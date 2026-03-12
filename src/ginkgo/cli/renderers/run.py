@@ -248,7 +248,9 @@ class _CliRunRenderer:
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
         summary.add_column()
         summary.add_row("Task", details.task_label)
-        summary.add_row("Exit code", str(details.exit_code) if details.exit_code is not None else "?")
+        summary.add_row(
+            "Exit code", str(details.exit_code) if details.exit_code is not None else "?"
+        )
         if details.log_path is not None:
             summary.add_row("Log", str(details.log_path))
         if self._summary.mode == "verbose" and details.error:
@@ -284,7 +286,10 @@ class _CliRunRenderer:
         rows = self._ordered_rows()
         task_width = max(
             len("Task"),
-            *(len(_truncate_task_label(row.label, max_width=_task_label_width(self._console))) for row in rows),
+            *(
+                len(_truncate_task_label(row.label, max_width=_task_label_width(self._console)))
+                for row in rows
+            ),
         )
         status_width = max(len("Status"), *(len(_status_label(row.status)) for row in rows))
         env_width = max(len("Environment"), *(len(row.env_label) for row in rows))

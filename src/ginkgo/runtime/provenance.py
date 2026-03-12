@@ -208,7 +208,9 @@ def latest_run_dir(root_dir: Path) -> Path | None:
     """Return the newest run directory by run id."""
     if not root_dir.exists():
         return None
-    runs = sorted((path for path in root_dir.iterdir() if path.is_dir()), key=lambda item: item.name)
+    runs = sorted(
+        (path for path in root_dir.iterdir() if path.is_dir()), key=lambda item: item.name
+    )
     return runs[-1] if runs else None
 
 

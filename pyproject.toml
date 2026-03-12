@@ -24,7 +24,7 @@ packages = ["src/ginkgo"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
 ginkgo = { path = ".", editable = true }
@@ -42,6 +42,10 @@ pyyaml = ">=6.0"
 pytest = ">=8.0"
 ruff = ">=0.4"
 
+[tool.pixi.feature.dev.pypi-dependencies]
+pre-commit = ">=4.0"
+ty = "*"
+
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
 
@@ -49,6 +53,9 @@ default = { features = ["dev"], solve-group = "default" }
 test = "pytest tests/ -v"
 lint = "ruff check src/ tests/"
 format = "ruff format src/ tests/"
+format-check = "ruff format --check src/ tests/"
+typecheck = "ty check src/ginkgo/config.py src/ginkgo/ui src/ginkgo/cli/app.py src/ginkgo/cli/commands/ui.py"
+precommit = "pre-commit run --all-files"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

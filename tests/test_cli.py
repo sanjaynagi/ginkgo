@@ -9,7 +9,12 @@ from pathlib import Path
 
 import yaml
 
-from ginkgo.cli import _core_unit_label, _environment_label, _time_of_day_spinner, _truncate_task_label
+from ginkgo.cli import (
+    _core_unit_label,
+    _environment_label,
+    _time_of_day_spinner,
+    _truncate_task_label,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +42,9 @@ class TestCliRunAndCache:
     def test_run_writes_manifest_params_and_cache_metadata(self) -> None:
         Path("ginkgo.toml").write_text('message = "default"\nextra = "base"\n', encoding="utf-8")
         Path("override-1.toml").write_text('message = "first"\n', encoding="utf-8")
-        Path("override-2.toml").write_text('message = "second"\nextra = "override"\n', encoding="utf-8")
+        Path("override-2.toml").write_text(
+            'message = "second"\nextra = "override"\n', encoding="utf-8"
+        )
         Path("workflow.py").write_text(
             """
 import ginkgo
@@ -69,7 +76,9 @@ def main():
             cwd=Path.cwd(),
         )
         assert first.returncode == 0, first.stderr
-        assert re.search(r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", first.stdout)
+        assert re.search(
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", first.stdout
+        )
         assert "📦 Loading workflow...  done" in first.stdout
         assert "🌱 Building expression tree...  1 tasks" in first.stdout
         assert re.search(r"💻 Running locally on \d+ Cores", first.stdout)
@@ -84,7 +93,9 @@ def main():
         assert '{"status":' not in first.stdout
 
         first_run_dir = _extract_run_dir(first.stdout)
-        first_manifest = yaml.safe_load((first_run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        first_manifest = yaml.safe_load(
+            (first_run_dir / "manifest.yaml").read_text(encoding="utf-8")
+        )
         first_params = yaml.safe_load((first_run_dir / "params.yaml").read_text(encoding="utf-8"))
         first_task = next(iter(first_manifest["tasks"].values()))
 
@@ -107,7 +118,9 @@ def main():
         assert second.returncode == 0, second.stderr
 
         second_run_dir = _extract_run_dir(second.stdout)
-        second_manifest = yaml.safe_load((second_run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        second_manifest = yaml.safe_load(
+            (second_run_dir / "manifest.yaml").read_text(encoding="utf-8")
+        )
         second_task = next(iter(second_manifest["tasks"].values()))
 
         assert "↺ cached" in second.stdout
@@ -351,7 +364,9 @@ def main():
 
         result = _run_cli("run", "workflow.py", "--verbose", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        assert re.search(r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout)
+        assert re.search(
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout
+        )
         assert "Run Summary" not in result.stdout
         assert re.search(r"💻 Running locally on \d+ Cores", result.stdout)
         assert "🧭 Verbose mode:" in result.stdout
@@ -409,6 +424,7 @@ def main():
         assert "fastq_stats[sample_b]" in result.stdout
         assert "fastq_stats[2]" not in result.stdout
         assert "2/2 complete" in result.stdout
+
 
 class TestCliSpinnerSelection:
     def test_time_of_day_spinner_uses_earth_in_day_and_moon_at_night(self) -> None:

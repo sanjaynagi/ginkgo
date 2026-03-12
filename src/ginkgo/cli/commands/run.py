@@ -45,8 +45,7 @@ def run_workflow(
     rich_console = console(sys.stdout)
     if not dry_run:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] "
-            f"[dim]({run_id})[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
 
     load_started = time.perf_counter()
@@ -149,11 +148,7 @@ def _load_failure_details(
     """Load failed-task diagnostics from a completed run manifest."""
     manifest = load_manifest(run_dir)
     failed_tasks = sorted(
-        (
-            task
-            for task in manifest.get("tasks", {}).values()
-            if task.get("status") == "failed"
-        ),
+        (task for task in manifest.get("tasks", {}).values() if task.get("status") == "failed"),
         key=lambda item: int(item.get("node_id", -1)),
     )
     details: list[_FailureDetails] = []
@@ -177,13 +172,7 @@ def _load_failure_details(
 
 
 def _discover_flow(module: ModuleType) -> FlowDef:
-    flows = {
-        id(value): value
-        for value in vars(module).values()
-        if isinstance(value, FlowDef)
-    }
+    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
     if len(flows) != 1:
-        raise RuntimeError(
-            f"Expected exactly one @flow in {module.__file__}, found {len(flows)}"
-        )
+        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
     return next(iter(flows.values()))

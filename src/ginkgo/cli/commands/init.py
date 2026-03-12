@@ -91,8 +91,7 @@ def command_init(args) -> int:
     if conflicts and not args.force:
         conflict_list = "\n".join(str(path.relative_to(root)) for path in conflicts)
         raise FileExistsError(
-            "Refusing to overwrite existing scaffold files without --force:\n"
-            f"{conflict_list}"
+            f"Refusing to overwrite existing scaffold files without --force:\n{conflict_list}"
         )
 
     for path, content in files.items():
