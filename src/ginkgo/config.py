@@ -51,7 +51,9 @@ def config(path: str | Path) -> dict[str, Any]:
     """
     session = _CONFIG_SESSIONS[-1] if _CONFIG_SESSIONS else None
     if session is not None and session.override_paths:
-        data = _merge_top_level_dicts(_load_config_mapping(item) for item in session.override_paths)
+        data = _merge_top_level_dicts(
+            _load_config_mapping(item) for item in session.override_paths
+        )
     else:
         data = _load_config_mapping(path)
 
@@ -90,9 +92,7 @@ def _load_config_mapping(path: str | Path) -> dict[str, Any]:
         with path.open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
     else:
-        raise ValueError(
-            f"Unsupported config format for {path}. Expected .toml, .yaml, or .yml"
-        )
+        raise ValueError(f"Unsupported config format for {path}. Expected .toml, .yaml, or .yml")
 
     if not isinstance(data, dict):
         raise TypeError(f"Config file must contain a top-level mapping, got {type(data).__name__}")
@@ -100,7 +100,9 @@ def _load_config_mapping(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def _merge_top_level_dicts(mappings: Sequence[dict[str, Any]] | Iterator[dict[str, Any]]) -> dict[str, Any]:
+def _merge_top_level_dicts(
+    mappings: Sequence[dict[str, Any]] | Iterator[dict[str, Any]],
+) -> dict[str, Any]:
     """Shallow-merge top-level config keys with last-write-wins semantics."""
     merged: dict[str, Any] = {}
     for mapping in mappings:

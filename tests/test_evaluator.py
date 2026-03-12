@@ -175,9 +175,7 @@ class TestShellTask:
         output = tmp_path / "out.txt"
         log = tmp_path / "logs" / "command.log"
 
-        result = evaluate(
-            shell_write_output_task(output_path=str(output), log_path=str(log))
-        )
+        result = evaluate(shell_write_output_task(output_path=str(output), log_path=str(log)))
 
         assert result == file(str(output))
         assert output.read_text(encoding="utf-8") == "payload"

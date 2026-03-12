@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote
 
 import yaml
@@ -101,8 +101,7 @@ def create_ui_server(
 
                 config_paths = payload.get("config_paths", [])
                 if not isinstance(config_paths, list) or any(
-                    not isinstance(item, str) or not item.strip()
-                    for item in config_paths
+                    not isinstance(item, str) or not item.strip() for item in config_paths
                 ):
                     self._send_json(
                         {"error": "config_paths must be a list of non-empty strings."},
@@ -145,18 +144,19 @@ def create_ui_server(
 
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
-        def log_message(self, _format: str, *args: object) -> None:
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
         def _handle_api(self, path: str) -> None:
             parts = [unquote(part) for part in path.strip("/").split("/")]
             if parts == ["api", "meta"]:
+                latest_run = latest_run_dir(runs_root)
                 self._send_json(
                     {
                         "project_root": str(project_root),
                         "runs_root": str(runs_root),
                         "selected_run_id": selected_run_id,
-                        "latest_run_id": latest_run_dir(runs_root).name if latest_run_dir(runs_root) else None,
+                        "latest_run_id": latest_run.name if latest_run is not None else None,
                     }
                 )
                 return
@@ -181,7 +181,9 @@ def create_ui_server(
                 run_id = parts[2]
                 run_dir = runs_root / run_id
                 if not run_dir.is_dir():
-                    self._send_json({"error": f"Run not found: {run_id}"}, status=HTTPStatus.NOT_FOUND)
+                    self._send_json(
+                        {"error": f"Run not found: {run_id}"}, status=HTTPStatus.NOT_FOUND
+                    )
                     return
                 self._send_json(_run_payload(run_dir))
                 return
@@ -199,7 +201,12 @@ def create_ui_server(
                 self._send_json(payload)
                 return
 
-            if len(parts) == 6 and parts[:2] == ["api", "runs"] and parts[3] == "tasks" and parts[5] == "log":
+            if (
+                len(parts) == 6
+                and parts[:2] == ["api", "runs"]
+                and parts[3] == "tasks"
+                and parts[5] == "log"
+            ):
                 run_id = parts[2]
                 task_key = parts[4]
                 payload = _task_payload(runs_root, run_id, task_key)
@@ -210,7 +217,11 @@ def create_ui_server(
                     )
                     return
                 log_path = payload.get("log_path")
-                content = Path(log_path).read_text(encoding="utf-8") if log_path and Path(log_path).is_file() else ""
+                content = (
+                    Path(log_path).read_text(encoding="utf-8")
+                    if log_path and Path(log_path).is_file()
+                    else ""
+                )
                 self._send_json({"content": content, "task_key": task_key})
                 return
 
@@ -239,7 +250,9 @@ def create_ui_server(
             index_path = STATIC_DIR / "index.html"
             if not index_path.is_file():
                 self._send_json(
-                    {"error": "UI assets not built. Run the frontend build before starting `ginkgo ui`."},
+                    {
+                        "error": "UI assets not built. Run the frontend build before starting `ginkgo ui`."
+                    },
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
@@ -276,7 +289,9 @@ def create_ui_server(
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-        def _send_json(self, payload: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _send_json(
+            self, payload: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK
+        ) -> None:
             encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -309,7 +324,9 @@ def _list_runs(runs_root: Path) -> list[dict[str, Any]]:
                 "failed_count": _status_count(tasks, "failed"),
                 "cached_count": _cached_count(tasks),
                 "succeeded_count": _status_count(tasks, "succeeded"),
-                "duration_seconds": _duration_seconds(manifest.get("started_at"), manifest.get("finished_at")),
+                "duration_seconds": _duration_seconds(
+                    manifest.get("started_at"), manifest.get("finished_at")
+                ),
             }
         )
     return runs
@@ -318,13 +335,22 @@ def _list_runs(runs_root: Path) -> list[dict[str, Any]]:
 def _run_payload(run_dir: Path) -> dict[str, Any]:
     manifest = load_manifest(run_dir)
     params_path = run_dir / "params.yaml"
-    params = yaml.safe_load(params_path.read_text(encoding="utf-8")) if params_path.is_file() else {}
+    params = (
+        yaml.safe_load(params_path.read_text(encoding="utf-8")) if params_path.is_file() else {}
+    )
     tasks_raw = manifest.get("tasks", {})
     tasks: list[dict[str, Any]] = []
     if isinstance(tasks_raw, dict):
-        for task_key, task in sorted(tasks_raw.items(), key=lambda item: int(item[1].get("node_id", -1))):
-            if not isinstance(task, dict):
+        task_items: list[tuple[str, dict[str, Any]]] = []
+        for task_key, task in tasks_raw.items():
+            if not isinstance(task_key, str) or not isinstance(task, dict):
                 continue
+            task_items.append((task_key, cast(dict[str, Any], task)))
+
+        for task_key, task in sorted(
+            task_items,
+            key=lambda item: int(item[1].get("node_id", -1)),
+        ):
             tasks.append(
                 {
                     "task_key": task_key,
@@ -470,13 +496,17 @@ def _base_name(value: Any) -> str:
 def _status_count(tasks: Any, status: str) -> int:
     if not isinstance(tasks, dict):
         return 0
-    return sum(1 for item in tasks.values() if isinstance(item, dict) and item.get("status") == status)
+    return sum(
+        1 for item in tasks.values() if isinstance(item, dict) and item.get("status") == status
+    )
 
 
 def _cached_count(tasks: Any) -> int:
     if not isinstance(tasks, dict):
         return 0
-    return sum(1 for item in tasks.values() if isinstance(item, dict) and item.get("cached") is True)
+    return sum(
+        1 for item in tasks.values() if isinstance(item, dict) and item.get("cached") is True
+    )
 
 
 def _duration_seconds(started_at: Any, finished_at: Any) -> float | None:
@@ -498,7 +528,9 @@ def _runs_signature(runs_root: Path) -> str:
     if not runs_root.exists():
         return "no-runs"
     parts: list[str] = []
-    for run_dir in sorted((path for path in runs_root.iterdir() if path.is_dir()), key=lambda item: item.name):
+    for run_dir in sorted(
+        (path for path in runs_root.iterdir() if path.is_dir()), key=lambda item: item.name
+    ):
         manifest_path = run_dir / "manifest.yaml"
         if manifest_path.is_file():
             stat = manifest_path.stat()
@@ -512,7 +544,9 @@ def _cache_signature(cache_root: Path) -> str:
     if not cache_root.exists():
         return "no-cache"
     parts: list[str] = []
-    for entry in sorted((path for path in cache_root.iterdir() if path.is_dir()), key=lambda item: item.name):
+    for entry in sorted(
+        (path for path in cache_root.iterdir() if path.is_dir()), key=lambda item: item.name
+    ):
         try:
             stat = entry.stat()
         except FileNotFoundError:

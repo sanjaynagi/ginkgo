@@ -67,7 +67,9 @@ class TestVW6Failure:
             "start:item_3",
         ]
 
-        result = evaluate(failure_pipeline_transient(items=items, log_path=log_path), jobs=1, cores=1)
+        result = evaluate(
+            failure_pipeline_transient(items=items, log_path=log_path), jobs=1, cores=1
+        )
 
         assert result == [f"ok:item_{i}" for i in range(5)]
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == [

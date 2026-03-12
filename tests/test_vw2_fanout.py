@@ -68,7 +68,9 @@ class TestVW2ConcurrentEvaluation:
         events_dir = "events"
 
         started_at = time.perf_counter()
-        result = evaluate(fan_pipeline(items=items, multiplier=2, events_dir=events_dir), jobs=10, cores=10)
+        result = evaluate(
+            fan_pipeline(items=items, multiplier=2, events_dir=events_dir), jobs=10, cores=10
+        )
         elapsed = time.perf_counter() - started_at
 
         intervals = list(_read_intervals(events_dir, "process").values())
@@ -79,7 +81,9 @@ class TestVW2ConcurrentEvaluation:
 
     def test_merge_receives_resolved_results(self):
         items = ["a", "b", "c"]
-        result = evaluate(fan_pipeline(items=items, multiplier=3, events_dir="events"), jobs=3, cores=3)
+        result = evaluate(
+            fan_pipeline(items=items, multiplier=3, events_dir="events"), jobs=3, cores=3
+        )
         assert result == "aaa,bbb,ccc"
 
     def test_merge_runs_after_all_fanout_tasks_complete(self):

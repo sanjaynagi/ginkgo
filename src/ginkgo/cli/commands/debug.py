@@ -18,16 +18,16 @@ def command_debug(args) -> int:
     run_dir = resolve_run_dir(args.run_id)
     manifest = load_manifest(run_dir)
     failed_tasks = [
-        task
-        for task in manifest.get("tasks", {}).values()
-        if task.get("status") == "failed"
+        task for task in manifest.get("tasks", {}).values() if task.get("status") == "failed"
     ]
     if not failed_tasks:
         rich_console.print(f"[bold green]🌿 ginkgo debug[/] [bold]{run_dir.name}[/]\n")
         rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{run_dir.name}[/]")
         return 0
 
-    rich_console.print(render_debug_header(run_dir=run_dir, manifest=manifest, failures=len(failed_tasks)))
+    rich_console.print(
+        render_debug_header(run_dir=run_dir, manifest=manifest, failures=len(failed_tasks))
+    )
     details = _debug_failure_details(run_dir=run_dir, failed_tasks=failed_tasks)
     for item in details:
         rich_console.print(render_debug_failure_panel(item))
