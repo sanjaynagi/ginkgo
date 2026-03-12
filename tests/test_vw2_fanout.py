@@ -67,17 +67,16 @@ class TestVW2ConcurrentEvaluation:
         items = [f"item_{i}" for i in range(10)]
         events_dir = "events"
 
-        started_at = time.perf_counter()
         result = evaluate(
             fan_pipeline(items=items, multiplier=2, events_dir=events_dir), jobs=10, cores=10
         )
-        elapsed = time.perf_counter() - started_at
 
         intervals = list(_read_intervals(events_dir, "process").values())
+        process_makespan = max(end for _, end in intervals) - min(start for start, _ in intervals)
         assert result == ",".join(sorted(item * 2 for item in items))
         assert len(intervals) == 10
         assert _peak_overlap(intervals) >= 5
-        assert elapsed < 2.0
+        assert process_makespan < 0.6
 
     def test_merge_receives_resolved_results(self):
         items = ["a", "b", "c"]
