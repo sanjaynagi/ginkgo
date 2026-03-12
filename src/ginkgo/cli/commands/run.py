@@ -1,0 +1,186 @@
+"""Run command handlers."""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+from types import ModuleType
+
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console
+from ginkgo.cli.renderers.common import _core_unit_label, _environment_label, _format_duration
+from ginkgo.cli.renderers.models import _FailureDetails, _RunSummary
+from ginkgo.cli.renderers.run import _CliRunRenderer
+from ginkgo.config import _config_session
+from ginkgo.core.flow import FlowDef
+from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
+
+
+def command_run(args, *, output_mode: RunMode) -> int:
+    """Handle ``ginkgo run``."""
+    workflow_path = Path(args.workflow).resolve()
+    return run_workflow(
+        workflow_path=workflow_path,
+        config_paths=[Path(path).resolve() for path in args.config],
+        jobs=args.jobs,
+        cores=args.cores,
+        dry_run=False,
+        output_mode=output_mode,
+    )
+
+
+def run_workflow(
+    *,
+    workflow_path: Path,
+    config_paths: list[Path],
+    jobs: int | None,
+    cores: int | None,
+    dry_run: bool,
+    output_mode: RunMode = "default",
+) -> int:
+    run_id = make_run_id(workflow_path=workflow_path)
+    rich_console = console(sys.stdout)
+    if not dry_run:
+        rich_console.print(
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] "
+            f"[dim]({run_id})[/]\n"
+        )
+
+    load_started = time.perf_counter()
+    with _config_session(override_paths=config_paths) as session:
+        module = load_module_from_path(workflow_path)
+        flow = _discover_flow(module)
+        expr = flow()
+        params = session.merged_loaded_values()
+    load_elapsed = time.perf_counter() - load_started
+
+    registry = PixiRegistry(project_root=Path.cwd())
+    evaluator = _ConcurrentEvaluator(jobs=jobs, cores=cores, pixi_registry=registry)
+    evaluator.validate(expr)
+    task_count = len(evaluator._nodes)
+    planned_tasks = [
+        (node.node_id, node.task_def.name, _environment_label(node.task_def.env))
+        for node in sorted(evaluator._nodes.values(), key=lambda item: item.node_id)
+    ]
+
+    if dry_run:
+        print(f"{workflow_path.name}: ok (dry-run)")
+        return 0
+
+    rich_console.print(
+        f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
+    )
+    rich_console.print(f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks")
+    rich_console.print(
+        f"[cyan]💻[/] Running locally on [bold]{evaluator.cores}[/] "
+        f"{_core_unit_label(evaluator.cores)}"
+    )
+    if output_mode == "verbose":
+        rich_console.print(
+            f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
+            f"config overlays={len(config_paths)}"
+        )
+        rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
+    else:
+        rich_console.print("")
+
+    recorder = RunProvenanceRecorder(
+        run_id=run_id,
+        workflow_path=workflow_path,
+        root_dir=RUNS_ROOT,
+        jobs=jobs,
+        cores=cores,
+        params=params,
+    )
+    renderer = _CliRunRenderer(
+        console=rich_console,
+        summary=_RunSummary(
+            run_id=run_id,
+            mode=output_mode,
+            run_dir=recorder.run_dir,
+        ),
+    )
+    evaluator = _ConcurrentEvaluator(
+        jobs=jobs,
+        cores=cores,
+        pixi_registry=registry,
+        provenance=recorder,
+        _stderr=renderer,
+    )
+    renderer.start(planned_tasks=planned_tasks)
+    run_started = time.perf_counter()
+    try:
+        evaluator.evaluate(expr)
+    except BaseException as exc:
+        recorder.finalize(status="failed", error=str(exc))
+        failure_details = _load_failure_details(
+            run_dir=recorder.run_dir,
+            renderer=renderer,
+            verbose=output_mode == "verbose",
+        )
+        renderer.finish(
+            elapsed=time.perf_counter() - run_started,
+            success=False,
+            failure_details=failure_details,
+        )
+        print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+        raise
+
+    recorder.finalize(status="succeeded")
+    renderer.finish(
+        elapsed=time.perf_counter() - run_started,
+        success=True,
+    )
+    return 0
+
+
+def _load_failure_details(
+    *,
+    run_dir: Path,
+    renderer: _CliRunRenderer,
+    verbose: bool,
+) -> list[_FailureDetails]:
+    """Load failed-task diagnostics from a completed run manifest."""
+    manifest = load_manifest(run_dir)
+    failed_tasks = sorted(
+        (
+            task
+            for task in manifest.get("tasks", {}).values()
+            if task.get("status") == "failed"
+        ),
+        key=lambda item: int(item.get("node_id", -1)),
+    )
+    details: list[_FailureDetails] = []
+    for task in failed_tasks:
+        node_id = int(task.get("node_id", -1))
+        log_rel = task.get("log")
+        log_path = run_dir / log_rel if isinstance(log_rel, str) else None
+        details.append(
+            _FailureDetails(
+                task_label=renderer.label_for_node(node_id) or task.get("task", f"node-{node_id}"),
+                exit_code=task.get("exit_code"),
+                log_path=log_path,
+                log_tail=tail_text(log_path, lines=20 if verbose else 10)
+                if log_path is not None
+                else [],
+                error=task.get("error") if verbose else None,
+                inputs=task.get("inputs") if verbose else None,
+            )
+        )
+    return details
+
+
+def _discover_flow(module: ModuleType) -> FlowDef:
+    flows = {
+        id(value): value
+        for value in vars(module).values()
+        if isinstance(value, FlowDef)
+    }
+    if len(flows) != 1:
+        raise RuntimeError(
+            f"Expected exactly one @flow in {module.__file__}, found {len(flows)}"
+        )
+    return next(iter(flows.values()))

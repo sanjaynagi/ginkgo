@@ -1,0 +1,31 @@
+# Local environment and tool caches
+.pixi/*
+!.pixi/config.toml
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+*__pycache__* 
+# Ginkgo runtime state
+.ginkgo/
+
+# Agent / local-instructions files
+AGENTS.md
+CLAUDE.md
+.claude/
+
+# Local planning / design / worklog docs
+plan.md
+*plan.local.md
+worklog.md
+*worklog*.md
+ginkgo-design-doc.md
+implementation-plan.md
+architecture.md
+example-workflow.py
+
+# OS/editor noise
+.DS_Store
+
+*.lock
