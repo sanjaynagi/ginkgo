@@ -32,3 +32,4 @@ example-workflow.py
 .DS_Store
 
 *.lock
+!tests/**/pixi.lock
