@@ -6,10 +6,12 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import _task_base_name
@@ -17,16 +19,13 @@ from ginkgo.cli.renderers.common import _task_base_name
 
 def command_cache(args) -> int:
     """Handle ``ginkgo cache`` subcommands."""
+    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
+    rich_console = console(sys.stdout, width=None if is_tty else 160)
     if args.cache_command == "ls":
-        is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-        rich_console = console(sys.stdout, width=None if is_tty else 160)
-        if not CACHE_ROOT.exists():
-            return 0
-        entries = [
-            _cache_entry_row(entry)
-            for entry in sorted(path for path in CACHE_ROOT.iterdir() if path.is_dir())
-        ]
+        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
+        entries = list_cache_entries(CACHE_ROOT)
         if not entries:
+            rich_console.print("[dim]No cache entries found.[/]")
             return 0
 
         table = Table(
@@ -41,7 +40,13 @@ def command_cache(args) -> int:
         table.add_column("Age", justify="right")
         table.add_column("Created", no_wrap=True)
         for row in entries:
-            table.add_row(*row)
+            table.add_row(
+                row["cache_key"],
+                row["task"],
+                row["size"],
+                row["age"],
+                row["created"],
+            )
         rich_console.print(table)
         return 0
 
@@ -49,10 +54,27 @@ def command_cache(args) -> int:
     if not cache_dir.is_dir():
         raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
     shutil.rmtree(cache_dir)
+    rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
+    message = Text()
+    message.append("✓ ", style="green")
+    message.append("Removed cache entry ")
+    message.append(args.cache_key, style="bold")
+    message.no_wrap = True
+    rich_console.print(message)
     return 0
 
 
-def _cache_entry_row(entry: Path) -> tuple[str, str, str, str, str]:
+def list_cache_entries(root: Path) -> list[dict[str, Any]]:
+    """Return cache entries as structured rows."""
+    if not root.exists():
+        return []
+    return [
+        _cache_entry_row(entry)
+        for entry in sorted(path for path in root.iterdir() if path.is_dir())
+    ]
+
+
+def _cache_entry_row(entry: Path) -> dict[str, Any]:
     """Return the display row for a cache entry."""
     meta_path = entry / "meta.json"
     if meta_path.is_file():
@@ -66,13 +88,15 @@ def _cache_entry_row(entry: Path) -> tuple[str, str, str, str, str]:
     function = str(meta.get("function") or "unknown")
     timestamp = str(meta.get("timestamp") or "")
     created_at = _parse_timestamp(timestamp)
-    return (
-        entry.name,
-        _task_base_name(function),
-        _format_size(_dir_size(entry)),
-        _format_age(created_at),
-        timestamp or "-",
-    )
+    return {
+        "cache_key": entry.name,
+        "task": _task_base_name(function),
+        "size": _format_size(_dir_size(entry)),
+        "size_bytes": _dir_size(entry),
+        "age": _format_age(created_at),
+        "created": timestamp or "-",
+        "function": function,
+    }
 
 
 def _dir_size(path: Path) -> int:

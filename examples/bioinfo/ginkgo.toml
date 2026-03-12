@@ -1,0 +1,5 @@
+[paths]
+samples_csv = "data/samples.csv"
+
+[qc]
+min_length = 8

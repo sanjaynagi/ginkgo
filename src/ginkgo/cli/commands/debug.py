@@ -23,7 +23,8 @@ def command_debug(args) -> int:
         if task.get("status") == "failed"
     ]
     if not failed_tasks:
-        rich_console.print(f"No failed tasks found in {run_dir.name}")
+        rich_console.print(f"[bold green]🌿 ginkgo debug[/] [bold]{run_dir.name}[/]\n")
+        rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{run_dir.name}[/]")
         return 0
 
     rich_console.print(render_debug_header(run_dir=run_dir, manifest=manifest, failures=len(failed_tasks)))

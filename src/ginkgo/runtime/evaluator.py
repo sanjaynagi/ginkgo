@@ -555,6 +555,7 @@ class _ConcurrentEvaluator:
             node.state = "waiting_dynamic"
             node.dynamic_template = completed_value
             node.dynamic_dependency_ids = dynamic_dependencies
+            self._record_task_metadata(node)
             return
 
         final_value = self._finalize_result_value(node=node, value=completed_value)
@@ -1059,6 +1060,8 @@ class _ConcurrentEvaluator:
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
             cache_key=node.cache_key,
+            dependency_ids=sorted(node.dependency_ids),
+            dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
         )
         if node.task_def.env is not None and self.pixi_registry is not None:
             manifest = self.pixi_registry.resolve(env=node.task_def.env)

@@ -1,7 +1,7 @@
 """Workflow configuration loading.
 
-Loads YAML config files and returns plain dicts.  Schema validation and
-multi-file layering are deferred to Phase 6.
+Loads TOML or YAML config files and returns plain dicts. Schema validation and
+multi-file layering are deferred to a later phase.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+import tomllib
 from typing import Any, Iterator, Sequence
 
 import yaml
@@ -31,12 +32,12 @@ _CONFIG_SESSIONS: list[_ConfigSession] = []
 
 
 def config(path: str | Path) -> dict[str, Any]:
-    """Load a YAML configuration file.
+    """Load a TOML or YAML configuration file.
 
     Parameters
     ----------
     path : str | Path
-        Path to the YAML config file.
+        Path to the configuration file.
 
     Returns
     -------
@@ -78,13 +79,23 @@ def _config_session(
 
 
 def _load_config_mapping(path: str | Path) -> dict[str, Any]:
-    """Load a single YAML config file and require a top-level mapping."""
+    """Load a single TOML or YAML config file and require a top-level mapping."""
     path = Path(path)
-    with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
+    suffix = path.suffix.lower()
+
+    if suffix == ".toml":
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    elif suffix in {".yaml", ".yml"}:
+        with path.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+    else:
+        raise ValueError(
+            f"Unsupported config format for {path}. Expected .toml, .yaml, or .yml"
+        )
 
     if not isinstance(data, dict):
-        raise TypeError(f"Config file must contain a YAML mapping, got {type(data).__name__}")
+        raise TypeError(f"Config file must contain a top-level mapping, got {type(data).__name__}")
 
     return data
 
