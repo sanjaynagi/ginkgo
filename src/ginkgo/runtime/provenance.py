@@ -100,6 +100,8 @@ class RunProvenanceRecorder:
         resolved_args: dict[str, Any] | None,
         input_hashes: dict[str, Any] | None,
         cache_key: str | None,
+        dependency_ids: list[int] | None = None,
+        dynamic_dependency_ids: list[int] | None = None,
     ) -> None:
         """Record resolved task inputs and cache identity."""
         self.ensure_task(node_id=node_id, task_name=task_name, env=env)
@@ -110,6 +112,10 @@ class RunProvenanceRecorder:
             task["input_hashes"] = _render_value(input_hashes)
         if cache_key is not None:
             task["cache_key"] = cache_key
+        if dependency_ids is not None:
+            task["dependency_ids"] = dependency_ids
+        if dynamic_dependency_ids is not None:
+            task["dynamic_dependency_ids"] = dynamic_dependency_ids
         self._write_manifest()
 
     def mark_running(self, *, node_id: int, task_name: str, env: str | None) -> None:

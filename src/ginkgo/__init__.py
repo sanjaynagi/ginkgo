@@ -1,4 +1,4 @@
-"""Ginkgo — a dynamic, reproducible workflow orchestrator for genomics."""
+"""Ginkgo — a dynamic, reproducible workflow orchestrator for scientific and data workflows."""
 
 from __future__ import annotations
 

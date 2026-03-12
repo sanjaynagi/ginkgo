@@ -1,0 +1,10 @@
+[workspace]
+name = "bioinfo_tools"
+version = "0.1.0"
+description = "Small example environment for the Ginkgo bioinformatics demo"
+channels = ["conda-forge", "bioconda"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+[dependencies]
+python = ">=3.11"
+seqkit = ">=2.8"

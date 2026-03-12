@@ -67,7 +67,10 @@ def run_workflow(
     ]
 
     if dry_run:
-        print(f"{workflow_path.name}: ok (dry-run)")
+        rich_console.print(
+            f"[green]✓[/] [bold]{workflow_path.name}[/] "
+            f"[dim](dry-run)[/] [dim]- {task_count} tasks validated[/]"
+        )
         return 0
 
     rich_console.print(
