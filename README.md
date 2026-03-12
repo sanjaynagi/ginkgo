@@ -1,6 +1,6 @@
 # Ginkgo
 
-Ginkgo is a Python workflow orchestrator for genomics and bioinformatics workloads.
+Ginkgo is a Python workflow orchestrator for scientific computing, data science, and analytical pipelines.
 
 It combines:
 
@@ -11,7 +11,15 @@ It combines:
 - concurrent scheduling with `--jobs` and `--cores`
 - provenance logging and a local CLI
 
-The project is currently implemented through **Phase 6** of the design and implementation plan. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, and debug tooling.
+It works well for:
+
+- data preparation and feature pipelines
+- exploratory and productionised data science workflows
+- bioinformatics and computational biology analyses
+- research and scientific computing pipelines
+- mixed Python and shell-based workflows
+
+The project is currently implemented through **Phase 6**, with an initial React-based local UI from **Phase 7**. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, debug tooling, and a local run browser.
 
 ## What Ginkgo Looks Like
 
@@ -19,7 +27,7 @@ The project is currently implemented through **Phase 6** of the design and imple
 import ginkgo
 from ginkgo import flow, shell_task, task, file
 
-cfg = ginkgo.config("config.yaml")
+cfg = ginkgo.config("ginkgo.toml")
 
 @task(env="bioinfo_tools")
 def qc(sample_id: str, fastq: file, min_length: int) -> file:
@@ -54,7 +62,8 @@ ginkgo run workflow.py
 - shell task execution through `shell_task(...)`
 - per-task Pixi environments resolved from `envs/<env>/pixi.toml`
 - run provenance under `.ginkgo/runs/<run_id>/`
-- `ginkgo run`, `ginkgo test --dry-run`, `ginkgo cache ls`, `ginkgo cache clear`, and `ginkgo debug`
+- a local React UI with `ginkgo ui` for browsing runs, a task graph, cache entries, and task logs
+- `ginkgo run`, `ginkgo test --dry-run`, `ginkgo cache ls`, `ginkgo cache clear`, `ginkgo debug`, and `ginkgo ui`
 
 ## Project Layout
 
@@ -156,14 +165,16 @@ The CLI prints the run directory when it finishes:
 Run directory: .ginkgo/runs/20260312_145430_affcc6b4
 ```
 
-## Example Workflow
+## Example Workflows
+
+Ginkgo is domain-agnostic, but bioinformatics is one of its strongest early examples.
 
 A runnable bioinformatics example lives in [examples/bioinfo](examples/bioinfo).
 
 It includes:
 
 - `workflow.py`
-- `config.yaml`
+- `ginkgo.toml`
 - tiny FASTQ inputs and a sample sheet
 - a Pixi environment in `envs/bioinfo_tools/pixi.toml`
 - a `.tests/` file so you can dry-run it immediately
@@ -254,21 +265,37 @@ def route(value: int):
 
 This is how Ginkgo supports dynamic DAG growth without a separate branching API.
 
+## Positioning
+
+Ginkgo is best understood as a Python-native workflow engine for reproducible analytical work.
+
+It is a good fit when you want:
+
+- task-level caching based on actual inputs
+- dynamic control flow that depends on computed values
+- local execution with sensible parallelism
+- reproducible per-task environments
+- lightweight provenance without adopting a large orchestration platform
+
+Bioinformatics remains a major use case, but the core runtime is designed to be broadly useful across data science and scientific workflows.
+
 ## Configuration
 
-`ginkgo.config(path)` loads YAML into a plain Python dict.
+`ginkgo.config(path)` loads TOML or YAML into a plain Python dict.
+
+The default first-party convention is `ginkgo.toml`.
 
 CLI overrides are supported:
 
 ```bash
-ginkgo run workflow.py --config base.yaml --config prod.yaml
+ginkgo run workflow.py --config base.toml --config prod.toml
 ```
 
 Behavior today:
 
 - later config files win
 - merging is shallow at the top-level key boundary
-- `ginkgo.config("anything.yaml")` inside the workflow resolves to the CLI override set during `ginkgo run`
+- `ginkgo.config("ginkgo.toml")` inside the workflow resolves to the CLI override set during `ginkgo run`
 
 ## Environments
 

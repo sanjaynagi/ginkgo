@@ -35,16 +35,16 @@ def _extract_run_dir(output: str) -> Path:
 
 class TestCliRunAndCache:
     def test_run_writes_manifest_params_and_cache_metadata(self) -> None:
-        Path("default.yaml").write_text("message: default\nextra: base\n", encoding="utf-8")
-        Path("override-1.yaml").write_text("message: first\n", encoding="utf-8")
-        Path("override-2.yaml").write_text("message: second\nextra: override\n", encoding="utf-8")
+        Path("ginkgo.toml").write_text('message = "default"\nextra = "base"\n', encoding="utf-8")
+        Path("override-1.toml").write_text('message = "first"\n', encoding="utf-8")
+        Path("override-2.toml").write_text('message = "second"\nextra = "override"\n', encoding="utf-8")
         Path("workflow.py").write_text(
             """
 import ginkgo
 from pathlib import Path
 from ginkgo import flow, task
 
-cfg = ginkgo.config("default.yaml")
+cfg = ginkgo.config("ginkgo.toml")
 
 @task()
 def write_message(message: str, output_path: str) -> str:
@@ -63,9 +63,9 @@ def main():
             "run",
             "workflow.py",
             "--config",
-            "override-1.yaml",
+            "override-1.toml",
             "--config",
-            "override-2.yaml",
+            "override-2.toml",
             cwd=Path.cwd(),
         )
         assert first.returncode == 0, first.stderr
@@ -99,9 +99,9 @@ def main():
             "run",
             "workflow.py",
             "--config",
-            "override-1.yaml",
+            "override-1.toml",
             "--config",
-            "override-2.yaml",
+            "override-2.toml",
             cwd=Path.cwd(),
         )
         assert second.returncode == 0, second.stderr
@@ -126,7 +126,15 @@ def main():
 
         cleared = _run_cli("cache", "clear", cache_key, cwd=Path.cwd())
         assert cleared.returncode == 0
+        assert "🌿 ginkgo cache clear" in cleared.stdout
+        assert f"✓ Removed cache entry {cache_key}" in cleared.stdout
         assert not (Path(".ginkgo") / "cache" / cache_key).exists()
+
+    def test_cache_ls_empty_state_is_styled(self) -> None:
+        result = _run_cli("cache", "ls", cwd=Path.cwd())
+        assert result.returncode == 0
+        assert "🌿 ginkgo cache ls" in result.stdout
+        assert "No cache entries found." in result.stdout
 
 
 class TestCliDebug:
@@ -180,6 +188,32 @@ def main():
         assert "Log tail" in debug.stdout
         assert "about-to-fail:sample_1" in debug.stdout
 
+    def test_debug_no_failures_uses_styled_empty_state(self) -> None:
+        Path("ok_workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def ok() -> str:
+    return "ok"
+
+@flow
+def main():
+    return ok()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        completed = _run_cli("run", "ok_workflow.py", cwd=Path.cwd())
+        assert completed.returncode == 0, completed.stderr
+        run_dir = _extract_run_dir(completed.stdout)
+
+        debug = _run_cli("debug", run_dir.name, cwd=Path.cwd())
+        assert debug.returncode == 0
+        assert f"🌿 ginkgo debug {run_dir.name}" in debug.stdout
+        assert f"✓ No failed tasks found in {run_dir.name}" in debug.stdout
+
     def test_verbose_run_includes_failure_inputs_and_error(self) -> None:
         Path("failing_verbose_workflow.py").write_text(
             """
@@ -232,8 +266,69 @@ def main():
 
         result = _run_cli("test", "--dry-run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        assert "dry_run_flow.py: ok (dry-run)" in result.stdout
+        assert "🌿 ginkgo test --dry-run" in result.stdout
+        assert "✓ dry_run_flow.py (dry-run) - 1 tasks validated" in result.stdout
+        assert "✓ Validated 1 test workflow" in result.stdout
         assert not Path("should-not-exist.txt").exists()
+
+    def test_test_execution_prints_header_and_summary(self) -> None:
+        tests_dir = Path(".tests")
+        tests_dir.mkdir()
+        (tests_dir / "exec_flow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("test", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo test" in result.stdout
+        assert "🌿 ginkgo run exec_flow.py" in result.stdout
+        assert "✓ Completed 1 test workflow" in result.stdout
+
+
+class TestCliInit:
+    def test_init_creates_project_scaffold(self) -> None:
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo init demo-project" in result.stdout
+        assert "✓ Initialized project scaffold at" in result.stdout
+        assert "Created:" in result.stdout
+        assert "workflow.py" in result.stdout
+        assert "agents.ginkgo.md" in result.stdout
+        assert "ginkgo test --dry-run" in result.stdout
+
+        project_dir = Path("demo-project")
+        assert (project_dir / "workflow.py").is_file()
+        assert (project_dir / "ginkgo.toml").is_file()
+        assert (project_dir / ".tests" / "smoke.py").is_file()
+        assert (project_dir / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "agents.ginkgo.md").is_file()
+
+        workflow_text = (project_dir / "workflow.py").read_text(encoding="utf-8")
+        assert "@flow" in workflow_text
+        assert "ginkgo.config" in workflow_text
+        assert 'ginkgo.config("ginkgo.toml")' in workflow_text
+
+    def test_init_refuses_to_overwrite_without_force(self) -> None:
+        project_dir = Path("demo-project")
+        project_dir.mkdir()
+        (project_dir / "workflow.py").write_text("existing\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
+        assert (project_dir / "workflow.py").read_text(encoding="utf-8") == "existing\n"
 
 
 class TestCliOutputModes:

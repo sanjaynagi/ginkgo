@@ -1,7 +1,7 @@
 [project]
 name = "ginkgo"
 version = "0.1.0"
-description = "A dynamic, reproducible workflow orchestrator for genomics"
+description = "A dynamic, reproducible workflow orchestrator for scientific and data workflows"
 requires-python = ">= 3.11"
 dependencies = [
     "numpy>=2.0",
