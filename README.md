@@ -19,7 +19,7 @@ It works well for:
 - research and scientific computing pipelines
 - mixed Python and shell-based workflows
 
-The project is currently implemented through **Phase 6**, with an initial React-based local UI from **Phase 7**. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, debug tooling, and a local run browser.
+The project is currently implemented through **Phase 7**, with the first hardening slice of **Phase 8** now landed. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, debug tooling, a local run browser, opt-in task retries, expression-graph cycle detection, and v1 cache pruning.
 
 ## What Ginkgo Looks Like
 
@@ -57,13 +57,15 @@ ginkgo run workflow.py
 - dynamic DAG expansion by returning new task expressions from a task body
 - `file`, `folder`, and `tmp_dir` marker types
 - content-addressed caching under `.ginkgo/cache/`
+- opt-in task retries via `@task(retries=n)`
+- explicit cycle detection for expression graphs before execution
 - concurrent scheduling with OR-Tools CP-SAT resource selection
 - Python task execution in worker processes, with a thread-pool fallback when process pools are blocked by the runtime environment
 - shell task execution through `shell_task(...)`
 - per-task Pixi environments resolved from `envs/<env>/pixi.toml`
 - run provenance under `.ginkgo/runs/<run_id>/`
 - a local React UI with `ginkgo ui` for browsing runs, a task graph, cache entries, and task logs
-- `ginkgo run`, `ginkgo test --dry-run`, `ginkgo cache ls`, `ginkgo cache clear`, `ginkgo debug`, and `ginkgo ui`
+- `ginkgo run`, `ginkgo test --dry-run`, `ginkgo cache ls`, `ginkgo cache clear`, `ginkgo cache prune`, `ginkgo debug`, and `ginkgo ui`
 
 ## Project Layout
 
@@ -308,7 +310,12 @@ Named environments are resolved from:
 <project_root>/envs/<env_name>/pixi.toml
 ```
 
-You can also point `env=` at an explicit `pixi.toml` path.
+You can also point `env=` at:
+
+- an explicit `pixi.toml` path
+- an explicit `environment.yml` or `environment.yaml` path
+
+When given a conda env spec, Ginkgo imports it into a generated sibling Pixi workspace under `.ginkgo-pixi/` and then executes through Pixi as normal. `pixi.toml` remains the recommended canonical format.
 
 Example:
 
@@ -388,7 +395,7 @@ to inspect the most recent failed run, including the last 50 lines of the failin
 ### Run a workflow
 
 ```bash
-ginkgo run workflow.py [--config PATH ...] [--jobs N] [--cores N]
+ginkgo run workflow.py [--config PATH ...] [--jobs N] [--cores N] [--dry-run]
 ```
 
 ### Validate local test workflows
@@ -411,6 +418,12 @@ This renders a Rich table with cache key, task, size, age, and created timestamp
 
 ```bash
 ginkgo cache clear <cache_key>
+```
+
+### Prune stale cache entries
+
+```bash
+ginkgo cache prune --older-than 30d [--dry-run]
 ```
 
 ### Inspect the latest failed run
@@ -451,11 +464,9 @@ The test suite currently covers:
 
 These items are still planned rather than shipped:
 
-- web UI
 - Docker backend
 - R task support
 - richer cache pruning commands
-- `ginkgo run --dry-run`
 
 ## Additional Documentation
 

@@ -1,13 +1,16 @@
 """Pixi environment registry and subprocess helpers.
 
 Environments are resolved from ``envs/<env_name>/`` under the project root, or
-from a direct path to a ``pixi.toml`` when the ``env`` value is an absolute
-path or contains a path separator.
+from an explicit path to a ``pixi.toml``. Explicit conda environment specs
+(``environment.yml`` / ``environment.yaml``) are imported into a generated
+neighboring Pixi workspace under ``.ginkgo-pixi/`` and then executed through
+the normal Pixi path.
 """
 
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +40,14 @@ class PixiEnvNotFoundError(RuntimeError):
         super().__init__(msg)
 
 
+class PixiEnvImportError(RuntimeError):
+    """Raised when a conda environment spec cannot be imported into Pixi."""
+
+    def __init__(self, *, source: Path, output: str) -> None:
+        details = output.strip() or "pixi did not provide any error output"
+        super().__init__(f"Failed to import conda env spec {str(source)!r} into Pixi: {details}")
+
+
 def _list_envs(envs_dir: Path) -> list[str]:
     """Return sorted names of discoverable environments under envs_dir."""
     if not envs_dir.is_dir():
@@ -46,6 +57,11 @@ def _list_envs(envs_dir: Path) -> list[str]:
         for child in envs_dir.iterdir()
         if child.is_dir() and (child / "pixi.toml").is_file()
     )
+
+
+def _is_conda_env_file(path: Path) -> bool:
+    """Return whether *path* names a supported conda env spec file."""
+    return path.name in {"environment.yml", "environment.yaml"}
 
 
 def _is_explicit_path(env: str) -> bool:
@@ -101,6 +117,8 @@ class PixiRegistry:
         """
         if _is_explicit_path(env):
             manifest = Path(env)
+            if _is_conda_env_file(manifest):
+                return self._resolve_conda_env_file(manifest=manifest)
             if not manifest.is_file():
                 raise PixiEnvNotFoundError(env=env)
             return manifest.resolve()
@@ -109,6 +127,62 @@ class PixiRegistry:
         if not manifest.is_file():
             raise PixiEnvNotFoundError(env=env, searched=self._envs_dir)
         return manifest.resolve()
+
+    def _resolve_conda_env_file(self, *, manifest: Path) -> Path:
+        """Import a conda env spec into a generated neighboring Pixi workspace."""
+        if not manifest.is_file():
+            raise PixiEnvNotFoundError(env=str(manifest))
+
+        _require_pixi()
+        generated_dir = manifest.parent / ".ginkgo-pixi"
+        generated_manifest = generated_dir / "pixi.toml"
+        if self._should_refresh_generated_manifest(
+            source_manifest=manifest,
+            generated_manifest=generated_manifest,
+        ):
+            self._import_conda_env_file(source_manifest=manifest, output_dir=generated_dir)
+        return generated_manifest.resolve()
+
+    def _should_refresh_generated_manifest(
+        self,
+        *,
+        source_manifest: Path,
+        generated_manifest: Path,
+    ) -> bool:
+        """Return whether the generated Pixi workspace should be recreated."""
+        if not generated_manifest.is_file():
+            return True
+        return source_manifest.stat().st_mtime > generated_manifest.stat().st_mtime
+
+    def _import_conda_env_file(self, *, source_manifest: Path, output_dir: Path) -> None:
+        """Run ``pixi init --import`` into *output_dir* for a conda env spec."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        argv = [
+            "pixi",
+            "init",
+            str(output_dir),
+            "--import",
+            str(source_manifest),
+        ]
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            raise PixiEnvImportError(
+                source=source_manifest,
+                output=(completed.stdout or "") + (completed.stderr or ""),
+            )
+
+        generated_manifest = output_dir / "pixi.toml"
+        if not generated_manifest.is_file():
+            raise PixiEnvImportError(
+                source=source_manifest,
+                output="pixi import completed without creating pixi.toml",
+            )
 
     def lock_hash(self, *, env: str) -> str | None:
         """Return the SHA-256 of the environment's ``pixi.lock``, or None.

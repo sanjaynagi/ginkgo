@@ -53,6 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--config", action="append", default=[])
     run_parser.add_argument("--jobs", type=int, default=None)
     run_parser.add_argument("--cores", type=int, default=None)
+    run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
 
     cache_parser = subparsers.add_parser("cache")
@@ -60,6 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cache_subparsers.add_parser("ls")
     clear_parser = cache_subparsers.add_parser("clear")
     clear_parser.add_argument("cache_key")
+    prune_parser = cache_subparsers.add_parser("prune")
+    prune_parser.add_argument("--older-than", required=True)
+    prune_parser.add_argument("--dry-run", action="store_true")
 
     debug_parser = subparsers.add_parser("debug")
     debug_parser.add_argument("run_id", nargs="?")
