@@ -28,16 +28,22 @@ class TaskDef:
         Pixi environment name (or Docker URI in future).
     version : int
         Cache-busting version tag.
+    retries : int
+        Additional retry attempts after the initial execution.
     """
 
     fn: Callable[..., Any]
     env: str | None = None
     version: int = 1
+    retries: int = 0
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.retries < 0:
+            raise ValueError("retries must be at least 0")
+
         sig = inspect.signature(self.fn)
         hints = get_type_hints(self.fn)
         required = frozenset(
@@ -211,6 +217,7 @@ def task(
     *,
     env: str | None = None,
     version: int = 1,
+    retries: int = 0,
 ) -> Callable[[Callable[..., Any]], TaskDef]:
     """Decorator that turns a function into a lazy task definition.
 
@@ -220,6 +227,8 @@ def task(
         Pixi environment name.  If ``None``, the task runs in the current env.
     version : int
         Cache-busting version tag.  Bump when task logic changes.
+    retries : int
+        Additional retry attempts after the initial execution.
 
     Returns
     -------
@@ -228,7 +237,7 @@ def task(
     """
 
     def decorator(fn: Callable[..., Any]) -> TaskDef:
-        return TaskDef(fn=fn, env=env, version=version)
+        return TaskDef(fn=fn, env=env, version=version, retries=retries)
 
     return decorator
 

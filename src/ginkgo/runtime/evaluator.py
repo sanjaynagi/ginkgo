@@ -63,6 +63,15 @@ _PIXI_WORKER_C = (
 )
 
 
+class CycleError(RuntimeError):
+    """Raised when the expression graph contains a dependency cycle."""
+
+    def __init__(self, cycle: list[str]) -> None:
+        self.cycle = cycle
+        rendered = " -> ".join(cycle)
+        super().__init__(f"Detected cycle in workflow graph: {rendered}")
+
+
 def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
     """Rebuild a task exception reported by a worker subprocess."""
     module_name = error_payload["module"]
@@ -132,6 +141,7 @@ class _TaskNode:
     stdout_path: Path | None = None
     stderr_path: Path | None = None
     display_label: str | None = None
+    attempt: int = 0
 
     @property
     def task_def(self) -> TaskDef:
@@ -265,44 +275,91 @@ class _ConcurrentEvaluator:
         assert self._failure is not None
         raise self._failure
 
-    def _register_value(self, value: Any) -> set[int]:
+    def _register_value(
+        self,
+        value: Any,
+        *,
+        expr_stack: tuple[int, ...] = (),
+        task_path: tuple[str, ...] = (),
+    ) -> set[int]:
         """Register all task nodes reachable from a nested value."""
         if isinstance(value, Expr):
-            return {self._register_expr(value)}
+            return {
+                self._register_expr(
+                    value,
+                    expr_stack=expr_stack,
+                    task_path=task_path,
+                )
+            }
 
         if isinstance(value, ExprList):
             dependencies: set[int] = set()
             for expr in value:
-                dependencies.add(self._register_expr(expr))
+                dependencies.add(
+                    self._register_expr(
+                        expr,
+                        expr_stack=expr_stack,
+                        task_path=task_path,
+                    )
+                )
             return dependencies
 
         if isinstance(value, list | tuple):
             dependencies: set[int] = set()
             for item in value:
-                dependencies |= self._register_value(item)
+                dependencies |= self._register_value(
+                    item,
+                    expr_stack=expr_stack,
+                    task_path=task_path,
+                )
             return dependencies
 
         if isinstance(value, dict):
             dependencies: set[int] = set()
             for key, item in value.items():
-                dependencies |= self._register_value(key)
-                dependencies |= self._register_value(item)
+                dependencies |= self._register_value(
+                    key,
+                    expr_stack=expr_stack,
+                    task_path=task_path,
+                )
+                dependencies |= self._register_value(
+                    item,
+                    expr_stack=expr_stack,
+                    task_path=task_path,
+                )
             return dependencies
 
         return set()
 
-    def _register_expr(self, expr: Expr) -> int:
+    def _register_expr(
+        self,
+        expr: Expr,
+        *,
+        expr_stack: tuple[int, ...] = (),
+        task_path: tuple[str, ...] = (),
+    ) -> int:
         """Register a task expression node once per object identity."""
         expr_id = id(expr)
+        if expr_id in expr_stack:
+            cycle_start = expr_stack.index(expr_id)
+            cycle = list(task_path[cycle_start:]) + [expr.task_def.name]
+            raise CycleError(cycle)
+
         if expr_id in self._expr_nodes:
             return self._expr_nodes[expr_id]
 
         node_id = self._next_node_id
         self._next_node_id += 1
 
+        next_expr_stack = (*expr_stack, expr_id)
+        next_task_path = (*task_path, expr.task_def.name)
         dependency_ids: set[int] = set()
         for value in expr.args.values():
-            dependency_ids |= self._register_value(value)
+            dependency_ids |= self._register_value(
+                value,
+                expr_stack=next_expr_stack,
+                task_path=next_task_path,
+            )
 
         self._nodes[node_id] = _TaskNode(
             node_id=node_id,
@@ -315,6 +372,7 @@ class _ConcurrentEvaluator:
                 node_id=node_id,
                 task_name=expr.task_def.name,
                 env=expr.task_def.env,
+                retries=expr.task_def.retries,
             )
             self._nodes[node_id].stdout_path = stdout_path
             self._nodes[node_id].stderr_path = stderr_path
@@ -412,18 +470,23 @@ class _ConcurrentEvaluator:
 
         for node_id in selected:
             node = self._nodes[node_id]
+            node.attempt += 1
             node.state = "running"
             self._log(
                 task=node.task_def.name,
                 status="running",
                 node_id=node.node_id,
                 display_label=node.display_label,
+                attempt=node.attempt,
+                max_attempts=node.task_def.retries + 1,
             )
             if self.provenance is not None:
                 self.provenance.mark_running(
                     node_id=node.node_id,
                     task_name=node.task_def.name,
                     env=node.task_def.env,
+                    attempt=node.attempt,
+                    retries=node.task_def.retries,
                 )
             node.resolved_args = self._resolve_task_args(
                 expr=node.expr,
@@ -465,19 +528,7 @@ class _ConcurrentEvaluator:
             try:
                 completed_value = future.result()
             except BaseException as exc:
-                node.state = "failed"
-                self._cleanup_transport(node)
-                if self._failure is None:
-                    self._failure = exc
-                    self._cancel_pending_futures()
-                self._record_task_failure(node=node, exc=exc)
-                self._log(
-                    task=node.task_def.name,
-                    status="failed",
-                    exit_code=getattr(exc, "exit_code", None),
-                    node_id=node.node_id,
-                    display_label=node.display_label,
-                )
+                self._handle_task_exception(node=node, exc=exc)
                 continue
 
             try:
@@ -486,19 +537,7 @@ class _ConcurrentEvaluator:
                 else:
                     self._handle_completed_shell_phase(node=node, completed_value=completed_value)
             except BaseException as exc:
-                node.state = "failed"
-                self._cleanup_transport(node)
-                if self._failure is None:
-                    self._failure = exc
-                    self._cancel_pending_futures()
-                self._record_task_failure(node=node, exc=exc)
-                self._log(
-                    task=node.task_def.name,
-                    status="failed",
-                    exit_code=getattr(exc, "exit_code", None),
-                    node_id=node.node_id,
-                    display_label=node.display_label,
-                )
+                self._handle_task_exception(node=node, exc=exc)
 
         if self._failure is None:
             self._finalize_dynamic_nodes()
@@ -566,6 +605,72 @@ class _ConcurrentEvaluator:
         final_value = self._finalize_result_value(node=node, value=completed_value)
         self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
 
+    def _handle_task_exception(self, *, node: _TaskNode, exc: BaseException) -> None:
+        """Either retry a failed task attempt or fail the run."""
+        if self._should_retry(node=node):
+            self._schedule_retry(node=node, exc=exc)
+            return
+
+        node.state = "failed"
+        self._cleanup_transport(node)
+        if self._failure is None:
+            self._failure = exc
+            self._cancel_pending_futures()
+        self._record_task_failure(node=node, exc=exc)
+        self._log(
+            task=node.task_def.name,
+            status="failed",
+            exit_code=getattr(exc, "exit_code", None),
+            node_id=node.node_id,
+            display_label=node.display_label,
+            attempt=node.attempt,
+            max_attempts=node.task_def.retries + 1,
+        )
+
+    def _should_retry(self, *, node: _TaskNode) -> bool:
+        """Return whether the current failed attempt should be retried."""
+        return node.attempt <= node.task_def.retries
+
+    def _schedule_retry(self, *, node: _TaskNode, exc: BaseException) -> None:
+        """Reset node state so the scheduler can rerun the task from scratch."""
+        self._cleanup_transport(node)
+
+        # Remove any attempt-local scratch directories before rerunning.
+        for path in node.tmp_paths:
+            if path.exists():
+                shutil.rmtree(path)
+
+        node.state = "pending"
+        node.resolved_args = None
+        node.cache_key = None
+        node.input_hashes = None
+        node.threads = 1
+        node.tmp_paths = []
+        node.transport_path = None
+        node.dynamic_template = None
+        node.dynamic_dependency_ids.clear()
+
+        retries_remaining = node.task_def.retries - node.attempt
+        if self.provenance is not None:
+            self.provenance.mark_retrying(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                env=node.task_def.env,
+                exc=exc,
+                attempt=node.attempt,
+                retries_remaining=retries_remaining,
+            )
+        self._log(
+            task=node.task_def.name,
+            status="waiting",
+            exit_code=getattr(exc, "exit_code", None),
+            node_id=node.node_id,
+            display_label=node.display_label,
+            attempt=node.attempt,
+            max_attempts=node.task_def.retries + 1,
+            retries_remaining=retries_remaining,
+        )
+
     def _complete_node(self, *, node: _TaskNode, value: Any, tmp_paths: list[Path]) -> None:
         """Persist and mark a task node as fully completed."""
         self._cleanup_transport(node)
@@ -598,6 +703,8 @@ class _ConcurrentEvaluator:
             exit_code=0,
             node_id=node.node_id,
             display_label=node.display_label,
+            attempt=node.attempt,
+            max_attempts=node.task_def.retries + 1,
         )
 
     def _resolve_task_args(
@@ -858,14 +965,17 @@ class _ConcurrentEvaluator:
         stderr_text = completed.stderr or ""
 
         # Write stdout and stderr to separate provenance logs.
-        if node.stdout_path is not None:
-            node.stdout_path.write_text(stdout_text, encoding="utf-8")
-        if node.stderr_path is not None:
-            node.stderr_path.write_text(stderr_text, encoding="utf-8")
+        if node.stdout_path is not None and stdout_text:
+            with node.stdout_path.open("a", encoding="utf-8") as handle:
+                handle.write(stdout_text)
+        if node.stderr_path is not None and stderr_text:
+            with node.stderr_path.open("a", encoding="utf-8") as handle:
+                handle.write(stderr_text)
 
         # User-specified log gets combined output for backwards compatibility.
-        if user_log_path is not None:
-            user_log_path.write_text(stdout_text + stderr_text, encoding="utf-8")
+        if user_log_path is not None and (stdout_text or stderr_text):
+            with user_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(stdout_text + stderr_text)
 
         combined_output = stdout_text + stderr_text
         if completed.returncode != 0:
@@ -1117,6 +1227,9 @@ class _ConcurrentEvaluator:
         exit_code: int | None = None,
         node_id: int | None = None,
         display_label: str | None = None,
+        attempt: int | None = None,
+        max_attempts: int | None = None,
+        retries_remaining: int | None = None,
     ) -> None:
         """Emit basic structured execution logs to stderr."""
         payload = {"task": task, "status": status}
@@ -1126,6 +1239,12 @@ class _ConcurrentEvaluator:
             payload["node_id"] = node_id
         if display_label is not None:
             payload["display_label"] = display_label
+        if attempt is not None:
+            payload["attempt"] = attempt
+        if max_attempts is not None:
+            payload["max_attempts"] = max_attempts
+        if retries_remaining is not None:
+            payload["retries_remaining"] = retries_remaining
         print(json.dumps(payload, sort_keys=True), file=self._stderr)
 
 

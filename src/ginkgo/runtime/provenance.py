@@ -70,7 +70,14 @@ class RunProvenanceRecorder:
             encoding="utf-8",
         )
 
-    def ensure_task(self, *, node_id: int, task_name: str, env: str | None) -> tuple[Path, Path]:
+    def ensure_task(
+        self,
+        *,
+        node_id: int,
+        task_name: str,
+        env: str | None,
+        retries: int = 0,
+    ) -> tuple[Path, Path]:
         """Create a manifest entry and log paths for a task node.
 
         Returns
@@ -90,6 +97,11 @@ class RunProvenanceRecorder:
                 "node_id": node_id,
                 "task": task_name,
                 "env": env,
+                "retries": retries,
+                "max_attempts": retries + 1,
+                "attempt": 0,
+                "attempts": 0,
+                "retries_remaining": retries,
                 "cached": False,
                 "exit_code": None,
                 "stdout_log": str(stdout_path.relative_to(self.run_dir)),
@@ -126,12 +138,49 @@ class RunProvenanceRecorder:
             task["dynamic_dependency_ids"] = dynamic_dependency_ids
         self._write_manifest()
 
-    def mark_running(self, *, node_id: int, task_name: str, env: str | None) -> None:
+    def mark_running(
+        self,
+        *,
+        node_id: int,
+        task_name: str,
+        env: str | None,
+        attempt: int,
+        retries: int,
+    ) -> None:
         """Mark a task as dispatched."""
+        self.ensure_task(node_id=node_id, task_name=task_name, env=env, retries=retries)
+        task = self._task(node_id)
+        task["attempt"] = attempt
+        task["attempts"] = max(int(task.get("attempts", 0)), attempt)
+        task["retries"] = retries
+        task["max_attempts"] = retries + 1
+        task["retries_remaining"] = max(0, retries - (attempt - 1))
+        task["status"] = "running"
+        task.setdefault("started_at", _timestamp())
+        task["last_started_at"] = _timestamp()
+        self._write_manifest()
+
+    def mark_retrying(
+        self,
+        *,
+        node_id: int,
+        task_name: str,
+        env: str | None,
+        exc: BaseException,
+        attempt: int,
+        retries_remaining: int,
+    ) -> None:
+        """Record a failed attempt that will be retried."""
         self.ensure_task(node_id=node_id, task_name=task_name, env=env)
         task = self._task(node_id)
-        task["status"] = "running"
-        task["started_at"] = _timestamp()
+        task["cached"] = False
+        task["attempt"] = attempt
+        task["attempts"] = max(int(task.get("attempts", 0)), attempt)
+        task["last_error"] = str(exc)
+        task["last_exit_code"] = getattr(exc, "exit_code", 1)
+        task["retries_remaining"] = retries_remaining
+        task["status"] = "pending"
+        task.pop("finished_at", None)
         self._write_manifest()
 
     def mark_cached(self, *, node_id: int, task_name: str, env: str | None, value: Any) -> None:
@@ -143,6 +192,9 @@ class RunProvenanceRecorder:
         task["output"] = _render_value(value)
         task["finished_at"] = _timestamp()
         task["status"] = "cached"
+        task.pop("error", None)
+        task.pop("last_error", None)
+        task.pop("last_exit_code", None)
         self._write_manifest()
 
     def mark_succeeded(
@@ -161,6 +213,9 @@ class RunProvenanceRecorder:
         task["output"] = _render_value(value)
         task["finished_at"] = _timestamp()
         task["status"] = "succeeded"
+        task.pop("error", None)
+        task.pop("last_error", None)
+        task.pop("last_exit_code", None)
         self._write_manifest()
 
     def mark_failed(
@@ -177,6 +232,9 @@ class RunProvenanceRecorder:
         task["cached"] = False
         task["exit_code"] = getattr(exc, "exit_code", 1)
         task["error"] = str(exc)
+        task["last_error"] = str(exc)
+        task["last_exit_code"] = getattr(exc, "exit_code", 1)
+        task["retries_remaining"] = 0
         task["finished_at"] = _timestamp()
         task["status"] = "failed"
         self._write_manifest()
