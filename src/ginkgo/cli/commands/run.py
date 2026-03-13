@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
-from ginkgo.cli.renderers.common import _core_unit_label, _environment_label, _format_duration
+from ginkgo.cli.renderers.common import _environment_label, _format_duration
 from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _RunSummary
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.config import _config_session
@@ -89,10 +89,6 @@ def run_workflow(
         f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
     )
     rich_console.print(f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks")
-    rich_console.print(
-        f"[cyan]💻[/] Running locally on [bold]{evaluator.cores}[/] "
-        f"{_core_unit_label(evaluator.cores)}"
-    )
     if evaluator.memory is not None:
         rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
     if output_mode == "verbose":
@@ -125,6 +121,7 @@ def run_workflow(
             run_id=run_id,
             mode=output_mode,
             run_dir=recorder.run_dir,
+            cores=evaluator.cores,
             memory=memory,
         ),
         resources=_ResourceRenderState(provider=resource_monitor.current_summary),

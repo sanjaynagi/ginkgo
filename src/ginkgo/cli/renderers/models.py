@@ -16,6 +16,7 @@ class _RunSummary:
     run_id: str
     mode: RunMode
     run_dir: Path
+    cores: int
     memory: int | None = None
 
 
