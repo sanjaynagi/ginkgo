@@ -1,5 +1,6 @@
 """Unit tests for the evaluator runtime."""
 
+import subprocess
 import shutil
 from pathlib import Path
 
@@ -8,7 +9,9 @@ import pandas as pd
 import pytest
 
 from ginkgo import evaluate, file, folder, shell_task, task, tmp_dir
+from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
+from ginkgo.runtime.worker import run_task
 
 
 def _append_line(path: str, line: str) -> None:
@@ -141,6 +144,17 @@ def build_dynamic_cycle_task() -> object:
     second = passthrough_task(value=first)
     first.args["value"] = second
     return first
+
+
+_PIXI_TEST_ENV = "race_env"
+
+
+@task(env=_PIXI_TEST_ENV)
+def pixi_shell_output_task(output_path: str) -> file:
+    return shell_task(
+        cmd=f"printf 'payload' > {output_path}",
+        output=output_path,
+    )
 
 
 class TestEvaluate:
@@ -321,6 +335,61 @@ class TestShellTask:
         assert result == file(str(output))
         assert output.read_text(encoding="utf-8") == "payload"
         assert "transient shell failure" in log.read_text(encoding="utf-8")
+
+    def test_pixi_environment_is_prepared_once_before_shell_fan_out(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        env_dir = tmp_path / "envs" / _PIXI_TEST_ENV
+        env_dir.mkdir(parents=True)
+        manifest = env_dir / "pixi.toml"
+        manifest.write_text(
+            "[workspace]\nname = 'race-env'\nchannels = []\nplatforms = []\n",
+            encoding="utf-8",
+        )
+
+        install_calls: list[list[str]] = []
+        real_subprocess_run = subprocess.run
+
+        def fake_pixi_install(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if argv[:2] != ["pixi", "install"]:
+                return real_subprocess_run(
+                    argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+            install_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        def fake_run_pixi_python_task(
+            self,
+            *,
+            node,
+            payload: dict[str, object],
+        ) -> dict[str, object]:
+            return run_task(payload)
+
+        registry = PixiRegistry(project_root=tmp_path)
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
+        monkeypatch.setattr(
+            _ConcurrentEvaluator, "_run_pixi_python_task", fake_run_pixi_python_task
+        )
+        monkeypatch.setattr(
+            registry,
+            "shell_argv",
+            lambda *, env, cmd: ["bash", "-c", cmd],
+        )
+
+        outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
+        result = evaluate(
+            [pixi_shell_output_task(output_path=str(path)) for path in outputs],
+            pixi_registry=registry,
+        )
+
+        assert result == [file(str(path)) for path in outputs]
+        assert install_calls == [["pixi", "install", "--manifest-path", str(manifest.resolve())]]
+        for path in outputs:
+            assert path.read_text(encoding="utf-8") == "payload"
 
 
 class TestValidation:

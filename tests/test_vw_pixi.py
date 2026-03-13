@@ -22,7 +22,12 @@ from pathlib import Path
 import pytest
 
 from ginkgo import evaluate, flow, shell_task, task
-from ginkgo.pixi import PixiEnvImportError, PixiEnvNotFoundError, PixiRegistry
+from ginkgo.pixi import (
+    PixiEnvImportError,
+    PixiEnvNotFoundError,
+    PixiEnvPrepareError,
+    PixiRegistry,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +172,37 @@ class TestPixiRegistry:
         registry = PixiRegistry(project_root=_TESTS_DIR)
         with pytest.raises(PixiEnvNotFoundError, match="missing_env"):
             registry.validate_envs(env_names={"missing_env"})
+
+    def test_prepare_installs_manifest_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+        manifest = registry.resolve(env=_TEST_ENV_NAME)
+        install_calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            install_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+
+        assert registry.prepare(env=_TEST_ENV_NAME) == manifest
+        assert registry.prepare(env=_TEST_ENV_NAME) == manifest
+        assert install_calls == [["pixi", "install", "--manifest-path", str(manifest)]]
+
+    def test_prepare_raises_clear_error_on_install_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+
+        def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="install failed")
+
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+
+        with pytest.raises(PixiEnvPrepareError, match="install failed"):
+            registry.prepare(env=_TEST_ENV_NAME)
 
     def test_shell_argv_structure(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
