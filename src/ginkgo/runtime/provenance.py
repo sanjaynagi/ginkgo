@@ -6,6 +6,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import yaml
@@ -31,6 +32,7 @@ class RunProvenanceRecorder:
     root_dir: Path
     jobs: int | None
     cores: int | None
+    memory: int | None = None
     params: dict[str, Any] = field(default_factory=dict)
     status: str = field(default="running", init=False)
     run_dir: Path = field(init=False)
@@ -41,6 +43,7 @@ class RunProvenanceRecorder:
     _manifest: dict[str, Any] = field(init=False, repr=False)
     _task_logs: dict[int, tuple[Path, Path]] = field(default_factory=dict, init=False, repr=False)
     _copied_envs: set[str] = field(default_factory=set, init=False, repr=False)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.run_dir = self.root_dir / self.run_id
@@ -55,8 +58,10 @@ class RunProvenanceRecorder:
             "workflow": str(self.workflow_path),
             "jobs": self.jobs,
             "cores": self.cores,
+            "memory": self.memory,
             "status": self.status,
             "started_at": _timestamp(),
+            "resources": _empty_resources(),
             "tasks": {},
         }
         self.write_params(self.params)
@@ -64,11 +69,12 @@ class RunProvenanceRecorder:
 
     def write_params(self, params: dict[str, Any]) -> None:
         """Persist resolved config parameters for the run."""
-        self.params = _render_value(params)
-        self.params_path.write_text(
-            yaml.safe_dump(self.params, sort_keys=True),
-            encoding="utf-8",
-        )
+        with self._lock:
+            self.params = _render_value(params)
+            self.params_path.write_text(
+                yaml.safe_dump(self.params, sort_keys=True),
+                encoding="utf-8",
+            )
 
     def ensure_task(
         self,
@@ -85,31 +91,32 @@ class RunProvenanceRecorder:
         tuple[Path, Path]
             ``(stdout_path, stderr_path)`` for the task.
         """
-        tasks = self._manifest["tasks"]
-        task_key = _task_key(node_id)
-        if task_key not in tasks:
-            slug = _slugify(task_name)
-            stdout_path = self.logs_dir / f"{task_key}_{slug}.stdout.log"
-            stderr_path = self.logs_dir / f"{task_key}_{slug}.stderr.log"
-            self._task_logs[node_id] = (stdout_path, stderr_path)
-            tasks[task_key] = {
-                "task_id": task_key,
-                "node_id": node_id,
-                "task": task_name,
-                "env": env,
-                "retries": retries,
-                "max_attempts": retries + 1,
-                "attempt": 0,
-                "attempts": 0,
-                "retries_remaining": retries,
-                "cached": False,
-                "exit_code": None,
-                "stdout_log": str(stdout_path.relative_to(self.run_dir)),
-                "stderr_log": str(stderr_path.relative_to(self.run_dir)),
-                "status": "pending",
-            }
-            self._write_manifest()
-        return self._task_logs[node_id]
+        with self._lock:
+            tasks = self._manifest["tasks"]
+            task_key = _task_key(node_id)
+            if task_key not in tasks:
+                slug = _slugify(task_name)
+                stdout_path = self.logs_dir / f"{task_key}_{slug}.stdout.log"
+                stderr_path = self.logs_dir / f"{task_key}_{slug}.stderr.log"
+                self._task_logs[node_id] = (stdout_path, stderr_path)
+                tasks[task_key] = {
+                    "task_id": task_key,
+                    "node_id": node_id,
+                    "task": task_name,
+                    "env": env,
+                    "retries": retries,
+                    "max_attempts": retries + 1,
+                    "attempt": 0,
+                    "attempts": 0,
+                    "retries_remaining": retries,
+                    "cached": False,
+                    "exit_code": None,
+                    "stdout_log": str(stdout_path.relative_to(self.run_dir)),
+                    "stderr_log": str(stderr_path.relative_to(self.run_dir)),
+                    "status": "pending",
+                }
+                self._write_manifest()
+            return self._task_logs[node_id]
 
     def update_task_inputs(
         self,
@@ -124,19 +131,20 @@ class RunProvenanceRecorder:
         dynamic_dependency_ids: list[int] | None = None,
     ) -> None:
         """Record resolved task inputs and cache identity."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env)
-        task = self._task(node_id)
-        if resolved_args is not None:
-            task["inputs"] = _render_value(resolved_args)
-        if input_hashes is not None:
-            task["input_hashes"] = _render_value(input_hashes)
-        if cache_key is not None:
-            task["cache_key"] = cache_key
-        if dependency_ids is not None:
-            task["dependency_ids"] = dependency_ids
-        if dynamic_dependency_ids is not None:
-            task["dynamic_dependency_ids"] = dynamic_dependency_ids
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            task = self._task(node_id)
+            if resolved_args is not None:
+                task["inputs"] = _render_value(resolved_args)
+            if input_hashes is not None:
+                task["input_hashes"] = _render_value(input_hashes)
+            if cache_key is not None:
+                task["cache_key"] = cache_key
+            if dependency_ids is not None:
+                task["dependency_ids"] = dependency_ids
+            if dynamic_dependency_ids is not None:
+                task["dynamic_dependency_ids"] = dynamic_dependency_ids
+            self._write_manifest()
 
     def mark_running(
         self,
@@ -148,17 +156,18 @@ class RunProvenanceRecorder:
         retries: int,
     ) -> None:
         """Mark a task as dispatched."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env, retries=retries)
-        task = self._task(node_id)
-        task["attempt"] = attempt
-        task["attempts"] = max(int(task.get("attempts", 0)), attempt)
-        task["retries"] = retries
-        task["max_attempts"] = retries + 1
-        task["retries_remaining"] = max(0, retries - (attempt - 1))
-        task["status"] = "running"
-        task.setdefault("started_at", _timestamp())
-        task["last_started_at"] = _timestamp()
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env, retries=retries)
+            task = self._task(node_id)
+            task["attempt"] = attempt
+            task["attempts"] = max(int(task.get("attempts", 0)), attempt)
+            task["retries"] = retries
+            task["max_attempts"] = retries + 1
+            task["retries_remaining"] = max(0, retries - (attempt - 1))
+            task["status"] = "running"
+            task.setdefault("started_at", _timestamp())
+            task["last_started_at"] = _timestamp()
+            self._write_manifest()
 
     def mark_retrying(
         self,
@@ -171,31 +180,33 @@ class RunProvenanceRecorder:
         retries_remaining: int,
     ) -> None:
         """Record a failed attempt that will be retried."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env)
-        task = self._task(node_id)
-        task["cached"] = False
-        task["attempt"] = attempt
-        task["attempts"] = max(int(task.get("attempts", 0)), attempt)
-        task["last_error"] = str(exc)
-        task["last_exit_code"] = getattr(exc, "exit_code", 1)
-        task["retries_remaining"] = retries_remaining
-        task["status"] = "pending"
-        task.pop("finished_at", None)
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            task = self._task(node_id)
+            task["cached"] = False
+            task["attempt"] = attempt
+            task["attempts"] = max(int(task.get("attempts", 0)), attempt)
+            task["last_error"] = str(exc)
+            task["last_exit_code"] = getattr(exc, "exit_code", 1)
+            task["retries_remaining"] = retries_remaining
+            task["status"] = "pending"
+            task.pop("finished_at", None)
+            self._write_manifest()
 
     def mark_cached(self, *, node_id: int, task_name: str, env: str | None, value: Any) -> None:
         """Mark a task as served from cache."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env)
-        task = self._task(node_id)
-        task["cached"] = True
-        task["exit_code"] = 0
-        task["output"] = _render_value(value)
-        task["finished_at"] = _timestamp()
-        task["status"] = "cached"
-        task.pop("error", None)
-        task.pop("last_error", None)
-        task.pop("last_exit_code", None)
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            task = self._task(node_id)
+            task["cached"] = True
+            task["exit_code"] = 0
+            task["output"] = _render_value(value)
+            task["finished_at"] = _timestamp()
+            task["status"] = "cached"
+            task.pop("error", None)
+            task.pop("last_error", None)
+            task.pop("last_exit_code", None)
+            self._write_manifest()
 
     def mark_succeeded(
         self,
@@ -206,17 +217,18 @@ class RunProvenanceRecorder:
         value: Any,
     ) -> None:
         """Mark a task as completed successfully."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env)
-        task = self._task(node_id)
-        task["cached"] = False
-        task["exit_code"] = 0
-        task["output"] = _render_value(value)
-        task["finished_at"] = _timestamp()
-        task["status"] = "succeeded"
-        task.pop("error", None)
-        task.pop("last_error", None)
-        task.pop("last_exit_code", None)
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            task = self._task(node_id)
+            task["cached"] = False
+            task["exit_code"] = 0
+            task["output"] = _render_value(value)
+            task["finished_at"] = _timestamp()
+            task["status"] = "succeeded"
+            task.pop("error", None)
+            task.pop("last_error", None)
+            task.pop("last_exit_code", None)
+            self._write_manifest()
 
     def mark_failed(
         self,
@@ -227,38 +239,56 @@ class RunProvenanceRecorder:
         exc: BaseException,
     ) -> None:
         """Mark a task as failed."""
-        self.ensure_task(node_id=node_id, task_name=task_name, env=env)
-        task = self._task(node_id)
-        task["cached"] = False
-        task["exit_code"] = getattr(exc, "exit_code", 1)
-        task["error"] = str(exc)
-        task["last_error"] = str(exc)
-        task["last_exit_code"] = getattr(exc, "exit_code", 1)
-        task["retries_remaining"] = 0
-        task["finished_at"] = _timestamp()
-        task["status"] = "failed"
-        self._write_manifest()
+        with self._lock:
+            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            task = self._task(node_id)
+            task["cached"] = False
+            task["exit_code"] = getattr(exc, "exit_code", 1)
+            task["error"] = str(exc)
+            task["last_error"] = str(exc)
+            task["last_exit_code"] = getattr(exc, "exit_code", 1)
+            task["retries_remaining"] = 0
+            task["finished_at"] = _timestamp()
+            task["status"] = "failed"
+            self._write_manifest()
 
     def copy_env_lock(self, *, env_name: str, lock_path: Path) -> None:
         """Copy a Pixi lockfile into the run provenance directory once."""
-        if env_name in self._copied_envs or not lock_path.is_file():
-            return
-        destination = self.envs_dir / f"{_slugify(env_name)}.pixi.lock"
-        shutil.copy2(lock_path, destination)
-        self._copied_envs.add(env_name)
+        with self._lock:
+            if env_name in self._copied_envs or not lock_path.is_file():
+                return
+            destination = self.envs_dir / f"{_slugify(env_name)}.pixi.lock"
+            shutil.copy2(lock_path, destination)
+            self._copied_envs.add(env_name)
 
-    def finalize(self, *, status: str, error: str | None = None) -> None:
+    def update_resources(self, resources: dict[str, Any]) -> None:
+        """Persist the latest run-level resource summary."""
+        with self._lock:
+            self._manifest["resources"] = _render_value(resources)
+            self._write_manifest()
+
+    def finalize(
+        self,
+        *,
+        status: str,
+        error: str | None = None,
+        resources: dict[str, Any] | None = None,
+    ) -> None:
         """Write the final run status."""
-        self.status = status
-        self._manifest["status"] = status
-        self._manifest["finished_at"] = _timestamp()
-        if error is not None:
-            self._manifest["error"] = error
-        self._write_manifest()
+        with self._lock:
+            self.status = status
+            self._manifest["status"] = status
+            self._manifest["finished_at"] = _timestamp()
+            if resources is not None:
+                self._manifest["resources"] = _render_value(resources)
+            if error is not None:
+                self._manifest["error"] = error
+            self._write_manifest()
 
     def log_paths_for(self, node_id: int) -> tuple[Path, Path] | None:
         """Return the ``(stdout, stderr)`` log paths for a task node."""
-        return self._task_logs.get(node_id)
+        with self._lock:
+            return self._task_logs.get(node_id)
 
     def _task(self, node_id: int) -> dict[str, Any]:
         return self._manifest["tasks"][_task_key(node_id)]
@@ -324,3 +354,15 @@ def _render_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(_render_value(key)): _render_value(item) for key, item in value.items()}
     return summarise_value(value)
+
+
+def _empty_resources() -> dict[str, Any]:
+    return {
+        "status": "pending",
+        "scope": "process_tree",
+        "sample_count": 0,
+        "current": None,
+        "peak": None,
+        "average": None,
+        "updated_at": None,
+    }

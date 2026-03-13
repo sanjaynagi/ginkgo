@@ -17,6 +17,8 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.renderers.common import (
+    _format_bytes,
+    _format_cpu_percent,
     _format_duration,
     _status_label,
     _status_text,
@@ -26,15 +28,27 @@ from ginkgo.cli.renderers.common import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
-from ginkgo.cli.renderers.models import _FailureDetails, _RunSummary, _TaskRow
+from ginkgo.cli.renderers.models import (
+    _FailureDetails,
+    _ResourceRenderState,
+    _RunSummary,
+    _TaskRow,
+)
 
 
 class _CliRunRenderer:
     """Render human-friendly task lifecycle output from evaluator JSON events."""
 
-    def __init__(self, *, console: Console, summary: _RunSummary) -> None:
+    def __init__(
+        self,
+        *,
+        console: Console,
+        summary: _RunSummary,
+        resources: _ResourceRenderState | None = None,
+    ) -> None:
         self._console = console
         self._summary = summary
+        self._resources = resources
         self._buffer = ""
         self._name_counts: Counter[str] = Counter()
         self._rows: dict[int, _TaskRow] = {}
@@ -82,6 +96,7 @@ class _CliRunRenderer:
         *,
         elapsed: float,
         success: bool,
+        resources: dict[str, object] | None = None,
         failure_details: list[_FailureDetails] | None = None,
     ) -> None:
         """Print the final run summary."""
@@ -113,6 +128,11 @@ class _CliRunRenderer:
             )
             if failure_details:
                 self._console.print(self._render_failure_details(failure_details))
+        resource_summary = resources or self._resource_summary()
+        if resource_summary is not None:
+            resource_footer = self._render_resource_footer(resource_summary)
+            if resource_footer is not None:
+                self._console.print(resource_footer)
         if success:
             self._console.print(f"Run directory: {self._summary.run_dir}")
 
@@ -177,6 +197,8 @@ class _CliRunRenderer:
     def _render_run_layout(self):
         return Group(
             self._render_status_line(),
+            Text(""),
+            self._render_resource_strip(),
             self._render_task_table(),
             self._render_progress_section(),
         )
@@ -238,6 +260,35 @@ class _CliRunRenderer:
             Text(progress_text, style="bold #134e4a"),
         )
         return progress
+
+    def _render_resource_strip(self) -> Table:
+        """Render a compact live CPU/RSS monitor line."""
+        resources = self._resource_summary()
+        table = Table.grid(padding=(0, 1))
+        table.width = self._task_table_width()
+        table.add_column(no_wrap=True)
+        table.add_column(justify="center")
+        table.add_column(no_wrap=True)
+        if resources is None:
+            table.add_row("", Text("CPU --   RSS --", style="dim"), "")
+            return table
+
+        current = resources.get("current")
+        peak = resources.get("peak")
+        status = str(resources.get("status", "unknown"))
+        if not isinstance(current, dict) or not isinstance(peak, dict):
+            table.add_row("", Text("CPU --   RSS --", style="dim"), "")
+            return table
+
+        label = (
+            f"CPU {_format_cpu_percent(_as_float(current.get('cpu_percent')))}   "
+            f"RSS {_format_bytes(_as_int(current.get('rss_bytes')))}   "
+            f"Peak {_format_bytes(_as_int(peak.get('rss_bytes')))}   "
+            f"Procs {_format_count(current.get('process_count'))}"
+        )
+        style = "bold #134e4a" if status == "running" else "dim"
+        table.add_row("", Text(label, style=style), "")
+        return table
 
     def _render_failure_details(self, details: list[_FailureDetails]):
         panels = [self._render_failure_panel(item) for item in details]
@@ -319,3 +370,47 @@ class _CliRunRenderer:
         if self._final_elapsed is not None and self._run_started_at is not None:
             return self._run_started_at + self._final_elapsed
         return time.perf_counter()
+
+    def _resource_summary(self) -> dict[str, object] | None:
+        """Return the latest available resource summary."""
+        if self._resources is None:
+            return None
+        return self._resources.provider()
+
+    def _render_resource_footer(self, resources: dict[str, object]) -> Text | None:
+        """Render the final CPU/RSS summary line."""
+        average = resources.get("average")
+        peak = resources.get("peak")
+        if not isinstance(average, dict) or not isinstance(peak, dict):
+            return None
+
+        avg_cpu = _format_cpu_percent(_as_float(average.get("cpu_percent")))
+        peak_cpu = _format_cpu_percent(_as_float(peak.get("cpu_percent")))
+        avg_rss = _format_bytes(_as_int(average.get("rss_bytes")))
+        peak_rss = _format_bytes(_as_int(peak.get("rss_bytes")))
+        return Text(
+            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss}",
+            style="dim",
+        )
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def _format_count(value: object) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return "--"
