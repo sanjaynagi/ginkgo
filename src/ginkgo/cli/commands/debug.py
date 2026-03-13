@@ -34,9 +34,7 @@ def command_debug(args) -> int:
     return 0
 
 
-def _combined_log_tail(
-    run_dir: Path, task: dict[str, object], *, lines: int
-) -> list[str]:
+def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
     """Combine stdout and stderr tails for failure display.
 
     Falls back to the legacy combined ``log`` field for old manifests.

@@ -216,11 +216,13 @@ def create_ui_server(
                         status=HTTPStatus.NOT_FOUND,
                     )
                     return
-                self._send_json({
-                    "stdout": _read_log(payload.get("stdout_path")),
-                    "stderr": _read_log(payload.get("stderr_path")),
-                    "task_key": task_key,
-                })
+                self._send_json(
+                    {
+                        "stdout": _read_log(payload.get("stdout_path")),
+                        "stderr": _read_log(payload.get("stderr_path")),
+                        "task_key": task_key,
+                    }
+                )
                 return
 
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
