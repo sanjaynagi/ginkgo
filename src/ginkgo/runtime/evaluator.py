@@ -1123,7 +1123,7 @@ class _ConcurrentEvaluator:
         return coerced
 
     def _run_shell(self, *, node: _TaskNode, shell_expr: ShellExpr) -> Any:
-        """Execute a shell command and return its declared output path."""
+        """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
         user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
 
@@ -1131,6 +1131,10 @@ class _ConcurrentEvaluator:
         for path in (node.stdout_path, node.stderr_path, user_log_path):
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Ensure declared output parents exist before running the command.
+        for output_path in self._iter_shell_output_paths(shell_expr.output):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Build the argv: wrap through pixi when the task declares an env.
         if task_def.env is not None and self.pixi_registry is not None:
@@ -1167,11 +1171,15 @@ class _ConcurrentEvaluator:
                 log=shell_expr.log,
             )
 
-        output_path = Path(shell_expr.output)
-        if not output_path.exists():
+        missing_outputs = [
+            str(output_path)
+            for output_path in self._iter_shell_output_paths(shell_expr.output)
+            if not output_path.exists()
+        ]
+        if missing_outputs:
+            missing_label = missing_outputs[0] if len(missing_outputs) == 1 else missing_outputs
             raise FileNotFoundError(
-                f"Shell task {task_def.name} completed but did not create output "
-                f"{shell_expr.output!r}"
+                f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
             )
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
@@ -1339,9 +1347,54 @@ class _ConcurrentEvaluator:
     def _coerce_return_value(self, *, task_def: TaskDef, value: Any) -> Any:
         """Coerce string returns into the declared Ginkgo path marker type."""
         annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        return self._coerce_annotated_value(annotation=annotation, value=value)
+
+    def _coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:
+        """Coerce values recursively for direct and container-wrapped path types."""
+        if annotation in {None, Any}:
+            return value
+
+        origin = get_origin(annotation)
+        if origin is list and isinstance(value, list):
+            inner_annotations = get_args(annotation)
+            inner_annotation = inner_annotations[0] if inner_annotations else Any
+            return [
+                self._coerce_annotated_value(annotation=inner_annotation, value=item)
+                for item in value
+            ]
+
+        if origin is tuple and isinstance(value, tuple):
+            inner_annotations = get_args(annotation)
+            if len(inner_annotations) == 2 and inner_annotations[1] is Ellipsis:
+                inner_annotation = inner_annotations[0]
+                return tuple(
+                    self._coerce_annotated_value(annotation=inner_annotation, value=item)
+                    for item in value
+                )
+
+            if inner_annotations and len(inner_annotations) == len(value):
+                return tuple(
+                    self._coerce_annotated_value(annotation=item_annotation, value=item)
+                    for item_annotation, item in zip(inner_annotations, value, strict=True)
+                )
+
+            inner_annotation = inner_annotations[0] if inner_annotations else Any
+            return tuple(
+                self._coerce_annotated_value(annotation=inner_annotation, value=item)
+                for item in value
+            )
+
         if annotation in {file, folder, tmp_dir} and isinstance(value, str):
             return annotation(value)
+
         return value
+
+    def _iter_shell_output_paths(self, output: str | list[str] | tuple[str, ...]) -> list[Path]:
+        """Return concrete output paths for a shell task declaration."""
+        if isinstance(output, str):
+            return [Path(output)]
+
+        return [Path(item) for item in output]
 
     def _is_valid_cached_result(self, *, task_def: TaskDef, value: Any) -> bool:
         """Return whether a cached value still satisfies return validation."""
