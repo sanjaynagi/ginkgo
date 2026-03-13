@@ -310,7 +310,12 @@ Named environments are resolved from:
 <project_root>/envs/<env_name>/pixi.toml
 ```
 
-You can also point `env=` at an explicit `pixi.toml` path.
+You can also point `env=` at:
+
+- an explicit `pixi.toml` path
+- an explicit `environment.yml` or `environment.yaml` path
+
+When given a conda env spec, Ginkgo imports it into a generated sibling Pixi workspace under `.ginkgo-pixi/` and then executes through Pixi as normal. `pixi.toml` remains the recommended canonical format.
 
 Example:
 
