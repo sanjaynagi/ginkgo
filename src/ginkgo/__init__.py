@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 from importlib import import_module
+from types import ModuleType
+from typing import Any
 
-from ginkgo.config import config
-from ginkgo.core.expr import Expr, ExprList
-from ginkgo.core.flow import FlowDef, flow
-from ginkgo.core.shell import ShellExpr, shell_task
-from ginkgo.core.task import PartialCall, TaskDef, task
-from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.runtime.evaluator import evaluate
+_EXPORTS = {
+    "Expr": ("ginkgo.core.expr", "Expr"),
+    "ExprList": ("ginkgo.core.expr", "ExprList"),
+    "FlowDef": ("ginkgo.core.flow", "FlowDef"),
+    "PartialCall": ("ginkgo.core.task", "PartialCall"),
+    "ShellExpr": ("ginkgo.core.shell", "ShellExpr"),
+    "TaskDef": ("ginkgo.core.task", "TaskDef"),
+    "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
+    "file": ("ginkgo.core.types", "file"),
+    "flow": ("ginkgo.core.flow", "flow"),
+    "folder": ("ginkgo.core.types", "folder"),
+    "shell_task": ("ginkgo.core.shell", "shell_task"),
+    "task": ("ginkgo.core.task", "task"),
+    "tmp_dir": ("ginkgo.core.types", "tmp_dir"),
+}
 
 _LEGACY_MODULE_ALIASES = {
     "ginkgo.cache": "ginkgo.runtime.cache",
@@ -28,22 +39,76 @@ _LEGACY_MODULE_ALIASES = {
     "ginkgo.worker": "ginkgo.runtime.worker",
 }
 
-for legacy_name, current_name in _LEGACY_MODULE_ALIASES.items():
-    sys.modules.setdefault(legacy_name, import_module(current_name))
 
-__all__ = [
-    "Expr",
-    "ExprList",
-    "FlowDef",
-    "PartialCall",
-    "ShellExpr",
-    "TaskDef",
-    "config",
-    "evaluate",
-    "file",
-    "flow",
-    "folder",
-    "shell_task",
-    "task",
-    "tmp_dir",
-]
+class _LazyAliasModule(ModuleType):
+    """Module proxy that loads a legacy alias target on first attribute access."""
+
+    def __init__(self, *, alias_name: str, target_name: str) -> None:
+        super().__init__(alias_name)
+        self._target_name = target_name
+
+    def _resolve(self) -> ModuleType:
+        module = import_module(self._target_name)
+        sys.modules[self.__name__] = module
+        return module
+
+    def __getattr__(self, name: str):
+        return getattr(self._resolve(), name)
+
+    def __dir__(self) -> list[str]:
+        return sorted(dir(self._resolve()))
+
+
+class _GinkgoModule(ModuleType):
+    """Package module that preserves callable exports across submodule imports."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Keep ``ginkgo.config(...)`` callable even after ``ginkgo.config`` is imported.
+        if (
+            name == "config"
+            and isinstance(value, ModuleType)
+            and value.__name__ == "ginkgo.config"
+        ):
+            ModuleType.__setattr__(self, "_config_module", value)
+            return
+
+        super().__setattr__(name, value)
+
+
+def config(path: str | Path) -> dict[str, Any]:
+    """Load a project configuration file via the top-level package API."""
+    from ginkgo.config import config as load_config
+
+    return load_config(path)
+
+
+def __getattr__(name: str):
+    """Resolve top-level package exports lazily."""
+    try:
+        module_name, attribute_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name)
+    value = getattr(module, attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Return the names exposed by this package."""
+    return sorted(list(globals().keys()) + list(_EXPORTS.keys()))
+
+
+for legacy_name, current_name in _LEGACY_MODULE_ALIASES.items():
+    sys.modules.setdefault(
+        legacy_name,
+        _LazyAliasModule(alias_name=legacy_name, target_name=current_name),
+    )
+
+
+_package = sys.modules[__name__]
+_package.__class__ = _GinkgoModule
+
+
+__all__ = sorted(["config", *_EXPORTS.keys()])

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import evaluate, flow, shell_task, task
+from ginkgo import flow, shell_task, task
 from ginkgo.pixi import (
     PixiEnvImportError,
     PixiEnvNotFoundError,
@@ -41,6 +41,13 @@ _TEST_ENV_NAME = "test_env"
 def _make_registry(tmp_path: Path) -> PixiRegistry:
     """Return a PixiRegistry pointing at the real test envs directory."""
     return PixiRegistry(project_root=_TESTS_DIR)
+
+
+def _evaluate(expr, *, registry: PixiRegistry):
+    """Evaluate an expression without importing the evaluator at module import time."""
+    from ginkgo import evaluate
+
+    return evaluate(expr, pixi_registry=registry)
 
 
 def _pixi_available() -> bool:
@@ -239,7 +246,7 @@ class TestPixiRegistry:
 
         registry = PixiRegistry(project_root=_TESTS_DIR)
         with pytest.raises(PixiEnvNotFoundError):
-            evaluate(my_flow(), pixi_registry=registry)
+            _evaluate(my_flow(), registry=registry)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +307,7 @@ class TestPixiShellTask:
     def test_shell_task_runs_in_pixi_env(self, tmp_path: Path) -> None:
         output = str(tmp_path / "sentinel.txt")
         registry = _make_registry(tmp_path)
-        result = evaluate(shell_touch(output_path=output), pixi_registry=registry)
+        result = _evaluate(shell_touch(output_path=output), registry=registry)
         assert result == output
         assert Path(output).read_text().strip() == "pixi_ran"
 
@@ -313,7 +320,7 @@ class TestPixiShellTask:
         registry = _make_registry(tmp_path)
 
         # Run 1 — shell command executes, result cached.
-        evaluate(shell_touch(output_path=output), pixi_registry=registry)
+        _evaluate(shell_touch(output_path=output), registry=registry)
         assert Path(output).exists()
 
         # Capture log output on run 2 to confirm the task was served from cache.
@@ -329,7 +336,7 @@ class TestPixiPythonTask:
     @pixi_required
     def test_python_task_runs_in_pixi_env(self, tmp_path: Path) -> None:
         registry = _make_registry(tmp_path)
-        result = evaluate(pixi_python_add(x=3, y=4), pixi_registry=registry)
+        result = _evaluate(pixi_python_add(x=3, y=4), registry=registry)
         assert result == 7
 
     @pixi_required
@@ -341,14 +348,14 @@ class TestPixiPythonTask:
             return pixi_double().map(x=items)
 
         registry = _make_registry(tmp_path)
-        result = evaluate(fan_flow(items=[1, 2, 3, 4, 5]), pixi_registry=registry)
+        result = _evaluate(fan_flow(items=[1, 2, 3, 4, 5]), registry=registry)
         assert result == [2, 4, 6, 8, 10]
 
     @pixi_required
     def test_mixed_pixi_and_plain_tasks(self, tmp_path: Path) -> None:
         """Pixi and non-pixi tasks coexist correctly in the same run."""
         registry = _make_registry(tmp_path)
-        pixi_result, plain_result = evaluate(mixed_flow(x=10, y=5), pixi_registry=registry)
+        pixi_result, plain_result = _evaluate(mixed_flow(x=10, y=5), registry=registry)
         assert pixi_result == 15
         assert plain_result == 15
 
@@ -359,8 +366,8 @@ class TestPixiCacheInvalidation:
         log_path = str(tmp_path / "log.txt")
         registry = _make_registry(tmp_path)
 
-        evaluate(logged_flow(x=2, y=3, log_path=log_path), pixi_registry=registry)
-        evaluate(logged_flow(x=2, y=3, log_path=log_path), pixi_registry=registry)
+        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
+        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
 
         # Task should have run exactly once despite two evaluate() calls.
         lines = Path(log_path).read_text().splitlines()
@@ -373,7 +380,7 @@ class TestPixiCacheInvalidation:
         registry = _make_registry(tmp_path)
         lock_path = _TESTS_DIR / "envs" / _TEST_ENV_NAME / "pixi.lock"
 
-        evaluate(logged_flow(x=2, y=3, log_path=log_path), pixi_registry=registry)
+        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
 
         # Invalidate the lock hash by appending a harmless comment.
         original = lock_path.read_text(encoding="utf-8")
@@ -381,7 +388,7 @@ class TestPixiCacheInvalidation:
             lock_path.write_text(original + "\n# test-invalidation\n", encoding="utf-8")
             # Flush the registry's in-memory hash cache.
             registry2 = _make_registry(tmp_path)
-            evaluate(logged_flow(x=2, y=3, log_path=log_path), pixi_registry=registry2)
+            _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry2)
         finally:
             lock_path.write_text(original, encoding="utf-8")
 
