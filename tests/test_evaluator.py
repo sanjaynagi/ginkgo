@@ -1,5 +1,6 @@
 """Unit tests for the evaluator runtime."""
 
+from concurrent.futures import Future, ProcessPoolExecutor
 import subprocess
 import shutil
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from ginkgo import evaluate, file, folder, shell_task, task, tmp_dir
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
+from ginkgo.runtime.module_loader import import_roots_for_path, resolve_module_file
 from ginkgo.runtime.worker import run_task
 
 
@@ -390,6 +392,129 @@ class TestShellTask:
         assert install_calls == [["pixi", "install", "--manifest-path", str(manifest.resolve())]]
         for path in outputs:
             assert path.read_text(encoding="utf-8") == "payload"
+
+
+class _FakeShellExecutor:
+    def __init__(self) -> None:
+        self.shutdown_calls: list[tuple[bool, bool]] = []
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        self.shutdown_calls.append((wait, cancel_futures))
+
+
+class _FakeProcessPoolExecutor(ProcessPoolExecutor):
+    def __init__(self) -> None:
+        self.shutdown_calls: list[tuple[bool, bool]] = []
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        self.shutdown_calls.append((wait, cancel_futures))
+
+
+class _FakeTrackedProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+
+class TestInterruptHandling:
+    def test_interrupt_running_work_terminates_subprocesses_and_shuts_down_executors(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        evaluator = _ConcurrentEvaluator()
+        future_one = Future()
+        future_two = Future()
+        tracked_one = _FakeTrackedProcess(pid=101)
+        tracked_two = _FakeTrackedProcess(pid=202)
+        shell_executor = _FakeShellExecutor()
+        python_executor = _FakeProcessPoolExecutor()
+        terminated: list[int] = []
+        pool_shutdowns: list[ProcessPoolExecutor] = []
+
+        evaluator._running_futures = {
+            future_one: (0, "shell"),
+            future_two: (1, "python"),
+        }
+        evaluator._active_subprocesses = {
+            tracked_one.pid: tracked_one,  # type: ignore[assignment]
+            tracked_two.pid: tracked_two,  # type: ignore[assignment]
+        }
+        evaluator._shell_executor = shell_executor
+        evaluator._python_executor = python_executor
+
+        monkeypatch.setattr(
+            evaluator,
+            "_terminate_subprocess",
+            lambda *, process: terminated.append(process.pid),
+        )
+        monkeypatch.setattr(
+            evaluator,
+            "_terminate_process_pool_workers",
+            lambda *, executor: pool_shutdowns.append(executor),
+        )
+
+        evaluator._interrupt_running_work()
+
+        assert future_one.cancelled()
+        assert future_two.cancelled()
+        assert terminated == [101, 202]
+        assert shell_executor.shutdown_calls == [(False, True)]
+        assert python_executor.shutdown_calls == [(False, True)]
+        assert pool_shutdowns == [python_executor]
+
+    def test_run_subprocess_unregisters_process_after_completion(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        evaluator = _ConcurrentEvaluator()
+        popen_calls: list[tuple[object, dict[str, object]]] = []
+
+        class FakePopen:
+            def __init__(self, argv: object, **kwargs: object) -> None:
+                popen_calls.append((argv, kwargs))
+                self.pid = 31337
+                self.returncode = 0
+
+            def communicate(self) -> tuple[str, str]:
+                assert 31337 in evaluator._active_subprocesses
+                return ("stdout", "stderr")
+
+        monkeypatch.setattr("ginkgo.runtime.evaluator.subprocess.Popen", FakePopen)
+
+        completed = evaluator._run_subprocess(argv=["echo", "hi"], use_shell=False)
+
+        assert completed.returncode == 0
+        assert completed.stdout == "stdout"
+        assert completed.stderr == "stderr"
+        assert evaluator._active_subprocesses == {}
+        assert popen_calls[0][0] == ["echo", "hi"]
+
+        if Path("/").anchor == "/":
+            assert popen_calls[0][1]["start_new_session"] is True
+
+
+class TestPixiWorkerPayload:
+    def test_build_worker_payload_uses_minimal_ginkgo_import_roots(self, tmp_path: Path) -> None:
+        evaluator = _ConcurrentEvaluator()
+        expr = add_one_task(x=1)
+        node_id = evaluator._register_expr(expr)
+        node = evaluator._nodes[node_id]
+        node.transport_path = tmp_path / "transport"
+        node.transport_path.mkdir()
+        node.resolved_args = {"x": 1}
+
+        payload = evaluator._build_worker_payload(node=node)
+
+        worker_module_file = resolve_module_file("ginkgo.runtime.worker")
+        assert worker_module_file is not None
+        assert payload["ginkgo_import_roots"] == import_roots_for_path(worker_module_file)
+        assert "sys_path" not in payload
+        assert "ginkgo_import_roots" in payload
+
+    def test_pixi_worker_bootstrap_uses_ginkgo_import_roots_not_host_sys_path(self) -> None:
+        from ginkgo.runtime.evaluator import _PIXI_WORKER_C
+
+        assert "ginkgo_import_roots" in _PIXI_WORKER_C
+        assert "sys_path" not in _PIXI_WORKER_C
 
 
 class TestValidation:

@@ -18,9 +18,9 @@ def module_name_for_path(path: str | Path) -> str:
     return f"ginkgo_user_{stem}_{digest}"
 
 
-def _import_roots_for_path(path: Path) -> list[str]:
-    """Return sys.path entries needed to import a workflow file and its package."""
-    source_dir = path.parent.resolve()
+def import_roots_for_path(path: str | Path) -> list[str]:
+    """Return import roots needed to load a source file and its package."""
+    source_dir = Path(path).resolve().parent
     roots = [str(source_dir)]
 
     current = source_dir
@@ -44,7 +44,7 @@ def load_module_from_path(path: str | Path, *, module_name: str | None = None) -
     if chosen_name in sys.modules:
         del sys.modules[chosen_name]
 
-    for import_root in reversed(_import_roots_for_path(source_path)):
+    for import_root in reversed(import_roots_for_path(source_path)):
         if import_root not in sys.path:
             sys.path.insert(0, import_root)
 

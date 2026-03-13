@@ -30,9 +30,8 @@ def run(input_path: pathlib.Path, output_path: pathlib.Path) -> None:
     """
     payload: dict[str, Any] = json.loads(input_path.read_bytes())
 
-    # Inject the host sys.path so ginkgo and the workflow module are importable
-    # inside the Pixi env even when ginkgo is not installed there.
-    for p in payload.get("sys_path", []):
+    # Inject only the Ginkgo package roots required to bootstrap the worker.
+    for p in payload.get("ginkgo_import_roots", []):
         if p not in sys.path:
             sys.path.insert(0, p)
 
