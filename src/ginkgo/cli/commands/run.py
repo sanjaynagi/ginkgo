@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
 from types import ModuleType
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
-from ginkgo.cli.renderers.common import _core_unit_label, _environment_label, _format_duration
-from ginkgo.cli.renderers.models import _FailureDetails, _RunSummary
+from ginkgo.cli.renderers.common import _environment_label, _format_duration
+from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _RunSummary
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.config import _config_session
 from ginkgo.core.flow import FlowDef
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.resources import RunResourceMonitor
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
 
 
@@ -27,6 +29,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         config_paths=[Path(path).resolve() for path in args.config],
         jobs=args.jobs,
         cores=args.cores,
+        memory=args.memory,
         dry_run=args.dry_run,
         output_mode=output_mode,
     )
@@ -38,6 +41,7 @@ def run_workflow(
     config_paths: list[Path],
     jobs: int | None,
     cores: int | None,
+    memory: int | None,
     dry_run: bool,
     output_mode: RunMode = "default",
 ) -> int:
@@ -61,7 +65,12 @@ def run_workflow(
     load_elapsed = time.perf_counter() - load_started
 
     registry = PixiRegistry(project_root=Path.cwd())
-    evaluator = _ConcurrentEvaluator(jobs=jobs, cores=cores, pixi_registry=registry)
+    evaluator = _ConcurrentEvaluator(
+        jobs=jobs,
+        cores=cores,
+        memory=memory,
+        pixi_registry=registry,
+    )
     evaluator.validate(expr)
     task_count = len(evaluator._nodes)
     planned_tasks = [
@@ -80,18 +89,16 @@ def run_workflow(
         f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
     )
     rich_console.print(f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks")
-    rich_console.print(
-        f"[cyan]💻[/] Running locally on [bold]{evaluator.cores}[/] "
-        f"{_core_unit_label(evaluator.cores)}"
-    )
+    if evaluator.memory is not None:
+        rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
     if output_mode == "verbose":
         rich_console.print(
             f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
+            f"memory={evaluator.memory if evaluator.memory is not None else 'auto'}, "
             f"config overlays={len(config_paths)}"
         )
         rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
-    else:
-        rich_console.print("")
+    rich_console.print("")
 
     recorder = RunProvenanceRecorder(
         run_id=run_id,
@@ -99,19 +106,29 @@ def run_workflow(
         root_dir=RUNS_ROOT,
         jobs=jobs,
         cores=cores,
+        memory=memory,
         params=params,
     )
+    resource_monitor = RunResourceMonitor(
+        root_pid=os.getpid(),
+        sink=recorder.update_resources,
+    )
+    resource_monitor.start()
     renderer = _CliRunRenderer(
         console=rich_console,
         summary=_RunSummary(
             run_id=run_id,
             mode=output_mode,
             run_dir=recorder.run_dir,
+            cores=evaluator.cores,
+            memory=memory,
         ),
+        resources=_ResourceRenderState(provider=resource_monitor.current_summary),
     )
     evaluator = _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
+        memory=memory,
         pixi_registry=registry,
         provenance=recorder,
         _stderr=renderer,
@@ -121,7 +138,8 @@ def run_workflow(
     try:
         evaluator.evaluate(expr)
     except BaseException as exc:
-        recorder.finalize(status="failed", error=str(exc))
+        resource_summary = resource_monitor.stop()
+        recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
         failure_details = _load_failure_details(
             run_dir=recorder.run_dir,
             renderer=renderer,
@@ -130,15 +148,18 @@ def run_workflow(
         renderer.finish(
             elapsed=time.perf_counter() - run_started,
             success=False,
+            resources=resource_summary,
             failure_details=failure_details,
         )
         print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
         raise
 
-    recorder.finalize(status="succeeded")
+    resource_summary = resource_monitor.stop()
+    recorder.finalize(status="succeeded", resources=resource_summary)
     renderer.finish(
         elapsed=time.perf_counter() - run_started,
         success=True,
+        resources=resource_summary,
     )
     return 0
 

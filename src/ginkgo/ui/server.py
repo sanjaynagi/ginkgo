@@ -111,6 +111,7 @@ def create_ui_server(
 
                 jobs = payload.get("jobs")
                 cores = payload.get("cores")
+                memory = payload.get("memory")
                 if jobs is not None and not isinstance(jobs, int):
                     self._send_json(
                         {"error": "jobs must be an integer when provided."},
@@ -123,6 +124,12 @@ def create_ui_server(
                         status=HTTPStatus.BAD_REQUEST,
                     )
                     return
+                if memory is not None and not isinstance(memory, int):
+                    self._send_json(
+                        {"error": "memory must be an integer when provided."},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
 
                 try:
                     launch = _launch_workflow_process(
@@ -131,6 +138,7 @@ def create_ui_server(
                         config_paths=config_paths,
                         jobs=jobs,
                         cores=cores,
+                        memory=memory,
                     )
                 except FileNotFoundError as exc:
                     self._send_json(
@@ -373,6 +381,7 @@ def _run_payload(run_dir: Path) -> dict[str, Any]:
     return {
         "run_id": run_dir.name,
         "run_dir": str(run_dir),
+        "resources": manifest.get("resources", {}),
         "manifest": manifest,
         "params": params,
         "tasks": tasks,
@@ -420,6 +429,7 @@ def _launch_workflow_process(
     config_paths: list[str],
     jobs: int | None,
     cores: int | None,
+    memory: int | None,
 ) -> dict[str, Any]:
     workflow_path = Path(workflow)
     if not workflow_path.is_absolute():
@@ -445,6 +455,8 @@ def _launch_workflow_process(
         command.extend(["--jobs", str(jobs)])
     if cores is not None:
         command.extend(["--cores", str(cores)])
+    if memory is not None:
+        command.extend(["--memory", str(memory)])
 
     process = subprocess.Popen(  # noqa: S603 - controlled local CLI invocation
         command,

@@ -8,7 +8,7 @@ It combines:
 - dynamic branching inside task bodies
 - content-addressed caching
 - per-task Pixi environments
-- concurrent scheduling with `--jobs` and `--cores`
+- concurrent scheduling with `--jobs`, `--cores`, and `--memory`
 - provenance logging and a local CLI
 
 It works well for:
@@ -19,7 +19,7 @@ It works well for:
 - research and scientific computing pipelines
 - mixed Python and shell-based workflows
 
-The project is currently implemented through **Phase 7**, with the first hardening slice of **Phase 8** now landed. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, debug tooling, a local run browser, opt-in task retries, expression-graph cycle detection, and v1 cache pruning.
+The project is currently implemented through **Phase 7**, with the first hardening slice of **Phase 8** now landed. The shipped system includes the Python DSL, concurrent runtime, cache, Pixi backend, CLI, run manifests, debug tooling, a local run browser, opt-in task retries, expression-graph cycle detection, v1 cache pruning, memory-aware scheduling, and run-level CPU / RSS reporting.
 
 ## What Ginkgo Looks Like
 
@@ -59,12 +59,13 @@ ginkgo run workflow.py
 - content-addressed caching under `.ginkgo/cache/`
 - opt-in task retries via `@task(retries=n)`
 - explicit cycle detection for expression graphs before execution
-- concurrent scheduling with OR-Tools CP-SAT resource selection
+- concurrent scheduling with OR-Tools CP-SAT resource selection across jobs, cores, and memory
 - Python task execution in worker processes, with a thread-pool fallback when process pools are blocked by the runtime environment
 - shell task execution through `shell_task(...)`
 - per-task Pixi environments resolved from `envs/<env>/pixi.toml`
 - run provenance under `.ginkgo/runs/<run_id>/`
-- a local React UI with `ginkgo ui` for browsing runs, a task graph, cache entries, and task logs
+- end-of-run CPU / RSS summaries plus a compact live CPU / RSS monitor in the CLI
+- a local React UI with `ginkgo ui` for browsing runs, a task graph, cache entries, task logs, and run resource summaries
 - `ginkgo run`, `ginkgo test --dry-run`, `ginkgo cache ls`, `ginkgo cache clear`, `ginkgo cache prune`, `ginkgo debug`, and `ginkgo ui`
 
 ## Project Layout
@@ -164,6 +165,7 @@ The CLI prints the run directory when it finishes:
   write_text                   [running]
   write_text                   [succeeded]
 
+CPU avg 7.5%, peak 15.0% | RSS avg 42 MiB, peak 47 MiB
 ⏱ Completed in 0.02s - 1 tasks executed, 0 cached
 Run directory: .ginkgo/runs/20260312_145430_affcc6b4
 ```
@@ -228,6 +230,29 @@ results = process(multiplier=2).map(sample_id=["a", "b", "c"])
 ```
 
 This produces an `ExprList` of independent tasks that Ginkgo can schedule concurrently.
+
+### Resource declarations
+
+Ginkgo currently understands two task-level scalar resource hints:
+
+- `threads`: contributes to the global `--cores` budget
+- `memory_gb`: contributes to the global `--memory` budget
+
+Example:
+
+```python
+@task()
+def align(sample_id: str, threads: int = 8, memory_gb: int = 16) -> str:
+    return sample_id
+```
+
+Run with explicit budgets:
+
+```bash
+ginkgo run workflow.py --jobs 8 --cores 32 --memory 64
+```
+
+If a task declares more memory than the run budget allows, Ginkgo fails before dispatching it.
 
 ### Path types
 
@@ -395,8 +420,14 @@ to inspect the most recent failed run, including the last 50 lines of the failin
 ### Run a workflow
 
 ```bash
-ginkgo run workflow.py [--config PATH ...] [--jobs N] [--cores N] [--dry-run]
+ginkgo run workflow.py [--config PATH ...] [--jobs N] [--cores N] [--memory N] [--dry-run]
 ```
+
+- `--jobs`: maximum number of concurrently running tasks
+- `--cores`: total thread budget across concurrently running tasks
+- `--memory`: total declared memory budget across concurrently running tasks, in GiB
+
+During a run, the CLI shows a compact live CPU / RSS strip. At the end of the run, Ginkgo prints a CPU / RSS summary derived from the local Ginkgo process tree and records the same summary in the run manifest for the UI.
 
 ### Validate local test workflows
 

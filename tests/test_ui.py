@@ -67,6 +67,17 @@ def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
         dependency_ids=[],
         dynamic_dependency_ids=[],
     )
+    recorder.update_resources(
+        {
+            "status": "completed",
+            "scope": "process_tree",
+            "sample_count": 2,
+            "current": {"cpu_percent": 12.5, "rss_bytes": 1024, "process_count": 1},
+            "peak": {"cpu_percent": 85.0, "rss_bytes": 4096, "process_count": 2},
+            "average": {"cpu_percent": 48.0, "rss_bytes": 2048, "process_count": 1.5},
+            "updated_at": "2026-03-13T00:00:00+00:00",
+        }
+    )
     if fail:
         recorder.mark_failed(
             node_id=0,
@@ -101,6 +112,7 @@ class TestUiServer:
         assert status == 200
         assert '<div id="root"></div>' in body
         assert "Ginkgo" in body
+        assert "resource-monitor.js" in body
 
     def test_api_lists_runs(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
@@ -136,6 +148,7 @@ class TestUiServer:
             server.server_close()
 
         assert run_payload["run_id"] == run_dir.name
+        assert run_payload["resources"]["peak"]["rss_bytes"] == 4096
         assert run_payload["tasks"][0]["task"] == "demo.write_output"
         assert run_payload["tasks"][0]["dependency_ids"] == []
         assert task_payload["task"]["error"] == "boom"
@@ -257,6 +270,7 @@ class TestUiServer:
                 "config_paths": ["ginkgo.toml"],
                 "jobs": 4,
                 "cores": 2,
+                "memory": 12,
             }
         ).encode("utf-8")
 
@@ -284,6 +298,7 @@ class TestUiServer:
                 "config_paths": ["ginkgo.toml"],
                 "jobs": 4,
                 "cores": 2,
+                "memory": 12,
             }
         ]
 

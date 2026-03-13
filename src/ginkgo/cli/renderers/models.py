@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from ginkgo.cli.common import RunMode
 
@@ -15,6 +16,8 @@ class _RunSummary:
     run_id: str
     mode: RunMode
     run_dir: Path
+    cores: int
+    memory: int | None = None
 
 
 @dataclass
@@ -40,3 +43,10 @@ class _FailureDetails:
     log_tail: list[str]
     error: str | None = None
     inputs: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class _ResourceRenderState:
+    """Live resource summary provider for CLI rendering."""
+
+    provider: Callable[[], dict[str, object]]

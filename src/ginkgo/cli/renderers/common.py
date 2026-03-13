@@ -114,3 +114,31 @@ def _time_of_day_spinner(now: datetime | None = None) -> str:
 def _core_unit_label(cores: int) -> str:
     """Return the singular/plural label for core counts."""
     return "core" if cores == 1 else "Cores"
+
+
+def _format_cpu_percent(value: float | None) -> str:
+    """Return a compact CPU percentage string."""
+    if value is None:
+        return "--"
+    if value >= 100:
+        return f"{value:.0f}%"
+    return f"{value:.1f}%"
+
+
+def _format_bytes(value: int | float | None) -> str:
+    """Return a compact binary size string."""
+    if value is None:
+        return "--"
+
+    size = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    if size >= 10:
+        return f"{size:.0f} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"
