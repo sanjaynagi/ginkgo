@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import builtins
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -21,7 +21,7 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
-from threading import current_thread, main_thread
+from threading import Lock, current_thread, main_thread
 from types import FrameType
 from typing import Any, get_args, get_origin
 
@@ -31,7 +31,7 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.cache import MISSING, CacheStore
-from ginkgo.runtime.module_loader import load_module, resolve_module_file
+from ginkgo.runtime.module_loader import import_roots_for_path, load_module, resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.value_codec import (
@@ -52,7 +52,7 @@ from ginkgo.runtime.worker import run_task
 _PIXI_WORKER_C = (
     "import sys,json,pathlib,base64,pickle;"
     "p=json.loads(pathlib.Path(sys.argv[1]).read_bytes());"
-    "[sys.path.insert(0,x) for x in p.get('sys_path',[]) if x not in sys.path];"
+    "[sys.path.insert(0,x) for x in p.get('ginkgo_import_roots',[]) if x not in sys.path];"
     "from ginkgo.runtime.worker import run_task;"
     "r=dict(run_task(p));"
     "enc=r.get('result_encoding');"
@@ -207,7 +207,18 @@ class _ConcurrentEvaluator:
     _root_template: Any = field(default=None, init=False, repr=False)
     _root_dependency_ids: set[int] = field(default_factory=set, init=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, repr=False)
+    _python_executor: ProcessPoolExecutor | ThreadPoolExecutor | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
+    _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _active_subprocesses: dict[int, subprocess.Popen[str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -245,40 +256,45 @@ class _ConcurrentEvaluator:
                 python_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             shell_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             signals = stack.enter_context(_SignalMonitor())
+            self._python_executor = python_executor
             self._shell_executor = shell_executor
-            while True:
-                if signals.exception is not None and self._failure is None:
-                    self._failure = signals.exception
-                    self._cancel_pending_futures()
+            try:
+                while True:
+                    if signals.exception is not None and self._failure is None:
+                        self._failure = signals.exception
+                        self._interrupt_running_work()
 
-                if self._failure is None:
-                    self._prepare_pending_nodes()
-                    self._finalize_dynamic_nodes()
-                    self._dispatch_ready_nodes(
-                        python_executor=python_executor,
-                        shell_executor=shell_executor,
-                    )
+                    if self._failure is None:
+                        self._prepare_pending_nodes()
+                        self._finalize_dynamic_nodes()
+                        self._dispatch_ready_nodes(
+                            python_executor=python_executor,
+                            shell_executor=shell_executor,
+                        )
 
-                    if self._is_root_resolved() and not self._running_futures:
+                        if self._is_root_resolved() and not self._running_futures:
+                            return self._materialize(self._root_template)
+                    elif not self._running_futures:
+                        break
+
+                    if self._running_futures:
+                        done, _ = wait(
+                            tuple(self._running_futures.keys()),
+                            return_when=FIRST_COMPLETED,
+                        )
+                        self._consume_completed_futures(done)
+                        continue
+
+                    if self._failure is not None:
+                        break
+
+                    if self._is_root_resolved():
                         return self._materialize(self._root_template)
-                elif not self._running_futures:
-                    break
 
-                if self._running_futures:
-                    done, _ = wait(
-                        tuple(self._running_futures.keys()),
-                        return_when=FIRST_COMPLETED,
-                    )
-                    self._consume_completed_futures(done)
-                    continue
-
-                if self._failure is not None:
-                    break
-
-                if self._is_root_resolved():
-                    return self._materialize(self._root_template)
-
-                raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
+                    raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
+            finally:
+                self._python_executor = None
+                self._shell_executor = None
 
         assert self._failure is not None
         raise self._failure
@@ -638,7 +654,7 @@ class _ConcurrentEvaluator:
 
     def _handle_task_exception(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Either retry a failed task attempt or fail the run."""
-        if self._should_retry(node=node):
+        if self._failure is None and self._should_retry(node=node):
             self._schedule_retry(node=node, exc=exc)
             return
 
@@ -812,6 +828,126 @@ class _ConcurrentEvaluator:
         for future in self._running_futures:
             future.cancel()
 
+    def _interrupt_running_work(self) -> None:
+        """Stop queued and active work after an external interrupt."""
+        self._cancel_pending_futures()
+        self._terminate_active_subprocesses()
+        self._shutdown_shell_executor()
+        self._shutdown_python_executor()
+
+    def _shutdown_shell_executor(self) -> None:
+        """Shut down the shell executor without waiting for new tasks."""
+        if self._shell_executor is None:
+            return
+        with suppress(Exception):
+            self._shell_executor.shutdown(wait=False, cancel_futures=True)
+
+    def _shutdown_python_executor(self) -> None:
+        """Shut down the Python executor and terminate worker processes."""
+        if self._python_executor is None:
+            return
+
+        executor = self._python_executor
+        with suppress(Exception):
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        if isinstance(executor, ProcessPoolExecutor):
+            self._terminate_process_pool_workers(executor=executor)
+
+    def _terminate_process_pool_workers(self, *, executor: ProcessPoolExecutor) -> None:
+        """Terminate active process-pool workers using the executor's process table."""
+        processes = getattr(executor, "_processes", None)
+        if not isinstance(processes, dict):
+            return
+
+        for process in list(processes.values()):
+            with suppress(Exception):
+                if process.is_alive():
+                    process.terminate()
+
+        for process in list(processes.values()):
+            with suppress(Exception):
+                process.join(timeout=0.2)
+
+        for process in list(processes.values()):
+            with suppress(Exception):
+                if process.is_alive():
+                    process.kill()
+
+    def _register_subprocess(self, *, process: subprocess.Popen[str]) -> None:
+        """Track a subprocess so interrupts can terminate it."""
+        with self._subprocess_lock:
+            self._active_subprocesses[process.pid] = process
+
+    def _unregister_subprocess(self, *, process: subprocess.Popen[str]) -> None:
+        """Stop tracking a subprocess after it exits."""
+        with self._subprocess_lock:
+            self._active_subprocesses.pop(process.pid, None)
+
+    def _terminate_active_subprocesses(self) -> None:
+        """Terminate all active shell and Pixi subprocesses."""
+        with self._subprocess_lock:
+            processes = list(self._active_subprocesses.values())
+
+        for process in processes:
+            self._terminate_subprocess(process=process)
+
+    def _terminate_subprocess(self, *, process: subprocess.Popen[str]) -> None:
+        """Terminate one subprocess, escalating to kill if needed."""
+        if process.poll() is not None:
+            return
+
+        if os.name == "posix":
+            with suppress(ProcessLookupError, OSError):
+                os.killpg(process.pid, signal.SIGTERM)
+        else:
+            with suppress(Exception):
+                process.terminate()
+
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=0.2)
+            return
+
+        if os.name == "posix":
+            with suppress(ProcessLookupError, OSError):
+                os.killpg(process.pid, signal.SIGKILL)
+        else:
+            with suppress(Exception):
+                process.kill()
+
+        with suppress(Exception):
+            process.wait(timeout=0.2)
+
+    def _run_subprocess(
+        self,
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a subprocess while tracking it for interrupt-time termination."""
+        popen_kwargs: dict[str, Any] = {
+            "shell": use_shell,
+            "stderr": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "text": True,
+        }
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(argv, **popen_kwargs)
+        self._register_subprocess(process=process)
+        try:
+            stdout_text, stderr_text = process.communicate()
+        finally:
+            self._unregister_subprocess(process=process)
+
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=process.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
+        )
+
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
         return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
@@ -850,16 +986,18 @@ class _ConcurrentEvaluator:
         """Encode task inputs into a transport payload for the process pool."""
         assert node.transport_path is not None
         assert node.resolved_args is not None
+        worker_module_file = resolve_module_file("ginkgo.runtime.worker")
+        assert worker_module_file is not None
         return {
             "args": {
                 name: encode_value(value, base_dir=node.transport_path)
                 for name, value in node.resolved_args.items()
             },
+            "ginkgo_import_roots": import_roots_for_path(worker_module_file),
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
-            "sys_path": list(sys.path),
             "task_name": node.task_def.fn.__name__,
             "transport_dir": str(node.transport_path),
         }
@@ -1002,14 +1140,7 @@ class _ConcurrentEvaluator:
             argv = shell_expr.cmd
             use_shell = True
 
-        completed = subprocess.run(
-            argv,
-            shell=use_shell,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        completed = self._run_subprocess(argv=argv, use_shell=use_shell)
         stdout_text = completed.stdout or ""
         stderr_text = completed.stderr or ""
 
@@ -1077,7 +1208,7 @@ class _ConcurrentEvaluator:
             code=_PIXI_WORKER_C,
             args=(str(input_path), str(output_path)),
         )
-        completed = subprocess.run(argv, shell=False, check=False, text=True, capture_output=True)
+        completed = self._run_subprocess(argv=argv, use_shell=False)
         stdout_text = completed.stdout or ""
         stderr_text = completed.stderr or ""
         if node.stdout_path is not None and stdout_text:

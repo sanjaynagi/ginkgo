@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-import sys
 import traceback
 from typing import Any
 
@@ -14,10 +13,6 @@ from ginkgo.runtime.value_codec import decode_value, encode_value
 
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
-    for path in payload.get("sys_path", []):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
     base_dir = Path(payload["transport_dir"])
     decoded_args = {
         name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
