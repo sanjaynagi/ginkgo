@@ -56,9 +56,9 @@ _PIXI_WORKER_C = (
     "from ginkgo.runtime.worker import run_task;"
     "r=dict(run_task(p));"
     "enc=r.get('result_encoding');"
-    "r['result'],r['result_encoding']="
-    "(base64.b64encode(pickle.dumps(r['result'],5)).decode(),'pixi_direct_pickled')"
-    " if enc=='direct' else (r['result'],enc);"
+    "r['result'],r['result_encoding']=("
+    "base64.b64encode(pickle.dumps(r['result'],5)).decode(),'pixi_direct_pickled'"
+    ") if r.get('ok') and enc=='direct' else (r.get('result'),enc);"
     "pathlib.Path(sys.argv[2]).write_text(json.dumps(r))"
 )
 

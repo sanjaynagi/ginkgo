@@ -1,37 +1,47 @@
 """Execution engine internals for Ginkgo."""
 
-from ginkgo.runtime.cache import CacheStore, MISSING
-from ginkgo.runtime.evaluator import evaluate
-from ginkgo.runtime.module_loader import load_module, load_module_from_path, module_name_for_path
-from ginkgo.runtime.provenance import RunProvenanceRecorder, latest_run_dir, load_manifest
-from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
-from ginkgo.runtime.value_codec import (
-    CodecError,
-    decode_value,
-    encode_value,
-    ensure_serializable,
-    hash_value_bytes,
-    summarise_value,
-)
-from ginkgo.runtime.worker import run_task
+from __future__ import annotations
 
-__all__ = [
-    "CacheStore",
-    "CodecError",
-    "MISSING",
-    "SchedulableTask",
-    "RunProvenanceRecorder",
-    "decode_value",
-    "encode_value",
-    "ensure_serializable",
-    "evaluate",
-    "hash_value_bytes",
-    "latest_run_dir",
-    "load_manifest",
-    "load_module",
-    "load_module_from_path",
-    "module_name_for_path",
-    "run_task",
-    "select_dispatch_subset",
-    "summarise_value",
-]
+from importlib import import_module
+
+_EXPORTS = {
+    "CacheStore": ("ginkgo.runtime.cache", "CacheStore"),
+    "CodecError": ("ginkgo.runtime.value_codec", "CodecError"),
+    "MISSING": ("ginkgo.runtime.cache", "MISSING"),
+    "RunProvenanceRecorder": ("ginkgo.runtime.provenance", "RunProvenanceRecorder"),
+    "SchedulableTask": ("ginkgo.runtime.scheduler", "SchedulableTask"),
+    "decode_value": ("ginkgo.runtime.value_codec", "decode_value"),
+    "encode_value": ("ginkgo.runtime.value_codec", "encode_value"),
+    "ensure_serializable": ("ginkgo.runtime.value_codec", "ensure_serializable"),
+    "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
+    "hash_value_bytes": ("ginkgo.runtime.value_codec", "hash_value_bytes"),
+    "latest_run_dir": ("ginkgo.runtime.provenance", "latest_run_dir"),
+    "load_manifest": ("ginkgo.runtime.provenance", "load_manifest"),
+    "load_module": ("ginkgo.runtime.module_loader", "load_module"),
+    "load_module_from_path": ("ginkgo.runtime.module_loader", "load_module_from_path"),
+    "module_name_for_path": ("ginkgo.runtime.module_loader", "module_name_for_path"),
+    "run_task": ("ginkgo.runtime.worker", "run_task"),
+    "select_dispatch_subset": ("ginkgo.runtime.scheduler", "select_dispatch_subset"),
+    "summarise_value": ("ginkgo.runtime.value_codec", "summarise_value"),
+}
+
+
+def __getattr__(name: str):
+    """Resolve runtime exports lazily to avoid importing optional deps eagerly."""
+    try:
+        module_name, attribute_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name)
+    value = getattr(module, attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Return the names exposed by this package."""
+    return sorted(list(globals().keys()) + list(_EXPORTS.keys()))
+
+
+__all__ = sorted(_EXPORTS.keys())
