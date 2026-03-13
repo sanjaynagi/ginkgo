@@ -63,9 +63,7 @@ def _is_dynamic_result(value: Any) -> bool:
 
 
 @contextlib.contextmanager
-def _task_log_context(
-    *, stdout_path: str | None, stderr_path: str | None
-):
+def _task_log_context(*, stdout_path: str | None, stderr_path: str | None):
     """Redirect task stdout and stderr to separate per-task log files."""
     if stdout_path is None and stderr_path is None:
         yield

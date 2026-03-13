@@ -70,9 +70,7 @@ class RunProvenanceRecorder:
             encoding="utf-8",
         )
 
-    def ensure_task(
-        self, *, node_id: int, task_name: str, env: str | None
-    ) -> tuple[Path, Path]:
+    def ensure_task(self, *, node_id: int, task_name: str, env: str | None) -> tuple[Path, Path]:
         """Create a manifest entry and log paths for a task node.
 
         Returns

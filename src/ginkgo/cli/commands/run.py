@@ -171,9 +171,7 @@ def _load_failure_details(
     return details
 
 
-def _combined_log_tail(
-    run_dir: Path, task: dict[str, object], *, lines: int
-) -> list[str]:
+def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
     """Combine stdout and stderr tails for failure display."""
     stdout_rel = task.get("stdout_log")
     stderr_rel = task.get("stderr_log")
