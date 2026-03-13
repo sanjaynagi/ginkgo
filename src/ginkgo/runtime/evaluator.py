@@ -447,6 +447,9 @@ class _ConcurrentEvaluator:
             )
             return
 
+        # Materialize Pixi environments before any parallel dispatch starts.
+        self._prepare_task_environment(node=node)
+
         node.threads = self._task_threads(resolved_args)
         node.memory_gb = self._task_memory_gb(resolved_args)
         if node.threads > self.cores:
@@ -460,6 +463,13 @@ class _ConcurrentEvaluator:
                 f"{self.memory} GiB are available"
             )
         node.state = "ready"
+
+    def _prepare_task_environment(self, *, node: _TaskNode) -> None:
+        """Materialize any external execution environment required by a task."""
+        if node.task_def.env is None or self.pixi_registry is None:
+            return
+
+        self.pixi_registry.prepare(env=node.task_def.env)
 
     def _dispatch_ready_nodes(
         self,

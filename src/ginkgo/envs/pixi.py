@@ -48,6 +48,14 @@ class PixiEnvImportError(RuntimeError):
         super().__init__(f"Failed to import conda env spec {str(source)!r} into Pixi: {details}")
 
 
+class PixiEnvPrepareError(RuntimeError):
+    """Raised when a Pixi environment cannot be materialized."""
+
+    def __init__(self, *, manifest: Path, output: str) -> None:
+        details = output.strip() or "pixi did not provide any error output"
+        super().__init__(f"Failed to prepare Pixi env {str(manifest)!r}: {details}")
+
+
 def _list_envs(envs_dir: Path) -> list[str]:
     """Return sorted names of discoverable environments under envs_dir."""
     if not envs_dir.is_dir():
@@ -88,6 +96,7 @@ class PixiRegistry:
     project_root: Path = field(default_factory=Path.cwd)
     _envs_dir: Path = field(init=False, repr=False)
     _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+    _prepared_manifests: set[Path] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_envs_dir", self.project_root / "envs")
@@ -236,6 +245,53 @@ class PixiRegistry:
 
         # Only check pixi availability after confirming all declared envs exist.
         _require_pixi()
+
+    def prepare(self, *, env: str) -> Path:
+        """Materialize the Pixi environment for *env* once per registry instance.
+
+        Parameters
+        ----------
+        env : str
+            Environment name or path.
+
+        Returns
+        -------
+        Path
+            Absolute path to the resolved ``pixi.toml``.
+
+        Raises
+        ------
+        PixiEnvPrepareError
+            If Pixi fails to install or update the environment.
+        RuntimeError
+            If ``pixi`` is not found on PATH.
+        """
+        manifest = self.resolve(env=env)
+        if manifest in self._prepared_manifests:
+            return manifest
+
+        _require_pixi()
+        argv = [
+            "pixi",
+            "install",
+            "--manifest-path",
+            str(manifest),
+        ]
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            raise PixiEnvPrepareError(
+                manifest=manifest,
+                output=(completed.stdout or "") + (completed.stderr or ""),
+            )
+
+        self._prepared_manifests.add(manifest)
+        return manifest
 
     # ------------------------------------------------------------------
     # Subprocess argument builders
