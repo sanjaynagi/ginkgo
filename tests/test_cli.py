@@ -254,6 +254,28 @@ def main():
         assert "Error" in failed.stdout
         assert "boom" in failed.stdout
 
+    def test_cli_error_rendering_escapes_bracketed_text(self) -> None:
+        Path("markup_error_workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def explode() -> str:
+    raise RuntimeError("solver failed at [/tmp/example/pixi.toml:1:1]")
+
+@flow
+def main():
+    return explode()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "markup_error_workflow.py", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "MarkupError" not in result.stderr
+        assert "solver failed at [/tmp/example/pixi.toml:1:1]" in result.stderr
+
 
 class TestCliDryRun:
     def test_test_dry_run_discovers_hidden_workflows_without_execution(self) -> None:

@@ -129,7 +129,8 @@ class _TaskNode:
     transport_path: Path | None = None
     dynamic_template: Any = None
     dynamic_dependency_ids: set[int] = field(default_factory=set)
-    log_path: Path | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
     display_label: str | None = None
 
     @property
@@ -310,11 +311,13 @@ class _ConcurrentEvaluator:
         )
         self._expr_nodes[expr_id] = node_id
         if self.provenance is not None:
-            self._nodes[node_id].log_path = self.provenance.ensure_task(
+            stdout_path, stderr_path = self.provenance.ensure_task(
                 node_id=node_id,
                 task_name=expr.task_def.name,
                 env=expr.task_def.env,
             )
+            self._nodes[node_id].stdout_path = stdout_path
+            self._nodes[node_id].stderr_path = stderr_path
         return node_id
 
     def _prepare_pending_nodes(self) -> None:
@@ -696,7 +699,8 @@ class _ConcurrentEvaluator:
                 name: encode_value(value, base_dir=node.transport_path)
                 for name, value in node.resolved_args.items()
             },
-            "log_path": str(node.log_path) if node.log_path is not None else None,
+            "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
+            "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
             "sys_path": list(sys.path),
@@ -827,9 +831,10 @@ class _ConcurrentEvaluator:
     def _run_shell(self, *, node: _TaskNode, shell_expr: ShellExpr) -> Any:
         """Execute a shell command and return its declared output path."""
         task_def = node.task_def
-        provenance_log_path = node.log_path
         user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
-        for path in (provenance_log_path, user_log_path):
+
+        # Ensure parent directories for all log paths.
+        for path in (node.stdout_path, node.stderr_path, user_log_path):
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -847,19 +852,28 @@ class _ConcurrentEvaluator:
             check=False,
             text=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
         )
-        output_text = completed.stdout or ""
-        for path in (provenance_log_path, user_log_path):
-            if path is not None:
-                path.write_text(output_text, encoding="utf-8")
+        stdout_text = completed.stdout or ""
+        stderr_text = completed.stderr or ""
 
+        # Write stdout and stderr to separate provenance logs.
+        if node.stdout_path is not None:
+            node.stdout_path.write_text(stdout_text, encoding="utf-8")
+        if node.stderr_path is not None:
+            node.stderr_path.write_text(stderr_text, encoding="utf-8")
+
+        # User-specified log gets combined output for backwards compatibility.
+        if user_log_path is not None:
+            user_log_path.write_text(stdout_text + stderr_text, encoding="utf-8")
+
+        combined_output = stdout_text + stderr_text
         if completed.returncode != 0:
             raise ShellTaskError(
                 task_name=task_def.name,
                 cmd=shell_expr.cmd,
                 exit_code=completed.returncode,
-                output=output_text,
+                output=combined_output,
                 log=shell_expr.log,
             )
 
@@ -905,17 +919,22 @@ class _ConcurrentEvaluator:
             args=(str(input_path), str(output_path)),
         )
         completed = subprocess.run(argv, shell=False, check=False, text=True, capture_output=True)
-        detail = (completed.stdout or "") + (completed.stderr or "")
-        if node.log_path is not None and detail:
-            with node.log_path.open("a", encoding="utf-8") as handle:
-                handle.write(detail)
+        stdout_text = completed.stdout or ""
+        stderr_text = completed.stderr or ""
+        if node.stdout_path is not None and stdout_text:
+            with node.stdout_path.open("a", encoding="utf-8") as handle:
+                handle.write(stdout_text)
+        if node.stderr_path is not None and stderr_text:
+            with node.stderr_path.open("a", encoding="utf-8") as handle:
+                handle.write(stderr_text)
 
+        combined = stdout_text + stderr_text
         if completed.returncode != 0:
             raise ShellTaskError(
                 task_name=node.task_def.name,
                 cmd=" ".join(argv),
                 exit_code=completed.returncode,
-                output=detail.strip(),
+                output=combined.strip(),
                 log=None,
             )
 

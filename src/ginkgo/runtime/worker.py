@@ -23,9 +23,10 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
     }
 
-    log_path = payload.get("log_path")
+    stdout_path = payload.get("stdout_path")
+    stderr_path = payload.get("stderr_path")
     try:
-        with _task_log_context(log_path):
+        with _task_log_context(stdout_path=stdout_path, stderr_path=stderr_path):
             module = load_module(
                 payload["module"],
                 module_file=payload.get("module_file"),
@@ -34,8 +35,8 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             fn = getattr(task_binding, "fn", task_binding)
             result = fn(**decoded_args)
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
-        if log_path is not None:
-            with Path(log_path).open("a", encoding="utf-8") as handle:
+        if stderr_path is not None:
+            with Path(stderr_path).open("a", encoding="utf-8") as handle:
                 traceback.print_exc(file=handle)
         return {
             "error": {
@@ -62,14 +63,34 @@ def _is_dynamic_result(value: Any) -> bool:
 
 
 @contextlib.contextmanager
-def _task_log_context(log_path: str | None):
-    """Redirect task stdout/stderr to a per-task log file when configured."""
-    if log_path is None:
+def _task_log_context(
+    *, stdout_path: str | None, stderr_path: str | None
+):
+    """Redirect task stdout and stderr to separate per-task log files."""
+    if stdout_path is None and stderr_path is None:
         yield
         return
 
-    path = Path(log_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        with contextlib.redirect_stdout(handle), contextlib.redirect_stderr(handle):
-            yield
+    managers: list[contextlib.AbstractContextManager] = []
+    handles = []
+
+    if stdout_path is not None:
+        path = Path(stdout_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_handle = path.open("a", encoding="utf-8")
+        handles.append(stdout_handle)
+        managers.append(contextlib.redirect_stdout(stdout_handle))
+
+    if stderr_path is not None:
+        path = Path(stderr_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_handle = path.open("a", encoding="utf-8")
+        handles.append(stderr_handle)
+        managers.append(contextlib.redirect_stderr(stderr_handle))
+
+    with contextlib.ExitStack() as stack:
+        for handle in handles:
+            stack.callback(handle.close)
+        for manager in managers:
+            stack.enter_context(manager)
+        yield

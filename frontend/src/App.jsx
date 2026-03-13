@@ -71,6 +71,42 @@ function statusTone(status) {
   }[status] || "pending";
 }
 
+function statusIcon(status) {
+  return {
+    succeeded: "\u2713",
+    cached: "\u21BA",
+    running: "\u25D0",
+    failed: "\u2716",
+    pending: "\u25CB",
+  }[status] || "\u25CB";
+}
+
+function GinkgoLeafIcon({ size = 48 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" className="empty-icon">
+      <path
+        d="M24 4C16 4 8 12 8 24c0 8 4 14 8 17l1-1c-2-4-3-9-3-14 0-10 5-17 10-20v0c5 3 10 10 10 20 0 5-1 10-3 14l1 1c4-3 8-9 8-17C40 12 32 4 24 4z"
+        fill="currentColor"
+        opacity="0.9"
+      />
+      <path d="M24 14v28" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+      <path d="M24 22c-3 2-6 6-7 12" stroke="currentColor" strokeWidth="1" opacity="0.3" />
+      <path d="M24 22c3 2 6 6 7 12" stroke="currentColor" strokeWidth="1" opacity="0.3" />
+    </svg>
+  );
+}
+
+function GinkgoLogo() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 48 48" fill="none">
+      <path
+        d="M24 4C16 4 8 12 8 24c0 8 4 14 8 17l1-1c-2-4-3-9-3-14 0-10 5-17 10-20v0c5 3 10 10 10 20 0 5-1 10-3 14l1 1c4-3 8-9 8-17C40 12 32 4 24 4z"
+        fill="#e5a93e"
+      />
+    </svg>
+  );
+}
+
 function MetricCard({ label, value, subvalue, accent = "teal" }) {
   return (
     <div className={`metric-card accent-${accent}`}>
@@ -96,19 +132,49 @@ function taskBaseName(value) {
   return parts[parts.length - 1] || value;
 }
 
-function RunList({ runs, latestRunId, onOpenRun, onOpenCache, onOpenRunDialog, live }) {
+function Breadcrumbs({ route, runDetail, navigate }) {
   return (
-    <section className="panel panel-table">
+    <nav className="breadcrumbs">
+      <button className="breadcrumb-link" onClick={() => navigate("/")}>Runs</button>
+      {route.page === "cache" ? (
+        <>
+          <span className="breadcrumb-sep">/</span>
+          <span className="breadcrumb-current">Cache</span>
+        </>
+      ) : null}
+      {(route.page === "run" || route.page === "task") && runDetail ? (
+        <>
+          <span className="breadcrumb-sep">/</span>
+          {route.page === "task" ? (
+            <button className="breadcrumb-link" onClick={() => navigate(`/runs/${runDetail.run_id}`)}>
+              {shortRunHash(runDetail.run_id)}
+            </button>
+          ) : (
+            <span className="breadcrumb-current">{shortRunHash(runDetail.run_id)}</span>
+          )}
+        </>
+      ) : null}
+      {route.page === "task" && route.taskKey ? (
+        <>
+          <span className="breadcrumb-sep">/</span>
+          <span className="breadcrumb-current">{route.taskKey}</span>
+        </>
+      ) : null}
+    </nav>
+  );
+}
+
+function RunList({ runs, latestRunId, onOpenRun, onOpenRunDialog, live }) {
+  return (
+    <section className="panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Run History</p>
-          <h2>Recent runs</h2>
-          <div className="muted-copy">Ordered by execution time</div>
+          <h2 className="panel-title">Recent runs</h2>
+          <p className="panel-subtitle">Ordered by execution time</p>
         </div>
         <div className="header-actions">
           <span className={`live-dot ${live ? "active" : ""}`}>{live ? "Live" : "Idle"}</span>
           <button className="primary-button" onClick={onOpenRunDialog}>Run workflow</button>
-          <button className="ghost-button" onClick={onOpenCache}>Cache</button>
           {latestRunId ? (
             <button className="ghost-button" onClick={() => onOpenRun(latestRunId)}>
               Open latest
@@ -118,6 +184,7 @@ function RunList({ runs, latestRunId, onOpenRun, onOpenCache, onOpenRunDialog, l
       </div>
       {runs.length === 0 ? (
         <div className="empty-state">
+          <GinkgoLeafIcon />
           <h3>No runs yet</h3>
           <p>Run a workflow with <code>ginkgo run workflow.py</code> and it will appear here.</p>
         </div>
@@ -141,7 +208,7 @@ function RunList({ runs, latestRunId, onOpenRun, onOpenCache, onOpenRunDialog, l
                 <tr key={run.run_id} onClick={() => onOpenRun(run.run_id)}>
                   <td className="strong">
                     <div>{shortRunHash(run.run_id)}</div>
-                    <div className="micro-copy">Executed {formatTimestamp(run.started_at)}</div>
+                    <div className="micro-copy">{formatTimestamp(run.started_at)}</div>
                   </td>
                   <td><Badge status={run.status} /></td>
                   <td>{run.workflow}</td>
@@ -161,6 +228,8 @@ function RunList({ runs, latestRunId, onOpenRun, onOpenCache, onOpenRunDialog, l
 }
 
 function TaskDrawer({ taskDetail, taskLog, onClose }) {
+  const stdout = taskLog?.stdout ?? "";
+  const stderr = taskLog?.stderr ?? "";
   const [tab, setTab] = useState("overview");
 
   useEffect(() => {
@@ -174,7 +243,6 @@ function TaskDrawer({ taskDetail, taskLog, onClose }) {
     <aside className="task-drawer">
       <div className="task-drawer-header">
         <div>
-          <p className="eyebrow">Task Detail</p>
           <h3>{title}</h3>
           <div className="task-drawer-subtitle">{task.task || taskDetail.task_key}</div>
         </div>
@@ -257,14 +325,14 @@ function TaskDrawer({ taskDetail, taskLog, onClose }) {
       ) : null}
 
       {tab === "logs" ? (
-        <div className="drawer-stack">
-          <section className="drawer-section drawer-card">
-            <h4>Log Tail</h4>
-            <pre>{(taskDetail.log_tail || []).join("\n") || "No log tail available."}</pre>
+        <div className="drawer-stack log-split">
+          <section className="drawer-section drawer-card log-pane">
+            <h4>stdout</h4>
+            <pre className="log-block">{stdout || "No stdout output."}</pre>
           </section>
-          <section className="drawer-section drawer-card">
-            <h4>Full Log</h4>
-            <pre className="log-block">{taskLog || "No log content available."}</pre>
+          <section className="drawer-section drawer-card log-pane">
+            <h4>stderr</h4>
+            <pre className="log-block stderr-block">{stderr || "No stderr output."}</pre>
           </section>
         </div>
       ) : null}
@@ -272,17 +340,54 @@ function TaskDrawer({ taskDetail, taskLog, onClose }) {
   );
 }
 
+function DagProgress({ tasks }) {
+  const total = tasks.length;
+  if (total === 0) return null;
+  const done = tasks.filter((t) => t.status === "succeeded" || t.status === "cached").length;
+  const failed = tasks.filter((t) => t.status === "failed").length;
+  const running = tasks.filter((t) => t.status === "running").length;
+  const pctDone = (done / total) * 100;
+  const pctFailed = (failed / total) * 100;
+  const pctRunning = (running / total) * 100;
+  return (
+    <div className="dag-progress">
+      <div className="dag-progress-bar">
+        <div className="dag-progress-done" style={{ width: `${pctDone}%` }} />
+        <div className="dag-progress-running" style={{ width: `${pctRunning}%` }} />
+        <div className="dag-progress-failed" style={{ width: `${pctFailed}%` }} />
+      </div>
+      <span className="dag-progress-label">{done + failed}/{total} complete</span>
+    </div>
+  );
+}
+
 function DagView({ tasks, onOpenTask, activeTaskKey }) {
   const [zoom, setZoom] = useState(1);
   const graph = useMemo(() => {
+    // Compute layers via iterative relaxation to handle both static and
+    // dynamic dependencies correctly regardless of task ordering.
     const layers = new Map();
-    let maxLayer = 0;
     for (const task of tasks) {
-      const deps = task.dependency_ids || [];
-      const layer = deps.length
-        ? Math.max(...deps.map((id) => layers.get(id) ?? 0)) + 1
-        : 0;
-      layers.set(task.node_id, layer);
+      layers.set(task.node_id, 0);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const task of tasks) {
+        const allDeps = [
+          ...(task.dependency_ids || []),
+          ...(task.dynamic_dependency_ids || []),
+        ];
+        if (allDeps.length === 0) continue;
+        const needed = Math.max(...allDeps.map((id) => (layers.get(id) ?? 0) + 1));
+        if (needed > layers.get(task.node_id)) {
+          layers.set(task.node_id, needed);
+          changed = true;
+        }
+      }
+    }
+    let maxLayer = 0;
+    for (const layer of layers.values()) {
       maxLayer = Math.max(maxLayer, layer);
     }
 
@@ -296,6 +401,11 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
       columnTasks.sort((left, right) => (left.node_id ?? 0) - (right.node_id ?? 0));
     }
 
+    const nodeW = 140;
+    const nodeH = 46;
+    const colSpacing = 174;
+    const rowSpacing = 62;
+
     const nodes = [];
     const nodeLookup = new Map();
     columns.forEach((layer) => {
@@ -304,26 +414,33 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
         const node = {
           ...task,
           layer,
-          x: 54 + layer * 230,
-          y: 74 + index * 114,
+          x: 36 + layer * colSpacing,
+          y: 36 + index * rowSpacing,
         };
         nodes.push(node);
         nodeLookup.set(task.node_id, node);
       });
     });
 
+    const halfH = nodeH / 2;
     const links = [];
+    const doneStatuses = new Set(["succeeded", "cached"]);
     for (const node of nodes) {
       for (const depId of node.dependency_ids || []) {
         const sourceNode = nodeLookup.get(depId);
         if (sourceNode) {
+          const srcDone = doneStatuses.has(sourceNode.status);
+          const tgtRunning = node.status === "running";
+          const bothDone = srcDone && doneStatuses.has(node.status);
           links.push({
             key: `${depId}-${node.node_id}`,
-            x1: sourceNode.x + 182,
-            y1: sourceNode.y + 34,
+            x1: sourceNode.x + nodeW,
+            y1: sourceNode.y + halfH,
             x2: node.x,
-            y2: node.y + 34,
+            y2: node.y + halfH,
             dynamic: false,
+            activeFlow: srcDone && tgtRunning,
+            completed: bothDone,
           });
         }
       }
@@ -332,18 +449,20 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
         if (sourceNode) {
           links.push({
             key: `dyn-${node.node_id}-${depId}`,
-            x1: node.x + 182,
-            y1: node.y + 34,
+            x1: node.x + nodeW,
+            y1: node.y + halfH,
             x2: sourceNode.x,
-            y2: sourceNode.y + 34,
+            y2: sourceNode.y + halfH,
             dynamic: true,
+            activeFlow: false,
+            completed: false,
           });
         }
       }
     }
-    const laneHeight = Math.max(...columns.map((layer) => 128 + (grouped.get(layer)?.length || 0) * 114), 220);
-    const width = Math.max(720, columns.length * 230 + 64);
-    const height = Math.max(280, laneHeight);
+    const maxRows = Math.max(...columns.map((layer) => grouped.get(layer)?.length || 0), 1);
+    const width = Math.max(480, columns.length * colSpacing + 48);
+    const height = Math.max(120, maxRows * rowSpacing + 36);
     return { nodes, links, width, height, columns };
   }, [tasks]);
 
@@ -355,13 +474,14 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
     <section className="panel dag-panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Task Graph</p>
-          <h3>Execution stages</h3>
+          <h3 className="panel-title">Task graph</h3>
+          <p className="panel-subtitle">Execution stages</p>
         </div>
         <div className="dag-toolbar">
           <div className="dag-legend">
-            <span><i className="legend-dot tone-success" /> Succeeded</span>
+            <span><i className="legend-dot tone-pending" /> Pending</span>
             <span><i className="legend-dot tone-running" /> Running</span>
+            <span><i className="legend-dot tone-success" /> Succeeded</span>
             <span><i className="legend-dot tone-failed" /> Failed</span>
             <span><i className="legend-line" /> Dependency</span>
             <span><i className="legend-line dynamic" /> Dynamic</span>
@@ -373,6 +493,7 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
           </div>
         </div>
       </div>
+      <DagProgress tasks={tasks} />
       <div className="dag-shell">
         <div className="dag-scroll">
           <svg
@@ -380,17 +501,16 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
             viewBox={`0 0 ${graph.width} ${graph.height}`}
             style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }}
           >
-            {graph.columns.map((layer) => (
-              <g key={`lane-${layer}`}>
-                <rect className="dag-lane" x={26 + layer * 230} y={26} width={204} height={graph.height - 40} rx={24} ry={24} />
-                <text x={42 + layer * 230} y={50} className="dag-lane-label">Stage {layer + 1}</text>
-              </g>
-            ))}
             {graph.links.map((link) => (
               <path
                 key={link.key}
-                d={`M ${link.x1} ${link.y1} C ${link.x1 + 32} ${link.y1}, ${link.x2 - 32} ${link.y2}, ${link.x2} ${link.y2}`}
-                className={`dag-link ${link.dynamic ? "dynamic" : ""}`}
+                d={`M ${link.x1} ${link.y1} C ${link.x1 + 24} ${link.y1}, ${link.x2 - 24} ${link.y2}, ${link.x2} ${link.y2}`}
+                className={[
+                  "dag-link",
+                  link.dynamic ? "dynamic" : "",
+                  link.activeFlow ? "active-flow" : "",
+                  link.completed ? "completed" : "",
+                ].filter(Boolean).join(" ")}
               />
             ))}
             {graph.nodes.map((node) => (
@@ -400,10 +520,10 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
                 onClick={() => onOpenTask(node.task_key)}
                 className={`dag-node tone-${statusTone(node.status)} ${activeTaskKey === node.task_key ? "active" : ""}`}
               >
-                <rect rx="22" ry="22" width="182" height="68" />
-                <text x="16" y="24">{truncateLabel(node.task_name, 24)}</text>
-                <text x="16" y="43" className="dag-node-sub">{node.task_key}</text>
-                <text x="16" y="58" className="dag-node-sub status">{node.status}</text>
+                <rect rx="8" ry="8" width="140" height="46" />
+                <text x="22" y="19" className="dag-node-name">{truncateLabel(node.task_name, 18)}</text>
+                <text x="22" y="33" className="dag-node-sub">{node.status}</text>
+                <text x="10" y="26" className="dag-node-icon">{statusIcon(node.status)}</text>
               </g>
             ))}
           </svg>
@@ -415,11 +535,11 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
 
 function CacheBrowser({ entries, onDelete, onClearAll, clearing }) {
   return (
-    <section className="panel panel-table">
+    <section className="panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Cache Browser</p>
-          <h2>Content-addressed entries</h2>
+          <h2 className="panel-title">Cache browser</h2>
+          <p className="panel-subtitle">Content-addressed entries</p>
         </div>
         <div className="header-actions">
           <button
@@ -433,6 +553,7 @@ function CacheBrowser({ entries, onDelete, onClearAll, clearing }) {
       </div>
       {entries.length === 0 ? (
         <div className="empty-state">
+          <GinkgoLeafIcon />
           <h3>No cache entries</h3>
           <p>Cache results will appear here after you run workflows.</p>
         </div>
@@ -504,9 +625,8 @@ function RunWorkflowModal({ open, workflows, initialWorkflow, busy, onClose, onS
       <div className="modal-card" onClick={(event) => event.stopPropagation()}>
         <div className="panel-header modal-header">
           <div>
-            <p className="eyebrow">Run Workflow</p>
-            <h3>Launch a new Ginkgo run</h3>
-            <p className="muted-copy">Pick a workflow file and optional config overlays.</p>
+            <h3 className="panel-title">Run workflow</h3>
+            <p className="panel-subtitle">Pick a workflow file and optional config overlays.</p>
           </div>
           <button className="ghost-button" onClick={onClose}>Close</button>
         </div>
@@ -571,7 +691,17 @@ function RunWorkflowModal({ open, workflows, initialWorkflow, busy, onClose, onS
   );
 }
 
+function formatDateTimeLarge(value) {
+  if (!value) return { date: "—", time: "" };
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return { date: value, time: "" };
+  const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
+  const time = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(d);
+  return { date, time };
+}
+
 function RunDetail({ run, onOpenTask, activeTaskKey }) {
+  const [detailTab, setDetailTab] = useState("graph");
   const tasks = run.tasks || [];
   const summary = useMemo(() => {
     const counts = { succeeded: 0, cached: 0, failed: 0, running: 0, pending: 0 };
@@ -581,50 +711,62 @@ function RunDetail({ run, onOpenTask, activeTaskKey }) {
     return counts;
   }, [tasks]);
 
+  const started = formatDateTimeLarge(run.manifest.started_at);
+
   return (
     <section className="run-detail">
       <div className="detail-hero">
         <div className="hero-copy">
-          <p className="eyebrow">Run Detail</p>
-          <h2>{run.run_id}</h2>
-          <p className="muted-copy">
-            {run.manifest.workflow} · started {formatTimestamp(run.manifest.started_at)}
-          </p>
+          <div className="hero-top-row">
+            <span className="hero-workflow">{run.manifest.workflow}</span>
+            <Badge status={run.manifest.status || "unknown"} />
+          </div>
+          <div className="hero-datetime">
+            <span className="hero-date">{started.date}</span>
+            <span className="hero-time">{started.time}</span>
+          </div>
           <div className="hero-pills">
             <span className="hero-pill">Jobs {run.manifest.jobs ?? "auto"}</span>
             <span className="hero-pill">Cores {run.manifest.cores ?? "auto"}</span>
-            <span className="hero-pill status-pill">
-              <Badge status={run.manifest.status || "unknown"} />
-            </span>
+            <span className="hero-pill hero-run-id">{shortRunHash(run.run_id)}</span>
           </div>
-        </div>
-        <div className="hero-visual hero-summary">
-          <MetricCard
-            label="Workflow"
-            value={run.manifest.workflow?.split("/").pop() || "unknown"}
-            subvalue={`Started ${formatTimestamp(run.manifest.started_at)}`}
-            accent="gold"
-          />
         </div>
       </div>
 
       <div className="metrics-grid">
-        <MetricCard label="Tasks" value={tasks.length} subvalue="Total recorded tasks" />
-        <MetricCard label="Succeeded" value={summary.succeeded || 0} subvalue="Executed successfully" accent="emerald" />
-        <MetricCard label="Cached" value={summary.cached || 0} subvalue="Served from cache" accent="blue" />
+        <MetricCard label="Tasks" value={tasks.length} subvalue="Total recorded" />
+        <MetricCard label="Succeeded" value={summary.succeeded || 0} subvalue="Executed OK" accent="emerald" />
+        <MetricCard label="Cached" value={summary.cached || 0} subvalue="From cache" accent="blue" />
         <MetricCard label="Failed" value={summary.failed || 0} subvalue="Need attention" accent="rose" />
       </div>
 
-      <DagView tasks={tasks} onOpenTask={onOpenTask} activeTaskKey={activeTaskKey} />
+      <div className="detail-tabs">
+        {[
+          ["graph", "Graph"],
+          ["tasks", "Tasks"],
+          ["config", "Config"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            className={`detail-tab ${detailTab === key ? "active" : ""}`}
+            onClick={() => setDetailTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-      <div className="content-grid">
-        <section className="panel panel-table">
+      {detailTab === "graph" ? (
+        <DagView tasks={tasks} onOpenTask={onOpenTask} activeTaskKey={activeTaskKey} />
+      ) : null}
+
+      {detailTab === "tasks" ? (
+        <section className="panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Tasks</p>
-              <h3>Execution ledger</h3>
+              <h3 className="panel-title">Tasks</h3>
+              <p className="panel-subtitle">Click a task to inspect inputs and logs</p>
             </div>
-            <div className="muted-copy">Click a task to inspect inputs and logs</div>
           </div>
           <div className="table-shell">
             <table className="modern-table">
@@ -658,17 +800,19 @@ function RunDetail({ run, onOpenTask, activeTaskKey }) {
             </table>
           </div>
         </section>
+      ) : null}
 
+      {detailTab === "config" ? (
         <section className="panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Config</p>
-              <h3>Resolved params</h3>
+              <h3 className="panel-title">Config</h3>
+              <p className="panel-subtitle">Resolved params</p>
             </div>
           </div>
           <pre className="code-block">{JSON.stringify(run.params || {}, null, 2)}</pre>
         </section>
-      </div>
+      ) : null}
     </section>
   );
 }
@@ -681,10 +825,10 @@ export function App() {
   const [workflows, setWorkflows] = useState([]);
   const [runDetail, setRunDetail] = useState(null);
   const [taskDetail, setTaskDetail] = useState(null);
-  const [taskLog, setTaskLog] = useState("");
+  const [taskLog, setTaskLog] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
   const [live, setLive] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
@@ -717,10 +861,19 @@ export function App() {
     return () => source.close();
   }, []);
 
+  const isRefresh = React.useRef(false);
+
+  // Reset refresh flag when route changes so we show loading for new pages.
+  useEffect(() => {
+    isRefresh.current = false;
+  }, [route.page, route.runId, route.taskKey]);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      setLoading(true);
+      if (!isRefresh.current) {
+        setInitialLoading(true);
+      }
       setError(null);
       try {
         const [metaData, runsData, cacheData, workflowsData] = await Promise.all([
@@ -738,7 +891,7 @@ export function App() {
         if (route.page === "cache") {
           setRunDetail(null);
           setTaskDetail(null);
-          setTaskLog("");
+          setTaskLog(null);
           return;
         }
 
@@ -747,7 +900,7 @@ export function App() {
         if (!targetRunId) {
           setRunDetail(null);
           setTaskDetail(null);
-          setTaskLog("");
+          setTaskLog(null);
           return;
         }
 
@@ -762,10 +915,13 @@ export function App() {
           ]);
           if (cancelled) return;
           setTaskDetail(taskData);
-          setTaskLog(logData.content || "");
+          setTaskLog({
+            stdout: logData.stdout ?? logData.content ?? "",
+            stderr: logData.stderr ?? "",
+          });
         } else {
           setTaskDetail(null);
-          setTaskLog("");
+          setTaskLog(null);
         }
       } catch (err) {
         if (!cancelled) {
@@ -773,7 +929,8 @@ export function App() {
         }
       } finally {
         if (!cancelled) {
-          setLoading(false);
+          setInitialLoading(false);
+          isRefresh.current = true;
         }
       }
     }
@@ -866,45 +1023,65 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <div className="backdrop backdrop-one" />
-      <div className="backdrop backdrop-two" />
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Ginkgo UI</p>
-          <h1>Ginkgo UI</h1>
-          <p className="topbar-copy">
-            Run history, task lineage, cache state, and task logs in one local interface.
-          </p>
+        <div className="topbar-left">
+          <div className="topbar-brand" onClick={() => navigate("/")}>
+            <GinkgoLogo />
+            <span>Ginkgo</span>
+          </div>
+          <nav className="topbar-nav">
+            <button
+              className={`nav-link ${route.page === "home" || route.page === "run" || route.page === "task" ? "active" : ""}`}
+              onClick={() => navigate("/")}
+            >
+              Runs
+            </button>
+            <button
+              className={`nav-link ${route.page === "cache" ? "active" : ""}`}
+              onClick={() => navigate("/cache")}
+            >
+              Cache
+            </button>
+          </nav>
         </div>
         <div className="topbar-actions">
+          <span className={`live-dot ${live ? "active" : ""}`}>{live ? "Live" : "Idle"}</span>
+          <div className="topbar-meta">
+            <code>{meta?.runs_root || ".ginkgo/runs"}</code>
+          </div>
           <button className="primary-button" onClick={() => openRunDialog(initialWorkflow)}>
             Run workflow
           </button>
-          <button className="ghost-button" onClick={() => navigate("/cache")}>View cache</button>
-          <div className="topbar-meta">
-            <span className="meta-chip">Runs root</span>
-            <code>{meta?.runs_root || ".ginkgo/runs"}</code>
-          </div>
         </div>
       </header>
 
-      {error ? <div className="error-banner">✖ {error}</div> : null}
-      {notice ? <div className="notice-banner">✓ {notice}</div> : null}
+      <Breadcrumbs route={route} runDetail={runDetail} navigate={navigate} />
 
-      <main className="main-grid">
-        <RunList
-          runs={runs}
-          latestRunId={meta?.latest_run_id}
-          onOpenRun={openRun}
-          onOpenCache={() => navigate("/cache")}
-          onOpenRunDialog={() => openRunDialog(initialWorkflow)}
-          live={live}
-        />
-        {loading ? (
+      {error ? <div className="error-banner">{error}</div> : null}
+      {notice ? <div className="notice-banner">{notice}</div> : null}
+
+      <div className="main-content">
+        {initialLoading ? (
           <section className="panel loading-panel">
             <div className="spinner-ring" />
-            <p>Loading Ginkgo UI…</p>
+            <p>Loading…</p>
           </section>
+        ) : route.page === "home" ? (
+          runDetail ? (
+            <RunDetail
+              run={runDetail}
+              onOpenTask={openTask}
+              activeTaskKey={null}
+            />
+          ) : (
+            <RunList
+              runs={runs}
+              latestRunId={meta?.latest_run_id}
+              onOpenRun={openRun}
+              onOpenRunDialog={() => openRunDialog(initialWorkflow)}
+              live={live}
+            />
+          )
         ) : route.page === "cache" ? (
           <CacheBrowser
             entries={cacheEntries}
@@ -920,11 +1097,12 @@ export function App() {
           />
         ) : (
           <section className="panel empty-state">
+            <GinkgoLeafIcon />
             <h3>No run selected</h3>
             <p>Choose a run from the history to inspect its task graph and provenance.</p>
           </section>
         )}
-      </main>
+      </div>
 
       <TaskDrawer taskDetail={taskDetail} taskLog={taskLog} onClose={closeTask} />
       <RunWorkflowModal
