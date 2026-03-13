@@ -52,10 +52,11 @@ def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
         cores=4,
         params={"message": "hello"},
     )
-    recorder.ensure_task(node_id=0, task_name="demo.write_output", env=None)
-    log_path = recorder.log_path_for(0)
-    assert log_path is not None
-    log_path.write_text("task log line\n", encoding="utf-8")
+    stdout_path, stderr_path = recorder.ensure_task(
+        node_id=0, task_name="demo.write_output", env=None
+    )
+    stdout_path.write_text("task log line\n", encoding="utf-8")
+    stderr_path.write_text("task error line\n", encoding="utf-8")
     recorder.update_task_inputs(
         node_id=0,
         task_name="demo.write_output",
@@ -99,7 +100,7 @@ class TestUiServer:
 
         assert status == 200
         assert '<div id="root"></div>' in body
-        assert "Ginkgo UI" in body
+        assert "Ginkgo" in body
 
     def test_api_lists_runs(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
@@ -139,7 +140,8 @@ class TestUiServer:
         assert run_payload["tasks"][0]["dependency_ids"] == []
         assert task_payload["task"]["error"] == "boom"
         assert task_payload["task"]["cache_key"] == "cache-key-123"
-        assert "task log line" in log_payload["content"]
+        assert "task log line" in log_payload["stdout"]
+        assert "task error line" in log_payload["stderr"]
 
     def test_meta_reports_selected_run(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
