@@ -10,6 +10,7 @@ from rich.text import Text
 
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.debug import command_debug
+from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.run import command_run
 from ginkgo.cli.commands.test import command_test
@@ -27,6 +28,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_run(args, output_mode=_run_mode_from_args(args))
         if args.command == "cache":
             return command_cache(args)
+        if args.command == "env":
+            return command_env(args)
         if args.command == "debug":
             return command_debug(args)
         if args.command == "test":
@@ -65,6 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
     prune_parser = cache_subparsers.add_parser("prune")
     prune_parser.add_argument("--older-than", required=True)
     prune_parser.add_argument("--dry-run", action="store_true")
+
+    env_parser = subparsers.add_parser("env")
+    env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)
+    env_subparsers.add_parser("ls")
+    env_clear_parser = env_subparsers.add_parser("clear")
+    env_clear_parser.add_argument("env", nargs="?")
+    env_clear_parser.add_argument("--all", action="store_true")
+    env_clear_parser.add_argument("--dry-run", action="store_true")
 
     debug_parser = subparsers.add_parser("debug")
     debug_parser.add_argument("run_id", nargs="?")

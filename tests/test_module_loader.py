@@ -5,10 +5,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.module_loader import import_roots_for_path, load_module_from_path
 
 
 class TestLoadModuleFromPath:
+    def test_import_roots_for_path_include_package_root_parent(self, tmp_path: Path) -> None:
+        repo_root = tmp_path / "AmpSeeker"
+        package_dir = repo_root / "ampseeker_ginkgo"
+        package_dir.mkdir(parents=True)
+
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        workflow_path = package_dir / "workflow.py"
+        workflow_path.write_text("VALUE = 1\n", encoding="utf-8")
+
+        roots = import_roots_for_path(workflow_path)
+
+        assert roots == [str(package_dir.resolve()), str(repo_root.resolve())]
+
     def test_load_module_supports_importing_own_package(self, tmp_path: Path) -> None:
         repo_root = tmp_path / "AmpSeeker"
         package_dir = repo_root / "ampseeker_ginkgo"
