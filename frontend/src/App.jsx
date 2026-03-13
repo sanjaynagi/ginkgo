@@ -521,9 +521,9 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
                 className={`dag-node tone-${statusTone(node.status)} ${activeTaskKey === node.task_key ? "active" : ""}`}
               >
                 <rect rx="8" ry="8" width="140" height="46" />
-                <text x="22" y="19" className="dag-node-name">{truncateLabel(node.task_name, 18)}</text>
-                <text x="22" y="33" className="dag-node-sub">{node.status}</text>
-                <text x="10" y="26" className="dag-node-icon">{statusIcon(node.status)}</text>
+                <text x="10" y="19" className="dag-node-name">{truncateLabel(node.task_name, 18)}</text>
+                <text x="10" y="33" className="dag-node-sub">{node.status}</text>
+                <text x="122" y="26" className="dag-node-icon">{statusIcon(node.status)}</text>
               </g>
             ))}
           </svg>
@@ -863,10 +863,11 @@ export function App() {
 
   const isRefresh = React.useRef(false);
 
-  // Reset refresh flag when route changes so we show loading for new pages.
+  // Reset refresh flag when page or run changes so we show loading for new pages.
+  // Intentionally excludes taskKey — task selection is additive and shouldn't flash a loader.
   useEffect(() => {
     isRefresh.current = false;
-  }, [route.page, route.runId, route.taskKey]);
+  }, [route.page, route.runId]);
 
   useEffect(() => {
     let cancelled = false;
