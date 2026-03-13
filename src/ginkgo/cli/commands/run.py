@@ -98,8 +98,7 @@ def run_workflow(
             f"config overlays={len(config_paths)}"
         )
         rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
-    else:
-        rich_console.print("")
+    rich_console.print("")
 
     recorder = RunProvenanceRecorder(
         run_id=run_id,

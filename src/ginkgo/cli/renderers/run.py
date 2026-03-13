@@ -197,6 +197,8 @@ class _CliRunRenderer:
 
     def _render_run_layout(self):
         return Group(
+            self._render_resource_info_line(),
+            Text(""),
             self._render_status_line(),
             self._render_task_table(),
             self._render_progress_section(),
@@ -204,7 +206,6 @@ class _CliRunRenderer:
 
     def _render_status_line(self) -> Table:
         line = Table.grid(padding=(0, 1))
-        line.add_column(no_wrap=True, justify="right")
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
@@ -212,15 +213,24 @@ class _CliRunRenderer:
         line.add_row(
             " " * self._status_line_padding(),
             self._activity_spinner,
-            Text(
-                f"Running locally on {self._summary.cores} "
-                f"{_core_unit_label(self._summary.cores)}",
-                style="bold #0f766e",
-            ),
-            self._resource_text(),
+            Text("Running", style="bold #0f766e"),
             self._time_spinner,
         )
         return line
+
+    def _render_resource_info_line(self) -> Text:
+        """Render the live locality and resource summary line."""
+        text = Text()
+        text.append("💻 ", style="cyan")
+        text.append(
+            f"Running locally on {self._summary.cores} {_core_unit_label(self._summary.cores)}",
+            style="bold",
+        )
+        text.append(" ")
+        text.append("(")
+        text.append(self._resource_label(), style="dim")
+        text.append(")", style="dim")
+        return text
 
     def _render_task_table(self) -> Table:
         table = Table(
@@ -266,22 +276,21 @@ class _CliRunRenderer:
         )
         return progress
 
-    def _resource_text(self) -> Text:
-        """Render the compact inline CPU/RSS monitor text."""
+    def _resource_label(self) -> str:
+        """Return the compact inline CPU/RSS monitor label."""
         resources = self._resource_summary()
         if resources is None:
-            return Text("CPU --   RSS --   Procs --", style="dim")
+            return "CPU --   RSS --   Procs --"
 
         current = resources.get("current")
         if not isinstance(current, dict):
-            return Text("CPU --   RSS --   Procs --", style="dim")
+            return "CPU --   RSS --   Procs --"
 
-        label = (
+        return (
             f"CPU {_format_cpu_percent(_as_float(current.get('cpu_percent')))}   "
             f"RSS {_format_bytes(_as_int(current.get('rss_bytes')))}   "
             f"Procs {_format_count(current.get('process_count'))}"
         )
-        return Text(label, style="dim")
 
     def _render_failure_details(self, details: list[_FailureDetails]):
         panels = [self._render_failure_panel(item) for item in details]
@@ -346,14 +355,7 @@ class _CliRunRenderer:
         return task_width + status_width + env_width + time_width + column_padding + separators
 
     def _status_line_padding(self) -> int:
-        status_width = (
-            len("Running locally on ")
-            + len(str(self._summary.cores))
-            + 1
-            + len(_core_unit_label(self._summary.cores))
-            + len(" CPU --   RSS --   Procs --")
-            + 7
-        )
+        status_width = len("Running") + 5
         return max(0, (self._task_table_width() - status_width) // 2)
 
     def _status_counts(self) -> Counter[str]:
