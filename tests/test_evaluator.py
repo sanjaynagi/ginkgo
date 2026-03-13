@@ -73,6 +73,38 @@ def shell_missing_output_task(output_path: str) -> file:
     return shell_task(cmd="true", output=output_path)
 
 
+@task()
+def shell_write_multiple_outputs_task(
+    output_one: str,
+    output_two: str,
+    marker_path: str,
+) -> tuple[file, file]:
+    return shell_task(
+        cmd=(
+            f"printf 'left' > {output_one}; "
+            f"printf 'right' > {output_two}; "
+            f"printf 'run\\n' >> {marker_path}"
+        ),
+        output=(output_one, output_two),
+    )
+
+
+@task()
+def shell_write_list_outputs_task(output_one: str, output_two: str) -> list[file]:
+    return shell_task(
+        cmd=f"printf 'left' > {output_one}; printf 'right' > {output_two}",
+        output=[output_one, output_two],
+    )
+
+
+@task()
+def shell_missing_multiple_outputs_task(output_one: str, output_two: str) -> tuple[file, file]:
+    return shell_task(
+        cmd=f"printf 'left' > {output_one}",
+        output=(output_one, output_two),
+    )
+
+
 @task(retries=2)
 def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
     return shell_task(
@@ -321,6 +353,49 @@ class TestShellTask:
         with pytest.raises(FileNotFoundError, match="did not create output"):
             evaluate(shell_missing_output_task(output_path=str(output)))
 
+    def test_shell_task_supports_multiple_outputs_and_creates_parent_dirs(self, tmp_path: Path):
+        output_one = tmp_path / "results" / "reads" / "sample_1.fastq.gz"
+        output_two = tmp_path / "results" / "reads" / "sample_2.fastq.gz"
+        marker = tmp_path / "command.log"
+
+        result = evaluate(
+            shell_write_multiple_outputs_task(
+                output_one=str(output_one),
+                output_two=str(output_two),
+                marker_path=str(marker),
+            )
+        )
+
+        assert result == (file(str(output_one)), file(str(output_two)))
+        assert output_one.read_text(encoding="utf-8") == "left"
+        assert output_two.read_text(encoding="utf-8") == "right"
+        assert marker.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    def test_shell_task_supports_list_outputs(self, tmp_path: Path):
+        output_one = tmp_path / "list" / "sample_1.fastq.gz"
+        output_two = tmp_path / "list" / "sample_2.fastq.gz"
+
+        result = evaluate(
+            shell_write_list_outputs_task(
+                output_one=str(output_one),
+                output_two=str(output_two),
+            )
+        )
+
+        assert result == [file(str(output_one)), file(str(output_two))]
+
+    def test_shell_task_requires_all_declared_outputs_to_exist(self, tmp_path: Path):
+        output_one = tmp_path / "results" / "sample_1.fastq.gz"
+        output_two = tmp_path / "results" / "sample_2.fastq.gz"
+
+        with pytest.raises(FileNotFoundError, match=str(output_two)):
+            evaluate(
+                shell_missing_multiple_outputs_task(
+                    output_one=str(output_one),
+                    output_two=str(output_two),
+                )
+            )
+
     def test_shell_task_retries_allow_transient_failures(self, tmp_path: Path):
         marker = tmp_path / "flaky-shell.marker"
         output = tmp_path / "flaky-shell.txt"
@@ -337,6 +412,30 @@ class TestShellTask:
         assert result == file(str(output))
         assert output.read_text(encoding="utf-8") == "payload"
         assert "transient shell failure" in log.read_text(encoding="utf-8")
+
+    def test_multi_output_shell_task_is_restored_from_cache(self, tmp_path: Path):
+        output_one = tmp_path / "cached" / "sample_1.fastq.gz"
+        output_two = tmp_path / "cached" / "sample_2.fastq.gz"
+        marker = tmp_path / "cached-runs.log"
+
+        first = evaluate(
+            shell_write_multiple_outputs_task(
+                output_one=str(output_one),
+                output_two=str(output_two),
+                marker_path=str(marker),
+            )
+        )
+        second = evaluate(
+            shell_write_multiple_outputs_task(
+                output_one=str(output_one),
+                output_two=str(output_two),
+                marker_path=str(marker),
+            )
+        )
+
+        assert first == (file(str(output_one)), file(str(output_two)))
+        assert second == first
+        assert marker.read_text(encoding="utf-8").splitlines() == ["run"]
 
     def test_pixi_environment_is_prepared_once_before_shell_fan_out(
         self,
