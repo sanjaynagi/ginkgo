@@ -98,7 +98,7 @@ class TestUiServer:
             server.server_close()
 
         assert status == 200
-        assert "<div id=\"root\"></div>" in body
+        assert '<div id="root"></div>' in body
         assert "Ginkgo UI" in body
 
     def test_api_lists_runs(self, tmp_path: Path) -> None:
@@ -120,7 +120,9 @@ class TestUiServer:
 
     def test_run_detail_task_detail_and_log_api(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
-        run_dir = _make_run(tmp_path, run_id="20260312_130000_deadbeef", status="failed", fail=True)
+        run_dir = _make_run(
+            tmp_path, run_id="20260312_130000_deadbeef", status="failed", fail=True
+        )
 
         server, thread, base_url = _start_server(runs_root=runs_root)
         try:
@@ -196,7 +198,9 @@ class TestUiServer:
 
         server, thread, base_url = _start_server(runs_root=runs_root)
         try:
-            status, payload = _fetch_json_request(Request(f"{base_url}/api/cache", method="DELETE"))
+            status, payload = _fetch_json_request(
+                Request(f"{base_url}/api/cache", method="DELETE")
+            )
         finally:
             server.shutdown()
             thread.join(timeout=2)
@@ -215,7 +219,9 @@ class TestUiServer:
             encoding="utf-8",
         )
         (tmp_path / "scripts").mkdir()
-        (tmp_path / "scripts" / "helper.py").write_text("print('no flow here')\n", encoding="utf-8")
+        (tmp_path / "scripts" / "helper.py").write_text(
+            "print('no flow here')\n", encoding="utf-8"
+        )
 
         server, thread, base_url = _start_server(runs_root=runs_root)
         try:

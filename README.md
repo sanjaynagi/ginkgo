@@ -91,6 +91,7 @@ This repository is already configured for Pixi-based development.
 ```bash
 pixi install
 pixi run test
+pixi run typecheck
 ```
 
 Prerequisite: if your workflows use Pixi-backed task environments, `pixi` must already be installed and available on `PATH`.
@@ -426,6 +427,14 @@ Common local commands:
 pixi run test
 pixi run lint
 pixi run format
+pixi run typecheck
+pixi run precommit
+```
+
+Install local git hooks with:
+
+```bash
+pixi run pre-commit install
 ```
 
 The test suite currently covers:

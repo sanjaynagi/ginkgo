@@ -43,10 +43,7 @@ class TaskDef:
         required = frozenset(
             name
             for name, param in sig.parameters.items()
-            if (
-                param.default is inspect.Parameter.empty
-                and hints.get(name) is not tmp_dir
-            )
+            if (param.default is inspect.Parameter.empty and hints.get(name) is not tmp_dir)
         )
         # frozen dataclass — use object.__setattr__ for post-init
         object.__setattr__(self, "_signature", sig)
@@ -103,9 +100,7 @@ class TaskDef:
                 f"{', '.join(sorted(unknown))}"
             )
 
-        managed = {
-            name for name, annotation in self._type_hints.items() if annotation is tmp_dir
-        }
+        managed = {name for name, annotation in self._type_hints.items() if annotation is tmp_dir}
         supplied_managed = supplied & managed
         if supplied_managed:
             raise TypeError(
@@ -176,9 +171,7 @@ class PartialCall:
             )
 
         managed = {
-            name
-            for name, annotation in self.task_def.type_hints.items()
-            if annotation is tmp_dir
+            name for name, annotation in self.task_def.type_hints.items() if annotation is tmp_dir
         }
         supplied_managed = set(varying.keys()) & managed
         if supplied_managed:

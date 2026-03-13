@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
@@ -20,10 +20,6 @@ from ginkgo.runtime.value_codec import (
     hash_value_bytes,
     summarise_value,
 )
-
-if TYPE_CHECKING:
-    from ginkgo.envs.pixi import PixiRegistry
-
 
 MISSING = object()
 

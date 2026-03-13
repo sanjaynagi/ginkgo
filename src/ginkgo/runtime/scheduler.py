@@ -61,10 +61,7 @@ def _select_with_cp_sat(
 ) -> list[int]:
     """Select tasks using OR-Tools CP-SAT when available."""
     model = cp_model.CpModel()
-    selected = {
-        task.task_id: model.NewBoolVar(f"task_{task.task_id}")
-        for task in tasks
-    }
+    selected = {task.task_id: model.NewBoolVar(f"task_{task.task_id}") for task in tasks}
 
     model.Add(sum(selected.values()) <= jobs)
     model.Add(sum(task.threads * selected[task.task_id] for task in tasks) <= cores)
@@ -72,8 +69,7 @@ def _select_with_cp_sat(
     total_selected = sum(selected.values())
     total_cores = sum(task.threads * selected[task.task_id] for task in tasks)
     order_bias = sum(
-        (len(tasks) - index) * selected[task.task_id]
-        for index, task in enumerate(tasks)
+        (len(tasks) - index) * selected[task.task_id] for index, task in enumerate(tasks)
     )
     model.Maximize(total_selected * 100000 + total_cores * 100 + order_bias)
 

@@ -7,7 +7,7 @@ frontend/node_modules/
 __pycache__/
 *.py[cod]
 
-*__pycache__* 
+*__pycache__*
 # Ginkgo runtime state
 .ginkgo/
 examples/**/logs/
@@ -32,3 +32,4 @@ example-workflow.py
 .DS_Store
 
 *.lock
+!tests/**/pixi.lock
