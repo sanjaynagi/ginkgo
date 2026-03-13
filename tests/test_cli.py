@@ -149,6 +149,93 @@ def main():
         assert "🌿 ginkgo cache ls" in result.stdout
         assert "No cache entries found." in result.stdout
 
+    def test_run_manifest_records_retry_attempts(self) -> None:
+        Path("retry_workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import flow, task
+
+@task(retries=2)
+def flaky(marker_path: str) -> str:
+    marker = Path(marker_path)
+    failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+    if failures < 1:
+        marker.write_text(str(failures + 1), encoding="utf-8")
+        raise RuntimeError("transient failure")
+    return "ok"
+
+@flow
+def main():
+    return flaky(marker_path="retry.marker")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "retry_workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        run_dir = _extract_run_dir(result.stdout)
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        task = next(iter(manifest["tasks"].values()))
+
+        assert task["status"] == "succeeded"
+        assert task["retries"] == 2
+        assert task["max_attempts"] == 3
+        assert task["attempt"] == 2
+        assert task["attempts"] == 2
+
+    def test_cache_prune_dry_run_reports_old_entries_without_deleting(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        old_entry = cache_root / "old123"
+        fresh_entry = cache_root / "fresh456"
+        old_entry.mkdir(parents=True)
+        fresh_entry.mkdir(parents=True)
+        (old_entry / "meta.json").write_text(
+            '{"function":"demo.old","timestamp":"2026-01-01T00:00:00+00:00"}',
+            encoding="utf-8",
+        )
+        (fresh_entry / "meta.json").write_text(
+            '{"function":"demo.fresh","timestamp":"2026-03-13T00:00:00+00:00"}',
+            encoding="utf-8",
+        )
+        (old_entry / "output.json").write_text("{}", encoding="utf-8")
+        (fresh_entry / "output.json").write_text("{}", encoding="utf-8")
+
+        result = _run_cli("cache", "prune", "--older-than", "30d", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo cache prune" in result.stdout
+        assert "would be removed" in result.stdout
+        assert "old123" in result.stdout
+        assert old_entry.exists()
+        assert fresh_entry.exists()
+
+    def test_cache_prune_removes_only_entries_older_than_cutoff(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        old_entry = cache_root / "old123"
+        fresh_entry = cache_root / "fresh456"
+        old_entry.mkdir(parents=True)
+        fresh_entry.mkdir(parents=True)
+        (old_entry / "meta.json").write_text(
+            '{"function":"demo.old","timestamp":"2026-01-01T00:00:00+00:00"}',
+            encoding="utf-8",
+        )
+        (fresh_entry / "meta.json").write_text(
+            '{"function":"demo.fresh","timestamp":"2026-03-13T00:00:00+00:00"}',
+            encoding="utf-8",
+        )
+
+        result = _run_cli("cache", "prune", "--older-than", "30d", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Removed" in result.stdout
+        assert not old_entry.exists()
+        assert fresh_entry.exists()
+
+    def test_cache_prune_rejects_invalid_duration(self) -> None:
+        result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Invalid duration for --older-than" in result.stderr
+
 
 class TestCliDebug:
     def test_debug_reports_failed_task_inputs_and_log_tail(self) -> None:
@@ -278,6 +365,63 @@ def main():
 
 
 class TestCliDryRun:
+    def test_run_dry_run_validates_without_execution(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import flow, task
+
+@task()
+def write_marker(path: str) -> str:
+    Path(path).write_text("executed", encoding="utf-8")
+    return path
+
+@flow
+def main():
+    return write_marker(path="should-not-exist.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo run workflow.py --dry-run" in result.stdout
+        assert "✓ workflow.py (dry-run) - 1 tasks validated" in result.stdout
+        assert not Path("should-not-exist.txt").exists()
+        runs_root = Path(".ginkgo") / "runs"
+        assert not runs_root.exists() or list(runs_root.iterdir()) == []
+
+    def test_run_dry_run_fails_for_invalid_workflow(self) -> None:
+        Path("invalid_workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def first() -> str:
+    return "first"
+
+@task()
+def second() -> str:
+    return "second"
+
+@flow
+def main():
+    left = first()
+    right = second()
+    left.args["value"] = right
+    right.args["value"] = left
+    return left
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "invalid_workflow.py", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Detected cycle in workflow graph" in result.stderr
+        assert "Run directory:" not in result.stdout
+
     def test_test_dry_run_discovers_hidden_workflows_without_execution(self) -> None:
         tests_dir = Path(".tests")
         tests_dir.mkdir()

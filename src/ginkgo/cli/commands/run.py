@@ -27,7 +27,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         config_paths=[Path(path).resolve() for path in args.config],
         jobs=args.jobs,
         cores=args.cores,
-        dry_run=False,
+        dry_run=args.dry_run,
         output_mode=output_mode,
     )
 
@@ -43,7 +43,11 @@ def run_workflow(
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
-    if not dry_run:
+    if dry_run:
+        rich_console.print(
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [bold]--dry-run[/]\n"
+        )
+    else:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )

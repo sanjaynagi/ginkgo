@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import shutil
 import sys
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import yaml
 from rich import box
@@ -41,13 +42,45 @@ def command_cache(args) -> int:
         table.add_column("Created", no_wrap=True)
         for row in entries:
             table.add_row(
-                row["cache_key"],
-                row["task"],
-                row["size"],
-                row["age"],
-                row["created"],
+                row.cache_key,
+                row.task,
+                row.size,
+                row.age,
+                row.created,
             )
         rich_console.print(table)
+        return 0
+
+    if args.cache_command == "prune":
+        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]prune[/]\n")
+        cutoff = _prune_cutoff(args.older_than)
+        entries = [
+            entry
+            for entry in list_cache_entries(CACHE_ROOT)
+            if entry.created_at is not None and entry.created_at < cutoff
+        ]
+        total_bytes = sum(entry.size_bytes for entry in entries)
+
+        if args.dry_run:
+            rich_console.print(
+                f"[cyan]Preview:[/] {len(entries)} entries older than "
+                f"[bold]{args.older_than}[/] "
+                f"([bold]{_format_size(total_bytes)}[/]) would be removed."
+            )
+            for entry in entries:
+                rich_console.print(
+                    f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.size})"
+                )
+            return 0
+
+        for entry in entries:
+            shutil.rmtree(entry.path)
+
+        rich_console.print(
+            f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
+            f"{'entry' if len(entries) == 1 else 'entries'} "
+            f"([bold]{_format_size(total_bytes)}[/])."
+        )
         return 0
 
     cache_dir = CACHE_ROOT / args.cache_key
@@ -64,7 +97,22 @@ def command_cache(args) -> int:
     return 0
 
 
-def list_cache_entries(root: Path) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class CacheEntryRow:
+    """Display and pruning metadata for a cache entry."""
+
+    path: Path
+    cache_key: str
+    task: str
+    size: str
+    size_bytes: int
+    age: str
+    created: str
+    created_at: datetime | None
+    function: str
+
+
+def list_cache_entries(root: Path) -> list[CacheEntryRow]:
     """Return cache entries as structured rows."""
     if not root.exists():
         return []
@@ -74,7 +122,7 @@ def list_cache_entries(root: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _cache_entry_row(entry: Path) -> dict[str, Any]:
+def _cache_entry_row(entry: Path) -> CacheEntryRow:
     """Return the display row for a cache entry."""
     meta_path = entry / "meta.json"
     if meta_path.is_file():
@@ -88,15 +136,18 @@ def _cache_entry_row(entry: Path) -> dict[str, Any]:
     function = str(meta.get("function") or "unknown")
     timestamp = str(meta.get("timestamp") or "")
     created_at = _parse_timestamp(timestamp)
-    return {
-        "cache_key": entry.name,
-        "task": _task_base_name(function),
-        "size": _format_size(_dir_size(entry)),
-        "size_bytes": _dir_size(entry),
-        "age": _format_age(created_at),
-        "created": timestamp or "-",
-        "function": function,
-    }
+    size_bytes = _dir_size(entry)
+    return CacheEntryRow(
+        path=entry,
+        cache_key=entry.name,
+        task=_task_base_name(function),
+        size=_format_size(size_bytes),
+        size_bytes=size_bytes,
+        age=_format_age(created_at),
+        created=timestamp or "-",
+        created_at=created_at,
+        function=function,
+    )
 
 
 def _dir_size(path: Path) -> int:
@@ -144,3 +195,26 @@ def _format_age(created_at: datetime | None) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def _prune_cutoff(older_than: str) -> datetime:
+    """Return the UTC cutoff timestamp implied by a duration string."""
+    duration = _parse_duration_seconds(older_than)
+    return datetime.now(UTC) - duration
+
+
+def _parse_duration_seconds(value: str):
+    """Parse a compact duration string like ``30d`` or ``12h``."""
+    match = re.fullmatch(r"(?P<count>\d+)(?P<unit>[mhd])", value.strip())
+    if match is None:
+        raise ValueError(
+            "Invalid duration for --older-than. Use a positive integer followed by "
+            "m, h, or d (for example: 45m, 12h, 30d)."
+        )
+
+    count = int(match.group("count"))
+    unit = match.group("unit")
+    multipliers = {"m": 60, "h": 3600, "d": 86400}
+    from datetime import timedelta
+
+    return timedelta(seconds=count * multipliers[unit])
