@@ -30,6 +30,7 @@ def command_test(args) -> int:
             config_paths=[],
             jobs=None,
             cores=None,
+            memory=None,
             dry_run=args.dry_run,
         )
         if exit_code != 0:

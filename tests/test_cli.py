@@ -81,7 +81,7 @@ def main():
         )
         assert "📦 Loading workflow...  done" in first.stdout
         assert "🌱 Building expression tree...  1 tasks" in first.stdout
-        assert re.search(r"💻 Running locally on \d+ Cores", first.stdout)
+        assert re.search(r"Running locally on \d+ Cores", first.stdout)
         assert "write_message" in first.stdout
         assert "Environment" in first.stdout
         assert "local" in first.stdout
@@ -534,7 +534,7 @@ def main():
             r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout
         )
         assert "Run Summary" not in result.stdout
-        assert re.search(r"💻 Running locally on \d+ Cores", result.stdout)
+        assert re.search(r"Running locally on \d+ Cores", result.stdout)
         assert "🧭 Verbose mode:" in result.stdout
         assert "config overlays=0" in result.stdout
         assert "🗂 Run directory:" in result.stdout
@@ -560,7 +560,38 @@ def main():
 
         result = _run_cli("run", "workflow.py", "--cores", "1", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        assert "💻 Running locally on 1 core" in result.stdout
+        assert "Running locally on 1 core" in result.stdout
+
+    def test_run_surfaces_memory_budget_and_resource_summary(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import time
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    time.sleep(1.2)
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--memory", "32", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🧠 Memory budget: 32 GiB" in result.stdout
+        assert "CPU avg " in result.stdout
+        assert "RSS avg " in result.stdout
+
+        run_dir = _extract_run_dir(result.stdout)
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["memory"] == 32
+        assert manifest["resources"]["status"] == "completed"
+        assert manifest["resources"]["sample_count"] >= 1
 
 
 class TestCliMappedLabels:
