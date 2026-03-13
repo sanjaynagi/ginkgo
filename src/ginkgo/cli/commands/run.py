@@ -152,23 +152,44 @@ def _load_failure_details(
         key=lambda item: int(item.get("node_id", -1)),
     )
     details: list[_FailureDetails] = []
+    tail_lines = 20 if verbose else 10
     for task in failed_tasks:
         node_id = int(task.get("node_id", -1))
-        log_rel = task.get("log")
-        log_path = run_dir / log_rel if isinstance(log_rel, str) else None
+        log_tail = _combined_log_tail(run_dir, task, lines=tail_lines)
+        stderr_rel = task.get("stderr_log")
+        stderr_path = run_dir / stderr_rel if isinstance(stderr_rel, str) else None
         details.append(
             _FailureDetails(
                 task_label=renderer.label_for_node(node_id) or task.get("task", f"node-{node_id}"),
                 exit_code=task.get("exit_code"),
-                log_path=log_path,
-                log_tail=tail_text(log_path, lines=20 if verbose else 10)
-                if log_path is not None
-                else [],
+                log_path=stderr_path,
+                log_tail=log_tail,
                 error=task.get("error") if verbose else None,
                 inputs=task.get("inputs") if verbose else None,
             )
         )
     return details
+
+
+def _combined_log_tail(
+    run_dir: Path, task: dict[str, object], *, lines: int
+) -> list[str]:
+    """Combine stdout and stderr tails for failure display."""
+    stdout_rel = task.get("stdout_log")
+    stderr_rel = task.get("stderr_log")
+    legacy_rel = task.get("log")
+
+    if stdout_rel or stderr_rel:
+        combined: list[str] = []
+        if isinstance(stdout_rel, str):
+            combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
+        if isinstance(stderr_rel, str):
+            combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
+        return combined[-lines:]
+
+    if isinstance(legacy_rel, str):
+        return tail_text(run_dir / legacy_rel, lines=lines)
+    return []
 
 
 def _discover_flow(module: ModuleType) -> FlowDef:

@@ -39,7 +39,7 @@ class RunProvenanceRecorder:
     envs_dir: Path = field(init=False)
     logs_dir: Path = field(init=False)
     _manifest: dict[str, Any] = field(init=False, repr=False)
-    _task_logs: dict[int, Path] = field(default_factory=dict, init=False, repr=False)
+    _task_logs: dict[int, tuple[Path, Path]] = field(default_factory=dict, init=False, repr=False)
     _copied_envs: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -70,14 +70,23 @@ class RunProvenanceRecorder:
             encoding="utf-8",
         )
 
-    def ensure_task(self, *, node_id: int, task_name: str, env: str | None) -> Path:
-        """Create a manifest entry and log path for a task node."""
+    def ensure_task(
+        self, *, node_id: int, task_name: str, env: str | None
+    ) -> tuple[Path, Path]:
+        """Create a manifest entry and log paths for a task node.
+
+        Returns
+        -------
+        tuple[Path, Path]
+            ``(stdout_path, stderr_path)`` for the task.
+        """
         tasks = self._manifest["tasks"]
         task_key = _task_key(node_id)
         if task_key not in tasks:
-            log_name = f"{task_key}_{_slugify(task_name)}.log"
-            log_path = self.logs_dir / log_name
-            self._task_logs[node_id] = log_path
+            slug = _slugify(task_name)
+            stdout_path = self.logs_dir / f"{task_key}_{slug}.stdout.log"
+            stderr_path = self.logs_dir / f"{task_key}_{slug}.stderr.log"
+            self._task_logs[node_id] = (stdout_path, stderr_path)
             tasks[task_key] = {
                 "task_id": task_key,
                 "node_id": node_id,
@@ -85,7 +94,8 @@ class RunProvenanceRecorder:
                 "env": env,
                 "cached": False,
                 "exit_code": None,
-                "log": str(log_path.relative_to(self.run_dir)),
+                "stdout_log": str(stdout_path.relative_to(self.run_dir)),
+                "stderr_log": str(stderr_path.relative_to(self.run_dir)),
                 "status": "pending",
             }
             self._write_manifest()
@@ -190,8 +200,8 @@ class RunProvenanceRecorder:
             self._manifest["error"] = error
         self._write_manifest()
 
-    def log_path_for(self, node_id: int) -> Path | None:
-        """Return the provenance log path for a task node."""
+    def log_paths_for(self, node_id: int) -> tuple[Path, Path] | None:
+        """Return the ``(stdout, stderr)`` log paths for a task node."""
         return self._task_logs.get(node_id)
 
     def _task(self, node_id: int) -> dict[str, Any]:
