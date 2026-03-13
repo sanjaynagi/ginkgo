@@ -6,6 +6,8 @@ import argparse
 import sys
 from typing import Sequence
 
+from rich.text import Text
+
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.init import command_init
@@ -35,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_ui(args)
     except BaseException as exc:
         rich_console = console(sys.stderr)
-        rich_console.print(f"[bold red]✖[/] {exc}")
+        rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
         return 1
 
     parser.error("missing command")

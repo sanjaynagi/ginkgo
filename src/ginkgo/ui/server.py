@@ -216,13 +216,13 @@ def create_ui_server(
                         status=HTTPStatus.NOT_FOUND,
                     )
                     return
-                log_path = payload.get("log_path")
-                content = (
-                    Path(log_path).read_text(encoding="utf-8")
-                    if log_path and Path(log_path).is_file()
-                    else ""
+                self._send_json(
+                    {
+                        "stdout": _read_log(payload.get("stdout_path")),
+                        "stderr": _read_log(payload.get("stderr_path")),
+                        "task_key": task_key,
+                    }
                 )
-                self._send_json({"content": content, "task_key": task_key})
                 return
 
             self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -361,7 +361,8 @@ def _run_payload(run_dir: Path) -> dict[str, Any]:
                     "env": task.get("env") or "local",
                     "cached": task.get("cached", False),
                     "exit_code": task.get("exit_code"),
-                    "log": task.get("log"),
+                    "stdout_log": task.get("stdout_log"),
+                    "stderr_log": task.get("stderr_log"),
                     "started_at": task.get("started_at"),
                     "finished_at": task.get("finished_at"),
                     "cache_key": task.get("cache_key"),
@@ -459,6 +460,20 @@ def _launch_workflow_process(
     return {"pid": process.pid, "workflow": workflow_label}
 
 
+def _resolve_log_path(run_dir: Path, task: dict[str, Any], key: str) -> Path | None:
+    """Resolve a log path from a task manifest entry."""
+    rel = task.get(key)
+    return run_dir / rel if isinstance(rel, str) else None
+
+
+def _read_log(path: str | Path | None) -> str:
+    """Read an entire log file, returning empty string on missing/error."""
+    if path is None:
+        return ""
+    p = Path(path)
+    return p.read_text(encoding="utf-8") if p.is_file() else ""
+
+
 def _task_payload(runs_root: Path, run_id: str, task_key: str) -> dict[str, Any] | None:
     run_dir = runs_root / run_id
     if not run_dir.is_dir():
@@ -470,14 +485,23 @@ def _task_payload(runs_root: Path, run_id: str, task_key: str) -> dict[str, Any]
     task = tasks.get(task_key)
     if not isinstance(task, dict):
         return None
-    log_rel = task.get("log")
-    log_path = run_dir / log_rel if isinstance(log_rel, str) else None
+
+    stdout_path = _resolve_log_path(run_dir, task, "stdout_log")
+    stderr_path = _resolve_log_path(run_dir, task, "stderr_log")
+
+    # Backwards compatibility: fall back to legacy combined "log" field.
+    legacy_path = _resolve_log_path(run_dir, task, "log")
+    if stdout_path is None and legacy_path is not None:
+        stdout_path = legacy_path
+
     return {
         "run_id": run_id,
         "task_key": task_key,
         "task": task,
-        "log_path": str(log_path) if log_path is not None else None,
-        "log_tail": tail_text(log_path, lines=80) if log_path is not None else [],
+        "stdout_path": str(stdout_path) if stdout_path is not None else None,
+        "stderr_path": str(stderr_path) if stderr_path is not None else None,
+        "stdout_tail": tail_text(stdout_path, lines=80) if stdout_path is not None else [],
+        "stderr_tail": tail_text(stderr_path, lines=80) if stderr_path is not None else [],
     }
 
 

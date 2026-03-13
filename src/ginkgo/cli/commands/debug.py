@@ -34,6 +34,28 @@ def command_debug(args) -> int:
     return 0
 
 
+def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
+    """Combine stdout and stderr tails for failure display.
+
+    Falls back to the legacy combined ``log`` field for old manifests.
+    """
+    stdout_rel = task.get("stdout_log")
+    stderr_rel = task.get("stderr_log")
+    legacy_rel = task.get("log")
+
+    if stdout_rel or stderr_rel:
+        combined: list[str] = []
+        if isinstance(stdout_rel, str):
+            combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
+        if isinstance(stderr_rel, str):
+            combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
+        return combined[-lines:]
+
+    if isinstance(legacy_rel, str):
+        return tail_text(run_dir / legacy_rel, lines=lines)
+    return []
+
+
 def _debug_failure_details(
     *,
     run_dir: Path,
@@ -42,15 +64,16 @@ def _debug_failure_details(
     """Return failure details for the rich ``ginkgo debug`` report."""
     details: list[_FailureDetails] = []
     for task in sorted(failed_tasks, key=lambda item: int(item.get("node_id", -1))):
-        log_rel = task.get("log")
-        log_path = run_dir / log_rel if isinstance(log_rel, str) else None
+        log_tail = _combined_log_tail(run_dir, task, lines=50)
+        stderr_rel = task.get("stderr_log")
+        stderr_path = run_dir / stderr_rel if isinstance(stderr_rel, str) else None
         task_name = str(task.get("task", "unknown"))
         details.append(
             _FailureDetails(
                 task_label=_task_base_name(task_name),
                 exit_code=task.get("exit_code"),
-                log_path=log_path,
-                log_tail=tail_text(log_path, lines=50) if log_path is not None else [],
+                log_path=stderr_path,
+                log_tail=log_tail,
                 error=str(task.get("error")) if task.get("error") is not None else None,
                 inputs=task.get("inputs") if isinstance(task.get("inputs"), dict) else None,
             )
