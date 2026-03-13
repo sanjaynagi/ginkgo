@@ -49,7 +49,9 @@ def render_debug_failure_panel(details: _FailureDetails) -> Panel:
     if details.inputs:
         sections.append(Text(""))
         sections.append(Text("Inputs", style="bold #7f1d1d"))
-        sections.append(Text(yaml.safe_dump(details.inputs, sort_keys=False).rstrip(), style="#7f1d1d"))
+        sections.append(
+            Text(yaml.safe_dump(details.inputs, sort_keys=False).rstrip(), style="#7f1d1d")
+        )
     if details.log_tail:
         sections.append(Text(""))
         sections.append(Text("Log tail", style="bold #7f1d1d"))

@@ -32,8 +32,7 @@ def _write_interval(
 
 def _load_intervals(events_dir: str) -> list[dict[str, object]]:
     return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in Path(events_dir).glob("*.json")
+        json.loads(path.read_text(encoding="utf-8")) for path in Path(events_dir).glob("*.json")
     ]
 
 

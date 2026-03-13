@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text

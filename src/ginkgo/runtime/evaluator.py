@@ -223,9 +223,7 @@ class _ConcurrentEvaluator:
                     )
                 )
             except PermissionError:
-                python_executor = stack.enter_context(
-                    ThreadPoolExecutor(max_workers=self.jobs)
-                )
+                python_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             shell_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             signals = stack.enter_context(_SignalMonitor())
             self._shell_executor = shell_executor
@@ -403,8 +401,7 @@ class _ConcurrentEvaluator:
         available_cores = self.cores - self._running_cores()
         selected = select_dispatch_subset(
             ready_tasks=[
-                SchedulableTask(task_id=node.node_id, threads=node.threads)
-                for node in ready_nodes
+                SchedulableTask(task_id=node.node_id, threads=node.threads) for node in ready_nodes
             ],
             jobs=available_jobs,
             cores=available_cores,
@@ -656,10 +653,7 @@ class _ConcurrentEvaluator:
             return tuple(self._materialize(item) for item in value)
 
         if isinstance(value, dict):
-            return {
-                self._materialize(key): self._materialize(item)
-                for key, item in value.items()
-            }
+            return {self._materialize(key): self._materialize(item) for key, item in value.items()}
 
         return value
 
@@ -727,6 +721,7 @@ class _ConcurrentEvaluator:
             # was pickle+base64 encoded to cross the JSON bridge.
             import base64
             import pickle
+
             return pickle.loads(base64.b64decode(payload["result"]))
 
         assert node.transport_path is not None
@@ -943,9 +938,7 @@ class _ConcurrentEvaluator:
             return
 
         env_names: set[str] = {
-            node.task_def.env
-            for node in self._nodes.values()
-            if node.task_def.env is not None
+            node.task_def.env for node in self._nodes.values() if node.task_def.env is not None
         }
         if env_names:
             self.pixi_registry.validate_envs(env_names=env_names)

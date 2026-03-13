@@ -38,12 +38,19 @@ def encode_value(
         return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
 
     if isinstance(value, list):
-        return {"__ginkgo_type__": "list", "items": [encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value]}
+        return {
+            "__ginkgo_type__": "list",
+            "items": [
+                encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value
+            ],
+        }
 
     if isinstance(value, tuple):
         return {
             "__ginkgo_type__": "tuple",
-            "items": [encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value],
+            "items": [
+                encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value
+            ],
         }
 
     if isinstance(value, dict):

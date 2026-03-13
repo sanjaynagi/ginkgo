@@ -71,9 +71,7 @@ class PixiRegistry:
 
     project_root: Path = field(default_factory=Path.cwd)
     _envs_dir: Path = field(init=False, repr=False)
-    _lock_cache: dict[str, str | None] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_envs_dir", self.project_root / "envs")
@@ -237,6 +235,7 @@ class PixiRegistry:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
 
 def _hash_file(path: Path) -> str:
     """Return the SHA-256 hex digest of a file's contents."""

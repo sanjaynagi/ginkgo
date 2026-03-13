@@ -18,12 +18,35 @@ def module_name_for_path(path: str | Path) -> str:
     return f"ginkgo_user_{stem}_{digest}"
 
 
+def _import_roots_for_path(path: Path) -> list[str]:
+    """Return sys.path entries needed to import a workflow file and its package."""
+    source_dir = path.parent.resolve()
+    roots = [str(source_dir)]
+
+    current = source_dir
+    package_root_parent: Path | None = None
+    while (current / "__init__.py").is_file():
+        package_root_parent = current.parent.resolve()
+        current = current.parent.resolve()
+
+    if package_root_parent is not None:
+        candidate = str(package_root_parent)
+        if candidate not in roots:
+            roots.append(candidate)
+
+    return roots
+
+
 def load_module_from_path(path: str | Path, *, module_name: str | None = None) -> ModuleType:
     """Import a Python source file under a synthetic module name."""
     source_path = Path(path).resolve()
     chosen_name = module_name or module_name_for_path(source_path)
     if chosen_name in sys.modules:
         del sys.modules[chosen_name]
+
+    for import_root in reversed(_import_roots_for_path(source_path)):
+        if import_root not in sys.path:
+            sys.path.insert(0, import_root)
 
     spec = importlib.util.spec_from_file_location(chosen_name, source_path)
     if spec is None or spec.loader is None:
