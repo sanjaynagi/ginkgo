@@ -19,6 +19,7 @@ from rich.text import Text
 from ginkgo.cli.renderers.common import (
     _format_bytes,
     _format_cpu_percent,
+    _core_unit_label,
     _format_duration,
     _status_label,
     _status_text,
@@ -197,14 +198,13 @@ class _CliRunRenderer:
     def _render_run_layout(self):
         return Group(
             self._render_status_line(),
-            Text(""),
-            self._render_resource_strip(),
             self._render_task_table(),
             self._render_progress_section(),
         )
 
     def _render_status_line(self) -> Table:
         line = Table.grid(padding=(0, 1))
+        line.add_column(no_wrap=True, justify="right")
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
         line.add_column(no_wrap=True)
@@ -212,7 +212,12 @@ class _CliRunRenderer:
         line.add_row(
             " " * self._status_line_padding(),
             self._activity_spinner,
-            Text("Running", style="bold #0f766e"),
+            Text(
+                f"Running locally on {self._summary.cores} "
+                f"{_core_unit_label(self._summary.cores)}",
+                style="bold #0f766e",
+            ),
+            self._resource_text(),
             self._time_spinner,
         )
         return line
@@ -261,34 +266,22 @@ class _CliRunRenderer:
         )
         return progress
 
-    def _render_resource_strip(self) -> Table:
-        """Render a compact live CPU/RSS monitor line."""
+    def _resource_text(self) -> Text:
+        """Render the compact inline CPU/RSS monitor text."""
         resources = self._resource_summary()
-        table = Table.grid(padding=(0, 1))
-        table.width = self._task_table_width()
-        table.add_column(no_wrap=True)
-        table.add_column(justify="center")
-        table.add_column(no_wrap=True)
         if resources is None:
-            table.add_row("", Text("CPU --   RSS --", style="dim"), "")
-            return table
+            return Text("CPU --   RSS --   Procs --", style="dim")
 
         current = resources.get("current")
-        peak = resources.get("peak")
-        status = str(resources.get("status", "unknown"))
-        if not isinstance(current, dict) or not isinstance(peak, dict):
-            table.add_row("", Text("CPU --   RSS --", style="dim"), "")
-            return table
+        if not isinstance(current, dict):
+            return Text("CPU --   RSS --   Procs --", style="dim")
 
         label = (
             f"CPU {_format_cpu_percent(_as_float(current.get('cpu_percent')))}   "
             f"RSS {_format_bytes(_as_int(current.get('rss_bytes')))}   "
-            f"Peak {_format_bytes(_as_int(peak.get('rss_bytes')))}   "
             f"Procs {_format_count(current.get('process_count'))}"
         )
-        style = "bold #134e4a" if status == "running" else "dim"
-        table.add_row("", Text(label, style=style), "")
-        return table
+        return Text(label, style="dim")
 
     def _render_failure_details(self, details: list[_FailureDetails]):
         panels = [self._render_failure_panel(item) for item in details]
@@ -353,7 +346,14 @@ class _CliRunRenderer:
         return task_width + status_width + env_width + time_width + column_padding + separators
 
     def _status_line_padding(self) -> int:
-        status_width = len("Running") + 5
+        status_width = (
+            len("Running locally on ")
+            + len(str(self._summary.cores))
+            + 1
+            + len(_core_unit_label(self._summary.cores))
+            + len(" CPU --   RSS --   Procs --")
+            + 7
+        )
         return max(0, (self._task_table_width() - status_width) // 2)
 
     def _status_counts(self) -> Counter[str]:
