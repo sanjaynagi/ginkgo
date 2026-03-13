@@ -26,6 +26,7 @@ class TestRunProvenanceRecorder:
             root_dir=tmp_path / ".ginkgo" / "runs",
             jobs=None,
             cores=None,
+            memory=None,
             params={},
         )
 
@@ -41,3 +42,34 @@ class TestRunProvenanceRecorder:
 
         manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["tasks"]["task_0000"]["output"] == "results/out.txt"
+
+    def test_resources_and_memory_budget_are_serialized(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="20260312_000000_deadbeef",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=4,
+            cores=2,
+            memory=32,
+            params={},
+        )
+
+        recorder.update_resources(
+            {
+                "status": "completed",
+                "scope": "process_tree",
+                "sample_count": 3,
+                "current": {"cpu_percent": 10.0, "rss_bytes": 1024, "process_count": 1},
+                "peak": {"cpu_percent": 120.0, "rss_bytes": 4096, "process_count": 2},
+                "average": {"cpu_percent": 55.0, "rss_bytes": 2048, "process_count": 1.5},
+                "updated_at": "2026-03-13T00:00:00+00:00",
+            }
+        )
+        recorder.finalize(status="succeeded")
+
+        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["memory"] == 32
+        assert manifest["resources"]["status"] == "completed"
+        assert manifest["resources"]["peak"]["rss_bytes"] == 4096

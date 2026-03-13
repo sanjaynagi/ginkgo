@@ -562,6 +562,37 @@ def main():
         assert result.returncode == 0, result.stderr
         assert "💻 Running locally on 1 core" in result.stdout
 
+    def test_run_surfaces_memory_budget_and_resource_summary(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import time
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    time.sleep(1.2)
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--memory", "32", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "🧠 Memory budget: 32 GiB" in result.stdout
+        assert "CPU avg " in result.stdout
+        assert "RSS avg " in result.stdout
+
+        run_dir = _extract_run_dir(result.stdout)
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["memory"] == 32
+        assert manifest["resources"]["status"] == "completed"
+        assert manifest["resources"]["sample_count"] >= 1
+
 
 class TestCliMappedLabels:
     def test_map_tasks_use_first_parameter_value_as_runtime_label(self) -> None:

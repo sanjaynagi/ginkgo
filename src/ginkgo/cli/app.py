@@ -53,6 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--config", action="append", default=[])
     run_parser.add_argument("--jobs", type=int, default=None)
     run_parser.add_argument("--cores", type=int, default=None)
+    run_parser.add_argument("--memory", type=int, default=None)
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
 

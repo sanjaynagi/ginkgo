@@ -91,6 +91,7 @@ def evaluate(
     *,
     jobs: int | None = None,
     cores: int | None = None,
+    memory: int | None = None,
     pixi_registry: PixiRegistry | None = None,
     provenance: RunProvenanceRecorder | None = None,
 ) -> Any:
@@ -104,6 +105,8 @@ def evaluate(
         Maximum number of concurrently running tasks.
     cores : int | None
         Maximum total thread budget across running tasks.
+    memory : int | None
+        Maximum total declared memory budget across running tasks in GiB.
     pixi_registry : PixiRegistry | None
         Registry for resolving Pixi environments. When ``None``, tasks with
         ``env=`` will raise at dispatch time.
@@ -116,6 +119,7 @@ def evaluate(
     return _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
+        memory=memory,
         pixi_registry=pixi_registry,
         provenance=provenance,
     ).evaluate(expr)
@@ -133,6 +137,7 @@ class _TaskNode:
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     threads: int = 1
+    memory_gb: int = 0
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
     transport_path: Path | None = None
@@ -186,6 +191,7 @@ class _ConcurrentEvaluator:
 
     jobs: int | None = None
     cores: int | None = None
+    memory: int | None = None
     pixi_registry: PixiRegistry | None = None
     provenance: RunProvenanceRecorder | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
@@ -212,6 +218,8 @@ class _ConcurrentEvaluator:
             raise ValueError("jobs must be at least 1")
         if self.cores < 1:
             raise ValueError("cores must be at least 1")
+        if self.memory is not None and self.memory < 1:
+            raise ValueError("memory must be at least 1 when provided")
 
         self._cache_store = CacheStore(pixi_registry=self.pixi_registry)
 
@@ -440,10 +448,16 @@ class _ConcurrentEvaluator:
             return
 
         node.threads = self._task_threads(resolved_args)
+        node.memory_gb = self._task_memory_gb(resolved_args)
         if node.threads > self.cores:
             raise ValueError(
                 f"{node.task_def.name} requires {node.threads} cores but only "
                 f"{self.cores} are available"
+            )
+        if self.memory is not None and node.memory_gb > self.memory:
+            raise ValueError(
+                f"{node.task_def.name} requires {node.memory_gb} GiB but only "
+                f"{self.memory} GiB are available"
             )
         node.state = "ready"
 
@@ -460,12 +474,19 @@ class _ConcurrentEvaluator:
 
         available_jobs = self.jobs - len(self._running_futures)
         available_cores = self.cores - self._running_cores()
+        available_memory = None if self.memory is None else self.memory - self._running_memory_gb()
         selected = select_dispatch_subset(
             ready_tasks=[
-                SchedulableTask(task_id=node.node_id, threads=node.threads) for node in ready_nodes
+                SchedulableTask(
+                    task_id=node.node_id,
+                    threads=node.threads,
+                    memory_gb=node.memory_gb,
+                )
+                for node in ready_nodes
             ],
             jobs=available_jobs,
             cores=available_cores,
+            memory=available_memory,
         )
 
         for node_id in selected:
@@ -645,6 +666,7 @@ class _ConcurrentEvaluator:
         node.cache_key = None
         node.input_hashes = None
         node.threads = 1
+        node.memory_gb = 0
         node.tmp_paths = []
         node.transport_path = None
         node.dynamic_template = None
@@ -784,6 +806,10 @@ class _ConcurrentEvaluator:
         """Return the core footprint of currently running tasks."""
         return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
 
+    def _running_memory_gb(self) -> int:
+        """Return the declared memory footprint of currently running tasks."""
+        return sum(self._nodes[node_id].memory_gb for node_id, _ in self._running_futures.values())
+
     def _task_threads(self, resolved_args: dict[str, Any]) -> int:
         """Return the scheduler core footprint for a task."""
         raw_threads = resolved_args.get("threads", 1)
@@ -796,6 +822,19 @@ class _ConcurrentEvaluator:
             raise ValueError(f"threads must be at least 1, got {threads}")
 
         return threads
+
+    def _task_memory_gb(self, resolved_args: dict[str, Any]) -> int:
+        """Return the scheduler memory footprint for a task in GiB."""
+        raw_memory = resolved_args.get("memory_gb", 0)
+        try:
+            memory_gb = int(raw_memory)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"memory_gb must be an integer, got {raw_memory!r}") from exc
+
+        if memory_gb < 0:
+            raise ValueError(f"memory_gb must be at least 0, got {memory_gb}")
+
+        return memory_gb
 
     def _build_worker_payload(self, *, node: _TaskNode) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""
