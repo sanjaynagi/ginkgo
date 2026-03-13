@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from ginkgo import evaluate, file, folder, shell_task, task, tmp_dir
+from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 
 
 def _append_line(path: str, line: str) -> None:
@@ -26,6 +27,29 @@ def logged_work_task(x: int, log_path: str) -> int:
     return x + 1
 
 
+@task(retries=2)
+def flaky_retry_task(marker_path: str, log_path: str) -> str:
+    _append_line(log_path, "attempt")
+    marker = Path(marker_path)
+    failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+    if failures < 1:
+        marker.write_text(str(failures + 1), encoding="utf-8")
+        raise RuntimeError("transient failure")
+    return "ok"
+
+
+@task(retries=2)
+def always_fail_retry_task(log_path: str) -> str:
+    _append_line(log_path, "attempt")
+    raise RuntimeError("still broken")
+
+
+@task()
+def always_fail_once_task(log_path: str) -> str:
+    _append_line(log_path, "attempt")
+    raise RuntimeError("no retry configured")
+
+
 @task()
 def shell_write_output_task(output_path: str, log_path: str) -> file:
     return shell_task(
@@ -42,6 +66,21 @@ def shell_write_output_task(output_path: str, log_path: str) -> file:
 @task()
 def shell_missing_output_task(output_path: str) -> file:
     return shell_task(cmd="true", output=output_path)
+
+
+@task(retries=2)
+def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
+    return shell_task(
+        cmd=(
+            f"if [ ! -f {marker_path} ]; then "
+            f"touch {marker_path}; "
+            "printf 'transient shell failure\\n' 1>&2; "
+            "exit 7; "
+            f"fi; printf 'payload' > {output_path}"
+        ),
+        output=output_path,
+        log=log_path,
+    )
 
 
 @task()
@@ -89,6 +128,19 @@ def dataframe_task(log_path: str, start: int) -> object:
 @task()
 def dataframe_total_task(df: object) -> int:
     return int(df["value"].sum())
+
+
+@task()
+def passthrough_task(value: object | None = None) -> object:
+    return value
+
+
+@task()
+def build_dynamic_cycle_task() -> object:
+    first = passthrough_task()
+    second = passthrough_task(value=first)
+    first.args["value"] = second
+    return first
 
 
 class TestEvaluate:
@@ -169,6 +221,71 @@ class TestEvaluate:
 
         assert result == 17
 
+    def test_validate_rejects_direct_expression_cycles(self):
+        first = passthrough_task()
+        second = passthrough_task(value=first)
+        first.args["value"] = second
+
+        evaluator = _ConcurrentEvaluator()
+        with pytest.raises(
+            CycleError,
+            match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
+            "test_evaluator.passthrough_task -> test_evaluator.passthrough_task",
+        ):
+            evaluator.validate(first)
+
+    def test_evaluate_rejects_cycles_nested_inside_containers(self):
+        first = passthrough_task()
+        second = passthrough_task(value=[first])
+        first.args["value"] = {"nested": second}
+
+        with pytest.raises(CycleError, match="Detected cycle in workflow graph"):
+            evaluate(first)
+
+    def test_evaluate_rejects_cycles_from_dynamic_returned_expressions(self):
+        with pytest.raises(CycleError, match="Detected cycle in workflow graph"):
+            evaluate(build_dynamic_cycle_task())
+
+    def test_task_retries_are_disabled_by_default(self):
+        log_path = "default-no-retry.log"
+
+        with pytest.raises(RuntimeError, match="no retry configured"):
+            evaluate(always_fail_once_task(log_path=log_path))
+
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt"]
+
+    def test_task_retries_allow_transient_python_failures_and_cache_success(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        marker_path = "flaky.marker"
+        log_path = "flaky.log"
+
+        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
+        captured = capsys.readouterr()
+
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
+        assert '"status": "waiting"' in captured.err
+        assert '"attempt": 1' in captured.err
+
+        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
+        cached = capsys.readouterr()
+
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
+        assert '"status": "cached"' in cached.err
+
+    def test_task_retries_fail_after_final_attempt(self):
+        log_path = "always-fail.log"
+
+        with pytest.raises(RuntimeError, match="still broken"):
+            evaluate(always_fail_retry_task(log_path=log_path))
+
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == [
+            "attempt",
+            "attempt",
+            "attempt",
+        ]
+
 
 class TestShellTask:
     def test_shell_task_executes_and_returns_output_file(self, tmp_path: Path):
@@ -187,6 +304,23 @@ class TestShellTask:
 
         with pytest.raises(FileNotFoundError, match="did not create output"):
             evaluate(shell_missing_output_task(output_path=str(output)))
+
+    def test_shell_task_retries_allow_transient_failures(self, tmp_path: Path):
+        marker = tmp_path / "flaky-shell.marker"
+        output = tmp_path / "flaky-shell.txt"
+        log = tmp_path / "flaky-shell.log"
+
+        result = evaluate(
+            flaky_shell_task(
+                marker_path=str(marker),
+                output_path=str(output),
+                log_path=str(log),
+            )
+        )
+
+        assert result == file(str(output))
+        assert output.read_text(encoding="utf-8") == "payload"
+        assert "transient shell failure" in log.read_text(encoding="utf-8")
 
 
 class TestValidation:

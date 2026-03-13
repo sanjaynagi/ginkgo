@@ -15,13 +15,14 @@ unavailable.
 
 from __future__ import annotations
 
+import subprocess
 import shutil
 from pathlib import Path
 
 import pytest
 
 from ginkgo import evaluate, flow, shell_task, task
-from ginkgo.pixi import PixiEnvNotFoundError, PixiRegistry
+from ginkgo.pixi import PixiEnvImportError, PixiEnvNotFoundError, PixiRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,71 @@ class TestPixiRegistry:
         registry = PixiRegistry(project_root=_TESTS_DIR)
         with pytest.raises(PixiEnvNotFoundError, match="nonexistent_env"):
             registry.resolve(env="nonexistent_env")
+
+    def test_resolve_conda_env_file_imports_to_generated_pixi_workspace(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        env_file = tmp_path / "environment.yml"
+        env_file.write_text("name: demo\ndependencies:\n  - python\n", encoding="utf-8")
+
+        def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            assert argv[:4] == ["pixi", "init", str(tmp_path / ".ginkgo-pixi"), "--import"]
+            assert argv[4] == str(env_file)
+            generated_manifest = tmp_path / ".ginkgo-pixi" / "pixi.toml"
+            generated_manifest.parent.mkdir(parents=True, exist_ok=True)
+            generated_manifest.write_text("[workspace]\nname = 'demo'\n", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+        manifest = registry.resolve(env=str(env_file))
+
+        assert manifest == (tmp_path / ".ginkgo-pixi" / "pixi.toml").resolve()
+
+    def test_resolve_conda_env_file_reuses_generated_manifest_when_fresh(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        env_file = tmp_path / "environment.yaml"
+        env_file.write_text("name: demo\n", encoding="utf-8")
+        generated_manifest = tmp_path / ".ginkgo-pixi" / "pixi.toml"
+        generated_manifest.parent.mkdir(parents=True, exist_ok=True)
+        generated_manifest.write_text("[workspace]\nname = 'demo'\n", encoding="utf-8")
+        generated_manifest.touch()
+
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+
+        def fail_run(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+            raise AssertionError("pixi import should not run for a fresh generated manifest")
+
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fail_run)
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+
+        manifest = registry.resolve(env=str(env_file))
+        assert manifest == generated_manifest.resolve()
+
+    def test_resolve_conda_env_file_raises_clear_error_on_import_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        env_file = tmp_path / "environment.yml"
+        env_file.write_text("name: broken\n", encoding="utf-8")
+
+        def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="import failed")
+
+        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+        with pytest.raises(PixiEnvImportError, match="import failed"):
+            registry.resolve(env=str(env_file))
 
     def test_lock_hash_returns_string(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
