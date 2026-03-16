@@ -91,24 +91,29 @@ def command_env(args) -> int:
 
 def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
     """Return discoverable project-local Pixi environments."""
-    envs_dir = registry.project_root / "envs"
-    if not envs_dir.is_dir():
-        return []
-
     entries: list[EnvEntryRow] = []
-    for child in sorted(envs_dir.iterdir(), key=lambda path: path.name):
-        manifest = child / "pixi.toml"
-        if not child.is_dir() or not manifest.is_file():
+    seen_manifests: set[Path] = set()
+    for envs_dir in registry.env_directories:
+        if not envs_dir.is_dir():
             continue
-        install_dir = manifest.parent / ".pixi"
-        entries.append(
-            EnvEntryRow(
-                env=child.name,
-                manifest=manifest.resolve(),
-                install_dir=install_dir.resolve(strict=False),
-                installed=install_dir.exists(),
+        for child in sorted(envs_dir.iterdir(), key=lambda path: path.name):
+            manifest = child / "pixi.toml"
+            if not child.is_dir() or not manifest.is_file():
+                continue
+            resolved_manifest = manifest.resolve()
+            if resolved_manifest in seen_manifests:
+                continue
+            seen_manifests.add(resolved_manifest)
+
+            install_dir = manifest.parent / ".pixi"
+            entries.append(
+                EnvEntryRow(
+                    env=child.name,
+                    manifest=resolved_manifest,
+                    install_dir=install_dir.resolve(strict=False),
+                    installed=install_dir.exists(),
+                )
             )
-        )
     return entries
 
 

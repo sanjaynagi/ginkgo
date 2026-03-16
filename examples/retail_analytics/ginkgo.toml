@@ -1,0 +1,7 @@
+[paths]
+orders_csv = "data/orders.csv"
+customers_csv = "data/customers.csv"
+products_csv = "data/products.csv"
+
+[reporting]
+hotspot_threshold = 250.0

@@ -1,0 +1,5 @@
+[paths]
+story_backlog_csv = "data/story_backlog.csv"
+
+[editorial]
+flagged_priority = 12

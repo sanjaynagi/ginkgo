@@ -7,13 +7,17 @@ from pathlib import Path
 
 from ginkgo.cli.common import console
 from ginkgo.cli.commands.run import run_workflow
+from ginkgo.cli.workspace import discover_test_workflows
 
 
 def command_test(args) -> int:
     """Handle ``ginkgo test``."""
-    tests_dir = Path(".tests")
-    if not tests_dir.is_dir():
-        raise FileNotFoundError(f"No .tests directory found in {Path.cwd()}")
+    workflow_paths = discover_test_workflows(project_root=Path.cwd())
+    if not workflow_paths:
+        raise FileNotFoundError(
+            f"No test workflows found in {Path.cwd()}. "
+            "Expected tests/workflows/ or legacy .tests/."
+        )
 
     rich_console = console(sys.stdout)
     if args.dry_run:
@@ -23,7 +27,7 @@ def command_test(args) -> int:
 
     status = 0
     workflow_count = 0
-    for workflow_path in sorted(tests_dir.glob("*.py")):
+    for workflow_path in workflow_paths:
         workflow_count += 1
         exit_code = run_workflow(
             workflow_path=workflow_path.resolve(),
@@ -38,7 +42,7 @@ def command_test(args) -> int:
             if not args.dry_run:
                 break
     if workflow_count == 0:
-        rich_console.print("[dim]No test workflows found in .tests/[/]")
+        rich_console.print("[dim]No test workflows found in tests/workflows/ or .tests/.[/]")
         return 0
 
     if status == 0:

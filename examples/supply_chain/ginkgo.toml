@@ -1,0 +1,24 @@
+[paths]
+demand_csv = "data/demand_forecast.csv"
+suppliers_csv = "data/suppliers.csv"
+lanes_csv = "data/shipping_lanes.csv"
+
+[[scenarios]]
+scenario_id = "port_delay"
+delay_days = 5
+capacity_multiplier = 0.92
+
+[[scenarios]]
+scenario_id = "weather_shock"
+delay_days = 3
+capacity_multiplier = 0.8
+
+[[scenarios]]
+scenario_id = "supplier_outage"
+delay_days = 7
+capacity_multiplier = 0.7
+
+[[scenarios]]
+scenario_id = "fuel_spike"
+delay_days = 2
+capacity_multiplier = 0.95
