@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import shlex
 
-from ginkgo import file, shell_task, task
+from ginkgo import file, shell, task
 
 
-@task()
+@task(kind="shell")
 def write_delivery_manifest(
     model_card: file,
     candidate_scorecard: file,
@@ -44,7 +44,7 @@ def write_delivery_manifest(
         *candidate_reports,
     ]
     quoted_items = " ".join(shlex.quote(str(item)) for item in manifest_items)
-    return shell_task(
+    return shell(
         cmd=f"printf '%s\\n' {quoted_items} > {shlex.quote(output)}",
         output=output,
         log="logs/write_delivery_manifest.log",

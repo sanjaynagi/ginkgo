@@ -7,7 +7,7 @@ import shlex
 
 import pandas as pd
 
-from ginkgo import file, shell_task, task
+from ginkgo import file, shell, task
 
 
 @task()
@@ -38,7 +38,7 @@ def build_operations_brief(
     return file(str(output))
 
 
-@task()
+@task(kind="shell")
 def write_artifact_manifest(
     operations_brief: file,
     resilience_scorecard: file,
@@ -47,9 +47,14 @@ def write_artifact_manifest(
 ) -> file:
     """Write a shell-generated artifact manifest for operations delivery."""
     output = "results/artifact_manifest.txt"
-    manifest_items = [operations_brief, resilience_scorecard, expedite_candidates, *scenario_reports]
+    manifest_items = [
+        operations_brief,
+        resilience_scorecard,
+        expedite_candidates,
+        *scenario_reports,
+    ]
     quoted_items = " ".join(shlex.quote(str(item)) for item in manifest_items)
-    return shell_task(
+    return shell(
         cmd=f"printf '%s\\n' {quoted_items} > {shlex.quote(output)}",
         output=output,
         log="logs/write_artifact_manifest.log",

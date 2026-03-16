@@ -49,7 +49,9 @@ def main() -> file:
         products=products,
     )
     channel_metrics = write_channel_metrics(enriched_orders=enriched_orders)
-    region_reports = write_region_margin_report(enriched_orders=enriched_orders).map(region=regions)
+    region_reports = write_region_margin_report(enriched_orders=enriched_orders).map(
+        region=regions
+    )
     hotspots = write_inventory_hotspots(
         enriched_orders=enriched_orders,
         region_reports=region_reports,
