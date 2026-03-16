@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run")
-    run_parser.add_argument("workflow")
+    run_parser.add_argument("workflow", nargs="?")
     run_parser.add_argument("--config", action="append", default=[])
     run_parser.add_argument("--jobs", type=int, default=None)
     run_parser.add_argument("--cores", type=int, default=None)

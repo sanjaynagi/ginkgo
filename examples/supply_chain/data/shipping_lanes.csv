@@ -1,0 +1,10 @@
+supplier_id,distribution_center,transit_days,lane_cost,lane_reliability
+SUP-A,dc_west,6,4.5,0.95
+SUP-A,dc_central,5,4.0,0.94
+SUP-B,dc_central,7,5.0,0.9
+SUP-B,dc_east,8,5.5,0.88
+SUP-C,dc_east,4,4.2,0.96
+SUP-C,dc_central,6,4.8,0.92
+SUP-D,dc_west,5,5.4,0.87
+SUP-D,dc_central,6,5.6,0.86
+SUP-E,dc_east,7,5.9,0.85
