@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ginkgo
 from ginkgo import file, flow
 
@@ -24,13 +22,6 @@ from supply_chain.modules.scenarios import (
 
 cfg = ginkgo.config("ginkgo.toml")
 scenarios = cfg["scenarios"]
-
-for relative_path in (
-    "logs",
-    "results",
-    "results/scenarios",
-):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
 
 
 @flow
