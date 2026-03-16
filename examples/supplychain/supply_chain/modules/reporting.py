@@ -33,6 +33,7 @@ def build_operations_brief(
         lines.append(f"- {report_path}")
 
     output = Path("results/operations_brief.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))
 

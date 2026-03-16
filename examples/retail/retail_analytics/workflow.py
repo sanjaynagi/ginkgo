@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ginkgo
 import pandas as pd
 from ginkgo import file, flow
@@ -26,13 +24,6 @@ from retail_analytics.modules.reporting import (
 
 cfg = ginkgo.config("ginkgo.toml")
 regions = sorted(pd.read_csv(cfg["paths"]["customers_csv"])["region"].unique().tolist())
-
-for relative_path in (
-    "logs",
-    "results",
-    "results/regions",
-):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
 
 
 @flow

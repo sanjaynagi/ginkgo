@@ -9,37 +9,35 @@ Each phase is independently testable and follows the same structure:
 - Key design points
 - Validation
 
-## Phase 2 — Expanded Validation Example Suite
+## Phase 3 — Execution Boundary and Foreign-Env Isolation
 
-**Goal:** Build a broader, deeper set of example workflows under `examples/` so validation covers more realistic workflow shapes, domains, and runtime behaviors.
+**Goal:** Ensure `workflow.py` is imported only by the scheduler/runtime process and that foreign execution environments receive only the payload they need.
 
 ### Deliverables
 
-- Add multiple larger example workflows under `examples/`, spanning distinct domains and demonstrating:
-  - deeper DAGs
-  - richer fan-out and fan-in
-  - shell-heavy workflows
-  - dynamic expansion where a task returns an unknown number of downstream `Expr` values
-- Add supporting test coverage that executes those examples end to end in isolated workspaces.
-- Use the example suite to validate:
-  - cache reuse
-  - provenance output
-  - dynamic dependency recording
-  - foreign-env execution behavior
-- Converge the example layouts onto the canonical repository structure from Phase 1.
+- Introduce a driver-executed mode for shell-oriented tasks so the scheduler evaluates the Python wrapper locally and dispatches only executable shell payloads to the target environment.
+- Stop requiring foreign Pixi environments to import `workflow.py` in order to execute shell-oriented tasks.
+- Define a cleaner execution contract for true Python tasks in foreign environments:
+  - either importable packaged task modules
+  - or a future source-bundling mechanism
+- Add runtime validation that distinguishes:
+  - driver-executed shell/spec-builder tasks
+  - worker-executed Python tasks
+- Add clear documentation of the scheduler/worker boundary.
 
 ### Key design points
 
-- The example suite should be useful for both documentation and runtime validation, not just demonstration.
-- Examples should be substantial enough to catch regressions that the small unit-scale validation workflows do not expose.
-- The suite should prefer lightweight, reproducible dependencies so it remains practical in local development and CI.
+- This phase fixes an architectural bug, not just a convenience issue.
+- `workflow.py` should define and build the graph; foreign environments should execute task payloads, not import unrelated workflow-module dependencies.
+- Shell-oriented tasks and true Python-in-foreign-env tasks are not the same problem and should not be solved with the same mechanism.
+- The design should improve isolation without weakening the current guarantees around top-level importability and reproducibility.
 
 ### Validation
 
-- Run the example suite end to end and assert each workflow produces its expected outputs and run manifests.
-- Assert at least one example exercises runtime-determined expansion to an unknown number of child expressions.
-- Assert rerunning the examples produces the expected cache behavior without changing outputs.
-- Assert the example suite can be used by future CLI and agent tooling as a stable validation corpus.
+- Define a workflow module with top-level imports unavailable in a foreign Pixi env, and assert a shell-oriented `env=` task still runs successfully in that env.
+- Assert driver-executed shell tasks preserve existing cache, logging, and provenance behavior.
+- Assert worker-executed Python tasks in foreign envs fail with a clear packaging/importability error when they do not satisfy the new contract.
+- Assert dynamic shell-task workflows continue to work when the shell spec is built by the scheduler rather than by a foreign worker import.
 
 ---
 

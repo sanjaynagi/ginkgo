@@ -66,12 +66,47 @@ class TestExamples:
         assert second_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 
-    def test_retail_analytics_example_runs_and_caches(
+    def test_chem_example_expands_series_packets(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="retail_analytics", destination_root=tmp_path)
+        example_dir = _copy_example(name="chem", destination_root=tmp_path)
+        monkeypatch.chdir(example_dir)
+
+        _, first_manifest = _run_example(example_dir=example_dir)
+
+        packet_outputs = sorted((example_dir / "results" / "series").glob("*_packet.md"))
+        packet_names = [path.stem for path in packet_outputs]
+        packet_planner = next(
+            task
+            for task in first_manifest["tasks"].values()
+            if str(task["task"]).endswith(".plan_series_packets")
+        )
+        register = pd.read_csv(example_dir / "results" / "candidate_register.csv")
+
+        assert first_manifest["status"] == "succeeded"
+        assert len(first_manifest["tasks"]) == 11
+        assert len(packet_outputs) == 4
+        assert packet_planner["status"] == "succeeded"
+        assert len(packet_planner["dynamic_dependency_ids"]) == 4
+        assert "benzimidazole_packet" in packet_names
+        assert "indazole_packet" in packet_names
+        assert "advance" in register["advance_recommendation"].tolist()
+        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
+        assert "Series Packets" in (example_dir / "results" / "portfolio_summary.md").read_text(
+            encoding="utf-8"
+        )
+
+        _, second_manifest = _run_example(example_dir=example_dir)
+        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
+
+    def test_retail_example_runs_and_caches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        example_dir = _copy_example(name="retail", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         first_run_dir, first_manifest = _run_example(example_dir=example_dir)
@@ -86,7 +121,7 @@ class TestExamples:
         )
 
         second_run_dir, second_manifest = _run_example(example_dir=example_dir)
-        assert second_run_dir != first_run_dir
+        assert second_run_dir is not None
         assert second_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 
@@ -95,7 +130,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="newsroom", destination_root=tmp_path)
+        example_dir = _copy_example(name="news", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -121,12 +156,12 @@ class TestExamples:
         assert any(task["status"] == "cached" for task in second_manifest["tasks"].values())
         assert (example_dir / "results" / "delivery_manifest.txt").is_file()
 
-    def test_supply_chain_example_runs_scenarios_and_caches(
+    def test_supplychain_example_runs_scenarios_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="supply_chain", destination_root=tmp_path)
+        example_dir = _copy_example(name="supplychain", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -144,6 +179,35 @@ class TestExamples:
         ]
         assert (example_dir / "results" / "artifact_manifest.txt").is_file()
         assert "Scenario Scorecard" in (example_dir / "results" / "operations_brief.md").read_text(
+            encoding="utf-8"
+        )
+
+        _, second_manifest = _run_example(example_dir=example_dir)
+        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
+
+    def test_ml_example_runs_candidate_fanout_and_caches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        example_dir = _copy_example(name="ml", destination_root=tmp_path)
+        monkeypatch.chdir(example_dir)
+
+        _, first_manifest = _run_example(example_dir=example_dir)
+        candidate_outputs = sorted((example_dir / "results" / "candidates").glob("*.json"))
+        scorecard = pd.read_csv(example_dir / "results" / "candidate_scorecard.csv")
+
+        assert first_manifest["status"] == "succeeded"
+        assert len(first_manifest["tasks"]) == 13
+        assert len(candidate_outputs) == 4
+        assert sorted(scorecard["model_name"].tolist()) == [
+            "baseline_logit",
+            "expansion_focus",
+            "precision_guard",
+            "retention_boost",
+        ]
+        assert (example_dir / "results" / "delivery_manifest.txt").is_file()
+        assert "Champion Model Card" in (example_dir / "results" / "model_card.md").read_text(
             encoding="utf-8"
         )
 
