@@ -108,7 +108,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="newsroom", destination_root=tmp_path)
+        example_dir = _copy_example(name="news", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)

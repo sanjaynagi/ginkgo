@@ -277,7 +277,7 @@ includes:
 
 - `retail` for static fan-out, fan-in, and shell-generated delivery
   bundles
-- `newsroom` for runtime-determined `ExprList` expansion and dynamic dependency
+- `news` for runtime-determined `ExprList` expansion and dynamic dependency
   recording
 - `supplychain` for multi-scenario analysis with richer artifact fan-in
 - `chem` for chemistry-domain portfolio review with
