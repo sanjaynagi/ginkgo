@@ -72,6 +72,7 @@ def write_publication_schedule(stories: pd.DataFrame) -> file:
         ["story_id", "desk", "headline", "priority_score", "publish_band", "draft_status"]
     ].copy()
     output = Path("results/publication_schedule.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     schedule.to_csv(output, index=False)
     return file(str(output))
 
@@ -85,6 +86,7 @@ def write_flagged_story_report(stories: pd.DataFrame, flagged_priority: int) -> 
         ["story_id", "desk", "headline", "priority_score", "legal_review_required", "draft_status"]
     ]
     output = Path("results/flagged_stories.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     flagged.to_csv(output, index=False)
     return file(str(output))
 
@@ -103,5 +105,6 @@ def write_budget_summary(stories: pd.DataFrame) -> file:
     )
     payload = {"desks": summary.to_dict(orient="records")}
     output = Path("results/desk_budget.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return file(str(output))

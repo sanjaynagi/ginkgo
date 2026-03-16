@@ -62,6 +62,7 @@ def write_model_card(
     ]
 
     output = Path("results/model_card.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))
 
@@ -108,5 +109,6 @@ def write_serving_checklist(champion_report: file, holdout_summary: file) -> fil
     )
 
     output = Path("results/serving_checklist.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     checklist.to_csv(output, index=False)
     return file(str(output))

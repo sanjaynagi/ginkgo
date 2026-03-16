@@ -125,6 +125,7 @@ def write_inventory_hotspots(
         "top_customers": top_customers.to_dict(orient="records"),
     }
     output = Path("results/inventory_hotspots.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return file(str(output))
 
@@ -188,5 +189,6 @@ def build_executive_report(
         )
 
     output = Path("results/executive_report.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))

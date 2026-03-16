@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ginkgo
 from ginkgo import file, flow
 
@@ -24,13 +22,6 @@ from ml_model_ops.modules.reporting import write_model_card, write_serving_check
 
 cfg = ginkgo.config("ginkgo.toml")
 candidates = cfg["candidates"]
-
-for relative_path in (
-    "logs",
-    "results",
-    "results/candidates",
-):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
 
 
 @flow
