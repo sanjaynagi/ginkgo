@@ -1,0 +1,13 @@
+account_id,segment,tenure_months,product_adoption,support_tickets,monthly_active_days,expansion_signal,renewed
+ACCT-001,enterprise,18,7,1,23,0.81,yes
+ACCT-002,enterprise,15,6,2,21,0.74,yes
+ACCT-003,mid_market,11,5,4,17,0.58,no
+ACCT-004,mid_market,9,4,5,15,0.46,no
+ACCT-005,smb,7,3,3,14,0.41,no
+ACCT-006,smb,10,4,2,18,0.52,yes
+ACCT-007,enterprise,22,8,1,25,0.88,yes
+ACCT-008,mid_market,13,5,2,19,0.61,yes
+ACCT-009,smb,6,2,4,12,0.35,no
+ACCT-010,enterprise,17,7,2,22,0.79,yes
+ACCT-011,mid_market,8,3,5,13,0.39,no
+ACCT-012,smb,12,5,1,20,0.57,yes

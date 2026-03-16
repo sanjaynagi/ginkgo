@@ -1,0 +1,8 @@
+[paths]
+compound_panel_csv = "data/compound_panel.csv"
+
+[screening]
+potency_floor_nM = 120.0
+solubility_floor_uM = 35.0
+permeability_floor = 1.5
+max_clearance = 26.0

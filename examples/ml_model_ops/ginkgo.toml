@@ -1,0 +1,26 @@
+[paths]
+training_events_csv = "data/training_events.csv"
+
+[[candidates]]
+model_name = "baseline_logit"
+weight_scale = 1.05
+ticket_penalty = 0.24
+decision_threshold = 0.52
+
+[[candidates]]
+model_name = "retention_boost"
+weight_scale = 1.18
+ticket_penalty = 0.2
+decision_threshold = 0.5
+
+[[candidates]]
+model_name = "precision_guard"
+weight_scale = 0.96
+ticket_penalty = 0.28
+decision_threshold = 0.57
+
+[[candidates]]
+model_name = "expansion_focus"
+weight_scale = 1.22
+ticket_penalty = 0.18
+decision_threshold = 0.48
