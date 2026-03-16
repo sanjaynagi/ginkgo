@@ -1,0 +1,7 @@
+sku,distribution_center,weekly_demand,target_weeks_cover
+SKU-1,dc_west,140,3
+SKU-2,dc_west,95,4
+SKU-3,dc_central,180,3
+SKU-4,dc_central,120,4
+SKU-5,dc_east,160,3
+SKU-6,dc_east,110,4

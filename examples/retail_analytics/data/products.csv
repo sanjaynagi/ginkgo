@@ -1,0 +1,6 @@
+sku,category,unit_cost,launch_quarter
+SKU-1,monitoring,62.0,2025Q1
+SKU-2,consumables,21.0,2024Q4
+SKU-3,diagnostics,44.0,2025Q2
+SKU-4,hardware,118.0,2024Q3
+SKU-5,automation,79.0,2025Q1

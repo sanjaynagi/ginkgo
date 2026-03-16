@@ -1,0 +1,11 @@
+story_id,desk,headline,word_count,sources,audience_signal,legal_review_required,breaking_news,draft_status
+N001,politics,Governor budget showdown,1200,5,9,yes,yes,reporting
+N002,climate,Heat dome strains hospitals,980,4,8,no,yes,editing
+N003,culture,Studio revival bet,760,3,6,no,no,reporting
+N004,sports,Playoff rotation gamble,650,2,7,no,yes,editing
+N005,politics,Election board audit,1350,6,8,yes,no,legal
+N006,climate,Reservoir recovery stalls,890,4,7,no,no,reporting
+N007,culture,Library late-night crowds,540,2,5,no,no,draft
+N008,sports,Rookie rehab update,710,3,6,no,no,reporting
+N009,politics,Transit contract leak,1110,5,9,yes,yes,editing
+N010,business,Regional grocery merger,930,4,7,yes,no,reporting

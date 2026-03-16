@@ -541,31 +541,80 @@ class TestCliInit:
         assert "🌿 ginkgo init demo-project" in result.stdout
         assert "✓ Initialized project scaffold at" in result.stdout
         assert "Created:" in result.stdout
-        assert "workflow.py" in result.stdout
+        assert "demo_project/workflow.py" in result.stdout
         assert "agents.ginkgo.md" in result.stdout
         assert "ginkgo test --dry-run" in result.stdout
 
         project_dir = Path("demo-project")
-        assert (project_dir / "workflow.py").is_file()
+        assert (project_dir / "pixi.toml").is_file()
         assert (project_dir / "ginkgo.toml").is_file()
-        assert (project_dir / ".tests" / "smoke.py").is_file()
-        assert (project_dir / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "demo_project" / "__init__.py").is_file()
+        assert (project_dir / "demo_project" / "workflow.py").is_file()
+        assert (project_dir / "demo_project" / "modules" / "reporting.py").is_file()
+        assert (project_dir / "demo_project" / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "tests" / "workflows" / "smoke.py").is_file()
         assert (project_dir / "agents.ginkgo.md").is_file()
 
-        workflow_text = (project_dir / "workflow.py").read_text(encoding="utf-8")
-        assert "@flow" in workflow_text
-        assert "ginkgo.config" in workflow_text
-        assert 'ginkgo.config("ginkgo.toml")' in workflow_text
+        workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
+        module_text = (project_dir / "demo_project" / "modules" / "reporting.py").read_text(
+            encoding="utf-8"
+        )
+        assert "@flow" not in workflow_text
+        assert "from demo_project.modules.reporting import main" in workflow_text
+        assert "@flow" in module_text
+        assert "ginkgo.config" in module_text
+        assert 'ginkgo.config("ginkgo.toml")' in module_text
 
     def test_init_refuses_to_overwrite_without_force(self) -> None:
         project_dir = Path("demo-project")
         project_dir.mkdir()
-        (project_dir / "workflow.py").write_text("existing\n", encoding="utf-8")
+        package_dir = project_dir / "demo_project"
+        package_dir.mkdir()
+        (package_dir / "workflow.py").write_text("existing\n", encoding="utf-8")
 
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 1
         assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
-        assert (project_dir / "workflow.py").read_text(encoding="utf-8") == "existing\n"
+        assert (package_dir / "workflow.py").read_text(encoding="utf-8") == "existing\n"
+
+
+class TestCliWorkflowDiscovery:
+    def test_run_autodiscovers_canonical_package_workflow(self) -> None:
+        package_dir = Path("demo_project")
+        package_dir.mkdir()
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "workflow.py").write_text(
+            """
+from demo_project.modules.pipeline import main
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        modules_dir = package_dir / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "__init__.py").write_text("", encoding="utf-8")
+        (modules_dir / "pipeline.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert re.search(
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout
+        )
+        assert "✓ succeeded" in result.stdout
 
 
 class TestCliOutputModes:

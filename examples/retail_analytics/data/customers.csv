@@ -1,0 +1,9 @@
+customer_id,customer_name,region,segment,signup_date
+C001,Atlas Health,west,enterprise,2024-01-10
+C002,Blue Harbor,east,midmarket,2024-02-18
+C003,Cedar Retail,south,enterprise,2024-04-22
+C004,Dawn Foods,central,midmarket,2024-05-03
+C005,Evergreen Labs,west,scale_up,2024-06-11
+C006,Fjord Outfitters,east,enterprise,2024-07-19
+C007,Granite Works,south,scale_up,2024-08-07
+C008,Halo Stores,central,enterprise,2024-09-14

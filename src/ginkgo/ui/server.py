@@ -17,6 +17,7 @@ from urllib.parse import unquote
 
 import yaml
 
+from ginkgo.cli.workspace import list_workflow_paths
 from ginkgo.runtime.provenance import latest_run_dir, load_manifest, tail_text
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -393,16 +394,7 @@ def _list_workflows(project_root: Path) -> list[str]:
         return []
 
     workflows: list[str] = []
-    ignored = {".git", ".ginkgo", ".pixi", "node_modules", "__pycache__"}
-    for path in sorted(project_root.rglob("*.py")):
-        if any(part in ignored for part in path.parts):
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if "@flow" not in content:
-            continue
+    for path in list_workflow_paths(project_root=project_root):
         try:
             workflows.append(str(path.relative_to(project_root)))
         except ValueError:
