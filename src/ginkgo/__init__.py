@@ -19,7 +19,7 @@ _EXPORTS = {
     "file": ("ginkgo.core.types", "file"),
     "flow": ("ginkgo.core.flow", "flow"),
     "folder": ("ginkgo.core.types", "folder"),
-    "shell_task": ("ginkgo.core.shell", "shell_task"),
+    "shell": ("ginkgo.core.shell", "shell"),
     "task": ("ginkgo.core.task", "task"),
     "tmp_dir": ("ginkgo.core.types", "tmp_dir"),
 }

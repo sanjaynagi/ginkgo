@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import flow, shell_task, task
+from ginkgo import flow, shell, task
+from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.pixi import (
     PixiEnvImportError,
     PixiEnvNotFoundError,
@@ -267,10 +268,10 @@ class TestPixiRegistry:
 # ---------------------------------------------------------------------------
 
 
-@task(env=_TEST_ENV_NAME)
+@task(env=_TEST_ENV_NAME, kind="shell")
 def shell_touch(output_path: str) -> str:
     """Shell task: uses the pixi env to create a sentinel file."""
-    return shell_task(
+    return shell(
         cmd=f"echo pixi_ran > {output_path}",
         output=output_path,
     )
@@ -344,6 +345,36 @@ class TestPixiShellTask:
         evaluator.evaluate(shell_touch(output_path=output))
         assert '"cached"' in log.getvalue()
 
+    @pixi_required
+    def test_shell_tasks_do_not_import_workflow_module_inside_pixi_env(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text(
+            """
+import pandas as pd
+
+from ginkgo import shell, task
+
+
+@task(env="test_env", kind="shell")
+def shell_only(output_path: str) -> str:
+    return shell(cmd=f"printf 'ok' > {output_path}", output=output_path)
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        module = load_module_from_path(workflow_path)
+        output = tmp_path / "shell-only.txt"
+        registry = _make_registry(tmp_path)
+
+        result = _evaluate(module.shell_only(output_path=str(output)), registry=registry)
+
+        assert result == str(output)
+        assert output.read_text(encoding="utf-8") == "ok"
+
 
 class TestPixiPythonTask:
     @pixi_required
@@ -371,6 +402,33 @@ class TestPixiPythonTask:
         pixi_result, plain_result = _evaluate(mixed_flow(x=10, y=5), registry=registry)
         assert pixi_result == 15
         assert plain_result == 15
+
+    @pixi_required
+    def test_python_tasks_fail_clearly_when_foreign_env_cannot_import_module(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text(
+            """
+import pandas as pd
+
+from ginkgo import task
+
+
+@task(env="test_env")
+def needs_worker_import(x: int) -> int:
+    return x + 1
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        module = load_module_from_path(workflow_path)
+        registry = _make_registry(tmp_path)
+
+        with pytest.raises(RuntimeError, match="Foreign Python task .*kind='shell'"):
+            _evaluate(module.needs_worker_import(x=1), registry=registry)
 
 
 class TestPixiCacheInvalidation:

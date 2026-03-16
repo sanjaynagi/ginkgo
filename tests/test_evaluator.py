@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo import evaluate, file, folder, shell_task, task, tmp_dir
+from ginkgo import evaluate, file, folder, shell, task, tmp_dir
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import import_roots_for_path, resolve_module_file
@@ -55,9 +55,9 @@ def always_fail_once_task(log_path: str) -> str:
     raise RuntimeError("no retry configured")
 
 
-@task()
+@task(kind="shell")
 def shell_write_output_task(output_path: str, log_path: str) -> file:
-    return shell_task(
+    return shell(
         cmd=(
             "printf 'captured stdout\\n'; "
             "printf 'captured stderr\\n' 1>&2; "
@@ -68,18 +68,18 @@ def shell_write_output_task(output_path: str, log_path: str) -> file:
     )
 
 
-@task()
+@task(kind="shell")
 def shell_missing_output_task(output_path: str) -> file:
-    return shell_task(cmd="true", output=output_path)
+    return shell(cmd="true", output=output_path)
 
 
-@task()
+@task(kind="shell")
 def shell_write_multiple_outputs_task(
     output_one: str,
     output_two: str,
     marker_path: str,
 ) -> tuple[file, file]:
-    return shell_task(
+    return shell(
         cmd=(
             f"printf 'left' > {output_one}; "
             f"printf 'right' > {output_two}; "
@@ -89,25 +89,25 @@ def shell_write_multiple_outputs_task(
     )
 
 
-@task()
+@task(kind="shell")
 def shell_write_list_outputs_task(output_one: str, output_two: str) -> list[file]:
-    return shell_task(
+    return shell(
         cmd=f"printf 'left' > {output_one}; printf 'right' > {output_two}",
         output=[output_one, output_two],
     )
 
 
-@task()
+@task(kind="shell")
 def shell_missing_multiple_outputs_task(output_one: str, output_two: str) -> tuple[file, file]:
-    return shell_task(
+    return shell(
         cmd=f"printf 'left' > {output_one}",
         output=(output_one, output_two),
     )
 
 
-@task(retries=2)
+@task(kind="shell", retries=2)
 def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
-    return shell_task(
+    return shell(
         cmd=(
             f"if [ ! -f {marker_path} ]; then "
             f"touch {marker_path}; "
@@ -118,6 +118,16 @@ def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
         output=output_path,
         log=log_path,
     )
+
+
+@task()
+def python_returns_shell_task(output_path: str) -> file:
+    return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
+
+
+@task(kind="shell")
+def shell_returns_plain_value_task() -> str:
+    return "plain-value"
 
 
 @task()
@@ -183,9 +193,9 @@ def build_dynamic_cycle_task() -> object:
 _PIXI_TEST_ENV = "race_env"
 
 
-@task(env=_PIXI_TEST_ENV)
+@task(env=_PIXI_TEST_ENV, kind="shell")
 def pixi_shell_output_task(output_path: str) -> file:
-    return shell_task(
+    return shell(
         cmd=f"printf 'payload' > {output_path}",
         output=output_path,
     )
@@ -237,6 +247,16 @@ class TestEvaluate:
 
         with pytest.raises(TypeError, match="top-level function"):
             evaluate(local_task(x=1))
+
+    def test_python_tasks_must_not_return_shell_payloads(self, tmp_path: Path) -> None:
+        output = tmp_path / "payload.txt"
+
+        with pytest.raises(TypeError, match="Use @task\\(kind='shell'\\)"):
+            evaluate(python_returns_shell_task(output_path=str(output)))
+
+    def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:
+        with pytest.raises(TypeError, match="must return shell\\(\\.\\.\\.\\) or dynamic"):
+            evaluate(shell_returns_plain_value_task())
 
     def test_numpy_array_can_cross_the_python_task_boundary(self):
         result = evaluate(array_task(start=2))

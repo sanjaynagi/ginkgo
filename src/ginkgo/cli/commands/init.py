@@ -82,7 +82,7 @@ This project uses Ginkgo for reproducible workflow execution.
 - Define tasks at module scope with `@task()`.
 - Use explicit task inputs and deterministic output paths.
 - Use `file`, `folder`, and `tmp_dir` annotations when path semantics matter.
-- Use `shell_task(...)` for command-line tools and always provide an explicit `output`.
+- Use `@task(kind="shell")` with `shell(...)` for command-line tools and always provide an explicit `output`.
 - Bump `version=` when task logic changes in a cache-relevant way.
 - Prefer `.map()` for fan-out and normal downstream tasks for fan-in.
 - Declare `env=` when a task depends on a reproducible Pixi environment.

@@ -25,14 +25,14 @@ The project is currently implemented through **Phase 7**, with the first hardeni
 
 ```python
 import ginkgo
-from ginkgo import flow, shell_task, task, file
+from ginkgo import flow, shell, task, file
 
 cfg = ginkgo.config("ginkgo.toml")
 
-@task(env="bioinfo_tools")
+@task(env="bioinfo_tools", kind="shell")
 def qc(sample_id: str, fastq: file, min_length: int) -> file:
     output = f"results/{sample_id}.filtered.fastq"
-    return shell_task(
+    return shell(
         cmd=f"seqkit seq -m {min_length} {fastq} > {output}",
         output=output,
         log=f"logs/{sample_id}.log",
@@ -61,7 +61,7 @@ ginkgo run workflow.py
 - explicit cycle detection for expression graphs before execution
 - concurrent scheduling with OR-Tools CP-SAT resource selection across jobs, cores, and memory
 - Python task execution in worker processes, with a thread-pool fallback when process pools are blocked by the runtime environment
-- shell task execution through `shell_task(...)`
+- shell task execution through `@task(kind="shell")` and `shell(...)`
 - per-task Pixi environments resolved from `envs/<env>/pixi.toml`
 - run provenance under `.ginkgo/runs/<run_id>/`
 - end-of-run CPU / RSS summaries plus a compact live CPU / RSS monitor in the CLI
@@ -207,7 +207,8 @@ ginkgo test --dry-run
 
 - Task bodies receive resolved argument values when they actually execute.
 - Tasks must be defined at module scope.
-- Tasks may return ordinary Python values, dynamic Ginkgo expressions, or `shell_task(...)`.
+- Python tasks may return ordinary Python values or dynamic Ginkgo expressions.
+- Shell tasks use `@task(kind="shell")` and return `shell(...)`.
 
 ### `@flow`
 
@@ -264,13 +265,13 @@ Ginkgo provides three marker types:
 
 ### Shell tasks
 
-Shell commands are returned from a normal task body:
+Shell commands are returned from a shell-kind task body:
 
 ```python
-@task(env="bioinfo_tools")
+@task(env="bioinfo_tools", kind="shell")
 def align(sample_id: str, fastq: file) -> file:
     output = f"results/{sample_id}.txt"
-    return shell_task(
+    return shell(
         cmd=f"cat {fastq} > {output}",
         output=output,
         log=f"logs/{sample_id}.log",
@@ -345,7 +346,7 @@ When given a conda env spec, Ginkgo imports it into a generated sibling Pixi wor
 Example:
 
 ```python
-@task(env="bioinfo_tools")
+@task(env="bioinfo_tools", kind="shell")
 def qc(...):
     ...
 ```

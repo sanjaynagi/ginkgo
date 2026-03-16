@@ -21,12 +21,13 @@ class TestTaskDecorator:
         assert my_fn.fn.__name__ == "my_fn"
 
     def test_task_env_and_version(self):
-        @task(env="my_env", version=3)
+        @task(env="my_env", version=3, kind="shell")
         def my_fn(x: int) -> int:
             return x
 
         assert my_fn.env == "my_env"
         assert my_fn.version == 3
+        assert my_fn.kind == "shell"
 
     def test_task_defaults(self):
         @task()
@@ -35,6 +36,14 @@ class TestTaskDecorator:
 
         assert my_fn.env is None
         assert my_fn.version == 1
+        assert my_fn.kind == "python"
+
+    def test_task_rejects_unknown_kind(self):
+        with pytest.raises(ValueError, match="kind must be one of"):
+
+            @task(kind="bash")
+            def my_fn(x: int) -> int:
+                return x
 
 
 class TestTaskDefCall:

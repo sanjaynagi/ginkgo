@@ -82,6 +82,8 @@ class RunProvenanceRecorder:
         node_id: int,
         task_name: str,
         env: str | None,
+        kind: str = "python",
+        execution_mode: str = "worker",
         retries: int = 0,
     ) -> tuple[Path, Path]:
         """Create a manifest entry and log paths for a task node.
@@ -104,6 +106,8 @@ class RunProvenanceRecorder:
                     "node_id": node_id,
                     "task": task_name,
                     "env": env,
+                    "kind": kind,
+                    "execution_mode": execution_mode,
                     "retries": retries,
                     "max_attempts": retries + 1,
                     "attempt": 0,
@@ -124,6 +128,8 @@ class RunProvenanceRecorder:
         node_id: int,
         task_name: str,
         env: str | None,
+        kind: str | None = None,
+        execution_mode: str | None = None,
         resolved_args: dict[str, Any] | None,
         input_hashes: dict[str, Any] | None,
         cache_key: str | None,
@@ -132,8 +138,18 @@ class RunProvenanceRecorder:
     ) -> None:
         """Record resolved task inputs and cache identity."""
         with self._lock:
-            self.ensure_task(node_id=node_id, task_name=task_name, env=env)
+            self.ensure_task(
+                node_id=node_id,
+                task_name=task_name,
+                env=env,
+                kind=kind or "python",
+                execution_mode=execution_mode or "worker",
+            )
             task = self._task(node_id)
+            if kind is not None:
+                task["kind"] = kind
+            if execution_mode is not None:
+                task["execution_mode"] = execution_mode
             if resolved_args is not None:
                 task["inputs"] = _render_value(resolved_args)
             if input_hashes is not None:
