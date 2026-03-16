@@ -15,6 +15,8 @@ from typing import Any, Callable, get_type_hints
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.types import tmp_dir
 
+_TASK_KINDS = frozenset({"python", "shell"})
+
 
 @dataclass(frozen=True)
 class TaskDef:
@@ -30,12 +32,15 @@ class TaskDef:
         Cache-busting version tag.
     retries : int
         Additional retry attempts after the initial execution.
+    kind : str
+        Execution contract for the task body.
     """
 
     fn: Callable[..., Any]
     env: str | None = None
     version: int = 1
     retries: int = 0
+    kind: str = "python"
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
@@ -43,6 +48,9 @@ class TaskDef:
     def __post_init__(self) -> None:
         if self.retries < 0:
             raise ValueError("retries must be at least 0")
+        if self.kind not in _TASK_KINDS:
+            supported = ", ".join(sorted(_TASK_KINDS))
+            raise ValueError(f"kind must be one of {{{supported}}}, got {self.kind!r}")
 
         sig = inspect.signature(self.fn)
         hints = get_type_hints(self.fn)
@@ -66,6 +74,13 @@ class TaskDef:
     def required_params(self) -> frozenset[str]:
         """Parameter names that have no default value."""
         return self._required_params
+
+    @property
+    def execution_mode(self) -> str:
+        """Return whether the task body runs on the driver or a worker."""
+        if self.kind == "shell":
+            return "driver"
+        return "worker"
 
     @property
     def all_params(self) -> dict[str, inspect.Parameter]:
@@ -218,6 +233,7 @@ def task(
     env: str | None = None,
     version: int = 1,
     retries: int = 0,
+    kind: str = "python",
 ) -> Callable[[Callable[..., Any]], TaskDef]:
     """Decorator that turns a function into a lazy task definition.
 
@@ -229,6 +245,9 @@ def task(
         Cache-busting version tag.  Bump when task logic changes.
     retries : int
         Additional retry attempts after the initial execution.
+    kind : str
+        Execution contract for the task body. Use ``"shell"`` for
+        scheduler-evaluated shell spec builders.
 
     Returns
     -------
@@ -237,7 +256,7 @@ def task(
     """
 
     def decorator(fn: Callable[..., Any]) -> TaskDef:
-        return TaskDef(fn=fn, env=env, version=version, retries=retries)
+        return TaskDef(fn=fn, env=env, version=version, retries=retries, kind=kind)
 
     return decorator
 

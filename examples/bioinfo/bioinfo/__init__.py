@@ -1,0 +1,1 @@
+"""Bioinformatics example package."""
