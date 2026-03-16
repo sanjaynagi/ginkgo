@@ -12,6 +12,7 @@ from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import _environment_label, _format_duration
 from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _RunSummary
 from ginkgo.cli.renderers.run import _CliRunRenderer
+from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
 from ginkgo.core.flow import FlowDef
 from ginkgo.envs.pixi import PixiRegistry
@@ -23,7 +24,10 @@ from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make
 
 def command_run(args, *, output_mode: RunMode) -> int:
     """Handle ``ginkgo run``."""
-    workflow_path = Path(args.workflow).resolve()
+    workflow_path = resolve_workflow_path(
+        project_root=Path.cwd(),
+        workflow=args.workflow,
+    ).path
     return run_workflow(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
@@ -64,7 +68,10 @@ def run_workflow(
         params = session.merged_loaded_values()
     load_elapsed = time.perf_counter() - load_started
 
-    registry = PixiRegistry(project_root=Path.cwd())
+    registry = PixiRegistry(
+        project_root=Path.cwd(),
+        workflow_root=workflow_path.parent,
+    )
     evaluator = _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,

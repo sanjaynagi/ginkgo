@@ -85,7 +85,11 @@ class PixiRegistry:
     ----------
     project_root : Path
         Root of the workflow project. Environments are discovered under
-        ``project_root/envs/``. Defaults to the current working directory.
+        ``project_root/envs/`` and, when provided, ``workflow_root/envs/``.
+        Defaults to the current working directory.
+    workflow_root : Path | None
+        Directory containing the resolved workflow entrypoint. Canonical
+        package-local envs are discovered from ``workflow_root/envs/``.
 
     Raises
     ------
@@ -94,12 +98,28 @@ class PixiRegistry:
     """
 
     project_root: Path = field(default_factory=Path.cwd)
-    _envs_dir: Path = field(init=False, repr=False)
+    workflow_root: Path | None = None
+    _envs_dirs: tuple[Path, ...] = field(init=False, repr=False)
     _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
     _prepared_manifests: set[Path] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "_envs_dir", self.project_root / "envs")
+        env_dirs: list[Path] = []
+        if self.workflow_root is not None:
+            workflow_envs = self.workflow_root / "envs"
+            env_dirs.append(workflow_envs)
+        env_dirs.append(self.project_root / "envs")
+
+        unique_dirs: list[Path] = []
+        seen: set[Path] = set()
+        for env_dir in env_dirs:
+            resolved = env_dir.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique_dirs.append(resolved)
+
+        object.__setattr__(self, "_envs_dirs", tuple(unique_dirs))
 
     # ------------------------------------------------------------------
     # Resolution
@@ -132,10 +152,18 @@ class PixiRegistry:
                 raise PixiEnvNotFoundError(env=env)
             return manifest.resolve()
 
-        manifest = self._envs_dir / env / "pixi.toml"
-        if not manifest.is_file():
-            raise PixiEnvNotFoundError(env=env, searched=self._envs_dir)
-        return manifest.resolve()
+        for envs_dir in self._envs_dirs:
+            manifest = envs_dir / env / "pixi.toml"
+            if manifest.is_file():
+                return manifest.resolve()
+
+        searched = self._envs_dirs[0] if self._envs_dirs else None
+        raise PixiEnvNotFoundError(env=env, searched=searched)
+
+    @property
+    def env_directories(self) -> tuple[Path, ...]:
+        """Return the environment discovery roots for this project."""
+        return self._envs_dirs
 
     def _resolve_conda_env_file(self, *, manifest: Path) -> Path:
         """Import a conda env spec into a generated neighboring Pixi workspace."""

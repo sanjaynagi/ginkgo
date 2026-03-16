@@ -84,6 +84,19 @@ class TestPixiRegistry:
         with pytest.raises(PixiEnvNotFoundError, match="nonexistent_env"):
             registry.resolve(env="nonexistent_env")
 
+    def test_resolve_named_env_from_workflow_local_envs_directory(self, tmp_path: Path) -> None:
+        workflow_root = tmp_path / "demo_project"
+        env_manifest = workflow_root / "envs" / "demo" / "pixi.toml"
+        env_manifest.parent.mkdir(parents=True)
+        env_manifest.write_text(
+            "[workspace]\nname = 'demo'\nchannels = []\nplatforms = []\n",
+            encoding="utf-8",
+        )
+
+        registry = PixiRegistry(project_root=tmp_path, workflow_root=workflow_root)
+
+        assert registry.resolve(env="demo") == env_manifest.resolve()
+
     def test_resolve_conda_env_file_imports_to_generated_pixi_workspace(
         self,
         tmp_path: Path,

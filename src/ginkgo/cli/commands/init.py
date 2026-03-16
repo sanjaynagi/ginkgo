@@ -8,7 +8,13 @@ from pathlib import Path
 from ginkgo.cli.common import console
 
 
-_WORKFLOW_TEMPLATE = """from pathlib import Path
+_PACKAGE_WORKFLOW_TEMPLATE = """from {package_name}.modules.reporting import main
+
+__all__ = ["main"]
+"""
+
+
+_MODULE_TEMPLATE = """from pathlib import Path
 
 import ginkgo
 from ginkgo import flow, task
@@ -29,6 +35,15 @@ def main():
         message=cfg["message"],
         output_path="results/summary.txt",
     )
+"""
+
+_ROOT_PIXI_TEMPLATE = """[workspace]
+name = "{project_name}"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+python = ">=3.11"
 """
 
 _CONFIG_TEMPLATE = """message = "hello from ginkgo"
@@ -62,15 +77,31 @@ This project uses Ginkgo for reproducible workflow execution.
 
 ## Expectations
 
+- Keep `{package_name}/workflow.py` focused on flow entrypoints and graph wiring.
+- Put reusable task implementations under `{package_name}/modules/`.
 - Define tasks at module scope with `@task()`.
-- Keep one `@flow` entrypoint per workflow module for CLI discovery.
 - Use explicit task inputs and deterministic output paths.
 - Use `file`, `folder`, and `tmp_dir` annotations when path semantics matter.
 - Use `shell_task(...)` for command-line tools and always provide an explicit `output`.
 - Bump `version=` when task logic changes in a cache-relevant way.
 - Prefer `.map()` for fan-out and normal downstream tasks for fan-in.
 - Declare `env=` when a task depends on a reproducible Pixi environment.
+- Keep task environment manifests under `{package_name}/envs/`.
 """
+
+
+def _package_name_for_directory(*, root: Path) -> str:
+    """Return a stable importable package name for the scaffolded project."""
+    normalized = "".join(ch.lower() if ch.isalnum() else "_" for ch in root.name)
+    normalized = normalized.strip("_") or "ginkgo_project"
+    if normalized[0].isdigit():
+        normalized = f"project_{normalized}"
+    return normalized
+
+
+def _root_workflow_template(*, package_name: str) -> str:
+    """Return the canonical workflow entrypoint template."""
+    return _PACKAGE_WORKFLOW_TEMPLATE.format(package_name=package_name)
 
 
 def command_init(args) -> int:
@@ -78,13 +109,18 @@ def command_init(args) -> int:
     root = Path(args.directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
     rich_console = console(sys.stdout)
+    package_name = _package_name_for_directory(root=root)
 
     files = {
-        root / "workflow.py": _WORKFLOW_TEMPLATE,
+        root / "pixi.toml": _ROOT_PIXI_TEMPLATE.format(project_name=root.name),
         root / "ginkgo.toml": _CONFIG_TEMPLATE,
-        root / ".tests" / "smoke.py": _TEST_TEMPLATE,
-        root / "envs" / "analysis_tools" / "pixi.toml": _ENV_TEMPLATE,
-        root / "agents.ginkgo.md": _AGENT_TEMPLATE,
+        root / package_name / "__init__.py": "",
+        root / package_name / "workflow.py": _root_workflow_template(package_name=package_name),
+        root / package_name / "modules" / "__init__.py": "",
+        root / package_name / "modules" / "reporting.py": _MODULE_TEMPLATE,
+        root / package_name / "envs" / "analysis_tools" / "pixi.toml": _ENV_TEMPLATE,
+        root / "tests" / "workflows" / "smoke.py": _TEST_TEMPLATE,
+        root / "agents.ginkgo.md": _AGENT_TEMPLATE.format(package_name=package_name),
     }
 
     conflicts = [path for path in files if path.exists()]

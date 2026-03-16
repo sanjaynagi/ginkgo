@@ -227,10 +227,19 @@ class TestUiServer:
 
     def test_workflows_api_lists_flow_modules(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
-        workflow_path = tmp_path / "workflows" / "demo.py"
-        workflow_path.parent.mkdir(parents=True)
+        package_dir = tmp_path / "demo_project"
+        package_dir.mkdir()
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        workflow_path = package_dir / "workflow.py"
         workflow_path.write_text(
-            "from ginkgo import flow\n\n@flow\ndef pipeline():\n    return None\n",
+            "from demo_project.modules.pipeline import main\n",
+            encoding="utf-8",
+        )
+        modules_dir = package_dir / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "__init__.py").write_text("", encoding="utf-8")
+        (modules_dir / "pipeline.py").write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
             encoding="utf-8",
         )
         (tmp_path / "scripts").mkdir()
@@ -247,7 +256,10 @@ class TestUiServer:
             server.server_close()
 
         assert status == 200
-        assert payload["workflows"] == ["workflows/demo.py"]
+        assert payload["workflows"] == [
+            "demo_project/modules/pipeline.py",
+            "demo_project/workflow.py",
+        ]
 
     def test_run_api_launches_workflow_process(self, monkeypatch, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
