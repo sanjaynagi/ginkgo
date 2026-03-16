@@ -271,6 +271,24 @@ The current implementation is validated against the canonical workflow families 
 
 These are exercised through the test suite and, from the CLI layer onward, through `ginkgo run` and `ginkgo test`.
 
+Phase 2 of the implementation roadmap is now completed through the expanded
+example suite under `examples/`. The repository-level validation corpus now
+includes:
+
+- `retail_analytics` for static fan-out, fan-in, and shell-generated delivery
+  bundles
+- `newsroom` for runtime-determined `ExprList` expansion and dynamic dependency
+  recording
+- `supply_chain` for multi-scenario analysis with richer artifact fan-in
+- `chemistry_screening` for chemistry-domain portfolio review with
+  runtime-determined per-series packet generation
+- `ml_model_ops` for ML-domain candidate evaluation, promotion, and delivery
+  packaging across a deeper static DAG
+
+`tests/test_examples.py` runs these examples end to end in isolated workspaces
+and asserts expected artifacts, manifests, dynamic dependency behavior, and
+cache reuse on rerun.
+
 ## Current Constraints
 
 The current runtime still has important boundaries and tradeoffs:

@@ -9,40 +9,6 @@ Each phase is independently testable and follows the same structure:
 - Key design points
 - Validation
 
-## Phase 2 — Expanded Validation Example Suite
-
-**Goal:** Build a broader, deeper set of example workflows under `examples/` so validation covers more realistic workflow shapes, domains, and runtime behaviors.
-
-### Deliverables
-
-- Add multiple larger example workflows under `examples/`, spanning distinct domains and demonstrating:
-  - deeper DAGs
-  - richer fan-out and fan-in
-  - shell-heavy workflows
-  - dynamic expansion where a task returns an unknown number of downstream `Expr` values
-- Add supporting test coverage that executes those examples end to end in isolated workspaces.
-- Use the example suite to validate:
-  - cache reuse
-  - provenance output
-  - dynamic dependency recording
-  - foreign-env execution behavior
-- Converge the example layouts onto the canonical repository structure from Phase 1.
-
-### Key design points
-
-- The example suite should be useful for both documentation and runtime validation, not just demonstration.
-- Examples should be substantial enough to catch regressions that the small unit-scale validation workflows do not expose.
-- The suite should prefer lightweight, reproducible dependencies so it remains practical in local development and CI.
-
-### Validation
-
-- Run the example suite end to end and assert each workflow produces its expected outputs and run manifests.
-- Assert at least one example exercises runtime-determined expansion to an unknown number of child expressions.
-- Assert rerunning the examples produces the expected cache behavior without changing outputs.
-- Assert the example suite can be used by future CLI and agent tooling as a stable validation corpus.
-
----
-
 ## Phase 3 — Execution Boundary and Foreign-Env Isolation
 
 **Goal:** Ensure `workflow.py` is imported only by the scheduler/runtime process and that foreign execution environments receive only the payload they need.
