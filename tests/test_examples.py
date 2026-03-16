@@ -44,12 +44,12 @@ def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
 
 
 class TestExamples:
-    def test_chemistry_screening_example_expands_series_packets(
+    def test_chem_example_expands_series_packets(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="chemistry_screening", destination_root=tmp_path)
+        example_dir = _copy_example(name="chem", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -79,12 +79,12 @@ class TestExamples:
         _, second_manifest = _run_example(example_dir=example_dir)
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 
-    def test_retail_analytics_example_runs_and_caches(
+    def test_retail_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="retail_analytics", destination_root=tmp_path)
+        example_dir = _copy_example(name="retail", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         first_run_dir, first_manifest = _run_example(example_dir=example_dir)
@@ -134,12 +134,12 @@ class TestExamples:
         assert any(task["status"] == "cached" for task in second_manifest["tasks"].values())
         assert (example_dir / "results" / "delivery_manifest.txt").is_file()
 
-    def test_supply_chain_example_runs_scenarios_and_caches(
+    def test_supplychain_example_runs_scenarios_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="supply_chain", destination_root=tmp_path)
+        example_dir = _copy_example(name="supplychain", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -163,12 +163,12 @@ class TestExamples:
         _, second_manifest = _run_example(example_dir=example_dir)
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 
-    def test_ml_model_ops_example_runs_candidate_fanout_and_caches(
+    def test_ml_example_runs_candidate_fanout_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="ml_model_ops", destination_root=tmp_path)
+        example_dir = _copy_example(name="ml", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
