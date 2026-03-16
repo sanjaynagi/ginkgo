@@ -43,38 +43,6 @@ Each phase is independently testable and follows the same structure:
 
 ---
 
-## Phase 3 — Execution Boundary and Foreign-Env Isolation
-
-**Goal:** Ensure `workflow.py` is imported only by the scheduler/runtime process and that foreign execution environments receive only the payload they need.
-
-### Deliverables
-
-- Introduce a driver-executed mode for shell-oriented tasks so the scheduler evaluates the Python wrapper locally and dispatches only executable shell payloads to the target environment.
-- Stop requiring foreign Pixi environments to import `workflow.py` in order to execute shell-oriented tasks.
-- Define a cleaner execution contract for true Python tasks in foreign environments:
-  - either importable packaged task modules
-  - or a future source-bundling mechanism
-- Add runtime validation that distinguishes:
-  - driver-executed shell/spec-builder tasks
-  - worker-executed Python tasks
-- Add clear documentation of the scheduler/worker boundary.
-
-### Key design points
-
-- This phase fixes an architectural bug, not just a convenience issue.
-- `workflow.py` should define and build the graph; foreign environments should execute task payloads, not import unrelated workflow-module dependencies.
-- Shell-oriented tasks and true Python-in-foreign-env tasks are not the same problem and should not be solved with the same mechanism.
-- The design should improve isolation without weakening the current guarantees around top-level importability and reproducibility.
-
-### Validation
-
-- Define a workflow module with top-level imports unavailable in a foreign Pixi env, and assert a shell-oriented `env=` task still runs successfully in that env.
-- Assert driver-executed shell tasks preserve existing cache, logging, and provenance behavior.
-- Assert worker-executed Python tasks in foreign envs fail with a clear packaging/importability error when they do not satisfy the new contract.
-- Assert dynamic shell-task workflows continue to work when the shell spec is built by the scheduler rather than by a foreign worker import.
-
----
-
 ## Phase 4 — Remaining Hardening and UI Polish
 
 **Goal:** Finish the production-readiness and local UI work that remains after the currently implemented hardening and UI slices.

@@ -47,8 +47,8 @@ def build_replenishment_plan(
     candidates["planned_units"] = candidates[["required_units", "max_units"]].min(axis=1)
     candidates["landed_unit_cost"] = candidates["unit_cost"] + candidates["lane_cost"]
     candidates["risk_penalty"] = (
-        (2.0 - candidates["supplier_reliability"] - candidates["lane_reliability"]) * 10.0
-    )
+        2.0 - candidates["supplier_reliability"] - candidates["lane_reliability"]
+    ) * 10.0
     candidates["selection_score"] = candidates["landed_unit_cost"] + candidates["risk_penalty"]
 
     selected = (

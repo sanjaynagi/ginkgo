@@ -81,9 +81,7 @@ def write_flagged_story_report(stories: pd.DataFrame, flagged_priority: int) -> 
     """Export stories that need senior editorial review."""
     flagged = stories.loc[
         stories["legal_review_required"] | (stories["priority_score"] >= flagged_priority)
-    ][
-        ["story_id", "desk", "headline", "priority_score", "legal_review_required", "draft_status"]
-    ]
+    ][["story_id", "desk", "headline", "priority_score", "legal_review_required", "draft_status"]]
     output = Path("results/flagged_stories.csv")
     flagged.to_csv(output, index=False)
     return file(str(output))
