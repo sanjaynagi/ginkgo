@@ -49,6 +49,7 @@ def write_series_packet(
         )
 
     output = Path(f"results/series/{_safe_slug(series)}_packet.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))
 
@@ -123,6 +124,7 @@ def write_candidate_register(compounds: pd.DataFrame, series_packets: list[file]
     )
 
     output = Path("results/candidate_register.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     register.to_csv(output, index=False)
     return file(str(output))
 
@@ -177,5 +179,6 @@ def build_portfolio_summary(
         lines.append(f"- {packet_path}")
 
     output = Path("results/portfolio_summary.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))

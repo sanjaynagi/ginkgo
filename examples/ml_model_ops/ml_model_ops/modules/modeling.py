@@ -102,6 +102,7 @@ def evaluate_candidate(
     }
 
     output = Path(f"results/candidates/{_safe_slug(model_name)}.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return file(str(output))
 
@@ -142,6 +143,7 @@ def write_candidate_scorecard(candidate_reports: list[file], feature_profile: fi
         ["business_score", "model_name"], ascending=[False, True]
     )
     output = Path("results/candidate_scorecard.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     scorecard.to_csv(output, index=False)
     return file(str(output))
 
@@ -166,5 +168,6 @@ def select_champion(candidate_reports: list[file]) -> file:
     champion = max(payloads, key=lambda item: (float(item["business_score"]), str(item["model_name"])))
 
     output = Path("results/champion_model.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(champion, indent=2), encoding="utf-8")
     return file(str(output))

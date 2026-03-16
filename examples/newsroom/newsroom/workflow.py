@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ginkgo
 from ginkgo import file, flow
 
@@ -19,13 +17,6 @@ from newsroom.modules.scoring import (
 
 
 cfg = ginkgo.config("ginkgo.toml")
-
-for relative_path in (
-    "logs",
-    "results",
-    "results/desk_packets",
-):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
 
 
 @flow

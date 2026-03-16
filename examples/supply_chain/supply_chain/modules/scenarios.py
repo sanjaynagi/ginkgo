@@ -32,6 +32,7 @@ def simulate_scenario(
         "impacted_skus": simulated.loc[simulated["fill_rate"] < 0.9, "sku"].tolist(),
     }
     output = Path(f"results/scenarios/{scenario_id}.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return file(str(output))
 
@@ -54,6 +55,7 @@ def summarize_resilience(plan: pd.DataFrame, scenario_reports: list[file]) -> fi
     scorecard = pd.DataFrame(rows).sort_values("worst_fill_rate")
     scorecard["baseline_plan_rows"] = len(plan)
     output = Path("results/resilience_scorecard.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     scorecard.to_csv(output, index=False)
     return file(str(output))
 
@@ -73,5 +75,6 @@ def identify_expedite_candidates(plan: pd.DataFrame, scenario_reports: list[file
     ).round(2)
     flagged = flagged.sort_values("expedite_priority", ascending=False)
     output = Path("results/expedite_candidates.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     flagged.to_csv(output, index=False)
     return file(str(output))

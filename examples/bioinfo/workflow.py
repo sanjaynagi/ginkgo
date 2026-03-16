@@ -12,10 +12,6 @@ from ginkgo import file, flow, shell_task, task
 cfg = ginkgo.config("ginkgo.toml")
 samples = pd.read_csv(cfg["paths"]["samples_csv"])
 
-# Ensure output directories exist before task execution starts.
-for relative_path in ("logs", "results", "results/filtered", "results/qc"):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
-
 
 @task(env="bioinfo_tools")
 def filter_fastq(sample_id: str, fastq: file, min_length: int) -> file:
@@ -50,6 +46,7 @@ def build_summary(sample_ids: list[str], stats_tables: list[file]) -> file:
 
     summary = pd.concat(frames, ignore_index=True)
     output = Path("results/summary.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output, index=False)
     return file(str(output))
 

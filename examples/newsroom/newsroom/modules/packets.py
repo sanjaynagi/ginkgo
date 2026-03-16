@@ -32,6 +32,7 @@ def write_desk_packet(desk: str, stories: list[dict[str, object]]) -> file:
             )
         )
     output = Path(f"results/desk_packets/{_safe_slug(desk)}_packet.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))
 
@@ -86,5 +87,6 @@ def compile_newsroom_digest(
         lines.append(f"- {packet_path}")
 
     output = Path("results/newsroom_digest.md")
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))

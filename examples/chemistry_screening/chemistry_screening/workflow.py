@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import ginkgo
 from ginkgo import file, flow
 
@@ -21,13 +19,6 @@ from chemistry_screening.modules.reports import (
 
 
 cfg = ginkgo.config("ginkgo.toml")
-
-for relative_path in (
-    "logs",
-    "results",
-    "results/series",
-):
-    Path(relative_path).mkdir(parents=True, exist_ok=True)
 
 
 @flow

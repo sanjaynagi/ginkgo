@@ -87,6 +87,7 @@ def write_feature_profile(feature_matrix: pd.DataFrame) -> file:
         ]
     )
     output = Path("results/feature_profile.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     profile.to_csv(output, index=False)
     return file(str(output))
 
@@ -118,5 +119,6 @@ def write_holdout_summary(feature_matrix: pd.DataFrame) -> file:
     summary["avg_expansion_readiness"] = summary["avg_expansion_readiness"].round(3)
 
     output = Path("results/holdout_summary.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output, index=False)
     return file(str(output))

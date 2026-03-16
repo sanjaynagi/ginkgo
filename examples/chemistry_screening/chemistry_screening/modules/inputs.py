@@ -128,5 +128,6 @@ def write_developability_matrix(compounds: pd.DataFrame) -> file:
         ]
     ].copy()
     output = Path("results/developability_matrix.csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
     matrix.to_csv(output, index=False)
     return file(str(output))
