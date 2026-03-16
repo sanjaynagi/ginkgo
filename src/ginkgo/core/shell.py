@@ -1,8 +1,8 @@
 """Shell task execution primitive.
 
-``shell_task()`` is called from inside a ``@task()`` body and returns a
-``ShellExpr`` sentinel.  The evaluator (Phase 2) detects this and dispatches
-to a shell runner.
+``shell()`` is called from inside a ``@task(kind="shell")`` body and returns
+a ``ShellExpr`` sentinel. The evaluator detects this and dispatches the
+command to the configured shell runner.
 """
 
 from __future__ import annotations
@@ -33,11 +33,11 @@ class ShellExpr:
     log: str | None = None
 
 
-def shell_task(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr:
+def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr:
     """Create a shell command expression.
 
-    Called from inside a ``@task()`` body with fully resolved argument values.
-    The ``cmd`` is a standard Python f-string — all variables are concrete
+    Called from inside a ``@task(kind="shell")`` body with fully resolved
+    argument values. The ``cmd`` is a standard Python f-string — all variables are concrete
     at the point this is called.
 
     Parameters
@@ -54,6 +54,6 @@ def shell_task(*, cmd: str, output: ShellOutput, log: str | None = None) -> Shel
     ShellExpr
     """
     if isinstance(output, list | tuple) and not output:
-        raise ValueError("shell_task output must contain at least one declared path")
+        raise ValueError("shell output must contain at least one declared path")
 
     return ShellExpr(cmd=cmd, output=output, log=log)

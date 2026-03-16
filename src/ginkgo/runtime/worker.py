@@ -22,11 +22,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     stderr_path = payload.get("stderr_path")
     try:
         with _task_log_context(stdout_path=stdout_path, stderr_path=stderr_path):
-            module = load_module(
-                payload["module"],
-                module_file=payload.get("module_file"),
-            )
-            task_binding = getattr(module, payload["task_name"])
+            task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
             result = fn(**decoded_args)
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
@@ -55,6 +51,27 @@ def _is_dynamic_result(value: Any) -> bool:
     from ginkgo.core.shell import ShellExpr
 
     return isinstance(value, (Expr, ExprList, ShellExpr))
+
+
+def _load_task_binding(*, payload: dict[str, Any]) -> Any:
+    """Load the declared task binding for worker-executed Python tasks."""
+    try:
+        module = load_module(
+            payload["module"],
+            module_file=payload.get("module_file"),
+        )
+        return getattr(module, payload["task_name"])
+    except BaseException as exc:
+        if payload.get("env") is None or payload.get("task_kind") != "python":
+            raise
+
+        task_name = f"{payload['module']}.{payload['task_name']}"
+        env_name = payload["env"]
+        raise RuntimeError(
+            f"Foreign Python task {task_name} could not be imported inside env {env_name!r}. "
+            "Python tasks with env= must live in importable packaged modules available in the "
+            "target environment. Use @task(kind='shell') for shell command wrappers."
+        ) from exc
 
 
 @contextlib.contextmanager

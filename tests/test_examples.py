@@ -44,6 +44,28 @@ def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
 
 
 class TestExamples:
+    def test_bioinfo_example_runs_and_caches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        example_dir = _copy_example(name="bioinfo", destination_root=tmp_path)
+        monkeypatch.chdir(example_dir)
+
+        _, first_manifest = _run_example(example_dir=example_dir)
+        filtered_fastqs = sorted((example_dir / "results" / "filtered").glob("*.filtered.fastq"))
+        qc_tables = sorted((example_dir / "results" / "qc").glob("*.stats.tsv"))
+        summary = pd.read_csv(example_dir / "results" / "summary.csv")
+
+        assert first_manifest["status"] == "succeeded"
+        assert len(filtered_fastqs) == 2
+        assert len(qc_tables) == 2
+        assert sorted(summary["sample_id"].tolist()) == ["sample_a", "sample_b"]
+
+        _, second_manifest = _run_example(example_dir=example_dir)
+        assert second_manifest["status"] == "succeeded"
+        assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
+
     def test_retail_analytics_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,

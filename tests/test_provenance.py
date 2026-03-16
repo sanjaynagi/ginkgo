@@ -42,6 +42,8 @@ class TestRunProvenanceRecorder:
 
         manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["tasks"]["task_0000"]["output"] == "results/out.txt"
+        assert manifest["tasks"]["task_0000"]["kind"] == "python"
+        assert manifest["tasks"]["task_0000"]["execution_mode"] == "worker"
 
     def test_resources_and_memory_budget_are_serialized(self, tmp_path: Path) -> None:
         workflow_path = tmp_path / "workflow.py"
