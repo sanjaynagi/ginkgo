@@ -8,10 +8,11 @@ The repository currently implements:
 
 - Declarative workflow construction with `@flow`, `@task()`, `Expr`, and `ExprList`
 - Dynamic DAG expansion when tasks return nested `Expr` or `ExprList` values
+- Explicit task kinds via `@task(kind="python" | "shell")`
 - Content-addressed caching for scalar values, files, folders, arrays, DataFrames, and other supported Python objects
 - Concurrent scheduling with job, core, and memory constraints
 - Python task execution through a `ProcessPoolExecutor`
-- Shell task execution with Pixi environment support
+- Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
 - Run provenance, per-task logs, cache inspection, and CLI debugging commands
 - A local browser UI for browsing runs, tasks, task graphs, logs, and cache entries
 - A canonical package-based workflow repository layout with root autodiscovery
@@ -135,7 +136,9 @@ Python task bodies must be top-level importable functions for worker execution. 
 
 ### Shell Tasks
 
-Shell execution is expressed by returning `shell_task(...)` from a Python task body. The task body runs in Python, constructs a concrete shell command, and the runtime executes that command while validating the declared outputs.
+Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
+
+For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches the shell payload through Pixi, while true `kind="python"` tasks with `env=` still execute their Python bodies inside the foreign worker environment.
 
 ### Special Types
 

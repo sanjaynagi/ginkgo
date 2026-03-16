@@ -40,7 +40,7 @@ from ginkgo.runtime.value_codec import (
     encode_value,
     ensure_serializable,
 )
-from ginkgo.runtime.worker import run_task
+from ginkgo.runtime.worker import _task_log_context, run_task
 
 # Inline Python code executed via ``python -c`` inside a Pixi environment.
 # Using ``-c`` avoids adding the script directory to sys.path, which would
@@ -396,6 +396,8 @@ class _ConcurrentEvaluator:
                 node_id=node_id,
                 task_name=expr.task_def.name,
                 env=expr.task_def.env,
+                kind=expr.task_def.kind,
+                execution_mode=expr.task_def.execution_mode,
                 retries=expr.task_def.retries,
             )
             self._nodes[node_id].stdout_path = stdout_path
@@ -426,7 +428,7 @@ class _ConcurrentEvaluator:
             include_tmp_dirs=False,
         )
         self._validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
-        self._validate_python_task_preconditions(
+        self._validate_task_preconditions(
             task_def=node.task_def,
             resolved_args=resolved_args,
         )
@@ -543,7 +545,17 @@ class _ConcurrentEvaluator:
                 tmp_paths=node.tmp_paths,
             )
             self._record_task_metadata(node)
-            self._validate_python_task_contract(node=node)
+            self._validate_task_contract(node=node)
+
+            if node.task_def.kind == "shell":
+                assert self._shell_executor is not None
+                future = self._shell_executor.submit(
+                    self._run_driver_task,
+                    node=node,
+                )
+                self._running_futures[future] = (node_id, "driver")
+                continue
+
             node.transport_path = Path(
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
@@ -580,7 +592,9 @@ class _ConcurrentEvaluator:
 
             try:
                 if phase in {"python", "pixi_python"}:
-                    self._handle_completed_python_phase(node=node, completed_value=completed_value)
+                    self._handle_completed_worker_phase(node=node, completed_value=completed_value)
+                elif phase == "driver":
+                    self._handle_completed_driver_phase(node=node, completed_value=completed_value)
                 else:
                     self._handle_completed_shell_phase(node=node, completed_value=completed_value)
             except BaseException as exc:
@@ -607,45 +621,14 @@ class _ConcurrentEvaluator:
             if not progressed:
                 return
 
-    def _handle_completed_python_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
-        """Handle the result returned from the Python process."""
+    def _handle_completed_worker_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
+        """Handle the result returned from a Python worker."""
         completed_value = self._decode_worker_result(node=node, payload=completed_value)
-        if self._failure is not None and isinstance(completed_value, (Expr, ExprList)):
-            self._cleanup_transport(node)
-            for path in node.tmp_paths:
-                shutil.rmtree(path)
-            node.tmp_paths = []
-            node.state = "failed"
-            return
+        self._handle_task_body_result(node=node, completed_value=completed_value)
 
-        if isinstance(completed_value, ShellExpr):
-            self._cleanup_transport(node)
-            assert self._shell_executor is not None
-            node.state = "running_shell"
-            future = self._shell_executor.submit(
-                self._run_shell,
-                node=node,
-                shell_expr=completed_value,
-            )
-            self._running_futures[future] = (node.node_id, "shell")
-            return
-
-        self._validate_process_safe_value(
-            value=completed_value,
-            label=f"{node.task_def.name}.return",
-        )
-        self._cleanup_transport(node)
-
-        dynamic_dependencies = self._register_value(completed_value)
-        if dynamic_dependencies:
-            node.state = "waiting_dynamic"
-            node.dynamic_template = completed_value
-            node.dynamic_dependency_ids = dynamic_dependencies
-            self._record_task_metadata(node)
-            return
-
-        final_value = self._finalize_result_value(node=node, value=completed_value)
-        self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
+    def _handle_completed_driver_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
+        """Handle the result returned from a driver-executed task wrapper."""
+        self._handle_task_body_result(node=node, completed_value=completed_value)
 
     def _handle_completed_shell_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Handle the result produced by the shell executor."""
@@ -996,8 +979,10 @@ class _ConcurrentEvaluator:
             "ginkgo_import_roots": import_roots_for_path(worker_module_file),
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
+            "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
+            "task_kind": node.task_def.kind,
             "task_name": node.task_def.fn.__name__,
             "transport_dir": str(node.transport_path),
         }
@@ -1033,14 +1018,14 @@ class _ConcurrentEvaluator:
             shutil.rmtree(node.transport_path)
         node.transport_path = None
 
-    def _validate_python_task_contract(self, *, node: _TaskNode) -> None:
-        """Validate that a Python task can run safely in a worker process."""
-        self._validate_python_task_preconditions(
+    def _validate_task_contract(self, *, node: _TaskNode) -> None:
+        """Validate that a task can run safely under its declared contract."""
+        self._validate_task_preconditions(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
         )
 
-    def _validate_python_task_preconditions(
+    def _validate_task_preconditions(
         self,
         *,
         task_def: TaskDef,
@@ -1412,6 +1397,8 @@ class _ConcurrentEvaluator:
             node_id=node.node_id,
             task_name=node.task_def.name,
             env=node.task_def.env,
+            kind=node.task_def.kind,
+            execution_mode=node.task_def.execution_mode,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
             cache_key=node.cache_key,
@@ -1479,6 +1466,81 @@ class _ConcurrentEvaluator:
         if retries_remaining is not None:
             payload["retries_remaining"] = retries_remaining
         print(json.dumps(payload, sort_keys=True), file=self._stderr)
+
+    def _run_driver_task(self, *, node: _TaskNode) -> Any:
+        """Run a shell-task wrapper on the scheduler process."""
+        assert node.resolved_args is not None
+        with _task_log_context(
+            stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
+            stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
+        ):
+            return node.task_def.fn(**node.resolved_args)
+
+    def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
+        """Advance a task after its Python wrapper has finished."""
+        if self._failure is not None and (
+            isinstance(completed_value, ShellExpr)
+            or self._contains_dynamic_expression(completed_value)
+        ):
+            self._cleanup_transport(node)
+            for path in node.tmp_paths:
+                shutil.rmtree(path)
+            node.tmp_paths = []
+            node.state = "failed"
+            return
+
+        if node.task_def.kind == "python":
+            if isinstance(completed_value, ShellExpr):
+                self._cleanup_transport(node)
+                raise TypeError(
+                    f"{node.task_def.name} returned shell(...), but the task is declared "
+                    "with kind='python'. Use @task(kind='shell') for shell command tasks."
+                )
+
+            self._validate_process_safe_value(
+                value=completed_value,
+                label=f"{node.task_def.name}.return",
+            )
+            self._cleanup_transport(node)
+
+            dynamic_dependencies = self._register_value(completed_value)
+            if dynamic_dependencies:
+                node.state = "waiting_dynamic"
+                node.dynamic_template = completed_value
+                node.dynamic_dependency_ids = dynamic_dependencies
+                self._record_task_metadata(node)
+                return
+
+            final_value = self._finalize_result_value(node=node, value=completed_value)
+            self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
+            return
+
+        if isinstance(completed_value, ShellExpr):
+            self._cleanup_transport(node)
+            assert self._shell_executor is not None
+            node.state = "running_shell"
+            future = self._shell_executor.submit(
+                self._run_shell,
+                node=node,
+                shell_expr=completed_value,
+            )
+            self._running_futures[future] = (node.node_id, "shell")
+            return
+
+        dynamic_dependencies = self._register_value(completed_value)
+        if dynamic_dependencies:
+            self._cleanup_transport(node)
+            node.state = "waiting_dynamic"
+            node.dynamic_template = completed_value
+            node.dynamic_dependency_ids = dynamic_dependencies
+            self._record_task_metadata(node)
+            return
+
+        self._cleanup_transport(node)
+        raise TypeError(
+            f"{node.task_def.name} is declared with kind='shell' and must return "
+            "shell(...) or dynamic task expressions."
+        )
 
 
 class ShellTaskError(RuntimeError):
