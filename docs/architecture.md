@@ -275,14 +275,14 @@ Phase 2 of the implementation roadmap is now completed through the expanded
 example suite under `examples/`. The repository-level validation corpus now
 includes:
 
-- `retail_analytics` for static fan-out, fan-in, and shell-generated delivery
+- `retail` for static fan-out, fan-in, and shell-generated delivery
   bundles
 - `newsroom` for runtime-determined `ExprList` expansion and dynamic dependency
   recording
-- `supply_chain` for multi-scenario analysis with richer artifact fan-in
-- `chemistry_screening` for chemistry-domain portfolio review with
+- `supplychain` for multi-scenario analysis with richer artifact fan-in
+- `chem` for chemistry-domain portfolio review with
   runtime-determined per-series packet generation
-- `ml_model_ops` for ML-domain candidate evaluation, promotion, and delivery
+- `ml` for ML-domain candidate evaluation, promotion, and delivery
   packaging across a deeper static DAG
 
 `tests/test_examples.py` runs these examples end to end in isolated workspaces
