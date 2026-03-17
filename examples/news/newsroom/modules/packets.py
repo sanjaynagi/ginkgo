@@ -7,12 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import ExprList, file, task
-
-
-def _safe_slug(value: str) -> str:
-    """Return a file-safe slug for a desk or artifact name."""
-    return "".join(ch if ch.isalnum() else "_" for ch in value.lower()).strip("_")
+from ginkgo import ExprList, expand, file, slug, task
 
 
 @task()
@@ -31,7 +26,7 @@ def write_desk_packet(desk: str, stories: list[dict[str, object]]) -> file:
                 f"(priority={item['priority_score']}, band={item['publish_band']})"
             )
         )
-    output = Path(f"results/desk_packets/{_safe_slug(desk)}_packet.md")
+    output = Path(f"results/desk_packets/{slug(desk)}_packet.md")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return file(str(output))
@@ -83,8 +78,7 @@ def compile_newsroom_digest(
         )
 
     lines.extend(["", "## Desk Packets"])
-    for packet_path in desk_packets:
-        lines.append(f"- {packet_path}")
+    lines.extend(expand("- {packet_path}", packet_path=desk_packets))
 
     output = Path("results/newsroom_digest.md")
     output.parent.mkdir(parents=True, exist_ok=True)

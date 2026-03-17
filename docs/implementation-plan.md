@@ -56,6 +56,7 @@ Each phase is independently testable and follows the same structure:
 - Cache explanation tooling that reports why a task was cached or rerun.
 - Machine-readable inspection output for workflows, tasks, dependencies, envs, resources, and cache metadata.
 - Extend `ginkgo init` so project scaffolding also creates or installs a standard set of agent skills alongside the project template.
+- Add agent-facing notebook prototyping support based on the [`datalayer/jupyter-mcp-server`](https://github.com/datalayer/jupyter-mcp-server), with project-local notebooks stored under `workflow/notebooks/`.
 - Ongoing improvements to scaffolding templates and installed skills for common Ginkgo project types.
 
 ### Key design points
@@ -64,6 +65,7 @@ Each phase is independently testable and follows the same structure:
 - The linter and doctor commands should share the same validation logic as the runtime.
 - Cache explanation should rely on real cache-key components, not heuristic guesses.
 - Agent-skill bootstrapping should be deterministic and idempotent so rerunning `ginkgo init` or upgrading templates does not leave projects in a half-installed state.
+- Agent-oriented prototyping should happen in Jupyter notebooks accessed through the Jupyter MCP server, with a standard on-disk location at `workflow/notebooks/` so both humans and agents can discover and reuse exploratory work consistently.
 
 ### Validation
 
@@ -72,6 +74,7 @@ Each phase is independently testable and follows the same structure:
 - Assert cache explain reports a version bump, env lock hash change, and changed input file contents as distinct rerun reasons.
 - Assert the inspect API returns dependency edges, task metadata, and resource declarations in deterministic JSON.
 - Assert `ginkgo init` creates or installs the expected agent-skill set and that the resulting project is immediately usable by the agent without manual skill setup.
+- Assert initialized projects expose the expected notebook prototyping path at `workflow/notebooks/` and can be connected to the configured Jupyter MCP workflow without ad hoc directory setup.
 
 ---
 
