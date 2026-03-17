@@ -140,6 +140,11 @@ Shell execution is expressed by declaring `@task(kind="shell")` and returning `s
 
 For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches the shell payload through Pixi, while true `kind="python"` tasks with `env=` still execute their Python bodies inside the foreign worker environment.
 
+This completes the Phase 3 execution-boundary work from the implementation
+roadmap: graph construction remains scheduler-local, shell-oriented tasks cross
+the boundary as executable shell payloads, and foreign-environment Python tasks
+now have a distinct execution contract from foreign-environment shell tasks.
+
 ### Special Types
 
 Ginkgo currently ships three path-oriented marker types:
@@ -297,8 +302,6 @@ cache reuse on rerun.
 The current runtime still has important boundaries and tradeoffs:
 
 - worker-executed Python tasks must be importable by module path
-- top-level imports in workflow modules can leak into foreign task environments because workers import task modules
-- shell-oriented tasks are still wrapped by Python task bodies
 - the authoritative run state for live execution is still in-memory, with YAML manifests as persisted exports
 
 Those constraints drive several of the future roadmap items in the implementation plan.
