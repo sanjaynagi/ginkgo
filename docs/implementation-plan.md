@@ -78,42 +78,6 @@ Each phase is independently testable and follows the same structure:
 
 ---
 
-## Phase 6 — Container Execution Backend
-
-**Goal:** Decouple task execution from the scheduler host by introducing a container-first runtime that still works locally.
-
-### Deliverables
-
-- Add a backend abstraction for task execution instead of hard-coding local subprocesses and process-pool workers.
-- Implement a Docker or OCI-container executor for both:
-  - shell tasks
-  - Python tasks
-- Add first-class environment metadata that can represent either:
-  - Pixi envs for local development
-  - container images for cloud-oriented execution
-- Capture container image identity in cache keys and run provenance, preferably by immutable image digest.
-- Define host/container mount conventions for:
-  - workflow source
-  - input artifacts
-  - output artifacts
-  - cache artifacts
-  - temp directories
-  - logs
-
-### Key design points
-
-- The container backend should reuse the existing evaluator, dependency graph, cache logic, and provenance recorder.
-- The hard problem is path semantics, not command execution.
-- Pixi remains useful as a local authoring and testing environment even after containers are added.
-
-### Validation
-
-- Run `VW-1` through `VW-8` through the container executor and assert results match the local executor.
-- Assert cache invalidation occurs when the container image digest changes.
-- Assert per-task logs and manifests still record resolved inputs, outputs, and environment identity.
-
----
-
 ## Phase 7 — Remote Artifact Store
 
 **Goal:** Remove the assumption that all task inputs, outputs, cache entries, and logs live on the scheduler's local filesystem.

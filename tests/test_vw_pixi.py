@@ -340,8 +340,9 @@ class TestPixiShellTask:
         # Capture log output on run 2 to confirm the task was served from cache.
         log = io.StringIO()
         from ginkgo.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.backend import LocalBackend
 
-        evaluator = _ConcurrentEvaluator(pixi_registry=registry, _stderr=log)
+        evaluator = _ConcurrentEvaluator(backend=LocalBackend(pixi_registry=registry), _stderr=log)
         evaluator.evaluate(shell_touch(output_path=output))
         assert '"cached"' in log.getvalue()
 

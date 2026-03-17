@@ -71,13 +71,14 @@ ginkgo run workflow.py
 ## Project Layout
 
 ```text
-src/ginkgo/
+ginkgo/
 ├── __init__.py
 ├── config.py
 ├── core/
 ├── runtime/
 ├── envs/
-└── cli/
+├── cli/
+└── ui/
 ```
 
 - `core/`: user-facing DSL types and decorators
