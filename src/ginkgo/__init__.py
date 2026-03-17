@@ -16,12 +16,16 @@ _EXPORTS = {
     "ShellExpr": ("ginkgo.core.shell", "ShellExpr"),
     "TaskDef": ("ginkgo.core.task", "TaskDef"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
+    "expand": ("ginkgo.helpers", "expand"),
+    "flatten": ("ginkgo.helpers", "flatten"),
     "file": ("ginkgo.core.types", "file"),
     "flow": ("ginkgo.core.flow", "flow"),
     "folder": ("ginkgo.core.types", "folder"),
     "shell": ("ginkgo.core.shell", "shell"),
+    "slug": ("ginkgo.helpers", "slug"),
     "task": ("ginkgo.core.task", "task"),
     "tmp_dir": ("ginkgo.core.types", "tmp_dir"),
+    "zip_expand": ("ginkgo.helpers", "zip_expand"),
 }
 
 _LEGACY_MODULE_ALIASES = {
