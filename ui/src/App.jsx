@@ -28,6 +28,37 @@ function usePathname() {
   return { pathname, navigate };
 }
 
+function parseRoute(pathname) {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 0) return { page: "home" };
+  if (parts[0] === "workspaces" && parts.length === 1) return { page: "workspaces" };
+  if (parts[0] === "workspaces" && parts[1] && parts[2] === "cache") {
+    return { page: "cache", workspaceId: parts[1] };
+  }
+  if (
+    parts[0] === "workspaces" &&
+    parts[1] &&
+    parts[2] === "runs" &&
+    parts[3] &&
+    parts[4] === "tasks" &&
+    parts[5]
+  ) {
+    return {
+      page: "task",
+      workspaceId: parts[1],
+      runId: parts[3],
+      taskKey: decodeURIComponent(parts[5]),
+    };
+  }
+  if (parts[0] === "workspaces" && parts[1] && parts[2] === "runs" && parts[3]) {
+    return { page: "run", workspaceId: parts[1], runId: parts[3] };
+  }
+  if (parts[0] === "workspaces" && parts[1] && parts[2] === "runs") {
+    return { page: "runs", workspaceId: parts[1] };
+  }
+  return { page: "home" };
+}
+
 function formatDuration(seconds) {
   if (seconds == null) return "—";
   if (seconds < 1) return `${seconds.toFixed(2)}s`;
@@ -45,6 +76,15 @@ function formatTimestamp(value) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatDateTimeLarge(value) {
+  if (!value) return { date: "—", time: "" };
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return { date: value, time: "" };
+  const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
+  const time = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(d);
+  return { date, time };
 }
 
 function relativeWorkflowPath(workflowPath, projectRoot) {
@@ -101,7 +141,7 @@ function GinkgoLogo() {
     <svg width="22" height="22" viewBox="0 0 48 48" fill="none">
       <path
         d="M24 4C16 4 8 12 8 24c0 8 4 14 8 17l1-1c-2-4-3-9-3-14 0-10 5-17 10-20v0c5 3 10 10 10 20 0 5-1 10-3 14l1 1c4-3 8-9 8-17C40 12 32 4 24 4z"
-        fill="#e5a93e"
+        fill="#b9852b"
       />
     </svg>
   );
@@ -132,10 +172,187 @@ function taskBaseName(value) {
   return parts[parts.length - 1] || value;
 }
 
-function Breadcrumbs({ route, runDetail, navigate }) {
+function parseTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function runElapsedSeconds(run, nowValue) {
+  if (!run?.manifest?.started_at) return null;
+  const started = parseTimestamp(run.manifest.started_at);
+  if (!started) return null;
+  const finished = parseTimestamp(run.manifest.finished_at);
+  const end = finished ?? new Date(nowValue);
+  return Math.max(0, (end.getTime() - started.getTime()) / 1000);
+}
+
+function summarizeRunTasks(run) {
+  const tasks = run?.tasks || [];
+  const counts = { succeeded: 0, cached: 0, failed: 0, running: 0, pending: 0 };
+  for (const task of tasks) {
+    counts[task.status] = (counts[task.status] || 0) + 1;
+  }
+  return counts;
+}
+
+function buildRunSummaryFromDetail(run) {
+  const summary = summarizeRunTasks(run);
+  return {
+    workspace_id: run.workspace_id,
+    workspace_label: run.workspace_label,
+    project_root: run.project_root,
+    run_id: run.run_id,
+    workflow: relativeWorkflowPath(run.manifest?.workflow, run.project_root),
+    workflow_path: run.manifest?.workflow,
+    status: run.manifest?.status || "unknown",
+    started_at: run.manifest?.started_at,
+    finished_at: run.manifest?.finished_at,
+    task_count: (run.tasks || []).length,
+    failed_count: summary.failed || 0,
+    cached_count: summary.cached || 0,
+    succeeded_count: summary.succeeded || 0,
+    duration_seconds: runElapsedSeconds(run, Date.now()),
+  };
+}
+
+function upsertRunSummary(currentRuns, nextRun) {
+  const nextSummary = buildRunSummaryFromDetail(nextRun);
+  const merged = [...currentRuns];
+  const index = merged.findIndex((run) => run.run_id === nextSummary.run_id);
+  if (index >= 0) {
+    merged[index] = nextSummary;
+  } else {
+    merged.unshift(nextSummary);
+  }
+  merged.sort((left, right) => String(right.started_at || "").localeCompare(String(left.started_at || "")));
+  return merged;
+}
+
+function Sidebar({ route, activeWorkspaceId, navigate }) {
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-brand" onClick={() => navigate("/")}>
+        <GinkgoLogo />
+        <div>
+          <strong>Ginkgo</strong>
+        </div>
+      </div>
+
+      <div className="sidebar-section">
+        <div className="sidebar-label">Navigation</div>
+        <button
+          className={`sidebar-link ${route.page === "home" || route.page === "runs" || route.page === "run" || route.page === "task" ? "active" : ""}`}
+          onClick={() => (activeWorkspaceId ? navigate(`/workspaces/${activeWorkspaceId}/runs`) : navigate("/"))}
+        >
+          Runs
+        </button>
+        <button
+          className={`sidebar-link ${route.page === "cache" ? "active" : ""}`}
+          onClick={() => activeWorkspaceId && navigate(`/workspaces/${activeWorkspaceId}/cache`)}
+          disabled={!activeWorkspaceId}
+        >
+          Cache
+        </button>
+        <div className="sidebar-divider" />
+        <button
+          className={`sidebar-link ${route.page === "workspaces" ? "active" : ""}`}
+          onClick={() => navigate("/workspaces")}
+        >
+          Workspaces
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function Topbar({
+  activeWorkspace,
+  workspaces,
+  loadingWorkspace,
+  onActivateWorkspace,
+  onLoadWorkspace,
+  onOpenRunDialog,
+}) {
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+
+  useEffect(() => {
+    setWorkspaceMenuOpen(false);
+  }, [activeWorkspace?.workspace_id]);
+
+  return (
+    <header className="topbar">
+      <div className="topbar-heading">
+        <div className="workspace-switcher">
+          <button
+            className="workspace-switcher-button"
+            onClick={() => setWorkspaceMenuOpen((open) => !open)}
+          >
+            <span className="topbar-workspace-name">
+              {activeWorkspace ? activeWorkspace.label : "No workspace loaded"}
+            </span>
+            <span className="workspace-switcher-caret">▾</span>
+          </button>
+          {workspaceMenuOpen ? (
+            <div className="workspace-switcher-menu">
+              <div className="workspace-switcher-list">
+                {workspaces.map((workspace) => (
+                  <button
+                    key={workspace.workspace_id}
+                    className={`workspace-switcher-item ${workspace.is_active ? "active" : ""}`}
+                    onClick={() => {
+                      onActivateWorkspace(workspace.workspace_id);
+                      setWorkspaceMenuOpen(false);
+                    }}
+                  >
+                    <strong>{workspace.label}</strong>
+                    <span>{workspace.run_count} runs</span>
+                  </button>
+                ))}
+              </div>
+              <button
+                className="workspace-switcher-add"
+                onClick={() => {
+                  onLoadWorkspace();
+                  setWorkspaceMenuOpen(false);
+                }}
+                disabled={loadingWorkspace}
+              >
+                <span className="workspace-switcher-plus">+</span>
+                <span>{loadingWorkspace ? "Loading..." : "Load workspace"}</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="topbar-actions">
+        <button
+          className="primary-button"
+          onClick={onOpenRunDialog}
+          disabled={!activeWorkspace}
+        >
+          Run workflow
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Breadcrumbs({ route, activeWorkspace, runDetail, navigate }) {
   return (
     <nav className="breadcrumbs">
-      <button className="breadcrumb-link" onClick={() => navigate("/")}>Runs</button>
+      <button className="breadcrumb-link" onClick={() => navigate("/workspaces")}>Workspaces</button>
+      {activeWorkspace ? (
+        <>
+          <span className="breadcrumb-sep">/</span>
+          <button
+            className="breadcrumb-link"
+            onClick={() => navigate(`/workspaces/${activeWorkspace.workspace_id}/runs`)}
+          >
+            {activeWorkspace.label}
+          </button>
+        </>
+      ) : null}
       {route.page === "cache" ? (
         <>
           <span className="breadcrumb-sep">/</span>
@@ -146,7 +363,10 @@ function Breadcrumbs({ route, runDetail, navigate }) {
         <>
           <span className="breadcrumb-sep">/</span>
           {route.page === "task" ? (
-            <button className="breadcrumb-link" onClick={() => navigate(`/runs/${runDetail.run_id}`)}>
+            <button
+              className="breadcrumb-link"
+              onClick={() => navigate(`/workspaces/${runDetail.workspace_id}/runs/${runDetail.run_id}`)}
+            >
               {shortRunHash(runDetail.run_id)}
             </button>
           ) : (
@@ -164,12 +384,52 @@ function Breadcrumbs({ route, runDetail, navigate }) {
   );
 }
 
-function RunList({ runs, latestRunId, onOpenRun, onOpenRunDialog, live }) {
+function WorkspaceOverview({ workspaces, activeWorkspaceId, onActivateWorkspace }) {
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2 className="panel-title">Recent runs</h2>
+          <h2 className="panel-title">Loaded workspaces</h2>
+          <p className="panel-subtitle">Switch the active workspace to inspect runs and cache.</p>
+        </div>
+      </div>
+      {workspaces.length === 0 ? (
+        <div className="empty-state">
+          <GinkgoLeafIcon />
+          <h3>No workspaces loaded</h3>
+          <p>Use the Load workspace button to add a Ginkgo project folder.</p>
+        </div>
+      ) : (
+        <div className="workspace-grid">
+          {workspaces.map((workspace) => (
+            <button
+              key={workspace.workspace_id}
+              className={`workspace-card ${workspace.workspace_id === activeWorkspaceId ? "active" : ""}`}
+              onClick={() => onActivateWorkspace(workspace.workspace_id)}
+            >
+              <div className="workspace-card-top">
+                <strong>{workspace.label}</strong>
+                {workspace.workspace_id === activeWorkspaceId ? <span>Active</span> : null}
+              </div>
+              <div className="workspace-card-path">{workspace.project_root}</div>
+              <div className="workspace-card-meta">
+                <span>{workspace.run_count} runs</span>
+                <span>{workspace.workflow_count} workflows</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RunList({ runs, workspaceLabel, latestRunId, onOpenRun, onOpenRunDialog, live }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2 className="panel-title">{workspaceLabel ? `${workspaceLabel} runs` : "Recent runs"}</h2>
           <p className="panel-subtitle">Ordered by execution time</p>
         </div>
         <div className="header-actions">
@@ -186,7 +446,7 @@ function RunList({ runs, latestRunId, onOpenRun, onOpenRunDialog, live }) {
         <div className="empty-state">
           <GinkgoLeafIcon />
           <h3>No runs yet</h3>
-          <p>Run a workflow with <code>ginkgo run workflow.py</code> and it will appear here.</p>
+          <p>Run a workflow from this workspace and it will appear here.</p>
         </div>
       ) : (
         <div className="table-shell">
@@ -205,7 +465,11 @@ function RunList({ runs, latestRunId, onOpenRun, onOpenRunDialog, live }) {
             </thead>
             <tbody>
               {runs.map((run) => (
-                <tr key={run.run_id} onClick={() => onOpenRun(run.run_id)}>
+                <tr
+                  key={run.run_id}
+                  className={run.status === "running" ? "live-row" : ""}
+                  onClick={() => onOpenRun(run.run_id)}
+                >
                   <td className="strong">
                     <div>{shortRunHash(run.run_id)}</div>
                     <div className="micro-copy">{formatTimestamp(run.started_at)}</div>
@@ -361,11 +625,23 @@ function DagProgress({ tasks }) {
   );
 }
 
-function DagView({ tasks, onOpenTask, activeTaskKey }) {
+function DagView({ tasks, onOpenTask, activeTaskKey, isLive }) {
   const [zoom, setZoom] = useState(1);
+  const [focusMode, setFocusMode] = useState("all");
+  const scrollRef = React.useRef(null);
+  const graphRef = React.useRef(null);
+
+  function taskPriority(task) {
+    return {
+      running: 0,
+      failed: 1,
+      pending: 2,
+      succeeded: 3,
+      cached: 4,
+    }[task.status] ?? 5;
+  }
+
   const graph = useMemo(() => {
-    // Compute layers via iterative relaxation to handle both static and
-    // dynamic dependencies correctly regardless of task ordering.
     const layers = new Map();
     for (const task of tasks) {
       layers.set(task.node_id, 0);
@@ -398,13 +674,19 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
       grouped.get(layer).push(task);
     }
     for (const columnTasks of grouped.values()) {
-      columnTasks.sort((left, right) => (left.node_id ?? 0) - (right.node_id ?? 0));
+      columnTasks.sort((left, right) => {
+        const priority = taskPriority(left) - taskPriority(right);
+        if (priority !== 0) return priority;
+        return String(left.task_name || left.task || "").localeCompare(
+          String(right.task_name || right.task || ""),
+        );
+      });
     }
 
-    const nodeW = 140;
-    const nodeH = 46;
-    const colSpacing = 174;
-    const rowSpacing = 62;
+    const nodeW = 148;
+    const nodeH = 54;
+    const colSpacing = 190;
+    const rowSpacing = 74;
 
     const nodes = [];
     const nodeLookup = new Map();
@@ -462,9 +744,26 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
     }
     const maxRows = Math.max(...columns.map((layer) => grouped.get(layer)?.length || 0), 1);
     const width = Math.max(480, columns.length * colSpacing + 48);
-    const height = Math.max(120, maxRows * rowSpacing + 36);
-    return { nodes, links, width, height, columns };
+    const height = Math.max(160, maxRows * rowSpacing + 48);
+    return { nodes, links, width, height };
   }, [tasks]);
+
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    const viewportWidth = scrollRef.current.clientWidth || graph.width;
+    const nextZoom = Math.min(1, Math.max(0.6, viewportWidth / (graph.width + 120)));
+    setZoom(nextZoom);
+  }, [graph.width]);
+
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    if (focusMode === "all") return;
+    const selector = focusMode === "running" ? ".dag-node.tone-running" : ".dag-node.tone-failed";
+    const element = graphRef.current?.querySelector(selector);
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+  }, [focusMode, tasks]);
 
   if (!tasks.length) {
     return <div className="empty-state compact-empty"><p>No task graph data available yet.</p></div>;
@@ -475,9 +774,26 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
       <div className="panel-header">
         <div>
           <h3 className="panel-title">Task graph</h3>
-          <p className="panel-subtitle">Execution stages</p>
+          <p className="panel-subtitle">
+            {isLive ? "Live execution stages" : "Execution stages"}
+          </p>
         </div>
         <div className="dag-toolbar">
+          <div className="dag-mode-toggle">
+            {[
+              ["all", "All"],
+              ["running", "Running"],
+              ["failed", "Failed"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                className={`detail-tab ${focusMode === key ? "active" : ""}`}
+                onClick={() => setFocusMode(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="dag-legend">
             <span><i className="legend-dot tone-pending" /> Pending</span>
             <span><i className="legend-dot tone-running" /> Running</span>
@@ -487,6 +803,7 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
             <span><i className="legend-line dynamic" /> Dynamic</span>
           </div>
           <div className="zoom-controls">
+            <button className="ghost-button" onClick={() => setZoom(1)}>Reset</button>
             <button className="ghost-button" onClick={() => setZoom((value) => Math.max(0.7, value - 0.1))}>−</button>
             <span>{Math.round(zoom * 100)}%</span>
             <button className="ghost-button" onClick={() => setZoom((value) => Math.min(1.5, value + 0.1))}>+</button>
@@ -495,8 +812,9 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
       </div>
       <DagProgress tasks={tasks} />
       <div className="dag-shell">
-        <div className="dag-scroll">
+        <div className="dag-scroll" ref={scrollRef}>
           <svg
+            ref={graphRef}
             className="dag-canvas"
             viewBox={`0 0 ${graph.width} ${graph.height}`}
             style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }}
@@ -520,10 +838,10 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
                 onClick={() => onOpenTask(node.task_key)}
                 className={`dag-node tone-${statusTone(node.status)} ${activeTaskKey === node.task_key ? "active" : ""}`}
               >
-                <rect rx="8" ry="8" width="140" height="46" />
-                <text x="10" y="19" className="dag-node-name">{truncateLabel(node.task_name, 18)}</text>
-                <text x="10" y="33" className="dag-node-sub">{node.status}</text>
-                <text x="122" y="26" className="dag-node-icon">{statusIcon(node.status)}</text>
+                <rect rx="10" ry="10" width="148" height="54" />
+                <text x="12" y="20" className="dag-node-name">{truncateLabel(node.task_name, 18)}</text>
+                <text x="12" y="37" className="dag-node-sub">{node.status}</text>
+                <text x="126" y="32" className="dag-node-icon">{statusIcon(node.status)}</text>
               </g>
             ))}
           </svg>
@@ -533,12 +851,12 @@ function DagView({ tasks, onOpenTask, activeTaskKey }) {
   );
 }
 
-function CacheBrowser({ entries, onDelete, onClearAll, clearing }) {
+function CacheBrowser({ entries, workspaceLabel, onDelete, onClearAll, clearing }) {
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2 className="panel-title">Cache browser</h2>
+          <h2 className="panel-title">{workspaceLabel ? `${workspaceLabel} cache` : "Cache browser"}</h2>
           <p className="panel-subtitle">Content-addressed entries</p>
         </div>
         <div className="header-actions">
@@ -691,43 +1009,34 @@ function RunWorkflowModal({ open, workflows, initialWorkflow, busy, onClose, onS
   );
 }
 
-function formatDateTimeLarge(value) {
-  if (!value) return { date: "—", time: "" };
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return { date: value, time: "" };
-  const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
-  const time = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(d);
-  return { date, time };
-}
-
-function RunDetail({ run, onOpenTask, activeTaskKey }) {
+function RunDetail({ run, projectRoot, onOpenTask, activeTaskKey, nowValue }) {
   const [detailTab, setDetailTab] = useState("graph");
   const tasks = run.tasks || [];
-  const summary = useMemo(() => {
-    const counts = { succeeded: 0, cached: 0, failed: 0, running: 0, pending: 0 };
-    for (const task of tasks) {
-      counts[task.status] = (counts[task.status] || 0) + 1;
-    }
-    return counts;
-  }, [tasks]);
+  const summary = useMemo(() => summarizeRunTasks(run), [run]);
 
   const started = formatDateTimeLarge(run.manifest.started_at);
+  const workflowLabel = relativeWorkflowPath(run.manifest.workflow, projectRoot);
+  const elapsedSeconds = runElapsedSeconds(run, nowValue);
+  const isRunning = run.manifest?.status === "running";
 
   return (
     <section className="run-detail">
       <div className="detail-hero">
         <div className="hero-copy">
           <div className="hero-top-row">
-            <span className="hero-workflow">{run.manifest.workflow}</span>
+            <span className="hero-workflow">{workflowLabel}</span>
             <Badge status={run.manifest.status || "unknown"} />
+            {isRunning ? <span className="hero-live-pill">Live run</span> : null}
           </div>
           <div className="hero-datetime">
             <span className="hero-date">{started.date}</span>
             <span className="hero-time">{started.time}</span>
           </div>
           <div className="hero-pills">
+            <span className="hero-pill">{run.workspace_label}</span>
             <span className="hero-pill">Jobs {run.manifest.jobs ?? "auto"}</span>
             <span className="hero-pill">Cores {run.manifest.cores ?? "auto"}</span>
+            <span className="hero-pill">Elapsed {formatDuration(elapsedSeconds)}</span>
             <span className="hero-pill hero-run-id">{shortRunHash(run.run_id)}</span>
           </div>
         </div>
@@ -737,7 +1046,12 @@ function RunDetail({ run, onOpenTask, activeTaskKey }) {
         <MetricCard label="Tasks" value={tasks.length} subvalue="Total recorded" />
         <MetricCard label="Succeeded" value={summary.succeeded || 0} subvalue="Executed OK" accent="emerald" />
         <MetricCard label="Cached" value={summary.cached || 0} subvalue="From cache" accent="blue" />
-        <MetricCard label="Failed" value={summary.failed || 0} subvalue="Need attention" accent="rose" />
+        <MetricCard
+          label={isRunning ? "Running" : "Failed"}
+          value={isRunning ? summary.running || 0 : summary.failed || 0}
+          subvalue={isRunning ? "In flight now" : "Need attention"}
+          accent={isRunning ? "gold" : "rose"}
+        />
       </div>
 
       <div className="detail-tabs">
@@ -757,7 +1071,12 @@ function RunDetail({ run, onOpenTask, activeTaskKey }) {
       </div>
 
       {detailTab === "graph" ? (
-        <DagView tasks={tasks} onOpenTask={onOpenTask} activeTaskKey={activeTaskKey} />
+        <DagView
+          tasks={tasks}
+          onOpenTask={onOpenTask}
+          activeTaskKey={activeTaskKey}
+          isLive={isRunning}
+        />
       ) : null}
 
       {detailTab === "tasks" ? (
@@ -819,7 +1138,9 @@ function RunDetail({ run, onOpenTask, activeTaskKey }) {
 
 export function App() {
   const { pathname, navigate } = usePathname();
+  const route = useMemo(() => parseRoute(pathname), [pathname]);
   const [meta, setMeta] = useState(null);
+  const [workspaces, setWorkspaces] = useState([]);
   const [runs, setRuns] = useState([]);
   const [cacheEntries, setCacheEntries] = useState([]);
   const [workflows, setWorkflows] = useState([]);
@@ -834,85 +1155,156 @@ export function App() {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [launchingRun, setLaunchingRun] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
-
-  const route = useMemo(() => {
-    const parts = pathname.split("/").filter(Boolean);
-    if (parts[0] === "cache") {
-      return { page: "cache" };
-    }
-    if (parts[0] === "runs" && parts[1] && parts[2] === "tasks" && parts[3]) {
-      return { page: "task", runId: parts[1], taskKey: parts[3] };
-    }
-    if (parts[0] === "runs" && parts[1]) {
-      return { page: "run", runId: parts[1] };
-    }
-    return { page: "home" };
-  }, [pathname]);
-
-  useEffect(() => {
-    const source = new EventSource("/api/events");
-    source.addEventListener("meta", () => {
-      setLive(true);
-      setRefreshTick((tick) => tick + 1);
-    });
-    source.onerror = () => {
-      setLive(false);
-    };
-    return () => source.close();
-  }, []);
+  const [loadingWorkspace, setLoadingWorkspace] = useState(false);
+  const [nowValue, setNowValue] = useState(Date.now());
 
   const isRefresh = React.useRef(false);
+  const liveContextRef = React.useRef({});
+  const activeWorkspaceId = meta?.active_workspace_id || null;
+  const activeWorkspace = meta?.active_workspace || null;
+  const targetWorkspaceId = route.workspaceId || activeWorkspaceId;
+  const targetWorkspace = workspaces.find((workspace) => workspace.workspace_id === targetWorkspaceId) || activeWorkspace;
 
-  // Reset refresh flag when page or run changes so we show loading for new pages.
-  // Intentionally excludes taskKey — task selection is additive and shouldn't flash a loader.
+  useEffect(() => {
+    liveContextRef.current = {
+      route,
+      targetWorkspaceId,
+    };
+  }, [route, targetWorkspaceId]);
+
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
+
+    socket.onopen = () => setLive(true);
+    socket.onerror = () => setLive(false);
+    socket.onclose = () => setLive(false);
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        const { route: currentRoute, targetWorkspaceId: currentWorkspaceId } = liveContextRef.current;
+        const payload = message.payload || {};
+
+        if (message.type === "connected") {
+          setLive(true);
+          return;
+        }
+
+        if (message.type === "meta" && payload.meta) {
+          setMeta(payload.meta);
+          setWorkspaces(payload.meta.workspaces || []);
+          return;
+        }
+
+        if (message.type === "runs_updated" && payload.workspace_id === currentWorkspaceId) {
+          setRuns(payload.runs || []);
+          return;
+        }
+
+        if (
+          message.type === "run_updated" &&
+          payload.workspace_id === currentWorkspaceId &&
+          payload.run
+        ) {
+          setRuns((current) => upsertRunSummary(current, payload.run));
+          if (
+            currentRoute?.runId === payload.run.run_id &&
+            currentRoute?.workspaceId === payload.workspace_id
+          ) {
+            setRunDetail(payload.run);
+          }
+          return;
+        }
+
+        if (
+          message.type === "task_log_updated" &&
+          currentRoute?.page === "task" &&
+          currentRoute?.workspaceId === payload.workspace_id &&
+          currentRoute?.runId === payload.run_id &&
+          currentRoute?.taskKey === payload.task_key
+        ) {
+          setTaskLog({
+            stdout: payload.stdout ?? "",
+            stderr: payload.stderr ?? "",
+          });
+        }
+      } catch (_error) {
+        setLive(false);
+      }
+    };
+
+    return () => socket.close();
+  }, []);
+
+  useEffect(() => {
+    const handle = window.setInterval(() => setNowValue(Date.now()), 1000);
+    return () => window.clearInterval(handle);
+  }, []);
+
   useEffect(() => {
     isRefresh.current = false;
-  }, [route.page, route.runId]);
+  }, [route.page, route.workspaceId, route.runId]);
 
   useEffect(() => {
     let cancelled = false;
+
     async function load() {
       if (!isRefresh.current) {
         setInitialLoading(true);
       }
       setError(null);
+
       try {
-        const [metaData, runsData, cacheData, workflowsData] = await Promise.all([
-          apiFetch("/api/meta"),
-          apiFetch("/api/runs"),
-          apiFetch("/api/cache"),
-          apiFetch("/api/workflows"),
+        const metaData = await apiFetch("/api/meta");
+        if (cancelled) return;
+
+        const workspaceList = metaData.workspaces || [];
+        setMeta(metaData);
+        setWorkspaces(workspaceList);
+
+        const workspaceId = route.workspaceId || metaData.active_workspace_id;
+        if (!workspaceId) {
+          setRuns([]);
+          setCacheEntries([]);
+          setWorkflows([]);
+          setRunDetail(null);
+          setTaskDetail(null);
+          setTaskLog(null);
+          return;
+        }
+
+        const [runsData, cacheData, workflowsData] = await Promise.all([
+          apiFetch(`/api/workspaces/${workspaceId}/runs`),
+          apiFetch(`/api/workspaces/${workspaceId}/cache`),
+          apiFetch(`/api/workspaces/${workspaceId}/workflows`),
         ]);
         if (cancelled) return;
-        setMeta(metaData);
         setRuns(runsData.runs || []);
         setCacheEntries(cacheData.entries || []);
         setWorkflows(workflowsData.workflows || []);
 
-        if (route.page === "cache") {
+        if (route.page === "workspaces" || route.page === "home" || route.page === "runs" || route.page === "cache") {
           setRunDetail(null);
           setTaskDetail(null);
           setTaskLog(null);
           return;
         }
 
-        const targetRunId =
-          route.page === "home" ? metaData.selected_run_id || metaData.latest_run_id : route.runId;
-        if (!targetRunId) {
+        if (!route.runId) {
           setRunDetail(null);
           setTaskDetail(null);
           setTaskLog(null);
           return;
         }
 
-        const runData = await apiFetch(`/api/runs/${targetRunId}`);
+        const runData = await apiFetch(`/api/workspaces/${workspaceId}/runs/${route.runId}`);
         if (cancelled) return;
         setRunDetail(runData);
 
         if (route.page === "task" && route.taskKey) {
           const [taskData, logData] = await Promise.all([
-            apiFetch(`/api/runs/${targetRunId}/tasks/${route.taskKey}`),
-            apiFetch(`/api/runs/${targetRunId}/tasks/${route.taskKey}/log`),
+            apiFetch(`/api/workspaces/${workspaceId}/runs/${route.runId}/tasks/${route.taskKey}`),
+            apiFetch(`/api/workspaces/${workspaceId}/runs/${route.runId}/tasks/${route.taskKey}/log`),
           ]);
           if (cancelled) return;
           setTaskDetail(taskData);
@@ -935,31 +1327,81 @@ export function App() {
         }
       }
     }
+
     load();
     return () => {
       cancelled = true;
     };
-  }, [route.page, route.runId, route.taskKey, refreshTick]);
+  }, [route.page, route.workspaceId, route.runId, route.taskKey, refreshTick]);
+
+  useEffect(() => {
+    if (!meta || route.page !== "home") return;
+    if (!meta.active_workspace_id) return;
+    navigate(`/workspaces/${meta.active_workspace_id}/runs`);
+  }, [meta, route.page, navigate]);
+
+  async function loadWorkspace() {
+    setLoadingWorkspace(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await apiFetch("/api/workspaces/load", { method: "POST", body: "{}" });
+      setNotice(`Loaded workspace ${response.workspace.label}.`);
+      navigate(`/workspaces/${response.workspace.workspace_id}/runs`);
+      setRefreshTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setLoadingWorkspace(false);
+    }
+  }
+
+  async function activateWorkspace(workspaceId) {
+    if (!workspaceId) return;
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch("/api/workspaces/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_id: workspaceId }),
+      });
+      if (route.page === "cache") {
+        navigate(`/workspaces/${workspaceId}/cache`);
+      } else if (route.page === "workspaces" || route.page === "home" || route.page === "runs") {
+        navigate(`/workspaces/${workspaceId}/runs`);
+      } else {
+        navigate(`/workspaces/${workspaceId}/runs`);
+      }
+      setRefreshTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  }
 
   function openRun(runId) {
-    navigate(`/runs/${runId}`);
+    if (!targetWorkspaceId) return;
+    navigate(`/workspaces/${targetWorkspaceId}/runs/${runId}`);
   }
 
   function openTask(taskKey) {
     if (!runDetail) return;
-    navigate(`/runs/${runDetail.run_id}/tasks/${taskKey}`);
+    navigate(
+      `/workspaces/${runDetail.workspace_id}/runs/${runDetail.run_id}/tasks/${encodeURIComponent(taskKey)}`,
+    );
   }
 
   function closeTask() {
     if (!runDetail) return;
-    navigate(`/runs/${runDetail.run_id}`);
+    navigate(`/workspaces/${runDetail.workspace_id}/runs/${runDetail.run_id}`);
   }
 
   async function deleteCacheEntry(cacheKey) {
+    if (!targetWorkspaceId) return;
     setError(null);
     setNotice(null);
     try {
-      await apiFetch(`/api/cache/${cacheKey}`, { method: "DELETE" });
+      await apiFetch(`/api/workspaces/${targetWorkspaceId}/cache/${cacheKey}`, { method: "DELETE" });
       setNotice(`Deleted cache entry ${cacheKey}.`);
       setRefreshTick((tick) => tick + 1);
     } catch (err) {
@@ -968,12 +1410,13 @@ export function App() {
   }
 
   async function clearCache() {
+    if (!targetWorkspaceId) return;
     if (!window.confirm("Clear all cache entries?")) return;
     setClearingCache(true);
     setError(null);
     setNotice(null);
     try {
-      const response = await apiFetch("/api/cache", { method: "DELETE" });
+      const response = await apiFetch(`/api/workspaces/${targetWorkspaceId}/cache`, { method: "DELETE" });
       setNotice(
         response.deleted > 0
           ? `Cleared ${response.deleted} cache entries.`
@@ -987,29 +1430,31 @@ export function App() {
     }
   }
 
-  function openRunDialog(prefillWorkflow) {
-    if (prefillWorkflow) {
-      const clean = prefillWorkflow.replace(/^\.\//, "");
-      if (!workflows.includes(clean)) {
-        setWorkflows((current) => [clean, ...current]);
-      }
-    }
+  function openRunDialog() {
     setRunDialogOpen(true);
     setError(null);
   }
 
   async function launchWorkflow(payload) {
+    if (!targetWorkspaceId) return;
     setLaunchingRun(true);
     setError(null);
     setNotice(null);
     try {
-      const response = await apiFetch("/api/run", {
+      const response = await apiFetch(`/api/workspaces/${targetWorkspaceId}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setNotice(`Started ${response.workflow} (pid ${response.pid}).`);
+      setNotice(
+        response.workspace_changed
+          ? `Started ${response.workflow} in ${response.workspace_label} (pid ${response.pid}).`
+          : `Started ${response.workflow} (pid ${response.pid}).`,
+      );
       setRunDialogOpen(false);
+      if (response.workspace_id) {
+        navigate(`/workspaces/${response.workspace_id}/runs`);
+      }
       setRefreshTick((tick) => tick + 1);
     } catch (err) {
       setError(err.message || String(err));
@@ -1019,90 +1464,95 @@ export function App() {
   }
 
   const initialWorkflow = runDetail?.manifest?.workflow
-    ? relativeWorkflowPath(runDetail.manifest.workflow, meta?.project_root)
+    ? relativeWorkflowPath(runDetail.manifest.workflow, targetWorkspace?.project_root)
     : workflows[0] || "";
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-left">
-          <div className="topbar-brand" onClick={() => navigate("/")}>
-            <GinkgoLogo />
-            <span>Ginkgo</span>
-          </div>
-          <nav className="topbar-nav">
-            <button
-              className={`nav-link ${route.page === "home" || route.page === "run" || route.page === "task" ? "active" : ""}`}
-              onClick={() => navigate("/")}
-            >
-              Runs
-            </button>
-            <button
-              className={`nav-link ${route.page === "cache" ? "active" : ""}`}
-              onClick={() => navigate("/cache")}
-            >
-              Cache
-            </button>
-          </nav>
-        </div>
-        <div className="topbar-actions">
-          <span className={`live-dot ${live ? "active" : ""}`}>{live ? "Live" : "Idle"}</span>
-          <div className="topbar-meta">
-            <code>{meta?.runs_root || ".ginkgo/runs"}</code>
-          </div>
-          <button className="primary-button" onClick={() => openRunDialog(initialWorkflow)}>
-            Run workflow
-          </button>
-        </div>
-      </header>
+      <Sidebar
+        route={route}
+        activeWorkspaceId={activeWorkspaceId}
+        navigate={navigate}
+      />
 
-      <Breadcrumbs route={route} runDetail={runDetail} navigate={navigate} />
+      <div className="app-main">
+        <Topbar
+          activeWorkspace={targetWorkspace}
+          workspaces={workspaces}
+          live={live}
+          loadingWorkspace={loadingWorkspace}
+          onActivateWorkspace={activateWorkspace}
+          onLoadWorkspace={loadWorkspace}
+          onOpenRunDialog={openRunDialog}
+        />
 
-      {error ? <div className="error-banner">{error}</div> : null}
-      {notice ? <div className="notice-banner">{notice}</div> : null}
+        <Breadcrumbs
+          route={route}
+          activeWorkspace={targetWorkspace}
+          runDetail={runDetail}
+          navigate={navigate}
+        />
 
-      <div className="main-content">
-        {initialLoading ? (
-          <section className="panel loading-panel">
-            <div className="spinner-ring" />
-            <p>Loading…</p>
-          </section>
-        ) : route.page === "home" ? (
-          runDetail ? (
-            <RunDetail
-              run={runDetail}
-              onOpenTask={openTask}
-              activeTaskKey={null}
+        {error ? <div className="error-banner">{error}</div> : null}
+        {notice ? <div className="notice-banner">{notice}</div> : null}
+
+        <main className="main-content">
+          {initialLoading ? (
+            <section className="panel loading-panel">
+              <div className="spinner-ring" />
+              <p>Loading…</p>
+            </section>
+          ) : route.page === "workspaces" ? (
+            <WorkspaceOverview
+              workspaces={workspaces}
+              activeWorkspaceId={activeWorkspaceId}
+              onActivateWorkspace={activateWorkspace}
             />
-          ) : (
+          ) : route.page === "cache" ? (
+            <CacheBrowser
+              entries={cacheEntries}
+              workspaceLabel={targetWorkspace?.label}
+              onDelete={deleteCacheEntry}
+              onClearAll={clearCache}
+              clearing={clearingCache}
+            />
+          ) : route.page === "run" || route.page === "task" ? (
+            runDetail ? (
+              <RunDetail
+                run={runDetail}
+                projectRoot={targetWorkspace?.project_root}
+                onOpenTask={openTask}
+                activeTaskKey={route.page === "task" ? route.taskKey : null}
+                nowValue={nowValue}
+              />
+            ) : (
+              <section className="panel empty-state">
+                <GinkgoLeafIcon />
+                <h3>No run selected</h3>
+                <p>Choose a run from the current workspace to inspect its task graph and provenance.</p>
+              </section>
+            )
+          ) : targetWorkspace ? (
             <RunList
               runs={runs}
-              latestRunId={meta?.latest_run_id}
+              workspaceLabel={targetWorkspace.label}
+              latestRunId={targetWorkspace.latest_run_id}
               onOpenRun={openRun}
-              onOpenRunDialog={() => openRunDialog(initialWorkflow)}
+              onOpenRunDialog={openRunDialog}
               live={live}
             />
-          )
-        ) : route.page === "cache" ? (
-          <CacheBrowser
-            entries={cacheEntries}
-            onDelete={deleteCacheEntry}
-            onClearAll={clearCache}
-            clearing={clearingCache}
-          />
-        ) : runDetail ? (
-          <RunDetail
-            run={runDetail}
-            onOpenTask={openTask}
-            activeTaskKey={route.page === "task" ? route.taskKey : null}
-          />
-        ) : (
-          <section className="panel empty-state">
-            <GinkgoLeafIcon />
-            <h3>No run selected</h3>
-            <p>Choose a run from the history to inspect its task graph and provenance.</p>
-          </section>
-        )}
+          ) : (
+            <section className="panel empty-state">
+              <GinkgoLeafIcon />
+              <h3>No workspace loaded</h3>
+              <p>Use the Load workspace button to select a Ginkgo project folder.</p>
+            </section>
+          )}
+        </main>
+
+        <div className={`screen-live-indicator ${live ? "active" : ""}`}>
+          {live ? "Live" : "Idle"}
+        </div>
       </div>
 
       <TaskDrawer taskDetail={taskDetail} taskLog={taskLog} onClose={closeTask} />

@@ -17,13 +17,13 @@
     panel.style.zIndex = "9999";
     panel.style.minWidth = "210px";
     panel.style.padding = "12px 14px";
-    panel.style.borderRadius = "12px";
-    panel.style.background = "rgba(12, 18, 22, 0.9)";
-    panel.style.color = "#f8fafc";
-    panel.style.boxShadow = "0 18px 40px rgba(15, 23, 42, 0.24)";
-    panel.style.border = "1px solid rgba(148, 163, 184, 0.16)";
+    panel.style.borderRadius = "14px";
+    panel.style.background = "rgba(255, 250, 241, 0.94)";
+    panel.style.color = "#2c241d";
+    panel.style.boxShadow = "0 18px 40px rgba(35, 24, 10, 0.12)";
+    panel.style.border = "1px solid rgba(71, 56, 37, 0.12)";
     panel.style.backdropFilter = "blur(10px)";
-    panel.style.fontFamily = "Inter, sans-serif";
+    panel.style.fontFamily = "'Avenir Next', 'Segoe UI', sans-serif";
     panel.style.display = "none";
     document.body.appendChild(panel);
     return panel;
@@ -37,22 +37,25 @@
     return response.json();
   }
 
-  function currentRunIdFromPath() {
+  function routeContext() {
     const parts = window.location.pathname.split("/").filter(Boolean);
-    if (parts[0] === "runs" && parts[1]) {
-      return parts[1];
+    if (parts[0] === "workspaces" && parts[1] && parts[2] === "runs" && parts[3]) {
+      return { workspaceId: parts[1], runId: parts[3] };
     }
-    return null;
+    return { workspaceId: null, runId: null };
   }
 
-  async function resolveRunId() {
-    const fromPath = currentRunIdFromPath();
-    if (fromPath) {
-      return fromPath;
+  async function resolveRunContext() {
+    const fromRoute = routeContext();
+    if (fromRoute.workspaceId && fromRoute.runId) {
+      return fromRoute;
     }
 
     const meta = await fetchJson("/api/meta");
-    return meta.selected_run_id || meta.latest_run_id || null;
+    if (!meta.active_workspace_id || !meta.latest_run_id) {
+      return { workspaceId: null, runId: null };
+    }
+    return { workspaceId: meta.active_workspace_id, runId: meta.latest_run_id };
   }
 
   function formatCpu(value) {
@@ -87,11 +90,11 @@
 
     const left = document.createElement("span");
     left.textContent = label;
-    left.style.opacity = "0.72";
+    left.style.opacity = "0.68";
 
     const right = document.createElement("strong");
     right.textContent = value;
-    right.style.fontWeight = "600";
+    right.style.fontWeight = "700";
 
     row.appendChild(left);
     row.appendChild(right);
@@ -131,8 +134,8 @@
     badge.style.fontSize = "11px";
     badge.style.padding = "2px 7px";
     badge.style.borderRadius = "999px";
-    badge.style.background = isLive ? "rgba(20, 184, 166, 0.2)" : "rgba(148, 163, 184, 0.18)";
-    badge.style.color = isLive ? "#99f6e4" : "#cbd5e1";
+    badge.style.background = isLive ? "rgba(29, 143, 103, 0.14)" : "rgba(91, 77, 64, 0.08)";
+    badge.style.color = isLive ? "#1d8f67" : "#5b4d40";
 
     title.appendChild(heading);
     title.appendChild(badge);
@@ -146,12 +149,17 @@
 
   async function refresh() {
     try {
-      const runId = await resolveRunId();
-      if (!runId) {
+      const context = await resolveRunContext();
+      if (!context.workspaceId || !context.runId) {
         ensurePanel().style.display = "none";
         return;
       }
-      const run = await fetchJson("/api/runs/" + encodeURIComponent(runId));
+      const run = await fetchJson(
+        "/api/workspaces/" +
+          encodeURIComponent(context.workspaceId) +
+          "/runs/" +
+          encodeURIComponent(context.runId),
+      );
       render(run);
     } catch (_error) {
       ensurePanel().style.display = "none";
