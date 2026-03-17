@@ -7,7 +7,7 @@ Instead, the evaluator uses ``python -c`` with inline code equivalent to
 the body of :func:`run` below.  This file exists for human readability.
 
 The actual inline code used by the evaluator is built in
-:meth:`_ConcurrentEvaluator._run_pixi_python_task`.
+:meth:`_ConcurrentEvaluator._run_env_python_task`.
 """
 
 from __future__ import annotations

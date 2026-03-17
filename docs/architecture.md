@@ -57,7 +57,7 @@ remain supported for non-canonical project layouts.
 The current source tree is organized around the user-facing DSL, the execution engine, and environment backends:
 
 ```text
-src/ginkgo/
+ginkgo/
 ├── __init__.py
 ├── config.py
 ├── helpers.py
@@ -68,6 +68,7 @@ src/ginkgo/
 │   ├── task.py
 │   └── types.py
 ├── runtime/
+│   ├── backend.py        # TaskBackend protocol, LocalBackend, CompositeBackend
 │   ├── cache.py
 │   ├── evaluator.py
 │   ├── module_loader.py
@@ -77,6 +78,7 @@ src/ginkgo/
 │   ├── value_codec.py
 │   └── worker.py
 ├── envs/
+│   ├── container.py      # ContainerBackend (Docker/Podman)
 │   ├── pixi.py
 │   └── pixi_worker.py
 ├── cli/
@@ -126,6 +128,20 @@ The current evaluator is concurrent and futures-based:
 
 The scheduler performs explicit cycle detection when registering expressions.
 
+### Execution Backends
+
+The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
+
+**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution (shell and Python tasks).
+
+**ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for **shell tasks only**. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
+
+**CompositeBackend** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalBackend`.
+
+Container environments do not support Python tasks — requiring Ginkgo installed inside every container image is an unreasonable constraint. This is enforced at validation time (before any work starts) and at the backend level.
+
+Image digests (not mutable tags) are used for cache key identity, ensuring cache invalidation when image contents change.
+
 ## Task Model
 
 ### Python Tasks
@@ -149,6 +165,14 @@ Python task bodies must be top-level importable functions for worker execution. 
 Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
 
 For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches the shell payload through Pixi, while true `kind="python"` tasks with `env=` still execute their Python bodies inside the foreign worker environment.
+
+Shell tasks can also run inside Docker or Podman containers by declaring a container env:
+
+```python
+@task(kind="shell", env="docker://biocontainers/samtools:1.17")
+def sort_bam(input_bam: file, output_bam: file) -> file:
+    return shell(cmd=f"samtools sort {input_bam} -o {output_bam}", output=output_bam)
+```
 
 This completes the Phase 3 execution-boundary work from the implementation
 roadmap: graph construction remains scheduler-local, shell-oriented tasks cross
@@ -179,14 +203,15 @@ Implemented cache hashing includes:
 - scalar hashing via stable value hashing
 - file-content hashing
 - recursive folder-content hashing
-- Pixi lock hashing
+- Pixi lock hashing for local environments
+- container image digest hashing for container environments
 - codec-based hashing for arrays, DataFrames, and other supported Python values
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
 ## Value Transport
 
-Python task inputs and outputs cross process boundaries through the codec layer in `src/ginkgo/runtime/value_codec.py`.
+Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/value_codec.py`.
 
 The current implementation supports:
 
@@ -233,6 +258,7 @@ The manifest records:
 - outputs
 - exit codes and errors
 - run-level CPU and RSS summaries
+- execution backend type (`local` or `container`) and container image digest
 
 ## CLI
 
@@ -302,6 +328,11 @@ includes:
   runtime-determined per-series packet generation
 - `ml` for ML-domain candidate evaluation, promotion, and delivery
   packaging across a deeper static DAG
+
+The foundational `bioinfo` example also demonstrates mixed execution
+environments: Pixi-based shell tasks for bioinformatics tools, a Docker
+container shell task for basic Unix processing, and local Python tasks
+for data aggregation.
 
 `tests/test_examples.py` runs these examples end to end in isolated workspaces
 and asserts expected artifacts, manifests, dynamic dependency behavior, and

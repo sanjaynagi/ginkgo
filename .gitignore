@@ -3,7 +3,8 @@
 !.pixi/config.toml
 .pytest_cache/
 .ruff_cache/
-frontend/node_modules/
+ui/node_modules/
+ui/.vite/
 __pycache__/
 *.py[cod]
 
