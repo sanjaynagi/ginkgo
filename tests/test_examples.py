@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Iterator
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
+from ginkgo.envs.container import ContainerBackend
+from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.provenance import latest_run_dir, load_manifest
 
 
@@ -43,6 +49,45 @@ def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
     return run_dir, load_manifest(run_dir)
 
 
+@contextmanager
+def _mock_docker() -> Iterator[None]:
+    """Mock Docker runtime so container shell tasks execute locally.
+
+    Docker argv is intercepted at the evaluator's ``_run_subprocess`` level:
+    the shell command is extracted and executed directly via ``bash -c``,
+    bypassing the container runtime while producing real file outputs.
+    """
+    original_run_subprocess = _ConcurrentEvaluator._run_subprocess
+
+    def _patched_run_subprocess(
+        self_eval: Any, *, argv: str | list[str], use_shell: bool
+    ) -> subprocess.CompletedProcess[str]:
+        # Docker argv: ["docker", "run", ..., "bash", "-c", "<cmd>"]
+        if isinstance(argv, list) and argv and argv[0] == "docker":
+            cmd = argv[-1]
+            completed = subprocess.run(
+                cmd,
+                shell=True,
+                text=True,
+                capture_output=True,
+            )
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=completed.returncode,
+                stdout=completed.stdout or "",
+                stderr=completed.stderr or "",
+            )
+        return original_run_subprocess(self_eval, argv=argv, use_shell=use_shell)
+
+    with (
+        patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess),
+        patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+        patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
+        patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:fake_test_digest"),
+    ):
+        yield
+
+
 class TestExamples:
     def test_bioinfo_example_runs_and_caches(
         self,
@@ -52,17 +97,24 @@ class TestExamples:
         example_dir = _copy_example(name="bioinfo", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
-        _, first_manifest = _run_example(example_dir=example_dir)
+        with _mock_docker():
+            _, first_manifest = _run_example(example_dir=example_dir)
+
         filtered_fastqs = sorted((example_dir / "results" / "filtered").glob("*.filtered.fastq"))
         qc_tables = sorted((example_dir / "results" / "qc").glob("*.stats.tsv"))
+        count_files = sorted((example_dir / "results" / "read_counts").glob("*.counts.tsv"))
         summary = pd.read_csv(example_dir / "results" / "summary.csv")
 
         assert first_manifest["status"] == "succeeded"
         assert len(filtered_fastqs) == 2
         assert len(qc_tables) == 2
+        assert len(count_files) == 2
         assert sorted(summary["sample_id"].tolist()) == ["sample_a", "sample_b"]
+        assert "read_count" in summary.columns
 
-        _, second_manifest = _run_example(example_dir=example_dir)
+        with _mock_docker():
+            _, second_manifest = _run_example(example_dir=example_dir)
+
         assert second_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 

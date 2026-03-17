@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 requires = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ginkgo"]
+packages = ["ginkgo"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -51,15 +51,15 @@ default = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
 test = "pytest tests/ -v"
-lint = "ruff check src/ tests/"
-format = "ruff format src/ tests/"
-format-check = "ruff format --check src/ tests/"
-typecheck = "ty check src/ginkgo/config.py src/ginkgo/ui src/ginkgo/cli/app.py src/ginkgo/cli/commands/ui.py"
+lint = "ruff check ginkgo/ tests/"
+format = "ruff format ginkgo/ tests/"
+format-check = "ruff format --check ginkgo/ tests/"
+typecheck = "ty check ginkgo/config.py ginkgo/ui ginkgo/cli/app.py ginkgo/cli/commands/ui.py"
 precommit = "pre-commit run --all-files"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-src = ["src"]
+src = ["ginkgo"]
 line-length = 99

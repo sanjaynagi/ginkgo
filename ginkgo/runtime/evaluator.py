@@ -29,7 +29,9 @@ from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.runtime.backend import LocalBackend, TaskBackend
 from ginkgo.runtime.cache import MISSING, CacheStore
 from ginkgo.runtime.module_loader import import_roots_for_path, load_module, resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
@@ -92,6 +94,7 @@ def evaluate(
     jobs: int | None = None,
     cores: int | None = None,
     memory: int | None = None,
+    backend: TaskBackend | None = None,
     pixi_registry: PixiRegistry | None = None,
     provenance: RunProvenanceRecorder | None = None,
 ) -> Any:
@@ -107,20 +110,27 @@ def evaluate(
         Maximum total thread budget across running tasks.
     memory : int | None
         Maximum total declared memory budget across running tasks in GiB.
+    backend : TaskBackend | None
+        Execution backend for environment-isolated tasks.  When ``None`` and
+        *pixi_registry* is provided, a ``LocalBackend`` is created
+        automatically for backward compatibility.
     pixi_registry : PixiRegistry | None
-        Registry for resolving Pixi environments. When ``None``, tasks with
-        ``env=`` will raise at dispatch time.
+        Deprecated — use *backend* instead.  Registry for resolving Pixi
+        environments.  Ignored when *backend* is provided.
 
     Returns
     -------
     Any
         The concrete result of evaluating the input.
     """
+    if backend is None and pixi_registry is not None:
+        backend = LocalBackend(pixi_registry=pixi_registry)
+
     return _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
         memory=memory,
-        pixi_registry=pixi_registry,
+        backend=backend,
         provenance=provenance,
     ).evaluate(expr)
 
@@ -192,7 +202,7 @@ class _ConcurrentEvaluator:
     jobs: int | None = None
     cores: int | None = None
     memory: int | None = None
-    pixi_registry: PixiRegistry | None = None
+    backend: TaskBackend | None = None
     provenance: RunProvenanceRecorder | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
     _stderr: Any = field(default_factory=lambda: sys.stderr)
@@ -232,7 +242,7 @@ class _ConcurrentEvaluator:
         if self.memory is not None and self.memory < 1:
             raise ValueError("memory must be at least 1 when provided")
 
-        self._cache_store = CacheStore(pixi_registry=self.pixi_registry)
+        self._cache_store = CacheStore(backend=self.backend)
 
     def evaluate(self, expr: Any) -> Any:
         """Resolve a root expression or nested container concurrently."""
@@ -484,10 +494,10 @@ class _ConcurrentEvaluator:
 
     def _prepare_task_environment(self, *, node: _TaskNode) -> None:
         """Materialize any external execution environment required by a task."""
-        if node.task_def.env is None or self.pixi_registry is None:
+        if node.task_def.env is None or self.backend is None:
             return
 
-        self.pixi_registry.prepare(env=node.task_def.env)
+        self.backend.prepare(env=node.task_def.env)
 
     def _dispatch_ready_nodes(
         self,
@@ -561,15 +571,15 @@ class _ConcurrentEvaluator:
             )
             payload = self._build_worker_payload(node=node)
 
-            if node.task_def.env is not None and self.pixi_registry is not None:
-                # Run the Python task body inside the Pixi environment via a subprocess.
+            if node.task_def.env is not None and self.backend is not None:
+                # Run the Python task body inside the environment via a subprocess.
                 assert self._shell_executor is not None
                 future = self._shell_executor.submit(
-                    self._run_pixi_python_task,
+                    self._run_env_python_task,
                     node=node,
                     payload=payload,
                 )
-                self._running_futures[future] = (node_id, "pixi_python")
+                self._running_futures[future] = (node_id, "env_python")
             else:
                 future = python_executor.submit(run_task, payload)
                 self._running_futures[future] = (node_id, "python")
@@ -591,7 +601,7 @@ class _ConcurrentEvaluator:
                 continue
 
             try:
-                if phase in {"python", "pixi_python"}:
+                if phase in {"python", "env_python"}:
                     self._handle_completed_worker_phase(node=node, completed_value=completed_value)
                 elif phase == "driver":
                     self._handle_completed_driver_phase(node=node, completed_value=completed_value)
@@ -1121,9 +1131,9 @@ class _ConcurrentEvaluator:
         for output_path in self._iter_shell_output_paths(shell_expr.output):
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build the argv: wrap through pixi when the task declares an env.
-        if task_def.env is not None and self.pixi_registry is not None:
-            argv = self.pixi_registry.shell_argv(env=task_def.env, cmd=shell_expr.cmd)
+        # Build the argv: wrap through the backend when the task declares an env.
+        if task_def.env is not None and self.backend is not None:
+            argv = self.backend.shell_argv(env=task_def.env, cmd=shell_expr.cmd)
             use_shell = False
         else:
             argv = shell_expr.cmd
@@ -1169,10 +1179,10 @@ class _ConcurrentEvaluator:
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
 
-    def _run_pixi_python_task(self, *, node: _TaskNode, payload: dict[str, Any]) -> dict[str, Any]:
-        """Run a Python task body inside its declared Pixi environment.
+    def _run_env_python_task(self, *, node: _TaskNode, payload: dict[str, Any]) -> dict[str, Any]:
+        """Run a Python task body inside its declared environment.
 
-        Serializes the worker payload to disk, invokes ``pixi_worker.py``
+        Serializes the worker payload to disk, invokes the worker code
         via the environment's Python interpreter, and deserializes the result.
 
         Parameters
@@ -1188,7 +1198,7 @@ class _ConcurrentEvaluator:
             Decoded worker response dict (``{"ok": bool, "result": ...}``).
         """
         assert node.transport_path is not None
-        assert self.pixi_registry is not None
+        assert self.backend is not None
 
         input_path = node.transport_path / "pixi_input.json"
         output_path = node.transport_path / "pixi_output.json"
@@ -1196,7 +1206,7 @@ class _ConcurrentEvaluator:
         # Write the serialized payload for the worker script to consume.
         input_path.write_text(json.dumps(payload), encoding="utf-8")
 
-        argv = self.pixi_registry.python_argv_c(
+        argv = self.backend.python_argv_c(
             env=node.task_def.env,
             code=_PIXI_WORKER_C,
             args=(str(input_path), str(output_path)),
@@ -1223,7 +1233,7 @@ class _ConcurrentEvaluator:
 
         if not output_path.exists():
             raise RuntimeError(
-                f"Pixi Python task {node.task_def.name} completed but produced no output. "
+                f"Environment Python task {node.task_def.name} completed but produced no output. "
                 f"Command: {' '.join(argv)}"
             )
 
@@ -1236,14 +1246,27 @@ class _ConcurrentEvaluator:
         (discovered mid-run via conditional branching) are validated when
         ``_prepare_node`` is called for them.
         """
-        if self.pixi_registry is None:
+        # Container environments only support shell tasks.
+        for node in self._nodes.values():
+            if (
+                node.task_def.env is not None
+                and is_container_env(node.task_def.env)
+                and node.task_def.kind != "shell"
+            ):
+                raise TypeError(
+                    f"{node.task_def.name} uses container env {node.task_def.env!r} "
+                    "but is declared with kind='python'. Container environments "
+                    "only support shell tasks — use @task(kind='shell')."
+                )
+
+        if self.backend is None:
             return
 
         env_names: set[str] = {
             node.task_def.env for node in self._nodes.values() if node.task_def.env is not None
         }
         if env_names:
-            self.pixi_registry.validate_envs(env_names=env_names)
+            self.backend.validate_envs(env_names=env_names)
 
     def validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
@@ -1405,12 +1428,28 @@ class _ConcurrentEvaluator:
             dependency_ids=sorted(node.dependency_ids),
             dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
         )
-        if node.task_def.env is not None and self.pixi_registry is not None:
-            manifest = self.pixi_registry.resolve(env=node.task_def.env)
-            self.provenance.copy_env_lock(
-                env_name=node.task_def.env,
-                lock_path=manifest.parent / "pixi.lock",
-            )
+        if node.task_def.env is not None and self.backend is not None:
+            # Record backend type and container-specific metadata.
+            if is_container_env(node.task_def.env):
+                extra: dict[str, Any] = {"backend": "container"}
+                digest = self.backend.env_identity(env=node.task_def.env)
+                if digest is not None:
+                    extra["container_image_digest"] = digest
+                self.provenance.update_task_extra(
+                    node_id=node.node_id,
+                    **extra,
+                )
+            else:
+                self.provenance.update_task_extra(
+                    node_id=node.node_id,
+                    backend="local",
+                )
+                lock_path = self.backend.env_lock_path(env=node.task_def.env)
+                if lock_path is not None:
+                    self.provenance.copy_env_lock(
+                        env_name=node.task_def.env,
+                        lock_path=lock_path,
+                    )
 
     def _record_task_failure(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Persist task failure details to the run manifest."""

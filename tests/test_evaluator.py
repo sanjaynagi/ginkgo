@@ -481,7 +481,7 @@ class TestShellTask:
             install_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        def fake_run_pixi_python_task(
+        def fake_run_env_python_task(
             self,
             *,
             node,
@@ -492,9 +492,7 @@ class TestShellTask:
         registry = PixiRegistry(project_root=tmp_path)
         monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
         monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
-        monkeypatch.setattr(
-            _ConcurrentEvaluator, "_run_pixi_python_task", fake_run_pixi_python_task
-        )
+        monkeypatch.setattr(_ConcurrentEvaluator, "_run_env_python_task", fake_run_env_python_task)
         monkeypatch.setattr(
             registry,
             "shell_argv",

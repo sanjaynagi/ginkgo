@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: "../src/ginkgo/ui/static",
+    outDir: "../ginkgo/ui/static",
     emptyOutDir: true,
   },
 });
