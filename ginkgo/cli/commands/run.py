@@ -15,7 +15,9 @@ from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
 from ginkgo.core.flow import FlowDef
+from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.runtime.backend import CompositeBackend, LocalBackend
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.resources import RunResourceMonitor
@@ -72,11 +74,15 @@ def run_workflow(
         project_root=Path.cwd(),
         workflow_root=workflow_path.parent,
     )
+    backend = CompositeBackend(
+        local=LocalBackend(pixi_registry=registry),
+        container=ContainerBackend(project_root=Path.cwd()),
+    )
     evaluator = _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
         memory=memory,
-        pixi_registry=registry,
+        backend=backend,
     )
     evaluator.validate(expr)
     task_count = len(evaluator._nodes)
@@ -136,7 +142,7 @@ def run_workflow(
         jobs=jobs,
         cores=cores,
         memory=memory,
-        pixi_registry=registry,
+        backend=backend,
         provenance=recorder,
         _stderr=renderer,
     )

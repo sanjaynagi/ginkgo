@@ -33,14 +33,14 @@ class CacheStore:
     root : Path | None
         Cache root directory. Defaults to ``.ginkgo/cache`` under the current
         working directory.
-    pixi_registry : PixiRegistry | None
-        Registry used to resolve per-environment lockfile hashes. When
-        ``None``, falls back to looking for a single ``pixi.lock`` in the
+    backend : TaskBackend | None
+        Execution backend used to resolve per-environment identity hashes.
+        When ``None``, falls back to looking for a single ``pixi.lock`` in the
         current working directory (pre-Phase-5 behaviour).
     """
 
     root: Path | None = None
-    pixi_registry: Any | None = None  # PixiRegistry; typed as Any to avoid circular import
+    backend: Any | None = None  # TaskBackend; typed as Any to avoid circular import
     _root: Path = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -138,13 +138,14 @@ class CacheStore:
         if task_def.env is None:
             return None
 
-        if self.pixi_registry is not None:
-            lock_digest = self.pixi_registry.lock_hash(env=task_def.env)
+        if self.backend is not None:
+            lock_digest = self.backend.env_identity(env=task_def.env)
         else:
             # Pre-Phase-5 fallback: single pixi.lock in cwd.
             pixi_lock = Path.cwd() / "pixi.lock"
             lock_digest = self._hash_file_contents(pixi_lock) if pixi_lock.is_file() else None
 
+        # Key name kept as "pixi_lock" for cache-key stability with existing entries.
         return {
             "env": task_def.env,
             "pixi_lock": lock_digest,

@@ -268,6 +268,13 @@ class RunProvenanceRecorder:
             task["status"] = "failed"
             self._write_manifest()
 
+    def update_task_extra(self, *, node_id: int, **fields: Any) -> None:
+        """Merge additional metadata fields into a task entry."""
+        with self._lock:
+            task = self._task(node_id)
+            task.update(fields)
+            self._write_manifest()
+
     def copy_env_lock(self, *, env_name: str, lock_path: Path) -> None:
         """Copy a Pixi lockfile into the run provenance directory once."""
         with self._lock:

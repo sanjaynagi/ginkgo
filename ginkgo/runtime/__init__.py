@@ -7,9 +7,12 @@ from importlib import import_module
 _EXPORTS = {
     "CacheStore": ("ginkgo.runtime.cache", "CacheStore"),
     "CodecError": ("ginkgo.runtime.value_codec", "CodecError"),
+    "CompositeBackend": ("ginkgo.runtime.backend", "CompositeBackend"),
+    "LocalBackend": ("ginkgo.runtime.backend", "LocalBackend"),
     "MISSING": ("ginkgo.runtime.cache", "MISSING"),
     "RunProvenanceRecorder": ("ginkgo.runtime.provenance", "RunProvenanceRecorder"),
     "SchedulableTask": ("ginkgo.runtime.scheduler", "SchedulableTask"),
+    "TaskBackend": ("ginkgo.runtime.backend", "TaskBackend"),
     "decode_value": ("ginkgo.runtime.value_codec", "decode_value"),
     "encode_value": ("ginkgo.runtime.value_codec", "encode_value"),
     "ensure_serializable": ("ginkgo.runtime.value_codec", "ensure_serializable"),
