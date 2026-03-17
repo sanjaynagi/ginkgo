@@ -7,6 +7,8 @@ Ginkgo is a Python-based workflow orchestrator for scientific and data workflows
 The repository currently implements:
 
 - Declarative workflow construction with `@flow`, `@task()`, `Expr`, and `ExprList`
+- Workflow authoring helpers via `expand(...)`, `zip_expand(...)`, `flatten(...)`, and `slug(...)`
+  for concise deterministic workflow authoring
 - Dynamic DAG expansion when tasks return nested `Expr` or `ExprList` values
 - Explicit task kinds via `@task(kind="python" | "shell")`
 - Content-addressed caching for scalar values, files, folders, arrays, DataFrames, and other supported Python objects
@@ -58,6 +60,7 @@ The current source tree is organized around the user-facing DSL, the execution e
 src/ginkgo/
 ├── __init__.py
 ├── config.py
+├── helpers.py
 ├── core/
 │   ├── expr.py
 │   ├── flow.py
@@ -91,6 +94,13 @@ src/ginkgo/
 `@task()`-decorated functions do not execute when called. They return `Expr[T]` values that describe deferred computation. A `@flow` function is the entrypoint that builds the initial expression tree.
 
 `ExprList[T]` is produced by `.map()` on a partially applied task and represents fan-out across multiple independent task invocations.
+
+Ginkgo also exposes small workflow-authoring helpers:
+
+- `expand(template, **wildcards)` for Cartesian wildcard expansion in placeholder order
+- `zip_expand(template, **wildcards)` for positional wildcard expansion with equal-length iterables
+- `flatten(items)` for flattening nested list/tuple structures into a single list
+- `slug(value)` for deterministic file-safe artifact names
 
 ### Dynamic DAG Expansion
 
