@@ -17,6 +17,8 @@ The repository currently implements:
 - Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
 - Run provenance, per-task logs, cache inspection, and CLI debugging commands
 - A local browser UI for browsing runs, tasks, task graphs, logs, and cache entries
+- A multi-workspace local UI shell with an active workspace model and native
+  folder-picker loading for switching between Ginkgo workspaces on one machine
 - A canonical package-based workflow repository layout with root autodiscovery
 
 ## Canonical Workflow Project Layout
@@ -258,6 +260,25 @@ The manifest records:
 - outputs
 - exit codes and errors
 - run-level CPU and RSS summaries
+
+## Local UI Workspace Model
+
+The UI remains local-first and file-backed, but it no longer assumes that one
+browser session only inspects one project.
+
+The current UI server now supports:
+
+- a set of loaded workspaces in one UI session
+- one active workspace that scopes the default runs, cache, and workflow-launch
+  views
+- a native `Load workspace` action exposed by the UI, backed by a local
+  folder-picker dialog
+- workspace-scoped run and task routes so browser navigation remains stable
+  after switching workspaces
+
+Each loaded workspace still reads directly from that workspace's local
+`.ginkgo/` provenance and cache directories. The UI does not yet depend on a
+central database or remote control plane.
 - execution backend type (`local` or `container`) and container image digest
 
 ## CLI
