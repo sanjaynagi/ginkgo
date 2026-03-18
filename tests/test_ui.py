@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import sys
 import threading
+import time
+from base64 import b64encode
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from ginkgo.runtime.provenance import RunProvenanceRecorder
-from ginkgo.ui import server as ui_server
 from ginkgo.ui import create_ui_server
+from ginkgo.ui.server import payloads as server_payloads
+from ginkgo.ui.server.workspaces import (
+    WorkspaceRegistry,
+    infer_workflow_project_root,
+    resolve_launch_workspace,
+    validate_workspace_root,
+)
 
 
 def _start_server(*, runs_root: Path, selected_run_id: str | None = None):
+    runs_root.parent.mkdir(parents=True, exist_ok=True)
     server = create_ui_server(
         host="127.0.0.1",
         port=0,
@@ -39,6 +52,51 @@ def _fetch_json(url: str) -> tuple[int, dict]:
 def _fetch_json_request(request: Request) -> tuple[int, dict]:
     with urlopen(request) as response:  # noqa: S310 - local test server only
         return response.status, json.loads(response.read().decode("utf-8"))
+
+
+def _open_websocket(base_url: str, *, path: str = "/ws") -> tuple[socket.socket, bytearray]:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+    client = socket.create_connection((host, port), timeout=5)
+    key = b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n"
+    )
+    client.sendall(request.encode("utf-8"))
+
+    response = b""
+    while b"\r\n\r\n" not in response:
+        response += client.recv(4096)
+    response, remainder = response.split(b"\r\n\r\n", 1)
+    assert b"101 Switching Protocols" in response
+    client.settimeout(6)
+    return client, bytearray(remainder)
+
+
+def _recv_exact(client: socket.socket, buffer: bytearray, size: int) -> bytes:
+    while len(buffer) < size:
+        buffer.extend(client.recv(4096))
+    data = bytes(buffer[:size])
+    del buffer[:size]
+    return data
+
+
+def _recv_ws_json(client: socket.socket, buffer: bytearray) -> dict:
+    header = _recv_exact(client, buffer, 2)
+    length = header[1] & 0x7F
+    if length == 126:
+        length = int.from_bytes(_recv_exact(client, buffer, 2), "big")
+    elif length == 127:
+        length = int.from_bytes(_recv_exact(client, buffer, 8), "big")
+    payload = _recv_exact(client, buffer, length)
+    return json.loads(payload.decode("utf-8"))
 
 
 def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
@@ -97,6 +155,116 @@ def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
 
 
 class TestUiServer:
+    def test_validate_workspace_root_accepts_pyproject_with_root_flow(
+        self, tmp_path: Path
+    ) -> None:
+        workspace_root = tmp_path / "project"
+        workspace_root.mkdir()
+        (workspace_root / "pyproject.toml").write_text(
+            "[project]\nname='demo'\n", encoding="utf-8"
+        )
+        (workspace_root / "ginkgo_workflow.py").write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
+            encoding="utf-8",
+        )
+
+        assert validate_workspace_root(workspace_root) == workspace_root.resolve()
+        assert infer_workflow_project_root(workspace_root / "ginkgo_workflow.py") == workspace_root
+
+    def test_resolve_launch_workspace_accepts_pyproject_root_flow(self, tmp_path: Path) -> None:
+        active_root = tmp_path / "active"
+        active_root.mkdir()
+        (active_root / "ginkgo.toml").write_text("name = 'active'\n", encoding="utf-8")
+        registry = WorkspaceRegistry(initial_project_root=active_root)
+        active_workspace = registry.active_workspace()
+        assert active_workspace is not None
+
+        external_root = tmp_path / "external"
+        external_root.mkdir()
+        (external_root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        workflow_path = external_root / "ginkgo_workflow.py"
+        workflow_path.write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
+            encoding="utf-8",
+        )
+
+        launch_workspace, workflow_label = resolve_launch_workspace(
+            registry=registry,
+            active_workspace=active_workspace,
+            workflow=str(workflow_path),
+        )
+
+        assert launch_workspace.project_root == external_root.resolve()
+        assert workflow_label == "ginkgo_workflow.py"
+
+    def test_meta_reports_no_workspace_when_started_outside_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+
+        server = create_ui_server(
+            host="127.0.0.1",
+            port=0,
+            runs_root=runs_root,
+            selected_run_id=None,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        base_url = f"http://{host}:{port}"
+
+        try:
+            status, payload = _fetch_json(f"{base_url}/api/meta")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert status == 200
+        assert payload["active_workspace_id"] is None
+        assert payload["active_workspace"] is None
+        assert payload["project_root"] is None
+        assert payload["runs_root"] is None
+        assert payload["workspaces"] == []
+
+    def test_launch_workflow_process_adds_repo_root_to_pythonpath(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workflow_path = workspace_root / "workflow.py"
+        workflow_path.write_text("from ginkgo import flow\n", encoding="utf-8")
+
+        captured: dict[str, object] = {}
+
+        class DummyProcess:
+            pid = 9999
+
+        def fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return DummyProcess()
+
+        monkeypatch.setattr(server_payloads.subprocess, "Popen", fake_popen)
+        monkeypatch.setenv("PYTHONPATH", "/existing/path")
+
+        result = server_payloads.launch_workflow_process(
+            project_root=workspace_root,
+            workflow="workflow.py",
+            config_paths=[],
+            jobs=None,
+            cores=None,
+            memory=None,
+        )
+
+        assert result == {"pid": 9999, "workflow": "workflow.py"}
+        assert captured["command"][:4] == [sys.executable, "-m", "ginkgo.cli", "run"]
+        assert captured["kwargs"]["cwd"] == workspace_root
+        assert captured["kwargs"]["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
+            str(server_payloads.REPO_ROOT),
+            "/existing/path",
+        ]
+
     def test_root_serves_spa(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
         _make_run(tmp_path, run_id="20260312_120000_deadbeef", status="succeeded", fail=False)
@@ -274,7 +442,11 @@ class TestUiServer:
             calls.append(kwargs)
             return {"pid": 4242, "workflow": kwargs["workflow"]}
 
-        monkeypatch.setattr(ui_server, "_launch_workflow_process", fake_launch_workflow_process)
+        monkeypatch.setattr(
+            server_payloads,
+            "launch_workflow_process",
+            fake_launch_workflow_process,
+        )
 
         body = json.dumps(
             {
@@ -302,7 +474,15 @@ class TestUiServer:
             server.server_close()
 
         assert status == 202
-        assert payload == {"ok": True, "pid": 4242, "workflow": "workflow.py"}
+        assert payload["ok"] is True
+        assert payload["pid"] == 4242
+        assert payload["workflow"] == "workflow.py"
+        assert payload["workspace_changed"] is False
+        assert payload["workspace_label"] == tmp_path.name
+        assert isinstance(payload["workspace_id"], str)
+        assert payload["workspace"]["workspace_id"] == payload["workspace_id"]
+        assert payload["workspace"]["project_root"] == str(tmp_path)
+        assert len(payload["workspaces"]) == 1
         assert calls == [
             {
                 "project_root": tmp_path,
@@ -311,6 +491,63 @@ class TestUiServer:
                 "jobs": 4,
                 "cores": 2,
                 "memory": 12,
+            }
+        ]
+
+    def test_run_api_loads_external_workflow_workspace(self, monkeypatch, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        (tmp_path / "workflow.py").write_text("from ginkgo import flow\n", encoding="utf-8")
+
+        other_root = tmp_path / "external_workspace"
+        other_root.mkdir()
+        (other_root / "ginkgo.toml").write_text('name = "external"\n', encoding="utf-8")
+        external_workflow = other_root / "workflow.py"
+        external_workflow.write_text("from ginkgo import flow\n", encoding="utf-8")
+
+        calls: list[dict[str, object]] = []
+
+        def fake_launch_workflow_process(**kwargs):
+            calls.append(kwargs)
+            return {"pid": 5252, "workflow": kwargs["workflow"]}
+
+        monkeypatch.setattr(
+            server_payloads,
+            "launch_workflow_process",
+            fake_launch_workflow_process,
+        )
+
+        body = json.dumps({"workflow": str(external_workflow), "config_paths": []}).encode("utf-8")
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        try:
+            status, payload = _fetch_json_request(
+                Request(
+                    f"{base_url}/api/run",
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert status == 202
+        assert payload["ok"] is True
+        assert payload["workspace_changed"] is True
+        assert payload["workspace_label"] == "external_workspace"
+        assert payload["workspace"]["workspace_id"] == payload["workspace_id"]
+        assert payload["workspace"]["project_root"] == str(other_root)
+        assert len(payload["workspaces"]) == 2
+        assert calls == [
+            {
+                "project_root": other_root,
+                "workflow": "workflow.py",
+                "config_paths": [],
+                "jobs": None,
+                "cores": None,
+                "memory": None,
             }
         ]
 
@@ -332,3 +569,92 @@ class TestUiServer:
 
         assert status == 404
         assert "Run not found: missing-run" in body
+
+    def test_workspace_load_and_activate_updates_active_workspace(self, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        primary_workflow = tmp_path / "workflow.py"
+        primary_workflow.write_text("from ginkgo import flow\n", encoding="utf-8")
+
+        other_root = tmp_path / "second"
+        other_root.mkdir()
+        (other_root / "ginkgo.toml").write_text('name = "second"\n', encoding="utf-8")
+        other_package = other_root / "second_project"
+        other_package.mkdir()
+        (other_package / "__init__.py").write_text("", encoding="utf-8")
+        (other_package / "workflow.py").write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
+            encoding="utf-8",
+        )
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        try:
+            load_status, load_payload = _fetch_json_request(
+                Request(
+                    f"{base_url}/api/workspaces/load",
+                    data=json.dumps({"path": str(other_root)}).encode("utf-8"),
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+            )
+            _, meta_payload = _fetch_json(f"{base_url}/api/meta")
+            initial_workspace = next(
+                item
+                for item in meta_payload["workspaces"]
+                if item["project_root"] == str(tmp_path)
+            )
+            activate_status, activate_payload = _fetch_json_request(
+                Request(
+                    f"{base_url}/api/workspaces/activate",
+                    data=json.dumps({"workspace_id": initial_workspace["workspace_id"]}).encode(
+                        "utf-8"
+                    ),
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert load_status == 202
+        assert load_payload["workspace"]["project_root"] == str(other_root)
+        assert meta_payload["active_workspace"]["project_root"] == str(other_root)
+        assert len(meta_payload["workspaces"]) == 2
+        assert activate_status == 200
+        assert activate_payload["workspace"]["project_root"] == str(tmp_path)
+
+    def test_websocket_emits_initial_and_run_update_events(self, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        _make_run(tmp_path, run_id="20260312_120000_deadbeef", status="succeeded", fail=False)
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        client, buffer = _open_websocket(base_url)
+        try:
+            connected = _recv_ws_json(client, buffer)
+            meta_event = _recv_ws_json(client, buffer)
+            _make_run(tmp_path, run_id="20260312_120100_feedface", status="succeeded", fail=False)
+
+            deadline = time.time() + 6
+            events: list[dict] = []
+            while time.time() < deadline:
+                event = _recv_ws_json(client, buffer)
+                events.append(event)
+                if event["type"] == "runs_updated":
+                    break
+        finally:
+            client.close()
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert connected["type"] == "connected"
+        assert meta_event["type"] == "meta"
+        assert meta_event["payload"]["meta"]["active_workspace_id"] is not None
+        assert any(
+            event["type"] == "runs_updated"
+            and any(
+                run["run_id"] == "20260312_120100_feedface" for run in event["payload"]["runs"]
+            )
+            for event in events
+        )

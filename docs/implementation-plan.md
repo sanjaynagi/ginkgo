@@ -11,21 +11,27 @@ Each phase is independently testable and follows the same structure:
 
 ## Phase 4 — Remaining Hardening and UI Polish
 
-**Goal:** Finish the production-readiness and local UI work that remains after the currently implemented hardening and UI slices.
+**Goal:** Finish the production-readiness and local UI work that remains.
 
-### Deliverables
+Completed in this phase: sidebar shell, multi-workspace aggregation and
+workspace switching, pixi-aware workflow launch from external workspaces,
+live WebSocket event channel, structured live-state diffing, UI server package
+refactor, workspace validation from non-workspace directories, age-based
+`ginkgo cache prune`.
+
+### Remaining Deliverables
 
 - Extend retry support with:
   - selective retry policies
   - retry backoff
-  - clearer retry reporting
-- Broaden cache-management policy beyond age-based pruning.
-- Improve CLI diagnostics and runtime error messages further where current reporting is still thin.
+- Broaden cache-management policy beyond age-based pruning (size- or
+  count-based eviction).
+- Improve CLI diagnostics and runtime error messages further where current
+  reporting is still thin.
 - Polish the UI task-graph experience:
-  - richer DAG layout
-  - better live-run visualization
-  - a true WebSocket-based event channel
-- Tighten documentation around partial resume, dry-run behavior, and resource declarations.
+  - richer DAG layout (fit-to-view, failure focus, better spacing)
+- Tighten documentation around partial resume, dry-run behavior, and resource
+  declarations.
 
 ### Key design points
 
@@ -36,7 +42,6 @@ Each phase is independently testable and follows the same structure:
 ### Validation
 
 - Re-run `VW-4`, `VW-5`, `VW-6`, and `VW-8` through the polished CLI and UI paths and assert the richer retry, cache, and resource behavior is visible in both CLI output and persisted provenance.
-- Assert live UI updates over the final event channel remain consistent with the run manifest and log files.
 - Assert the improved diagnostics distinguish common classes of failure such as env mismatch, invalid paths, and packaging/importability errors.
 
 ---

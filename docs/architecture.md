@@ -17,6 +17,8 @@ The repository currently implements:
 - Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
 - Run provenance, per-task logs, cache inspection, and CLI debugging commands
 - A local browser UI for browsing runs, tasks, task graphs, logs, and cache entries
+- A multi-workspace local UI shell with an active workspace model and native
+  folder-picker loading for switching between Ginkgo workspaces on one machine
 - A canonical package-based workflow repository layout with root autodiscovery
 
 ## Canonical Workflow Project Layout
@@ -85,7 +87,14 @@ ginkgo/
 │   ├── app.py
 │   └── commands/
 └── ui/
-    ├── server.py
+    ├── server/
+    │   ├── __init__.py      # re-exports create_ui_server
+    │   ├── app.py           # HTTP/WebSocket handler and route wiring
+    │   ├── live.py          # live-state capture and diffing
+    │   ├── payloads.py      # run/task/workspace/cache payload builders
+    │   ├── utils.py         # shared formatting helpers
+    │   ├── websocket.py     # WebSocket framing
+    │   └── workspaces.py    # WorkspaceRecord, WorkspaceRegistry, discovery
     └── static/
 ```
 
@@ -258,7 +267,43 @@ The manifest records:
 - outputs
 - exit codes and errors
 - run-level CPU and RSS summaries
-- execution backend type (`local` or `container`) and container image digest
+
+## Local UI Workspace Model
+
+The UI remains local-first and file-backed, but it no longer assumes that one
+browser session only inspects one project, or that it must be launched from the
+workspace directory.
+
+The current UI server now supports:
+
+- a set of loaded workspaces in one UI session
+- one active workspace that scopes the default runs, cache, and workflow-launch
+  views
+- a native `Load workspace` action exposed by the UI, backed by a local
+  folder-picker dialog
+- workspace-scoped run and task routes so browser navigation remains stable
+  after switching workspaces
+- launching from any directory (including `~`): workspace validation uses a
+  shallow probe rather than a recursive scan, so startup is immediate even when
+  the launch directory is not itself a workspace
+- workspace detection accepts `ginkgo.toml`, `.ginkgo/`, `pyproject.toml` +
+  root-level `@flow` files, or `pixi.toml` + root-level `@flow` files, so
+  projects with non-canonical layouts (e.g. a root-level `ginkgo_workflow.py`
+  in a pixi project) are recognized correctly
+
+### Pixi-aware workflow launch
+
+When the UI launches a workflow subprocess for an external workspace, it
+detects whether the workspace has a `.pixi/` environment directory. If pixi
+is found, the subprocess command is `pixi run python -m ginkgo.cli run
+<workflow>` (run in the workspace's own pixi environment), so that
+workspace-specific dependencies are importable when the workflow module is
+loaded. Workspaces without a pixi environment fall back to the current
+interpreter (`sys.executable`).
+
+Each loaded workspace still reads directly from that workspace's local
+`.ginkgo/` provenance and cache directories. The UI does not yet depend on a
+central database or remote control plane.
 
 ## CLI
 
@@ -289,16 +334,22 @@ The local UI is implemented as a lightweight JSON API server plus a bundled Reac
 
 The current UI supports:
 
-- run history
-- run summaries
-- task tables
-- task-graph visualization using recorded dependencies
-- task detail drawers
-- full log retrieval
+- sidebar-first desktop shell with primary navigation (Runs, Cache, Workspaces)
+- multi-workspace session: load any number of local Ginkgo workspaces, switch
+  the active workspace via the top bar, and scope runs/cache/workflow-launch to
+  that workspace
+- run history and run summaries
+- task tables, task-graph visualization using recorded dependencies
+- task detail drawers with full log retrieval
 - cache browsing and deletion
-- live refresh via server-sent events
+- live updates via a WebSocket event channel (`/ws`): the server emits
+  structured events derived from on-disk provenance changes; the frontend
+  applies incremental state updates without full page reloads
+- pixi-aware workflow launch for external workspaces (see Local UI Workspace
+  Model section)
 
-Full DAG-visualization polish and a true WebSocket event channel remain future work.
+DAG layout improvements (fit-to-view, failure focus, richer positioning)
+remain future work.
 
 ## Validation Workflows
 
