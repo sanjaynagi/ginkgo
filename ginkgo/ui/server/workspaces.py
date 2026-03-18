@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ginkgo.cli.workspace import list_workflow_paths
+from ginkgo.cli.workspace import canonical_workflow_candidates
 
 
 class WorkspaceLoadCancelledError(RuntimeError):
@@ -44,11 +44,21 @@ class WorkspaceRecord:
 class WorkspaceRegistry:
     """Track loaded workspaces and the current active workspace."""
 
-    def __init__(self, *, initial_project_root: Path) -> None:
+    def __init__(self, *, initial_project_root: Path | None = None) -> None:
         self._lock = threading.RLock()
         self._records: dict[str, WorkspaceRecord] = {}
         self._active_workspace_id: str | None = None
-        initial_record = workspace_record_from_root(initial_project_root.resolve())
+
+        # Seed the registry only when the launch directory is a valid workspace.
+        if initial_project_root is None:
+            return
+
+        try:
+            resolved_root = validate_workspace_root(initial_project_root)
+        except (FileNotFoundError, RuntimeError):
+            return
+
+        initial_record = workspace_record_from_root(resolved_root)
         self._records[initial_record.workspace_id] = initial_record
         self._active_workspace_id = initial_record.workspace_id
 
@@ -118,11 +128,37 @@ def validate_workspace_root(project_root: Path) -> Path:
 
     has_config = (resolved_root / "ginkgo.toml").is_file()
     has_runtime_state = (resolved_root / ".ginkgo").is_dir()
-    has_workflows = bool(list_workflow_paths(project_root=resolved_root))
-    if has_config or has_runtime_state or has_workflows:
+    has_project_manifest = (resolved_root / "pyproject.toml").is_file() or (
+        resolved_root / "pixi.toml"
+    ).is_file()
+    has_workflows = bool(_shallow_workflow_candidates(project_root=resolved_root))
+    if (
+        has_config
+        or has_runtime_state
+        or (has_project_manifest and has_workflows)
+        or has_workflows
+    ):
         return resolved_root
 
     raise RuntimeError(f"Directory does not look like a Ginkgo workspace: {resolved_root}")
+
+
+def _shallow_workflow_candidates(*, project_root: Path) -> list[Path]:
+    """Return likely workflow entrypoints without scanning the whole tree."""
+    discovered: dict[Path, None] = {}
+
+    for path in canonical_workflow_candidates(project_root=project_root):
+        discovered[path] = None
+
+    for path in sorted(project_root.glob("*.py")):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if "@flow" in content:
+            discovered[path.resolve()] = None
+
+    return sorted(discovered)
 
 
 def pick_workspace_folder() -> Path:
@@ -194,6 +230,9 @@ def infer_workflow_project_root(workflow_path: Path) -> Path:
     """Infer a workflow's owning workspace root from its path."""
     for candidate in (workflow_path.parent, *workflow_path.parents):
         if (candidate / "ginkgo.toml").is_file():
+            return candidate
+    for candidate in (workflow_path.parent, *workflow_path.parents):
+        if (candidate / "pyproject.toml").is_file():
             return candidate
     for candidate in (workflow_path.parent, *workflow_path.parents):
         if (candidate / "pixi.toml").is_file():

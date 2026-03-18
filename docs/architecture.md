@@ -87,7 +87,14 @@ ginkgo/
 │   ├── app.py
 │   └── commands/
 └── ui/
-    ├── server.py
+    ├── server/
+    │   ├── __init__.py      # re-exports create_ui_server
+    │   ├── app.py           # HTTP/WebSocket handler and route wiring
+    │   ├── live.py          # live-state capture and diffing
+    │   ├── payloads.py      # run/task/workspace/cache payload builders
+    │   ├── utils.py         # shared formatting helpers
+    │   ├── websocket.py     # WebSocket framing
+    │   └── workspaces.py    # WorkspaceRecord, WorkspaceRegistry, discovery
     └── static/
 ```
 
@@ -264,7 +271,8 @@ The manifest records:
 ## Local UI Workspace Model
 
 The UI remains local-first and file-backed, but it no longer assumes that one
-browser session only inspects one project.
+browser session only inspects one project, or that it must be launched from the
+workspace directory.
 
 The current UI server now supports:
 
@@ -275,11 +283,27 @@ The current UI server now supports:
   folder-picker dialog
 - workspace-scoped run and task routes so browser navigation remains stable
   after switching workspaces
+- launching from any directory (including `~`): workspace validation uses a
+  shallow probe rather than a recursive scan, so startup is immediate even when
+  the launch directory is not itself a workspace
+- workspace detection accepts `ginkgo.toml`, `.ginkgo/`, `pyproject.toml` +
+  root-level `@flow` files, or `pixi.toml` + root-level `@flow` files, so
+  projects with non-canonical layouts (e.g. a root-level `ginkgo_workflow.py`
+  in a pixi project) are recognized correctly
+
+### Pixi-aware workflow launch
+
+When the UI launches a workflow subprocess for an external workspace, it
+detects whether the workspace has a `.pixi/` environment directory. If pixi
+is found, the subprocess command is `pixi run python -m ginkgo.cli run
+<workflow>` (run in the workspace's own pixi environment), so that
+workspace-specific dependencies are importable when the workflow module is
+loaded. Workspaces without a pixi environment fall back to the current
+interpreter (`sys.executable`).
 
 Each loaded workspace still reads directly from that workspace's local
 `.ginkgo/` provenance and cache directories. The UI does not yet depend on a
 central database or remote control plane.
-- execution backend type (`local` or `container`) and container image digest
 
 ## CLI
 

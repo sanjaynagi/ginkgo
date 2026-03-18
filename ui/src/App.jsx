@@ -229,6 +229,18 @@ function upsertRunSummary(currentRuns, nextRun) {
   return merged;
 }
 
+function mergeWorkspace(workspaces, nextWorkspace) {
+  if (!nextWorkspace?.workspace_id) return workspaces;
+  const merged = [...workspaces];
+  const index = merged.findIndex((workspace) => workspace.workspace_id === nextWorkspace.workspace_id);
+  if (index >= 0) {
+    merged[index] = nextWorkspace;
+  } else {
+    merged.push(nextWorkspace);
+  }
+  return merged;
+}
+
 function Sidebar({ route, activeWorkspaceId, navigate }) {
   return (
     <aside className="sidebar">
@@ -269,6 +281,7 @@ function Sidebar({ route, activeWorkspaceId, navigate }) {
 function Topbar({
   activeWorkspace,
   workspaces,
+  live,
   loadingWorkspace,
   onActivateWorkspace,
   onLoadWorkspace,
@@ -326,6 +339,7 @@ function Topbar({
         </div>
       </div>
       <div className="topbar-actions">
+        <span className={`live-dot ${live ? "active" : ""}`}>{live ? "Live" : "Idle"}</span>
         <button
           className="primary-button"
           onClick={onOpenRunDialog}
@@ -424,7 +438,7 @@ function WorkspaceOverview({ workspaces, activeWorkspaceId, onActivateWorkspace 
   );
 }
 
-function RunList({ runs, workspaceLabel, latestRunId, onOpenRun, onOpenRunDialog, live }) {
+function RunList({ runs, workspaceLabel, latestRunId, onOpenRun, onOpenRunDialog }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -433,7 +447,6 @@ function RunList({ runs, workspaceLabel, latestRunId, onOpenRun, onOpenRunDialog
           <p className="panel-subtitle">Ordered by execution time</p>
         </div>
         <div className="header-actions">
-          <span className={`live-dot ${live ? "active" : ""}`}>{live ? "Live" : "Idle"}</span>
           <button className="primary-button" onClick={onOpenRunDialog}>Run workflow</button>
           {latestRunId ? (
             <button className="ghost-button" onClick={() => onOpenRun(latestRunId)}>
@@ -1164,6 +1177,7 @@ export function App() {
   const activeWorkspace = meta?.active_workspace || null;
   const targetWorkspaceId = route.workspaceId || activeWorkspaceId;
   const targetWorkspace = workspaces.find((workspace) => workspace.workspace_id === targetWorkspaceId) || activeWorkspace;
+  const showWorkspaceLanding = !initialLoading && !activeWorkspaceId && workspaces.length === 0;
 
   useEffect(() => {
     liveContextRef.current = {
@@ -1452,6 +1466,23 @@ export function App() {
           : `Started ${response.workflow} (pid ${response.pid}).`,
       );
       setRunDialogOpen(false);
+      const nextWorkspaces = Array.isArray(response.workspaces)
+        ? response.workspaces
+        : mergeWorkspace(workspaces, response.workspace);
+      if (nextWorkspaces.length > 0) {
+        setWorkspaces(nextWorkspaces);
+      }
+      if (response.workspace) {
+        setMeta((currentMeta) => ({
+          ...(currentMeta || {}),
+          active_workspace_id: response.workspace.workspace_id,
+          active_workspace: response.workspace,
+          project_root: response.workspace.project_root,
+          runs_root: response.workspace.runs_root,
+          latest_run_id: response.workspace.latest_run_id,
+          workspaces: nextWorkspaces,
+        }));
+      }
       if (response.workspace_id) {
         navigate(`/workspaces/${response.workspace_id}/runs`);
       }
@@ -1466,6 +1497,16 @@ export function App() {
   const initialWorkflow = runDetail?.manifest?.workflow
     ? relativeWorkflowPath(runDetail.manifest.workflow, targetWorkspace?.project_root)
     : workflows[0] || "";
+
+  if (showWorkspaceLanding) {
+    return (
+      <div className="workspace-landing">
+        <button className="primary-button workspace-landing-button" onClick={loadWorkspace}>
+          {loadingWorkspace ? "Loading..." : "Load workspace"}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -1539,7 +1580,6 @@ export function App() {
               latestRunId={targetWorkspace.latest_run_id}
               onOpenRun={openRun}
               onOpenRunDialog={openRunDialog}
-              live={live}
             />
           ) : (
             <section className="panel empty-state">
@@ -1550,9 +1590,6 @@ export function App() {
           )}
         </main>
 
-        <div className={`screen-live-indicator ${live ? "active" : ""}`}>
-          {live ? "Live" : "Idle"}
-        </div>
       </div>
 
       <TaskDrawer taskDetail={taskDetail} taskLog={taskLog} onClose={closeTask} />

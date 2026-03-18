@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,8 @@ from .utils import (
     task_base_name,
 )
 from .workspaces import WorkspaceRecord
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def workspace_payload(
@@ -184,6 +187,20 @@ def clear_cache_entries(cache_root: Path) -> int:
     return deleted
 
 
+def _workflow_launch_command(*, project_root: Path, workflow_path: Path) -> list[str]:
+    """Build the base subprocess command to launch a workflow.
+
+    Uses the workspace's pixi environment when one is present, so that
+    workspace-specific dependencies are available when the workflow module is
+    imported.  Falls back to the current interpreter when pixi is unavailable.
+    """
+    if (project_root / ".pixi").is_dir():
+        pixi = shutil.which("pixi")
+        if pixi:
+            return [pixi, "run", "python", "-m", "ginkgo.cli", "run", str(workflow_path)]
+    return [sys.executable, "-m", "ginkgo.cli", "run", str(workflow_path)]
+
+
 def launch_workflow_process(
     *,
     project_root: Path,
@@ -211,7 +228,7 @@ def launch_workflow_process(
             raise FileNotFoundError(f"Config not found: {config_path}")
         resolved_configs.append(path)
 
-    command = [sys.executable, "-m", "ginkgo.cli", "run", str(workflow_path)]
+    command = _workflow_launch_command(project_root=project_root, workflow_path=workflow_path)
     for config_path in resolved_configs:
         command.extend(["--config", str(config_path)])
     if jobs is not None:
@@ -221,9 +238,19 @@ def launch_workflow_process(
     if memory is not None:
         command.extend(["--memory", str(memory)])
 
+    # Ensure `python -m ginkgo.cli` resolves this checkout even when the spawned
+    # process changes its cwd to a different workspace.
+    env = os.environ.copy()
+    pythonpath_entries = [str(REPO_ROOT)]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
     process = subprocess.Popen(  # noqa: S603 - controlled local CLI invocation
         command,
         cwd=project_root,
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
