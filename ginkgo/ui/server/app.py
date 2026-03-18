@@ -663,6 +663,12 @@ def create_ui_server(
                     "workspace_id": launch_workspace.workspace_id,
                     "workspace_label": launch_workspace.label,
                     "workspace_changed": launch_workspace.workspace_id != workspace.workspace_id,
+                    "workspace": workspace_payload(
+                        launch_workspace,
+                        active_workspace_id=registry.active_workspace_id(),
+                        selected_run_id=selected_run_id,
+                    ),
+                    "workspaces": self._workspace_payloads(),
                 },
                 status=HTTPStatus.ACCEPTED,
             )

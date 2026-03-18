@@ -68,6 +68,18 @@ select {
   font: inherit;
 }
 
+.workspace-landing {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.workspace-landing-button {
+  min-width: 180px;
+  min-height: 48px;
+}
+
 button {
   cursor: pointer;
 }
@@ -415,41 +427,6 @@ pre {
 }
 
 .live-dot.active::before {
-  background: var(--green);
-  box-shadow: 0 0 0 4px var(--green-dim);
-}
-
-.screen-live-indicator {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 18;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255, 250, 241, 0.92);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
-  color: var(--text-tertiary);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.screen-live-indicator::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-
-.screen-live-indicator.active {
-  color: var(--green);
-}
-
-.screen-live-indicator.active::before {
   background: var(--green);
   box-shadow: 0 0 0 4px var(--green-dim);
 }
@@ -1382,11 +1359,6 @@ pre {
     width: 100vw;
     padding: 18px;
     border-left: none;
-  }
-
-  .screen-live-indicator {
-    right: 12px;
-    bottom: 12px;
   }
 
   .workspace-grid {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from base64 import b64encode
@@ -16,9 +17,16 @@ from urllib.request import Request, urlopen
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.ui import create_ui_server
 from ginkgo.ui.server import payloads as server_payloads
+from ginkgo.ui.server.workspaces import (
+    WorkspaceRegistry,
+    infer_workflow_project_root,
+    resolve_launch_workspace,
+    validate_workspace_root,
+)
 
 
 def _start_server(*, runs_root: Path, selected_run_id: str | None = None):
+    runs_root.parent.mkdir(parents=True, exist_ok=True)
     server = create_ui_server(
         host="127.0.0.1",
         port=0,
@@ -147,6 +155,116 @@ def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
 
 
 class TestUiServer:
+    def test_validate_workspace_root_accepts_pyproject_with_root_flow(
+        self, tmp_path: Path
+    ) -> None:
+        workspace_root = tmp_path / "project"
+        workspace_root.mkdir()
+        (workspace_root / "pyproject.toml").write_text(
+            "[project]\nname='demo'\n", encoding="utf-8"
+        )
+        (workspace_root / "ginkgo_workflow.py").write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
+            encoding="utf-8",
+        )
+
+        assert validate_workspace_root(workspace_root) == workspace_root.resolve()
+        assert infer_workflow_project_root(workspace_root / "ginkgo_workflow.py") == workspace_root
+
+    def test_resolve_launch_workspace_accepts_pyproject_root_flow(self, tmp_path: Path) -> None:
+        active_root = tmp_path / "active"
+        active_root.mkdir()
+        (active_root / "ginkgo.toml").write_text("name = 'active'\n", encoding="utf-8")
+        registry = WorkspaceRegistry(initial_project_root=active_root)
+        active_workspace = registry.active_workspace()
+        assert active_workspace is not None
+
+        external_root = tmp_path / "external"
+        external_root.mkdir()
+        (external_root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+        workflow_path = external_root / "ginkgo_workflow.py"
+        workflow_path.write_text(
+            "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
+            encoding="utf-8",
+        )
+
+        launch_workspace, workflow_label = resolve_launch_workspace(
+            registry=registry,
+            active_workspace=active_workspace,
+            workflow=str(workflow_path),
+        )
+
+        assert launch_workspace.project_root == external_root.resolve()
+        assert workflow_label == "ginkgo_workflow.py"
+
+    def test_meta_reports_no_workspace_when_started_outside_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+
+        server = create_ui_server(
+            host="127.0.0.1",
+            port=0,
+            runs_root=runs_root,
+            selected_run_id=None,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        base_url = f"http://{host}:{port}"
+
+        try:
+            status, payload = _fetch_json(f"{base_url}/api/meta")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert status == 200
+        assert payload["active_workspace_id"] is None
+        assert payload["active_workspace"] is None
+        assert payload["project_root"] is None
+        assert payload["runs_root"] is None
+        assert payload["workspaces"] == []
+
+    def test_launch_workflow_process_adds_repo_root_to_pythonpath(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workflow_path = workspace_root / "workflow.py"
+        workflow_path.write_text("from ginkgo import flow\n", encoding="utf-8")
+
+        captured: dict[str, object] = {}
+
+        class DummyProcess:
+            pid = 9999
+
+        def fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return DummyProcess()
+
+        monkeypatch.setattr(server_payloads.subprocess, "Popen", fake_popen)
+        monkeypatch.setenv("PYTHONPATH", "/existing/path")
+
+        result = server_payloads.launch_workflow_process(
+            project_root=workspace_root,
+            workflow="workflow.py",
+            config_paths=[],
+            jobs=None,
+            cores=None,
+            memory=None,
+        )
+
+        assert result == {"pid": 9999, "workflow": "workflow.py"}
+        assert captured["command"][:4] == [sys.executable, "-m", "ginkgo.cli", "run"]
+        assert captured["kwargs"]["cwd"] == workspace_root
+        assert captured["kwargs"]["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
+            str(server_payloads.REPO_ROOT),
+            "/existing/path",
+        ]
+
     def test_root_serves_spa(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
         _make_run(tmp_path, run_id="20260312_120000_deadbeef", status="succeeded", fail=False)
@@ -362,6 +480,9 @@ class TestUiServer:
         assert payload["workspace_changed"] is False
         assert payload["workspace_label"] == tmp_path.name
         assert isinstance(payload["workspace_id"], str)
+        assert payload["workspace"]["workspace_id"] == payload["workspace_id"]
+        assert payload["workspace"]["project_root"] == str(tmp_path)
+        assert len(payload["workspaces"]) == 1
         assert calls == [
             {
                 "project_root": tmp_path,
@@ -416,6 +537,9 @@ class TestUiServer:
         assert payload["ok"] is True
         assert payload["workspace_changed"] is True
         assert payload["workspace_label"] == "external_workspace"
+        assert payload["workspace"]["workspace_id"] == payload["workspace_id"]
+        assert payload["workspace"]["project_root"] == str(other_root)
+        assert len(payload["workspaces"]) == 2
         assert calls == [
             {
                 "project_root": other_root,
