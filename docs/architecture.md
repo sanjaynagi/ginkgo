@@ -334,16 +334,22 @@ The local UI is implemented as a lightweight JSON API server plus a bundled Reac
 
 The current UI supports:
 
-- run history
-- run summaries
-- task tables
-- task-graph visualization using recorded dependencies
-- task detail drawers
-- full log retrieval
+- sidebar-first desktop shell with primary navigation (Runs, Cache, Workspaces)
+- multi-workspace session: load any number of local Ginkgo workspaces, switch
+  the active workspace via the top bar, and scope runs/cache/workflow-launch to
+  that workspace
+- run history and run summaries
+- task tables, task-graph visualization using recorded dependencies
+- task detail drawers with full log retrieval
 - cache browsing and deletion
-- live refresh via server-sent events
+- live updates via a WebSocket event channel (`/ws`): the server emits
+  structured events derived from on-disk provenance changes; the frontend
+  applies incremental state updates without full page reloads
+- pixi-aware workflow launch for external workspaces (see Local UI Workspace
+  Model section)
 
-Full DAG-visualization polish and a true WebSocket event channel remain future work.
+DAG layout improvements (fit-to-view, failure focus, richer positioning)
+remain future work.
 
 ## Validation Workflows
 
