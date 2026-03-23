@@ -9,7 +9,7 @@ the normal Pixi path.
 
 from __future__ import annotations
 
-import hashlib
+
 import subprocess
 import shutil
 from dataclasses import dataclass, field
@@ -355,21 +355,17 @@ class PixiRegistry:
             cmd,
         ]
 
-    def python_argv_c(self, *, env: str, code: str, args: Sequence[str] = ()) -> list[str]:
-        """Build argv to run Python *code* with ``-c`` inside the Pixi environment.
-
-        Using ``-c`` instead of running a script file avoids adding the script's
-        directory to ``sys.path``, which would cause module-name collisions with
-        stdlib modules (e.g. ``ginkgo/types.py`` shadowing ``types``).
+    def python_argv_m(self, *, env: str, module: str, args: Sequence[str] = ()) -> list[str]:
+        """Build argv to run a Python *module* with ``-m`` inside the Pixi environment.
 
         Parameters
         ----------
         env : str
             Environment name or path.
-        code : str
-            Python source code to pass to ``python -c``.
+        module : str
+            Fully-qualified module name to pass to ``python -m``.
         args : Sequence[str]
-            Positional arguments available as ``sys.argv[1:]`` inside *code*.
+            Positional arguments available as ``sys.argv[1:]`` inside the module.
 
         Returns
         -------
@@ -384,8 +380,8 @@ class PixiRegistry:
             str(manifest),
             "--",
             "python",
-            "-c",
-            code,
+            "-m",
+            module,
             *args,
         ]
 
@@ -396,12 +392,10 @@ class PixiRegistry:
 
 
 def _hash_file(path: Path) -> str:
-    """Return the SHA-256 hex digest of a file's contents."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Return the BLAKE3 hex digest of a file's contents."""
+    from ginkgo.runtime.hashing import hash_file
+
+    return hash_file(path)
 
 
 def _require_pixi() -> None:

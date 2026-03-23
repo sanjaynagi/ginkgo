@@ -235,15 +235,17 @@ class TestPixiRegistry:
         assert "-c" in argv
         assert "echo hello" in argv
 
-    def test_python_argv_c_structure(self) -> None:
+    def test_python_argv_m_structure(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
-        argv = registry.python_argv_c(env=_TEST_ENV_NAME, code="print('hi')", args=("a", "b"))
+        argv = registry.python_argv_m(
+            env=_TEST_ENV_NAME, module="ginkgo.envs.pixi_worker", args=("a", "b")
+        )
         assert argv[0] == "pixi"
         assert argv[1] == "run"
         assert "--manifest-path" in argv
         assert "python" in argv
-        assert "-c" in argv
-        assert "print('hi')" in argv
+        assert "-m" in argv
+        assert "ginkgo.envs.pixi_worker" in argv
         assert "a" in argv
         assert "b" in argv
 
@@ -412,8 +414,6 @@ class TestPixiPythonTask:
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text(
             """
-import pandas as pd
-
 from ginkgo import task
 
 
@@ -426,6 +426,8 @@ def needs_worker_import(x: int) -> int:
         )
 
         module = load_module_from_path(workflow_path)
+        # Delete the file so the pixi worker subprocess cannot load it by path.
+        workflow_path.unlink()
         registry = _make_registry(tmp_path)
 
         with pytest.raises(RuntimeError, match="Foreign Python task .*kind='shell'"):

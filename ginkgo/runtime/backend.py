@@ -56,14 +56,14 @@ class TaskBackend(Protocol):
         """
         ...
 
-    def python_argv_c(
+    def python_argv_m(
         self,
         *,
         env: str,
-        code: str,
+        module: str,
         args: Sequence[str] = (),
     ) -> list[str]:
-        """Build an argument vector to run ``python -c`` inside the environment.
+        """Build an argument vector to run ``python -m`` inside the environment.
 
         Returns
         -------
@@ -113,15 +113,15 @@ class LocalBackend:
         """Build argv to run *cmd* through the Pixi environment."""
         return self.pixi_registry.shell_argv(env=env, cmd=cmd)
 
-    def python_argv_c(
+    def python_argv_m(
         self,
         *,
         env: str,
-        code: str,
+        module: str,
         args: Sequence[str] = (),
     ) -> list[str]:
-        """Build argv to run ``python -c`` through the Pixi environment."""
-        return self.pixi_registry.python_argv_c(env=env, code=code, args=args)
+        """Build argv to run ``python -m`` through the Pixi environment."""
+        return self.pixi_registry.python_argv_m(env=env, module=module, args=args)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
@@ -186,15 +186,15 @@ class CompositeBackend:
         """Delegate to the correct backend."""
         return self._route(env=env).shell_argv(env=env, cmd=cmd)
 
-    def python_argv_c(
+    def python_argv_m(
         self,
         *,
         env: str,
-        code: str,
+        module: str,
         args: Sequence[str] = (),
     ) -> list[str]:
         """Delegate to the correct backend."""
-        return self._route(env=env).python_argv_c(env=env, code=code, args=args)
+        return self._route(env=env).python_argv_m(env=env, module=module, args=args)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Delegate to the correct backend."""

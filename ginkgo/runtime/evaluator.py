@@ -33,7 +33,7 @@ from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
 from ginkgo.runtime.cache import MISSING, CacheStore
-from ginkgo.runtime.module_loader import import_roots_for_path, load_module, resolve_module_file
+from ginkgo.runtime.module_loader import load_module, resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.value_codec import (
@@ -43,26 +43,6 @@ from ginkgo.runtime.value_codec import (
     ensure_serializable,
 )
 from ginkgo.runtime.worker import _task_log_context, run_task
-
-# Inline Python code executed via ``python -c`` inside a Pixi environment.
-# Using ``-c`` avoids adding the script directory to sys.path, which would
-# otherwise make the worker's package-local modules import precedence-sensitive.
-#
-# Dynamic results (ShellExpr, Expr, ExprList) are not JSON-serializable, so
-# when run_task returns one, we pickle+base64 encode it under the special
-# encoding "pixi_direct_pickled" for the main process to decode.
-_PIXI_WORKER_C = (
-    "import sys,json,pathlib,base64,pickle;"
-    "p=json.loads(pathlib.Path(sys.argv[1]).read_bytes());"
-    "[sys.path.insert(0,x) for x in p.get('ginkgo_import_roots',[]) if x not in sys.path];"
-    "from ginkgo.runtime.worker import run_task;"
-    "r=dict(run_task(p));"
-    "enc=r.get('result_encoding');"
-    "r['result'],r['result_encoding']=("
-    "base64.b64encode(pickle.dumps(r['result'],5)).decode(),'pixi_direct_pickled'"
-    ") if r.get('ok') and enc=='direct' else (r.get('result'),enc);"
-    "pathlib.Path(sys.argv[2]).write_text(json.dumps(r))"
-)
 
 
 class CycleError(RuntimeError):
@@ -979,14 +959,11 @@ class _ConcurrentEvaluator:
         """Encode task inputs into a transport payload for the process pool."""
         assert node.transport_path is not None
         assert node.resolved_args is not None
-        worker_module_file = resolve_module_file("ginkgo.runtime.worker")
-        assert worker_module_file is not None
         return {
             "args": {
                 name: encode_value(value, base_dir=node.transport_path)
                 for name, value in node.resolved_args.items()
             },
-            "ginkgo_import_roots": import_roots_for_path(worker_module_file),
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "env": node.task_def.env,
@@ -1206,9 +1183,9 @@ class _ConcurrentEvaluator:
         # Write the serialized payload for the worker script to consume.
         input_path.write_text(json.dumps(payload), encoding="utf-8")
 
-        argv = self.backend.python_argv_c(
+        argv = self.backend.python_argv_m(
             env=node.task_def.env,
-            code=_PIXI_WORKER_C,
+            module="ginkgo.envs.pixi_worker",
             args=(str(input_path), str(output_path)),
         )
         completed = self._run_subprocess(argv=argv, use_shell=False)
@@ -1405,11 +1382,22 @@ class _ConcurrentEvaluator:
         return [Path(item) for item in output]
 
     def _is_valid_cached_result(self, *, task_def: TaskDef, value: Any) -> bool:
-        """Return whether a cached value still satisfies return validation."""
+        """Return whether a cached value still satisfies return validation.
+
+        For file/folder outputs, checks symlink integrity via the cache store.
+        Missing symlinks are silently recreated; replaced regular files trigger
+        a cache miss.  Symlink validation runs first so that missing symlinks
+        can be recreated before the standard file-existence check.
+        """
+        # Symlink-aware validation first: may recreate missing symlinks.
+        if not self._cache_store.validate_cached_outputs(task_def=task_def, value=value):
+            return False
+
         try:
             self._validate_return_value(task_def=task_def, value=value)
         except (FileNotFoundError, ValueError):
             return False
+
         return True
 
     def _record_task_metadata(self, node: _TaskNode) -> None:
