@@ -244,7 +244,7 @@ class TestContainerBackendPythonArgv:
     def test_raises_not_implemented(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path)
         with pytest.raises(NotImplementedError, match="only support shell tasks"):
-            backend.python_argv_c(env="docker://img:1", code="print(1)")
+            backend.python_argv_m(env="docker://img:1", module="ginkgo.envs.pixi_worker")
 
 
 class TestContainerBackendEnvLockPath:

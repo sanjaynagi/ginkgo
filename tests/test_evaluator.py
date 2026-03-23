@@ -12,7 +12,6 @@ import pytest
 from ginkgo import evaluate, file, folder, shell, task, tmp_dir
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
-from ginkgo.runtime.module_loader import import_roots_for_path, resolve_module_file
 from ginkgo.runtime.worker import run_task
 
 
@@ -610,7 +609,7 @@ class TestInterruptHandling:
 
 
 class TestPixiWorkerPayload:
-    def test_build_worker_payload_uses_minimal_ginkgo_import_roots(self, tmp_path: Path) -> None:
+    def test_build_worker_payload_does_not_contain_import_roots(self, tmp_path: Path) -> None:
         evaluator = _ConcurrentEvaluator()
         expr = add_one_task(x=1)
         node_id = evaluator._register_expr(expr)
@@ -621,17 +620,8 @@ class TestPixiWorkerPayload:
 
         payload = evaluator._build_worker_payload(node=node)
 
-        worker_module_file = resolve_module_file("ginkgo.runtime.worker")
-        assert worker_module_file is not None
-        assert payload["ginkgo_import_roots"] == import_roots_for_path(worker_module_file)
+        assert "ginkgo_import_roots" not in payload
         assert "sys_path" not in payload
-        assert "ginkgo_import_roots" in payload
-
-    def test_pixi_worker_bootstrap_uses_ginkgo_import_roots_not_host_sys_path(self) -> None:
-        from ginkgo.runtime.evaluator import _PIXI_WORKER_C
-
-        assert "ginkgo_import_roots" in _PIXI_WORKER_C
-        assert "sys_path" not in _PIXI_WORKER_C
 
 
 class TestValidation:
