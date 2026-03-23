@@ -755,3 +755,58 @@ class TestCliCoreLabels:
     def test_core_unit_label_handles_singular_and_plural(self) -> None:
         assert _core_unit_label(1) == "core"
         assert _core_unit_label(2) == "Cores"
+
+
+class TestCliSecrets:
+    def test_secrets_list_and_validate(self, monkeypatch) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, secret, task
+
+@task()
+def echo_token(token: str) -> str:
+    return token
+
+@flow
+def main():
+    return echo_token(token=secret("API_TOKEN"))
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        listed = _run_cli("secrets", "list", "workflow.py", cwd=Path.cwd())
+        assert listed.returncode == 0, listed.stderr
+        assert "env:API_TOKEN" in listed.stdout
+
+        monkeypatch.delenv("API_TOKEN", raising=False)
+        missing = _run_cli("secrets", "validate", "workflow.py", cwd=Path.cwd())
+        assert missing.returncode == 1
+        assert "env:API_TOKEN" in missing.stdout
+
+        monkeypatch.setenv("API_TOKEN", "ok")
+        validated = _run_cli("secrets", "validate", "workflow.py", cwd=Path.cwd())
+        assert validated.returncode == 0, validated.stderr
+        assert "env:API_TOKEN" in validated.stdout
+
+    def test_doctor_reports_missing_secret(self, monkeypatch) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, secret, task
+
+@task()
+def echo_token(token: str) -> str:
+    return token
+
+@flow
+def main():
+    return echo_token(token=secret("MISSING_TOKEN"))
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv("MISSING_TOKEN", raising=False)
+        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Missing secrets: env:MISSING_TOKEN" in result.stderr

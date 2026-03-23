@@ -11,10 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.artifact_store import LocalArtifactStore
 from ginkgo.runtime.hashing import hash_bytes, hash_file, hash_str, new_hasher
+from ginkgo.runtime.secrets import redact_value, secret_identity
 from ginkgo.runtime.value_codec import (
     decode_value,
     encode_value,
@@ -412,6 +414,8 @@ class CacheStore:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
+        if isinstance(value, SecretRef):
+            return secret_identity(value)
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
@@ -492,7 +496,11 @@ class CacheStore:
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir:
                 continue
-            inputs[name] = summarise_value(resolved_args[name])
+            value = redact_value(resolved_args[name])
+            if isinstance(value, dict | list):
+                inputs[name] = value
+            else:
+                inputs[name] = summarise_value(value)
         return inputs
 
     def _hash_file_contents(self, path: Path) -> str:

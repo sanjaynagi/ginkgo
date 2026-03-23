@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.runtime.secrets import redact_value
 from ginkgo.runtime.value_codec import summarise_value
 
 
@@ -366,6 +367,7 @@ def _slugify(value: str) -> str:
 
 
 def _render_value(value: Any) -> Any:
+    value = redact_value(value)
     if isinstance(value, (file, folder, tmp_dir, Path)):
         return str(value)
     if value is None or isinstance(value, (bool, int, float, str)):

@@ -22,6 +22,7 @@ from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.resources import RunResourceMonitor
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
+from ginkgo.runtime.secrets import build_secret_resolver
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -74,6 +75,11 @@ def run_workflow(
         project_root=Path.cwd(),
         workflow_root=workflow_path.parent,
     )
+    secret_resolver = build_secret_resolver(
+        project_root=Path.cwd(),
+        config=params,
+        environ=os.environ,
+    )
     backend = CompositeBackend(
         local=LocalBackend(pixi_registry=registry),
         container=ContainerBackend(project_root=Path.cwd()),
@@ -83,6 +89,7 @@ def run_workflow(
         cores=cores,
         memory=memory,
         backend=backend,
+        secret_resolver=secret_resolver,
     )
     evaluator.validate(expr)
     task_count = len(evaluator._nodes)
@@ -144,6 +151,7 @@ def run_workflow(
         memory=memory,
         backend=backend,
         provenance=recorder,
+        secret_resolver=secret_resolver,
         _stderr=renderer,
     )
     renderer.start(planned_tasks=planned_tasks)
