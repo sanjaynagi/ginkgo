@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo import evaluate, file, folder, secret, shell, task, tmp_dir
+from ginkgo import Expr, TaskDef, evaluate, file, folder, secret, shell, task, tmp_dir
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
@@ -20,6 +20,14 @@ from ginkgo.runtime.secrets import build_secret_resolver
 def _append_line(path: str, line: str) -> None:
     with Path(path).open("a", encoding="utf-8") as handle:
         handle.write(f"{line}\n")
+
+
+def notebook_ipynb_schema(*, value: int) -> Path:
+    """Render the demo ipynb notebook."""
+
+
+def notebook_marimo_schema(*, sample_id: str) -> Path:
+    """Render the demo marimo notebook."""
 
 
 @task()
@@ -254,6 +262,106 @@ class TestEvaluate:
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
         assert '"status": "cached"' in captured.err
         assert (Path(".ginkgo") / "cache").exists()
+
+    def test_ipynb_notebook_task_records_html_and_uses_cache(self, tmp_path: Path) -> None:
+        notebook_path = tmp_path / "report.ipynb"
+        notebook_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        task_def = TaskDef(fn=notebook_ipynb_schema, kind="notebook", notebook_path=notebook_path)
+        expr = Expr(task_def=task_def, args={"value": 7}, mapped=False)
+
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+
+        calls: list[str] = []
+
+        def fake_run_subprocess(
+            *, argv: str | list[str], use_shell: bool
+        ) -> subprocess.CompletedProcess[str]:
+            assert use_shell is True
+            command = str(argv)
+            calls.append(command)
+            if "papermill" in command:
+                output_path = recorder.run_dir / "notebooks" / "task_0000.ipynb"
+                output_path.write_text("executed", encoding="utf-8")
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=0, stdout="papermill ok\n", stderr=""
+                )
+            if "nbconvert" in command:
+                html_path = recorder.run_dir / "notebooks" / "task_0000.html"
+                html_path.write_text("<html>report</html>", encoding="utf-8")
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=0, stdout="render ok\n", stderr=""
+                )
+            raise AssertionError(command)
+
+        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        try:
+            result = evaluator.evaluate(expr)
+            manifest = load_manifest(recorder.run_dir)
+
+            assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+            assert len(calls) == 2
+            assert manifest["tasks"]["task_0000"]["task_type"] == "notebook"
+            assert manifest["tasks"]["task_0000"]["render_status"] == "succeeded"
+            assert manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
+
+            cached = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+            monkeypatch.setattr(
+                cached,
+                "_run_subprocess",
+                lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
+            )
+            assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        finally:
+            monkeypatch.undo()
+
+    def test_marimo_notebook_render_failure_writes_fallback_html(self, tmp_path: Path) -> None:
+        notebook_path = tmp_path / "explore.py"
+        notebook_path.write_text("print('marimo')\n", encoding="utf-8")
+        task_def = TaskDef(fn=notebook_marimo_schema, kind="notebook", notebook_path=notebook_path)
+        expr = Expr(task_def=task_def, args={"sample_id": "s1"}, mapped=False)
+
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+
+        def fake_run_subprocess(
+            *, argv: str | list[str], use_shell: bool
+        ) -> subprocess.CompletedProcess[str]:
+            command = str(argv)
+            if "export html" in command:
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=2, stdout="", stderr="render blew up"
+                )
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
+
+        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        try:
+            result = evaluator.evaluate(expr)
+        finally:
+            monkeypatch.undo()
+
+        html_path = Path(result)
+        manifest = load_manifest(recorder.run_dir)
+        assert html_path.is_file()
+        assert "HTML export failed" in html_path.read_text(encoding="utf-8")
+        assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
+        assert manifest["tasks"]["task_0000"]["render_error"] == "render blew up"
 
     def test_local_task_fails_immediately_at_runtime(self):
         @task()
