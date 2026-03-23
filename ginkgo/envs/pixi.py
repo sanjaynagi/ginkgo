@@ -14,7 +14,6 @@ import subprocess
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 
 class PixiEnvNotFoundError(RuntimeError):
@@ -353,36 +352,6 @@ class PixiRegistry:
             "bash",
             "-c",
             cmd,
-        ]
-
-    def python_argv_m(self, *, env: str, module: str, args: Sequence[str] = ()) -> list[str]:
-        """Build argv to run a Python *module* with ``-m`` inside the Pixi environment.
-
-        Parameters
-        ----------
-        env : str
-            Environment name or path.
-        module : str
-            Fully-qualified module name to pass to ``python -m``.
-        args : Sequence[str]
-            Positional arguments available as ``sys.argv[1:]`` inside the module.
-
-        Returns
-        -------
-        list[str]
-            Argument vector suitable for ``subprocess.run(..., shell=False)``.
-        """
-        manifest = self.resolve(env=env)
-        return [
-            "pixi",
-            "run",
-            "--manifest-path",
-            str(manifest),
-            "--",
-            "python",
-            "-m",
-            module,
-            *args,
         ]
 
 

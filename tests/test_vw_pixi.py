@@ -3,8 +3,7 @@
 These tests cover:
 - PixiRegistry resolution, lock hash, and argv helpers (unit).
 - Shell tasks executed inside a Pixi environment (integration).
-- Python tasks executed inside a Pixi environment (integration).
-- Env lock hash invalidation of the task cache (integration).
+- Validation that foreign execution environments are shell-only.
 - Startup validation for undeclared environments (unit + integration).
 - Tasks with ``env=None`` still run correctly alongside env-isolated tasks.
 
@@ -235,22 +234,8 @@ class TestPixiRegistry:
         assert "-c" in argv
         assert "echo hello" in argv
 
-    def test_python_argv_m_structure(self) -> None:
-        registry = PixiRegistry(project_root=_TESTS_DIR)
-        argv = registry.python_argv_m(
-            env=_TEST_ENV_NAME, module="ginkgo.envs.pixi_worker", args=("a", "b")
-        )
-        assert argv[0] == "pixi"
-        assert argv[1] == "run"
-        assert "--manifest-path" in argv
-        assert "python" in argv
-        assert "-m" in argv
-        assert "ginkgo.envs.pixi_worker" in argv
-        assert "a" in argv
-        assert "b" in argv
-
-    def test_startup_validation_raises_for_missing_env(self, tmp_path: Path) -> None:
-        """evaluate() raises PixiEnvNotFoundError before any task runs."""
+    def test_python_task_with_env_is_rejected_before_env_resolution(self, tmp_path: Path) -> None:
+        """evaluate() rejects Python tasks with env= before any env lookup occurs."""
 
         @task(env="definitely_does_not_exist")
         def my_task(x: int) -> int:
@@ -261,7 +246,7 @@ class TestPixiRegistry:
             return my_task(x=1)
 
         registry = PixiRegistry(project_root=_TESTS_DIR)
-        with pytest.raises(PixiEnvNotFoundError):
+        with pytest.raises(TypeError, match="Foreign environments only support shell tasks"):
             _evaluate(my_flow(), registry=registry)
 
 
@@ -279,43 +264,10 @@ def shell_touch(output_path: str) -> str:
     )
 
 
-@task(env=_TEST_ENV_NAME)
-def pixi_double(x: int) -> int:
-    """Pure Python task for fan-out test."""
-    return x * 2
-
-
-@task(env=_TEST_ENV_NAME)
-def pixi_python_add(x: int, y: int) -> int:
-    """Pure Python task running inside the Pixi environment."""
-    return x + y
-
-
 @task()
 def plain_add(x: int, y: int) -> int:
     """Pure Python task without an env — runs in the current Python."""
     return x + y
-
-
-@flow
-def mixed_flow(x: int, y: int):
-    """Fan-out combining pixi and non-pixi tasks."""
-    pixi_result = pixi_python_add(x=x, y=y)
-    plain_result = plain_add(x=x, y=y)
-    return pixi_result, plain_result
-
-
-@task(env=_TEST_ENV_NAME)
-def logged_pixi_add(x: int, y: int, log_path: str) -> int:
-    """Pixi Python task that appends to a log file (for cache invalidation tests)."""
-    with open(log_path, "a") as f:
-        f.write(f"run:{x}+{y}\n")
-    return x + y
-
-
-@flow
-def logged_flow(x: int, y: int, log_path: str):
-    return logged_pixi_add(x=x, y=y, log_path=log_path)
 
 
 class TestPixiShellTask:
@@ -380,37 +332,7 @@ def shell_only(output_path: str) -> str:
 
 
 class TestPixiPythonTask:
-    @pixi_required
-    def test_python_task_runs_in_pixi_env(self, tmp_path: Path) -> None:
-        registry = _make_registry(tmp_path)
-        result = _evaluate(pixi_python_add(x=3, y=4), registry=registry)
-        assert result == 7
-
-    @pixi_required
-    def test_python_task_fan_out(self, tmp_path: Path) -> None:
-        """Fan-out of pixi Python tasks produces correct results in order."""
-
-        @flow
-        def fan_flow(items: list[int]):
-            return pixi_double().map(x=items)
-
-        registry = _make_registry(tmp_path)
-        result = _evaluate(fan_flow(items=[1, 2, 3, 4, 5]), registry=registry)
-        assert result == [2, 4, 6, 8, 10]
-
-    @pixi_required
-    def test_mixed_pixi_and_plain_tasks(self, tmp_path: Path) -> None:
-        """Pixi and non-pixi tasks coexist correctly in the same run."""
-        registry = _make_registry(tmp_path)
-        pixi_result, plain_result = _evaluate(mixed_flow(x=10, y=5), registry=registry)
-        assert pixi_result == 15
-        assert plain_result == 15
-
-    @pixi_required
-    def test_python_tasks_fail_clearly_when_foreign_env_cannot_import_module(
-        self,
-        tmp_path: Path,
-    ) -> None:
+    def test_python_tasks_with_pixi_env_are_rejected_at_validation(self, tmp_path: Path) -> None:
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text(
             """
@@ -418,7 +340,7 @@ from ginkgo import task
 
 
 @task(env="test_env")
-def needs_worker_import(x: int) -> int:
+def needs_foreign_env(x: int) -> int:
     return x + 1
 """.strip()
             + "\n",
@@ -426,45 +348,7 @@ def needs_worker_import(x: int) -> int:
         )
 
         module = load_module_from_path(workflow_path)
-        # Delete the file so the pixi worker subprocess cannot load it by path.
-        workflow_path.unlink()
         registry = _make_registry(tmp_path)
 
-        with pytest.raises(RuntimeError, match="Foreign Python task .*kind='shell'"):
-            _evaluate(module.needs_worker_import(x=1), registry=registry)
-
-
-class TestPixiCacheInvalidation:
-    @pixi_required
-    def test_unchanged_inputs_served_from_cache(self, tmp_path: Path) -> None:
-        log_path = str(tmp_path / "log.txt")
-        registry = _make_registry(tmp_path)
-
-        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
-        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
-
-        # Task should have run exactly once despite two evaluate() calls.
-        lines = Path(log_path).read_text().splitlines()
-        assert lines.count("run:2+3") == 1
-
-    @pixi_required
-    def test_lock_hash_change_invalidates_cache(self, tmp_path: Path) -> None:
-        """Touching pixi.lock forces the task to re-run on the next evaluate()."""
-        log_path = str(tmp_path / "log.txt")
-        registry = _make_registry(tmp_path)
-        lock_path = _TESTS_DIR / "envs" / _TEST_ENV_NAME / "pixi.lock"
-
-        _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry)
-
-        # Invalidate the lock hash by appending a harmless comment.
-        original = lock_path.read_text(encoding="utf-8")
-        try:
-            lock_path.write_text(original + "\n# test-invalidation\n", encoding="utf-8")
-            # Flush the registry's in-memory hash cache.
-            registry2 = _make_registry(tmp_path)
-            _evaluate(logged_flow(x=2, y=3, log_path=log_path), registry=registry2)
-        finally:
-            lock_path.write_text(original, encoding="utf-8")
-
-        lines = Path(log_path).read_text().splitlines()
-        assert lines.count("run:2+3") == 2
+        with pytest.raises(TypeError, match="Foreign environments only support shell tasks"):
+            _evaluate(module.needs_foreign_env(x=1), registry=registry)

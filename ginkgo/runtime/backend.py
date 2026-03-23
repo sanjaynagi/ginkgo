@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ginkgo.envs.container import ContainerBackend, is_container_env
 from ginkgo.envs.pixi import PixiRegistry
@@ -48,22 +48,6 @@ class TaskBackend(Protocol):
 
     def shell_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build an argument vector to execute *cmd* inside the environment.
-
-        Returns
-        -------
-        list[str]
-            Argument vector suitable for ``subprocess.run(..., shell=False)``.
-        """
-        ...
-
-    def python_argv_m(
-        self,
-        *,
-        env: str,
-        module: str,
-        args: Sequence[str] = (),
-    ) -> list[str]:
-        """Build an argument vector to run ``python -m`` inside the environment.
 
         Returns
         -------
@@ -112,16 +96,6 @@ class LocalBackend:
     def shell_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build argv to run *cmd* through the Pixi environment."""
         return self.pixi_registry.shell_argv(env=env, cmd=cmd)
-
-    def python_argv_m(
-        self,
-        *,
-        env: str,
-        module: str,
-        args: Sequence[str] = (),
-    ) -> list[str]:
-        """Build argv to run ``python -m`` through the Pixi environment."""
-        return self.pixi_registry.python_argv_m(env=env, module=module, args=args)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
@@ -185,16 +159,6 @@ class CompositeBackend:
     def shell_argv(self, *, env: str, cmd: str) -> list[str]:
         """Delegate to the correct backend."""
         return self._route(env=env).shell_argv(env=env, cmd=cmd)
-
-    def python_argv_m(
-        self,
-        *,
-        env: str,
-        module: str,
-        args: Sequence[str] = (),
-    ) -> list[str]:
-        """Delegate to the correct backend."""
-        return self._route(env=env).python_argv_m(env=env, module=module, args=args)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Delegate to the correct backend."""
