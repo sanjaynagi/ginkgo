@@ -240,13 +240,6 @@ class TestContainerBackendEnvIdentity:
         mock_run.assert_called_once()
 
 
-class TestContainerBackendPythonArgv:
-    def test_raises_not_implemented(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
-        with pytest.raises(NotImplementedError, match="only support shell tasks"):
-            backend.python_argv_m(env="docker://img:1", module="ginkgo.envs.pixi_worker")
-
-
 class TestContainerBackendEnvLockPath:
     def test_returns_none(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path)

@@ -26,6 +26,7 @@ from types import FrameType
 from typing import Any, get_args, get_origin
 
 from ginkgo.core.expr import Expr, ExprList
+from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
@@ -36,6 +37,13 @@ from ginkgo.runtime.cache import MISSING, CacheStore
 from ginkgo.runtime.module_loader import load_module, resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
+from ginkgo.runtime.secrets import (
+    SecretResolver,
+    collect_secret_refs,
+    collect_resolved_secret_values,
+    redact_text,
+    resolve_secret_refs,
+)
 from ginkgo.runtime.value_codec import (
     CodecError,
     decode_value,
@@ -77,6 +85,7 @@ def evaluate(
     backend: TaskBackend | None = None,
     pixi_registry: PixiRegistry | None = None,
     provenance: RunProvenanceRecorder | None = None,
+    secret_resolver: SecretResolver | None = None,
 ) -> Any:
     """Resolve an expression tree to concrete values.
 
@@ -112,6 +121,7 @@ def evaluate(
         memory=memory,
         backend=backend,
         provenance=provenance,
+        secret_resolver=secret_resolver,
     ).evaluate(expr)
 
 
@@ -124,6 +134,7 @@ class _TaskNode:
     dependency_ids: set[int]
     state: str = "pending"
     resolved_args: dict[str, Any] | None = None
+    execution_args: dict[str, Any] | None = None
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     threads: int = 1
@@ -137,6 +148,7 @@ class _TaskNode:
     stderr_path: Path | None = None
     display_label: str | None = None
     attempt: int = 0
+    secret_values: tuple[str, ...] = ()
 
     @property
     def task_def(self) -> TaskDef:
@@ -184,6 +196,7 @@ class _ConcurrentEvaluator:
     memory: int | None = None
     backend: TaskBackend | None = None
     provenance: RunProvenanceRecorder | None = None
+    secret_resolver: SecretResolver | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
     _stderr: Any = field(default_factory=lambda: sys.stderr)
     _nodes: dict[int, _TaskNode] = field(default_factory=dict, init=False, repr=False)
@@ -233,6 +246,7 @@ class _ConcurrentEvaluator:
 
         # Validate all statically declared environments before any work starts.
         self._validate_declared_envs()
+        self._validate_declared_secrets()
 
         with ExitStack() as stack:
             try:
@@ -534,6 +548,11 @@ class _ConcurrentEvaluator:
                 existing_args=node.resolved_args,
                 tmp_paths=node.tmp_paths,
             )
+            node.execution_args = self._resolve_execution_args(node=node)
+            node.secret_values = collect_resolved_secret_values(
+                template=node.resolved_args,
+                resolved=node.execution_args,
+            )
             self._record_task_metadata(node)
             self._validate_task_contract(node=node)
 
@@ -551,18 +570,8 @@ class _ConcurrentEvaluator:
             )
             payload = self._build_worker_payload(node=node)
 
-            if node.task_def.env is not None and self.backend is not None:
-                # Run the Python task body inside the environment via a subprocess.
-                assert self._shell_executor is not None
-                future = self._shell_executor.submit(
-                    self._run_env_python_task,
-                    node=node,
-                    payload=payload,
-                )
-                self._running_futures[future] = (node_id, "env_python")
-            else:
-                future = python_executor.submit(run_task, payload)
-                self._running_futures[future] = (node_id, "python")
+            future = python_executor.submit(run_task, payload)
+            self._running_futures[future] = (node_id, "python")
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
         """Handle finished worker futures from the thread pool."""
@@ -581,7 +590,7 @@ class _ConcurrentEvaluator:
                 continue
 
             try:
-                if phase in {"python", "env_python"}:
+                if phase == "python":
                     self._handle_completed_worker_phase(node=node, completed_value=completed_value)
                 elif phase == "driver":
                     self._handle_completed_driver_phase(node=node, completed_value=completed_value)
@@ -627,20 +636,21 @@ class _ConcurrentEvaluator:
 
     def _handle_task_exception(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Either retry a failed task attempt or fail the run."""
+        sanitized_exc = self._sanitize_exception(exc=exc, secret_values=node.secret_values)
         if self._failure is None and self._should_retry(node=node):
-            self._schedule_retry(node=node, exc=exc)
+            self._schedule_retry(node=node, exc=sanitized_exc)
             return
 
         node.state = "failed"
         self._cleanup_transport(node)
         if self._failure is None:
-            self._failure = exc
+            self._failure = sanitized_exc
             self._cancel_pending_futures()
-        self._record_task_failure(node=node, exc=exc)
+        self._record_task_failure(node=node, exc=sanitized_exc)
         self._log(
             task=node.task_def.name,
             status="failed",
-            exit_code=getattr(exc, "exit_code", None),
+            exit_code=getattr(sanitized_exc, "exit_code", None),
             node_id=node.node_id,
             display_label=node.display_label,
             attempt=node.attempt,
@@ -662,6 +672,7 @@ class _ConcurrentEvaluator:
 
         node.state = "pending"
         node.resolved_args = None
+        node.execution_args = None
         node.cache_key = None
         node.input_hashes = None
         node.threads = 1
@@ -670,6 +681,7 @@ class _ConcurrentEvaluator:
         node.transport_path = None
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
+        node.secret_values = ()
 
         retries_remaining = node.task_def.retries - node.attempt
         if self.provenance is not None:
@@ -711,6 +723,8 @@ class _ConcurrentEvaluator:
         node.transport_path = None
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
+        node.execution_args = None
+        node.secret_values = ()
         if self.provenance is not None:
             self.provenance.mark_succeeded(
                 node_id=node.node_id,
@@ -765,6 +779,16 @@ class _ConcurrentEvaluator:
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
 
         return resolved_args
+
+    def _resolve_execution_args(self, *, node: _TaskNode) -> dict[str, Any]:
+        """Resolve runtime-only inputs such as secret references."""
+        assert node.resolved_args is not None
+        if self.secret_resolver is None:
+            return dict(node.resolved_args)
+        return {
+            name: resolve_secret_refs(value=value, resolver=self.secret_resolver)
+            for name, value in node.resolved_args.items()
+        }
 
     def _materialize(self, value: Any) -> Any:
         """Materialize a nested value using completed task-node results."""
@@ -958,14 +982,15 @@ class _ConcurrentEvaluator:
     def _build_worker_payload(self, *, node: _TaskNode) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""
         assert node.transport_path is not None
-        assert node.resolved_args is not None
+        assert node.execution_args is not None
         return {
             "args": {
                 name: encode_value(value, base_dir=node.transport_path)
-                for name, value in node.resolved_args.items()
+                for name, value in node.execution_args.items()
             },
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
+            "secret_values": list(node.secret_values),
             "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
@@ -1007,9 +1032,10 @@ class _ConcurrentEvaluator:
 
     def _validate_task_contract(self, *, node: _TaskNode) -> None:
         """Validate that a task can run safely under its declared contract."""
+        assert node.execution_args is not None
         self._validate_task_preconditions(
             task_def=node.task_def,
-            resolved_args=node.resolved_args,
+            resolved_args=node.execution_args,
         )
 
     def _validate_task_preconditions(
@@ -1036,6 +1062,8 @@ class _ConcurrentEvaluator:
                 continue
             value = node.expr.args[name]
             if self._contains_dynamic_expression(value):
+                continue
+            if collect_secret_refs(value):
                 continue
             self._validate_annotated_value(
                 annotation=annotation,
@@ -1081,7 +1109,9 @@ class _ConcurrentEvaluator:
 
     def _validate_process_safe_value(self, *, value: Any, label: str) -> None:
         """Reject values that are not supported across process and cache boundaries."""
-        if isinstance(value, (Expr, ExprList, ShellExpr)):
+        if isinstance(value, (Expr, ExprList, ShellExpr, SecretRef)):
+            return
+        if collect_secret_refs(value):
             return
         try:
             ensure_serializable(value, label=label)
@@ -1117,8 +1147,8 @@ class _ConcurrentEvaluator:
             use_shell = True
 
         completed = self._run_subprocess(argv=argv, use_shell=use_shell)
-        stdout_text = completed.stdout or ""
-        stderr_text = completed.stderr or ""
+        stdout_text = self._redact_text(completed.stdout or "", secret_values=node.secret_values)
+        stderr_text = self._redact_text(completed.stderr or "", secret_values=node.secret_values)
 
         # Write stdout and stderr to separate provenance logs.
         if node.stdout_path is not None and stdout_text:
@@ -1137,7 +1167,7 @@ class _ConcurrentEvaluator:
         if completed.returncode != 0:
             raise ShellTaskError(
                 task_name=task_def.name,
-                cmd=shell_expr.cmd,
+                cmd=self._redact_text(shell_expr.cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
                 log=shell_expr.log,
@@ -1156,66 +1186,6 @@ class _ConcurrentEvaluator:
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
 
-    def _run_env_python_task(self, *, node: _TaskNode, payload: dict[str, Any]) -> dict[str, Any]:
-        """Run a Python task body inside its declared environment.
-
-        Serializes the worker payload to disk, invokes the worker code
-        via the environment's Python interpreter, and deserializes the result.
-
-        Parameters
-        ----------
-        node : _TaskNode
-            The task node being executed (used for error context and paths).
-        payload : dict[str, Any]
-            Encoded worker payload (same format as the process-pool path).
-
-        Returns
-        -------
-        dict[str, Any]
-            Decoded worker response dict (``{"ok": bool, "result": ...}``).
-        """
-        assert node.transport_path is not None
-        assert self.backend is not None
-
-        input_path = node.transport_path / "pixi_input.json"
-        output_path = node.transport_path / "pixi_output.json"
-
-        # Write the serialized payload for the worker script to consume.
-        input_path.write_text(json.dumps(payload), encoding="utf-8")
-
-        argv = self.backend.python_argv_m(
-            env=node.task_def.env,
-            module="ginkgo.envs.pixi_worker",
-            args=(str(input_path), str(output_path)),
-        )
-        completed = self._run_subprocess(argv=argv, use_shell=False)
-        stdout_text = completed.stdout or ""
-        stderr_text = completed.stderr or ""
-        if node.stdout_path is not None and stdout_text:
-            with node.stdout_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text)
-        if node.stderr_path is not None and stderr_text:
-            with node.stderr_path.open("a", encoding="utf-8") as handle:
-                handle.write(stderr_text)
-
-        combined = stdout_text + stderr_text
-        if completed.returncode != 0:
-            raise ShellTaskError(
-                task_name=node.task_def.name,
-                cmd=" ".join(argv),
-                exit_code=completed.returncode,
-                output=combined.strip(),
-                log=None,
-            )
-
-        if not output_path.exists():
-            raise RuntimeError(
-                f"Environment Python task {node.task_def.name} completed but produced no output. "
-                f"Command: {' '.join(argv)}"
-            )
-
-        return json.loads(output_path.read_text(encoding="utf-8"))
-
     def _validate_declared_envs(self) -> None:
         """Raise before any work starts if a declared env cannot be resolved.
 
@@ -1223,16 +1193,12 @@ class _ConcurrentEvaluator:
         (discovered mid-run via conditional branching) are validated when
         ``_prepare_node`` is called for them.
         """
-        # Container environments only support shell tasks.
+        # Foreign execution environments only support shell tasks.
         for node in self._nodes.values():
-            if (
-                node.task_def.env is not None
-                and is_container_env(node.task_def.env)
-                and node.task_def.kind != "shell"
-            ):
+            if node.task_def.env is not None and node.task_def.kind != "shell":
                 raise TypeError(
-                    f"{node.task_def.name} uses container env {node.task_def.env!r} "
-                    "but is declared with kind='python'. Container environments "
+                    f"{node.task_def.name} uses env {node.task_def.env!r} "
+                    "but is declared with kind='python'. Foreign environments "
                     "only support shell tasks — use @task(kind='shell')."
                 )
 
@@ -1245,11 +1211,33 @@ class _ConcurrentEvaluator:
         if env_names:
             self.backend.validate_envs(env_names=env_names)
 
+    def _validate_declared_secrets(self) -> None:
+        """Raise before execution if any statically declared secrets are missing."""
+        if self.secret_resolver is None:
+            return
+
+        missing: list[SecretRef] = []
+        seen: set[SecretRef] = set()
+        for node in self._nodes.values():
+            for ref in collect_secret_refs(node.expr.args):
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                try:
+                    self.secret_resolver.resolve(ref=ref)
+                except BaseException:
+                    missing.append(ref)
+
+        if missing:
+            rendered = ", ".join(f"{ref.backend}:{ref.name}" for ref in sorted(missing, key=str))
+            raise RuntimeError(f"Missing secrets: {rendered}")
+
     def validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
         self._validate_declared_envs()
+        self._validate_declared_secrets()
 
         for node in self._nodes.values():
             self._validate_task_importable(task_def=node.task_def)
@@ -1450,6 +1438,38 @@ class _ConcurrentEvaluator:
             exc=exc,
         )
 
+    def _redact_text(self, text: str, *, secret_values: tuple[str, ...]) -> str:
+        """Redact known secret values from text."""
+        return redact_text(text=text, secret_values=secret_values)
+
+    def _sanitize_exception(
+        self,
+        *,
+        exc: BaseException,
+        secret_values: tuple[str, ...],
+    ) -> BaseException:
+        """Return an exception with redacted message text."""
+        if not secret_values:
+            return exc
+
+        message = self._redact_text(str(exc), secret_values=secret_values)
+        try:
+            exc.args = (message,)
+        except Exception:
+            return RuntimeError(message)
+
+        if hasattr(exc, "output"):
+            try:
+                exc.output = self._redact_text(str(exc.output), secret_values=secret_values)
+            except Exception:
+                pass
+        if hasattr(exc, "cmd"):
+            try:
+                exc.cmd = self._redact_text(str(exc.cmd), secret_values=secret_values)
+            except Exception:
+                pass
+        return exc
+
     def _display_label_for(self, *, node: _TaskNode) -> str | None:
         """Return a richer CLI label for mapped tasks once args are resolved."""
         if not node.expr.mapped or node.resolved_args is None:
@@ -1496,12 +1516,13 @@ class _ConcurrentEvaluator:
 
     def _run_driver_task(self, *, node: _TaskNode) -> Any:
         """Run a shell-task wrapper on the scheduler process."""
-        assert node.resolved_args is not None
+        assert node.execution_args is not None
         with _task_log_context(
             stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
             stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
+            secret_values=node.secret_values,
         ):
-            return node.task_def.fn(**node.resolved_args)
+            return node.task_def.fn(**node.execution_args)
 
     def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Advance a task after its Python wrapper has finished."""

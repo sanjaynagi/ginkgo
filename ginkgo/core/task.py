@@ -27,7 +27,7 @@ class TaskDef:
     fn : Callable
         The original user function.
     env : str | None
-        Pixi environment name (or Docker URI in future).
+        Foreign execution environment for shell tasks.
     version : int
         Cache-busting version tag.
     retries : int
@@ -247,7 +247,8 @@ def task(
     Parameters
     ----------
     env : str | None
-        Pixi environment name.  If ``None``, the task runs in the current env.
+        Foreign execution environment for shell tasks. If ``None``, the task
+        runs in the current environment.
     version : int
         Cache-busting version tag.  Bump when task logic changes.
     retries : int

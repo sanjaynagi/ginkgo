@@ -10,9 +10,11 @@ from rich.text import Text
 
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.debug import command_debug
+from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.run import command_run
+from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.commands.ui import command_ui
 from ginkgo.cli.common import RunMode, console
@@ -32,10 +34,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_env(args)
         if args.command == "debug":
             return command_debug(args)
+        if args.command == "doctor":
+            return command_doctor(args)
         if args.command == "test":
             return command_test(args)
         if args.command == "init":
             return command_init(args)
+        if args.command == "secrets":
+            return command_secrets(args)
         if args.command == "ui":
             return command_ui(args)
     except BaseException as exc:
@@ -80,6 +86,10 @@ def _build_parser() -> argparse.ArgumentParser:
     debug_parser = subparsers.add_parser("debug")
     debug_parser.add_argument("run_id", nargs="?")
 
+    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser.add_argument("workflow", nargs="?")
+    doctor_parser.add_argument("--config", action="append", default=[])
+
     test_parser = subparsers.add_parser("test")
     test_parser.add_argument("--dry-run", action="store_true")
 
@@ -93,6 +103,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument("--port", type=int, default=7777)
     ui_parser.add_argument("--open", dest="open", action="store_true", default=True)
     ui_parser.add_argument("--no-open", dest="open", action="store_false")
+
+    secrets_parser = subparsers.add_parser("secrets")
+    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)
+    list_parser = secrets_subparsers.add_parser("list")
+    list_parser.add_argument("workflow", nargs="?")
+    list_parser.add_argument("--config", action="append", default=[])
+    validate_parser = secrets_subparsers.add_parser("validate")
+    validate_parser.add_argument("workflow", nargs="?")
+    validate_parser.add_argument("--config", action="append", default=[])
 
     return parser
 

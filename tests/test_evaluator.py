@@ -4,15 +4,17 @@ from concurrent.futures import Future, ProcessPoolExecutor
 import subprocess
 import shutil
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo import evaluate, file, folder, shell, task, tmp_dir
+from ginkgo import evaluate, file, folder, secret, shell, task, tmp_dir
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
-from ginkgo.runtime.worker import run_task
+from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+from ginkgo.runtime.secrets import build_secret_resolver
 
 
 def _append_line(path: str, line: str) -> None:
@@ -179,6 +181,20 @@ def dataframe_total_task(df: object) -> int:
 @task()
 def passthrough_task(value: object | None = None) -> object:
     return value
+
+
+@task()
+def reveal_secret_task(secret_value: str, output_path: str) -> file:
+    print(f"stdout:{secret_value}")
+    print(f"stderr:{secret_value}", file=sys.stderr)
+    Path(output_path).write_text(secret_value, encoding="utf-8")
+    return file(output_path)
+
+
+@task()
+def fail_with_secret_task(secret_value: str) -> str:
+    print(f"task-secret:{secret_value}")
+    raise RuntimeError(f"failure:{secret_value}")
 
 
 @task()
@@ -480,18 +496,9 @@ class TestShellTask:
             install_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        def fake_run_env_python_task(
-            self,
-            *,
-            node,
-            payload: dict[str, object],
-        ) -> dict[str, object]:
-            return run_task(payload)
-
         registry = PixiRegistry(project_root=tmp_path)
         monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
         monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
-        monkeypatch.setattr(_ConcurrentEvaluator, "_run_env_python_task", fake_run_env_python_task)
         monkeypatch.setattr(
             registry,
             "shell_argv",
@@ -617,11 +624,129 @@ class TestPixiWorkerPayload:
         node.transport_path = tmp_path / "transport"
         node.transport_path.mkdir()
         node.resolved_args = {"x": 1}
+        node.execution_args = {"x": 1}
 
         payload = evaluator._build_worker_payload(node=node)
 
         assert "ginkgo_import_roots" not in payload
         assert "sys_path" not in payload
+
+
+class TestSecrets:
+    def test_secret_rotation_keeps_cache_key_stable_and_redacts_manifest(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+
+        first_resolver = build_secret_resolver(
+            project_root=tmp_path,
+            config={},
+            environ={"API_TOKEN": "first-token"},
+        )
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        expr = reveal_secret_task(
+            secret_value=secret("API_TOKEN"),
+            output_path="result.txt",
+        )
+        evaluator = _ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            provenance=recorder,
+            secret_resolver=first_resolver,
+        )
+
+        first_result = evaluator.evaluate(expr)
+        first_manifest = load_manifest(recorder.run_dir)
+        first_task = next(iter(first_manifest["tasks"].values()))
+        cache_key = first_task["cache_key"]
+        meta_path = tmp_path / ".ginkgo" / "cache" / cache_key / "meta.json"
+
+        assert Path(first_result).read_text(encoding="utf-8") == "first-token"
+        assert first_task["inputs"]["secret_value"]["redacted"] is True
+        assert "first-token" not in recorder.manifest_path.read_text(encoding="utf-8")
+        assert "first-token" not in meta_path.read_text(encoding="utf-8")
+
+        second_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        second_resolver = build_secret_resolver(
+            project_root=tmp_path,
+            config={},
+            environ={"API_TOKEN": "rotated-token"},
+        )
+        second_evaluator = _ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            provenance=second_recorder,
+            secret_resolver=second_resolver,
+        )
+
+        second_result = second_evaluator.evaluate(expr)
+        second_manifest = load_manifest(second_recorder.run_dir)
+        second_task = next(iter(second_manifest["tasks"].values()))
+
+        assert second_task["status"] == "cached"
+        assert second_task["cache_key"] == cache_key
+        assert Path(second_result).read_text(encoding="utf-8") == "first-token"
+
+    def test_secret_values_are_redacted_from_logs_and_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        evaluator = _ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            provenance=recorder,
+            secret_resolver=build_secret_resolver(
+                project_root=tmp_path,
+                config={},
+                environ={"API_TOKEN": "super-secret"},
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="failure:\\[REDACTED\\]"):
+            evaluator.evaluate(fail_with_secret_task(secret_value=secret("API_TOKEN")))
+
+        manifest = load_manifest(recorder.run_dir)
+        task = next(iter(manifest["tasks"].values()))
+        stdout_log = recorder.run_dir / task["stdout_log"]
+        stderr_log = recorder.run_dir / task["stderr_log"]
+
+        assert "[REDACTED]" in stdout_log.read_text(encoding="utf-8")
+        assert "super-secret" not in stdout_log.read_text(encoding="utf-8")
+        assert "super-secret" not in stderr_log.read_text(encoding="utf-8")
+        assert "super-secret" not in recorder.manifest_path.read_text(encoding="utf-8")
 
 
 class TestValidation:

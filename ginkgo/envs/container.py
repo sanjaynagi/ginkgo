@@ -16,7 +16,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 
 # ------------------------------------------------------------------
@@ -212,25 +211,6 @@ class ContainerBackend:
             "-c",
             cmd,
         ]
-
-    def python_argv_m(
-        self,
-        *,
-        env: str,
-        module: str,
-        args: Sequence[str] = (),
-    ) -> list[str]:
-        """Container environments only support shell tasks.
-
-        Raises
-        ------
-        NotImplementedError
-            Always — Python tasks cannot run in container environments.
-        """
-        raise NotImplementedError(
-            "Container environments only support shell tasks. "
-            "Use @task(kind='shell') for tasks with a container env."
-        )
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Containers have no lock file artifact."""

@@ -81,8 +81,7 @@ ginkgo/
 │   └── worker.py
 ├── envs/
 │   ├── container.py      # ContainerBackend (Docker/Podman)
-│   ├── pixi.py
-│   └── pixi_worker.py
+│   └── pixi.py
 ├── cli/
 │   ├── app.py
 │   └── commands/
@@ -141,13 +140,13 @@ The scheduler performs explicit cycle detection when registering expressions.
 
 The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
 
-**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution (shell and Python tasks).
+**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for **shell tasks only**. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
 **CompositeBackend** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalBackend`.
 
-Container environments do not support Python tasks — requiring Ginkgo installed inside every container image is an unreasonable constraint. This is enforced at validation time (before any work starts) and at the backend level.
+Foreign execution environments do not support Python tasks. Ginkgo treats `env=...` as a shell-task boundary only, which keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 
 Image digests (not mutable tags) are used for cache key identity, ensuring cache invalidation when image contents change.
 
@@ -157,9 +156,12 @@ Image digests (not mutable tags) are used for cache key identity, ensuring cache
 
 `@task()` supports:
 
-- `env=...`
 - `version=...`
 - `retries=...`
+
+Python tasks always execute in the scheduler's own Python environment. If a
+task needs a different Pixi or container environment, it must be declared with
+`kind="shell"` and invoke the desired script or command explicitly.
 
 Python task bodies must be top-level importable functions for worker execution. Supported task inputs and outputs include:
 
@@ -173,7 +175,7 @@ Python task bodies must be top-level importable functions for worker execution. 
 
 Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
 
-For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches the shell payload through Pixi, while true `kind="python"` tasks with `env=` still execute their Python bodies inside the foreign worker environment.
+For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches only the shell payload through Pixi.
 
 Shell tasks can also run inside Docker or Podman containers by declaring a container env:
 
@@ -184,9 +186,8 @@ def sort_bam(input_bam: file, output_bam: file) -> file:
 ```
 
 This completes the Phase 3 execution-boundary work from the implementation
-roadmap: graph construction remains scheduler-local, shell-oriented tasks cross
-the boundary as executable shell payloads, and foreign-environment Python tasks
-now have a distinct execution contract from foreign-environment shell tasks.
+roadmap: graph construction remains scheduler-local and foreign environments
+are entered only for executable shell payloads.
 
 ### Special Types
 
@@ -204,6 +205,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 
 - task identity
 - task version
+- task source hash
 - resolved input hashes
 - environment lock hash when `env=` is used
 
@@ -217,6 +219,46 @@ Implemented cache hashing includes:
 - codec-based hashing for arrays, DataFrames, and other supported Python values
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
+
+Phase 2 of the implementation roadmap is now complete for cache integrity. The
+runtime now hashes the top-level task function source during task registration
+and stores that `source_hash` in both the cache key payload and `meta.json`, so
+task-body changes invalidate prior cache entries without requiring a manual
+`version=` bump. If source extraction fails for a task definition, registration
+now fails explicitly instead of silently weakening cache correctness.
+
+File and folder outputs now flow through a formal `ArtifactStore` contract,
+implemented locally by `LocalArtifactStore` in
+`ginkgo/runtime/artifact_store.py`. Artifact identity is content-addressed:
+files use `<sha256>.<ext>` and directories use `<sha256>`. This identity is now
+recorded in cache metadata as `artifact_ids`, which gives later roadmap phases
+a stable contract for remote storage and lineage features.
+
+The local cache is now the source of truth for path outputs. When a task
+produces a `file` or `folder`, Ginkgo copies the bytes into `.ginkgo/artifacts/`
+as a read-only artifact and replaces the original output path with a symlink to
+that artifact. On cache hit, symlink integrity is validated before reuse:
+missing symlinks are recreated from the stored artifact, while regular files or
+foreign symlinks at the output path are treated as external modification and
+force re-execution.
+
+`ginkgo cache prune` and related cache cleanup paths are now artifact-aware:
+read-only artifacts have permissions restored before deletion so cache
+maintenance can safely remove unreferenced stored outputs.
+
+Phase 13 of the implementation roadmap is now complete for secrets and
+credentials management. Workflows can declare runtime-only secret dependencies
+via `secret(...)` references, which are resolved at execution time through a
+pluggable resolver layer with environment-variable lookup and optional `.env`
+support. Secret references remain identifiers during graph construction and
+cache-keying, so rotating a credential value does not invalidate cache entries
+that are otherwise still valid.
+
+Secret-bearing inputs are redacted before they reach persisted provenance or
+cache metadata, and task log capture now redacts resolved secret values before
+they are written to per-task stdout/stderr logs. The CLI also exposes `ginkgo
+secrets list`, `ginkgo secrets validate`, and `ginkgo doctor` checks for
+declared but unresolvable secrets.
 
 ## Value Transport
 
@@ -234,7 +276,8 @@ The same codec layer is used for both task transport and cache persistence.
 
 ## Pixi Environment Integration
 
-Tasks may declare `env="name"` to run against a Pixi environment under `envs/<name>/pixi.toml`, or against an explicit manifest path.
+Shell tasks may declare `env="name"` to run against a Pixi environment under
+`envs/<name>/pixi.toml`, or against an explicit manifest path.
 
 Implemented behavior includes:
 
@@ -242,7 +285,6 @@ Implemented behavior includes:
 - Pixi lock hashing for cache invalidation
 - environment preparation before dispatch
 - shell execution through the Pixi environment
-- Python task execution through the Pixi environment interpreter
 
 ## Provenance and Run State
 
