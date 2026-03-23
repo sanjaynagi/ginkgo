@@ -1,0 +1,243 @@
+:root {
+  --gk-peach-50: #fff8df;
+  --gk-peach-100: #fff1bf;
+  --gk-peach-200: #ffe28a;
+  --gk-peach-300: #ffd14d;
+  --gk-peach-400: #ffbb00;
+  --gk-leaf-500: #6c8f67;
+  --gk-leaf-700: #46614a;
+  --gk-ink-900: #2b2a28;
+  --gk-sand-200: #efe4d8;
+  --gk-white: #fffdfa;
+
+  --font-stack: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-stack--headings: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-stack--monospace: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+
+  --color-background-primary: var(--gk-white);
+  --color-background-secondary: #fff9f5;
+  --color-background-hover: var(--gk-peach-50);
+  --color-background-border: rgba(232, 141, 104, 0.2);
+  --color-foreground-primary: var(--gk-ink-900);
+  --color-foreground-secondary: #5b5751;
+  --color-foreground-muted: #7c766d;
+  --color-brand-primary: var(--gk-leaf-500);
+  --color-brand-content: #39553f;
+  --color-link: #8a6500;
+  --color-link--hover: #684d00;
+  --color-admonition-title-background--note: #fff2c4;
+  --color-admonition-title--note: #6d5200;
+  --color-admonition-background--note: #fff9e4;
+  --color-code-background: #fff6ef;
+  --color-code-foreground: #4e3d34;
+  --color-sidebar-background: #d9edce;
+  --color-sidebar-background-border: rgba(70, 97, 74, 0.12);
+  --color-sidebar-brand-text: #314734;
+  --color-sidebar-link-text: #3e5442;
+  --color-sidebar-link-text--top-level: #314734;
+  --color-sidebar-link-text--active: #223625;
+  --color-sidebar-item-background--hover: rgba(108, 143, 103, 0.14);
+  --color-sidebar-item-expander-background--hover: rgba(108, 143, 103, 0.2);
+}
+
+body {
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  background:
+    radial-gradient(circle at top right, rgba(255, 187, 0, 0.16), transparent 30%),
+    linear-gradient(180deg, #fffdfa 0%, #fff8ef 100%);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.sidebar-brand-text,
+.toc-title,
+.caption-text {
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+.sidebar-drawer,
+.sidebar-container,
+.sidebar-sticky {
+  background: #d9edce;
+}
+
+.sidebar-brand-text {
+  letter-spacing: 0.02em;
+  font-weight: 700;
+}
+
+.theme-toggle-container {
+  display: none !important;
+}
+
+.content {
+  max-width: 56rem;
+}
+
+.content h1 {
+  font-size: clamp(2.4rem, 5vw, 4rem);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+}
+
+.content h2,
+.content h3 {
+  letter-spacing: -0.02em;
+}
+
+.content p,
+.content li {
+  font-size: 1.03rem;
+}
+
+.hero {
+  margin: 0 0 2.75rem;
+  padding: 1.9rem 2.1rem;
+  border: 1px solid rgba(255, 187, 0, 0.24);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 187, 0, 0.18), transparent 26%),
+    linear-gradient(135deg, rgba(255, 241, 191, 0.5), rgba(255, 253, 250, 0.98));
+  box-shadow: 0 20px 50px rgba(166, 131, 108, 0.12);
+}
+
+.hero p {
+  max-width: 40rem;
+  margin: 0.7rem 0 0;
+  color: #4b4640;
+  font-size: 1.04rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-top: 1.4rem;
+}
+
+.hero-actions a,
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.6rem;
+  padding: 0.6rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 187, 0, 0.3);
+  background: rgba(255, 253, 250, 0.85);
+  color: var(--gk-ink-900);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.hero-actions a:hover,
+.action-link:hover {
+  border-color: rgba(255, 187, 0, 0.5);
+  background: #fffdfa;
+  text-decoration: none;
+}
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  margin: 1.2rem 0 2.2rem;
+}
+
+.quick-card {
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(255, 187, 0, 0.22);
+  border-radius: 22px;
+  background: rgba(255, 252, 248, 0.92);
+}
+
+.quick-card h3 {
+  margin-top: 0.15rem;
+  margin-bottom: 0.4rem;
+  font-size: 1.05rem;
+}
+
+.quick-card p {
+  margin-bottom: 0;
+  font-size: 0.97rem;
+}
+
+.section-note {
+  margin: 2rem 0;
+  padding: 1rem 1.1rem;
+  border-left: 4px solid var(--gk-peach-400);
+  background: rgba(255, 241, 191, 0.45);
+}
+
+.surface {
+  margin: 1.5rem 0 2rem;
+  padding: 1.2rem 1.25rem;
+  border: 1px solid rgba(108, 143, 103, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 253, 250, 0.9);
+}
+
+.surface h2:first-child,
+.surface h3:first-child {
+  margin-top: 0;
+}
+
+.contents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  margin: 1.2rem 0 2rem;
+}
+
+.contents-block {
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(255, 187, 0, 0.18);
+  border-radius: 22px;
+  background: rgba(255, 253, 250, 0.9);
+}
+
+.contents-block h3 {
+  margin-top: 0.05rem;
+  margin-bottom: 0.45rem;
+  font-size: 1rem;
+}
+
+.contents-block ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.contents-block li + li {
+  margin-top: 0.35rem;
+}
+
+.toctree-wrapper ul {
+  padding-left: 1.1rem;
+}
+
+.toctree-wrapper a {
+  text-decoration: none;
+}
+
+.toctree-wrapper a:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 187, 0, 0.8);
+}
+
+div.highlight,
+pre {
+  border: 1px solid rgba(255, 187, 0, 0.18);
+  border-radius: 18px;
+}
+
+table.docutils {
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.reference-page h1 {
+  font-size: 2.6rem;
+}

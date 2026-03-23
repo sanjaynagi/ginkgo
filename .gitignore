@@ -26,6 +26,7 @@ worklog.md
 *worklog*.md
 ginkgo-design-doc.md
 example-workflow.py
+docs/_build/
 
 # OS/editor noise
 .DS_Store
