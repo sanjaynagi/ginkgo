@@ -13,6 +13,13 @@ dependencies = [
     "rich>=13.9",
 ]
 
+[project.optional-dependencies]
+notebooks = [
+    "papermill>=2.6",
+    "marimo>=0.11",
+    "nbconvert>=7.16",
+]
+
 [project.scripts]
 ginkgo = "ginkgo.cli:main"
 
