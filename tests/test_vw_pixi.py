@@ -412,8 +412,6 @@ class TestPixiPythonTask:
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text(
             """
-import pandas as pd
-
 from ginkgo import task
 
 
@@ -426,6 +424,8 @@ def needs_worker_import(x: int) -> int:
         )
 
         module = load_module_from_path(workflow_path)
+        # Delete the file so the pixi worker subprocess cannot load it by path.
+        workflow_path.unlink()
         registry = _make_registry(tmp_path)
 
         with pytest.raises(RuntimeError, match="Foreign Python task .*kind='shell'"):
