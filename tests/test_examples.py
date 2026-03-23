@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from contextlib import contextmanager
@@ -88,6 +89,46 @@ def _mock_docker() -> Iterator[None]:
         yield
 
 
+@contextmanager
+def _mock_notebook_tools() -> Iterator[None]:
+    """Mock notebook tooling so example workflows do not need real installs."""
+    original_run_subprocess = _ConcurrentEvaluator._run_subprocess
+
+    def _patched_run_subprocess(
+        self_eval: Any, *, argv: str | list[str], use_shell: bool
+    ) -> subprocess.CompletedProcess[str]:
+        if isinstance(argv, str) and "papermill" in argv:
+            parts = shlex.split(argv)
+            output_path = Path(parts[4])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("executed notebook", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout="papermill ok\n",
+                stderr="",
+            )
+
+        if isinstance(argv, str) and "nbconvert" in argv:
+            parts = shlex.split(argv)
+            output_stem = parts[parts.index("--output") + 1]
+            output_dir = Path(parts[parts.index("--output-dir") + 1])
+            html_path = output_dir / f"{output_stem}.html"
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text("<html><body>notebook report</body></html>", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout="nbconvert ok\n",
+                stderr="",
+            )
+
+        return original_run_subprocess(self_eval, argv=argv, use_shell=use_shell)
+
+    with patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess):
+        yield
+
+
 class TestExamples:
     def test_bioinfo_example_runs_and_caches(
         self,
@@ -161,18 +202,29 @@ class TestExamples:
         example_dir = _copy_example(name="retail", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
-        first_run_dir, first_manifest = _run_example(example_dir=example_dir)
+        with _mock_notebook_tools():
+            first_run_dir, first_manifest = _run_example(example_dir=example_dir)
         region_outputs = sorted((example_dir / "results" / "regions").glob("*.csv"))
+        notebook_task = next(
+            task
+            for task in first_manifest["tasks"].values()
+            if str(task["task"]).endswith(".render_channel_performance_notebook")
+        )
+        notebook_html = first_run_dir / str(notebook_task["rendered_html"])
 
         assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 13
+        assert len(first_manifest["tasks"]) == 14
         assert len(region_outputs) == 4
+        assert notebook_task["task_type"] == "notebook"
+        assert notebook_task["render_status"] == "succeeded"
+        assert notebook_html.is_file()
         assert (example_dir / "results" / "delivery_manifest.txt").is_file()
         assert "Top region:" in (example_dir / "results" / "executive_report.md").read_text(
             encoding="utf-8"
         )
 
-        second_run_dir, second_manifest = _run_example(example_dir=example_dir)
+        with _mock_notebook_tools():
+            second_run_dir, second_manifest = _run_example(example_dir=example_dir)
         assert second_run_dir is not None
         assert second_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())

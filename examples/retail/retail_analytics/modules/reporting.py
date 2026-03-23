@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import file, task
+from ginkgo import file, notebook, task
 
 
 def _write_dataframe(*, frame: pd.DataFrame, output_path: str) -> file:
@@ -43,6 +43,15 @@ def write_channel_metrics(enriched_orders: pd.DataFrame) -> file:
         .sort_values(["order_month", "channel"])
     )
     return _write_dataframe(frame=summary, output_path="results/channel_metrics.csv")
+
+
+@notebook(path="../notebooks/channel_performance.ipynb")
+def render_channel_performance_notebook(
+    *,
+    channel_metrics: file,
+    report_title: str,
+) -> file:
+    """Render a notebook view of channel performance trends."""
 
 
 @task()

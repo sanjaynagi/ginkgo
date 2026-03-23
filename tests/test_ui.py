@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import yaml
+
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.ui import create_ui_server
 from ginkgo.ui.server import payloads as server_payloads
@@ -152,6 +154,27 @@ def _make_run(tmp_path: Path, *, run_id: str, status: str, fail: bool) -> Path:
         )
     recorder.finalize(status=status, error="boom" if fail else None)
     return recorder.run_dir
+
+
+def _add_notebook_artifact(run_dir: Path) -> None:
+    manifest_path = run_dir / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    notebook_dir = run_dir / "notebooks"
+    notebook_dir.mkdir(parents=True, exist_ok=True)
+    (notebook_dir / "task_0000.html").write_text(
+        "<html><body>report</body></html>", encoding="utf-8"
+    )
+    manifest["tasks"]["task_0000"].update(
+        {
+            "task_type": "notebook",
+            "notebook_kind": "ipynb",
+            "notebook_description": "Notebook report.",
+            "notebook_path": "/tmp/report.ipynb",
+            "render_status": "succeeded",
+            "rendered_html": "notebooks/task_0000.html",
+        }
+    )
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
 
 class TestUiServer:
@@ -323,6 +346,30 @@ class TestUiServer:
         assert task_payload["task"]["cache_key"] == "cache-key-123"
         assert "task log line" in log_payload["stdout"]
         assert "task error line" in log_payload["stderr"]
+
+    def test_run_payload_exposes_notebook_entries_and_html_route(self, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        run_dir = _make_run(
+            tmp_path, run_id="20260312_130000_deadbeef", status="succeeded", fail=False
+        )
+        _add_notebook_artifact(run_dir)
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        try:
+            _, run_payload = _fetch_json(f"{base_url}/api/runs/{run_dir.name}")
+            status, html = _fetch_text(
+                f"{base_url}/api/runs/{run_dir.name}/tasks/task_0000/notebook"
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert run_payload["notebooks"][0]["task_key"] == "task_0000"
+        assert run_payload["tasks"][0]["task_type"] == "notebook"
+        assert run_payload["tasks"][0]["render_status"] == "succeeded"
+        assert status == 200
+        assert "<body>report</body>" in html
 
     def test_meta_reports_selected_run(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"
