@@ -15,7 +15,6 @@ from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 from ginkgo.runtime.secrets import build_secret_resolver
-from ginkgo.runtime.worker import run_task
 
 
 def _append_line(path: str, line: str) -> None:
@@ -497,18 +496,9 @@ class TestShellTask:
             install_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        def fake_run_env_python_task(
-            self,
-            *,
-            node,
-            payload: dict[str, object],
-        ) -> dict[str, object]:
-            return run_task(payload)
-
         registry = PixiRegistry(project_root=tmp_path)
         monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
         monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
-        monkeypatch.setattr(_ConcurrentEvaluator, "_run_env_python_task", fake_run_env_python_task)
         monkeypatch.setattr(
             registry,
             "shell_argv",

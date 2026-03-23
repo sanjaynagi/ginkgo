@@ -81,8 +81,7 @@ ginkgo/
 │   └── worker.py
 ├── envs/
 │   ├── container.py      # ContainerBackend (Docker/Podman)
-│   ├── pixi.py
-│   └── pixi_worker.py
+│   └── pixi.py
 ├── cli/
 │   ├── app.py
 │   └── commands/
@@ -141,13 +140,13 @@ The scheduler performs explicit cycle detection when registering expressions.
 
 The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
 
-**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution (shell and Python tasks).
+**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for **shell tasks only**. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
 **CompositeBackend** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalBackend`.
 
-Container environments do not support Python tasks — requiring Ginkgo installed inside every container image is an unreasonable constraint. This is enforced at validation time (before any work starts) and at the backend level.
+Foreign execution environments do not support Python tasks. Ginkgo treats `env=...` as a shell-task boundary only, which keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 
 Image digests (not mutable tags) are used for cache key identity, ensuring cache invalidation when image contents change.
 
@@ -157,9 +156,12 @@ Image digests (not mutable tags) are used for cache key identity, ensuring cache
 
 `@task()` supports:
 
-- `env=...`
 - `version=...`
 - `retries=...`
+
+Python tasks always execute in the scheduler's own Python environment. If a
+task needs a different Pixi or container environment, it must be declared with
+`kind="shell"` and invoke the desired script or command explicitly.
 
 Python task bodies must be top-level importable functions for worker execution. Supported task inputs and outputs include:
 
@@ -173,7 +175,7 @@ Python task bodies must be top-level importable functions for worker execution. 
 
 Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
 
-For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches the shell payload through Pixi, while true `kind="python"` tasks with `env=` still execute their Python bodies inside the foreign worker environment.
+For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches only the shell payload through Pixi.
 
 Shell tasks can also run inside Docker or Podman containers by declaring a container env:
 
@@ -184,9 +186,8 @@ def sort_bam(input_bam: file, output_bam: file) -> file:
 ```
 
 This completes the Phase 3 execution-boundary work from the implementation
-roadmap: graph construction remains scheduler-local, shell-oriented tasks cross
-the boundary as executable shell payloads, and foreign-environment Python tasks
-now have a distinct execution contract from foreign-environment shell tasks.
+roadmap: graph construction remains scheduler-local and foreign environments
+are entered only for executable shell payloads.
 
 ### Special Types
 
@@ -275,7 +276,8 @@ The same codec layer is used for both task transport and cache persistence.
 
 ## Pixi Environment Integration
 
-Tasks may declare `env="name"` to run against a Pixi environment under `envs/<name>/pixi.toml`, or against an explicit manifest path.
+Shell tasks may declare `env="name"` to run against a Pixi environment under
+`envs/<name>/pixi.toml`, or against an explicit manifest path.
 
 Implemented behavior includes:
 
@@ -283,7 +285,6 @@ Implemented behavior includes:
 - Pixi lock hashing for cache invalidation
 - environment preparation before dispatch
 - shell execution through the Pixi environment
-- Python task execution through the Pixi environment interpreter
 
 ## Provenance and Run State
 

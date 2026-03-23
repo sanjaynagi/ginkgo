@@ -570,18 +570,8 @@ class _ConcurrentEvaluator:
             )
             payload = self._build_worker_payload(node=node)
 
-            if node.task_def.env is not None and self.backend is not None:
-                # Run the Python task body inside the environment via a subprocess.
-                assert self._shell_executor is not None
-                future = self._shell_executor.submit(
-                    self._run_env_python_task,
-                    node=node,
-                    payload=payload,
-                )
-                self._running_futures[future] = (node_id, "env_python")
-            else:
-                future = python_executor.submit(run_task, payload)
-                self._running_futures[future] = (node_id, "python")
+            future = python_executor.submit(run_task, payload)
+            self._running_futures[future] = (node_id, "python")
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
         """Handle finished worker futures from the thread pool."""
@@ -600,7 +590,7 @@ class _ConcurrentEvaluator:
                 continue
 
             try:
-                if phase in {"python", "env_python"}:
+                if phase == "python":
                     self._handle_completed_worker_phase(node=node, completed_value=completed_value)
                 elif phase == "driver":
                     self._handle_completed_driver_phase(node=node, completed_value=completed_value)
@@ -1196,66 +1186,6 @@ class _ConcurrentEvaluator:
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
 
-    def _run_env_python_task(self, *, node: _TaskNode, payload: dict[str, Any]) -> dict[str, Any]:
-        """Run a Python task body inside its declared environment.
-
-        Serializes the worker payload to disk, invokes the worker code
-        via the environment's Python interpreter, and deserializes the result.
-
-        Parameters
-        ----------
-        node : _TaskNode
-            The task node being executed (used for error context and paths).
-        payload : dict[str, Any]
-            Encoded worker payload (same format as the process-pool path).
-
-        Returns
-        -------
-        dict[str, Any]
-            Decoded worker response dict (``{"ok": bool, "result": ...}``).
-        """
-        assert node.transport_path is not None
-        assert self.backend is not None
-
-        input_path = node.transport_path / "pixi_input.json"
-        output_path = node.transport_path / "pixi_output.json"
-
-        # Write the serialized payload for the worker script to consume.
-        input_path.write_text(json.dumps(payload), encoding="utf-8")
-
-        argv = self.backend.python_argv_m(
-            env=node.task_def.env,
-            module="ginkgo.envs.pixi_worker",
-            args=(str(input_path), str(output_path)),
-        )
-        completed = self._run_subprocess(argv=argv, use_shell=False)
-        stdout_text = self._redact_text(completed.stdout or "", secret_values=node.secret_values)
-        stderr_text = self._redact_text(completed.stderr or "", secret_values=node.secret_values)
-        if node.stdout_path is not None and stdout_text:
-            with node.stdout_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text)
-        if node.stderr_path is not None and stderr_text:
-            with node.stderr_path.open("a", encoding="utf-8") as handle:
-                handle.write(stderr_text)
-
-        combined = stdout_text + stderr_text
-        if completed.returncode != 0:
-            raise ShellTaskError(
-                task_name=node.task_def.name,
-                cmd=self._redact_text(" ".join(argv), secret_values=node.secret_values),
-                exit_code=completed.returncode,
-                output=combined.strip(),
-                log=None,
-            )
-
-        if not output_path.exists():
-            raise RuntimeError(
-                f"Environment Python task {node.task_def.name} completed but produced no output. "
-                f"Command: {' '.join(argv)}"
-            )
-
-        return json.loads(output_path.read_text(encoding="utf-8"))
-
     def _validate_declared_envs(self) -> None:
         """Raise before any work starts if a declared env cannot be resolved.
 
@@ -1263,16 +1193,12 @@ class _ConcurrentEvaluator:
         (discovered mid-run via conditional branching) are validated when
         ``_prepare_node`` is called for them.
         """
-        # Container environments only support shell tasks.
+        # Foreign execution environments only support shell tasks.
         for node in self._nodes.values():
-            if (
-                node.task_def.env is not None
-                and is_container_env(node.task_def.env)
-                and node.task_def.kind != "shell"
-            ):
+            if node.task_def.env is not None and node.task_def.kind != "shell":
                 raise TypeError(
-                    f"{node.task_def.name} uses container env {node.task_def.env!r} "
-                    "but is declared with kind='python'. Container environments "
+                    f"{node.task_def.name} uses env {node.task_def.env!r} "
+                    "but is declared with kind='python'. Foreign environments "
                     "only support shell tasks — use @task(kind='shell')."
                 )
 

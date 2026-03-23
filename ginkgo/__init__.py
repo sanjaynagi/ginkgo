@@ -36,7 +36,6 @@ _LEGACY_MODULE_ALIASES = {
     "ginkgo.expr": "ginkgo.core.expr",
     "ginkgo.flow": "ginkgo.core.flow",
     "ginkgo.pixi": "ginkgo.envs.pixi",
-    "ginkgo.pixi_worker": "ginkgo.envs.pixi_worker",
     "ginkgo.scheduler": "ginkgo.runtime.scheduler",
     "ginkgo.shell": "ginkgo.core.shell",
     "ginkgo.task": "ginkgo.core.task",

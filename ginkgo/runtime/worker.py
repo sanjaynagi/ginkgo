@@ -71,17 +71,8 @@ def _load_task_binding(*, payload: dict[str, Any]) -> Any:
             module_file=payload.get("module_file"),
         )
         return getattr(module, payload["task_name"])
-    except BaseException as exc:
-        if payload.get("env") is None or payload.get("task_kind") != "python":
-            raise
-
-        task_name = f"{payload['module']}.{payload['task_name']}"
-        env_name = payload["env"]
-        raise RuntimeError(
-            f"Foreign Python task {task_name} could not be imported inside env {env_name!r}. "
-            "Python tasks with env= must live in importable packaged modules available in the "
-            "target environment. Use @task(kind='shell') for shell command wrappers."
-        ) from exc
+    except BaseException:
+        raise
 
 
 @contextlib.contextmanager
@@ -141,4 +132,9 @@ class _RedactingWriter(io.TextIOBase):
         return self._handle.write(redacted)
 
     def flush(self) -> None:
-        self._handle.flush()
+        try:
+            self._handle.flush()
+        except ValueError:
+            # CPython may flush redirected streams during finalization after
+            # the underlying file handle has already been closed.
+            return
