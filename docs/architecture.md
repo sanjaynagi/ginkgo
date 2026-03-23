@@ -10,13 +10,14 @@ The repository currently implements:
 - Workflow authoring helpers via `expand(...)`, `zip_expand(...)`, `flatten(...)`, and `slug(...)`
   for concise deterministic workflow authoring
 - Dynamic DAG expansion when tasks return nested `Expr` or `ExprList` values
-- Explicit task kinds via `@task(kind="python" | "shell")`
+- Explicit task kinds via `@task(kind="python" | "shell")` and `@notebook(...)`
 - Content-addressed caching for scalar values, files, folders, arrays, DataFrames, and other supported Python objects
 - Concurrent scheduling with job, core, and memory constraints
 - Python task execution through a `ProcessPoolExecutor`
 - Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
+- First-class notebook execution for Jupyter (`.ipynb`) and marimo notebooks with stable run-scoped HTML artifacts
 - Run provenance, per-task logs, cache inspection, and CLI debugging commands
-- A local browser UI for browsing runs, tasks, task graphs, logs, and cache entries
+- A local browser UI for browsing runs, tasks, notebook artifacts, task graphs, logs, and cache entries
 - A multi-workspace local UI shell with an active workspace model and native
   folder-picker loading for switching between Ginkgo workspaces on one machine
 - A canonical package-based workflow repository layout with root autodiscovery
@@ -189,6 +190,24 @@ This completes the Phase 3 execution-boundary work from the implementation
 roadmap: graph construction remains scheduler-local and foreign environments
 are entered only for executable shell payloads.
 
+### Notebook Tasks
+
+Notebook execution is expressed with `@notebook(...)`. The decorated function
+defines the typed parameter schema and UI description, while the notebook file
+itself is treated as the executable source artifact.
+
+Implemented notebook behavior includes:
+
+- `.ipynb` execution through Papermill with standard parameters-cell injection
+- marimo notebook execution through a CLI/script invocation with resolved task arguments forwarded as CLI parameters
+- stable run-scoped notebook artifacts under `.ginkgo/runs/<run_id>/notebooks/`
+- HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
+- notebook source hashing folded into cache identity so notebook edits invalidate cache even when the wrapper function body is unchanged
+
+Notebook tasks run on the same driver-side shell execution path as other
+shell-like tasks. This preserves existing scheduler semantics for dependency
+resolution, retries, environment dispatch, cache recording, and provenance.
+
 ### Special Types
 
 Ginkgo currently ships three path-oriented marker types:
@@ -206,6 +225,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 - task identity
 - task version
 - task source hash
+- notebook source hash for notebook-backed tasks
 - resolved input hashes
 - environment lock hash when `env=` is used
 
@@ -307,6 +327,7 @@ The manifest records:
 - task dependencies and dynamic dependency ids
 - retries and attempts
 - outputs
+- notebook artifact metadata including rendered HTML paths, executed notebook paths where applicable, and render status
 - exit codes and errors
 - run-level CPU and RSS summaries
 
@@ -381,7 +402,7 @@ The current UI supports:
   the active workspace via the top bar, and scope runs/cache/workflow-launch to
   that workspace
 - run history and run summaries
-- task tables, task-graph visualization using recorded dependencies
+- task tables, task-graph visualization using recorded dependencies, and notebook artifact links derived from run provenance
 - task detail drawers with full log retrieval
 - cache browsing and deletion
 - live updates via a WebSocket event channel (`/ws`): the server emits
@@ -413,7 +434,7 @@ example suite under `examples/`. The repository-level validation corpus now
 includes:
 
 - `retail` for static fan-out, fan-in, and shell-generated delivery
-  bundles
+  bundles, now including a notebook-backed reporting step
 - `news` for runtime-determined `ExprList` expansion and dynamic dependency
   recording
 - `supplychain` for multi-scenario analysis with richer artifact fan-in

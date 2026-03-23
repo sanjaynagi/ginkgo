@@ -105,46 +105,6 @@ Each phase is independently testable and follows the same structure:
 - `ginkgo init` produces a project with agent skills and notebook directory immediately usable by a coding agent.
 - `ginkgo export --format mermaid` produces a valid Mermaid graph that renders without errors.
 
----
-
-### Phase 5 — Notebook Tasks
-
-**Goal:** Allow users to parameterise and execute Jupyter (`.ipynb`) and marimo notebooks as first-class workflow tasks, with automatic HTML export and a dedicated UI view.
-
-**Downstream consumers:** Phase 12 (Publishing) bundles rendered notebook HTML. The HTML storage path and provenance entry format should be stable and discoverable from the run manifest.
-
-#### Deliverables
-
-- Add a `@notebook` decorator that registers a notebook file as a workflow task:
-  - For `.ipynb` notebooks: execute via Papermill, injecting parameters through the standard Papermill parameters cell mechanism.
-  - For marimo notebooks: execute as a standard Python script with CLI arguments forwarded.
-- Execute notebooks as shell tasks under the hood so they integrate cleanly with existing task scheduling, caching, and provenance without a separate execution path.
-- After each successful execution, render the executed notebook to HTML and store it at a stable path alongside run provenance (e.g. `.ginkgo/runs/<run-id>/notebooks/<task-id>.html`). Record this path in the run manifest so Phase 12 can discover it without heuristics.
-- Expose the `@notebook` docstring as the human-readable description surfaced in the UI.
-- Add a **Notebooks** tab to the UI that:
-  - Lists all registered notebooks with their descriptions.
-  - Links to the rendered HTML output for each completed run.
-  - Shows per-notebook execution status (pending, running, completed, failed).
-
-#### Key design points
-
-- Notebook tasks are first-class DAG nodes: they participate in dependency resolution, are cached by their input parameters and notebook content hash, and appear in run provenance identically to Python tasks.
-- The `@notebook` decorator should accept typed parameters in the same style as `@task` so inputs can be validated before execution.
-- Papermill is used for `.ipynb` execution because it provides a well-defined injection mechanism and produces an executed output notebook suitable for HTML conversion.
-- Marimo notebooks receive their arguments via CLI args consistent with marimo's own execution model.
-- HTML rendering is a post-execution step and must not block cache recording or provenance writes if rendering fails.
-- The Notebooks tab is additive and must not disrupt existing Tasks or DAG views.
-
-#### Validation
-
-- Define a `.ipynb` notebook with a Papermill parameters cell, register it with `@notebook`, and assert that parameter injection, execution, and HTML export complete correctly and appear in run provenance.
-- Define a marimo notebook with CLI args, register it with `@notebook`, and assert it executes with the correct arguments and produces an HTML export.
-- Run a workflow containing a notebook task twice with identical inputs and assert the second run is served from cache.
-- Assert the Notebooks tab lists all registered notebooks with their descriptions and links to the rendered HTML for each completed run.
-- Assert a notebook task failure is reflected in the Notebooks tab with the correct failure state and does not leave a stale HTML artifact from a prior successful run.
-
----
-
 ### Phase 6 — Remote Artifact Store
 
 **Goal:** Add a remote backend to the `ArtifactStore` abstraction introduced in Phase 2, removing the assumption that artifact bytes live on the local filesystem.
