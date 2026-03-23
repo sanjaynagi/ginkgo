@@ -11,6 +11,7 @@ from ginkgo import file, shell, task
 def write_delivery_manifest(
     executive_report: file,
     channel_metrics: file,
+    channel_notebook: file,
     hotspot_report: file,
     region_reports: list[file],
 ) -> file:
@@ -22,6 +23,8 @@ def write_delivery_manifest(
         Markdown executive brief.
     channel_metrics : file
         Channel KPI summary.
+    channel_notebook : file
+        Rendered notebook HTML summary.
     hotspot_report : file
         Hotspot JSON output.
     region_reports : list[file]
@@ -33,7 +36,7 @@ def write_delivery_manifest(
         Plain-text artifact manifest.
     """
     output = "results/delivery_manifest.txt"
-    manifest_items = [executive_report, channel_metrics, hotspot_report, *region_reports]
+    manifest_items = [executive_report, channel_metrics, channel_notebook, hotspot_report, *region_reports]
     quoted_items = " ".join(shlex.quote(str(item)) for item in manifest_items)
     return shell(
         cmd=f"printf '%s\\n' {quoted_items} > {shlex.quote(output)}",

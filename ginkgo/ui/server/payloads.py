@@ -120,6 +120,7 @@ def run_payload(workspace: WorkspaceRecord, run_id: str) -> dict[str, Any] | Non
     )
     tasks_raw = manifest.get("tasks", {})
     tasks: list[dict[str, Any]] = []
+    notebooks: list[dict[str, Any]] = []
     if isinstance(tasks_raw, dict):
         task_items: list[tuple[str, dict[str, Any]]] = []
         for task_key, task in tasks_raw.items():
@@ -128,6 +129,8 @@ def run_payload(workspace: WorkspaceRecord, run_id: str) -> dict[str, Any] | Non
             task_items.append((task_key, cast(dict[str, Any], task)))
 
         for task_key, task in sorted(task_items, key=lambda item: int(item[1].get("node_id", -1))):
+            rendered_html = resolve_task_path(run_dir, task, "rendered_html")
+            executed_notebook = resolve_task_path(run_dir, task, "executed_notebook")
             tasks.append(
                 {
                     "task_key": task_key,
@@ -145,8 +148,40 @@ def run_payload(workspace: WorkspaceRecord, run_id: str) -> dict[str, Any] | Non
                     "cache_key": task.get("cache_key"),
                     "dependency_ids": task.get("dependency_ids", []),
                     "dynamic_dependency_ids": task.get("dynamic_dependency_ids", []),
+                    "task_type": task.get("task_type", "task"),
+                    "notebook_kind": task.get("notebook_kind"),
+                    "notebook_description": task.get("notebook_description"),
+                    "render_status": task.get("render_status"),
+                    "rendered_html": str(rendered_html) if rendered_html is not None else None,
+                    "rendered_html_url": (
+                        f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
+                        if rendered_html is not None
+                        else None
+                    ),
+                    "executed_notebook": (
+                        str(executed_notebook) if executed_notebook is not None else None
+                    ),
                 }
             )
+            if task.get("task_type") == "notebook":
+                notebooks.append(
+                    {
+                        "task_key": task_key,
+                        "task": task.get("task"),
+                        "task_name": task_base_name(task.get("task")),
+                        "description": task.get("notebook_description"),
+                        "status": task.get("status", "unknown"),
+                        "render_status": task.get("render_status"),
+                        "notebook_kind": task.get("notebook_kind"),
+                        "notebook_path": task.get("notebook_path"),
+                        "rendered_html": str(rendered_html) if rendered_html is not None else None,
+                        "rendered_html_url": (
+                            f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
+                            if rendered_html is not None
+                            else None
+                        ),
+                    }
+                )
     return {
         "workspace_id": workspace.workspace_id,
         "workspace_label": workspace.label,
@@ -157,6 +192,7 @@ def run_payload(workspace: WorkspaceRecord, run_id: str) -> dict[str, Any] | Non
         "manifest": manifest,
         "params": params,
         "tasks": tasks,
+        "notebooks": notebooks,
     }
 
 
@@ -262,10 +298,15 @@ def launch_workflow_process(
     return {"pid": process.pid, "workflow": workflow_label}
 
 
-def resolve_log_path(run_dir: Path, task: dict[str, Any], key: str) -> Path | None:
-    """Resolve a log path from a task manifest entry."""
+def resolve_task_path(run_dir: Path, task: dict[str, Any], key: str) -> Path | None:
+    """Resolve one task-relative path from a manifest entry."""
     rel = task.get(key)
     return run_dir / rel if isinstance(rel, str) else None
+
+
+def resolve_log_path(run_dir: Path, task: dict[str, Any], key: str) -> Path | None:
+    """Resolve a log path from a task manifest entry."""
+    return resolve_task_path(run_dir, task, key)
 
 
 def read_log(path: str | Path | None) -> str:
@@ -294,6 +335,7 @@ def task_payload(
     stdout_path = resolve_log_path(run_dir, task, "stdout_log")
     stderr_path = resolve_log_path(run_dir, task, "stderr_log")
     legacy_path = resolve_log_path(run_dir, task, "log")
+    notebook_html = resolve_task_path(run_dir, task, "rendered_html")
     if stdout_path is None and legacy_path is not None:
         stdout_path = legacy_path
 
@@ -304,6 +346,12 @@ def task_payload(
         "task": task,
         "stdout_path": str(stdout_path) if stdout_path is not None else None,
         "stderr_path": str(stderr_path) if stderr_path is not None else None,
+        "notebook_html_path": str(notebook_html) if notebook_html is not None else None,
+        "notebook_html_url": (
+            f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
+            if notebook_html is not None
+            else None
+        ),
         "stdout_tail": tail_text(stdout_path, lines=80) if stdout_path is not None else [],
         "stderr_tail": tail_text(stderr_path, lines=80) if stderr_path is not None else [],
     }

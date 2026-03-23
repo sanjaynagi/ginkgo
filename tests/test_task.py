@@ -1,8 +1,10 @@
 """Unit tests for @task decorator, TaskDef, and PartialCall."""
 
+from pathlib import Path
+
 import pytest
 
-from ginkgo import Expr, ExprList, PartialCall, TaskDef, task, tmp_dir
+from ginkgo import Expr, ExprList, PartialCall, TaskDef, notebook, task, tmp_dir
 
 
 class TestTaskDecorator:
@@ -44,6 +46,41 @@ class TestTaskDecorator:
             @task(kind="bash")
             def my_fn(x: int) -> int:
                 return x
+
+    def test_notebook_creates_notebook_task(self, tmp_path: Path):
+        notebook_path = tmp_path / "report.ipynb"
+        notebook_path.write_text("{}", encoding="utf-8")
+
+        @notebook(path=notebook_path, env="analysis", version=2)
+        def my_notebook(*, sample_id: str) -> Path:
+            """Notebook description."""
+
+        assert isinstance(my_notebook, TaskDef)
+        assert my_notebook.kind == "notebook"
+        assert my_notebook.env == "analysis"
+        assert my_notebook.version == 2
+        assert my_notebook.notebook is not None
+        assert my_notebook.notebook.kind == "ipynb"
+        assert my_notebook.notebook.description == "Notebook description."
+
+    def test_notebook_uses_wrapper_signature_as_parameter_schema(self, tmp_path: Path):
+        notebook_path = tmp_path / "explore.py"
+        notebook_path.write_text("print('hi')\n", encoding="utf-8")
+
+        @notebook(path=notebook_path)
+        def explore(*, dataset_path: Path, label: str = "group") -> Path:
+            """Explore one dataset."""
+
+        expr = explore(dataset_path=Path("data.csv"))
+        assert isinstance(expr, Expr)
+        assert expr.args == {"dataset_path": Path("data.csv")}
+
+    def test_notebook_rejects_missing_source(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError, match="Notebook source not found"):
+
+            @notebook(path=tmp_path / "missing.ipynb")
+            def my_notebook(*, sample_id: str) -> Path:
+                return Path(sample_id)
 
 
 class TestTaskDefCall:

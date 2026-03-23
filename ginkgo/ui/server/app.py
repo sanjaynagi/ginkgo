@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from ginkgo.runtime.provenance import load_manifest
+
 from .live import capture_live_state, diff_live_state
 from . import payloads
 from .payloads import (
@@ -22,6 +24,7 @@ from .payloads import (
     list_runs_across_workspaces,
     list_workflows,
     read_log,
+    resolve_task_path,
     run_payload,
     task_payload,
     workspace_payload,
@@ -297,6 +300,19 @@ def create_ui_server(
                 and parts[:2] == ["api", "workspaces"]
                 and parts[3] == "runs"
                 and parts[5] == "tasks"
+                and parts[7] == "notebook"
+            ):
+                workspace = self._workspace_or_404(parts[2])
+                if workspace is None:
+                    return
+                self._serve_notebook_html(workspace=workspace, run_id=parts[4], task_key=parts[6])
+                return
+
+            if (
+                len(parts) == 8
+                and parts[:2] == ["api", "workspaces"]
+                and parts[3] == "runs"
+                and parts[5] == "tasks"
                 and parts[7] == "log"
             ):
                 workspace = self._workspace_or_404(parts[2])
@@ -351,6 +367,18 @@ def create_ui_server(
                 len(parts) == 6
                 and parts[:2] == ["api", "runs"]
                 and parts[3] == "tasks"
+                and parts[5] == "notebook"
+            ):
+                workspace = self._active_workspace_or_404()
+                if workspace is None:
+                    return
+                self._serve_notebook_html(workspace=workspace, run_id=parts[2], task_key=parts[4])
+                return
+
+            if (
+                len(parts) == 6
+                and parts[:2] == ["api", "runs"]
+                and parts[3] == "tasks"
                 and parts[5] == "log"
             ):
                 workspace = self._active_workspace_or_404()
@@ -389,6 +417,47 @@ def create_ui_server(
             content_type, _ = mimetypes.guess_type(asset_path.name)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type or "application/octet-stream")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def _serve_notebook_html(
+            self,
+            *,
+            workspace: WorkspaceRecord,
+            run_id: str,
+            task_key: str,
+        ) -> None:
+            run_dir = workspace.runs_root / run_id
+            if not run_dir.is_dir():
+                self._send_json({"error": f"Run not found: {run_id}"}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            manifest = load_manifest(run_dir)
+            tasks = manifest.get("tasks", {})
+            if not isinstance(tasks, dict):
+                self._send_json(
+                    {"error": f"Task not found: {task_key}"}, status=HTTPStatus.NOT_FOUND
+                )
+                return
+            task = tasks.get(task_key)
+            if not isinstance(task, dict):
+                self._send_json(
+                    {"error": f"Task not found: {task_key}"}, status=HTTPStatus.NOT_FOUND
+                )
+                return
+
+            html_path = resolve_task_path(run_dir, cast(dict[str, Any], task), "rendered_html")
+            if html_path is None or not html_path.is_file():
+                self._send_json(
+                    {"error": f"Notebook HTML not found for task: {task_key}"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+
+            content = html_path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)

@@ -82,7 +82,7 @@ class CacheStore:
             "env": task_def.env,
             "env_hash": env_hash,
             "inputs": input_hashes,
-            "source_hash": task_def.source_hash,
+            "source_hash": task_def.cache_source_hash,
             "task": task_def.name,
             "version": task_def.version,
         }
@@ -144,10 +144,14 @@ class CacheStore:
                         task_def=task_def, resolved_args=resolved_args
                     ),
                     "input_hashes": input_hashes,
-                    "source_hash": task_def.source_hash,
+                    "source_hash": task_def.cache_source_hash,
                     "timestamp": datetime.now(UTC).isoformat(),
                     "version": task_def.version,
                 }
+                if task_def.notebook is not None:
+                    meta["notebook_path"] = str(task_def.notebook.path)
+                    meta["notebook_kind"] = task_def.notebook.kind
+                    meta["notebook_source_hash"] = task_def.notebook.source_hash
                 (temp_dir / "meta.json").write_text(
                     json.dumps(meta, indent=2, sort_keys=True),
                     encoding="utf-8",

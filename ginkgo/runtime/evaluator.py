@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -24,6 +25,8 @@ from pathlib import Path
 from threading import Lock, current_thread, main_thread
 from types import FrameType
 from typing import Any, get_args, get_origin
+
+import yaml
 
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.secret import SecretRef
@@ -154,6 +157,16 @@ class _TaskNode:
     def task_def(self) -> TaskDef:
         """Return the task definition for the node."""
         return self.expr.task_def
+
+
+@dataclass(frozen=True, kw_only=True)
+class _NotebookArtifacts:
+    """Run-scoped artifact locations for one notebook task."""
+
+    root_dir: Path
+    html_path: Path
+    executed_path: Path | None
+    params_path: Path
 
 
 class _SignalMonitor:
@@ -563,6 +576,15 @@ class _ConcurrentEvaluator:
                     node=node,
                 )
                 self._running_futures[future] = (node_id, "driver")
+                continue
+
+            if node.task_def.kind == "notebook":
+                assert self._shell_executor is not None
+                future = self._shell_executor.submit(
+                    self._run_notebook,
+                    node=node,
+                )
+                self._running_futures[future] = (node_id, "shell")
                 continue
 
             node.transport_path = Path(
@@ -1129,41 +1151,15 @@ class _ConcurrentEvaluator:
         task_def = node.task_def
         user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
 
-        # Ensure parent directories for all log paths.
-        for path in (node.stdout_path, node.stderr_path, user_log_path):
-            if path is not None:
-                path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Ensure declared output parents exist before running the command.
         for output_path in self._iter_shell_output_paths(shell_expr.output):
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build the argv: wrap through the backend when the task declares an env.
-        if task_def.env is not None and self.backend is not None:
-            argv = self.backend.shell_argv(env=task_def.env, cmd=shell_expr.cmd)
-            use_shell = False
-        else:
-            argv = shell_expr.cmd
-            use_shell = True
-
-        completed = self._run_subprocess(argv=argv, use_shell=use_shell)
-        stdout_text = self._redact_text(completed.stdout or "", secret_values=node.secret_values)
-        stderr_text = self._redact_text(completed.stderr or "", secret_values=node.secret_values)
-
-        # Write stdout and stderr to separate provenance logs.
-        if node.stdout_path is not None and stdout_text:
-            with node.stdout_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text)
-        if node.stderr_path is not None and stderr_text:
-            with node.stderr_path.open("a", encoding="utf-8") as handle:
-                handle.write(stderr_text)
-
-        # User-specified log gets combined output for backwards compatibility.
-        if user_log_path is not None and (stdout_text or stderr_text):
-            with user_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text + stderr_text)
-
-        combined_output = stdout_text + stderr_text
+        completed = self._run_logged_command(
+            node=node,
+            cmd=shell_expr.cmd,
+            user_log_path=user_log_path,
+        )
+        combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
             raise ShellTaskError(
                 task_name=task_def.name,
@@ -1186,6 +1182,303 @@ class _ConcurrentEvaluator:
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
 
+    def _run_notebook(self, *, node: _TaskNode) -> Any:
+        """Execute a notebook task and return the rendered HTML path."""
+        assert node.execution_args is not None
+        notebook = node.task_def.notebook
+        if notebook is None:
+            raise RuntimeError(f"{node.task_def.name} is missing notebook metadata")
+
+        artifacts = self._notebook_artifacts(node=node)
+        self._prepare_notebook_artifacts(artifacts=artifacts)
+        self._record_notebook_manifest(
+            node=node,
+            executed_path=artifacts.executed_path,
+            rendered_html=artifacts.html_path,
+            render_status="pending",
+            render_error=None,
+        )
+
+        if notebook.kind == "ipynb":
+            command = self._build_ipynb_execute_command(
+                notebook_path=notebook.path,
+                executed_path=artifacts.executed_path,
+                params_path=artifacts.params_path,
+                resolved_args=node.execution_args,
+            )
+            executed_artifact = artifacts.executed_path
+        else:
+            command = self._build_marimo_execute_command(
+                notebook_path=notebook.path,
+                resolved_args=node.execution_args,
+            )
+            executed_artifact = None
+
+        completed = self._run_logged_command(node=node, cmd=command)
+        if completed.returncode != 0:
+            self._record_notebook_manifest(
+                node=node,
+                executed_path=executed_artifact,
+                rendered_html=artifacts.html_path,
+                render_status="not_started",
+                render_error=None,
+            )
+            raise NotebookTaskError(
+                task_name=node.task_def.name,
+                phase="execute",
+                cmd=command,
+                exit_code=completed.returncode,
+                output=(completed.stdout or "") + (completed.stderr or ""),
+            )
+
+        render_command = self._build_notebook_render_command(
+            notebook_path=notebook.path,
+            notebook_kind=notebook.kind,
+            executed_path=artifacts.executed_path,
+            html_path=artifacts.html_path,
+        )
+        render_result = self._run_logged_command(node=node, cmd=render_command)
+        if render_result.returncode != 0 or not artifacts.html_path.is_file():
+            render_error = self._render_notebook_failure_page(
+                html_path=artifacts.html_path,
+                task_name=node.task_def.name,
+                error_output=(render_result.stdout or "") + (render_result.stderr or ""),
+            )
+            self._record_notebook_manifest(
+                node=node,
+                executed_path=executed_artifact,
+                rendered_html=artifacts.html_path,
+                render_status="failed",
+                render_error=render_error,
+            )
+        else:
+            self._record_notebook_manifest(
+                node=node,
+                executed_path=executed_artifact,
+                rendered_html=artifacts.html_path,
+                render_status="succeeded",
+                render_error=None,
+            )
+
+        return self._coerce_return_value(task_def=node.task_def, value=str(artifacts.html_path))
+
+    def _run_logged_command(
+        self,
+        *,
+        node: _TaskNode,
+        cmd: str,
+        user_log_path: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one command while appending to provenance logs."""
+        for path in (node.stdout_path, node.stderr_path, user_log_path):
+            if path is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+        if node.task_def.env is not None and self.backend is not None:
+            argv = self.backend.shell_argv(env=node.task_def.env, cmd=cmd)
+            use_shell = False
+        else:
+            argv = cmd
+            use_shell = True
+
+        completed = self._run_subprocess(argv=argv, use_shell=use_shell)
+        stdout_text = self._redact_text(completed.stdout or "", secret_values=node.secret_values)
+        stderr_text = self._redact_text(completed.stderr or "", secret_values=node.secret_values)
+        completed = subprocess.CompletedProcess(
+            args=completed.args,
+            returncode=completed.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
+        )
+
+        if node.stdout_path is not None and stdout_text:
+            with node.stdout_path.open("a", encoding="utf-8") as handle:
+                handle.write(stdout_text)
+        if node.stderr_path is not None and stderr_text:
+            with node.stderr_path.open("a", encoding="utf-8") as handle:
+                handle.write(stderr_text)
+        if user_log_path is not None and (stdout_text or stderr_text):
+            with user_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(stdout_text + stderr_text)
+        return completed
+
+    def _notebook_artifacts(self, *, node: _TaskNode) -> _NotebookArtifacts:
+        """Return deterministic artifact paths for one notebook task."""
+        task_key = f"task_{node.node_id:04d}"
+        root_dir = (
+            self.provenance.run_dir / "notebooks"
+            if self.provenance is not None
+            else Path.cwd() / ".ginkgo" / "notebooks"
+        )
+        root_dir.mkdir(parents=True, exist_ok=True)
+        executed_path = (
+            root_dir / f"{task_key}.ipynb"
+            if node.task_def.notebook is not None and node.task_def.notebook.kind == "ipynb"
+            else None
+        )
+        return _NotebookArtifacts(
+            root_dir=root_dir,
+            html_path=root_dir / f"{task_key}.html",
+            executed_path=executed_path,
+            params_path=root_dir / f"{task_key}.params.yaml",
+        )
+
+    def _prepare_notebook_artifacts(self, *, artifacts: _NotebookArtifacts) -> None:
+        """Clear stale notebook artifacts before a fresh execution attempt."""
+        artifacts.root_dir.mkdir(parents=True, exist_ok=True)
+        for path in (artifacts.html_path, artifacts.executed_path, artifacts.params_path):
+            if path is None:
+                continue
+            if path.exists():
+                path.unlink()
+
+    def _build_ipynb_execute_command(
+        self,
+        *,
+        notebook_path: Path,
+        executed_path: Path | None,
+        params_path: Path,
+        resolved_args: dict[str, Any],
+    ) -> str:
+        """Build the Papermill execution command for one Jupyter notebook."""
+        if executed_path is None:
+            raise RuntimeError("ipynb notebooks require an executed output path")
+        params_path.write_text(
+            yaml.safe_dump(
+                _serialize_notebook_value(resolved_args),
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return " ".join(
+            [
+                shlex.quote(sys.executable),
+                "-m",
+                "papermill",
+                shlex.quote(str(notebook_path)),
+                shlex.quote(str(executed_path)),
+                "-f",
+                shlex.quote(str(params_path)),
+            ]
+        )
+
+    def _build_marimo_execute_command(
+        self,
+        *,
+        notebook_path: Path,
+        resolved_args: dict[str, Any],
+    ) -> str:
+        """Build the command used to execute one marimo notebook script."""
+        args: list[str] = [shlex.quote(sys.executable), shlex.quote(str(notebook_path))]
+        for name, value in resolved_args.items():
+            option = f"--{name.replace('_', '-')}"
+            args.extend([shlex.quote(option), shlex.quote(_stringify_notebook_argument(value))])
+        return " ".join(args)
+
+    def _build_notebook_render_command(
+        self,
+        *,
+        notebook_path: Path,
+        notebook_kind: str,
+        executed_path: Path | None,
+        html_path: Path,
+    ) -> str:
+        """Build the HTML render command for one notebook task."""
+        if notebook_kind == "ipynb":
+            if executed_path is None:
+                raise RuntimeError("ipynb notebooks require an executed output path")
+            return " ".join(
+                [
+                    shlex.quote(sys.executable),
+                    "-m",
+                    "jupyter",
+                    "nbconvert",
+                    "--to",
+                    "html",
+                    "--output",
+                    shlex.quote(html_path.stem),
+                    "--output-dir",
+                    shlex.quote(str(html_path.parent)),
+                    shlex.quote(str(executed_path)),
+                ]
+            )
+
+        return " ".join(
+            [
+                shlex.quote(sys.executable),
+                "-m",
+                "marimo",
+                "export",
+                "html",
+                shlex.quote(str(notebook_path)),
+                "-o",
+                shlex.quote(str(html_path)),
+            ]
+        )
+
+    def _record_notebook_manifest(
+        self,
+        *,
+        node: _TaskNode,
+        executed_path: Path | None,
+        rendered_html: Path,
+        render_status: str,
+        render_error: str | None,
+    ) -> None:
+        """Persist notebook-specific metadata to the task manifest."""
+        if self.provenance is None:
+            return
+        notebook = node.task_def.notebook
+        if notebook is None:
+            return
+        extra: dict[str, Any] = {
+            "task_type": "notebook",
+            "notebook_kind": notebook.kind,
+            "notebook_path": str(notebook.path),
+            "notebook_description": notebook.description,
+            "render_status": render_status,
+            "rendered_html": _relativize_to_run_dir(
+                run_dir=self.provenance.run_dir,
+                path=rendered_html,
+            ),
+        }
+        if executed_path is not None:
+            extra["executed_notebook"] = _relativize_to_run_dir(
+                run_dir=self.provenance.run_dir,
+                path=executed_path,
+            )
+        if render_error is not None:
+            extra["render_error"] = render_error
+        elif render_status != "failed":
+            extra["render_error"] = None
+        self.provenance.update_task_extra(node_id=node.node_id, **extra)
+
+    def _render_notebook_failure_page(
+        self,
+        *,
+        html_path: Path,
+        task_name: str,
+        error_output: str,
+    ) -> str:
+        """Write a fallback HTML page when notebook rendering fails."""
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        message = error_output.strip() or "Notebook HTML export failed."
+        html_path.write_text(
+            "\n".join(
+                [
+                    "<html><body>",
+                    f"<h1>{task_name}</h1>",
+                    "<p>Notebook execution succeeded, but HTML export failed.</p>",
+                    "<pre>",
+                    _escape_html(message),
+                    "</pre>",
+                    "</body></html>",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return message
+
     def _validate_declared_envs(self) -> None:
         """Raise before any work starts if a declared env cannot be resolved.
 
@@ -1193,13 +1486,14 @@ class _ConcurrentEvaluator:
         (discovered mid-run via conditional branching) are validated when
         ``_prepare_node`` is called for them.
         """
-        # Foreign execution environments only support shell tasks.
+        # Foreign execution environments only support shell-like tasks.
         for node in self._nodes.values():
-            if node.task_def.env is not None and node.task_def.kind != "shell":
+            if node.task_def.env is not None and node.task_def.kind not in {"notebook", "shell"}:
                 raise TypeError(
                     f"{node.task_def.name} uses env {node.task_def.env!r} "
                     "but is declared with kind='python'. Foreign environments "
-                    "only support shell tasks — use @task(kind='shell')."
+                    "only support shell-like tasks — use @task(kind='shell') "
+                    "or @notebook(...)."
                 )
 
         if self.backend is None:
@@ -1291,6 +1585,11 @@ class _ConcurrentEvaluator:
 
         if annotation is tmp_dir:
             self._validate_tmp_dir_path(path=value, label=label)
+            return
+
+        if _is_path_annotation(annotation):
+            if not Path(value).exists():
+                raise FileNotFoundError(f"{label} must exist: {str(value)!r}")
 
     def _validate_file_path(self, *, path: Any, label: str) -> None:
         """Validate a concrete file path argument or return value."""
@@ -1360,6 +1659,9 @@ class _ConcurrentEvaluator:
         if annotation in {file, folder, tmp_dir} and isinstance(value, str):
             return annotation(value)
 
+        if _is_path_annotation(annotation) and isinstance(value, str):
+            return Path(value)
+
         return value
 
     def _iter_shell_output_paths(self, output: str | list[str] | tuple[str, ...]) -> list[Path]:
@@ -1404,6 +1706,14 @@ class _ConcurrentEvaluator:
             dependency_ids=sorted(node.dependency_ids),
             dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
         )
+        if node.task_def.notebook is not None:
+            self._record_notebook_manifest(
+                node=node,
+                executed_path=None,
+                rendered_html=self._notebook_artifacts(node=node).html_path,
+                render_status="pending",
+                render_error=None,
+            )
         if node.task_def.env is not None and self.backend is not None:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
@@ -1563,6 +1873,13 @@ class _ConcurrentEvaluator:
             self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
             return
 
+        if node.task_def.kind == "notebook":
+            self._cleanup_transport(node)
+            raise TypeError(
+                f"{node.task_def.name} is declared with kind='notebook' and is executed "
+                "from its notebook source file rather than a Python return value."
+            )
+
         if isinstance(completed_value, ShellExpr):
             self._cleanup_transport(node)
             assert self._shell_executor is not None
@@ -1612,6 +1929,71 @@ class ShellTaskError(RuntimeError):
             details = f"{details}\n{output.strip()}"
 
         super().__init__(details)
+
+
+class NotebookTaskError(RuntimeError):
+    """Notebook task execution failure."""
+
+    def __init__(
+        self,
+        *,
+        task_name: str,
+        phase: str,
+        cmd: str,
+        exit_code: int,
+        output: str,
+    ) -> None:
+        self.exit_code = exit_code
+        details = (
+            f"Notebook task {task_name} failed during {phase} with exit code {exit_code}: {cmd}"
+        )
+        if output:
+            details = f"{details}\n{output.strip()}"
+        super().__init__(details)
+
+
+def _serialize_notebook_value(value: Any) -> Any:
+    """Convert runtime values into YAML/CLI-safe notebook parameters."""
+    if isinstance(value, Path | file | folder | tmp_dir):
+        return str(value)
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, list):
+        return [_serialize_notebook_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_serialize_notebook_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(_serialize_notebook_value(key)): _serialize_notebook_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _stringify_notebook_argument(value: Any) -> str:
+    """Render one notebook argument for a CLI invocation."""
+    serialized = _serialize_notebook_value(value)
+    if isinstance(serialized, str):
+        return serialized
+    return json.dumps(serialized, sort_keys=True)
+
+
+def _relativize_to_run_dir(*, run_dir: Path, path: Path) -> str:
+    """Return a run-relative path when possible."""
+    try:
+        return str(path.relative_to(run_dir))
+    except ValueError:
+        return str(path)
+
+
+def _escape_html(value: str) -> str:
+    """Escape plain text for a tiny fallback HTML page."""
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _is_path_annotation(annotation: Any) -> bool:
+    """Return whether an annotation is a pathlib path type."""
+    return isinstance(annotation, type) and issubclass(annotation, Path)
 
 
 def _first_label_param_name(*, task_def: TaskDef) -> str | None:

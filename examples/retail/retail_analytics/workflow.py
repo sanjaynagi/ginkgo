@@ -16,6 +16,7 @@ from retail_analytics.modules.inputs import (
 )
 from retail_analytics.modules.reporting import (
     build_executive_report,
+    render_channel_performance_notebook,
     write_channel_metrics,
     write_inventory_hotspots,
     write_region_margin_report,
@@ -49,6 +50,10 @@ def main() -> file:
         products=products,
     )
     channel_metrics = write_channel_metrics(enriched_orders=enriched_orders)
+    channel_notebook = render_channel_performance_notebook(
+        channel_metrics=channel_metrics,
+        report_title="Retail Channel Performance Notebook",
+    )
     region_reports = write_region_margin_report(enriched_orders=enriched_orders).map(
         region=regions
     )
@@ -65,6 +70,7 @@ def main() -> file:
     return write_delivery_manifest(
         executive_report=executive_report,
         channel_metrics=channel_metrics,
+        channel_notebook=channel_notebook,
         hotspot_report=hotspots,
         region_reports=region_reports,
     )
