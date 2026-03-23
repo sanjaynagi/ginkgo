@@ -213,11 +213,11 @@ class ContainerBackend:
             cmd,
         ]
 
-    def python_argv_c(
+    def python_argv_m(
         self,
         *,
         env: str,
-        code: str,
+        module: str,
         args: Sequence[str] = (),
     ) -> list[str]:
         """Container environments only support shell tasks.
