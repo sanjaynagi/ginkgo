@@ -204,6 +204,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 
 - task identity
 - task version
+- task source hash
 - resolved input hashes
 - environment lock hash when `env=` is used
 
@@ -217,6 +218,46 @@ Implemented cache hashing includes:
 - codec-based hashing for arrays, DataFrames, and other supported Python values
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
+
+Phase 2 of the implementation roadmap is now complete for cache integrity. The
+runtime now hashes the top-level task function source during task registration
+and stores that `source_hash` in both the cache key payload and `meta.json`, so
+task-body changes invalidate prior cache entries without requiring a manual
+`version=` bump. If source extraction fails for a task definition, registration
+now fails explicitly instead of silently weakening cache correctness.
+
+File and folder outputs now flow through a formal `ArtifactStore` contract,
+implemented locally by `LocalArtifactStore` in
+`ginkgo/runtime/artifact_store.py`. Artifact identity is content-addressed:
+files use `<sha256>.<ext>` and directories use `<sha256>`. This identity is now
+recorded in cache metadata as `artifact_ids`, which gives later roadmap phases
+a stable contract for remote storage and lineage features.
+
+The local cache is now the source of truth for path outputs. When a task
+produces a `file` or `folder`, Ginkgo copies the bytes into `.ginkgo/artifacts/`
+as a read-only artifact and replaces the original output path with a symlink to
+that artifact. On cache hit, symlink integrity is validated before reuse:
+missing symlinks are recreated from the stored artifact, while regular files or
+foreign symlinks at the output path are treated as external modification and
+force re-execution.
+
+`ginkgo cache prune` and related cache cleanup paths are now artifact-aware:
+read-only artifacts have permissions restored before deletion so cache
+maintenance can safely remove unreferenced stored outputs.
+
+Phase 13 of the implementation roadmap is now complete for secrets and
+credentials management. Workflows can declare runtime-only secret dependencies
+via `secret(...)` references, which are resolved at execution time through a
+pluggable resolver layer with environment-variable lookup and optional `.env`
+support. Secret references remain identifiers during graph construction and
+cache-keying, so rotating a credential value does not invalidate cache entries
+that are otherwise still valid.
+
+Secret-bearing inputs are redacted before they reach persisted provenance or
+cache metadata, and task log capture now redacts resolved secret values before
+they are written to per-task stdout/stderr logs. The CLI also exposes `ginkgo
+secrets list`, `ginkgo secrets validate`, and `ginkgo doctor` checks for
+declared but unresolvable secrets.
 
 ## Value Transport
 
