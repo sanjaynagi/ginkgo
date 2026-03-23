@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from ginkgo import file, task
+from ginkgo import file, secret, task
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 
 
@@ -75,3 +75,30 @@ class TestRunProvenanceRecorder:
         assert manifest["memory"] == 32
         assert manifest["resources"]["status"] == "completed"
         assert manifest["resources"]["peak"]["rss_bytes"] == 4096
+
+    def test_secret_inputs_are_redacted_in_manifest(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="20260312_000000_deadbeef",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=None,
+            cores=None,
+            memory=None,
+            params={},
+        )
+
+        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
+        recorder.update_task_inputs(
+            node_id=0,
+            task_name="demo.task",
+            env=None,
+            resolved_args={"token": secret("API_TOKEN")},
+            input_hashes=None,
+            cache_key=None,
+        )
+
+        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["tasks"]["task_0000"]["inputs"]["token"]["redacted"] is True
+        assert manifest["tasks"]["task_0000"]["inputs"]["token"]["secret"]["name"] == "API_TOKEN"
