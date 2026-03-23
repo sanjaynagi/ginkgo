@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -14,6 +13,8 @@ from typing import Any, get_args, get_origin
 
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.runtime.artifact_store import LocalArtifactStore
+from ginkgo.runtime.hashing import hash_bytes, hash_file, hash_str, new_hasher
 from ginkgo.runtime.value_codec import (
     decode_value,
     encode_value,
@@ -37,16 +38,28 @@ class CacheStore:
         Execution backend used to resolve per-environment identity hashes.
         When ``None``, falls back to looking for a single ``pixi.lock`` in the
         current working directory (pre-Phase-5 behaviour).
+    artifact_store : LocalArtifactStore | None
+        Shared artifact store for content-addressed binary and file/folder
+        artifacts.  Created automatically when ``None``.
     """
 
     root: Path | None = None
     backend: Any | None = None  # TaskBackend; typed as Any to avoid circular import
+    artifact_store: LocalArtifactStore | None = None
     _root: Path = field(init=False, repr=False)
+    _artifact_store: LocalArtifactStore = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else Path.cwd() / ".ginkgo" / "cache"
         object.__setattr__(self, "_root", Path(root))
         self._root.mkdir(parents=True, exist_ok=True)
+
+        if self.artifact_store is not None:
+            object.__setattr__(self, "_artifact_store", self.artifact_store)
+        else:
+            # Default: sibling directory to the cache root.
+            artifacts_root = self._root.parent / "artifacts"
+            object.__setattr__(self, "_artifact_store", LocalArtifactStore(root=artifacts_root))
 
     def build_cache_key(
         self,
@@ -67,11 +80,12 @@ class CacheStore:
             "env": task_def.env,
             "env_hash": env_hash,
             "inputs": input_hashes,
+            "source_hash": task_def.source_hash,
             "task": task_def.name,
             "version": task_def.version,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest(), input_hashes
+        return hash_bytes(encoded), input_hashes
 
     def load(self, *, cache_key: str) -> Any:
         """Load a cached result if present."""
@@ -83,6 +97,7 @@ class CacheStore:
         return decode_value(
             json.loads(output_path.read_text(encoding="utf-8")),
             base_dir=entry_dir,
+            artifact_store=self._artifact_store,
         )
 
     def save(
@@ -94,40 +109,282 @@ class CacheStore:
         resolved_args: dict[str, Any],
         input_hashes: dict[str, Any],
     ) -> None:
-        """Atomically persist a task result and metadata."""
+        """Atomically persist a task result and metadata.
+
+        File and folder outputs are copied into the artifact store and replaced
+        with read-only symlinks at their original paths.
+        """
+        # Always store output artifacts and create symlinks, even if the cache
+        # entry already exists (handles re-execution after symlink replacement).
+        artifact_ids = self._store_output_artifacts(result=result, task_def=task_def)
+
         entry_dir = self._entry_dir(cache_key)
-        if entry_dir.exists():
+        if not entry_dir.exists():
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
+            try:
+                output_path = temp_dir / "output.json"
+                output_path.write_text(
+                    json.dumps(
+                        encode_value(
+                            result, base_dir=temp_dir, artifact_store=self._artifact_store
+                        ),
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+
+                meta = {
+                    "artifact_ids": artifact_ids,
+                    "cache_key": cache_key,
+                    "env": task_def.env,
+                    "function": task_def.name,
+                    "inputs": self._serialise_inputs(
+                        task_def=task_def, resolved_args=resolved_args
+                    ),
+                    "input_hashes": input_hashes,
+                    "source_hash": task_def.source_hash,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "version": task_def.version,
+                }
+                (temp_dir / "meta.json").write_text(
+                    json.dumps(meta, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+
+                try:
+                    os.replace(temp_dir, entry_dir)
+                except FileExistsError:
+                    pass
+            finally:
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+
+        # Replace original output paths with symlinks to the artifact store.
+        self._symlink_output_artifacts(result=result, task_def=task_def)
+
+    def validate_cached_outputs(self, *, task_def: TaskDef, value: Any) -> bool:
+        """Check whether cached file/folder outputs are valid symlinks.
+
+        Returns
+        -------
+        bool
+            ``True`` if all file/folder outputs are intact symlinks to the
+            artifact store, or if missing symlinks were successfully recreated.
+            ``False`` if any output has been replaced with a regular file
+            (indicating external modification — cache miss).
+        """
+        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        return self._validate_output_value(annotation=return_annotation, value=value)
+
+    def _validate_output_value(self, *, annotation: Any, value: Any) -> bool:
+        """Recursively validate symlink integrity for file/folder outputs."""
+        origin = get_origin(annotation)
+        if origin in {list, tuple}:
+            inner_args = get_args(annotation)
+            inner_annotation = inner_args[0] if inner_args else Any
+            for item in value:
+                if not self._validate_output_value(annotation=inner_annotation, value=item):
+                    return False
+            return True
+
+        if annotation is file or isinstance(value, file):
+            return self._validate_file_symlink(Path(str(value)))
+
+        if annotation is folder or isinstance(value, folder):
+            return self._validate_folder_symlink(Path(str(value)))
+
+        # Non-path types: no symlink validation needed.
+        return True
+
+    def _validate_file_symlink(self, path: Path) -> bool:
+        """Validate a single file output symlink.
+
+        Returns ``True`` if the symlink is valid or was recreated.  Returns
+        ``False`` if the path is a regular file (external modification).
+        """
+        if path.is_symlink():
+            target = path.resolve()
+            # Symlink points into our artifact store — valid.
+            if str(target).startswith(str(self._artifact_store._root)):
+                return True
+            # Symlink to somewhere else — treat as modified.
+            return False
+
+        if path.exists():
+            # Regular file replaced the symlink — external modification.
+            return False
+
+        # Path is absent — try to recreate from the artifact store.
+        artifact_id = self._find_artifact_for_path(path, is_dir=False)
+        if artifact_id is not None and self._artifact_store.exists(artifact_id=artifact_id):
+            self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
+            return True
+        return False
+
+    def _validate_folder_symlink(self, path: Path) -> bool:
+        """Validate a single folder output symlink."""
+        if path.is_symlink():
+            target = path.resolve()
+            if str(target).startswith(str(self._artifact_store._root)):
+                return True
+            return False
+
+        if path.exists():
+            return False
+
+        artifact_id = self._find_artifact_for_path(path, is_dir=True)
+        if artifact_id is not None and self._artifact_store.exists(artifact_id=artifact_id):
+            self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
+            return True
+        return False
+
+    def _find_artifact_for_path(self, path: Path, *, is_dir: bool) -> str | None:
+        """Look up the artifact ID for an output path from cache metadata.
+
+        Scans all cache entries for one whose artifact_ids map contains the
+        given path.  This is O(entries) but only triggered on symlink
+        recreation (rare path).
+        """
+        path_str = str(path)
+        for entry_dir in self._root.iterdir():
+            if not entry_dir.is_dir():
+                continue
+            meta_path = entry_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            artifact_ids = meta.get("artifact_ids", {})
+            artifact_id = artifact_ids.get(path_str)
+            if artifact_id is not None:
+                return artifact_id
+        return None
+
+    def _store_output_artifacts(
+        self,
+        *,
+        result: Any,
+        task_def: TaskDef,
+    ) -> dict[str, str]:
+        """Store file/folder outputs in the artifact store.
+
+        Returns
+        -------
+        dict[str, str]
+            Mapping from output path strings to artifact IDs.
+        """
+        artifact_ids: dict[str, str] = {}
+        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        self._collect_output_artifacts(
+            annotation=return_annotation,
+            value=result,
+            artifact_ids=artifact_ids,
+        )
+        return artifact_ids
+
+    def _collect_output_artifacts(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        artifact_ids: dict[str, str],
+    ) -> None:
+        """Recursively walk a result value and store file/folder outputs."""
+        origin = get_origin(annotation)
+        if origin in {list, tuple}:
+            inner_args = get_args(annotation)
+            inner_annotation = inner_args[0] if inner_args else Any
+            for item in value:
+                self._collect_output_artifacts(
+                    annotation=inner_annotation,
+                    value=item,
+                    artifact_ids=artifact_ids,
+                )
             return
 
-        temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
-        try:
-            output_path = temp_dir / "output.json"
-            output_path.write_text(
-                json.dumps(encode_value(result, base_dir=temp_dir), sort_keys=True),
-                encoding="utf-8",
-            )
+        if annotation is file or isinstance(value, file):
+            path = Path(str(value))
+            if path.is_symlink():
+                # Already a symlink (e.g. from a previous run) — skip.
+                return
+            if path.is_file():
+                artifact_id = self._artifact_store.store(src_path=path)
+                artifact_ids[str(path)] = artifact_id
+            return
 
-            meta = {
-                "cache_key": cache_key,
-                "env": task_def.env,
-                "function": task_def.name,
-                "inputs": self._serialise_inputs(task_def=task_def, resolved_args=resolved_args),
-                "input_hashes": input_hashes,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "version": task_def.version,
-            }
-            (temp_dir / "meta.json").write_text(
-                json.dumps(meta, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
+        if annotation is folder or isinstance(value, folder):
+            path = Path(str(value))
+            if path.is_symlink():
+                return
+            if path.is_dir():
+                artifact_id = self._artifact_store.store(src_path=path)
+                artifact_ids[str(path)] = artifact_id
+            return
 
+    def _symlink_output_artifacts(self, *, result: Any, task_def: TaskDef) -> None:
+        """Replace original output paths with symlinks to the artifact store."""
+        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        self._symlink_output_value(annotation=return_annotation, value=result)
+
+    def _symlink_output_value(self, *, annotation: Any, value: Any) -> None:
+        """Recursively replace file/folder outputs with symlinks."""
+        origin = get_origin(annotation)
+        if origin in {list, tuple}:
+            inner_args = get_args(annotation)
+            inner_annotation = inner_args[0] if inner_args else Any
+            for item in value:
+                self._symlink_output_value(annotation=inner_annotation, value=item)
+            return
+
+        if annotation is file or isinstance(value, file):
+            path = Path(str(value))
+            if path.is_symlink():
+                return
+            self._replace_with_symlink(path, is_dir=False)
+            return
+
+        if annotation is folder or isinstance(value, folder):
+            path = Path(str(value))
+            if path.is_symlink():
+                return
+            self._replace_with_symlink(path, is_dir=True)
+            return
+
+    def _replace_with_symlink(self, path: Path, *, is_dir: bool) -> None:
+        """Replace a file or directory with a symlink to its artifact."""
+        path_str = str(path)
+
+        # Find the artifact ID from the most recently saved entry.
+        artifact_id: str | None = None
+        for entry_dir in self._root.iterdir():
+            if not entry_dir.is_dir():
+                continue
+            meta_path = entry_dir / "meta.json"
+            if not meta_path.exists():
+                continue
             try:
-                os.replace(temp_dir, entry_dir)
-            except FileExistsError:
-                pass
-        finally:
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            aids = meta.get("artifact_ids", {})
+            if path_str in aids:
+                artifact_id = aids[path_str]
+                break
+
+        if artifact_id is None:
+            return
+
+        # Remove the original and replace with a symlink.
+        if is_dir and path.is_dir():
+            shutil.rmtree(path)
+        elif path.is_file():
+            path.unlink()
+        else:
+            return
+
+        self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
 
     def _entry_dir(self, cache_key: str) -> Path:
         """Return the cache directory for a given key."""
@@ -212,7 +469,7 @@ class CacheStore:
 
         if value is None or isinstance(value, (bool, int, float, str)):
             return {
-                "sha256": hashlib.sha256(repr(value).encode("utf-8")).hexdigest(),
+                "sha256": hash_str(repr(value)),
                 "type": type(value).__name__,
             }
 
@@ -239,27 +496,30 @@ class CacheStore:
         return inputs
 
     def _hash_file_contents(self, path: Path) -> str:
-        """Return the SHA-256 digest of a file's contents."""
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(65536), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        """Return the BLAKE3 digest of a file's contents.
+
+        Follows symlinks so that hashing a symlinked output reads the artifact
+        store content transparently.
+        """
+        return hash_file(path)
 
     def _hash_folder_contents(self, path: Path) -> str:
-        """Return the SHA-256 digest of a folder's recursive contents."""
-        digest = hashlib.sha256()
+        """Return the BLAKE3 digest of a folder's recursive contents."""
+        real_path = path.resolve()
+        hasher = new_hasher()
 
-        for child in sorted(path.rglob("*"), key=lambda item: str(item.relative_to(path))):
-            rel = str(child.relative_to(path))
+        for child in sorted(
+            real_path.rglob("*"), key=lambda item: str(item.relative_to(real_path))
+        ):
+            rel = str(child.relative_to(real_path))
             if child.is_dir():
-                digest.update(f"D:{rel}".encode("utf-8"))
+                hasher.update(f"D:{rel}".encode("utf-8"))
                 continue
 
-            digest.update(f"F:{rel}".encode("utf-8"))
-            digest.update(self._hash_file_contents(child).encode("utf-8"))
+            hasher.update(f"F:{rel}".encode("utf-8"))
+            hasher.update(self._hash_file_contents(child).encode("utf-8"))
 
-        return digest.hexdigest()
+        return hasher.hexdigest()
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""

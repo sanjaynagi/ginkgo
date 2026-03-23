@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import re
@@ -16,6 +17,7 @@ from rich.text import Text
 
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import _task_base_name
+from ginkgo.runtime.artifact_store import _make_writable_recursive
 
 
 def command_cache(args) -> int:
@@ -74,7 +76,10 @@ def command_cache(args) -> int:
             return 0
 
         for entry in entries:
-            shutil.rmtree(entry.path)
+            _safe_rmtree(entry.path)
+
+        # Clean up orphaned artifacts after pruning.
+        _gc_orphan_artifacts(CACHE_ROOT)
 
         rich_console.print(
             f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
@@ -86,7 +91,10 @@ def command_cache(args) -> int:
     cache_dir = CACHE_ROOT / args.cache_key
     if not cache_dir.is_dir():
         raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
-    shutil.rmtree(cache_dir)
+    _safe_rmtree(cache_dir)
+
+    # Clean up orphaned artifacts after clearing.
+    _gc_orphan_artifacts(CACHE_ROOT)
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
     message = Text()
     message.append("✓ ", style="green")
@@ -218,3 +226,47 @@ def _parse_duration_seconds(value: str):
     from datetime import timedelta
 
     return timedelta(seconds=count * multipliers[unit])
+
+
+def _safe_rmtree(path: Path) -> None:
+    """Remove a cache entry directory, handling read-only artifacts."""
+    try:
+        shutil.rmtree(path)
+    except PermissionError:
+        _make_writable_recursive(path)
+        shutil.rmtree(path)
+
+
+def _gc_orphan_artifacts(cache_root: Path) -> None:
+    """Remove artifacts not referenced by any remaining cache entry.
+
+    Scans all ``meta.json`` files under *cache_root* to collect referenced
+    artifact IDs, then deletes any artifacts in the sibling ``artifacts/``
+    directory that are not referenced.
+    """
+    artifacts_root = cache_root.parent / "artifacts"
+    if not artifacts_root.exists():
+        return
+
+    # Collect all referenced artifact IDs from surviving cache entries.
+    referenced: set[str] = set()
+    for entry_dir in cache_root.iterdir():
+        if not entry_dir.is_dir():
+            continue
+        meta_path = entry_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for artifact_id in meta.get("artifact_ids", {}).values():
+            referenced.add(artifact_id)
+
+    # Remove orphaned artifacts.
+    from ginkgo.runtime.artifact_store import LocalArtifactStore
+
+    store = LocalArtifactStore(root=artifacts_root)
+    for child in list(artifacts_root.iterdir()):
+        if child.name not in referenced:
+            store.delete(artifact_id=child.name)

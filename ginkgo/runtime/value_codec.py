@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 import pickle
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ginkgo.core.types import file, folder, tmp_dir
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.artifact_store import ArtifactStore
 
 INLINE_BYTES_LIMIT = 256 * 1024
 
@@ -22,9 +24,23 @@ def encode_value(
     value: Any,
     *,
     base_dir: Path,
+    artifact_store: ArtifactStore | None = None,
     inline_limit: int = INLINE_BYTES_LIMIT,
 ) -> Any:
-    """Encode a Python value into a JSON-safe payload with optional artifacts."""
+    """Encode a Python value into a JSON-safe payload with optional artifacts.
+
+    Parameters
+    ----------
+    value : Any
+        The value to encode.
+    base_dir : Path
+        Directory for ephemeral artifact storage (used by process transport).
+    artifact_store : ArtifactStore | None
+        When provided, large binary payloads are stored through the artifact
+        store instead of writing to *base_dir*.  Used by cache persistence.
+    inline_limit : int
+        Byte threshold below which binary payloads are base64-inlined.
+    """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
 
@@ -41,7 +57,13 @@ def encode_value(
         return {
             "__ginkgo_type__": "list",
             "items": [
-                encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value
+                encode_value(
+                    item,
+                    base_dir=base_dir,
+                    artifact_store=artifact_store,
+                    inline_limit=inline_limit,
+                )
+                for item in value
             ],
         }
 
@@ -49,7 +71,13 @@ def encode_value(
         return {
             "__ginkgo_type__": "tuple",
             "items": [
-                encode_value(item, base_dir=base_dir, inline_limit=inline_limit) for item in value
+                encode_value(
+                    item,
+                    base_dir=base_dir,
+                    artifact_store=artifact_store,
+                    inline_limit=inline_limit,
+                )
+                for item in value
             ],
         }
 
@@ -58,8 +86,18 @@ def encode_value(
             "__ginkgo_type__": "dict",
             "items": [
                 {
-                    "key": encode_value(key, base_dir=base_dir, inline_limit=inline_limit),
-                    "value": encode_value(item, base_dir=base_dir, inline_limit=inline_limit),
+                    "key": encode_value(
+                        key,
+                        base_dir=base_dir,
+                        artifact_store=artifact_store,
+                        inline_limit=inline_limit,
+                    ),
+                    "value": encode_value(
+                        item,
+                        base_dir=base_dir,
+                        artifact_store=artifact_store,
+                        inline_limit=inline_limit,
+                    ),
                 }
                 for key, item in value.items()
             ],
@@ -71,12 +109,29 @@ def encode_value(
         data=data,
         extension=extension,
         base_dir=base_dir,
+        artifact_store=artifact_store,
         inline_limit=inline_limit,
     )
 
 
-def decode_value(payload: Any, *, base_dir: Path) -> Any:
-    """Restore a Python value from an encoded payload."""
+def decode_value(
+    payload: Any,
+    *,
+    base_dir: Path,
+    artifact_store: ArtifactStore | None = None,
+) -> Any:
+    """Restore a Python value from an encoded payload.
+
+    Parameters
+    ----------
+    payload : Any
+        Encoded payload from :func:`encode_value`.
+    base_dir : Path
+        Base directory for resolving ephemeral artifact paths.
+    artifact_store : ArtifactStore | None
+        When provided, artifact-backed binary payloads are read through the
+        store instead of from *base_dir*.
+    """
     if not isinstance(payload, dict):
         return payload
 
@@ -88,18 +143,30 @@ def decode_value(payload: Any, *, base_dir: Path) -> Any:
     if kind == "tmp_dir":
         return tmp_dir(payload["value"])
     if kind == "list":
-        return [decode_value(item, base_dir=base_dir) for item in payload["items"]]
+        return [
+            decode_value(item, base_dir=base_dir, artifact_store=artifact_store)
+            for item in payload["items"]
+        ]
     if kind == "tuple":
-        return tuple(decode_value(item, base_dir=base_dir) for item in payload["items"])
+        return tuple(
+            decode_value(item, base_dir=base_dir, artifact_store=artifact_store)
+            for item in payload["items"]
+        )
     if kind == "dict":
         return {
-            decode_value(item["key"], base_dir=base_dir): decode_value(
-                item["value"], base_dir=base_dir
+            decode_value(
+                item["key"], base_dir=base_dir, artifact_store=artifact_store
+            ): decode_value(
+                item["value"],
+                base_dir=base_dir,
+                artifact_store=artifact_store,
             )
             for item in payload["items"]
         }
     if kind == "binary":
-        return _decode_binary_payload(payload=payload, base_dir=base_dir)
+        return _decode_binary_payload(
+            payload=payload, base_dir=base_dir, artifact_store=artifact_store
+        )
     return payload
 
 
@@ -149,9 +216,11 @@ def summarise_value(value: Any) -> Any:
 
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:
-    """Return the codec name and SHA-256 digest for a Python value."""
+    """Return the codec name and BLAKE3 digest for a Python value."""
+    from ginkgo.runtime.hashing import hash_bytes
+
     codec_name, data, _extension = _encode_bytes(value)
-    digest = hashlib.sha256(data).hexdigest()
+    digest = hash_bytes(data)
     return codec_name, digest
 
 
@@ -186,6 +255,7 @@ def _encode_binary_payload(
     data: bytes,
     extension: str,
     base_dir: Path,
+    artifact_store: ArtifactStore | None = None,
     inline_limit: int,
 ) -> dict[str, Any]:
     if len(data) <= inline_limit:
@@ -196,9 +266,22 @@ def _encode_binary_payload(
             "data": base64.b64encode(data).decode("ascii"),
         }
 
+    # Route through the artifact store when available (cache persistence).
+    if artifact_store is not None:
+        artifact_id = artifact_store.store_bytes(data=data, extension=extension)
+        return {
+            "__ginkgo_type__": "binary",
+            "artifact_id": artifact_id,
+            "codec": codec_name,
+            "storage": "artifact_store",
+        }
+
+    # Ephemeral transport fallback: write to base_dir/artifacts/.
+    from ginkgo.runtime.hashing import hash_bytes
+
     artifacts_dir = base_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(data).hexdigest()
+    digest = hash_bytes(data)
     artifact_name = f"{digest}.{extension}"
     artifact_path = artifacts_dir / artifact_name
     if not artifact_path.exists():
@@ -213,11 +296,22 @@ def _encode_binary_payload(
     }
 
 
-def _decode_binary_payload(*, payload: dict[str, Any], base_dir: Path) -> Any:
-    if payload["storage"] == "inline":
+def _decode_binary_payload(
+    *,
+    payload: dict[str, Any],
+    base_dir: Path,
+    artifact_store: ArtifactStore | None = None,
+) -> Any:
+    storage = payload["storage"]
+
+    if storage == "inline":
         data = base64.b64decode(payload["data"])
+    elif storage == "artifact_store" and artifact_store is not None:
+        data = artifact_store.read_bytes(artifact_id=payload["artifact_id"])
     else:
+        # Ephemeral transport or legacy cache entries.
         data = (base_dir / payload["artifact"]).read_bytes()
+
     return _decode_bytes(codec_name=payload["codec"], data=data)
 
 

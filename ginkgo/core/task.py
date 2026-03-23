@@ -44,6 +44,7 @@ class TaskDef:
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
+    _source_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.retries < 0:
@@ -63,6 +64,7 @@ class TaskDef:
         object.__setattr__(self, "_signature", sig)
         object.__setattr__(self, "_type_hints", hints)
         object.__setattr__(self, "_required_params", required)
+        object.__setattr__(self, "_source_hash", _compute_source_hash(self.fn))
 
     @property
     def name(self) -> str:
@@ -96,6 +98,11 @@ class TaskDef:
     def type_hints(self) -> dict[str, Any]:
         """Resolved runtime type hints for the wrapped function."""
         return dict(self._type_hints)
+
+    @property
+    def source_hash(self) -> str:
+        """SHA-256 digest of the task function's source code."""
+        return self._source_hash
 
     def __call__(self, **kwargs: Any) -> Expr | PartialCall:
         """Build an ``Expr`` (all required args supplied) or ``PartialCall``.
@@ -259,6 +266,36 @@ def task(
         return TaskDef(fn=fn, env=env, version=version, retries=retries, kind=kind)
 
     return decorator
+
+
+def _compute_source_hash(fn: Callable[..., Any]) -> str:
+    """Return the SHA-256 digest of a function's source code.
+
+    Parameters
+    ----------
+    fn : Callable
+        The function to hash.
+
+    Returns
+    -------
+    str
+        Hex-encoded SHA-256 digest.
+
+    Raises
+    ------
+    ValueError
+        If the source cannot be extracted (lambdas, dynamic functions).
+    """
+    from ginkgo.runtime.hashing import hash_str
+
+    try:
+        source = inspect.getsource(fn)
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot extract source for task '{fn.__qualname__}'. "
+            "Tasks must be defined as named, top-level functions."
+        ) from exc
+    return hash_str(source)
 
 
 def _load_taskdef(module_name: str, task_name: str) -> TaskDef:

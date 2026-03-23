@@ -1405,11 +1405,22 @@ class _ConcurrentEvaluator:
         return [Path(item) for item in output]
 
     def _is_valid_cached_result(self, *, task_def: TaskDef, value: Any) -> bool:
-        """Return whether a cached value still satisfies return validation."""
+        """Return whether a cached value still satisfies return validation.
+
+        For file/folder outputs, checks symlink integrity via the cache store.
+        Missing symlinks are silently recreated; replaced regular files trigger
+        a cache miss.  Symlink validation runs first so that missing symlinks
+        can be recreated before the standard file-existence check.
+        """
+        # Symlink-aware validation first: may recreate missing symlinks.
+        if not self._cache_store.validate_cached_outputs(task_def=task_def, value=value):
+            return False
+
         try:
             self._validate_return_value(task_def=task_def, value=value)
         except (FileNotFoundError, ValueError):
             return False
+
         return True
 
     def _record_task_metadata(self, node: _TaskNode) -> None:

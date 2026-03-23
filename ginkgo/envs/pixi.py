@@ -9,7 +9,7 @@ the normal Pixi path.
 
 from __future__ import annotations
 
-import hashlib
+
 import subprocess
 import shutil
 from dataclasses import dataclass, field
@@ -396,12 +396,10 @@ class PixiRegistry:
 
 
 def _hash_file(path: Path) -> str:
-    """Return the SHA-256 hex digest of a file's contents."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Return the BLAKE3 hex digest of a file's contents."""
+    from ginkgo.runtime.hashing import hash_file
+
+    return hash_file(path)
 
 
 def _require_pixi() -> None:
