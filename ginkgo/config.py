@@ -63,6 +63,26 @@ def config(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def load_runtime_config(
+    *,
+    project_root: Path,
+    override_paths: Sequence[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Load the CLI runtime config mapping.
+
+    When explicit override paths are provided, they fully define the runtime
+    config. Otherwise the canonical project config file is loaded if present.
+    """
+    resolved_overrides = [Path(path).resolve() for path in override_paths or ()]
+    if resolved_overrides:
+        return _merge_top_level_dicts(_load_config_mapping(path) for path in resolved_overrides)
+
+    default_path = _default_runtime_config_path(project_root=project_root)
+    if default_path is None:
+        return {}
+    return _load_config_mapping(default_path)
+
+
 @contextmanager
 def _config_session(
     *,
@@ -108,3 +128,11 @@ def _merge_top_level_dicts(
     for mapping in mappings:
         merged.update(deepcopy(mapping))
     return merged
+
+
+def _default_runtime_config_path(*, project_root: Path) -> Path | None:
+    for candidate_name in ("ginkgo.toml", "ginkgo.yaml", "ginkgo.yml"):
+        candidate = (project_root / candidate_name).resolve()
+        if candidate.is_file():
+            return candidate
+    return None
