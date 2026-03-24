@@ -23,11 +23,20 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     stdout_path = payload.get("stdout_path")
     stderr_path = payload.get("stderr_path")
     secret_values = tuple(payload.get("secret_values", ()))
+    event_queue = payload.get("log_event_queue")
+    log_context = {
+        "run_id": payload.get("run_id"),
+        "task_id": payload.get("task_id"),
+        "task_name": payload.get("task_name"),
+        "attempt": payload.get("attempt"),
+        "display_label": payload.get("display_label"),
+    }
     try:
         with _task_log_context(
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             secret_values=secret_values,
+            log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
         ):
             task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
@@ -70,9 +79,32 @@ def _load_task_binding(*, payload: dict[str, Any]) -> Any:
             payload["module"],
             module_file=payload.get("module_file"),
         )
-        return getattr(module, payload["task_name"])
+        return getattr(module, payload["binding_name"])
     except BaseException:
         raise
+
+
+def _queue_log_emitter(*, event_queue: Any, context: dict[str, Any]) -> Any:
+    """Return a best-effort queue-backed task log emitter."""
+    if event_queue is None:
+        return None
+
+    def emit(*, stream: str, chunk: str) -> None:
+        if not chunk:
+            return
+        event_queue.put(
+            {
+                "run_id": context.get("run_id"),
+                "task_id": context.get("task_id"),
+                "task_name": context.get("task_name"),
+                "attempt": context.get("attempt"),
+                "display_label": context.get("display_label"),
+                "stream": stream,
+                "chunk": chunk,
+            }
+        )
+
+    return emit
 
 
 @contextlib.contextmanager
@@ -81,6 +113,7 @@ def _task_log_context(
     stdout_path: str | None,
     stderr_path: str | None,
     secret_values: tuple[str, ...] = (),
+    log_emitter: Any = None,
 ):
     """Redirect task stdout and stderr to separate per-task log files."""
     if stdout_path is None and stderr_path is None:
@@ -97,7 +130,12 @@ def _task_log_context(
         handles.append(stdout_handle)
         managers.append(
             contextlib.redirect_stdout(
-                _RedactingWriter(handle=stdout_handle, secret_values=secret_values)
+                _RedactingWriter(
+                    handle=stdout_handle,
+                    secret_values=secret_values,
+                    stream_name="stdout",
+                    log_emitter=log_emitter,
+                )
             )
         )
 
@@ -108,7 +146,12 @@ def _task_log_context(
         handles.append(stderr_handle)
         managers.append(
             contextlib.redirect_stderr(
-                _RedactingWriter(handle=stderr_handle, secret_values=secret_values)
+                _RedactingWriter(
+                    handle=stderr_handle,
+                    secret_values=secret_values,
+                    stream_name="stderr",
+                    log_emitter=log_emitter,
+                )
             )
         )
 
@@ -123,13 +166,25 @@ def _task_log_context(
 class _RedactingWriter(io.TextIOBase):
     """Text writer that redacts known secret values before writing."""
 
-    def __init__(self, *, handle: io.TextIOBase, secret_values: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        handle: io.TextIOBase,
+        secret_values: tuple[str, ...],
+        stream_name: str | None = None,
+        log_emitter: Any = None,
+    ) -> None:
         self._handle = handle
         self._secret_values = secret_values
+        self._stream_name = stream_name
+        self._log_emitter = log_emitter
 
     def write(self, text: str) -> int:
         redacted = redact_text(text=text, secret_values=self._secret_values)
-        return self._handle.write(redacted)
+        written = self._handle.write(redacted)
+        if self._log_emitter is not None and self._stream_name is not None and redacted:
+            self._log_emitter(stream=self._stream_name, chunk=redacted)
+        return written
 
     def flush(self) -> None:
         try:

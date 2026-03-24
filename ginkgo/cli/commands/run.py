@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import ModuleType
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import _environment_label, _format_duration
+from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _RunSummary
+from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
@@ -23,6 +26,7 @@ from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.resources import RunResourceMonitor
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
 from ginkgo.runtime.secrets import build_secret_resolver
+from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -54,11 +58,11 @@ def run_workflow(
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
-    if dry_run:
+    if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [bold]--dry-run[/]\n"
         )
-    else:
+    elif output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
@@ -93,32 +97,55 @@ def run_workflow(
     )
     evaluator.validate(expr)
     task_count = len(evaluator._nodes)
+    edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
+    env_count = len({node.task_def.env for node in evaluator._nodes.values() if node.task_def.env})
     planned_tasks = [
         (node.node_id, node.task_def.name, _environment_label(node.task_def.env))
         for node in sorted(evaluator._nodes.values(), key=lambda item: item.node_id)
     ]
 
     if dry_run:
-        rich_console.print(
-            f"[green]✓[/] [bold]{workflow_path.name}[/] "
-            f"[dim](dry-run)[/] [dim]- {task_count} tasks validated[/]"
-        )
+        if output_mode in {"agent", "agent_verbose"}:
+            bus = EventBus()
+            bus.subscribe(JsonlEventRenderer(stream=sys.stdout))
+            bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
+            bus.emit(
+                RunValidated(
+                    run_id=run_id,
+                    task_count=task_count,
+                    edge_count=edge_count,
+                    env_count=env_count,
+                )
+            )
+            bus.emit(
+                RunCompleted(
+                    run_id=run_id, status="success", task_counts={"validated": task_count}
+                )
+            )
+        else:
+            rich_console.print(
+                f"[green]✓[/] [bold]{workflow_path.name}[/] "
+                f"[dim](dry-run)[/] [dim]- {task_count} tasks validated[/]"
+            )
         return 0
 
-    rich_console.print(
-        f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
-    )
-    rich_console.print(f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks")
-    if evaluator.memory is not None:
-        rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
-    if output_mode == "verbose":
+    if output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
-            f"memory={evaluator.memory if evaluator.memory is not None else 'auto'}, "
-            f"config overlays={len(config_paths)}"
+            f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
         )
-        rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
-    rich_console.print("")
+        rich_console.print(
+            f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks"
+        )
+        if evaluator.memory is not None:
+            rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
+        if output_mode == "verbose":
+            rich_console.print(
+                f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
+                f"memory={evaluator.memory if evaluator.memory is not None else 'auto'}, "
+                f"config overlays={len(config_paths)}"
+            )
+            rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
+        rich_console.print("")
 
     recorder = RunProvenanceRecorder(
         run_id=run_id,
@@ -134,54 +161,96 @@ def run_workflow(
         sink=recorder.update_resources,
     )
     resource_monitor.start()
-    renderer = _CliRunRenderer(
-        console=rich_console,
-        summary=_RunSummary(
-            run_id=run_id,
-            mode=output_mode,
-            run_dir=recorder.run_dir,
-            cores=evaluator.cores,
+    with ExitStack() as stack:
+        events_stream = stack.enter_context(recorder.events_path.open("a", encoding="utf-8"))
+        bus = EventBus()
+        bus.subscribe(JsonlEventRenderer(stream=events_stream, include_task_logs=True))
+        renderer = None
+        if output_mode in {"agent", "agent_verbose"}:
+            bus.subscribe(
+                JsonlEventRenderer(
+                    stream=sys.stdout,
+                    include_task_logs=output_mode == "agent_verbose",
+                )
+            )
+        else:
+            renderer = _CliRunRenderer(
+                console=rich_console,
+                summary=_RunSummary(
+                    run_id=run_id,
+                    mode=output_mode,
+                    run_dir=recorder.run_dir,
+                    cores=evaluator.cores,
+                    memory=memory,
+                ),
+                resources=_ResourceRenderState(provider=resource_monitor.current_summary),
+            )
+            bus.subscribe(RichEventRenderer(renderer=renderer))
+        evaluator = _ConcurrentEvaluator(
+            jobs=jobs,
+            cores=cores,
             memory=memory,
-        ),
-        resources=_ResourceRenderState(provider=resource_monitor.current_summary),
-    )
-    evaluator = _ConcurrentEvaluator(
-        jobs=jobs,
-        cores=cores,
-        memory=memory,
-        backend=backend,
-        provenance=recorder,
-        secret_resolver=secret_resolver,
-        _stderr=renderer,
-    )
-    renderer.start(planned_tasks=planned_tasks)
-    run_started = time.perf_counter()
-    try:
-        evaluator.evaluate(expr)
-    except BaseException as exc:
-        resource_summary = resource_monitor.stop()
-        recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
-        failure_details = _load_failure_details(
-            run_dir=recorder.run_dir,
-            renderer=renderer,
-            verbose=output_mode == "verbose",
+            backend=backend,
+            provenance=recorder,
+            secret_resolver=secret_resolver,
+            event_bus=bus,
         )
-        renderer.finish(
-            elapsed=time.perf_counter() - run_started,
-            success=False,
-            resources=resource_summary,
-            failure_details=failure_details,
+        if renderer is not None:
+            renderer.start(planned_tasks=planned_tasks)
+        bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
+        bus.emit(
+            RunValidated(
+                run_id=run_id,
+                task_count=task_count,
+                edge_count=edge_count,
+                env_count=env_count,
+            )
         )
-        print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
-        raise
+        run_started = time.perf_counter()
+        try:
+            evaluator.evaluate(expr)
+        except BaseException as exc:
+            resource_summary = resource_monitor.stop()
+            recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
+            bus.emit(
+                RunCompleted(
+                    run_id=run_id,
+                    status="failed",
+                    task_counts=_task_counts(load_manifest(recorder.run_dir)),
+                    error=str(exc),
+                )
+            )
+            if renderer is not None:
+                failure_details = _load_failure_details(
+                    run_dir=recorder.run_dir,
+                    renderer=renderer,
+                    verbose=output_mode == "verbose",
+                )
+                renderer.finish(
+                    elapsed=time.perf_counter() - run_started,
+                    success=False,
+                    resources=resource_summary,
+                    failure_details=failure_details,
+                )
+                print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+            raise
 
-    resource_summary = resource_monitor.stop()
-    recorder.finalize(status="succeeded", resources=resource_summary)
-    renderer.finish(
-        elapsed=time.perf_counter() - run_started,
-        success=True,
-        resources=resource_summary,
-    )
+        resource_summary = resource_monitor.stop()
+        recorder.finalize(status="succeeded", resources=resource_summary)
+        manifest = load_manifest(recorder.run_dir)
+        bus.emit(
+            RunCompleted(
+                run_id=run_id,
+                status="success",
+                task_counts=_task_counts(manifest),
+            )
+        )
+        if renderer is not None:
+            renderer.finish(
+                elapsed=time.perf_counter() - run_started,
+                success=True,
+                resources=resource_summary,
+            )
     return 0
 
 
@@ -241,3 +310,17 @@ def _discover_flow(module: ModuleType) -> FlowDef:
     if len(flows) != 1:
         raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
     return next(iter(flows.values()))
+
+
+def _task_counts(manifest: dict[str, object]) -> dict[str, int]:
+    """Return task counts by manifest status."""
+    counts: dict[str, int] = {}
+    tasks = manifest.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return counts
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        status = str(task.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 from ginkgo.cli.common import console, resolve_run_dir
@@ -20,6 +21,15 @@ def command_debug(args) -> int:
     failed_tasks = [
         task for task in manifest.get("tasks", {}).values() if task.get("status") == "failed"
     ]
+    if args.json:
+        payload = {
+            "run_id": manifest.get("run_id", run_dir.name),
+            "workflow": manifest.get("workflow"),
+            "status": manifest.get("status"),
+            "failures": _debug_failure_payload(run_dir=run_dir, failed_tasks=failed_tasks),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
     if not failed_tasks:
         rich_console.print(f"[bold green]🌿 ginkgo debug[/] [bold]{run_dir.name}[/]\n")
         rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{run_dir.name}[/]")
@@ -79,3 +89,27 @@ def _debug_failure_details(
             )
         )
     return details
+
+
+def _debug_failure_payload(
+    *,
+    run_dir: Path,
+    failed_tasks: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Return JSON-serializable failure details."""
+    payload: list[dict[str, object]] = []
+    for task in sorted(failed_tasks, key=lambda item: int(item.get("node_id", -1))):
+        stderr_rel = task.get("stderr_log")
+        payload.append(
+            {
+                "task_id": task.get("task_id"),
+                "task_name": _task_base_name(str(task.get("task", "unknown"))),
+                "exit_code": task.get("exit_code"),
+                "error": task.get("error"),
+                "failure": task.get("failure"),
+                "inputs": task.get("inputs") if isinstance(task.get("inputs"), dict) else None,
+                "stderr_log": stderr_rel,
+                "log_tail": _combined_log_tail(run_dir, task, lines=50),
+            }
+        )
+    return payload
