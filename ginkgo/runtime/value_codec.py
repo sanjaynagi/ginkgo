@@ -8,6 +8,9 @@ import pickle
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+import pandas as pd
+
 from ginkgo.core.types import file, folder, tmp_dir
 
 if TYPE_CHECKING:
@@ -188,24 +191,14 @@ def summarise_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {"type": "dict", "length": len(value)}
 
-    try:
-        import numpy as np
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
-        np = None
-
-    if np is not None and isinstance(value, np.ndarray):
+    if isinstance(value, np.ndarray):
         return {
             "type": "numpy.ndarray",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
 
-    try:
-        import pandas as pd
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
-        pd = None
-
-    if pd is not None and isinstance(value, pd.DataFrame):
+    if isinstance(value, pd.DataFrame):
         return {
             "type": "pandas.DataFrame",
             "columns": list(map(str, value.columns)),
@@ -217,6 +210,16 @@ def summarise_value(value: Any) -> Any:
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:
     """Return the codec name and BLAKE3 digest for a Python value."""
+    if isinstance(value, np.ndarray) and value.dtype.hasobject is False:
+        return "numpy.ndarray", _hash_numpy_array(value)
+    if isinstance(value, pd.DataFrame):
+        try:
+            return "pandas.DataFrame", _hash_pandas_dataframe(value)
+        except Exception:
+            # Fall back to the existing serialized-byte path for frames pandas
+            # cannot hash directly (for example some exotic object payloads).
+            pass
+
     from ginkgo.runtime.hashing import hash_bytes
 
     codec_name, data, _extension = _encode_bytes(value)
@@ -316,22 +319,12 @@ def _decode_binary_payload(
 
 
 def _encode_bytes(value: Any) -> tuple[str, bytes, str]:
-    try:
-        import numpy as np
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
-        np = None
-
-    if np is not None and isinstance(value, np.ndarray):
+    if isinstance(value, np.ndarray):
         buffer = io.BytesIO()
         np.save(buffer, value, allow_pickle=True)
         return "numpy.npy", buffer.getvalue(), "npy"
 
-    try:
-        import pandas as pd
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
-        pd = None
-
-    if pd is not None and isinstance(value, pd.DataFrame):
+    if isinstance(value, pd.DataFrame):
         parquet_bytes = _try_encode_dataframe_parquet(value)
         if parquet_bytes is not None:
             return "pandas.parquet", parquet_bytes, "parquet"
@@ -342,17 +335,9 @@ def _encode_bytes(value: Any) -> tuple[str, bytes, str]:
 
 def _decode_bytes(*, codec_name: str, data: bytes) -> Any:
     if codec_name == "numpy.npy":
-        try:
-            import numpy as np
-        except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
-            raise CodecError("numpy is required to decode ndarray values") from exc
         return np.load(io.BytesIO(data), allow_pickle=True)
 
     if codec_name == "pandas.parquet":
-        try:
-            import pandas as pd
-        except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
-            raise CodecError("pandas is required to decode DataFrame values") from exc
         return pd.read_parquet(io.BytesIO(data))
 
     if codec_name == "python.pickle":
@@ -368,3 +353,48 @@ def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
     except Exception:
         return None
     return buffer.getvalue()
+
+
+def _hash_numpy_array(value: Any) -> str:
+    """Return a stable BLAKE3 digest for a non-object NumPy array."""
+    from ginkgo.runtime.hashing import new_hasher
+
+    normalized = np.ascontiguousarray(value)
+    hasher = new_hasher()
+
+    # Include array metadata so equal bytes with different logical arrays diverge.
+    hasher.update(normalized.dtype.str.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(str(normalized.ndim).encode("ascii"))
+    hasher.update(b"\0")
+    for dim in normalized.shape:
+        hasher.update(str(dim).encode("ascii"))
+        hasher.update(b"\0")
+
+    hasher.update(memoryview(normalized).cast("B"))
+    return hasher.hexdigest()
+
+
+def _hash_pandas_dataframe(value: pd.DataFrame) -> str:
+    """Return a stable BLAKE3 digest for a pandas DataFrame."""
+    from ginkgo.runtime.hashing import new_hasher
+
+    hasher = new_hasher()
+
+    # Include structural metadata so equivalent row hashes with different
+    # labels, dtype declarations, or axis metadata still diverge.
+    metadata = (
+        tuple(value.columns.tolist()),
+        tuple(map(str, value.dtypes.tolist())),
+        tuple(value.columns.names),
+        tuple(value.index.names),
+        type(value.index).__module__,
+        type(value.index).__qualname__,
+        tuple(map(str, getattr(value.index, "dtypes", [value.index.dtype]))),
+    )
+    hasher.update(pickle.dumps(metadata, protocol=5))
+
+    row_hashes = pd.util.hash_pandas_object(value, index=True, categorize=True)
+    normalized = np.ascontiguousarray(row_hashes.to_numpy(dtype=np.uint64, copy=False))
+    hasher.update(memoryview(normalized).cast("B"))
+    return hasher.hexdigest()

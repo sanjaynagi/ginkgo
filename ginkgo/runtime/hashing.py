@@ -68,6 +68,42 @@ def hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def hash_directory(path: Path) -> str:
+    """Return the hex digest of a directory's recursive contents.
+
+    Parameters
+    ----------
+    path : Path
+        Directory to hash. Symlinks are followed.
+
+    Returns
+    -------
+    str
+        Hex-encoded BLAKE3 digest over relative paths, entry kinds, and file
+        contents.
+    """
+    real_path = path.resolve()
+    hasher = blake3.blake3()
+
+    # Walk entries in lexical relative-path order so the digest is stable.
+    for child in sorted(real_path.rglob("*"), key=lambda item: str(item.relative_to(real_path))):
+        relative_path = child.relative_to(real_path).as_posix().encode("utf-8")
+        if child.is_dir():
+            hasher.update(b"D")
+            hasher.update(len(relative_path).to_bytes(8, byteorder="big"))
+            hasher.update(relative_path)
+            continue
+
+        hasher.update(b"F")
+        hasher.update(len(relative_path).to_bytes(8, byteorder="big"))
+        hasher.update(relative_path)
+        with child.resolve().open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                hasher.update(chunk)
+
+    return hasher.hexdigest()
+
+
 def new_hasher() -> blake3.blake3:
     """Return a fresh incremental BLAKE3 hasher.
 
