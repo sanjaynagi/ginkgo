@@ -18,6 +18,8 @@ The repository currently implements:
 - Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
 - First-class notebook execution for Jupyter (`.ipynb`) and marimo notebooks with stable run-scoped HTML artifacts
 - Run provenance, per-task logs, cache inspection, and CLI debugging commands
+- Slack notifications for run start, successful completion, failed completion,
+  and retry exhaustion, sourced from runtime config and secrets
 - A local browser UI for browsing runs, tasks, notebook artifacts, task graphs, logs, and cache entries
 - A multi-workspace local UI shell with an active workspace model and native
   folder-picker loading for switching between Ginkgo workspaces on one machine
@@ -79,6 +81,30 @@ To support these surfaces, task provenance now records structured failure
 summaries and a compact typed output index alongside the existing manifest
 fields.
 
+### Runtime Notifications
+
+Ginkgo now includes a Slack notification path built on the same runtime event
+stream used by CLI and agent renderers.
+
+- Notification config is loaded from `ginkgo.toml` or explicit CLI config
+  overlays, independent of whether the workflow module calls `ginkgo.config(...)`.
+- Slack webhook credentials are resolved through the existing secrets resolver
+  using secret references such as `{ env = "GINKGO_SLACK_WEBHOOK" }`.
+- Supported events are:
+  - run started
+  - run completed successfully
+  - run failed
+  - task retry exhaustion
+- Failure notifications are enriched from run provenance so they can include
+  failed task names, exit codes, and truncated log tails.
+- Notification dispatch is non-blocking and warning-only. Slack delivery
+  failures do not affect workflow execution or provenance recording.
+
+The implementation is intentionally narrow for now: Slack incoming webhooks are
+the only supported notification channel, and channel routing is controlled by
+the webhook configured in Slack rather than by a per-run channel override in
+Ginkgo.
+
 ## Canonical Workflow Project Layout
 
 Ginkgo now treats the following repository structure as the canonical default for
@@ -134,6 +160,8 @@ ginkgo/
 │   ├── cache.py
 │   ├── evaluator.py
 │   ├── module_loader.py
+│   ├── notification_slack.py
+│   ├── notifications.py
 │   ├── provenance.py
 │   ├── resources.py
 │   ├── scheduler.py
