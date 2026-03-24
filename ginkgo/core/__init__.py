@@ -2,8 +2,8 @@
 
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.flow import FlowDef, flow
-from ginkgo.core.notebook_expr import NotebookExpr, notebook
-from ginkgo.core.script_expr import ScriptExpr, script
+from ginkgo.core.notebook import NotebookExpr, notebook
+from ginkgo.core.script import ScriptExpr, script
 from ginkgo.core.shell import ShellExpr, shell
 from ginkgo.core.task import PartialCall, TaskDef, task
 from ginkgo.core.types import file, folder, tmp_dir

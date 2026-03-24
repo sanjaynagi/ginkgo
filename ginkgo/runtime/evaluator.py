@@ -29,8 +29,8 @@ from typing import Any, get_args, get_origin
 import yaml
 
 from ginkgo.core.expr import Expr, ExprList
-from ginkgo.core.notebook_expr import NotebookExpr
-from ginkgo.core.script_expr import ScriptExpr
+from ginkgo.core.notebook import NotebookExpr
+from ginkgo.core.script import ScriptExpr
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef

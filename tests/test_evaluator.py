@@ -451,7 +451,7 @@ class TestEvaluate:
         )
         # Recompute v1's key inline to compare — both keys are the same task_def
         # so the difference comes from the source hash stored in the sentinel.
-        from ginkgo.core.notebook_expr import notebook as make_notebook
+        from ginkgo.core.notebook import notebook as make_notebook
 
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
