@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import builtins
+import inspect
 from contextlib import ExitStack, suppress
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -1136,6 +1137,18 @@ class _ConcurrentEvaluator:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
+        if not hasattr(process, "stdout") or not hasattr(process, "stderr"):
+            try:
+                stdout_text, stderr_text = process.communicate()
+            finally:
+                self._unregister_subprocess(process=process)
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=process.returncode,
+                stdout=stdout_text,
+                stderr=stderr_text,
+            )
+
         def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
             try:
                 while True:
@@ -1173,6 +1186,30 @@ class _ConcurrentEvaluator:
             stdout="".join(stdout_chunks),
             stderr="".join(stderr_chunks),
         )
+
+    def _call_run_subprocess(
+        self,
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+        on_stdout: Any,
+        on_stderr: Any,
+    ) -> tuple[subprocess.CompletedProcess[str], bool]:
+        """Call ``_run_subprocess`` while tolerating legacy test doubles."""
+        run_subprocess = self._run_subprocess
+        parameters = inspect.signature(run_subprocess).parameters
+        supports_stream_callbacks = "on_stdout" in parameters and "on_stderr" in parameters
+        if supports_stream_callbacks:
+            completed = run_subprocess(
+                argv=argv,
+                use_shell=use_shell,
+                on_stdout=on_stdout,
+                on_stderr=on_stderr,
+            )
+            return completed, True
+
+        completed = run_subprocess(argv=argv, use_shell=use_shell)
+        return completed, False
 
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
@@ -1597,12 +1634,17 @@ class _ConcurrentEvaluator:
             self._task_log_emitter(node=node, stream=stream)(chunk)
 
         try:
-            completed = self._run_subprocess(
+            completed, streamed = self._call_run_subprocess(
                 argv=argv,
                 use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
             )
+            if not streamed:
+                if completed.stdout:
+                    emit_chunk(stream="stdout", chunk=completed.stdout)
+                if completed.stderr:
+                    emit_chunk(stream="stderr", chunk=completed.stderr)
         finally:
             if stdout_handle is not None:
                 stdout_handle.close()
