@@ -1,10 +1,12 @@
 """Unit tests for LocalArtifactStore."""
 
 import stat
+from pathlib import Path
 
 import pytest
 
 from ginkgo.runtime.artifact_store import LocalArtifactStore
+from ginkgo.runtime.hashing import hash_directory
 
 
 @pytest.fixture()
@@ -89,6 +91,49 @@ class TestStoreDirectory:
         stored_file = store.artifact_path(artifact_id=artifact_id) / "f.txt"
         mode = stored_file.stat().st_mode
         assert not (mode & stat.S_IWUSR)
+
+
+class TestDirectoryHashing:
+    def test_hash_is_stable_across_creation_order(self, tmp_path: Path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+
+        for root, ordered_names in (
+            (first, ("b.txt", "sub/c.txt", "a.txt")),
+            (second, ("a.txt", "b.txt", "sub/c.txt")),
+        ):
+            root.mkdir()
+            for relative_name in ordered_names:
+                path = root / relative_name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(relative_name)
+
+        assert hash_directory(first) == hash_directory(second)
+
+    def test_hash_changes_when_relative_paths_change(self, tmp_path: Path):
+        original = tmp_path / "original"
+        renamed = tmp_path / "renamed"
+
+        for root in (original, renamed):
+            root.mkdir()
+            (root / "sub").mkdir()
+
+        (original / "sub" / "data.txt").write_text("same")
+        (renamed / "other.txt").write_text("same")
+
+        assert hash_directory(original) != hash_directory(renamed)
+
+    def test_hash_changes_when_empty_directory_is_added(self, tmp_path: Path):
+        without_empty = tmp_path / "without_empty"
+        with_empty = tmp_path / "with_empty"
+
+        without_empty.mkdir()
+        with_empty.mkdir()
+        (without_empty / "data.txt").write_text("payload")
+        (with_empty / "data.txt").write_text("payload")
+        (with_empty / "empty").mkdir()
+
+        assert hash_directory(without_empty) != hash_directory(with_empty)
 
 
 class TestStoreBytes:
