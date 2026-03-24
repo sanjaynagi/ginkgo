@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import builtins
+import inspect
 from contextlib import ExitStack, suppress
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -20,9 +21,10 @@ from concurrent.futures import (
     wait,
 )
 from dataclasses import dataclass, field
-from multiprocessing import get_context
+from multiprocessing import Manager, get_context
 from pathlib import Path
-from threading import Lock, current_thread, main_thread
+from queue import Empty
+from threading import Event, Lock, Thread, current_thread, main_thread
 from types import FrameType
 from typing import Any, get_args, get_origin
 
@@ -39,6 +41,22 @@ from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
 from ginkgo.runtime.cache import MISSING, CacheStore
+from ginkgo.runtime.events import (
+    EnvPrepareCompleted,
+    EnvPrepareStarted,
+    EventBus,
+    GraphExpanded,
+    GraphNodeRegistered,
+    GinkgoEvent,
+    TaskCacheHit,
+    TaskCacheMiss,
+    TaskCompleted,
+    TaskFailed,
+    TaskLog,
+    TaskReady,
+    TaskRetrying,
+    TaskStarted,
+)
 from ginkgo.runtime.module_loader import load_module, resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
@@ -54,6 +72,7 @@ from ginkgo.runtime.value_codec import (
     decode_value,
     encode_value,
     ensure_serializable,
+    summarise_value,
 )
 from ginkgo.runtime.worker import _task_log_context, run_task
 
@@ -213,6 +232,7 @@ class _ConcurrentEvaluator:
     backend: TaskBackend | None = None
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None
+    event_bus: EventBus | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
     _stderr: Any = field(default_factory=lambda: sys.stderr)
     _nodes: dict[int, _TaskNode] = field(default_factory=dict, init=False, repr=False)
@@ -234,6 +254,14 @@ class _ConcurrentEvaluator:
     _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
     _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _active_subprocesses: dict[int, subprocess.Popen[str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _log_event_queue: Any = field(default=None, init=False, repr=False)
+    _log_drain_stop: Event | None = field(default=None, init=False, repr=False)
+    _log_drain_thread: Thread | None = field(default=None, init=False, repr=False)
+    _task_log_sequences: dict[tuple[int, str], int] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -275,9 +303,11 @@ class _ConcurrentEvaluator:
             except PermissionError:
                 python_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             shell_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
+            log_manager = stack.enter_context(Manager())
             signals = stack.enter_context(_SignalMonitor())
             self._python_executor = python_executor
             self._shell_executor = shell_executor
+            self._start_log_drain(queue=log_manager.Queue())
             try:
                 while True:
                     if signals.exception is not None and self._failure is None:
@@ -313,6 +343,7 @@ class _ConcurrentEvaluator:
 
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             finally:
+                self._stop_log_drain()
                 self._python_executor = None
                 self._shell_executor = None
 
@@ -411,6 +442,16 @@ class _ConcurrentEvaluator:
             dependency_ids=dependency_ids,
         )
         self._expr_nodes[expr_id] = node_id
+        self._emit_event(
+            GraphNodeRegistered(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node_id),
+                task_name=expr.task_def.name,
+                kind=expr.task_def.kind,
+                env=expr.task_def.env,
+                dependency_ids=[_task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
+            )
+        )
         if self.provenance is not None:
             stdout_path, stderr_path = self.provenance.ensure_task(
                 node_id=node_id,
@@ -484,15 +525,42 @@ class _ConcurrentEvaluator:
                     task_name=node.task_def.name,
                     env=node.task_def.env,
                     value=cached_result,
+                    outputs=self._artifact_index_for(node=node, value=cached_result),
                 )
-            self._log(
-                task=node.task_def.name,
-                status="cached",
-                exit_code=0,
-                node_id=node.node_id,
-                display_label=node.display_label,
+            self._emit_event(
+                TaskCacheHit(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    cache_key=cache_key,
+                )
+            )
+            self._emit_event(
+                TaskCompleted(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    status="cached",
+                    cache_key=cache_key,
+                    outputs=self._artifact_index_for(node=node, value=cached_result),
+                )
             )
             return
+
+        self._emit_event(
+            TaskCacheMiss(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                cache_key=cache_key,
+            )
+        )
 
         # Materialize Pixi environments before any parallel dispatch starts.
         self._prepare_task_environment(node=node)
@@ -510,13 +578,41 @@ class _ConcurrentEvaluator:
                 f"{self.memory} GiB are available"
             )
         node.state = "ready"
+        self._emit_event(
+            TaskReady(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                resources={"cores": node.threads, "memory_gb": node.memory_gb},
+            )
+        )
 
     def _prepare_task_environment(self, *, node: _TaskNode) -> None:
         """Materialize any external execution environment required by a task."""
         if node.task_def.env is None or self.backend is None:
             return
 
+        self._emit_event(
+            EnvPrepareStarted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                env=node.task_def.env,
+            )
+        )
         self.backend.prepare(env=node.task_def.env)
+        self._emit_event(
+            EnvPrepareCompleted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                env=node.task_def.env,
+            )
+        )
 
     def _dispatch_ready_nodes(
         self,
@@ -550,13 +646,21 @@ class _ConcurrentEvaluator:
             node = self._nodes[node_id]
             node.attempt += 1
             node.state = "running"
-            self._log(
-                task=node.task_def.name,
-                status="running",
-                node_id=node.node_id,
-                display_label=node.display_label,
-                attempt=node.attempt,
-                max_attempts=node.task_def.retries + 1,
+            self._emit_event(
+                TaskStarted(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    kind=node.task_def.kind,
+                    env=node.task_def.env,
+                    resources={
+                        "cores": node.threads,
+                        "memory_gb": node.memory_gb,
+                        "max_attempts": node.task_def.retries + 1,
+                    },
+                )
             )
             if self.provenance is not None:
                 self.provenance.mark_running(
@@ -672,14 +776,16 @@ class _ConcurrentEvaluator:
             self._failure = sanitized_exc
             self._cancel_pending_futures()
         self._record_task_failure(node=node, exc=sanitized_exc)
-        self._log(
-            task=node.task_def.name,
-            status="failed",
-            exit_code=getattr(sanitized_exc, "exit_code", None),
-            node_id=node.node_id,
-            display_label=node.display_label,
-            attempt=node.attempt,
-            max_attempts=node.task_def.retries + 1,
+        self._emit_event(
+            TaskFailed(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                exit_code=getattr(sanitized_exc, "exit_code", None),
+                failure=_classify_failure(exc=sanitized_exc),
+            )
         )
 
     def _should_retry(self, *, node: _TaskNode) -> bool:
@@ -718,15 +824,16 @@ class _ConcurrentEvaluator:
                 attempt=node.attempt,
                 retries_remaining=retries_remaining,
             )
-        self._log(
-            task=node.task_def.name,
-            status="waiting",
-            exit_code=getattr(exc, "exit_code", None),
-            node_id=node.node_id,
-            display_label=node.display_label,
-            attempt=node.attempt,
-            max_attempts=node.task_def.retries + 1,
-            retries_remaining=retries_remaining,
+        self._emit_event(
+            TaskRetrying(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                retries_remaining=retries_remaining,
+                failure=_classify_failure(exc=exc),
+            )
         )
 
     def _complete_node(self, *, node: _TaskNode, value: Any, tmp_paths: list[Path]) -> None:
@@ -756,15 +863,19 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 env=node.task_def.env,
                 value=value,
+                outputs=self._artifact_index_for(node=node, value=value),
             )
-        self._log(
-            task=node.task_def.name,
-            status="succeeded",
-            exit_code=0,
-            node_id=node.node_id,
-            display_label=node.display_label,
-            attempt=node.attempt,
-            max_attempts=node.task_def.retries + 1,
+        self._emit_event(
+            TaskCompleted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                status="success",
+                cache_key=node.cache_key,
+                outputs=self._artifact_index_for(node=node, value=value),
+            )
         )
 
     def _resolve_task_args(
@@ -940,11 +1051,76 @@ class _ConcurrentEvaluator:
         with suppress(Exception):
             process.wait(timeout=0.2)
 
+    def _start_log_drain(self, *, queue: Any) -> None:
+        """Start draining worker log chunks from the multiprocessing queue."""
+        self._log_event_queue = queue
+        self._log_drain_stop = Event()
+        self._log_drain_thread = Thread(
+            target=self._drain_log_events,
+            name="ginkgo-log-drain",
+            daemon=True,
+        )
+        self._log_drain_thread.start()
+
+    def _stop_log_drain(self) -> None:
+        """Stop the worker log drain thread."""
+        if self._log_drain_stop is not None:
+            self._log_drain_stop.set()
+        if self._log_drain_thread is not None:
+            self._log_drain_thread.join(timeout=1.0)
+        self._log_event_queue = None
+        self._log_drain_stop = None
+        self._log_drain_thread = None
+
+    def _drain_log_events(self) -> None:
+        """Convert queued worker log chunks into runtime events."""
+        if self._log_event_queue is None or self._log_drain_stop is None:
+            return
+
+        while True:
+            try:
+                payload = self._log_event_queue.get(timeout=0.1)
+            except Empty:
+                if self._log_drain_stop.is_set():
+                    return
+                continue
+            except Exception:
+                return
+
+            chunk = payload.get("chunk")
+            stream = payload.get("stream")
+            task_id = payload.get("task_id")
+            if (
+                not isinstance(chunk, str)
+                or not isinstance(stream, str)
+                or not isinstance(task_id, str)
+                or not chunk
+            ):
+                continue
+            node_id = int(task_id.split("_")[-1])
+            sequence_key = (node_id, stream)
+            sequence = self._task_log_sequences.get(sequence_key, 0) + 1
+            self._task_log_sequences[sequence_key] = sequence
+            self._emit_event(
+                TaskLog(
+                    run_id=str(payload.get("run_id") or self._run_id),
+                    task_id=task_id,
+                    task_name=str(payload.get("task_name") or ""),
+                    attempt=int(payload.get("attempt") or 0),
+                    display_label=payload.get("display_label"),
+                    stream=stream,
+                    chunk=chunk,
+                    sequence=sequence,
+                )
+            )
+
     def _run_subprocess(
         self,
         *,
         argv: str | list[str],
         use_shell: bool,
+        on_stdout: Any = None,
+        on_stderr: Any = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a subprocess while tracking it for interrupt-time termination."""
         popen_kwargs: dict[str, Any] = {
@@ -958,17 +1134,82 @@ class _ConcurrentEvaluator:
 
         process = subprocess.Popen(argv, **popen_kwargs)
         self._register_subprocess(process=process)
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        if not hasattr(process, "stdout") or not hasattr(process, "stderr"):
+            try:
+                stdout_text, stderr_text = process.communicate()
+            finally:
+                self._unregister_subprocess(process=process)
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=process.returncode,
+                stdout=stdout_text,
+                stderr=stderr_text,
+            )
+
+        def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
+            try:
+                while True:
+                    chunk = pipe.readline()
+                    if chunk == "":
+                        break
+                    sink.append(chunk)
+                    if callback is not None:
+                        callback(chunk)
+            finally:
+                pipe.close()
+
+        stdout_thread = Thread(
+            target=consume_stream,
+            kwargs={"pipe": process.stdout, "sink": stdout_chunks, "callback": on_stdout},
+            daemon=True,
+        )
+        stderr_thread = Thread(
+            target=consume_stream,
+            kwargs={"pipe": process.stderr, "sink": stderr_chunks, "callback": on_stderr},
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
         try:
-            stdout_text, stderr_text = process.communicate()
+            returncode = process.wait()
         finally:
+            stdout_thread.join()
+            stderr_thread.join()
             self._unregister_subprocess(process=process)
 
         return subprocess.CompletedProcess(
             args=argv,
-            returncode=process.returncode,
-            stdout=stdout_text,
-            stderr=stderr_text,
+            returncode=returncode,
+            stdout="".join(stdout_chunks),
+            stderr="".join(stderr_chunks),
         )
+
+    def _call_run_subprocess(
+        self,
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+        on_stdout: Any,
+        on_stderr: Any,
+    ) -> tuple[subprocess.CompletedProcess[str], bool]:
+        """Call ``_run_subprocess`` while tolerating legacy test doubles."""
+        run_subprocess = self._run_subprocess
+        parameters = inspect.signature(run_subprocess).parameters
+        supports_stream_callbacks = "on_stdout" in parameters and "on_stderr" in parameters
+        if supports_stream_callbacks:
+            completed = run_subprocess(
+                argv=argv,
+                use_shell=use_shell,
+                on_stdout=on_stdout,
+                on_stderr=on_stderr,
+            )
+            return completed, True
+
+        completed = run_subprocess(argv=argv, use_shell=use_shell)
+        return completed, False
 
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
@@ -1016,11 +1257,17 @@ class _ConcurrentEvaluator:
             "stdout_path": str(node.stdout_path) if node.stdout_path is not None else None,
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "secret_values": list(node.secret_values),
+            "run_id": self._run_id,
+            "task_id": _task_id_for_node(node.node_id),
+            "task_name": node.task_def.name,
+            "attempt": node.attempt,
+            "display_label": node.display_label,
+            "log_event_queue": self._log_event_queue,
             "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
             "task_kind": node.task_def.kind,
-            "task_name": node.task_def.fn.__name__,
+            "binding_name": node.task_def.fn.__name__,
             "transport_dir": str(node.transport_path),
         }
 
@@ -1370,25 +1617,42 @@ class _ConcurrentEvaluator:
             argv = cmd
             use_shell = True
 
-        completed = self._run_subprocess(argv=argv, use_shell=use_shell)
-        stdout_text = self._redact_text(completed.stdout or "", secret_values=node.secret_values)
-        stderr_text = self._redact_text(completed.stderr or "", secret_values=node.secret_values)
-        completed = subprocess.CompletedProcess(
-            args=completed.args,
-            returncode=completed.returncode,
-            stdout=stdout_text,
-            stderr=stderr_text,
-        )
+        stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
+        stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
+        user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
 
-        if node.stdout_path is not None and stdout_text:
-            with node.stdout_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text)
-        if node.stderr_path is not None and stderr_text:
-            with node.stderr_path.open("a", encoding="utf-8") as handle:
-                handle.write(stderr_text)
-        if user_log_path is not None and (stdout_text or stderr_text):
-            with user_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(stdout_text + stderr_text)
+        def emit_chunk(*, stream: str, chunk: str) -> None:
+            if stream == "stdout" and stdout_handle is not None:
+                stdout_handle.write(chunk)
+                stdout_handle.flush()
+            if stream == "stderr" and stderr_handle is not None:
+                stderr_handle.write(chunk)
+                stderr_handle.flush()
+            if user_log_handle is not None:
+                user_log_handle.write(chunk)
+                user_log_handle.flush()
+            self._task_log_emitter(node=node, stream=stream)(chunk)
+
+        try:
+            completed, streamed = self._call_run_subprocess(
+                argv=argv,
+                use_shell=use_shell,
+                on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
+                on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
+            )
+            if not streamed:
+                if completed.stdout:
+                    emit_chunk(stream="stdout", chunk=completed.stdout)
+                if completed.stderr:
+                    emit_chunk(stream="stderr", chunk=completed.stderr)
+        finally:
+            if stdout_handle is not None:
+                stdout_handle.close()
+            if stderr_handle is not None:
+                stderr_handle.close()
+            if user_log_handle is not None:
+                user_log_handle.close()
+
         return completed
 
     def _notebook_artifacts(self, *, node: _TaskNode, notebook_kind: str) -> _NotebookArtifacts:
@@ -1855,6 +2119,7 @@ class _ConcurrentEvaluator:
             task_name=node.task_def.name,
             env=node.task_def.env,
             exc=exc,
+            failure=_classify_failure(exc=exc),
         )
 
     def _redact_text(self, text: str, *, secret_values: tuple[str, ...]) -> str:
@@ -1905,33 +2170,95 @@ class _ConcurrentEvaluator:
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"
 
-    def _log(
-        self,
-        *,
-        task: str,
-        status: str,
-        exit_code: int | None = None,
-        node_id: int | None = None,
-        display_label: str | None = None,
-        attempt: int | None = None,
-        max_attempts: int | None = None,
-        retries_remaining: int | None = None,
-    ) -> None:
-        """Emit basic structured execution logs to stderr."""
-        payload = {"task": task, "status": status}
-        if exit_code is not None:
-            payload["exit_code"] = exit_code
-        if node_id is not None:
-            payload["node_id"] = node_id
-        if display_label is not None:
-            payload["display_label"] = display_label
-        if attempt is not None:
-            payload["attempt"] = attempt
-        if max_attempts is not None:
-            payload["max_attempts"] = max_attempts
-        if retries_remaining is not None:
-            payload["retries_remaining"] = retries_remaining
-        print(json.dumps(payload, sort_keys=True), file=self._stderr)
+    def _artifact_index_for(self, *, node: _TaskNode, value: Any) -> list[dict[str, Any]]:
+        """Return a compact typed artifact summary for one task result."""
+        annotation = node.task_def.type_hints.get(
+            "return", node.task_def.signature.return_annotation
+        )
+        return _artifact_index(annotation=annotation, value=value)
+
+    @property
+    def _run_id(self) -> str:
+        """Return the active run id, or a placeholder outside live runs."""
+        if self.provenance is not None:
+            return self.provenance.run_id
+        return "validation"
+
+    def _emit_event(self, event: object) -> None:
+        """Emit a runtime event when an event bus is attached."""
+        if self.event_bus is not None:
+            self.event_bus.emit(event)
+        elif isinstance(event, GinkgoEvent):
+            self._emit_legacy_log(event)
+
+    def _emit_legacy_log(self, event: GinkgoEvent) -> None:
+        """Emit the pre-Phase-4 stderr task stream for compatibility."""
+        payload: dict[str, object] | None = None
+        if isinstance(event, TaskStarted):
+            payload = {
+                "task": event.task_name,
+                "status": "running",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+                "max_attempts": event.resources.get("max_attempts"),
+            }
+        elif isinstance(event, TaskCacheHit):
+            payload = {
+                "task": event.task_name,
+                "status": "cached",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+            }
+        elif isinstance(event, TaskRetrying):
+            payload = {
+                "task": event.task_name,
+                "status": "waiting",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+                "retries_remaining": event.retries_remaining,
+            }
+        elif isinstance(event, TaskCompleted) and event.status == "success":
+            payload = {
+                "task": event.task_name,
+                "status": "succeeded",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+            }
+        elif isinstance(event, TaskFailed):
+            payload = {
+                "task": event.task_name,
+                "status": "failed",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+                "exit_code": event.exit_code,
+            }
+
+        if payload is not None:
+            print(json.dumps(payload, sort_keys=True), file=self._stderr)
+
+    def _task_log_emitter(self, *, node: _TaskNode, stream: str) -> Any:
+        """Return a task-log callback bound to one task node and stream."""
+
+        def emit(chunk: str) -> None:
+            if not chunk:
+                return
+            sequence_key = (node.node_id, stream)
+            sequence = self._task_log_sequences.get(sequence_key, 0) + 1
+            self._task_log_sequences[sequence_key] = sequence
+            self._emit_event(
+                TaskLog(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    stream=stream,
+                    chunk=chunk,
+                    sequence=sequence,
+                )
+            )
+
+        return emit
 
     def _run_driver_task(self, *, node: _TaskNode) -> Any:
         """Run a driver-task wrapper on the scheduler process.
@@ -1947,6 +2274,10 @@ class _ConcurrentEvaluator:
             stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
             stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
             secret_values=node.secret_values,
+            log_emitter=lambda *, stream, chunk: self._task_log_emitter(
+                node=node,
+                stream=stream,
+            )(chunk),
         ):
             return node.task_def.fn(**node.execution_args)
 
@@ -1986,6 +2317,15 @@ class _ConcurrentEvaluator:
                 node.dynamic_template = completed_value
                 node.dynamic_dependency_ids = dynamic_dependencies
                 self._record_task_metadata(node)
+                self._emit_event(
+                    GraphExpanded(
+                        run_id=self._run_id,
+                        parent_task_id=_task_id_for_node(node.node_id),
+                        new_node_ids=[
+                            _task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
+                        ],
+                    )
+                )
                 return
 
             final_value = self._finalize_result_value(node=node, value=completed_value)
@@ -2035,6 +2375,15 @@ class _ConcurrentEvaluator:
             node.dynamic_template = completed_value
             node.dynamic_dependency_ids = dynamic_dependencies
             self._record_task_metadata(node)
+            self._emit_event(
+                GraphExpanded(
+                    run_id=self._run_id,
+                    parent_task_id=_task_id_for_node(node.node_id),
+                    new_node_ids=[
+                        _task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
+                    ],
+                )
+            )
             return
 
         self._cleanup_transport(node)
@@ -2166,3 +2515,87 @@ def _render_label_value(value: Any) -> str | None:
     if len(compact) > 24:
         compact = f"{compact[:21]}..."
     return compact
+
+
+def _task_id_for_node(node_id: int) -> str:
+    """Return the stable task identifier for a node."""
+    return f"task_{node_id:04d}"
+
+
+def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> list[dict[str, Any]]:
+    """Return a compact typed output index for a task result."""
+    if value is None:
+        return []
+
+    origin = get_origin(annotation)
+    if origin in {list, tuple} and isinstance(value, (list, tuple)):
+        inner_args = get_args(annotation)
+        inner_annotation = inner_args[0] if inner_args else Any
+        outputs: list[dict[str, Any]] = []
+        for index, item in enumerate(value):
+            outputs.extend(_artifact_index(inner_annotation, item, name=f"{name}[{index}]"))
+        return outputs
+
+    if annotation is file or isinstance(value, file):
+        return [{"name": name, "type": "file", "path": str(value)}]
+
+    if annotation is folder or isinstance(value, folder):
+        return [{"name": name, "type": "folder", "path": str(value)}]
+
+    if isinstance(value, Path):
+        return [{"name": name, "type": "path", "path": str(value)}]
+
+    shape = getattr(value, "shape", None)
+    dtype = getattr(value, "dtype", None)
+    if shape is not None and dtype is not None:
+        return [
+            {
+                "name": name,
+                "type": "ndarray",
+                "shape": list(shape),
+                "dtype": str(dtype),
+                "summary": summarise_value(value),
+            }
+        ]
+
+    if value.__class__.__module__.startswith("pandas") and value.__class__.__name__ == "DataFrame":
+        return [
+            {
+                "name": name,
+                "type": "dataframe",
+                "shape": [int(value.shape[0]), int(value.shape[1])],
+                "summary": summarise_value(value),
+            }
+        ]
+
+    return [{"name": name, "type": "value", "summary": summarise_value(value)}]
+
+
+def _classify_failure(*, exc: BaseException) -> dict[str, Any]:
+    """Return a structured task failure summary."""
+    message = str(exc)
+    if isinstance(exc, CycleError):
+        kind = "cycle_detected"
+    elif isinstance(exc, CodecError):
+        kind = "serialization_error"
+    elif isinstance(exc, (ShellTaskError, NotebookTaskError)):
+        kind = "shell_command_error"
+    elif isinstance(exc, FileNotFoundError):
+        kind = "missing_input" if "did not create" not in message else "output_validation_error"
+    elif isinstance(exc, (TypeError, ValueError)):
+        kind = "user_code_error"
+    else:
+        exc_name = exc.__class__.__name__.lower()
+        if "env" in exc_name or "container" in exc_name:
+            kind = "environment_error"
+        elif "cache" in exc_name:
+            kind = "cache_error"
+        else:
+            kind = "scheduler_error"
+
+    return {
+        "kind": kind,
+        "message": message,
+        "retryable": False,
+        "code": exc.__class__.__name__,
+    }

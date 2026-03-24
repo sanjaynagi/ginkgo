@@ -22,6 +22,62 @@ The repository currently implements:
 - A multi-workspace local UI shell with an active workspace model and native
   folder-picker loading for switching between Ginkgo workspaces on one machine
 - A canonical package-based workflow repository layout with root autodiscovery
+- A runtime event protocol and in-process event bus for machine-readable run
+  monitoring
+- Agent-oriented CLI surfaces including `ginkgo run --agent`,
+  `ginkgo inspect workflow`, `ginkgo inspect run`, `ginkgo debug --json`,
+  `ginkgo doctor --json`, and `ginkgo cache explain --run`
+- Agent-oriented project scaffolding in `ginkgo init`, including durable
+  project notes and a notebook scratch directory
+
+## Agent Operability
+
+Phase 4 introduced a machine-readable operability layer for AI agents and
+other programmatic clients.
+
+### Runtime Event Protocol
+
+The evaluator now emits typed runtime events through an in-process event bus in
+`ginkgo/runtime/events.py`. These events cover:
+
+- run lifecycle
+- task lifecycle
+- cache hits and misses
+- environment preparation
+- dynamic graph expansion
+
+This keeps runtime state changes explicit and lets multiple consumers observe
+the same execution facts without duplicating scheduler logic.
+
+### Human and Agent Output Modes
+
+Rich CLI output and agent-mode JSONL output are now separate renderings of the
+same runtime event stream.
+
+- Human operators continue to use the Rich run renderer.
+- Agents can use `ginkgo run --agent` to receive one JSON event per line on
+  stdout.
+
+The legacy structured stderr task stream used by direct `evaluate(...)`
+callers remains available when no event bus is attached, preserving backward
+compatibility for existing tests and programmatic use.
+
+### Structured Inspection and Diagnostics
+
+Ginkgo now exposes machine-readable post-hoc inspection and diagnostics:
+
+- `ginkgo inspect workflow` returns a static task graph snapshot without
+  execution.
+- `ginkgo inspect run <run_id>` reconstructs a run snapshot from provenance.
+- `ginkgo debug --json` returns failed-task diagnostics, including failure
+  summaries and log tails.
+- `ginkgo doctor --json` returns structured validation diagnostics.
+- `ginkgo cache explain --run <run_id>` provides best-effort rerun reasons from
+  cache metadata.
+
+To support these surfaces, task provenance now records structured failure
+summaries and a compact typed output index alongside the existing manifest
+fields.
 
 ## Canonical Workflow Project Layout
 

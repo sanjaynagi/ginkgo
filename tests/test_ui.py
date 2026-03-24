@@ -705,3 +705,86 @@ class TestUiServer:
             )
             for event in events
         )
+
+    def test_websocket_tails_runtime_event_log_for_run_and_task_updates(
+        self, tmp_path: Path
+    ) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# workflow\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="20260324_120000_livefeed",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            params={},
+        )
+        stdout_path, _ = recorder.ensure_task(node_id=0, task_name="demo.stream", env=None)
+        recorder.mark_running(
+            node_id=0,
+            task_name="demo.stream",
+            env=None,
+            attempt=1,
+            retries=0,
+        )
+
+        server, thread, base_url = _start_server(runs_root=tmp_path / ".ginkgo" / "runs")
+        client, buffer = _open_websocket(base_url)
+        try:
+            _recv_ws_json(client, buffer)
+            _recv_ws_json(client, buffer)
+
+            stdout_path.write_text("live stdout chunk\n", encoding="utf-8")
+            recorder.events_path.write_text(
+                json.dumps(
+                    {
+                        "event": "task_log",
+                        "run_id": recorder.run_id,
+                        "task_id": "task_0000",
+                        "task_name": "demo.stream",
+                        "attempt": 1,
+                        "stream": "stdout",
+                        "chunk": "live stdout chunk\n",
+                        "sequence": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            recorder.mark_succeeded(
+                node_id=0,
+                task_name="demo.stream",
+                env=None,
+                value="ok",
+            )
+            recorder.finalize(status="succeeded")
+            with recorder.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"event": "task_completed", "run_id": recorder.run_id}) + "\n"
+                )
+                handle.write(
+                    json.dumps({"event": "run_completed", "run_id": recorder.run_id}) + "\n"
+                )
+
+            deadline = time.time() + 6
+            events: list[dict] = []
+            saw_log = False
+            saw_run = False
+            while time.time() < deadline and not (saw_log and saw_run):
+                event = _recv_ws_json(client, buffer)
+                events.append(event)
+                if event["type"] == "task_log_updated":
+                    saw_log = True
+                if event["type"] == "run_updated":
+                    saw_run = True
+        finally:
+            client.close()
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        log_event = next(event for event in events if event["type"] == "task_log_updated")
+        run_event = next(event for event in events if event["type"] == "run_updated")
+        assert log_event["payload"]["task_key"] == "task_0000"
+        assert "live stdout chunk" in log_event["payload"]["stdout"]
+        assert run_event["payload"]["run"]["manifest"]["status"] == "succeeded"
