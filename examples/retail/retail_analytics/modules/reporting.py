@@ -9,6 +9,8 @@ import pandas as pd
 
 from ginkgo import file, notebook, task
 
+_NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
+
 
 def _write_dataframe(*, frame: pd.DataFrame, output_path: str) -> file:
     """Write a DataFrame and return it as a Ginkgo ``file`` marker."""
@@ -45,13 +47,14 @@ def write_channel_metrics(enriched_orders: pd.DataFrame) -> file:
     return _write_dataframe(frame=summary, output_path="results/channel_metrics.csv")
 
 
-@notebook(path="../notebooks/channel_performance.ipynb")
+@task("notebook")
 def render_channel_performance_notebook(
     *,
     channel_metrics: file,
     report_title: str,
 ) -> file:
     """Render a notebook view of channel performance trends."""
+    return notebook(_NOTEBOOKS_DIR / "channel_performance.ipynb")
 
 
 @task()

@@ -9,36 +9,13 @@ from __future__ import annotations
 
 import inspect
 from importlib import import_module
-from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, get_type_hints
 
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.types import tmp_dir
 
-_TASK_KINDS = frozenset({"notebook", "python", "shell"})
-
-
-@dataclass(frozen=True)
-class NotebookDef:
-    """Static metadata for a first-class notebook task.
-
-    Parameters
-    ----------
-    path : Path
-        Absolute source path of the notebook file.
-    kind : str
-        Notebook backend kind, either ``"ipynb"`` or ``"marimo"``.
-    description : str | None
-        Human-readable description surfaced in the UI.
-    source_hash : str
-        Content hash of the notebook source file.
-    """
-
-    path: Path
-    kind: str
-    description: str | None
-    source_hash: str
+_TASK_KINDS = frozenset({"notebook", "python", "script", "shell"})
 
 
 @dataclass(frozen=True)
@@ -57,8 +34,6 @@ class TaskDef:
         Additional retry attempts after the initial execution.
     kind : str
         Execution contract for the task body.
-    notebook_path : str | Path | None
-        Source path for notebook-backed tasks.
     """
 
     fn: Callable[..., Any]
@@ -66,13 +41,10 @@ class TaskDef:
     version: int = 1
     retries: int = 0
     kind: str = "python"
-    notebook_path: str | Path | None = None
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
     _source_hash: str = field(init=False, repr=False)
-    _cache_source_hash: str = field(init=False, repr=False)
-    _notebook: NotebookDef | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.retries < 0:
@@ -92,23 +64,7 @@ class TaskDef:
         object.__setattr__(self, "_signature", sig)
         object.__setattr__(self, "_type_hints", hints)
         object.__setattr__(self, "_required_params", required)
-        source_hash = _compute_source_hash(self.fn)
-        object.__setattr__(self, "_source_hash", source_hash)
-
-        notebook = _build_notebook_def(
-            fn=self.fn, kind=self.kind, notebook_path=self.notebook_path
-        )
-        object.__setattr__(self, "_notebook", notebook)
-        if notebook is None:
-            object.__setattr__(self, "_cache_source_hash", source_hash)
-        else:
-            object.__setattr__(
-                self,
-                "_cache_source_hash",
-                _combine_source_hashes(
-                    source_hash=source_hash, notebook_hash=notebook.source_hash
-                ),
-            )
+        object.__setattr__(self, "_source_hash", _compute_source_hash(self.fn))
 
     @property
     def name(self) -> str:
@@ -124,7 +80,7 @@ class TaskDef:
     @property
     def execution_mode(self) -> str:
         """Return whether the task body runs on the driver or a worker."""
-        if self.kind in {"notebook", "shell"}:
+        if self.kind in {"notebook", "script", "shell"}:
             return "driver"
         return "worker"
 
@@ -150,13 +106,12 @@ class TaskDef:
 
     @property
     def cache_source_hash(self) -> str:
-        """Digest used for cache invalidation."""
-        return self._cache_source_hash
+        """Digest used for cache invalidation.
 
-    @property
-    def notebook(self) -> NotebookDef | None:
-        """Notebook metadata for notebook-backed tasks."""
-        return self._notebook
+        For notebook and script tasks, the source file hash is incorporated
+        at execution time via the ``NotebookExpr``/``ScriptExpr`` sentinel.
+        """
+        return self._source_hash
 
     def __call__(self, **kwargs: Any) -> Expr | PartialCall:
         """Build an ``Expr`` (all required args supplied) or ``PartialCall``.
@@ -290,6 +245,8 @@ class PartialCall:
 
 
 def task(
+    _kind: str | None = None,
+    /,
     *,
     env: str | None = None,
     version: int = 1,
@@ -298,8 +255,15 @@ def task(
 ) -> Callable[[Callable[..., Any]], TaskDef]:
     """Decorator that turns a function into a lazy task definition.
 
+    The task kind may be given as the first positional argument or via the
+    ``kind`` keyword.  ``@task("shell")``, ``@task("notebook")``, and
+    ``@task("script")`` are the preferred short forms.
+
     Parameters
     ----------
+    _kind : str | None
+        Task kind as a positional argument. When provided, takes precedence
+        over the ``kind`` keyword.
     env : str | None
         Foreign execution environment for shell tasks. If ``None``, the task
         runs in the current environment.
@@ -308,56 +272,25 @@ def task(
     retries : int
         Additional retry attempts after the initial execution.
     kind : str
-        Execution contract for the task body. Use ``"shell"`` for
-        scheduler-evaluated shell spec builders.
+        Execution contract for the task body. Ignored when ``_kind`` is given.
 
     Returns
     -------
     Callable
         A decorator that wraps the function in a ``TaskDef``.
+
+    Raises
+    ------
+    ValueError
+        If both a positional kind and a non-default ``kind`` keyword are
+        supplied and they differ.
     """
+    resolved_kind = _kind if _kind is not None else kind
+    if _kind is not None and kind != "python" and _kind != kind:
+        raise ValueError(f"task kind specified twice: positional {_kind!r} and keyword {kind!r}")
 
     def decorator(fn: Callable[..., Any]) -> TaskDef:
-        return TaskDef(fn=fn, env=env, version=version, retries=retries, kind=kind)
-
-    return decorator
-
-
-def notebook(
-    *,
-    path: str | Path,
-    env: str | None = None,
-    version: int = 1,
-    retries: int = 0,
-) -> Callable[[Callable[..., Any]], TaskDef]:
-    """Decorator that turns a function signature into a notebook task.
-
-    Parameters
-    ----------
-    path : str | Path
-        Notebook source path. Relative paths resolve from the defining module.
-    env : str | None
-        Optional foreign execution environment.
-    version : int
-        Cache-busting version tag.
-    retries : int
-        Additional retry attempts after the initial execution.
-
-    Returns
-    -------
-    Callable
-        A decorator that wraps the function in a notebook-backed ``TaskDef``.
-    """
-
-    def decorator(fn: Callable[..., Any]) -> TaskDef:
-        return TaskDef(
-            fn=fn,
-            env=env,
-            version=version,
-            retries=retries,
-            kind="notebook",
-            notebook_path=path,
-        )
+        return TaskDef(fn=fn, env=env, version=version, retries=retries, kind=resolved_kind)
 
     return decorator
 
@@ -399,62 +332,3 @@ def _load_taskdef(module_name: str, task_name: str) -> TaskDef:
     if not isinstance(task_def, TaskDef):
         raise TypeError(f"{module_name}.{task_name} is not a ginkgo task")
     return task_def
-
-
-def _build_notebook_def(
-    *,
-    fn: Callable[..., Any],
-    kind: str,
-    notebook_path: str | Path | None,
-) -> NotebookDef | None:
-    """Resolve and validate notebook metadata for one task definition."""
-    if kind != "notebook":
-        if notebook_path is not None:
-            raise ValueError("notebook_path is only valid for kind='notebook'")
-        return None
-
-    if notebook_path is None:
-        raise ValueError("notebook tasks require a notebook source path")
-
-    resolved_path = _resolve_notebook_path(fn=fn, notebook_path=notebook_path)
-    suffix = resolved_path.suffix.lower()
-    if suffix == ".ipynb":
-        notebook_kind = "ipynb"
-    elif suffix == ".py":
-        notebook_kind = "marimo"
-    else:
-        raise ValueError(
-            f"notebook path must point to a .ipynb or .py notebook, got {str(resolved_path)!r}"
-        )
-
-    from ginkgo.runtime.hashing import hash_file
-
-    description = inspect.getdoc(fn)
-    return NotebookDef(
-        path=resolved_path,
-        kind=notebook_kind,
-        description=description,
-        source_hash=hash_file(resolved_path),
-    )
-
-
-def _resolve_notebook_path(*, fn: Callable[..., Any], notebook_path: str | Path) -> Path:
-    """Resolve a notebook path relative to the defining module."""
-    path = Path(notebook_path)
-    if not path.is_absolute():
-        module_file = inspect.getsourcefile(fn)
-        if module_file is None:
-            raise ValueError(f"Cannot resolve notebook path for task {fn.__qualname__!r}")
-        path = Path(module_file).resolve().parent / path
-
-    resolved = path.resolve()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"Notebook source not found: {str(resolved)!r}")
-    return resolved
-
-
-def _combine_source_hashes(*, source_hash: str, notebook_hash: str) -> str:
-    """Return a stable combined hash for wrapper and notebook source."""
-    from ginkgo.runtime.hashing import hash_str
-
-    return hash_str(f"{source_hash}:{notebook_hash}")
