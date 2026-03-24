@@ -1,0 +1,576 @@
+/* ─── Web Fonts ───────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;0,800;1,500;1,600;1,700&family=Source+Sans+3:ital,wght@0,300;0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+
+/* ─── Palette ─────────────────────────────────────────────────────────────── */
+:root {
+  --gk-forest-950: #0e1a0f;
+  --gk-forest-900: #162818;
+  --gk-forest-800: #1f3822;
+  --gk-forest-700: #2a4a2e;
+  --gk-forest-500: #4a7a52;
+  --gk-forest-300: #8ab890;
+  --gk-forest-100: #c8e4cc;
+
+  --gk-gold-700:  #9e6f08;
+  --gk-gold-600:  #c8900a;
+  --gk-gold-500:  #e8ac24;
+  --gk-gold-300:  #f5d98a;
+  --gk-gold-100:  #faf0c4;
+  --gk-gold-50:   #fdf8e8;
+
+  --gk-cream-50:  #faf8f2;
+  --gk-cream-100: #f2ece0;
+  --gk-cream-200: #e8e0d0;
+  --gk-cream-300: #d8ceba;
+
+  --gk-ink-950: #1a1814;
+  --gk-ink-800: #2e2c26;
+  --gk-ink-600: #4a4740;
+  --gk-ink-400: #7a776e;
+  --gk-ink-200: #b4b0a8;
+
+
+  /* ─── Font stacks ──────────────────────────────────────────────────────── */
+  --font-stack:           "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --font-stack--headings: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-stack--monospace:"JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+
+
+  /* ─── Furo: content area ───────────────────────────────────────────────── */
+  --color-background-primary:   var(--gk-cream-50);
+  --color-background-secondary: var(--gk-cream-100);
+  --color-background-hover:     var(--gk-cream-200);
+  --color-background-border:    rgba(200, 144, 10, 0.18);
+
+  --color-foreground-primary:   var(--gk-ink-950);
+  --color-foreground-secondary: var(--gk-ink-800);
+  --color-foreground-muted:     var(--gk-ink-400);
+  --color-foreground-border:    var(--gk-cream-300);
+
+  --color-brand-primary: var(--gk-forest-500);
+  --color-brand-content: var(--gk-forest-700);
+
+  --color-link:        #8a6200;
+  --color-link--hover: var(--gk-gold-600);
+
+  /* ─── Furo: admonitions ────────────────────────────────────────────────── */
+  --color-admonition-title-background--note: var(--gk-gold-50);
+  --color-admonition-title--note:            #5a4200;
+  --color-admonition-background--note:       var(--gk-gold-50);
+  --color-admonition-title-background--tip:  #eaf2eb;
+  --color-admonition-title--tip:             #1f3822;
+  --color-admonition-background--tip:        #f2f9f3;
+  --color-admonition-title-background--warning: #fff3e0;
+  --color-admonition-title--warning:            #7a4000;
+  --color-admonition-background--warning:       #fff8f0;
+
+  /* ─── Furo: code ───────────────────────────────────────────────────────── */
+  --color-code-background: #ede5d5;
+  --color-code-foreground: var(--gk-ink-800);
+
+  /* ─── Furo: sidebar ────────────────────────────────────────────────────── */
+  --color-sidebar-background:                     var(--gk-forest-900);
+  --color-sidebar-background-border:              rgba(200, 144, 10, 0.1);
+  --color-sidebar-brand-text:                     var(--gk-gold-300);
+  --color-sidebar-caption-color:                  var(--gk-forest-300);
+  --color-sidebar-link-text:                      var(--gk-forest-100);
+  --color-sidebar-link-text--top-level:           #d4ead8;
+  --color-sidebar-item-background--hover:         rgba(200, 144, 10, 0.14);
+  --color-sidebar-item-background--current:       rgba(200, 144, 10, 0.08);
+  --color-sidebar-item-expander-background--hover:rgba(200, 144, 10, 0.1);
+  --color-sidebar-link-text--active:              var(--gk-gold-300);
+  --color-sidebar-search-background:              var(--gk-forest-800);
+  --color-sidebar-search-foreground:              var(--gk-forest-100);
+  --color-sidebar-search-border:                  rgba(200, 144, 10, 0.22);
+  --color-sidebar-search-icon:                    var(--gk-forest-300);
+}
+
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+body {
+  font-family: var(--font-stack);
+  background: var(--gk-cream-50);
+}
+
+
+/* ─── Sidebar ─────────────────────────────────────────────────────────────── */
+.sidebar-drawer,
+.sidebar-container,
+.sidebar-sticky {
+  background: var(--gk-forest-900);
+}
+
+.sidebar-brand-text {
+  font-family: var(--font-stack--headings);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--gk-gold-300) !important;
+}
+
+/* Thin gold separator between sidebar and content */
+.sidebar-drawer {
+  border-right: 1px solid rgba(200, 144, 10, 0.18);
+}
+
+/* Section caption labels */
+.sidebar-tree .caption-text {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gk-forest-300);
+  opacity: 0.85;
+}
+
+/* Active sidebar link gold indicator */
+.sidebar-tree .current > a,
+.sidebar-tree .current-page > a {
+  color: var(--gk-gold-300) !important;
+  font-weight: 500;
+}
+
+/* Sidebar search input */
+.sidebar-search-container input {
+  background: var(--gk-forest-800);
+  border-color: rgba(200, 144, 10, 0.22);
+  color: var(--gk-forest-100);
+  border-radius: 8px;
+}
+
+.sidebar-search-container input::placeholder {
+  color: var(--gk-forest-300);
+  opacity: 0.7;
+}
+
+.theme-toggle-container {
+  display: none !important;
+}
+
+
+/* ─── Typography ──────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6,
+.sidebar-brand-text,
+.toc-title,
+.caption-text {
+  font-family: var(--font-stack--headings);
+}
+
+h3, h4, h5, h6 {
+  font-family: var(--font-stack);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.content h1 {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  color: var(--gk-ink-950);
+}
+
+.content h2 {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 2.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--gk-cream-300);
+}
+
+.content h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--gk-forest-700);
+  margin-top: 1.8rem;
+}
+
+.content p,
+.content li {
+  font-size: 1.05rem;
+  line-height: 1.72;
+  color: var(--gk-ink-800);
+}
+
+.content {
+  max-width: 56rem;
+}
+
+/* Remove h2 border on first h2 that immediately follows h1 */
+.content h1 + h2 {
+  border-top: none;
+  margin-top: 1rem;
+}
+
+
+/* ─── Code blocks ─────────────────────────────────────────────────────────── */
+div.highlight,
+pre {
+  border: 1px solid rgba(200, 144, 10, 0.16);
+  border-radius: 12px;
+  background: var(--gk-cream-100);
+}
+
+code.literal {
+  background: var(--gk-cream-100);
+  border: 1px solid var(--gk-cream-300);
+  border-radius: 5px;
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+  color: var(--gk-forest-700);
+}
+
+
+/* ─── Tables ──────────────────────────────────────────────────────────────── */
+table.docutils {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--gk-cream-300);
+  font-size: 0.97rem;
+}
+
+table.docutils thead {
+  background: var(--gk-cream-200);
+}
+
+table.docutils thead th {
+  font-family: var(--font-stack);
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--gk-ink-600);
+  padding: 0.6rem 0.9rem;
+}
+
+table.docutils td {
+  padding: 0.55rem 0.9rem;
+  border-color: var(--gk-cream-200);
+}
+
+
+/* ─── TOC / right-hand navigation ────────────────────────────────────────── */
+.toc-title {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--gk-ink-400);
+  font-family: var(--font-stack);
+}
+
+.toc-tree a {
+  font-size: 0.88rem;
+  color: var(--gk-ink-600);
+}
+
+.toc-tree a:hover {
+  color: var(--gk-gold-600);
+  text-decoration: none;
+}
+
+
+/* ─── Homepage: Hero ──────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  margin: 0 0 2.75rem;
+  padding: 2.4rem 2.6rem;
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--gk-forest-900);
+  box-shadow:
+    0 1px 0 rgba(200, 144, 10, 0.3) inset,
+    0 24px 60px rgba(22, 40, 24, 0.25);
+}
+
+/* Subtle leaf-vein pattern overlay via gradient */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 80% 20%, rgba(200, 144, 10, 0.14), transparent 55%),
+    radial-gradient(ellipse at 15% 90%, rgba(74, 122, 82, 0.2), transparent 45%);
+  pointer-events: none;
+}
+
+.hero h1 {
+  position: relative;
+  margin: 0;
+  font-size: clamp(2.6rem, 6vw, 4.2rem);
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--gk-gold-300);
+  text-shadow: 0 2px 30px rgba(200, 144, 10, 0.3);
+}
+
+.hero p {
+  position: relative;
+  max-width: 42rem;
+  margin: 0.9rem 0 0;
+  color: var(--gk-forest-100);
+  font-size: 1.08rem;
+  line-height: 1.65;
+  opacity: 0.9;
+}
+
+.hero-actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.6rem;
+}
+
+.hero-actions a,
+.action-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 217, 138, 0.35);
+  background: rgba(245, 217, 138, 0.1);
+  color: var(--gk-gold-300);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.hero-actions a:first-child,
+.action-link:first-child {
+  background: var(--gk-gold-600);
+  border-color: var(--gk-gold-600);
+  color: var(--gk-forest-950);
+  font-weight: 600;
+}
+
+.hero-actions a:first-child:hover {
+  background: var(--gk-gold-500);
+  border-color: var(--gk-gold-500);
+  text-decoration: none;
+}
+
+.hero-actions a:not(:first-child):hover,
+.action-link:hover {
+  background: rgba(245, 217, 138, 0.2);
+  border-color: rgba(245, 217, 138, 0.55);
+  text-decoration: none;
+  color: var(--gk-gold-300);
+}
+
+
+/* ─── Homepage: Quick-feature cards ──────────────────────────────────────── */
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.85rem;
+  margin: 1.4rem 0 2.4rem;
+}
+
+.quick-card {
+  padding: 1.2rem 1.3rem;
+  border: 1px solid var(--gk-cream-300);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(30, 24, 20, 0.05);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.quick-card:hover {
+  border-color: rgba(200, 144, 10, 0.35);
+  box-shadow: 0 4px 18px rgba(30, 24, 20, 0.08);
+}
+
+/* Small gold accent chip above the title */
+.quick-card::before {
+  display: block;
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--gk-gold-500);
+  margin-bottom: 0.7rem;
+  content: "";
+}
+
+.quick-card h3 {
+  margin-top: 0 !important;
+  margin-bottom: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--gk-ink-950);
+}
+
+.quick-card p {
+  margin-bottom: 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--gk-ink-600);
+}
+
+
+/* ─── Homepage: Contents grid ─────────────────────────────────────────────── */
+.contents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.85rem;
+  margin: 1.4rem 0 2rem;
+}
+
+.contents-block {
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--gk-cream-300);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.contents-block h3 {
+  margin-top: 0 !important;
+  margin-bottom: 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gk-forest-700);
+}
+
+.contents-block ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.contents-block li {
+  font-size: 0.93rem;
+  line-height: 1.5;
+}
+
+.contents-block li + li {
+  margin-top: 0.3rem;
+}
+
+.contents-block a {
+  color: var(--gk-ink-800);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.contents-block a:hover {
+  color: var(--gk-gold-700);
+  border-bottom-color: rgba(200, 144, 10, 0.4);
+}
+
+
+/* ─── Section note / callout ──────────────────────────────────────────────── */
+.section-note {
+  margin: 2rem 0;
+  padding: 0.9rem 1.1rem;
+  border-left: 3px solid var(--gk-gold-500);
+  border-radius: 0 10px 10px 0;
+  background: var(--gk-gold-50);
+  font-size: 0.95rem;
+  color: var(--gk-ink-800);
+}
+
+
+/* ─── Surface container ───────────────────────────────────────────────────── */
+.surface {
+  margin: 1.5rem 0 2rem;
+  padding: 1.3rem 1.4rem;
+  border: 1px solid var(--gk-cream-300);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.surface h2:first-child,
+.surface h3:first-child {
+  margin-top: 0;
+}
+
+
+/* ─── Toctree links ───────────────────────────────────────────────────────── */
+.toctree-wrapper ul {
+  padding-left: 1rem;
+}
+
+.toctree-wrapper a {
+  color: var(--gk-ink-800);
+  text-decoration: none;
+}
+
+.toctree-wrapper a:hover {
+  color: var(--gk-gold-700);
+  text-decoration: underline;
+  text-decoration-color: rgba(200, 144, 10, 0.5);
+}
+
+
+/* ─── API / reference page ────────────────────────────────────────────────── */
+.reference-page h1 {
+  font-size: 2.4rem;
+}
+
+dl.py dt {
+  background: var(--gk-cream-100);
+  border-left: 3px solid var(--gk-forest-500);
+  border-radius: 0 8px 8px 0;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-stack--monospace);
+  font-size: 0.9rem;
+}
+
+dl.py dd {
+  margin-left: 1.2rem;
+  padding-left: 0.8rem;
+  border-left: 1px solid var(--gk-cream-300);
+}
+
+
+/* ─── Miscellaneous ───────────────────────────────────────────────────────── */
+
+/* Scrollbar in sidebar (webkit) */
+.sidebar-sticky::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-sticky::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-sticky::-webkit-scrollbar-thumb {
+  background: rgba(200, 144, 10, 0.25);
+  border-radius: 2px;
+}
+
+/* Furo pagination nav */
+.prev-next-area a {
+  border-radius: 10px;
+  border: 1px solid var(--gk-cream-300);
+  background: #fff;
+  transition: border-color 0.15s ease;
+}
+
+.prev-next-area a:hover {
+  border-color: rgba(200, 144, 10, 0.35);
+}
+
+/* Article header announcement / version pill */
+.sidebar-version {
+  font-size: 0.72rem;
+  background: rgba(200, 144, 10, 0.15);
+  color: var(--gk-gold-700);
+  border: 1px solid rgba(200, 144, 10, 0.25);
+  border-radius: 999px;
+  padding: 0.1em 0.6em;
+}

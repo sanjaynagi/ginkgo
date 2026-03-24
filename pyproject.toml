@@ -55,6 +55,10 @@ ruff = ">=0.4"
 [tool.pixi.feature.dev.pypi-dependencies]
 pre-commit = ">=4.0"
 ty = "*"
+sphinx = ">=8.0"
+myst-parser = ">=4.0"
+furo = ">=2024.8.6"
+sphinx-copybutton = ">=0.5.2"
 
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
@@ -66,6 +70,8 @@ format = "ruff format ginkgo/ tests/"
 format-check = "ruff format --check ginkgo/ tests/"
 typecheck = "ty check ginkgo/config.py ginkgo/ui ginkgo/cli/app.py ginkgo/cli/commands/ui.py"
 precommit = "pre-commit run --all-files"
+docs-build = "sphinx-build -b dirhtml docs/site docs/_build/dirhtml"
+docs-clean = "rm -rf docs/_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
