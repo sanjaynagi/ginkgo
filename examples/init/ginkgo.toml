@@ -1,0 +1,3 @@
+run_label = "Starter demo"
+items = ["alpha", "beta"]
+variants = ["draft", "final"]
