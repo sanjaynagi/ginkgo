@@ -52,48 +52,6 @@ Each phase is independently testable and follows the same structure:
 
 ---
 
-### Phase 10 — Alerts and Notifications
-
-**Goal:** Notify users and teams when workflow runs complete, fail, or breach configurable thresholds — without requiring constant UI monitoring.
-
-**Depends on:** Phase 13 (Secrets) for credential resolution. Channel credentials must be sourced exclusively through the secrets resolver.
-
-#### Deliverables
-
-- Add a notification system that fires on run lifecycle events:
-  - run started
-  - run completed successfully
-  - run failed (with task-level failure detail)
-  - task retry threshold exceeded
-- Support the following notification channels with pluggable backends:
-  - **Email**: SMTP-based with configurable recipients and templates
-  - **Slack**: webhook-based messages with run summary and link to local UI
-- Add notification configuration at the workflow level and as global defaults in Ginkgo config:
-  - per-channel enable/disable
-  - event filter (e.g. only notify on failure)
-  - recipient list or webhook URL (resolved via the secrets system from Phase 13)
-- Include enough context in each notification to be actionable without opening the UI:
-  - workflow name, run id, trigger timestamp
-  - list of failed tasks with exit codes and truncated log tails
-  - direct link to the local UI run detail view where available
-
-#### Key design points
-
-- Notification dispatch must be non-blocking and must not affect run execution or provenance recording if a notification channel is unavailable.
-- Webhook URLs, SMTP passwords, and other channel credentials must be resolved through the secrets system (Phase 13), never stored in plaintext config.
-- Notification templates should be user-overridable so teams can adapt message content to their conventions.
-- Channel backends should be pluggable so additional channels (PagerDuty, Teams, etc.) can be added without core changes.
-
-#### Validation
-
-- Run a workflow that succeeds and assert a Slack webhook receives a well-formed success notification with the correct run id and summary.
-- Run a workflow that fails and assert the failure notification includes the failed task name, exit code, and a truncated log tail.
-- Configure failure-only filtering and assert no notification is sent for a successful run.
-- Assert that a misconfigured or unavailable notification channel logs a warning but does not prevent the run from completing or provenance from being recorded.
-- Assert that channel credentials are sourced from the secrets layer and never appear in config files or log output.
-
----
-
 ## Tier 3 — Asset Layer
 
 ### Phase 7 — Asset Catalog and Lineage

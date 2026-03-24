@@ -95,6 +95,7 @@ ginkgo run workflow.py
       <li><a href="guide/notebooks/">Notebook tasks</a></li>
       <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
       <li><a href="guide/cli-and-ui/">CLI and UI</a></li>
+      <li><a href="guide/notifications/">Notifications</a></li>
     </ul>
   </article>
   <article class="contents-block">
@@ -129,6 +130,7 @@ guide/environments
 guide/notebooks
 guide/caching-and-provenance
 guide/cli-and-ui
+guide/notifications
 examples/bioinfo-workflow
 examples/notebook-task
 reference/api
