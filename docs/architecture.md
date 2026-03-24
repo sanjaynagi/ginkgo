@@ -10,7 +10,8 @@ The repository currently implements:
 - Workflow authoring helpers via `expand(...)`, `zip_expand(...)`, `flatten(...)`, and `slug(...)`
   for concise deterministic workflow authoring
 - Dynamic DAG expansion when tasks return nested `Expr` or `ExprList` values
-- Explicit task kinds via `@task(kind="python" | "shell")` and `@notebook(...)`
+- Explicit task kinds via `@task("python")`, `@task("shell")`, `@task("notebook")`, and `@task("script")`, with kind optionally specified as first positional argument
+- Notebook and script execution via explicit `notebook(...)` and `script(...)` sentinels returned from task bodies
 - Content-addressed caching for scalar values, files, folders, arrays, DataFrames, and other supported Python objects
 - Concurrent scheduling with job, core, and memory constraints
 - Python task execution through a `ProcessPoolExecutor`
@@ -67,6 +68,8 @@ ginkgo/
 ├── core/
 │   ├── expr.py
 │   ├── flow.py
+│   ├── notebook.py
+│   ├── script.py
 │   ├── shell.py
 │   ├── task.py
 │   └── types.py
@@ -207,9 +210,21 @@ are entered only for executable shell payloads.
 
 ### Notebook Tasks
 
-Notebook execution is expressed with `@notebook(...)`. The decorated function
-defines the typed parameter schema and UI description, while the notebook file
-itself is treated as the executable source artifact.
+Notebook execution is expressed by declaring `@task("notebook")` and returning
+a `notebook(...)` sentinel from the task body. The task decorator defines the
+typed parameter schema, while the notebook file itself is treated as the
+executable source artifact.
+
+Task body pattern:
+
+```python
+@task("notebook")
+def analyze_data(*, input_file: file) -> file:
+    return notebook(
+        path="notebooks/analysis.ipynb",
+        outputs="output.html"
+    )
+```
 
 Implemented notebook behavior includes:
 
@@ -217,11 +232,43 @@ Implemented notebook behavior includes:
 - marimo notebook execution through a CLI/script invocation with resolved task arguments forwarded as CLI parameters
 - stable run-scoped notebook artifacts under `.ginkgo/runs/<run_id>/notebooks/`
 - HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
-- notebook source hashing folded into cache identity so notebook edits invalidate cache even when the wrapper function body is unchanged
+- notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
+- explicit `outputs=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `outputs` is omitted)
 
-Notebook tasks run on the same driver-side shell execution path as other
-shell-like tasks. This preserves existing scheduler semantics for dependency
-resolution, retries, environment dispatch, cache recording, and provenance.
+Notebook tasks run on the same driver-side execution path as shell tasks,
+preserving scheduler semantics for dependency resolution, retries, environment
+dispatch, cache recording, and provenance. This completes Phase 5 of the
+implementation roadmap: notebook execution now converges onto the explicit
+output contract used by other non-Python task kinds.
+
+### Script Tasks
+
+Script execution is expressed by declaring `@task("script")` and returning a
+`script(...)` sentinel from the task body. Scripts support Python and R languages
+with automatic interpreter detection based on file extension.
+
+Task body pattern:
+
+```python
+@task("script")
+def process_data(*, input_file: file, threshold: float) -> file:
+    return script(
+        path="scripts/analyze.py",
+        outputs="results.csv"
+    )
+```
+
+Implemented script behavior includes:
+
+- automatic interpreter detection: `.py` → `python`, `.R` or `.r` → `rscript`
+- optional explicit interpreter override via `interpreter=` parameter
+- resolved task inputs forwarded as CLI arguments (`--arg-name value`)
+- explicit `outputs=` parameter for declaring and validating post-execution outputs (optional)
+- source file hashing folded into cache identity so script edits invalidate cache
+
+Script tasks, like notebook tasks, run on the driver-side execution path and
+preserve full scheduler semantics. They are part of Phase 5's convergence of
+non-Python task kinds onto a unified explicit output contract.
 
 ### Special Types
 
@@ -240,9 +287,9 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 - task identity
 - task version
 - task source hash
-- notebook source hash for notebook-backed tasks
 - resolved input hashes
 - environment lock hash when `env=` is used
+- source file hash for driver tasks (notebook and script) folded at evaluation time
 
 Implemented cache hashing includes:
 
