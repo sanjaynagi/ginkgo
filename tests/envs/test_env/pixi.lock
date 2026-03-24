@@ -265,7 +265,7 @@ packages:
 - pypi: ../../..
   name: ginkgo
   version: 0.1.0
-  sha256: 5dc9d979f76fa2be704261fff34c2e5b5d11ec7674bc2ee1266ac4c2ba2772eb
+  sha256: 204d9b6d47ccdfc72130312a7fc83854e183996873280c6eade4f2ec7b2f52a0
   requires_dist:
   - blake3>=1.0.0
   - numpy>=2.0
@@ -274,6 +274,9 @@ packages:
   - pyarrow>=23.0.1,<24
   - pyyaml>=6.0
   - rich>=13.9
+  - papermill>=2.6 ; extra == 'notebooks'
+  - marimo>=0.11 ; extra == 'notebooks'
+  - nbconvert>=7.16 ; extra == 'notebooks'
   requires_python: '>=3.11'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/icu-78.2-h33c6efd_0.conda
   sha256: 142a722072fa96cf16ff98eaaf641f54ab84744af81754c292cb81e0881c0329

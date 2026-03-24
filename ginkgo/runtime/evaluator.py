@@ -29,6 +29,8 @@ from typing import Any, get_args, get_origin
 import yaml
 
 from ginkgo.core.expr import Expr, ExprList
+from ginkgo.core.notebook_expr import NotebookExpr
+from ginkgo.core.script_expr import ScriptExpr
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
@@ -152,6 +154,7 @@ class _TaskNode:
     display_label: str | None = None
     attempt: int = 0
     secret_values: tuple[str, ...] = ()
+    driver_sentinel: Any = None
 
     @property
     def task_def(self) -> TaskDef:
@@ -450,9 +453,18 @@ class _ConcurrentEvaluator:
             resolved_args=resolved_args,
         )
 
+        # For notebook/script tasks, eagerly evaluate the body to capture the
+        # source hash of the underlying file and fold it into the cache key.
+        extra_source_hash: str | None = None
+        if node.task_def.kind in {"notebook", "script"}:
+            sentinel = node.task_def.fn(**resolved_args)
+            node.driver_sentinel = sentinel
+            extra_source_hash = sentinel.source_hash
+
         cache_key, input_hashes = self._cache_store.build_cache_key(
             task_def=node.task_def,
             resolved_args=resolved_args,
+            extra_source_hash=extra_source_hash,
         )
         node.resolved_args = resolved_args
         node.cache_key = cache_key
@@ -569,22 +581,13 @@ class _ConcurrentEvaluator:
             self._record_task_metadata(node)
             self._validate_task_contract(node=node)
 
-            if node.task_def.kind == "shell":
+            if node.task_def.kind in {"notebook", "script", "shell"}:
                 assert self._shell_executor is not None
                 future = self._shell_executor.submit(
                     self._run_driver_task,
                     node=node,
                 )
                 self._running_futures[future] = (node_id, "driver")
-                continue
-
-            if node.task_def.kind == "notebook":
-                assert self._shell_executor is not None
-                future = self._shell_executor.submit(
-                    self._run_notebook,
-                    node=node,
-                )
-                self._running_futures[future] = (node_id, "shell")
                 continue
 
             node.transport_path = Path(
@@ -1182,26 +1185,36 @@ class _ConcurrentEvaluator:
 
         return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
 
-    def _run_notebook(self, *, node: _TaskNode) -> Any:
-        """Execute a notebook task and return the rendered HTML path."""
-        assert node.execution_args is not None
-        notebook = node.task_def.notebook
-        if notebook is None:
-            raise RuntimeError(f"{node.task_def.name} is missing notebook metadata")
+    def _run_notebook_expr(self, *, node: _TaskNode, notebook_expr: NotebookExpr) -> Any:
+        """Execute a notebook task from a ``NotebookExpr`` sentinel.
 
-        artifacts = self._notebook_artifacts(node=node)
+        Determines the notebook backend from the file extension, runs
+        execution, renders HTML, validates any declared outputs, and
+        returns the appropriate result value.
+        """
+        assert node.execution_args is not None
+        notebook_path = notebook_expr.path
+        notebook_kind = "ipynb" if notebook_path.suffix.lower() == ".ipynb" else "marimo"
+        user_log_path = Path(notebook_expr.log) if notebook_expr.log is not None else None
+        description = _fn_description(node.task_def.fn)
+
+        artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
         self._prepare_notebook_artifacts(artifacts=artifacts)
         self._record_notebook_manifest(
             node=node,
+            notebook_kind=notebook_kind,
+            notebook_path=notebook_path,
+            notebook_description=description,
             executed_path=artifacts.executed_path,
             rendered_html=artifacts.html_path,
             render_status="pending",
             render_error=None,
         )
 
-        if notebook.kind == "ipynb":
+        # Build and run the execution command.
+        if notebook_kind == "ipynb":
             command = self._build_ipynb_execute_command(
-                notebook_path=notebook.path,
+                notebook_path=notebook_path,
                 executed_path=artifacts.executed_path,
                 params_path=artifacts.params_path,
                 resolved_args=node.execution_args,
@@ -1209,15 +1222,18 @@ class _ConcurrentEvaluator:
             executed_artifact = artifacts.executed_path
         else:
             command = self._build_marimo_execute_command(
-                notebook_path=notebook.path,
+                notebook_path=notebook_path,
                 resolved_args=node.execution_args,
             )
             executed_artifact = None
 
-        completed = self._run_logged_command(node=node, cmd=command)
+        completed = self._run_logged_command(node=node, cmd=command, user_log_path=user_log_path)
         if completed.returncode != 0:
             self._record_notebook_manifest(
                 node=node,
+                notebook_kind=notebook_kind,
+                notebook_path=notebook_path,
+                notebook_description=description,
                 executed_path=executed_artifact,
                 rendered_html=artifacts.html_path,
                 render_status="not_started",
@@ -1231,9 +1247,10 @@ class _ConcurrentEvaluator:
                 output=(completed.stdout or "") + (completed.stderr or ""),
             )
 
+        # Render notebook to HTML.
         render_command = self._build_notebook_render_command(
-            notebook_path=notebook.path,
-            notebook_kind=notebook.kind,
+            notebook_path=notebook_path,
+            notebook_kind=notebook_kind,
             executed_path=artifacts.executed_path,
             html_path=artifacts.html_path,
         )
@@ -1246,6 +1263,9 @@ class _ConcurrentEvaluator:
             )
             self._record_notebook_manifest(
                 node=node,
+                notebook_kind=notebook_kind,
+                notebook_path=notebook_path,
+                notebook_description=description,
                 executed_path=executed_artifact,
                 rendered_html=artifacts.html_path,
                 render_status="failed",
@@ -1254,13 +1274,82 @@ class _ConcurrentEvaluator:
         else:
             self._record_notebook_manifest(
                 node=node,
+                notebook_kind=notebook_kind,
+                notebook_path=notebook_path,
+                notebook_description=description,
                 executed_path=executed_artifact,
                 rendered_html=artifacts.html_path,
                 render_status="succeeded",
                 render_error=None,
             )
 
-        return self._coerce_return_value(task_def=node.task_def, value=str(artifacts.html_path))
+        # Validate and return declared outputs, or fall back to HTML artifact.
+        if notebook_expr.outputs is None:
+            return self._coerce_return_value(
+                task_def=node.task_def, value=str(artifacts.html_path)
+            )
+        return self._validate_and_return_outputs(
+            task_name=node.task_def.name,
+            task_def=node.task_def,
+            outputs=notebook_expr.outputs,
+        )
+
+    def _run_script(self, *, node: _TaskNode, script_expr: ScriptExpr) -> Any:
+        """Execute a script task, forwarding task inputs as CLI arguments."""
+        assert node.execution_args is not None
+        user_log_path = Path(script_expr.log) if script_expr.log is not None else None
+
+        # Resolve the interpreter: use sys.executable for Python to stay in the same env.
+        interpreter_cmd = (
+            shlex.quote(sys.executable)
+            if script_expr.interpreter == "python"
+            else shlex.quote(script_expr.interpreter)
+        )
+
+        # Build command: interpreter script_path --arg-name value ...
+        cmd_parts = [interpreter_cmd, shlex.quote(str(script_expr.path))]
+        for name, value in node.execution_args.items():
+            option = f"--{name.replace('_', '-')}"
+            cmd_parts.extend(
+                [shlex.quote(option), shlex.quote(_stringify_notebook_argument(value))]
+            )
+        cmd = " ".join(cmd_parts)
+
+        completed = self._run_logged_command(node=node, cmd=cmd, user_log_path=user_log_path)
+        combined_output = (completed.stdout or "") + (completed.stderr or "")
+        if completed.returncode != 0:
+            raise ShellTaskError(
+                task_name=node.task_def.name,
+                cmd=self._redact_text(cmd, secret_values=node.secret_values),
+                exit_code=completed.returncode,
+                output=combined_output,
+                log=script_expr.log,
+            )
+
+        if script_expr.outputs is None:
+            return None
+        return self._validate_and_return_outputs(
+            task_name=node.task_def.name,
+            task_def=node.task_def,
+            outputs=script_expr.outputs,
+        )
+
+    def _validate_and_return_outputs(
+        self,
+        *,
+        task_name: str,
+        task_def: TaskDef,
+        outputs: str | list[str],
+    ) -> Any:
+        """Validate declared output paths exist and return coerced value."""
+        output_paths = [outputs] if isinstance(outputs, str) else list(outputs)
+        missing = [p for p in output_paths if not Path(p).exists()]
+        if missing:
+            label = missing[0] if len(missing) == 1 else missing
+            raise FileNotFoundError(
+                f"Task {task_name} completed but did not create declared output {label!r}"
+            )
+        return self._coerce_return_value(task_def=task_def, value=outputs)
 
     def _run_logged_command(
         self,
@@ -1302,8 +1391,16 @@ class _ConcurrentEvaluator:
                 handle.write(stdout_text + stderr_text)
         return completed
 
-    def _notebook_artifacts(self, *, node: _TaskNode) -> _NotebookArtifacts:
-        """Return deterministic artifact paths for one notebook task."""
+    def _notebook_artifacts(self, *, node: _TaskNode, notebook_kind: str) -> _NotebookArtifacts:
+        """Return deterministic artifact paths for one notebook task.
+
+        Parameters
+        ----------
+        node : _TaskNode
+            The task node being executed.
+        notebook_kind : str
+            Either ``"ipynb"`` (Jupyter/Papermill) or ``"marimo"``.
+        """
         task_key = f"task_{node.node_id:04d}"
         root_dir = (
             self.provenance.run_dir / "notebooks"
@@ -1311,11 +1408,7 @@ class _ConcurrentEvaluator:
             else Path.cwd() / ".ginkgo" / "notebooks"
         )
         root_dir.mkdir(parents=True, exist_ok=True)
-        executed_path = (
-            root_dir / f"{task_key}.ipynb"
-            if node.task_def.notebook is not None and node.task_def.notebook.kind == "ipynb"
-            else None
-        )
+        executed_path = root_dir / f"{task_key}.ipynb" if notebook_kind == "ipynb" else None
         return _NotebookArtifacts(
             root_dir=root_dir,
             html_path=root_dir / f"{task_key}.html",
@@ -1420,22 +1513,42 @@ class _ConcurrentEvaluator:
         self,
         *,
         node: _TaskNode,
+        notebook_kind: str,
+        notebook_path: Path,
+        notebook_description: str | None,
         executed_path: Path | None,
         rendered_html: Path,
         render_status: str,
         render_error: str | None,
     ) -> None:
-        """Persist notebook-specific metadata to the task manifest."""
+        """Persist notebook-specific metadata to the task manifest.
+
+        Parameters
+        ----------
+        node : _TaskNode
+            The task node being recorded.
+        notebook_kind : str
+            Either ``"ipynb"`` or ``"marimo"``.
+        notebook_path : Path
+            Resolved path to the source notebook file.
+        notebook_description : str | None
+            Human-readable description from the task function docstring.
+        executed_path : Path | None
+            Path to the executed notebook artifact (ipynb only).
+        rendered_html : Path
+            Path to the rendered HTML artifact.
+        render_status : str
+            One of ``"pending"``, ``"not_started"``, ``"failed"``, ``"succeeded"``.
+        render_error : str | None
+            Error message when rendering fails.
+        """
         if self.provenance is None:
-            return
-        notebook = node.task_def.notebook
-        if notebook is None:
             return
         extra: dict[str, Any] = {
             "task_type": "notebook",
-            "notebook_kind": notebook.kind,
-            "notebook_path": str(notebook.path),
-            "notebook_description": notebook.description,
+            "notebook_kind": notebook_kind,
+            "notebook_path": str(notebook_path),
+            "notebook_description": notebook_description,
             "render_status": render_status,
             "rendered_html": _relativize_to_run_dir(
                 run_dir=self.provenance.run_dir,
@@ -1488,12 +1601,16 @@ class _ConcurrentEvaluator:
         """
         # Foreign execution environments only support shell-like tasks.
         for node in self._nodes.values():
-            if node.task_def.env is not None and node.task_def.kind not in {"notebook", "shell"}:
+            if node.task_def.env is not None and node.task_def.kind not in {
+                "notebook",
+                "script",
+                "shell",
+            }:
                 raise TypeError(
                     f"{node.task_def.name} uses env {node.task_def.env!r} "
                     "but is declared with kind='python'. Foreign environments "
-                    "only support shell-like tasks — use @task(kind='shell') "
-                    "or @notebook(...)."
+                    "only support driver tasks — use @task('shell'), "
+                    "@task('notebook'), or @task('script')."
                 )
 
         if self.backend is None:
@@ -1706,14 +1823,6 @@ class _ConcurrentEvaluator:
             dependency_ids=sorted(node.dependency_ids),
             dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
         )
-        if node.task_def.notebook is not None:
-            self._record_notebook_manifest(
-                node=node,
-                executed_path=None,
-                rendered_html=self._notebook_artifacts(node=node).html_path,
-                render_status="pending",
-                render_error=None,
-            )
         if node.task_def.env is not None and self.backend is not None:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
@@ -1825,8 +1934,15 @@ class _ConcurrentEvaluator:
         print(json.dumps(payload, sort_keys=True), file=self._stderr)
 
     def _run_driver_task(self, *, node: _TaskNode) -> Any:
-        """Run a shell-task wrapper on the scheduler process."""
+        """Run a driver-task wrapper on the scheduler process.
+
+        For notebook and script tasks the body was already evaluated eagerly
+        in ``_prepare_node`` to extract the source hash for the cache key.
+        The stored sentinel is returned directly to avoid re-running the body.
+        """
         assert node.execution_args is not None
+        if node.driver_sentinel is not None:
+            return node.driver_sentinel
         with _task_log_context(
             stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
             stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
@@ -1835,9 +1951,10 @@ class _ConcurrentEvaluator:
             return node.task_def.fn(**node.execution_args)
 
     def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
-        """Advance a task after its Python wrapper has finished."""
+        """Advance a task after its driver wrapper has finished."""
+        _driver_sentinels = (ShellExpr, NotebookExpr, ScriptExpr)
         if self._failure is not None and (
-            isinstance(completed_value, ShellExpr)
+            isinstance(completed_value, _driver_sentinels)
             or self._contains_dynamic_expression(completed_value)
         ):
             self._cleanup_transport(node)
@@ -1848,11 +1965,13 @@ class _ConcurrentEvaluator:
             return
 
         if node.task_def.kind == "python":
-            if isinstance(completed_value, ShellExpr):
+            if isinstance(completed_value, _driver_sentinels):
+                sentinel_name = type(completed_value).__name__
                 self._cleanup_transport(node)
                 raise TypeError(
-                    f"{node.task_def.name} returned shell(...), but the task is declared "
-                    "with kind='python'. Use @task(kind='shell') for shell command tasks."
+                    f"{node.task_def.name} returned {sentinel_name}, but the task is declared "
+                    "with kind='python'. Use @task(kind='shell'), @task('notebook'), or "
+                    "@task('script') for the appropriate task kind."
                 )
 
             self._validate_process_safe_value(
@@ -1873,21 +1992,38 @@ class _ConcurrentEvaluator:
             self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
             return
 
-        if node.task_def.kind == "notebook":
-            self._cleanup_transport(node)
-            raise TypeError(
-                f"{node.task_def.name} is declared with kind='notebook' and is executed "
-                "from its notebook source file rather than a Python return value."
-            )
+        # Driver task: shell / notebook / script — dispatch to the appropriate runner.
+        assert self._shell_executor is not None
 
         if isinstance(completed_value, ShellExpr):
             self._cleanup_transport(node)
-            assert self._shell_executor is not None
             node.state = "running_shell"
             future = self._shell_executor.submit(
                 self._run_shell,
                 node=node,
                 shell_expr=completed_value,
+            )
+            self._running_futures[future] = (node.node_id, "shell")
+            return
+
+        if isinstance(completed_value, NotebookExpr):
+            self._cleanup_transport(node)
+            node.state = "running_shell"
+            future = self._shell_executor.submit(
+                self._run_notebook_expr,
+                node=node,
+                notebook_expr=completed_value,
+            )
+            self._running_futures[future] = (node.node_id, "shell")
+            return
+
+        if isinstance(completed_value, ScriptExpr):
+            self._cleanup_transport(node)
+            node.state = "running_shell"
+            future = self._shell_executor.submit(
+                self._run_script,
+                node=node,
+                script_expr=completed_value,
             )
             self._running_futures[future] = (node.node_id, "shell")
             return
@@ -1902,9 +2038,11 @@ class _ConcurrentEvaluator:
             return
 
         self._cleanup_transport(node)
+        kind = node.task_def.kind
+        _expected = {"shell": "shell(...)", "notebook": "notebook(...)", "script": "script(...)"}
         raise TypeError(
-            f"{node.task_def.name} is declared with kind='shell' and must return "
-            "shell(...) or dynamic task expressions."
+            f"{node.task_def.name} is declared with kind={kind!r} and must return "
+            f"{_expected.get(kind, 'the appropriate sentinel')} or dynamic task expressions."
         )
 
 
@@ -1950,6 +2088,13 @@ class NotebookTaskError(RuntimeError):
         if output:
             details = f"{details}\n{output.strip()}"
         super().__init__(details)
+
+
+def _fn_description(fn: Any) -> str | None:
+    """Return the first line of a function's docstring, or None."""
+    import inspect
+
+    return inspect.getdoc(fn)
 
 
 def _serialize_notebook_value(value: Any) -> Any:
