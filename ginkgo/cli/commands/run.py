@@ -16,7 +16,7 @@ from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.config import _config_session
+from ginkgo.config import _config_session, load_runtime_config
 from ginkgo.core.flow import FlowDef
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
@@ -27,6 +27,7 @@ from ginkgo.runtime.resources import RunResourceMonitor
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
 from ginkgo.runtime.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
+from ginkgo.runtime.notifications import build_notification_service
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -73,6 +74,9 @@ def run_workflow(
         flow = _discover_flow(module)
         expr = flow()
         params = session.merged_loaded_values()
+    runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
+    runtime_params = dict(runtime_config)
+    runtime_params.update(params)
     load_elapsed = time.perf_counter() - load_started
 
     registry = PixiRegistry(
@@ -81,7 +85,7 @@ def run_workflow(
     )
     secret_resolver = build_secret_resolver(
         project_root=Path.cwd(),
-        config=params,
+        config=runtime_params,
         environ=os.environ,
     )
     backend = CompositeBackend(
@@ -161,96 +165,110 @@ def run_workflow(
         sink=recorder.update_resources,
     )
     resource_monitor.start()
-    with ExitStack() as stack:
-        events_stream = stack.enter_context(recorder.events_path.open("a", encoding="utf-8"))
-        bus = EventBus()
-        bus.subscribe(JsonlEventRenderer(stream=events_stream, include_task_logs=True))
-        renderer = None
-        if output_mode in {"agent", "agent_verbose"}:
-            bus.subscribe(
-                JsonlEventRenderer(
-                    stream=sys.stdout,
-                    include_task_logs=output_mode == "agent_verbose",
+    warning_console = console(sys.stderr)
+    notification_service = build_notification_service(
+        config=runtime_params,
+        resolver=secret_resolver,
+        run_dir=recorder.run_dir,
+        workflow_path=workflow_path,
+        logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+    )
+    try:
+        with ExitStack() as stack:
+            events_stream = stack.enter_context(recorder.events_path.open("a", encoding="utf-8"))
+            bus = EventBus()
+            bus.subscribe(JsonlEventRenderer(stream=events_stream, include_task_logs=True))
+            if notification_service is not None:
+                bus.subscribe(notification_service.handle)
+            renderer = None
+            if output_mode in {"agent", "agent_verbose"}:
+                bus.subscribe(
+                    JsonlEventRenderer(
+                        stream=sys.stdout,
+                        include_task_logs=output_mode == "agent_verbose",
+                    )
+                )
+            else:
+                renderer = _CliRunRenderer(
+                    console=rich_console,
+                    summary=_RunSummary(
+                        run_id=run_id,
+                        mode=output_mode,
+                        run_dir=recorder.run_dir,
+                        cores=evaluator.cores,
+                        memory=memory,
+                    ),
+                    resources=_ResourceRenderState(provider=resource_monitor.current_summary),
+                )
+                bus.subscribe(RichEventRenderer(renderer=renderer))
+            evaluator = _ConcurrentEvaluator(
+                jobs=jobs,
+                cores=cores,
+                memory=memory,
+                backend=backend,
+                provenance=recorder,
+                secret_resolver=secret_resolver,
+                event_bus=bus,
+            )
+            if renderer is not None:
+                renderer.start(planned_tasks=planned_tasks)
+            bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
+            bus.emit(
+                RunValidated(
+                    run_id=run_id,
+                    task_count=task_count,
+                    edge_count=edge_count,
+                    env_count=env_count,
                 )
             )
-        else:
-            renderer = _CliRunRenderer(
-                console=rich_console,
-                summary=_RunSummary(
-                    run_id=run_id,
-                    mode=output_mode,
-                    run_dir=recorder.run_dir,
-                    cores=evaluator.cores,
-                    memory=memory,
-                ),
-                resources=_ResourceRenderState(provider=resource_monitor.current_summary),
-            )
-            bus.subscribe(RichEventRenderer(renderer=renderer))
-        evaluator = _ConcurrentEvaluator(
-            jobs=jobs,
-            cores=cores,
-            memory=memory,
-            backend=backend,
-            provenance=recorder,
-            secret_resolver=secret_resolver,
-            event_bus=bus,
-        )
-        if renderer is not None:
-            renderer.start(planned_tasks=planned_tasks)
-        bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
-        bus.emit(
-            RunValidated(
-                run_id=run_id,
-                task_count=task_count,
-                edge_count=edge_count,
-                env_count=env_count,
-            )
-        )
-        run_started = time.perf_counter()
-        try:
-            evaluator.evaluate(expr)
-        except BaseException as exc:
+            run_started = time.perf_counter()
+            try:
+                evaluator.evaluate(expr)
+            except BaseException as exc:
+                resource_summary = resource_monitor.stop()
+                recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
+                bus.emit(
+                    RunCompleted(
+                        run_id=run_id,
+                        status="failed",
+                        task_counts=_task_counts(load_manifest(recorder.run_dir)),
+                        error=str(exc),
+                    )
+                )
+                if renderer is not None:
+                    failure_details = _load_failure_details(
+                        run_dir=recorder.run_dir,
+                        renderer=renderer,
+                        verbose=output_mode == "verbose",
+                    )
+                    renderer.finish(
+                        elapsed=time.perf_counter() - run_started,
+                        success=False,
+                        resources=resource_summary,
+                        failure_details=failure_details,
+                    )
+                    print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+                raise
+
             resource_summary = resource_monitor.stop()
-            recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
+            recorder.finalize(status="succeeded", resources=resource_summary)
+            manifest = load_manifest(recorder.run_dir)
             bus.emit(
                 RunCompleted(
                     run_id=run_id,
-                    status="failed",
-                    task_counts=_task_counts(load_manifest(recorder.run_dir)),
-                    error=str(exc),
+                    status="success",
+                    task_counts=_task_counts(manifest),
                 )
             )
             if renderer is not None:
-                failure_details = _load_failure_details(
-                    run_dir=recorder.run_dir,
-                    renderer=renderer,
-                    verbose=output_mode == "verbose",
-                )
                 renderer.finish(
                     elapsed=time.perf_counter() - run_started,
-                    success=False,
+                    success=True,
                     resources=resource_summary,
-                    failure_details=failure_details,
                 )
-                print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
-            raise
-
-        resource_summary = resource_monitor.stop()
-        recorder.finalize(status="succeeded", resources=resource_summary)
-        manifest = load_manifest(recorder.run_dir)
-        bus.emit(
-            RunCompleted(
-                run_id=run_id,
-                status="success",
-                task_counts=_task_counts(manifest),
-            )
-        )
-        if renderer is not None:
-            renderer.finish(
-                elapsed=time.perf_counter() - run_started,
-                success=True,
-                resources=resource_summary,
-            )
+    finally:
+        if notification_service is not None:
+            notification_service.close()
     return 0
 
 
