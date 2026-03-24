@@ -293,6 +293,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 
 Implemented cache hashing includes:
 
+- BLAKE3 as the canonical digest algorithm for cache keys, artifact IDs, input hashing, and source hashing
 - scalar hashing via stable value hashing
 - file-content hashing
 - recursive folder-content hashing
@@ -312,7 +313,7 @@ now fails explicitly instead of silently weakening cache correctness.
 File and folder outputs now flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
 `ginkgo/runtime/artifact_store.py`. Artifact identity is content-addressed:
-files use `<sha256>.<ext>` and directories use `<sha256>`. This identity is now
+files use `<blake3-digest>.<ext>` and directories use `<blake3-digest>`. This identity is now
 recorded in cache metadata as `artifact_ids`, which gives later roadmap phases
 a stable contract for remote storage and lineage features.
 
