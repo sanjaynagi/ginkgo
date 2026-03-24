@@ -264,7 +264,7 @@ class TestContainerKindRestriction:
         def python_in_container(x: int) -> int:
             return x + 1
 
-        with pytest.raises(TypeError, match="only support shell-like tasks"):
+        with pytest.raises(TypeError, match="only support driver tasks"):
             evaluate(python_in_container(x=1))
 
     def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path):
