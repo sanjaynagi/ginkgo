@@ -13,6 +13,7 @@ from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.init import command_init
+from ginkgo.cli.commands.inspect import command_inspect
 from ginkgo.cli.commands.run import command_run
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
@@ -40,6 +41,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_test(args)
         if args.command == "init":
             return command_init(args)
+        if args.command == "inspect":
+            return command_inspect(args)
         if args.command == "secrets":
             return command_secrets(args)
         if args.command == "ui":
@@ -65,12 +68,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--memory", type=int, default=None)
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
+    run_parser.add_argument("--agent", action="store_true")
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
     cache_subparsers.add_parser("ls")
     clear_parser = cache_subparsers.add_parser("clear")
     clear_parser.add_argument("cache_key")
+    explain_parser = cache_subparsers.add_parser("explain")
+    explain_parser.add_argument("--run", required=True, dest="run_id")
     prune_parser = cache_subparsers.add_parser("prune")
     prune_parser.add_argument("--older-than", required=True)
     prune_parser.add_argument("--dry-run", action="store_true")
@@ -85,10 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     debug_parser = subparsers.add_parser("debug")
     debug_parser.add_argument("run_id", nargs="?")
+    debug_parser.add_argument("--json", action="store_true")
 
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("workflow", nargs="?")
     doctor_parser.add_argument("--config", action="append", default=[])
+    doctor_parser.add_argument("--json", action="store_true")
 
     test_parser = subparsers.add_parser("test")
     test_parser.add_argument("--dry-run", action="store_true")
@@ -96,6 +104,14 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("directory", nargs="?", default=".")
     init_parser.add_argument("--force", action="store_true")
+
+    inspect_parser = subparsers.add_parser("inspect")
+    inspect_subparsers = inspect_parser.add_subparsers(dest="inspect_command", required=True)
+    inspect_workflow_parser = inspect_subparsers.add_parser("workflow")
+    inspect_workflow_parser.add_argument("workflow", nargs="?")
+    inspect_workflow_parser.add_argument("--config", action="append", default=[])
+    inspect_run_parser = inspect_subparsers.add_parser("run")
+    inspect_run_parser.add_argument("run_id")
 
     ui_parser = subparsers.add_parser("ui")
     ui_parser.add_argument("run_id", nargs="?")
@@ -118,6 +134,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_mode_from_args(args: argparse.Namespace) -> RunMode:
     """Return the run output mode implied by CLI flags."""
+    if getattr(args, "agent", False):
+        if getattr(args, "verbose", False):
+            return "agent_verbose"
+        return "agent"
     if getattr(args, "verbose", False):
         return "verbose"
     return "default"

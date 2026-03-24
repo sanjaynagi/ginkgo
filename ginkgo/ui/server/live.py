@@ -1,56 +1,26 @@
-"""Live state capture and incremental event helpers for the UI server."""
+"""Runtime-event-backed live state helpers for the UI server."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from ginkgo.runtime.provenance import load_manifest
-
 from .payloads import (
     list_runs,
     read_log,
-    resolve_log_path,
     run_payload,
     task_payload,
     workspace_payload,
 )
-from .utils import cache_signature, runs_signature
 from .workspaces import WorkspaceRecord, WorkspaceRegistry
-
-
-def workspaces_signature(workspaces: list[WorkspaceRecord]) -> str:
-    """Build a change signature across all loaded workspaces.
-
-    Parameters
-    ----------
-    workspaces : list[WorkspaceRecord]
-        Loaded workspace metadata.
-
-    Returns
-    -------
-    str
-        Deterministic change signature for live refreshes.
-    """
-    parts: list[str] = []
-    for workspace in workspaces:
-        parts.append(
-            "|".join(
-                [
-                    workspace.workspace_id,
-                    runs_signature(workspace.runs_root),
-                    cache_signature(workspace.cache_root),
-                ]
-            )
-        )
-    return "||".join(parts) or "no-workspaces"
 
 
 def capture_live_state(
     *, registry: WorkspaceRegistry, selected_run_id: str | None
 ) -> dict[str, Any]:
-    """Capture the current workspace/run/task state for live event diffing.
+    """Capture the current workspace/run state for event-log tailing.
 
     Parameters
     ----------
@@ -76,8 +46,7 @@ def capture_live_state(
     }
 
     runs_by_workspace: dict[str, list[dict[str, Any]]] = {}
-    run_signatures: dict[str, dict[str, str]] = {}
-    task_log_signatures: dict[str, dict[str, dict[str, str]]] = {}
+    event_offsets: dict[str, dict[str, int]] = {}
     active_workspace = registry.active_workspace()
 
     # Capture serialized workspace meta and per-run signatures.
@@ -96,14 +65,14 @@ def capture_live_state(
 
         runs = list_runs(workspace)
         runs_by_workspace[workspace.workspace_id] = runs
-        run_signatures[workspace.workspace_id] = {}
-        task_log_signatures[workspace.workspace_id] = {}
+        event_offsets[workspace.workspace_id] = {}
 
         for run in runs:
             run_id = cast(str, run["run_id"])
-            run_dir = workspace.runs_root / run_id
-            run_signatures[workspace.workspace_id][run_id] = run_dir_signature(run_dir)
-            task_log_signatures[workspace.workspace_id][run_id] = run_task_log_signatures(run_dir)
+            events_path = workspace.runs_root / run_id / "events.jsonl"
+            event_offsets[workspace.workspace_id][run_id] = (
+                events_path.stat().st_size if events_path.is_file() else 0
+            )
 
     if active_workspace is None:
         meta["active_workspace"] = None
@@ -111,8 +80,7 @@ def capture_live_state(
     return {
         "meta": meta,
         "runs_by_workspace": runs_by_workspace,
-        "run_signatures": run_signatures,
-        "task_log_signatures": task_log_signatures,
+        "event_offsets": event_offsets,
     }
 
 
@@ -151,63 +119,62 @@ def diff_live_state(*, previous: dict[str, Any], current: dict[str, Any]) -> lis
                 )
             )
 
-    # Then emit full run payload updates for changed run manifests/params.
-    previous_signatures = previous["run_signatures"]
-    current_signatures = current["run_signatures"]
+    # Tail runtime event logs for incremental run/task updates.
+    previous_offsets = previous["event_offsets"]
+    current_offsets = current["event_offsets"]
     for workspace_id in all_workspace_ids:
-        prev_workspace_runs = previous_signatures.get(workspace_id, {})
-        curr_workspace_runs = current_signatures.get(workspace_id, {})
+        prev_workspace_runs = previous_offsets.get(workspace_id, {})
+        curr_workspace_runs = current_offsets.get(workspace_id, {})
         all_run_ids = sorted(set(prev_workspace_runs) | set(curr_workspace_runs))
-        for run_id in all_run_ids:
-            prev_signature = prev_workspace_runs.get(run_id)
-            curr_signature = curr_workspace_runs.get(run_id)
-            if curr_signature is None or prev_signature == curr_signature:
-                continue
-            workspace = workspace_from_meta(meta=current["meta"], workspace_id=workspace_id)
-            if workspace is None:
-                continue
-            payload = run_payload(workspace=workspace, run_id=run_id)
-            if payload is None:
-                continue
-            events.append(
-                live_event(
-                    event_type="run_updated",
-                    payload={"workspace_id": workspace_id, "run": payload},
-                )
-            )
-
-    # Finally emit log updates for tasks whose log files changed.
-    previous_logs = previous["task_log_signatures"]
-    current_logs = current["task_log_signatures"]
-    for workspace_id in all_workspace_ids:
-        prev_workspace_logs = previous_logs.get(workspace_id, {})
-        curr_workspace_logs = current_logs.get(workspace_id, {})
-        all_run_ids = sorted(set(prev_workspace_logs) | set(curr_workspace_logs))
         workspace = workspace_from_meta(meta=current["meta"], workspace_id=workspace_id)
         if workspace is None:
             continue
         for run_id in all_run_ids:
-            prev_run_logs = prev_workspace_logs.get(run_id, {})
-            curr_run_logs = curr_workspace_logs.get(run_id, {})
-            all_task_keys = sorted(set(prev_run_logs) | set(curr_run_logs))
-            for task_key in all_task_keys:
-                prev_signature = prev_run_logs.get(task_key)
-                curr_signature = curr_run_logs.get(task_key)
-                if curr_signature is None or prev_signature == curr_signature:
+            prev_offset = prev_workspace_runs.get(run_id, 0)
+            curr_offset = curr_workspace_runs.get(run_id)
+            if curr_offset is None or curr_offset <= prev_offset:
+                continue
+            run_dir = workspace.runs_root / run_id
+            runtime_events = read_runtime_events(
+                run_dir=run_dir,
+                start_offset=prev_offset,
+                end_offset=curr_offset,
+            )
+            if not runtime_events:
+                continue
+
+            should_refresh_run = False
+            for runtime_event in runtime_events:
+                if runtime_event.get("event") == "task_log":
+                    task_key = runtime_event.get("task_id")
+                    if not isinstance(task_key, str):
+                        continue
+                    detail = task_payload(workspace=workspace, run_id=run_id, task_key=task_key)
+                    if detail is None:
+                        continue
+                    events.append(
+                        live_event(
+                            event_type="task_log_updated",
+                            payload={
+                                "workspace_id": workspace_id,
+                                "run_id": run_id,
+                                "task_key": task_key,
+                                "stdout": read_log(detail.get("stdout_path")),
+                                "stderr": read_log(detail.get("stderr_path")),
+                            },
+                        )
+                    )
                     continue
-                detail = task_payload(workspace=workspace, run_id=run_id, task_key=task_key)
-                if detail is None:
+                should_refresh_run = True
+
+            if should_refresh_run:
+                payload = run_payload(workspace=workspace, run_id=run_id)
+                if payload is None:
                     continue
                 events.append(
                     live_event(
-                        event_type="task_log_updated",
-                        payload={
-                            "workspace_id": workspace_id,
-                            "run_id": run_id,
-                            "task_key": task_key,
-                            "stdout": read_log(detail.get("stdout_path")),
-                            "stderr": read_log(detail.get("stderr_path")),
-                        },
+                        event_type="run_updated",
+                        payload={"workspace_id": workspace_id, "run": payload},
                     )
                 )
 
@@ -264,58 +231,27 @@ def live_event(*, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_dir_signature(run_dir: Path) -> str:
-    """Return a signature for one run directory.
+def read_runtime_events(
+    *, run_dir: Path, start_offset: int, end_offset: int
+) -> list[dict[str, Any]]:
+    """Read appended runtime events from one run-local JSONL stream."""
+    events_path = run_dir / "events.jsonl"
+    if not events_path.is_file() or end_offset <= start_offset:
+        return []
 
-    Parameters
-    ----------
-    run_dir : Path
-        Run directory to inspect.
+    payloads: list[dict[str, Any]] = []
+    with events_path.open("r", encoding="utf-8") as handle:
+        handle.seek(start_offset)
+        remaining = end_offset - start_offset
+        text = handle.read(remaining)
 
-    Returns
-    -------
-    str
-        Deterministic file signature.
-    """
-    manifest_path = run_dir / "manifest.yaml"
-    params_path = run_dir / "params.yaml"
-    parts: list[str] = []
-    for path in (manifest_path, params_path):
-        if path.is_file():
-            stat = path.stat()
-            parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
-    return "|".join(parts) or "missing"
-
-
-def run_task_log_signatures(run_dir: Path) -> dict[str, str]:
-    """Return per-task log signatures for one run.
-
-    Parameters
-    ----------
-    run_dir : Path
-        Run directory to inspect.
-
-    Returns
-    -------
-    dict[str, str]
-        Per-task log signatures.
-    """
-    manifest = load_manifest(run_dir)
-    tasks = manifest.get("tasks", {})
-    if not isinstance(tasks, dict):
-        return {}
-
-    signatures: dict[str, str] = {}
-    for task_key, task in tasks.items():
-        if not isinstance(task_key, str) or not isinstance(task, dict):
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
             continue
-        stdout_path = resolve_log_path(run_dir, task, "stdout_log")
-        stderr_path = resolve_log_path(run_dir, task, "stderr_log")
-        parts: list[str] = []
-        for path in (stdout_path, stderr_path):
-            if path is None or not path.is_file():
-                continue
-            stat = path.stat()
-            parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
-        signatures[task_key] = "|".join(parts) or "no-logs"
-    return signatures
+        try:
+            payload = cast(dict[str, Any], json.loads(line))
+        except Exception:
+            continue
+        payloads.append(payload)
+    return payloads
