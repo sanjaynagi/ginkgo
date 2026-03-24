@@ -68,8 +68,22 @@ class CacheStore:
         *,
         task_def: TaskDef,
         resolved_args: dict[str, Any],
+        extra_source_hash: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        """Build a stable content-addressed cache key for a task call."""
+        """Build a stable content-addressed cache key for a task call.
+
+        Parameters
+        ----------
+        task_def : TaskDef
+            The task definition.
+        resolved_args : dict[str, Any]
+            Resolved input argument values.
+        extra_source_hash : str | None
+            Additional source hash to fold into the cache key. Used by
+            notebook and script tasks to incorporate the source hash of the
+            underlying notebook or script file, which is not known at
+            decoration time.
+        """
         input_hashes: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -78,11 +92,19 @@ class CacheStore:
             input_hashes[name] = self._hash_value(annotation=annotation, value=resolved_args[name])
 
         env_hash = self._env_hash(task_def=task_def)
+
+        # Combine wrapper source hash with optional extra (notebook/script) source hash.
+        source_hash = task_def.cache_source_hash
+        if extra_source_hash is not None:
+            from ginkgo.runtime.hashing import hash_str
+
+            source_hash = hash_str(f"{source_hash}:{extra_source_hash}")
+
         payload = {
             "env": task_def.env,
             "env_hash": env_hash,
             "inputs": input_hashes,
-            "source_hash": task_def.cache_source_hash,
+            "source_hash": source_hash,
             "task": task_def.name,
             "version": task_def.version,
         }
@@ -148,10 +170,6 @@ class CacheStore:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "version": task_def.version,
                 }
-                if task_def.notebook is not None:
-                    meta["notebook_path"] = str(task_def.notebook.path)
-                    meta["notebook_kind"] = task_def.notebook.kind
-                    meta["notebook_source_hash"] = task_def.notebook.source_hash
                 (temp_dir / "meta.json").write_text(
                     json.dumps(meta, indent=2, sort_keys=True),
                     encoding="utf-8",
