@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 from datetime import datetime
+import json
 from pathlib import Path
 
 import yaml
@@ -542,28 +543,36 @@ class TestCliInit:
         assert "✓ Initialized project scaffold at" in result.stdout
         assert "Created:" in result.stdout
         assert "demo_project/workflow.py" in result.stdout
-        assert "agents.ginkgo.md" in result.stdout
+        assert "README.md" in result.stdout
         assert "ginkgo test --dry-run" in result.stdout
 
         project_dir = Path("demo-project")
         assert (project_dir / "pixi.toml").is_file()
         assert (project_dir / "ginkgo.toml").is_file()
+        assert (project_dir / "README.md").is_file()
         assert (project_dir / "demo_project" / "__init__.py").is_file()
         assert (project_dir / "demo_project" / "workflow.py").is_file()
+        assert (project_dir / "demo_project" / "modules" / "pipeline.py").is_file()
+        assert (project_dir / "demo_project" / "modules" / "prep.py").is_file()
+        assert (project_dir / "demo_project" / "modules" / "analysis.py").is_file()
         assert (project_dir / "demo_project" / "modules" / "reporting.py").is_file()
         assert (project_dir / "demo_project" / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "demo_project" / "scripts" / "build_brief.py").is_file()
+        assert (project_dir / "demo_project" / "notebooks" / "overview.ipynb").is_file()
         assert (project_dir / "tests" / "workflows" / "smoke.py").is_file()
-        assert (project_dir / "agents.ginkgo.md").is_file()
+        assert not (project_dir / "agents.ginkgo.md").exists()
 
         workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
-        module_text = (project_dir / "demo_project" / "modules" / "reporting.py").read_text(
+        pipeline_text = (project_dir / "demo_project" / "modules" / "pipeline.py").read_text(
             encoding="utf-8"
         )
+        readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
         assert "@flow" not in workflow_text
-        assert "from demo_project.modules.reporting import main" in workflow_text
-        assert "@flow" in module_text
-        assert "ginkgo.config" in module_text
-        assert 'ginkgo.config("ginkgo.toml")' in module_text
+        assert "from demo_project.modules.pipeline import main" in workflow_text
+        assert "@flow" in pipeline_text
+        assert "expand(" in pipeline_text
+        assert "ginkgo run --agent" in readme_text
+        assert "demo_project/workflow.py" in readme_text
 
     def test_init_refuses_to_overwrite_without_force(self) -> None:
         project_dir = Path("demo-project")
@@ -810,3 +819,189 @@ def main():
         result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 1
         assert "Missing secrets: env:MISSING_TOKEN" in result.stderr
+
+
+class TestCliAgentAndInspection:
+    def test_run_agent_emits_jsonl_events(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--agent", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        event_types = {event["event"] for event in events}
+        assert "run_started" in event_types
+        assert "run_validated" in event_types
+        assert "task_started" in event_types
+        assert "task_completed" in event_types
+        assert "run_completed" in event_types
+
+    def test_run_agent_verbose_emits_task_log_events(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    print("streamed stdout line")
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--agent", "--verbose", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        task_logs = [event for event in events if event["event"] == "task_log"]
+        assert task_logs
+        assert any(event["stream"] == "stdout" for event in task_logs)
+        assert any("streamed stdout line" in event["chunk"] for event in task_logs)
+
+    def test_inspect_workflow_returns_static_graph_json(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def one() -> str:
+    return "one"
+
+@task()
+def two(value: str) -> str:
+    return value
+
+@flow
+def main():
+    return two(value=one())
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["task_count"] == 2
+        assert payload["edge_count"] == 1
+        assert {task["task_name"] for task in payload["tasks"]} == {"one", "two"}
+
+    def test_debug_json_and_inspect_run_return_machine_readable_failure_data(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def explode(value: str) -> str:
+    raise RuntimeError(f"boom:{value}")
+
+@flow
+def main():
+    return explode(value="sample")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 1
+        run_dir = _extract_run_dir(run.stderr)
+
+        debug = _run_cli("debug", run_dir.name, "--json", cwd=Path.cwd())
+        assert debug.returncode == 0, debug.stderr
+        debug_payload = json.loads(debug.stdout)
+        assert debug_payload["status"] == "failed"
+        assert debug_payload["failures"][0]["task_name"] == "explode"
+
+        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
+        assert inspect.returncode == 0, inspect.stderr
+        inspect_payload = json.loads(inspect.stdout)
+        assert inspect_payload["status"] == "failed"
+        assert inspect_payload["tasks"][0]["failure"]["kind"] == "scheduler_error"
+
+    def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, secret, task
+
+@task()
+def echo_token(token: str) -> str:
+    return token
+
+@flow
+def main():
+    return echo_token(token=secret("MISSING_TOKEN"))
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv("MISSING_TOKEN", raising=False)
+        result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload[0]["code"] == "MISSING_SECRET"
+
+    def test_cache_explain_reports_rerun_reason(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task(version="v1")
+def produce(value: str) -> str:
+    return value
+
+@flow
+def main():
+    return produce(value="a")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert first.returncode == 0, first.stderr
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task(version="v2")
+def produce(value: str) -> str:
+    return value
+
+@flow
+def main():
+    return produce(value="a")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert second.returncode == 0, second.stderr
+        run_dir = _extract_run_dir(second.stdout)
+
+        explain = _run_cli("cache", "explain", "--run", run_dir.name, cwd=Path.cwd())
+        assert explain.returncode == 0, explain.stderr
+        payload = json.loads(explain.stdout)
+        assert payload["tasks"][0]["reason"] in {
+            "version_bump",
+            "cache_key_changed",
+            "source_hash_changed",
+        }

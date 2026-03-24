@@ -28,7 +28,17 @@ def _copy_example(*, name: str, destination_root: Path) -> Path:
     """Copy an example workflow into the isolated test workspace."""
     source = EXAMPLES_ROOT / name
     destination = destination_root / name
-    shutil.copytree(source, destination)
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(
+            ".ginkgo",
+            "results",
+            "logs",
+            "__pycache__",
+            ".pytest_cache",
+        ),
+    )
     return destination
 
 
@@ -61,7 +71,12 @@ def _mock_docker() -> Iterator[None]:
     original_run_subprocess = _ConcurrentEvaluator._run_subprocess
 
     def _patched_run_subprocess(
-        self_eval: Any, *, argv: str | list[str], use_shell: bool
+        self_eval: Any,
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+        on_stdout: Any = None,
+        on_stderr: Any = None,
     ) -> subprocess.CompletedProcess[str]:
         # Docker argv: ["docker", "run", ..., "bash", "-c", "<cmd>"]
         if isinstance(argv, list) and argv and argv[0] == "docker":
@@ -72,13 +87,23 @@ def _mock_docker() -> Iterator[None]:
                 text=True,
                 capture_output=True,
             )
+            if on_stdout is not None and completed.stdout:
+                on_stdout(completed.stdout)
+            if on_stderr is not None and completed.stderr:
+                on_stderr(completed.stderr)
             return subprocess.CompletedProcess(
                 args=argv,
                 returncode=completed.returncode,
                 stdout=completed.stdout or "",
                 stderr=completed.stderr or "",
             )
-        return original_run_subprocess(self_eval, argv=argv, use_shell=use_shell)
+        return original_run_subprocess(
+            self_eval,
+            argv=argv,
+            use_shell=use_shell,
+            on_stdout=on_stdout,
+            on_stderr=on_stderr,
+        )
 
     with (
         patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess),
@@ -95,13 +120,20 @@ def _mock_notebook_tools() -> Iterator[None]:
     original_run_subprocess = _ConcurrentEvaluator._run_subprocess
 
     def _patched_run_subprocess(
-        self_eval: Any, *, argv: str | list[str], use_shell: bool
+        self_eval: Any,
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+        on_stdout: Any = None,
+        on_stderr: Any = None,
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(argv, str) and "papermill" in argv:
             parts = shlex.split(argv)
             output_path = Path(parts[4])
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("executed notebook", encoding="utf-8")
+            if on_stdout is not None:
+                on_stdout("papermill ok\n")
             return subprocess.CompletedProcess(
                 args=argv,
                 returncode=0,
@@ -116,6 +148,8 @@ def _mock_notebook_tools() -> Iterator[None]:
             html_path = output_dir / f"{output_stem}.html"
             html_path.parent.mkdir(parents=True, exist_ok=True)
             html_path.write_text("<html><body>notebook report</body></html>", encoding="utf-8")
+            if on_stdout is not None:
+                on_stdout("nbconvert ok\n")
             return subprocess.CompletedProcess(
                 args=argv,
                 returncode=0,
@@ -123,13 +157,55 @@ def _mock_notebook_tools() -> Iterator[None]:
                 stderr="",
             )
 
-        return original_run_subprocess(self_eval, argv=argv, use_shell=use_shell)
+        return original_run_subprocess(
+            self_eval,
+            argv=argv,
+            use_shell=use_shell,
+            on_stdout=on_stdout,
+            on_stderr=on_stderr,
+        )
 
     with patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess):
         yield
 
 
 class TestExamples:
+    def test_init_example_runs_and_caches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        example_dir = _copy_example(name="init", destination_root=tmp_path)
+        monkeypatch.chdir(example_dir)
+
+        with _mock_docker(), _mock_notebook_tools():
+            first_run_dir, first_manifest = _run_example(example_dir=example_dir)
+
+        notebook_task = next(
+            task
+            for task in first_manifest["tasks"].values()
+            if str(task["task"]).endswith(".render_overview_notebook")
+        )
+        notebook_html = first_run_dir / str(notebook_task["rendered_html"])
+
+        assert first_manifest["status"] == "succeeded"
+        assert len(first_manifest["tasks"]) == 19
+        assert notebook_task["task_type"] == "notebook"
+        assert notebook_task["render_status"] == "succeeded"
+        assert notebook_html.is_file()
+        assert (example_dir / "results" / "summary.json").is_file()
+        assert (example_dir / "results" / "delivery_manifest.md").is_file()
+
+        with _mock_docker(), _mock_notebook_tools():
+            _, second_manifest = _run_example(example_dir=example_dir)
+        with _mock_docker(), _mock_notebook_tools():
+            _, third_manifest = _run_example(example_dir=example_dir)
+
+        assert second_manifest["status"] == "succeeded"
+        assert any(task["status"] == "cached" for task in second_manifest["tasks"].values())
+        assert third_manifest["status"] == "succeeded"
+        assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
+
     def test_bioinfo_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
