@@ -41,6 +41,7 @@ class RunProvenanceRecorder:
     params_path: Path = field(init=False)
     envs_dir: Path = field(init=False)
     logs_dir: Path = field(init=False)
+    events_path: Path = field(init=False)
     _manifest: dict[str, Any] = field(init=False, repr=False)
     _task_logs: dict[int, tuple[Path, Path]] = field(default_factory=dict, init=False, repr=False)
     _copied_envs: set[str] = field(default_factory=set, init=False, repr=False)
@@ -52,6 +53,7 @@ class RunProvenanceRecorder:
         self.params_path = self.run_dir / "params.yaml"
         self.envs_dir = self.run_dir / "envs"
         self.logs_dir = self.run_dir / "logs"
+        self.events_path = self.run_dir / "events.jsonl"
         self.envs_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self._manifest = {
@@ -210,7 +212,15 @@ class RunProvenanceRecorder:
             task.pop("finished_at", None)
             self._write_manifest()
 
-    def mark_cached(self, *, node_id: int, task_name: str, env: str | None, value: Any) -> None:
+    def mark_cached(
+        self,
+        *,
+        node_id: int,
+        task_name: str,
+        env: str | None,
+        value: Any,
+        outputs: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Mark a task as served from cache."""
         with self._lock:
             self.ensure_task(node_id=node_id, task_name=task_name, env=env)
@@ -218,6 +228,7 @@ class RunProvenanceRecorder:
             task["cached"] = True
             task["exit_code"] = 0
             task["output"] = _render_value(value)
+            task["outputs"] = _render_value(outputs or [])
             task["finished_at"] = _timestamp()
             task["status"] = "cached"
             task.pop("error", None)
@@ -232,6 +243,7 @@ class RunProvenanceRecorder:
         task_name: str,
         env: str | None,
         value: Any,
+        outputs: list[dict[str, Any]] | None = None,
     ) -> None:
         """Mark a task as completed successfully."""
         with self._lock:
@@ -240,6 +252,7 @@ class RunProvenanceRecorder:
             task["cached"] = False
             task["exit_code"] = 0
             task["output"] = _render_value(value)
+            task["outputs"] = _render_value(outputs or [])
             task["finished_at"] = _timestamp()
             task["status"] = "succeeded"
             task.pop("error", None)
@@ -254,6 +267,7 @@ class RunProvenanceRecorder:
         task_name: str,
         env: str | None,
         exc: BaseException,
+        failure: dict[str, Any] | None = None,
     ) -> None:
         """Mark a task as failed."""
         with self._lock:
@@ -262,6 +276,7 @@ class RunProvenanceRecorder:
             task["cached"] = False
             task["exit_code"] = getattr(exc, "exit_code", 1)
             task["error"] = str(exc)
+            task["failure"] = _render_value(failure or {})
             task["last_error"] = str(exc)
             task["last_exit_code"] = getattr(exc, "exit_code", 1)
             task["retries_remaining"] = 0

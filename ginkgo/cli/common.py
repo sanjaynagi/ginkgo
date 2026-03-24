@@ -11,7 +11,7 @@ from ginkgo.runtime.provenance import latest_run_dir
 
 RUNS_ROOT = Path(".ginkgo") / "runs"
 CACHE_ROOT = Path(".ginkgo") / "cache"
-RunMode = Literal["default", "verbose"]
+RunMode = Literal["default", "verbose", "agent", "agent_verbose"]
 
 
 def console(output_stream, *, width: int | None = None) -> Console:

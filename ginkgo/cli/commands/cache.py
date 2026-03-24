@@ -88,6 +88,17 @@ def command_cache(args) -> int:
         )
         return 0
 
+    if args.cache_command == "explain":
+        from ginkgo.cli.commands.inspect import inspect_run
+        from ginkgo.cli.common import resolve_run_dir
+
+        payload = explain_run_cache(
+            cache_root=CACHE_ROOT,
+            run_snapshot=inspect_run(run_dir=resolve_run_dir(args.run_id)),
+        )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     cache_dir = CACHE_ROOT / args.cache_key
     if not cache_dir.is_dir():
         raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
@@ -270,3 +281,97 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
     for child in list(artifacts_root.iterdir()):
         if child.name not in referenced:
             store.delete(artifact_id=child.name)
+
+
+def explain_run_cache(*, cache_root: Path, run_snapshot: dict[str, object]) -> dict[str, object]:
+    """Return cache explanations for each task in a run snapshot."""
+    explanations = []
+    tasks = run_snapshot.get("tasks", [])
+    if isinstance(tasks, list):
+        for task in tasks:
+            if isinstance(task, dict):
+                explanations.append(_explain_task_cache(cache_root=cache_root, task=task))
+    return {
+        "run_id": run_snapshot.get("run_id"),
+        "workflow": run_snapshot.get("workflow"),
+        "tasks": explanations,
+    }
+
+
+def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[str, object]:
+    """Return a best-effort cache explanation for one task."""
+    cache_key = task.get("cache_key")
+    task_name = str(task.get("task_name") or task.get("task") or "unknown")
+    if task.get("status") == "cached":
+        return {
+            "task_id": task.get("task_id"),
+            "task_name": task_name,
+            "cache_key": cache_key,
+            "reason": "all_inputs_match",
+        }
+
+    current_meta = _read_cache_meta(cache_root=cache_root, cache_key=cache_key)
+    sibling_entries = _entries_for_function(
+        cache_root=cache_root, function=task_name, exclude=cache_key
+    )
+    if not sibling_entries:
+        return {
+            "task_id": task.get("task_id"),
+            "task_name": task_name,
+            "cache_key": cache_key,
+            "reason": "no_prior_entry",
+        }
+
+    prior_meta = sibling_entries[-1]
+    reasons = []
+    if current_meta.get("source_hash") != prior_meta.get("source_hash"):
+        reasons.append("source_hash_changed")
+    if current_meta.get("version") != prior_meta.get("version"):
+        reasons.append("version_bump")
+    if current_meta.get("env") != prior_meta.get("env"):
+        reasons.append("env_lock_changed")
+    if current_meta.get("input_hashes") != prior_meta.get("input_hashes"):
+        reasons.append("input_changed")
+    if not reasons:
+        reasons.append("cache_key_changed")
+
+    return {
+        "task_id": task.get("task_id"),
+        "task_name": task_name,
+        "cache_key": cache_key,
+        "reason": reasons[0],
+        "details": reasons,
+    }
+
+
+def _read_cache_meta(*, cache_root: Path, cache_key: object) -> dict[str, object]:
+    """Return cache metadata for one key."""
+    if not isinstance(cache_key, str):
+        return {}
+    meta_path = cache_root / cache_key / "meta.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _entries_for_function(
+    *,
+    cache_root: Path,
+    function: str,
+    exclude: object,
+) -> list[dict[str, object]]:
+    """Return cache metadata entries for the same function."""
+    entries: list[dict[str, object]] = []
+    if not cache_root.exists():
+        return entries
+    for entry in sorted(path for path in cache_root.iterdir() if path.is_dir()):
+        if exclude == entry.name:
+            continue
+        meta = _read_cache_meta(cache_root=cache_root, cache_key=entry.name)
+        if _task_base_name(str(meta.get("function", "unknown"))) == _task_base_name(function):
+            entries.append(meta)
+    return entries
