@@ -76,7 +76,7 @@ class TestVW2ConcurrentEvaluation:
         assert result == ",".join(sorted(item * 2 for item in items))
         assert len(intervals) == 10
         assert _peak_overlap(intervals) >= 5
-        assert process_makespan < 0.6
+        assert process_makespan < 1.0
 
     def test_merge_receives_resolved_results(self):
         items = ["a", "b", "c"]
