@@ -15,7 +15,7 @@ from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.hashing import hash_bytes, hash_file, hash_str, new_hasher
+from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.runtime.secrets import redact_value, secret_identity
 from ginkgo.runtime.value_codec import (
     decode_value,
@@ -535,21 +535,7 @@ class CacheStore:
 
     def _hash_folder_contents(self, path: Path) -> str:
         """Return the BLAKE3 digest of a folder's recursive contents."""
-        real_path = path.resolve()
-        hasher = new_hasher()
-
-        for child in sorted(
-            real_path.rglob("*"), key=lambda item: str(item.relative_to(real_path))
-        ):
-            rel = str(child.relative_to(real_path))
-            if child.is_dir():
-                hasher.update(f"D:{rel}".encode("utf-8"))
-                continue
-
-            hasher.update(f"F:{rel}".encode("utf-8"))
-            hasher.update(self._hash_file_contents(child).encode("utf-8"))
-
-        return hasher.hexdigest()
+        return hash_directory(path)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""

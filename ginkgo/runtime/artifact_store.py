@@ -12,7 +12,7 @@ import stat
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ginkgo.runtime.hashing import hash_bytes, hash_file, new_hasher
+from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file
 
 
 @runtime_checkable
@@ -298,15 +298,7 @@ class LocalArtifactStore:
 
 def _hash_directory(path: Path) -> str:
     """Return a BLAKE3 digest over a directory's recursive contents."""
-    hasher = new_hasher()
-    for child in sorted(path.rglob("*"), key=lambda p: str(p.relative_to(path))):
-        rel = str(child.relative_to(path))
-        if child.is_dir():
-            hasher.update(f"D:{rel}".encode("utf-8"))
-            continue
-        hasher.update(f"F:{rel}".encode("utf-8"))
-        hasher.update(hash_file(child).encode("utf-8"))
-    return hasher.hexdigest()
+    return hash_directory(path)
 
 
 def _set_read_only_recursive(path: Path) -> None:
