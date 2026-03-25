@@ -18,9 +18,6 @@
 Ginkgo is a Python workflow orchestrator for scientific, analytical, and
 research workflows.
 
-It is licensed under the Apache License, Version 2.0. See
-[`LICENSE`](LICENSE).
-
 It is built around four ideas:
 
 - a Python-native authoring model with `@flow` and `@task()`
@@ -157,3 +154,8 @@ ginkgo/
 - `envs/` contains execution backends
 - `cli/` contains the `ginkgo` command-line interface
 - `ui/` contains the local run browser
+
+---
+
+Ginkgo is licensed under the Apache License, Version 2.0. See
+[`LICENSE`](LICENSE).
