@@ -2,6 +2,7 @@
 
 from concurrent.futures import Future, ProcessPoolExecutor
 import subprocess
+from typing import Any
 import shutil
 from pathlib import Path
 import sys
@@ -283,7 +284,9 @@ class TestEvaluate:
         assert '"status": "cached"' in captured.err
         assert (Path(".ginkgo") / "cache").exists()
 
-    def test_ipynb_notebook_task_records_html_and_uses_cache(self, tmp_path: Path) -> None:
+    def test_ipynb_notebook_task_records_html_and_uses_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         nb_path = tmp_path / "report.ipynb"
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
@@ -301,7 +304,7 @@ class TestEvaluate:
         calls: list[str] = []
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
         ) -> subprocess.CompletedProcess[str]:
             assert use_shell is True
             command = str(argv)
@@ -321,30 +324,28 @@ class TestEvaluate:
             raise AssertionError(command)
 
         evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
-        try:
-            result = evaluator.evaluate(expr)
-            manifest = load_manifest(recorder.run_dir)
+        result = evaluator.evaluate(expr)
+        manifest = load_manifest(recorder.run_dir)
 
-            assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
-            assert len(calls) == 2
-            assert manifest["tasks"]["task_0000"]["task_type"] == "notebook"
-            assert manifest["tasks"]["task_0000"]["render_status"] == "succeeded"
-            assert manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
+        assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        assert len(calls) == 2
+        assert manifest["tasks"]["task_0000"]["task_type"] == "notebook"
+        assert manifest["tasks"]["task_0000"]["render_status"] == "succeeded"
+        assert manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
 
-            # Re-evaluating with the same notebook hits cache.
-            cached = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-            monkeypatch.setattr(
-                cached,
-                "_run_subprocess",
-                lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
-            )
-            assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
-        finally:
-            monkeypatch.undo()
+        # Re-evaluating with the same notebook hits cache.
+        cached = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        monkeypatch.setattr(
+            cached,
+            "_run_subprocess",
+            lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
+        )
+        assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
 
-    def test_marimo_notebook_render_failure_writes_fallback_html(self, tmp_path: Path) -> None:
+    def test_marimo_notebook_render_failure_writes_fallback_html(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         nb_path = tmp_path / "explore.py"
         nb_path.write_text("print('marimo')\n", encoding="utf-8")
         expr = notebook_marimo_task(notebook_path=str(nb_path), sample_id="s1")
@@ -358,7 +359,7 @@ class TestEvaluate:
         )
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
         ) -> subprocess.CompletedProcess[str]:
             command = str(argv)
             if "export html" in command:
@@ -368,12 +369,8 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
         evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
-        try:
-            result = evaluator.evaluate(expr)
-        finally:
-            monkeypatch.undo()
+        result = evaluator.evaluate(expr)
 
         html_path = Path(result)
         manifest = load_manifest(recorder.run_dir)
@@ -382,26 +379,24 @@ class TestEvaluate:
         assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
         assert manifest["tasks"]["task_0000"]["render_error"] == "render blew up"
 
-    def test_script_task_runs_and_validates_outputs(self, tmp_path: Path) -> None:
+    def test_script_task_runs_and_validates_outputs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         script_path = tmp_path / "fit.py"
         script_path.write_text("# placeholder script\n", encoding="utf-8")
         output_path = tmp_path / "out.txt"
         expr = python_script_task(script_path=str(script_path), output_path=str(output_path))
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
         ) -> subprocess.CompletedProcess[str]:
             # Simulate the script creating its declared output.
             output_path.write_text("done\n", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
         evaluator = _ConcurrentEvaluator(jobs=1, cores=1)
-        monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
-        try:
-            result = evaluator.evaluate(expr)
-        finally:
-            monkeypatch.undo()
+        result = evaluator.evaluate(expr)
 
         assert Path(result).is_file()
 

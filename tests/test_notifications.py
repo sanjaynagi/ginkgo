@@ -9,6 +9,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 from ginkgo.runtime.notifications import parse_notification_config
 
 
@@ -106,13 +108,16 @@ class TestNotificationConfig:
         assert config.slack.webhook is not None
         assert config.slack.webhook.backend == "env"
         assert config.slack.webhook.name == "GINKGO_SLACK_WEBHOOK"
+        # "run_completed" is an alias for "run_succeeded"; the parser normalises it.
         assert config.slack.events == frozenset(
             {"run_started", "run_succeeded", "retry_exhausted"}
         )
+        # Values are capped at the schema maximums (50 → 25, 20 → 10).
         assert config.slack.log_tail_lines == 25
         assert config.slack.max_failed_tasks == 10
 
 
+@pytest.mark.integration
 class TestSlackNotifications:
     def test_cli_run_sends_start_and_success_notifications(self, monkeypatch) -> None:
         with _WebhookServer() as server:
