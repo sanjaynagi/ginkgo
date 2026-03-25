@@ -1,14 +1,24 @@
 # Ginkgo
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](/Users/sanjay.nagi/Software/ginkgo/pyproject.toml)
+[![Tests](https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml)
+[![Quality](https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push)](https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml)
+
 Ginkgo is a Python workflow orchestrator for scientific, analytical, and
 research workflows.
 
+It is licensed under the Apache License, Version 2.0. See
+[`LICENSE`](LICENSE).
+
 It is built around four ideas:
 
-- dynamic workflow expansion from resolved task results
 - a Python-native authoring model with `@flow` and `@task()`
-- reproducible execution through content-addressed caching and declared environments
-- clear post-run inspection through provenance, CLI tooling, and a local UI
+- dynamic workflow expansion from resolved task results
+- reproducible execution through content-addressed caching
+- isolated environments with pixi or container images
+- an agent-friendly interface for autonomous analytics
+- clear post-run inspection through provenance, CLI tooling, and a UI
 
 ## Documentation
 
