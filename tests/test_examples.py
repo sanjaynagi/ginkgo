@@ -169,6 +169,7 @@ def _mock_notebook_tools() -> Iterator[None]:
         yield
 
 
+@pytest.mark.integration
 class TestExamples:
     def test_init_example_runs_and_caches(
         self,

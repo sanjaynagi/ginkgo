@@ -1,9 +1,19 @@
 # Ginkgo
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](/Users/sanjay.nagi/Software/ginkgo/pyproject.toml)
-[![Tests](https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml)
-[![Quality](https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push)](https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml)
+<p align="center">
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
+  </a>
+  <a href="/Users/sanjay.nagi/Software/ginkgo/pyproject.toml">
+    <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python">
+  </a>
+  <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml">
+    <img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests">
+  </a>
+  <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml">
+    <img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality">
+  </a>
+</p>
 
 Ginkgo is a Python workflow orchestrator for scientific, analytical, and
 research workflows.
