@@ -166,6 +166,15 @@ def read_text_task(path: file) -> str:
 
 
 @task()
+def write_multiple_files_with_scalar_annotation(output_paths: list[str]) -> file:
+    for index, output_path in enumerate(output_paths):
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"payload-{index}", encoding="utf-8")
+    return output_paths
+
+
+@task()
 def list_dir_task(path: folder) -> list[str]:
     return sorted(child.name for child in Path(path).iterdir())
 
@@ -622,6 +631,19 @@ class TestShellTask:
         )
 
         assert result == [file(str(output_one)), file(str(output_two))]
+
+    def test_python_task_supports_list_output_values_for_scalar_file_annotation(
+        self, tmp_path: Path
+    ):
+        output_one = tmp_path / "python-list" / "sample_1.fastq.gz"
+        output_two = tmp_path / "python-list" / "sample_2.fastq.gz"
+        output_paths = [str(output_one), str(output_two)]
+
+        first = evaluate(write_multiple_files_with_scalar_annotation(output_paths=output_paths))
+        second = evaluate(write_multiple_files_with_scalar_annotation(output_paths=output_paths))
+
+        assert first == [file(str(output_one)), file(str(output_two))]
+        assert second == [file(str(output_one)), file(str(output_two))]
 
     def test_shell_task_requires_all_declared_outputs_to_exist(self, tmp_path: Path):
         output_one = tmp_path / "results" / "sample_1.fastq.gz"

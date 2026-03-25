@@ -12,6 +12,7 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -127,13 +128,14 @@ class _CliRunRenderer:
                 f"\n[bold red]✖[/] Failed in [bold]{_format_duration(elapsed)}[/] - "
                 f"{executed} tasks executed, {cached} cached, {failed} failed"
             )
-            if failure_details:
-                self._console.print(self._render_failure_details(failure_details))
         resource_summary = resources or self._resource_summary()
         if resource_summary is not None:
             resource_footer = self._render_resource_footer(resource_summary)
             if resource_footer is not None:
                 self._console.print(resource_footer)
+        if not success and failure_details:
+            self._console.print(self._render_failure_separator())
+            self._console.print(self._render_failure_details(failure_details))
         if success:
             self._console.print(f"Run directory: {self._summary.run_dir}")
 
@@ -304,10 +306,10 @@ class _CliRunRenderer:
         summary.add_row(
             "Exit code", str(details.exit_code) if details.exit_code is not None else "?"
         )
+        if details.error:
+            summary.add_row("Reason", Text(details.error, style="#7f1d1d"))
         if details.log_path is not None:
             summary.add_row("Log", str(details.log_path))
-        if self._summary.mode == "verbose" and details.error:
-            summary.add_row("Error", details.error)
 
         sections: list[object] = [summary]
         if self._summary.mode == "verbose" and details.inputs:
@@ -331,6 +333,10 @@ class _CliRunRenderer:
             box=box.SQUARE,
             expand=False,
         )
+
+    def _render_failure_separator(self) -> Rule:
+        """Render a separator before end-of-run failure diagnostics."""
+        return Rule(style="dim")
 
     def _ordered_rows(self) -> list[_TaskRow]:
         return [self._rows[node_id] for node_id in self._row_order]

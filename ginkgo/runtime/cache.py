@@ -211,6 +211,12 @@ class CacheStore:
                     return False
             return True
 
+        if isinstance(value, list | tuple):
+            for item in value:
+                if not self._validate_output_value(annotation=annotation, value=item):
+                    return False
+            return True
+
         if annotation is file or isinstance(value, file):
             return self._validate_file_symlink(Path(str(value)))
 
@@ -328,6 +334,15 @@ class CacheStore:
                 )
             return
 
+        if isinstance(value, list | tuple):
+            for item in value:
+                self._collect_output_artifacts(
+                    annotation=annotation,
+                    value=item,
+                    artifact_ids=artifact_ids,
+                )
+            return
+
         if annotation is file or isinstance(value, file):
             path = Path(str(value))
             if path.is_symlink():
@@ -360,6 +375,11 @@ class CacheStore:
             inner_annotation = inner_args[0] if inner_args else Any
             for item in value:
                 self._symlink_output_value(annotation=inner_annotation, value=item)
+            return
+
+        if isinstance(value, list | tuple):
+            for item in value:
+                self._symlink_output_value(annotation=annotation, value=item)
             return
 
         if annotation is file or isinstance(value, file):
@@ -463,23 +483,23 @@ class CacheStore:
                 "type": "dict",
             }
 
-        if annotation is file or isinstance(value, file):
-            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
-
-        if annotation is folder or isinstance(value, folder):
-            return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
-
         if isinstance(value, list):
             return {
-                "items": [self._hash_value(annotation=Any, value=item) for item in value],
+                "items": [self._hash_value(annotation=annotation, value=item) for item in value],
                 "type": "list",
             }
 
         if isinstance(value, tuple):
             return {
-                "items": [self._hash_value(annotation=Any, value=item) for item in value],
+                "items": [self._hash_value(annotation=annotation, value=item) for item in value],
                 "type": "tuple",
             }
+
+        if annotation is file or isinstance(value, file):
+            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+
+        if annotation is folder or isinstance(value, folder):
+            return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
             return {
