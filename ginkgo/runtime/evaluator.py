@@ -1956,6 +1956,15 @@ class _ConcurrentEvaluator:
                 )
             return
 
+        if isinstance(value, list | tuple):
+            for index, item in enumerate(value):
+                self._validate_annotated_value(
+                    annotation=annotation,
+                    value=item,
+                    label=f"{label}[{index}]",
+                )
+            return
+
         if annotation is file:
             self._validate_file_path(path=value, label=label)
             return
@@ -2035,6 +2044,16 @@ class _ConcurrentEvaluator:
             return tuple(
                 self._coerce_annotated_value(annotation=inner_annotation, value=item)
                 for item in value
+            )
+
+        if isinstance(value, list):
+            return [
+                self._coerce_annotated_value(annotation=annotation, value=item) for item in value
+            ]
+
+        if isinstance(value, tuple):
+            return tuple(
+                self._coerce_annotated_value(annotation=annotation, value=item) for item in value
             )
 
         if annotation in {file, folder, tmp_dir} and isinstance(value, str):
@@ -2534,6 +2553,12 @@ def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> lis
         outputs: list[dict[str, Any]] = []
         for index, item in enumerate(value):
             outputs.extend(_artifact_index(inner_annotation, item, name=f"{name}[{index}]"))
+        return outputs
+
+    if isinstance(value, (list, tuple)):
+        outputs: list[dict[str, Any]] = []
+        for index, item in enumerate(value):
+            outputs.extend(_artifact_index(annotation, item, name=f"{name}[{index}]"))
         return outputs
 
     if annotation is file or isinstance(value, file):

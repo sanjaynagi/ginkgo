@@ -325,10 +325,13 @@ def main():
         assert "✖ Failed in " in failed.stdout
         assert "Run Summary" not in failed.stdout
         assert "Failure Details: explode" in failed.stdout
+        assert "Reason" in failed.stdout
+        assert "boom" in failed.stdout
         assert "Log tail" in failed.stdout
         assert "about-to-fail:sample_1" in failed.stdout
         assert "1/1 complete" in failed.stdout
         assert '{"status":' not in failed.stdout
+        assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
         run_dir = _extract_run_dir(failed.stderr)
         manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
@@ -397,7 +400,7 @@ def main():
         assert "Inputs" in failed.stdout
         assert "sample: sample_1" in failed.stdout
         assert "attempt: 3" in failed.stdout
-        assert "Error" in failed.stdout
+        assert "Reason" in failed.stdout
         assert "boom" in failed.stdout
 
     def test_cli_error_rendering_escapes_bracketed_text(self) -> None:

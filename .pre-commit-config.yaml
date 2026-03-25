@@ -18,8 +18,8 @@ repos:
         language: system
         pass_filenames: false
       - id: ruff-format-check
-        name: ruff format --check
-        entry: pixi run format-check
+        name: ruff format
+        entry: pixi run format
         language: system
         pass_filenames: false
       - id: ty-check

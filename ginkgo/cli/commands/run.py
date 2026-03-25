@@ -297,7 +297,7 @@ def _load_failure_details(
                 exit_code=task.get("exit_code"),
                 log_path=stderr_path,
                 log_tail=log_tail,
-                error=task.get("error") if verbose else None,
+                error=task.get("error"),
                 inputs=task.get("inputs") if verbose else None,
             )
         )
