@@ -36,7 +36,7 @@ def write_seed_card(*, item: str, output_path: str) -> file:
 @task(kind="shell")
 def normalize_seed_card(
     *, seed_card: file, output_path: str, check_path: str
-) -> tuple[file, file]:
+) -> list[file]:
     """Normalize one seed artifact and produce a validation checksum.
 
     Parameters
@@ -50,8 +50,8 @@ def normalize_seed_card(
 
     Returns
     -------
-    tuple[file, file]
-        ``(normalized_card, checksum_file)``.
+    list[file]
+        ``[normalized_card, checksum_file]``.
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -64,4 +64,4 @@ def normalize_seed_card(
         f"tr '[:lower:]' '[:upper:]' < {quoted_input} > {quoted_output} && "
         f"shasum {quoted_output} > {quoted_check}"
     )
-    return shell(cmd=cmd, output=(str(output), str(check)))
+    return shell(cmd=cmd, output=[str(output), str(check)])
