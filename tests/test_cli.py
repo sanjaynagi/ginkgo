@@ -726,6 +726,61 @@ def main():
         assert "fastq_stats[2]" not in result.stdout
         assert "2/2 complete" in result.stdout
 
+    def test_product_map_tasks_use_named_parameter_grid_runtime_labels(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def train(sample: str, lr: float) -> str:
+    return f"{sample}:{lr}"
+
+@flow
+def main():
+    return train().product_map(
+        sample=["sample_a", "sample_b"],
+        lr=[0.01, 0.1],
+    )
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "train[sample=sample_a,lr=0.01]" in result.stdout
+        assert "train[sample=sample_a,lr=0.1]" in result.stdout
+        assert "train[sample=sample_b,lr=0.01]" in result.stdout
+        assert "train[sample=sample_b,lr=0.1]" in result.stdout
+        assert "4/4 complete" in result.stdout
+
+    def test_map_then_product_map_composes_runtime_labels(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def train(sample: str, lr: float, epochs: int) -> str:
+    return f"{sample}:{lr}:{epochs}"
+
+@flow
+def main():
+    return train().map(sample=["sample_a"]).product_map(
+        lr=[0.01, 0.1],
+        epochs=[10, 50],
+    )
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "train[sample_a,lr=0.01,epochs=10]" in result.stdout
+        assert "train[sample_a,lr=0.01,epochs=50]" in result.stdout
+        assert "train[sample_a,lr=0.1,epochs=10]" in result.stdout
+        assert "train[sample_a,lr=0.1,epochs=50]" in result.stdout
+
 
 class TestCliSpinnerSelection:
     def test_time_of_day_spinner_uses_earth_in_day_and_moon_at_night(self) -> None:

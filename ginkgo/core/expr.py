@@ -32,6 +32,7 @@ class Expr(Generic[T]):
     task_def: TaskDef
     args: dict[str, object] = field(default_factory=dict)
     mapped: bool = False
+    display_label_parts: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
     def __repr__(self) -> str:
         arg_strs = []

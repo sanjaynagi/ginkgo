@@ -354,3 +354,19 @@ class TestPartialCallMap:
             (0.1, 50, "s1"),
             (0.1, 50, "s2"),
         ]
+
+    def test_product_map_sets_named_display_label_parts(self):
+        @task()
+        def process(sample: str, lr: float) -> str:
+            return f"{sample}:{lr}"
+
+        result = process().product_map(sample=["s1"], lr=[0.01])
+        assert result[0].display_label_parts == ("sample=s1", "lr=0.01")
+
+    def test_chained_map_and_product_map_compose_display_label_parts(self):
+        @task()
+        def process(sample: str, lr: float, epochs: int) -> str:
+            return f"{sample}:{lr}:{epochs}"
+
+        result = process().map(sample=["s1"]).product_map(lr=[0.01], epochs=[10])
+        assert result[0].display_label_parts == ("s1", "lr=0.01", "epochs=10")

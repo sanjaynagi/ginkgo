@@ -219,11 +219,18 @@ def _fan_out_partial_call(
     rows = _build_varying_rows(
         columns=columns, mode=mode, function_name=_fan_out_function_name(mode=mode)
     )
+    varying_keys = tuple(columns.keys())
     exprs = [
         Expr(
             task_def=partial_call.task_def,
             args={**partial_call.fixed_args, **row},
             mapped=True,
+            display_label_parts=_label_parts_for_row(
+                task_def=partial_call.task_def,
+                row=row,
+                mode=mode,
+                varying_keys=varying_keys,
+            ),
         )
         for row in rows
     ]
@@ -248,11 +255,21 @@ def _fan_out_expr_list(
     rows = _build_varying_rows(
         columns=columns, mode=mode, function_name=_fan_out_function_name(mode=mode)
     )
+    varying_keys = tuple(columns.keys())
     exprs = [
         Expr(
             task_def=task_def,
             args={**base_expr.args, **row},
             mapped=True,
+            display_label_parts=(
+                *base_expr.display_label_parts,
+                *_label_parts_for_row(
+                    task_def=task_def,
+                    row=row,
+                    mode=mode,
+                    varying_keys=varying_keys,
+                ),
+            ),
         )
         for base_expr in expr_list
         for row in rows
@@ -337,6 +354,47 @@ def _fan_out_function_name(*, mode: _FanOutMode) -> str:
     if mode == "zip":
         return "map"
     return "product_map"
+
+
+def _label_parts_for_row(
+    *,
+    task_def: TaskDef,
+    row: dict[str, Any],
+    mode: _FanOutMode,
+    varying_keys: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return display-label fragments for one fan-out row."""
+    if not varying_keys:
+        return ()
+
+    if mode == "zip":
+        first_key = varying_keys[0]
+        rendered = _render_label_value(row.get(first_key))
+        if rendered is None:
+            return ()
+        return (rendered,)
+
+    parts: list[str] = []
+    valid_params = set(task_def.all_params.keys())
+    for key in varying_keys:
+        if key not in valid_params:
+            continue
+        rendered = _render_label_value(row.get(key))
+        if rendered is None:
+            continue
+        parts.append(f"{key}={rendered}")
+    return tuple(parts)
+
+
+def _render_label_value(value: Any) -> str | None:
+    """Render one concise label-safe value."""
+    if isinstance(value, Expr):
+        return None
+    if isinstance(value, ExprList):
+        return None
+    if value is None:
+        return None
+    return str(value)
 
 
 def task(
