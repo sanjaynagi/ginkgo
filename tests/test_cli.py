@@ -555,7 +555,6 @@ class TestCliInit:
         assert (project_dir / "README.md").is_file()
         assert (project_dir / "demo_project" / "__init__.py").is_file()
         assert (project_dir / "demo_project" / "workflow.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "pipeline.py").is_file()
         assert (project_dir / "demo_project" / "modules" / "prep.py").is_file()
         assert (project_dir / "demo_project" / "modules" / "analysis.py").is_file()
         assert (project_dir / "demo_project" / "modules" / "reporting.py").is_file()
@@ -566,14 +565,10 @@ class TestCliInit:
         assert not (project_dir / "agents.ginkgo.md").exists()
 
         workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
-        pipeline_text = (project_dir / "demo_project" / "modules" / "pipeline.py").read_text(
-            encoding="utf-8"
-        )
         readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
-        assert "@flow" not in workflow_text
-        assert "from demo_project.modules.pipeline import main" in workflow_text
-        assert "@flow" in pipeline_text
-        assert "expand(" in pipeline_text
+        assert "@flow" in workflow_text
+        assert "from demo_project.modules.pipeline import main" not in workflow_text
+        assert "expand(" in workflow_text
         assert "ginkgo run --agent" in readme_text
         assert "demo_project/workflow.py" in readme_text
 
@@ -596,16 +591,6 @@ class TestCliWorkflowDiscovery:
         package_dir.mkdir()
         (package_dir / "__init__.py").write_text("", encoding="utf-8")
         (package_dir / "workflow.py").write_text(
-            """
-from demo_project.modules.pipeline import main
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        modules_dir = package_dir / "modules"
-        modules_dir.mkdir()
-        (modules_dir / "__init__.py").write_text("", encoding="utf-8")
-        (modules_dir / "pipeline.py").write_text(
             """
 from ginkgo import flow, task
 

@@ -221,7 +221,7 @@ class PixiRegistry:
             )
 
     def lock_hash(self, *, env: str) -> str | None:
-        """Return the SHA-256 of the environment's ``pixi.lock``, or None.
+        """Return the BLAKE3 digest of the environment's ``pixi.lock``, or None.
 
         The hash is computed once per env name and cached in memory.
 
@@ -324,7 +324,7 @@ class PixiRegistry:
     # Subprocess argument builders
     # ------------------------------------------------------------------
 
-    def shell_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build argv to run *cmd* inside the Pixi environment.
 
         The command string is passed verbatim to ``bash -c``, which handles

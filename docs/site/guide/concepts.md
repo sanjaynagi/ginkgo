@@ -64,6 +64,21 @@ results = qc(min_length=8).map(sample_id=["sample_a", "sample_b"])
 The result is an `ExprList` of independent task expressions that Ginkgo can
 schedule concurrently.
 
+Use `.product_map()` when you want the Cartesian product of multiple varying
+arguments instead of positional pairing.
+
+```python
+@task()
+def train(sample_id: str, lr: float) -> str:
+    return sample_id
+
+
+results = train().product_map(sample_id=["sample_a", "sample_b"], lr=[0.01, 0.1])
+```
+
+Chained fan-out stays flat: existing branches are the outer loop, and new rows
+introduced by `.map()` or `.product_map()` are the inner loop.
+
 ## Path Marker Types Matter
 
 Ginkgo uses a few special path-oriented annotations to define runtime behavior:

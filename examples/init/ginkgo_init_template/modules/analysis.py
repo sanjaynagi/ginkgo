@@ -16,7 +16,6 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 def build_brief(
     *,
     item: str,
-    variant: str,
     normalized_card: file,
     output_path: str,
 ) -> file:
@@ -26,8 +25,6 @@ def build_brief(
     ----------
     item : str
         Synthetic item identifier.
-    variant : str
-        Synthetic variant label.
     normalized_card : file
         Normalized text artifact.
     output_path : str
@@ -73,7 +70,6 @@ def package_brief(*, brief: file, output_path: str) -> file:
 def write_summary(
     *,
     items: list[str],
-    variants: list[str],
     seed_cards: list[file],
     normalized_cards: list[file],
     briefs: list[file],
@@ -85,8 +81,6 @@ def write_summary(
     ----------
     items : list[str]
         Item identifiers for each fan-out branch.
-    variants : list[str]
-        Variant identifiers for each fan-out branch.
     seed_cards : list[file]
         Seed text artifacts.
     normalized_cards : list[file]
@@ -102,9 +96,8 @@ def write_summary(
         JSON summary path.
     """
     rows = []
-    for item, variant, seed_card, normalized_card, brief, package in zip(
+    for item, seed_card, normalized_card, brief, package in zip(
         items,
-        variants,
         seed_cards,
         normalized_cards,
         briefs,
@@ -114,7 +107,6 @@ def write_summary(
         rows.append(
             {
                 "item": item,
-                "variant": variant,
                 "seed_card": str(seed_card),
                 "normalized_card": str(normalized_card),
                 "brief": str(brief),

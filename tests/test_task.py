@@ -275,3 +275,82 @@ class TestPartialCallMap:
 
         result = process().map(item=["a", "b"])
         assert len(result) == 2
+
+    def test_product_map_produces_cartesian_exprlist(self):
+        @task()
+        def process(item: str, suffix: str, scale: int) -> str:
+            return f"{item}{suffix}" * scale
+
+        result = process(scale=2).product_map(item=["a", "b"], suffix=["x", "y"])
+        rows = [(expr.args["item"], expr.args["suffix"]) for expr in result]
+        assert isinstance(result, ExprList)
+        assert rows == [("a", "x"), ("a", "y"), ("b", "x"), ("b", "y")]
+
+    def test_product_map_no_varying_raises(self):
+        @task()
+        def process(item: str) -> str:
+            return item
+
+        with pytest.raises(ValueError, match="at least one varying"):
+            process().product_map()
+
+    def test_product_map_unknown_arg_raises(self):
+        @task()
+        def process(item: str) -> str:
+            return item
+
+        with pytest.raises(TypeError, match="unexpected keyword arguments"):
+            process().product_map(bogus=["a", "b"])
+
+    def test_product_map_rejects_tmp_dir(self):
+        @task()
+        def process(item: str, scratch: tmp_dir) -> str:
+            return item
+
+        with pytest.raises(TypeError, match="auto-managed by ginkgo"):
+            process().product_map(item=["a"], scratch=["/tmp/a"])
+
+    def test_exprlist_map_multiplies_existing_branches(self):
+        @task()
+        def process(sample: str, lr: float) -> str:
+            return f"{sample}:{lr}"
+
+        result = process().map(sample=["s1", "s2"]).map(lr=[0.01, 0.1])
+        rows = [(expr.args["sample"], expr.args["lr"]) for expr in result]
+        assert rows == [("s1", 0.01), ("s1", 0.1), ("s2", 0.01), ("s2", 0.1)]
+
+    def test_exprlist_product_map_multiplies_existing_branches(self):
+        @task()
+        def process(sample: str, lr: float, epochs: int) -> str:
+            return f"{sample}:{lr}:{epochs}"
+
+        result = process().map(sample=["s1", "s2"]).product_map(lr=[0.01, 0.1], epochs=[10, 50])
+        rows = [(expr.args["sample"], expr.args["lr"], expr.args["epochs"]) for expr in result]
+        assert rows == [
+            ("s1", 0.01, 10),
+            ("s1", 0.01, 50),
+            ("s1", 0.1, 10),
+            ("s1", 0.1, 50),
+            ("s2", 0.01, 10),
+            ("s2", 0.01, 50),
+            ("s2", 0.1, 10),
+            ("s2", 0.1, 50),
+        ]
+
+    def test_exprlist_map_after_product_map_keeps_existing_outer_order(self):
+        @task()
+        def process(lr: float, epochs: int, sample: str) -> str:
+            return f"{sample}:{lr}:{epochs}"
+
+        result = process().product_map(lr=[0.01, 0.1], epochs=[10, 50]).map(sample=["s1", "s2"])
+        rows = [(expr.args["lr"], expr.args["epochs"], expr.args["sample"]) for expr in result]
+        assert rows == [
+            (0.01, 10, "s1"),
+            (0.01, 10, "s2"),
+            (0.01, 50, "s1"),
+            (0.01, 50, "s2"),
+            (0.1, 10, "s1"),
+            (0.1, 10, "s2"),
+            (0.1, 50, "s1"),
+            (0.1, 50, "s2"),
+        ]
