@@ -22,7 +22,7 @@ samples = pd.read_csv(cfg["paths"]["samples_csv"])
 @task(env="bioinfo_tools", kind="shell")
 def filter_fastq(
     sample_id: str, fastq_1: file, fastq_2: file, min_length: int
-) -> tuple[file, file]:
+) -> list[file]:
     """Filter paired-end reads shorter than ``min_length`` with seqkit."""
     out_1 = f"results/filtered/{sample_id}_1.filtered.fastq.gz"
     out_2 = f"results/filtered/{sample_id}_2.filtered.fastq.gz"
@@ -31,7 +31,7 @@ def filter_fastq(
             f"seqkit seq -m {min_length} {fastq_1} -o {out_1} && "
             f"seqkit seq -m {min_length} {fastq_2} -o {out_2}"
         ),
-        output=(out_1, out_2),
+        output=[out_1, out_2],
         log=f"logs/filter_{sample_id}.log",
     )
 
