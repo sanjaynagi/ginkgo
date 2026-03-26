@@ -29,8 +29,9 @@ The repository currently implements:
 - Agent-oriented CLI surfaces including `ginkgo run --agent`,
   `ginkgo inspect workflow`, `ginkgo inspect run`, `ginkgo debug --json`,
   `ginkgo doctor --json`, and `ginkgo cache explain --run`
-- Agent-oriented project scaffolding in `ginkgo init`, including durable
-  project notes and a notebook scratch directory
+- Agent-oriented project scaffolding in `ginkgo init`, including a canonical
+  package layout, starter environments, scripts, notebooks, and workflow
+  smoke tests
 
 ## Agent Operability
 
@@ -526,9 +527,13 @@ The current CLI supports:
 - `ginkgo run`
 - `ginkgo test`
 - `ginkgo debug`
+- `ginkgo doctor`
+- `ginkgo inspect`
+- `ginkgo secrets`
 - `ginkgo ui`
 - `ginkgo init`
 - `ginkgo cache ls`
+- `ginkgo cache explain`
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo env ls`
@@ -539,6 +544,8 @@ Implemented CLI features include:
 - dry-run validation
 - merged config overrides
 - human-readable run summaries
+- structured inspection and diagnostics
+- secret discovery and validation
 - cache inspection and eviction
 - failed-task debugging
 
