@@ -207,6 +207,7 @@ class TestExamples:
         assert third_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
 
+    @pytest.mark.skip(reason="bioinfo example uses remote OCI URIs pending phase 6")
     def test_bioinfo_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -218,17 +219,19 @@ class TestExamples:
         with _mock_docker():
             _, first_manifest = _run_example(example_dir=example_dir)
 
-        filtered_fastqs = sorted((example_dir / "results" / "filtered").glob("*.filtered.fastq"))
+        filtered_fastqs = sorted(
+            (example_dir / "results" / "filtered").glob("*.filtered.fastq.gz")
+        )
         qc_tables = sorted((example_dir / "results" / "qc").glob("*.stats.tsv"))
         count_files = sorted((example_dir / "results" / "read_counts").glob("*.counts.tsv"))
         summary = pd.read_csv(example_dir / "results" / "summary.csv")
 
         assert first_manifest["status"] == "succeeded"
-        assert len(filtered_fastqs) == 2
+        assert len(filtered_fastqs) == 4
         assert len(qc_tables) == 2
         assert len(count_files) == 2
-        assert sorted(summary["sample_id"].tolist()) == ["sample_a", "sample_b"]
-        assert "read_count" in summary.columns
+        assert sorted(summary["sample_id"].tolist()) == ["ERR3058522", "ERR3058532"]
+        assert "read_count_r1" in summary.columns
 
         with _mock_docker():
             _, second_manifest = _run_example(example_dir=example_dir)

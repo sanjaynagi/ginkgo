@@ -18,6 +18,7 @@ def main():
 
     seed_paths = expand("results/seed/{item}.txt", item=items)
     normalized_paths = expand("results/normalized/{item}.txt", item=items)
+    check_paths = expand("results/checks/{item}.sha", item=items)
     brief_paths = expand("results/briefs/{item}.md", item=items)
     package_paths = expand("results/packages/{item}.txt", item=items)
 
@@ -25,10 +26,17 @@ def main():
         item=items,
         output_path=seed_paths,
     )
-    normalized_cards = normalize_seed_card().map(
+
+    # normalize_seed_card returns tuple[file, file]: (normalized_card, checksum).
+    # Use .output[i] to select individual elements from the tuple result.
+    norm_results = normalize_seed_card().map(
         seed_card=seed_cards,
         output_path=normalized_paths,
+        check_path=check_paths,
     )
+    normalized_cards = norm_results.output[0]
+    checksums = norm_results.output[1]
+
     briefs = build_brief().map(
         item=items,
         normalized_card=normalized_cards,
@@ -43,6 +51,7 @@ def main():
         items=items,
         seed_cards=seed_cards,
         normalized_cards=normalized_cards,
+        checksums=checksums,
         briefs=briefs,
         packages=packages,
     )

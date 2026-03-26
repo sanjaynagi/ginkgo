@@ -1,3 +1,3 @@
-sample_id,fastq
-sample_a,data/sample_a.fastq
-sample_b,data/sample_b.fastq
+sample_id,fastq_1,fastq_2
+ERR3058522,oci://eit-pathogen-data-science-dev-internal@lrvdxat1h51m/snagi/example_fastqs/ERR3058522_1.fastq.gz,oci://eit-pathogen-data-science-dev-internal@lrvdxat1h51m/snagi/example_fastqs/ERR3058522_2.fastq.gz
+ERR3058532,oci://eit-pathogen-data-science-dev-internal@lrvdxat1h51m/snagi/example_fastqs/ERR3058532_1.fastq.gz,oci://eit-pathogen-data-science-dev-internal@lrvdxat1h51m/snagi/example_fastqs/ERR3058532_2.fastq.gz

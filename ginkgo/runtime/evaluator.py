@@ -30,7 +30,7 @@ from typing import Any, get_args, get_origin
 
 import yaml
 
-from ginkgo.core.expr import Expr, ExprList
+from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
 from ginkgo.core.script import ScriptExpr
 from ginkgo.core.secret import SecretRef
@@ -358,6 +358,13 @@ class _ConcurrentEvaluator:
         task_path: tuple[str, ...] = (),
     ) -> set[int]:
         """Register all task nodes reachable from a nested value."""
+        if isinstance(value, OutputIndex):
+            return self._register_value(
+                value.expr,
+                expr_stack=expr_stack,
+                task_path=task_path,
+            )
+
         if isinstance(value, Expr):
             return {
                 self._register_expr(
@@ -369,13 +376,11 @@ class _ConcurrentEvaluator:
 
         if isinstance(value, ExprList):
             dependencies: set[int] = set()
-            for expr in value:
-                dependencies.add(
-                    self._register_expr(
-                        expr,
-                        expr_stack=expr_stack,
-                        task_path=task_path,
-                    )
+            for item in value:
+                dependencies |= self._register_value(
+                    item,
+                    expr_stack=expr_stack,
+                    task_path=task_path,
                 )
             return dependencies
 
@@ -928,6 +933,10 @@ class _ConcurrentEvaluator:
 
     def _materialize(self, value: Any) -> Any:
         """Materialize a nested value using completed task-node results."""
+        if isinstance(value, OutputIndex):
+            result = self._materialize(value.expr)
+            return result[value.index]
+
         if isinstance(value, Expr):
             node = self._nodes[self._expr_nodes[id(value)]]
             if node.state != "completed":
@@ -1345,7 +1354,7 @@ class _ConcurrentEvaluator:
 
     def _contains_dynamic_expression(self, value: Any) -> bool:
         """Return whether a nested value contains unresolved expressions."""
-        if isinstance(value, (Expr, ExprList)):
+        if isinstance(value, (Expr, ExprList, OutputIndex)):
             return True
         if isinstance(value, list | tuple):
             return any(self._contains_dynamic_expression(item) for item in value)

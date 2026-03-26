@@ -34,6 +34,11 @@ class Expr(Generic[T]):
     mapped: bool = False
     display_label_parts: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
+    @property
+    def output(self) -> _OutputProxy:
+        """Return a proxy for indexing into this expression's tuple result."""
+        return _OutputProxy(self)
+
     def __repr__(self) -> str:
         arg_strs = []
         for k, v in self.args.items():
@@ -43,6 +48,64 @@ class Expr(Generic[T]):
                 arg_strs.append(f"{k}={v!r}")
         joined = ", ".join(arg_strs)
         return f"Expr({self.task_def.name}({joined}))"
+
+
+@dataclass(frozen=True)
+class OutputIndex:
+    """Deferred index into a tuple-returning expression.
+
+    Created by ``expr.output[i]``.  The evaluator resolves the upstream
+    ``Expr`` and then indexes into the concrete result.
+
+    Parameters
+    ----------
+    expr : Expr
+        The upstream expression whose result is a tuple.
+    index : int
+        The positional index into the result tuple.
+    """
+
+    expr: Expr
+    index: int
+
+    def __repr__(self) -> str:
+        return f"OutputIndex({self.expr!r}, {self.index})"
+
+
+class _OutputProxy:
+    """Proxy returned by ``Expr.output`` and ``ExprList.output``.
+
+    Supports ``__getitem__`` to create deferred index selections into
+    tuple-returning task results.
+    """
+
+    def __init__(self, source: Expr | ExprList) -> None:
+        self._source = source
+
+    def __getitem__(self, index: int) -> OutputIndex | ExprList:
+        """Select element *index* from each tuple result.
+
+        Parameters
+        ----------
+        index : int
+            Positional index into the result tuple.
+
+        Returns
+        -------
+        OutputIndex
+            When the source is a single ``Expr``.
+        ExprList
+            When the source is an ``ExprList``, returns a new ``ExprList``
+            whose elements are ``OutputIndex`` wrappers.
+        """
+        if isinstance(self._source, Expr):
+            return OutputIndex(expr=self._source, index=index)
+
+        # ExprList — wrap each constituent Expr.
+        return ExprList(
+            exprs=[OutputIndex(expr=e, index=index) for e in self._source],
+            task_def=self._source.task_def,
+        )
 
 
 @dataclass(frozen=True)
@@ -63,6 +126,11 @@ class ExprList(Generic[T]):
 
     exprs: list[Expr[T]] = field(default_factory=list)
     task_def: TaskDef | None = field(default=None, repr=False)
+
+    @property
+    def output(self) -> _OutputProxy:
+        """Return a proxy for indexing into each element's tuple result."""
+        return _OutputProxy(self)
 
     def __len__(self) -> int:
         return len(self.exprs)
