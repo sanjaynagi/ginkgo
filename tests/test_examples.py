@@ -190,7 +190,7 @@ class TestExamples:
         notebook_html = first_run_dir / str(notebook_task["rendered_html"])
 
         assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 19
+        assert len(first_manifest["tasks"]) == 15
         assert notebook_task["task_type"] == "notebook"
         assert notebook_task["render_status"] == "succeeded"
         assert notebook_html.is_file()
