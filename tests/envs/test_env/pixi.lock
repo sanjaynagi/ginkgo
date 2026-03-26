@@ -265,7 +265,7 @@ packages:
 - pypi: ../../..
   name: ginkgo
   version: 0.1.0
-  sha256: 204d9b6d47ccdfc72130312a7fc83854e183996873280c6eade4f2ec7b2f52a0
+  sha256: 2b4ced0c45a007f42ca34a295316b1c03035f61877159d2eb5677c89e4981f6c
   requires_dist:
   - blake3>=1.0.0
   - numpy>=2.0
