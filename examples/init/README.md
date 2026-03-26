@@ -38,8 +38,8 @@ patterns in one small workflow:
 
 ## Project Layout
 
-- `ginkgo_init_template/workflow.py` keeps the CLI entrypoint thin.
-- `ginkgo_init_template/modules/` contains the actual task implementations.
+- `ginkgo_init_template/workflow.py` contains the top-level flow wiring.
+- `ginkgo_init_template/modules/` contains the reusable task implementations.
 - `ginkgo_init_template/envs/analysis_tools/` contains a task-local Pixi env.
 - `ginkgo_init_template/scripts/` contains the script used by the script task.
 - `ginkgo_init_template/notebooks/` contains the report notebook.

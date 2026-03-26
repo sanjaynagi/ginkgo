@@ -631,7 +631,7 @@ class _ConcurrentEvaluator:
         selected = select_dispatch_subset(
             ready_tasks=[
                 SchedulableTask(
-                    task_id=node.node_id,
+                    node_id=node.node_id,
                     threads=node.threads,
                     memory_gb=node.memory_gb,
                 )
@@ -1611,7 +1611,7 @@ class _ConcurrentEvaluator:
                 path.parent.mkdir(parents=True, exist_ok=True)
 
         if node.task_def.env is not None and self.backend is not None:
-            argv = self.backend.shell_argv(env=node.task_def.env, cmd=cmd)
+            argv = self.backend.exec_argv(env=node.task_def.env, cmd=cmd)
             use_shell = False
         else:
             argv = cmd
@@ -2177,6 +2177,10 @@ class _ConcurrentEvaluator:
         """Return a richer CLI label for mapped tasks once args are resolved."""
         if not node.expr.mapped or node.resolved_args is None:
             return None
+
+        if node.expr.display_label_parts:
+            base_name = node.task_def.name.rsplit(".", 1)[-1]
+            return f"{base_name}[{','.join(node.expr.display_label_parts)}]"
 
         label_key = _first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:

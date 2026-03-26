@@ -184,7 +184,7 @@ class ContainerBackend:
         self._digest_cache[env] = digest
         return digest
 
-    def shell_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build an argument vector to run *cmd* inside a container.
 
         The project root is bind-mounted at its host-side absolute path so
