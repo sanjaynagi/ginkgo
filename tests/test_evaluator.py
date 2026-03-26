@@ -727,7 +727,7 @@ class TestShellTask:
         monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
         monkeypatch.setattr(
             registry,
-            "shell_argv",
+            "exec_argv",
             lambda *, env, cmd: ["bash", "-c", cmd],
         )
 

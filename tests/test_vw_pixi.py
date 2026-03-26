@@ -166,7 +166,7 @@ class TestPixiRegistry:
         registry = PixiRegistry(project_root=_TESTS_DIR)
         digest = registry.lock_hash(env=_TEST_ENV_NAME)
         assert isinstance(digest, str)
-        assert len(digest) == 64  # SHA-256 hex digest
+        assert len(digest) == 64  # BLAKE3 hex digest
 
     def test_lock_hash_is_stable(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
@@ -224,9 +224,9 @@ class TestPixiRegistry:
         with pytest.raises(PixiEnvPrepareError, match="install failed"):
             registry.prepare(env=_TEST_ENV_NAME)
 
-    def test_shell_argv_structure(self) -> None:
+    def test_exec_argv_structure(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
-        argv = registry.shell_argv(env=_TEST_ENV_NAME, cmd="echo hello")
+        argv = registry.exec_argv(env=_TEST_ENV_NAME, cmd="echo hello")
         assert argv[0] == "pixi"
         assert argv[1] == "run"
         assert "--manifest-path" in argv

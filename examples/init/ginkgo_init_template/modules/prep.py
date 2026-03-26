@@ -9,15 +9,13 @@ from ginkgo import file, shell, task
 
 
 @task()
-def write_seed_card(*, item: str, variant: str, output_path: str) -> file:
-    """Write a tiny text artifact for one item and variant pair.
+def write_seed_card(*, item: str, output_path: str) -> file:
+    """Write a tiny text artifact for one item.
 
     Parameters
     ----------
     item : str
         Synthetic item identifier.
-    variant : str
-        Synthetic variant label.
     output_path : str
         Destination path for the seed artifact.
 
@@ -29,7 +27,7 @@ def write_seed_card(*, item: str, variant: str, output_path: str) -> file:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        f"item={item}\nvariant={variant}\nlabel={item}-{variant}\n",
+        f"item={item}\nlabel={item}\n",
         encoding="utf-8",
     )
     return file(str(output))

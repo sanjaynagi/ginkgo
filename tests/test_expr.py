@@ -1,5 +1,7 @@
 """Unit tests for Expr, ExprList, and related expression tree primitives."""
 
+import pytest
+
 from ginkgo import Expr, ExprList, task
 
 
@@ -60,3 +62,13 @@ class TestExprList:
         collected = list(el)
         assert len(collected) == 3
         assert all(isinstance(e, Expr) for e in collected)
+
+    def test_map_requires_shared_task_for_mixed_exprlist(self):
+        @task()
+        def other(y: int) -> int:
+            return y * 2
+
+        exprs = [dummy(x=1), other(y=2)]
+        el = ExprList(exprs=exprs)
+        with pytest.raises(TypeError, match="share one task"):
+            el.map(x=[3])

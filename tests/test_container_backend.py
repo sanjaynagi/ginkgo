@@ -68,13 +68,13 @@ class TestIsContainerEnv:
 # ------------------------------------------------------------------
 
 
-class TestContainerBackendShellArgv:
+class TestContainerBackendExecArgv:
     def test_builds_correct_command(self, tmp_path: Path):
         backend = ContainerBackend(
             runtime="docker",
             project_root=tmp_path,
         )
-        argv = backend.shell_argv(
+        argv = backend.exec_argv(
             env="docker://myorg/image:3.11",
             cmd="echo hello > output.txt",
         )
@@ -94,7 +94,7 @@ class TestContainerBackendShellArgv:
 
     def test_uses_podman_runtime(self, tmp_path: Path):
         backend = ContainerBackend(runtime="podman", project_root=tmp_path)
-        argv = backend.shell_argv(env="docker://img:1", cmd="ls")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
         assert argv[0] == "podman"
 
 
@@ -311,7 +311,7 @@ class TestCompositeBackend:
 
     def test_routes_container_env_to_container_backend(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
-        argv = composite.shell_argv(env="docker://img:1", cmd="echo hi")
+        argv = composite.exec_argv(env="docker://img:1", cmd="echo hi")
         assert argv[0] == "docker"
         assert "run" in argv
 
@@ -322,7 +322,7 @@ class TestCompositeBackend:
             "[workspace]\nname = 'test'\nchannels = []\nplatforms = []\n"
         )
         composite = self._make_composite(tmp_path)
-        argv = composite.shell_argv(env="myenv", cmd="echo hi")
+        argv = composite.exec_argv(env="myenv", cmd="echo hi")
         assert argv[0] == "pixi"
 
     def test_validate_envs_partitions(self, tmp_path: Path):
@@ -340,7 +340,7 @@ class TestCompositeBackend:
             container=None,
         )
         with pytest.raises(RuntimeError, match="requires a container backend"):
-            composite.shell_argv(env="docker://img:1", cmd="ls")
+            composite.exec_argv(env="docker://img:1", cmd="ls")
 
     def test_env_lock_path_delegates(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)

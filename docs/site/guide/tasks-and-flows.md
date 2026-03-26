@@ -89,6 +89,20 @@ filtered = filter_fastq(min_length=8).map(
 
 This pattern keeps one fixed parameter set while varying the per-sample inputs.
 
+Use `.product_map()` when the varying arguments should form a parameter grid
+rather than being zipped by position.
+
+```python
+models = train().product_map(
+    sample_id=["sample_a", "sample_b"],
+    lr=[0.01, 0.1],
+)
+```
+
+You can also chain fan-out calls. Chaining always returns a flat `ExprList`,
+with existing branches treated as the outer loop and newly introduced rows as
+the inner loop.
+
 ## Returning Expressions From Tasks
 
 Tasks can return:
