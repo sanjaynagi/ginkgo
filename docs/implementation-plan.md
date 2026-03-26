@@ -17,38 +17,78 @@ Each phase is independently testable and follows the same structure:
 
 ### Phase 6 — Remote Artifact Store
 
-**Goal:** Add a remote backend to the `ArtifactStore` abstraction introduced in Phase 2, removing the assumption that artifact bytes live on the local filesystem.
+**Goal:** Add a remote-capable artifact access layer that lets Ginkgo tasks read
+object storage inputs through normal filesystem paths, while remaining
+compatible with future remote execution.
 
-**Depends on:** Phase 2 (`ArtifactStore` interface and `artifact_id` scheme).
+**Detailed design:** [`docs/phase6-remote-artifact-store-plan.md`](phase6-remote-artifact-store-plan.md)
 
-**Downstream consumers:** Phase 7 (Asset Catalog), Phase 8 (DataFrame Assets), Phase 9 (Model Assets), and Phase 14 (K8s Executor) all depend on remote storage being available.
+**Depends on:** Phase 2 (`ArtifactStore`, immutable artifact IDs, cache
+metadata). Hard prerequisite for Phase 14 (remote execution). Improves Phase 7,
+Phase 8, and Phase 9 by allowing artifacts to be stored and rehydrated outside
+the local machine.
 
 #### Deliverables
 
-- Implement a `RemoteArtifactStore` backend targeting S3-compatible object storage, conforming to the `ArtifactStore` interface from Phase 2.
-- `store()` uploads artifact bytes to the remote store keyed by the same content-addressed `artifact_id` (`<sha256>.<ext>`) used locally — no key translation is needed.
-- `retrieve()` downloads the artifact to a local staging path under `.ginkgo/staging/` and places a symlink at the declared output path, exactly as the local backend does. The staging path is recorded in provenance alongside the remote artifact ID.
-- `exists()` checks the remote store without downloading.
-- Add configurable local staging cache so repeated `retrieve()` calls for the same `artifact_id` skip re-downloading.
-- Extend support to all artifact types the local backend handles: task output files, folders, run manifests, and task logs.
-- Add backend configuration to the Ginkgo project config so users can switch from local to remote storage without changing task code.
+- Refactor the artifact model from "local file or copied directory" into a
+  unified content-addressed store supporting:
+  - immutable file blobs
+  - immutable tree manifests for directory artifacts
+  - artifact metadata records that separate identity from local access paths
+- Distinguish between:
+  - managed artifacts published by Ginkgo
+  - external remote object references such as `s3://...` and `oci://...`
+- Add canonical remote input constructors such as `remote_file(...)` and
+  `remote_folder(...)`.
+- Add annotation-aware coercion so URI strings passed to parameters annotated as
+  `file` or `folder` can be upgraded automatically to remote references.
+- Replace the current local-path-centric retrieval contract with a task-facing
+  resolution layer that can provide a local readable path by:
+  - local symlink
+  - staged local hydration
+  - mounted virtual filesystem access
+- Add a worker-local cache for remote reads and writes, with content-addressed
+  reuse across tasks on the same machine.
+- Publish task outputs into a remote-capable managed artifact store rather than
+  assuming the producer's local path is durable.
+- Record remote identity metadata in cache and provenance so reproducibility is
+  preserved across machines.
 
 #### Key design points
 
-- This phase is entirely additive to the `ArtifactStore` interface — no changes to the cache, evaluator, or task code are required. The interface from Phase 2 was designed for exactly this extension.
-- Artifact identity (`artifact_id`) is unchanged: the same content-addressed string used locally becomes the remote object key. Cache keys remain content-addressed whether bytes live locally or remotely.
-- `retrieve()` is the only place that knows whether an artifact came from local or remote storage. Everything above it (cache hit logic, provenance recording, symlink creation) is unaffected.
-- The local backend remains the default. Remote is opt-in via project config.
-- Provenance records both the logical `artifact_id` and the resolved local staging path so downstream tools can locate artifacts without knowing the backend.
+- Tasks should continue to consume normal local paths. Phase 6 changes the
+  access layer, not the task programming model.
+- `file` and `folder` should remain type-level input and output contracts.
+  Remote values should be represented by explicit reference objects, with URI
+  string auto-coercion limited to `file` and `folder` parameters only.
+- FUSE or Fusion-like mounted access is an optimization and UX layer, not the
+  correctness contract. A staging fallback must remain first-class.
+- Remote URIs are not stable cache identity by themselves. Cache keys must use
+  version IDs, checksums, or materialized content hashes.
+- Directory artifacts must become tree manifests rather than opaque copied
+  folders if Ginkgo wants lazy mounted access and sparse hydration.
+- Object storage remains the durable source of truth. Local disk is a
+  transparent cache and writeback layer.
+- Ginkgo should exploit workflow semantics such as known task inputs,
+  deterministic workdirs, and explicit artifact identity to enable prefetch and
+  deduplication.
 
 #### Validation
 
-- Configure a remote backend and run a workflow; assert all declared output artifacts are uploaded and `artifact_id` values match their content hashes.
-- Re-run the same workflow and assert cache hits are served from the remote store without re-executing tasks.
-- Assert `retrieve()` uses the local staging cache on repeated accesses and does not re-download the same `artifact_id` twice.
-- Re-run `VW-5` and assert selective cache invalidation still works when artifacts are stored remotely.
-- Assert `ginkgo debug` can retrieve task logs when the log backend is remote.
-- Assert switching from local to remote backend in config requires no changes to workflow or task code.
+- A Python task can consume `remote_file("s3://...")` through a normal local
+  path without explicit staging code.
+- A Python task parameter annotated as `file` or `folder` can also accept a raw
+  `s3://...` or `oci://...` string through annotation-aware coercion.
+- A shell task can consume the same remote input through a normal local path.
+- A folder-shaped remote input is readable as a directory tree.
+- Re-running a task against the same pinned remote object yields a cache hit.
+- Changing a remote object version invalidates the cache deterministically.
+- Two tasks on the same worker reuse the same local cached artifact instead of
+  downloading it twice.
+- A produced output can be published to remote storage and consumed from a
+  different machine.
+- Environments that cannot use a mounted filesystem fall back to staging
+  without workflow changes.
 
 ---
 

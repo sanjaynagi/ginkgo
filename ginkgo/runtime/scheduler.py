@@ -14,15 +14,15 @@ class SchedulableTask:
 
     Parameters
     ----------
-    task_id : int
-        Internal task identifier.
+    node_id : int
+        Internal evaluator node identifier.
     threads : int
         Core footprint for the task.
     memory_gb : int
         Declared memory footprint for the task in GiB.
     """
 
-    task_id: int
+    node_id: int
     threads: int
     memory_gb: int
 
@@ -69,17 +69,17 @@ def _select_with_cp_sat(
 ) -> list[int]:
     """Select tasks using OR-Tools CP-SAT when available."""
     model = cp_model.CpModel()
-    selected = {task.task_id: model.NewBoolVar(f"task_{task.task_id}") for task in tasks}
+    selected = {task.node_id: model.NewBoolVar(f"task_{task.node_id}") for task in tasks}
 
     model.Add(sum(selected.values()) <= jobs)
-    model.Add(sum(task.threads * selected[task.task_id] for task in tasks) <= cores)
+    model.Add(sum(task.threads * selected[task.node_id] for task in tasks) <= cores)
     if memory is not None:
-        model.Add(sum(task.memory_gb * selected[task.task_id] for task in tasks) <= memory)
+        model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= memory)
 
     total_selected = sum(selected.values())
-    total_cores = sum(task.threads * selected[task.task_id] for task in tasks)
+    total_cores = sum(task.threads * selected[task.node_id] for task in tasks)
     order_bias = sum(
-        (len(tasks) - index) * selected[task.task_id] for index, task in enumerate(tasks)
+        (len(tasks) - index) * selected[task.node_id] for index, task in enumerate(tasks)
     )
     model.Maximize(total_selected * 100000 + total_cores * 100 + order_bias)
 
@@ -88,4 +88,4 @@ def _select_with_cp_sat(
     if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
         return []
 
-    return [task.task_id for task in tasks if solver.Value(selected[task.task_id])]
+    return [task.node_id for task in tasks if solver.Value(selected[task.node_id])]
