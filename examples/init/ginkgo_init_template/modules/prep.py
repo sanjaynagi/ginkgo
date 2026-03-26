@@ -34,8 +34,10 @@ def write_seed_card(*, item: str, output_path: str) -> file:
 
 
 @task(kind="shell")
-def normalize_seed_card(*, seed_card: file, output_path: str) -> file:
-    """Normalize one seed artifact with a local shell command.
+def normalize_seed_card(
+    *, seed_card: file, output_path: str, check_path: str
+) -> tuple[file, file]:
+    """Normalize one seed artifact and produce a validation checksum.
 
     Parameters
     ----------
@@ -43,17 +45,23 @@ def normalize_seed_card(*, seed_card: file, output_path: str) -> file:
         Seed text artifact.
     output_path : str
         Destination path for the normalized artifact.
+    check_path : str
+        Destination path for a checksum validation file.
 
     Returns
     -------
-    file
-        Upper-cased normalized artifact.
+    tuple[file, file]
+        ``(normalized_card, checksum_file)``.
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    check = Path(check_path)
+    check.parent.mkdir(parents=True, exist_ok=True)
     quoted_input = shlex.quote(str(seed_card))
     quoted_output = shlex.quote(str(output))
-    return shell(
-        cmd=f"tr '[:lower:]' '[:upper:]' < {quoted_input} > {quoted_output}",
-        output=str(output),
+    quoted_check = shlex.quote(str(check))
+    cmd = (
+        f"tr '[:lower:]' '[:upper:]' < {quoted_input} > {quoted_output} && "
+        f"shasum {quoted_output} > {quoted_check}"
     )
+    return shell(cmd=cmd, output=(str(output), str(check)))
