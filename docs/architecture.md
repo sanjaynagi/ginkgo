@@ -6,32 +6,21 @@ Ginkgo is a Python-based workflow orchestrator for scientific and data workflows
 
 The repository currently implements:
 
-- Declarative workflow construction with `@flow`, `@task()`, `Expr`, and `ExprList`
-- Workflow authoring helpers via `expand(...)`, `zip_expand(...)`, `flatten(...)`, and `slug(...)`
-  for concise deterministic workflow authoring
-- Dynamic DAG expansion when tasks return nested `Expr` or `ExprList` values
-- Explicit task kinds via `@task("python")`, `@task("shell")`, `@task("notebook")`, and `@task("script")`, with kind optionally specified as first positional argument
-- Notebook and script execution via explicit `notebook(...)` and `script(...)` sentinels returned from task bodies
-- Content-addressed caching for scalar values, files, folders, arrays, DataFrames, and other supported Python objects
-- Concurrent scheduling with job, core, and memory constraints
-- Python task execution through a `ProcessPoolExecutor`
-- Scheduler-evaluated shell task wrappers dispatched as `shell(...)` payloads, including Pixi-backed shell execution without importing `workflow.py` in the foreign env
-- First-class notebook execution for Jupyter (`.ipynb`) and marimo notebooks with stable run-scoped HTML artifacts
-- Run provenance, per-task logs, cache inspection, and CLI debugging commands
-- Slack notifications for run start, successful completion, failed completion,
-  and retry exhaustion, sourced from runtime config and secrets
-- A local browser UI for browsing runs, tasks, notebook artifacts, task graphs, logs, and cache entries
-- A multi-workspace local UI shell with an active workspace model and native
-  folder-picker loading for switching between Ginkgo workspaces on one machine
-- A canonical package-based workflow repository layout with root autodiscovery
-- A runtime event protocol and in-process event bus for machine-readable run
-  monitoring
-- Agent-oriented CLI surfaces including `ginkgo run --agent`,
-  `ginkgo inspect workflow`, `ginkgo inspect run`, `ginkgo debug --json`,
-  `ginkgo doctor --json`, and `ginkgo cache explain --run`
-- Agent-oriented project scaffolding in `ginkgo init`, including a canonical
-  package layout, starter environments, scripts, notebooks, and workflow
-  smoke tests
+- A lazy DSL built around `@flow`, `@task`, `Expr`, and `ExprList` for
+  declarative workflow construction
+- Concurrent local execution with dynamic DAG expansion, resource-aware
+  scheduling, and explicit task kinds for Python, shell, notebook, and script
+  work
+- Content-addressed caching, artifact storage, and value transport for common
+  Python values and path-based outputs
+- Reproducible environment dispatch through Pixi for local shell execution and
+  container-backed execution for shell tasks
+- Provenance capture, logs, machine-readable runtime events, and structured
+  inspection and diagnostics through the CLI
+- A local-first web UI for runs, cache inspection, graphs, notebook artifacts,
+  and multi-workspace browsing
+- A canonical package-oriented project layout with workflow autodiscovery and
+  scaffolded project initialization
 
 ## Agent Operability
 
@@ -249,6 +238,10 @@ The scheduler performs explicit cycle detection when registering expressions.
 The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
 
 **LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution.
+Shell tasks may declare `env="name"` to run against a Pixi environment under
+`envs/<name>/pixi.toml`, or against an explicit manifest path. This path is
+responsible for env discovery, validation, lock hashing for cache invalidation,
+environment preparation before dispatch, and shell execution through Pixi.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for **shell tasks only**. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
@@ -283,7 +276,9 @@ Python task bodies must be top-level importable functions for worker execution. 
 
 Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
 
-For Pixi-backed shell tasks, the foreign environment no longer imports the task's defining `workflow.py` module. The scheduler evaluates the wrapper locally and dispatches only the shell payload through Pixi.
+For Pixi-backed shell tasks, the foreign environment does not import the task's
+defining `workflow.py` module. The scheduler evaluates the wrapper locally and
+dispatches only the shell payload through Pixi.
 
 Shell tasks can also run inside Docker or Podman containers by declaring a container env:
 
@@ -293,9 +288,8 @@ def sort_bam(input_bam: file, output_bam: file) -> file:
     return shell(cmd=f"samtools sort {input_bam} -o {output_bam}", output=output_bam)
 ```
 
-This completes the Phase 3 execution-boundary work from the implementation
-roadmap: graph construction remains scheduler-local and foreign environments
-are entered only for executable shell payloads.
+Graph construction remains scheduler-local and foreign environments are entered
+only for executable shell payloads.
 
 ### Notebook Tasks
 
@@ -326,9 +320,7 @@ Implemented notebook behavior includes:
 
 Notebook tasks run on the same driver-side execution path as shell tasks,
 preserving scheduler semantics for dependency resolution, retries, environment
-dispatch, cache recording, and provenance. This completes Phase 5 of the
-implementation roadmap: notebook execution now converges onto the explicit
-output contract used by other non-Python task kinds.
+dispatch, cache recording, and provenance.
 
 ### Script Tasks
 
@@ -356,8 +348,7 @@ Implemented script behavior includes:
 - source file hashing folded into cache identity so script edits invalidate cache
 
 Script tasks, like notebook tasks, run on the driver-side execution path and
-preserve full scheduler semantics. They are part of Phase 5's convergence of
-non-Python task kinds onto a unified explicit output contract.
+preserve full scheduler semantics.
 
 ### Special Types
 
@@ -392,12 +383,11 @@ Implemented cache hashing includes:
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
-Phase 2 of the implementation roadmap is now complete for cache integrity. The
-runtime now hashes the top-level task function source during task registration
+The runtime hashes the top-level task function source during task registration
 and stores that `source_hash` in both the cache key payload and `meta.json`, so
 task-body changes invalidate prior cache entries without requiring a manual
 `version=` bump. If source extraction fails for a task definition, registration
-now fails explicitly instead of silently weakening cache correctness.
+fails explicitly instead of silently weakening cache correctness.
 
 File and folder outputs now flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
@@ -418,20 +408,6 @@ force re-execution.
 read-only artifacts have permissions restored before deletion so cache
 maintenance can safely remove unreferenced stored outputs.
 
-Phase 13 of the implementation roadmap is now complete for secrets and
-credentials management. Workflows can declare runtime-only secret dependencies
-via `secret(...)` references, which are resolved at execution time through a
-pluggable resolver layer with environment-variable lookup and optional `.env`
-support. Secret references remain identifiers during graph construction and
-cache-keying, so rotating a credential value does not invalidate cache entries
-that are otherwise still valid.
-
-Secret-bearing inputs are redacted before they reach persisted provenance or
-cache metadata, and task log capture now redacts resolved secret values before
-they are written to per-task stdout/stderr logs. The CLI also exposes `ginkgo
-secrets list`, `ginkgo secrets validate`, and `ginkgo doctor` checks for
-declared but unresolvable secrets.
-
 ## Value Transport
 
 Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/value_codec.py`.
@@ -446,17 +422,18 @@ The current implementation supports:
 
 The same codec layer is used for both task transport and cache persistence.
 
-## Pixi Environment Integration
+## Configuration and Secrets
 
-Shell tasks may declare `env="name"` to run against a Pixi environment under
-`envs/<name>/pixi.toml`, or against an explicit manifest path.
+Workflows can declare runtime-only secret dependencies via `secret(...)`
+references, which are resolved at execution time through a pluggable resolver
+layer with environment-variable lookup and optional `.env` support. Secret
+references remain identifiers during graph construction and cache-keying, so
+rotating a credential value does not invalidate cache entries that are
+otherwise still valid.
 
-Implemented behavior includes:
-
-- env discovery and validation
-- Pixi lock hashing for cache invalidation
-- environment preparation before dispatch
-- shell execution through the Pixi environment
+Secret-bearing inputs are redacted before they reach persisted provenance or
+cache metadata, and task log capture redacts resolved secret values before they
+are written to per-task stdout/stderr logs.
 
 ## Provenance and Run State
 
@@ -483,43 +460,6 @@ The manifest records:
 - exit codes and errors
 - run-level CPU and RSS summaries
 
-## Local UI Workspace Model
-
-The UI remains local-first and file-backed, but it no longer assumes that one
-browser session only inspects one project, or that it must be launched from the
-workspace directory.
-
-The current UI server now supports:
-
-- a set of loaded workspaces in one UI session
-- one active workspace that scopes the default runs, cache, and workflow-launch
-  views
-- a native `Load workspace` action exposed by the UI, backed by a local
-  folder-picker dialog
-- workspace-scoped run and task routes so browser navigation remains stable
-  after switching workspaces
-- launching from any directory (including `~`): workspace validation uses a
-  shallow probe rather than a recursive scan, so startup is immediate even when
-  the launch directory is not itself a workspace
-- workspace detection accepts `ginkgo.toml`, `.ginkgo/`, `pyproject.toml` +
-  root-level `@flow` files, or `pixi.toml` + root-level `@flow` files, so
-  projects with non-canonical layouts (e.g. a root-level `ginkgo_workflow.py`
-  in a pixi project) are recognized correctly
-
-### Pixi-aware workflow launch
-
-When the UI launches a workflow subprocess for an external workspace, it
-detects whether the workspace has a `.pixi/` environment directory. If pixi
-is found, the subprocess command is `pixi run python -m ginkgo.cli run
-<workflow>` (run in the workspace's own pixi environment), so that
-workspace-specific dependencies are importable when the workflow module is
-loaded. Workspaces without a pixi environment fall back to the current
-interpreter (`sys.executable`).
-
-Each loaded workspace still reads directly from that workspace's local
-`.ginkgo/` provenance and cache directories. The UI does not yet depend on a
-central database or remote control plane.
-
 ## CLI
 
 The current CLI supports:
@@ -539,15 +479,10 @@ The current CLI supports:
 - `ginkgo env ls`
 - `ginkgo env clear`
 
-Implemented CLI features include:
-
-- dry-run validation
-- merged config overrides
-- human-readable run summaries
-- structured inspection and diagnostics
-- secret discovery and validation
-- cache inspection and eviction
-- failed-task debugging
+Implemented CLI features include dry-run validation, merged config overrides,
+human-readable run summaries, structured inspection and diagnostics, secret
+discovery and validation, cache inspection and eviction, and failed-task
+debugging.
 
 ## Web UI
 
@@ -559,6 +494,8 @@ The current UI supports:
 - multi-workspace session: load any number of local Ginkgo workspaces, switch
   the active workspace via the top bar, and scope runs/cache/workflow-launch to
   that workspace
+- local-first workspace loading from any directory: a shallow workspace probe
+  keeps startup fast and supports both canonical and non-canonical layouts
 - run history and run summaries
 - task tables, task-graph visualization using recorded dependencies, and notebook artifact links derived from run provenance
 - task detail drawers with full log retrieval
@@ -566,8 +503,20 @@ The current UI supports:
 - live updates via a WebSocket event channel (`/ws`): the server emits
   structured events derived from on-disk provenance changes; the frontend
   applies incremental state updates without full page reloads
-- pixi-aware workflow launch for external workspaces (see Local UI Workspace
-  Model section)
+- workspace-scoped routes so browser navigation remains stable after switching
+  workspaces
+- native `Load workspace` integration backed by a local folder picker
+
+When the UI launches a workflow subprocess for an external workspace, it checks
+for a `.pixi/` environment directory. If pixi is present, the subprocess
+command is `pixi run python -m ginkgo.cli run <workflow>` in that workspace's
+own environment so workspace-specific dependencies are importable when the
+workflow module is loaded. Workspaces without a pixi environment fall back to
+the current interpreter (`sys.executable`).
+
+Each loaded workspace reads directly from that workspace's local `.ginkgo/`
+provenance and cache directories. The UI does not depend on a central database
+or remote control plane.
 
 DAG layout improvements (fit-to-view, failure focus, richer positioning)
 remain future work.
@@ -587,9 +536,7 @@ The current implementation is validated against the canonical workflow families 
 
 These are exercised through the test suite and, from the CLI layer onward, through `ginkgo run` and `ginkgo test`.
 
-Phase 2 of the implementation roadmap is now completed through the expanded
-example suite under `examples/`. The repository-level validation corpus now
-includes:
+The repository-level validation corpus includes:
 
 - `retail` for static fan-out, fan-in, and shell-generated delivery
   bundles, now including a notebook-backed reporting step
@@ -615,6 +562,8 @@ cache reuse on rerun.
 The current runtime still has important boundaries and tradeoffs:
 
 - worker-executed Python tasks must be importable by module path
-- the authoritative run state for live execution is still in-memory, with YAML manifests as persisted exports
+- the scheduler's authoritative live execution state is still in-memory, with
+  persisted run state exported incrementally to `manifest.yaml` and
+  `events.jsonl`
 
 Those constraints drive several of the future roadmap items in the implementation plan.

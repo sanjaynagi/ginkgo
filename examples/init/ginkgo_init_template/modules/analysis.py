@@ -72,6 +72,7 @@ def write_summary(
     items: list[str],
     seed_cards: list[file],
     normalized_cards: list[file],
+    checksums: list[file],
     briefs: list[file],
     packages: list[file],
 ) -> file:
@@ -85,6 +86,8 @@ def write_summary(
         Seed text artifacts.
     normalized_cards : list[file]
         Normalized text artifacts.
+    checksums : list[file]
+        Checksum validation files from normalization.
     briefs : list[file]
         Pixi-built Markdown briefs.
     packages : list[file]
@@ -96,10 +99,11 @@ def write_summary(
         JSON summary path.
     """
     rows = []
-    for item, seed_card, normalized_card, brief, package in zip(
+    for item, seed_card, normalized_card, checksum, brief, package in zip(
         items,
         seed_cards,
         normalized_cards,
+        checksums,
         briefs,
         packages,
         strict=True,
@@ -109,6 +113,7 @@ def write_summary(
                 "item": item,
                 "seed_card": str(seed_card),
                 "normalized_card": str(normalized_card),
+                "checksum": str(checksum),
                 "brief": str(brief),
                 "package": str(package),
             }

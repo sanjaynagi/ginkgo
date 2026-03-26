@@ -20,49 +20,58 @@ samples = pd.read_csv(cfg["paths"]["samples_csv"])
 
 
 @task(env="bioinfo_tools", kind="shell")
-def filter_fastq(sample_id: str, fastq: file, min_length: int) -> file:
-    """Filter reads shorter than ``min_length`` with seqkit."""
-    output = f"results/filtered/{sample_id}.filtered.fastq"
+def filter_fastq(
+    sample_id: str, fastq_1: file, fastq_2: file, min_length: int
+) -> tuple[file, file]:
+    """Filter paired-end reads shorter than ``min_length`` with seqkit."""
+    out_1 = f"results/filtered/{sample_id}_1.filtered.fastq.gz"
+    out_2 = f"results/filtered/{sample_id}_2.filtered.fastq.gz"
     return shell(
-        cmd=f"seqkit seq -m {min_length} {fastq} > {output}",
-        output=output,
+        cmd=(
+            f"seqkit seq -m {min_length} {fastq_1} -o {out_1} && "
+            f"seqkit seq -m {min_length} {fastq_2} -o {out_2}"
+        ),
+        output=(out_1, out_2),
         log=f"logs/filter_{sample_id}.log",
     )
 
 
 @task(env="bioinfo_tools", kind="shell")
-def fastq_stats(sample_id: str, fastq: file) -> file:
-    """Compute per-sample FASTQ QC metrics with seqkit."""
+def fastq_stats(sample_id: str, fastq_1: file, fastq_2: file) -> file:
+    """Compute per-sample paired-end FASTQ QC metrics with seqkit."""
     output = f"results/qc/{sample_id}.stats.tsv"
     return shell(
-        cmd=f"seqkit stats -T {fastq} > {output}",
+        cmd=f"seqkit stats -T {fastq_1} {fastq_2} > {output}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def count_reads(sample_id: str, fastq: file) -> file:
-    """Count reads in a FASTQ using grep inside a Docker container.
+def count_reads(sample_id: str, fastq_1: file, fastq_2: file) -> file:
+    """Count reads in paired-end FASTQs using grep inside a Docker container.
 
     Parameters
     ----------
     sample_id : str
         Unique sample identifier.
-    fastq : file
-        Input FASTQ file (each read occupies four lines).
+    fastq_1 : file
+        Forward reads FASTQ file (each read occupies four lines).
+    fastq_2 : file
+        Reverse reads FASTQ file (each read occupies four lines).
 
     Returns
     -------
     file
-        Tab-separated file with ``sample_id`` and ``read_count`` columns.
+        Tab-separated file with ``sample_id``, ``read_count_r1``, and
+        ``read_count_r2`` columns.
     """
     output = f"results/read_counts/{sample_id}.counts.tsv"
     cmd = (
-        f"mkdir -p results/read_counts && "
-        f"printf 'sample_id\\tread_count\\n' > {shlex.quote(output)} && "
-        f"printf '%s\\t%s\\n' {shlex.quote(sample_id)} "
-        f"$(grep -c '^@' {shlex.quote(str(fastq))}) >> {shlex.quote(output)}"
+        f"printf 'sample_id\\tread_count_r1\\tread_count_r2\\n' > {shlex.quote(output)} && "
+        f"printf '%s\\t%s\\t%s\\n' {shlex.quote(sample_id)} "
+        f"$(zgrep -c '^@' {shlex.quote(str(fastq_1))}) "
+        f"$(zgrep -c '^@' {shlex.quote(str(fastq_2))}) >> {shlex.quote(output)}"
     )
     return shell(cmd=cmd, output=output)
 
@@ -112,17 +121,21 @@ def build_summary(
 @flow
 def main():
     """Filter FASTQs (Pixi), compute stats (Pixi), count reads (Docker), merge (local)."""
-    filtered_fastqs = filter_fastq(min_length=int(cfg["qc"]["min_length"])).map(
+    filtered_pairs = filter_fastq(min_length=int(cfg["qc"]["min_length"])).map(
         sample_id=samples["sample_id"],
-        fastq=samples["fastq"],
+        fastq_1=samples["fastq_1"],
+        fastq_2=samples["fastq_2"],
     )
+
     qc_tables = fastq_stats().map(
         sample_id=samples["sample_id"],
-        fastq=filtered_fastqs,
+        fastq_1=filtered_pairs.output[0],
+        fastq_2=filtered_pairs.output[1],
     )
     read_counts = count_reads().map(
         sample_id=samples["sample_id"],
-        fastq=filtered_fastqs,
+        fastq_1=filtered_pairs.output[0],
+        fastq_2=filtered_pairs.output[1],
     )
     return build_summary(
         sample_ids=samples["sample_id"].tolist(),

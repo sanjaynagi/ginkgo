@@ -243,6 +243,16 @@ def build_dynamic_cycle_task() -> object:
     return first
 
 
+@task()
+def make_pair_task(x: int) -> tuple[int, int]:
+    return (x * 10, x * 100)
+
+
+@task()
+def sum_pair_task(a: int, b: int) -> int:
+    return a + b
+
+
 _PIXI_TEST_ENV = "race_env"
 
 
@@ -269,6 +279,26 @@ class TestEvaluate:
             "list": [3, 4],
             "tuple": (5, "literal"),
         }
+
+    def test_output_index_selects_tuple_element(self):
+        pair = make_pair_task(x=3)
+        result = evaluate(sum_pair_task(a=pair.output[0], b=pair.output[1]))
+        assert result == 30 + 300
+
+    def test_output_index_single_element(self):
+        pair = make_pair_task(x=5)
+        result = evaluate(add_one_task(x=pair.output[0]))
+        assert result == 51
+
+    def test_output_index_with_fan_out(self):
+        pairs = make_pair_task().map(x=[1, 2, 3])
+        result = evaluate(
+            sum_pair_task().map(
+                a=pairs.output[0],
+                b=pairs.output[1],
+            )
+        )
+        assert result == [10 + 100, 20 + 200, 30 + 300]
 
     def test_structured_logs_are_emitted_to_stderr(self, capsys: pytest.CaptureFixture[str]):
         log_path = "work-events.log"

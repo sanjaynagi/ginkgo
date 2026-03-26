@@ -11,8 +11,6 @@ Each phase is independently testable and follows the same structure:
 - Key design points
 - Validation
 
-## Tier 1 — Foundations
-
 ## Tier 2 — Build on Foundations
 
 ### Phase 6 — Remote Artifact Store
