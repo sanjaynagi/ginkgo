@@ -13,7 +13,7 @@ class file(str):
 
     Validated to exist on disk before task execution.  Return values declared
     as ``file`` are validated to exist after execution.  Cache key contribution
-    is SHA-256 of file contents.
+    is the BLAKE3 digest of file contents.
     """
 
 
@@ -21,7 +21,7 @@ class folder(str):
     """A path to a directory.
 
     Validated to exist and be a directory before execution.  Cache key
-    contribution is SHA-256 of sorted recursive contents.
+    contribution is the BLAKE3 digest of sorted recursive contents.
     """
 
 

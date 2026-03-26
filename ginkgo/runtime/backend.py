@@ -46,7 +46,7 @@ class TaskBackend(Protocol):
         """
         ...
 
-    def shell_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build an argument vector to execute *cmd* inside the environment.
 
         Returns
@@ -90,12 +90,12 @@ class LocalBackend:
         self.pixi_registry.prepare(env=env)
 
     def env_identity(self, *, env: str) -> str | None:
-        """Return the Pixi lock-file SHA-256 digest."""
+        """Return the Pixi lock-file BLAKE3 digest."""
         return self.pixi_registry.lock_hash(env=env)
 
-    def shell_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build argv to run *cmd* through the Pixi environment."""
-        return self.pixi_registry.shell_argv(env=env, cmd=cmd)
+        return self.pixi_registry.exec_argv(env=env, cmd=cmd)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
@@ -156,9 +156,9 @@ class CompositeBackend:
         """Delegate to the correct backend."""
         return self._route(env=env).env_identity(env=env)
 
-    def shell_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Delegate to the correct backend."""
-        return self._route(env=env).shell_argv(env=env, cmd=cmd)
+        return self._route(env=env).exec_argv(env=env, cmd=cmd)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Delegate to the correct backend."""

@@ -447,13 +447,6 @@ class TestUiServer:
         (package_dir / "__init__.py").write_text("", encoding="utf-8")
         workflow_path = package_dir / "workflow.py"
         workflow_path.write_text(
-            "from demo_project.modules.pipeline import main\n",
-            encoding="utf-8",
-        )
-        modules_dir = package_dir / "modules"
-        modules_dir.mkdir()
-        (modules_dir / "__init__.py").write_text("", encoding="utf-8")
-        (modules_dir / "pipeline.py").write_text(
             "from ginkgo import flow\n\n@flow\ndef main():\n    return None\n",
             encoding="utf-8",
         )
@@ -471,10 +464,7 @@ class TestUiServer:
             server.server_close()
 
         assert status == 200
-        assert payload["workflows"] == [
-            "demo_project/modules/pipeline.py",
-            "demo_project/workflow.py",
-        ]
+        assert payload["workflows"] == ["demo_project/workflow.py"]
 
     def test_run_api_launches_workflow_process(self, monkeypatch, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"

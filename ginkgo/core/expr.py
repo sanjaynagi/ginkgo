@@ -7,7 +7,7 @@ than executing.  The evaluator (Phase 2) recursively resolves these nodes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
     from ginkgo.core.task import TaskDef
@@ -46,7 +46,7 @@ class Expr(Generic[T]):
 
 @dataclass(frozen=True)
 class ExprList(Generic[T]):
-    """A typed list of independent ``Expr[T]`` nodes produced by ``.map()``.
+    """A typed list of independent ``Expr[T]`` nodes produced by fan-out.
 
     The scheduler evaluates all elements in parallel.  When passed as an
     argument to a downstream task expecting ``list[T]``, the evaluator resolves
@@ -56,9 +56,12 @@ class ExprList(Generic[T]):
     ----------
     exprs : list[Expr[T]]
         The individual expression nodes.
+    task_def : TaskDef | None
+        Optional originating task definition for empty or chained fan-out.
     """
 
     exprs: list[Expr[T]] = field(default_factory=list)
+    task_def: TaskDef | None = field(default=None, repr=False)
 
     def __len__(self) -> int:
         return len(self.exprs)
@@ -68,3 +71,15 @@ class ExprList(Generic[T]):
 
     def __iter__(self):
         return iter(self.exprs)
+
+    def map(self, **varying: Any) -> ExprList[T]:
+        """Extend each existing branch by zipping new varying arguments."""
+        from ginkgo.core.task import _fan_out_expr_list
+
+        return _fan_out_expr_list(expr_list=self, varying=varying, mode="zip")
+
+    def product_map(self, **varying: Any) -> ExprList[T]:
+        """Extend each existing branch across Cartesian varying arguments."""
+        from ginkgo.core.task import _fan_out_expr_list
+
+        return _fan_out_expr_list(expr_list=self, varying=varying, mode="product")

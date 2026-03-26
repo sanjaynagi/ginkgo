@@ -206,7 +206,11 @@ as development artifacts rather than end-user pages.
 
 `@task()`-decorated functions do not execute when called. They return `Expr[T]` values that describe deferred computation. A `@flow` function is the entrypoint that builds the initial expression tree.
 
-`ExprList[T]` is produced by `.map()` on a partially applied task and represents fan-out across multiple independent task invocations.
+`ExprList[T]` is produced by `.map()` or `.product_map()` and represents
+fan-out across multiple independent task invocations. `.map()` uses positional
+zip semantics, while `.product_map()` uses Cartesian expansion. Chained
+fan-out remains flat, with existing branches as the outer loop and newly
+introduced rows as the inner loop.
 
 Ginkgo also exposes small workflow-authoring helpers:
 

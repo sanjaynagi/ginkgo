@@ -28,7 +28,7 @@ class NotebookExpr:
     log : str | None
         Optional path to capture stdout/stderr.
     source_hash : str
-        SHA-256 hash of the notebook source file, used for cache invalidation.
+        BLAKE3 hash of the notebook source file, used for cache invalidation.
     """
 
     path: Path

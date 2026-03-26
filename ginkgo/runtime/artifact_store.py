@@ -19,7 +19,7 @@ from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file
 class ArtifactStore(Protocol):
     """Protocol for content-addressed artifact storage.
 
-    Artifact IDs use the format ``<sha256>.<ext>`` for files and ``<sha256>``
+    Artifact IDs use the format ``<blake3>.<ext>`` for files and ``<blake3>``
     for directories.  This identity scheme is consumed directly by downstream
     phases (remote artifact store, asset catalog, versioned assets).
     """
@@ -35,7 +35,7 @@ class ArtifactStore(Protocol):
         Returns
         -------
         str
-            Artifact ID in the form ``<sha256>.<ext>`` (file) or ``<sha256>``
+            Artifact ID in the form ``<blake3>.<ext>`` (file) or ``<blake3>``
             (directory).
         """
         ...
@@ -265,7 +265,7 @@ class LocalArtifactStore:
         Returns
         -------
         str
-            Artifact ID in the form ``<sha256>.<ext>``.
+            Artifact ID in the form ``<blake3>.<ext>``.
         """
         digest = hash_bytes(data)
         artifact_id = f"{digest}.{extension}" if extension else digest

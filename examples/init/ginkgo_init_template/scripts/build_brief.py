@@ -10,7 +10,6 @@ def main() -> None:
     """Render one brief from a normalized seed card."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--item", required=True)
-    parser.add_argument("--variant", required=True)
     parser.add_argument("--normalized-card", required=True)
     parser.add_argument("--output-path", required=True)
     args = parser.parse_args()
@@ -23,7 +22,7 @@ def main() -> None:
     output.write_text(
         "\n".join(
             [
-                f"# Brief: {args.item} / {args.variant}",
+                f"# Brief: {args.item}",
                 "",
                 "## Normalized Seed",
                 "",

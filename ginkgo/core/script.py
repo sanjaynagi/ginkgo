@@ -34,7 +34,7 @@ class ScriptExpr:
     interpreter : str
         Interpreter command (e.g. ``"python"`` or ``"rscript"``).
     source_hash : str
-        SHA-256 hash of the script source file, used for cache invalidation.
+        BLAKE3 hash of the script source file, used for cache invalidation.
     """
 
     path: Path
