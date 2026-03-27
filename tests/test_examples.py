@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -207,12 +208,15 @@ class TestExamples:
         assert third_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
 
-    @pytest.mark.skip(reason="bioinfo example uses remote OCI URIs pending phase 6")
     def test_bioinfo_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
+        profile = os.environ.get("GINKGO_REMOTE_OCI_PROFILE")
+        if not profile:
+            pytest.skip("Set GINKGO_REMOTE_OCI_PROFILE to run the OCI bioinfo example")
+
         example_dir = _copy_example(name="bioinfo", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
@@ -230,7 +234,8 @@ class TestExamples:
         assert len(filtered_fastqs) == 4
         assert len(qc_tables) == 2
         assert len(count_files) == 2
-        assert sorted(summary["sample_id"].tolist()) == ["ERR3058522", "ERR3058532"]
+        assert sorted(summary["sample_id"].unique().tolist()) == ["ERR3058522", "ERR3058532"]
+        assert len(summary) == 4
         assert "read_count_r1" in summary.columns
 
         with _mock_docker():

@@ -25,6 +25,8 @@ _EXPORTS = {
     "flow": ("ginkgo.core.flow", "flow"),
     "folder": ("ginkgo.core.types", "folder"),
     "notebook": ("ginkgo.core.notebook", "notebook"),
+    "remote_file": ("ginkgo.core.remote", "remote_file"),
+    "remote_folder": ("ginkgo.core.remote", "remote_folder"),
     "script": ("ginkgo.core.script", "script"),
     "secret": ("ginkgo.core.secret", "secret"),
     "shell": ("ginkgo.core.shell", "shell"),

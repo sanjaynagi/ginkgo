@@ -271,10 +271,10 @@ def _encode_binary_payload(
 
     # Route through the artifact store when available (cache persistence).
     if artifact_store is not None:
-        artifact_id = artifact_store.store_bytes(data=data, extension=extension)
+        record = artifact_store.store_bytes(data=data, extension=extension)
         return {
             "__ginkgo_type__": "binary",
-            "artifact_id": artifact_id,
+            "artifact_id": record.artifact_id,
             "codec": codec_name,
             "storage": "artifact_store",
         }

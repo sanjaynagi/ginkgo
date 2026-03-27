@@ -14,6 +14,7 @@ from typing import Any, get_args, get_origin
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.runtime.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifact_store import LocalArtifactStore
 from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.runtime.secrets import redact_value, secret_identity
@@ -43,11 +44,15 @@ class CacheStore:
     artifact_store : LocalArtifactStore | None
         Shared artifact store for content-addressed binary and file/folder
         artifacts.  Created automatically when ``None``.
+    publisher : RemotePublisher | None
+        Optional remote publisher for uploading artifacts after local storage.
+        When set, artifacts are published to the remote store automatically.
     """
 
     root: Path | None = None
     backend: Any | None = None  # TaskBackend; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
+    publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
 
@@ -142,6 +147,10 @@ class CacheStore:
         # entry already exists (handles re-execution after symlink replacement).
         artifact_ids = self._store_output_artifacts(result=result, task_def=task_def)
 
+        # Publish artifacts to remote store if a publisher is configured.
+        if self.publisher is not None:
+            self._publish_artifacts(artifact_ids)
+
         entry_dir = self._entry_dir(cache_key)
         if not entry_dir.exists():
             temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
@@ -234,8 +243,8 @@ class CacheStore:
         """
         if path.is_symlink():
             target = path.resolve()
-            # Symlink points into our artifact store — valid.
-            if str(target).startswith(str(self._artifact_store._root)):
+            # Symlink points into our artifact store blobs — valid.
+            if str(target).startswith(str(self._artifact_store._blobs_dir)):
                 return True
             # Symlink to somewhere else — treat as modified.
             return False
@@ -252,16 +261,37 @@ class CacheStore:
         return False
 
     def _validate_folder_symlink(self, path: Path) -> bool:
-        """Validate a single folder output symlink."""
+        """Validate a single folder output.
+
+        Tree artifacts are reconstructed directories containing symlinks to
+        individual blobs.  A valid folder output is a directory whose file
+        entries are symlinks pointing into the artifact store's blob directory.
+        """
         if path.is_symlink():
             target = path.resolve()
             if str(target).startswith(str(self._artifact_store._root)):
                 return True
             return False
 
+        if path.is_dir():
+            # Tree artifacts: directory with symlinked files pointing to blobs.
+            blobs_prefix = str(self._artifact_store._blobs_dir)
+            for child in path.rglob("*"):
+                if child.is_dir() and not child.is_symlink():
+                    continue
+                if child.is_symlink():
+                    target = child.resolve()
+                    if not str(target).startswith(blobs_prefix):
+                        return False
+                else:
+                    # Regular file inside what should be a reconstructed tree.
+                    return False
+            return True
+
         if path.exists():
             return False
 
+        # Path is absent — try to recreate from the artifact store.
         artifact_id = self._find_artifact_for_path(path, is_dir=True)
         if artifact_id is not None and self._artifact_store.exists(artifact_id=artifact_id):
             self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
@@ -314,6 +344,24 @@ class CacheStore:
         )
         return artifact_ids
 
+    def _publish_artifacts(self, artifact_ids: dict[str, str]) -> None:
+        """Publish stored artifacts to the remote store.
+
+        Loads each artifact record from the refs directory and publishes it
+        via the configured publisher.
+
+        Parameters
+        ----------
+        artifact_ids : dict[str, str]
+            Mapping from output path strings to artifact IDs.
+        """
+        refs_dir = self._artifact_store._refs_dir
+        for artifact_id in artifact_ids.values():
+            ref_path = refs_dir / f"{artifact_id}.json"
+            if ref_path.exists():
+                record = ArtifactRecord.from_path(ref_path)
+                self.publisher.publish(record=record)
+
     def _collect_output_artifacts(
         self,
         *,
@@ -349,8 +397,8 @@ class CacheStore:
                 # Already a symlink (e.g. from a previous run) — skip.
                 return
             if path.is_file():
-                artifact_id = self._artifact_store.store(src_path=path)
-                artifact_ids[str(path)] = artifact_id
+                record = self._artifact_store.store(src_path=path)
+                artifact_ids[str(path)] = record.artifact_id
             return
 
         if annotation is folder or isinstance(value, folder):
@@ -358,8 +406,8 @@ class CacheStore:
             if path.is_symlink():
                 return
             if path.is_dir():
-                artifact_id = self._artifact_store.store(src_path=path)
-                artifact_ids[str(path)] = artifact_id
+                record = self._artifact_store.store(src_path=path)
+                artifact_ids[str(path)] = record.artifact_id
             return
 
     def _symlink_output_artifacts(self, *, result: Any, task_def: TaskDef) -> None:
