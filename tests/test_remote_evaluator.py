@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Barrier, Lock
 from unittest.mock import MagicMock, patch
 
 from ginkgo import evaluate, file, task
@@ -21,6 +22,12 @@ def read_file_content(*, path: file) -> str:
 def count_files_in_list(*, paths: list[file]) -> int:
     """Count the number of file paths received."""
     return len(paths)
+
+
+@task()
+def count_file_bytes(*, path: file) -> int:
+    """Return the file size in bytes."""
+    return len(Path(str(path)).read_bytes())
 
 
 def _make_mock_staging_cache(tmp_path: Path, content: bytes = b"staged content"):
@@ -152,3 +159,135 @@ class TestRemoteFileEvaluator:
 
         assert result1 == result2 == "cacheable"
         assert '"status": "cached"' in captured.err
+
+    def test_task_started_is_emitted_after_staging(self, tmp_path, monkeypatch, capsys) -> None:
+        monkeypatch.chdir(tmp_path)
+        cache, backend = _make_mock_staging_cache(tmp_path, b"ordered")
+
+        with (
+            patch(
+                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                return_value=cache,
+            ),
+            patch(
+                "ginkgo.remote.staging.resolve_backend",
+                return_value=backend,
+            ),
+        ):
+            evaluate(read_file_content(path=remote_file("s3://bucket/ordered.txt")))
+            captured = capsys.readouterr()
+
+        assert captured.err.index('"status": "staging"') < captured.err.index(
+            '"status": "running"'
+        )
+
+    def test_independent_remote_inputs_stage_concurrently(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GINKGO_STAGING_JOBS", "2")
+        cache = StagingCache(root=tmp_path / "staging")
+        backend = MagicMock()
+        barrier = Barrier(2, timeout=1.0)
+
+        contents = {
+            "a.txt": b"alpha",
+            "b.txt": b"beta",
+        }
+
+        def _download(*, bucket, key, dest_path):
+            barrier.wait()
+            payload = contents[key]
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(payload)
+            return RemoteObjectMeta(
+                uri=f"s3://{bucket}/{key}",
+                size=len(payload),
+                etag=f"etag-{key}",
+            )
+
+        def _head(*, bucket, key):
+            payload = contents[key]
+            return RemoteObjectMeta(
+                uri=f"s3://{bucket}/{key}",
+                size=len(payload),
+                etag=f"etag-{key}",
+            )
+
+        backend.download.side_effect = _download
+        backend.head.side_effect = _head
+
+        with (
+            patch(
+                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                return_value=cache,
+            ),
+            patch(
+                "ginkgo.remote.staging.resolve_backend",
+                return_value=backend,
+            ),
+        ):
+            result = evaluate(
+                [
+                    read_file_content(path=remote_file("s3://bucket/a.txt")),
+                    read_file_content(path=remote_file("s3://bucket/b.txt")),
+                ],
+                jobs=2,
+            )
+
+        assert result == ["alpha", "beta"]
+        assert backend.download.call_count == 2
+
+    def test_shared_remote_ref_is_staged_once_across_concurrent_tasks(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GINKGO_STAGING_JOBS", "2")
+        cache = StagingCache(root=tmp_path / "staging")
+        backend = MagicMock()
+        download_lock = Lock()
+        download_calls = 0
+
+        def _download(*, bucket, key, dest_path):
+            nonlocal download_calls
+            with download_lock:
+                download_calls += 1
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"shared payload")
+            return RemoteObjectMeta(
+                uri=f"s3://{bucket}/{key}",
+                size=len(b"shared payload"),
+                etag="shared-etag",
+            )
+
+        def _head(*, bucket, key):
+            return RemoteObjectMeta(
+                uri=f"s3://{bucket}/{key}",
+                size=len(b"shared payload"),
+                etag="shared-etag",
+            )
+
+        backend.download.side_effect = _download
+        backend.head.side_effect = _head
+        ref = remote_file("s3://bucket/shared.txt")
+
+        with (
+            patch(
+                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                return_value=cache,
+            ),
+            patch(
+                "ginkgo.remote.staging.resolve_backend",
+                return_value=backend,
+            ),
+        ):
+            result = evaluate(
+                [
+                    read_file_content(path=ref),
+                    count_file_bytes(path=ref),
+                ],
+                jobs=2,
+            )
+
+        assert result == ["shared payload", len(b"shared payload")]
+        assert download_calls == 1

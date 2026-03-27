@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 notebooks = [
     "papermill>=2.6",
+    "ipykernel>=6.29",
     "marimo>=0.11",
     "nbconvert>=7.16",
 ]
@@ -39,7 +40,7 @@ channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
-ginkgo = { path = ".", editable = true }
+ginkgo = { path = ".", editable = true, extras = ["notebooks"] }
 fsspec = ">=2024.10.0"
 numpy = ">=2.0"
 ocifs = ">=1.3.2"

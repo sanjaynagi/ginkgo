@@ -233,6 +233,22 @@ The current evaluator is concurrent and futures-based:
 
 The scheduler performs explicit cycle detection when registering expressions.
 
+### Worker-Affine Remote Staging
+
+Phase 6D made remote staging an explicit execution phase rather than hidden
+argument preprocessing.
+
+- Ready tasks now reserve scheduler capacity before any remote downloads begin.
+- Tasks with remote inputs transition through `waiting -> staging -> running`,
+  and `task_started` is emitted only after staging completes successfully.
+- Remote hydration runs on a dedicated bounded thread pool that is configured
+  independently from CPU task concurrency, with `GINKGO_STAGING_JOBS` and
+  `remote.staging_jobs` support.
+- Concurrent tasks deduplicate in-flight staging of the same remote reference,
+  so one download fan-outs to multiple waiting tasks on the same worker.
+- The staging root remains worker-local by contract, which keeps the local
+  runtime aligned with a future Kubernetes or pod-local execution model.
+
 ### Execution Backends
 
 The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
