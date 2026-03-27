@@ -97,6 +97,15 @@ class TaskStarted(TaskEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class TaskStaging(TaskEvent):
+    """Task is staging remote inputs before dispatch."""
+
+    event: str = "task_staging"
+    status: Literal["staging"] = "staging"
+    remote_input_count: int = 0
+
+
+@dataclass(kw_only=True, frozen=True)
 class TaskLog(TaskEvent):
     """Task log chunk event."""
 

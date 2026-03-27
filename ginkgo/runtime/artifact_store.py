@@ -3,29 +3,42 @@
 The ``ArtifactStore`` protocol defines the contract for storing and retrieving
 binary artifacts.  ``LocalArtifactStore`` is the default implementation that
 stores artifacts on the local filesystem under ``.ginkgo/artifacts/``.
+
+Storage layout::
+
+    .ginkgo/artifacts/
+      blobs/<digest>              # raw file bytes, read-only
+      trees/<tree_digest>.json    # directory manifest
+      refs/<artifact_id>.json     # artifact metadata record
 """
 
 from __future__ import annotations
 
 import shutil
 import stat
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file
+from ginkgo.runtime.artifact_model import (
+    ArtifactRecord,
+    TreeEntry,
+    TreeRef,
+    deserialize_tree_manifest,
+    serialize_tree_manifest,
+)
+from ginkgo.runtime.hashing import hash_bytes, hash_file
+
+
+DIGEST_ALGORITHM = "blake3"
 
 
 @runtime_checkable
 class ArtifactStore(Protocol):
-    """Protocol for content-addressed artifact storage.
+    """Protocol for content-addressed artifact storage."""
 
-    Artifact IDs use the format ``<blake3>.<ext>`` for files and ``<blake3>``
-    for directories.  This identity scheme is consumed directly by downstream
-    phases (remote artifact store, asset catalog, versioned assets).
-    """
-
-    def store(self, *, src_path: Path) -> str:
-        """Copy bytes into the store and return a content-addressed artifact ID.
+    def store(self, *, src_path: Path) -> ArtifactRecord:
+        """Copy bytes into the store and return an artifact record.
 
         Parameters
         ----------
@@ -34,9 +47,8 @@ class ArtifactStore(Protocol):
 
         Returns
         -------
-        str
-            Artifact ID in the form ``<blake3>.<ext>`` (file) or ``<blake3>``
-            (directory).
+        ArtifactRecord
+            Metadata record for the stored artifact.
         """
         ...
 
@@ -90,8 +102,8 @@ class ArtifactStore(Protocol):
         """
         ...
 
-    def store_bytes(self, *, data: bytes, extension: str) -> str:
-        """Store raw bytes and return a content-addressed artifact ID.
+    def store_bytes(self, *, data: bytes, extension: str) -> ArtifactRecord:
+        """Store raw bytes and return an artifact record.
 
         Parameters
         ----------
@@ -102,8 +114,7 @@ class ArtifactStore(Protocol):
 
         Returns
         -------
-        str
-            Artifact ID.
+        ArtifactRecord
         """
         ...
 
@@ -123,7 +134,7 @@ class ArtifactStore(Protocol):
 
 
 class LocalArtifactStore:
-    """Local filesystem artifact store.
+    """Local filesystem artifact store using blob/tree CAS layout.
 
     Parameters
     ----------
@@ -134,9 +145,13 @@ class LocalArtifactStore:
 
     def __init__(self, *, root: Path | None = None) -> None:
         self._root = root if root is not None else Path.cwd() / ".ginkgo" / "artifacts"
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._blobs_dir = self._root / "blobs"
+        self._trees_dir = self._root / "trees"
+        self._refs_dir = self._root / "refs"
+        for directory in (self._blobs_dir, self._trees_dir, self._refs_dir):
+            directory.mkdir(parents=True, exist_ok=True)
 
-    def store(self, *, src_path: Path) -> str:
+    def store(self, *, src_path: Path) -> ArtifactRecord:
         """Copy a file or directory into the store.
 
         Parameters
@@ -146,8 +161,8 @@ class LocalArtifactStore:
 
         Returns
         -------
-        str
-            Content-addressed artifact ID.
+        ArtifactRecord
+            Metadata record for the stored artifact.
         """
         if src_path.is_dir():
             return self._store_directory(src_path)
@@ -156,26 +171,32 @@ class LocalArtifactStore:
     def retrieve(self, *, artifact_id: str, dest_path: Path) -> None:
         """Create a symlink at *dest_path* pointing to the stored artifact.
 
+        For blob artifacts, creates a symlink to the blob file.  For tree
+        artifacts, reconstructs the directory by creating symlinks from each
+        manifest entry to its corresponding blob.
+
         Parameters
         ----------
         artifact_id : str
             Artifact ID returned by :meth:`store`.
         dest_path : Path
-            Target symlink location.  Parent directories are created if needed.
+            Target symlink location.
         """
-        target = self._root / artifact_id
-        if not target.exists():
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        if not ref_path.exists():
             raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
 
+        record = ArtifactRecord.from_path(ref_path)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        if dest_path.is_symlink() or dest_path.exists():
-            if dest_path.is_symlink():
-                dest_path.unlink()
-            elif dest_path.is_dir():
-                shutil.rmtree(dest_path)
-            else:
-                dest_path.unlink()
-        dest_path.symlink_to(target)
+
+        # Clean up any existing path at dest.
+        _remove_dest(dest_path)
+
+        if record.kind == "blob":
+            blob_path = self._blobs_dir / record.digest_hex
+            dest_path.symlink_to(blob_path)
+        else:
+            self._retrieve_tree(artifact_id=artifact_id, dest_path=dest_path)
 
     def exists(self, *, artifact_id: str) -> bool:
         """Check whether an artifact exists in the store.
@@ -189,7 +210,7 @@ class LocalArtifactStore:
         -------
         bool
         """
-        return (self._root / artifact_id).exists()
+        return (self._refs_dir / f"{artifact_id}.json").exists()
 
     def delete(self, *, artifact_id: str) -> None:
         """Remove an artifact from the store.
@@ -199,18 +220,36 @@ class LocalArtifactStore:
         artifact_id : str
             The artifact ID to remove.
         """
-        target = self._root / artifact_id
-        if not target.exists():
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        if not ref_path.exists():
             return
-        if target.is_dir():
-            _make_writable_recursive(target)
-            shutil.rmtree(target)
-        else:
-            target.chmod(stat.S_IRUSR | stat.S_IWUSR)
-            target.unlink()
+
+        record = ArtifactRecord.from_path(ref_path)
+
+        if record.kind == "tree":
+            # Remove tree manifest.
+            tree_path = self._trees_dir / f"{record.digest_hex}.json"
+            if tree_path.exists():
+                tree_path.unlink()
+
+        # Remove blob(s).  For trees, only remove blobs not referenced
+        # by other artifacts.  For simplicity in the local case we remove
+        # the blob unconditionally -- orphaned blob cleanup can be added
+        # later if needed.
+        if record.kind == "blob":
+            blob_path = self._blobs_dir / record.digest_hex
+            if blob_path.exists():
+                blob_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                blob_path.unlink()
+
+        ref_path.unlink()
 
     def artifact_path(self, *, artifact_id: str) -> Path:
-        """Return the absolute path for an artifact.
+        """Return the absolute path for an artifact's primary content.
+
+        For blobs, returns the blob file path.  For trees, returns the
+        blob directory (callers should use :meth:`retrieve` instead for
+        tree artifacts).
 
         Parameters
         ----------
@@ -221,39 +260,17 @@ class LocalArtifactStore:
         -------
         Path
         """
-        return self._root / artifact_id
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        if not ref_path.exists():
+            return self._blobs_dir / artifact_id
 
-    def _store_file(self, src_path: Path) -> str:
-        """Store a single file, returning its artifact ID."""
-        digest = hash_file(src_path)
-        ext = src_path.suffix.lstrip(".")
-        artifact_id = f"{digest}.{ext}" if ext else digest
-        dest = self._root / artifact_id
+        record = ArtifactRecord.from_path(ref_path)
+        if record.kind == "blob":
+            return self._blobs_dir / record.digest_hex
+        return self._trees_dir / f"{record.digest_hex}.json"
 
-        # Content-addressed dedup: skip if already present.
-        if dest.exists():
-            return artifact_id
-
-        shutil.copy2(src_path, dest)
-        dest.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0o444
-        return artifact_id
-
-    def _store_directory(self, src_path: Path) -> str:
-        """Store a directory tree, returning its artifact ID."""
-        digest = _hash_directory(src_path)
-        artifact_id = digest
-        dest = self._root / artifact_id
-
-        # Content-addressed dedup: skip if already present.
-        if dest.exists():
-            return artifact_id
-
-        shutil.copytree(src_path, dest)
-        _set_read_only_recursive(dest)
-        return artifact_id
-
-    def store_bytes(self, *, data: bytes, extension: str) -> str:
-        """Store raw bytes, returning a content-addressed artifact ID.
+    def store_bytes(self, *, data: bytes, extension: str) -> ArtifactRecord:
+        """Store raw bytes, returning an artifact record.
 
         Parameters
         ----------
@@ -264,19 +281,28 @@ class LocalArtifactStore:
 
         Returns
         -------
-        str
-            Artifact ID in the form ``<blake3>.<ext>``.
+        ArtifactRecord
         """
         digest = hash_bytes(data)
-        artifact_id = f"{digest}.{extension}" if extension else digest
-        dest = self._root / artifact_id
+        blob_path = self._blobs_dir / digest
 
-        if dest.exists():
-            return artifact_id
+        if not blob_path.exists():
+            blob_path.write_bytes(data)
+            blob_path.chmod(_READ_ONLY_FILE)
 
-        dest.write_bytes(data)
-        dest.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0o444
-        return artifact_id
+        ext = f".{extension}" if extension else ""
+        record = ArtifactRecord(
+            artifact_id=digest,
+            kind="blob",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=digest,
+            extension=ext,
+            size=len(data),
+            created_at=_now_iso(),
+            storage_backend="local",
+        )
+        self._write_ref(record)
+        return record
 
     def read_bytes(self, *, artifact_id: str) -> bytes:
         """Read raw bytes for an artifact.
@@ -290,35 +316,156 @@ class LocalArtifactStore:
         -------
         bytes
         """
-        target = self._root / artifact_id
-        if not target.exists():
-            raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
-        return target.read_bytes()
-
-
-def _hash_directory(path: Path) -> str:
-    """Return a BLAKE3 digest over a directory's recursive contents."""
-    return hash_directory(path)
-
-
-def _set_read_only_recursive(path: Path) -> None:
-    """Set a directory tree to read-only (files 0o444, dirs 0o555)."""
-    for child in path.rglob("*"):
-        if child.is_dir():
-            child.chmod(
-                stat.S_IRUSR
-                | stat.S_IXUSR
-                | stat.S_IRGRP
-                | stat.S_IXGRP
-                | stat.S_IROTH
-                | stat.S_IXOTH
-            )
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        if ref_path.exists():
+            record = ArtifactRecord.from_path(ref_path)
+            blob_path = self._blobs_dir / record.digest_hex
         else:
-            child.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-    # Set the root directory itself.
-    path.chmod(
-        stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
-    )
+            blob_path = self._blobs_dir / artifact_id
+
+        if not blob_path.exists():
+            raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
+        return blob_path.read_bytes()
+
+    # -- internal helpers --------------------------------------------------
+
+    def _store_file(self, src_path: Path) -> ArtifactRecord:
+        """Store a single file as a blob."""
+        digest = hash_file(src_path)
+        blob_path = self._blobs_dir / digest
+
+        if not blob_path.exists():
+            shutil.copy2(src_path, blob_path)
+            blob_path.chmod(_READ_ONLY_FILE)
+
+        size = blob_path.stat().st_size
+        ext = src_path.suffix  # includes leading dot
+
+        record = ArtifactRecord(
+            artifact_id=digest,
+            kind="blob",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=digest,
+            extension=ext,
+            size=size,
+            created_at=_now_iso(),
+            storage_backend="local",
+        )
+        self._write_ref(record)
+        return record
+
+    def _store_directory(self, src_path: Path) -> ArtifactRecord:
+        """Store a directory as individual blobs plus a tree manifest."""
+        real_src = src_path.resolve()
+        entries: list[TreeEntry] = []
+        total_size = 0
+
+        # Walk files in sorted order for deterministic manifests.
+        for child in sorted(real_src.rglob("*"), key=lambda p: str(p.relative_to(real_src))):
+            if child.is_dir():
+                continue
+
+            rel = child.relative_to(real_src).as_posix()
+            digest = hash_file(child)
+            file_size = child.stat().st_size
+            file_mode = child.stat().st_mode & 0o777
+
+            # Store the blob.
+            blob_path = self._blobs_dir / digest
+            if not blob_path.exists():
+                shutil.copy2(child, blob_path)
+                blob_path.chmod(_READ_ONLY_FILE)
+
+            entries.append(
+                TreeEntry(
+                    relative_path=rel,
+                    blob_digest=digest,
+                    size=file_size,
+                    mode=file_mode,
+                )
+            )
+            total_size += file_size
+
+        # Build and store the tree manifest.
+        manifest_json = serialize_tree_manifest(
+            TreeRef(
+                digest_algorithm=DIGEST_ALGORITHM,
+                digest_hex="",  # placeholder, recomputed below
+                entries=tuple(entries),
+            )
+        )
+        tree_digest = hash_bytes(manifest_json.encode("utf-8"))
+
+        # Rewrite with the real digest.
+        tree_ref = TreeRef(
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=tree_digest,
+            entries=tuple(entries),
+        )
+        manifest_json = serialize_tree_manifest(tree_ref)
+        tree_path = self._trees_dir / f"{tree_digest}.json"
+        tree_path.write_text(manifest_json, encoding="utf-8")
+
+        record = ArtifactRecord(
+            artifact_id=tree_digest,
+            kind="tree",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=tree_digest,
+            extension="",
+            size=total_size,
+            created_at=_now_iso(),
+            storage_backend="local",
+        )
+        self._write_ref(record)
+        return record
+
+    def _retrieve_tree(self, *, artifact_id: str, dest_path: Path) -> None:
+        """Reconstruct a directory from its tree manifest."""
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        record = ArtifactRecord.from_path(ref_path)
+        tree_path = self._trees_dir / f"{record.digest_hex}.json"
+
+        if not tree_path.exists():
+            raise FileNotFoundError(f"Tree manifest not found: {record.digest_hex}")
+
+        tree_ref = deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
+
+        dest_path.mkdir(parents=True, exist_ok=True)
+
+        for entry in tree_ref.entries:
+            entry_dest = dest_path / entry.relative_path
+            entry_dest.parent.mkdir(parents=True, exist_ok=True)
+            blob_path = self._blobs_dir / entry.blob_digest
+
+            # Symlink each file to its blob.
+            if entry_dest.is_symlink() or entry_dest.exists():
+                entry_dest.unlink()
+            entry_dest.symlink_to(blob_path)
+
+    def _write_ref(self, record: ArtifactRecord) -> None:
+        """Write an artifact metadata record to the refs directory."""
+        ref_path = self._refs_dir / f"{record.artifact_id}.json"
+        ref_path.write_text(record.to_json(), encoding="utf-8")
+
+
+# -- module-level helpers --------------------------------------------------
+
+_READ_ONLY_FILE = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH  # 0o444
+
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _remove_dest(dest_path: Path) -> None:
+    """Remove an existing file, symlink, or directory at *dest_path*."""
+    if dest_path.is_symlink():
+        dest_path.unlink()
+    elif dest_path.is_dir():
+        shutil.rmtree(dest_path)
+    elif dest_path.exists():
+        dest_path.unlink()
 
 
 def _make_writable_recursive(path: Path) -> None:

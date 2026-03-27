@@ -167,33 +167,41 @@ class TestFileOutputSymlinks:
 
 
 class TestFolderOutputSymlinks:
-    def test_output_is_symlinked_after_execution(self, tmp_path):
+    def test_output_is_directory_with_symlinked_files_after_execution(self, tmp_path):
         output = tmp_path / "outdir"
         result = evaluate(write_folder_task(output_dir=str(output)))
-        assert Path(str(result)).is_symlink()
-        assert (Path(str(result)) / "a.txt").read_text().strip() == "a"
-        assert (Path(str(result)) / "b.txt").read_text().strip() == "b"
+        result_path = Path(str(result))
+        # Tree artifacts are reconstructed directories, not symlinks.
+        assert result_path.is_dir()
+        assert (result_path / "a.txt").read_text().strip() == "a"
+        assert (result_path / "b.txt").read_text().strip() == "b"
+        # Individual files are symlinks to blobs.
+        assert (result_path / "a.txt").is_symlink()
+        assert (result_path / "b.txt").is_symlink()
 
     def test_folder_contents_are_read_only(self, tmp_path):
         output = tmp_path / "ro_dir"
         result = evaluate(write_folder_task(output_dir=str(output)))
-        target = Path(str(result)).resolve()
-        file_mode = (target / "a.txt").stat().st_mode
+        result_path = Path(str(result))
+        # Files are symlinks to read-only blobs.
+        file_mode = (result_path / "a.txt").resolve().stat().st_mode
         assert not (file_mode & stat.S_IWUSR)
 
-    def test_deleted_symlink_is_recreated(self, tmp_path, capsys):
+    def test_deleted_folder_is_recreated(self, tmp_path, capsys):
         output = tmp_path / "dir_recreate"
         evaluate(write_folder_task(output_dir=str(output)))
         capsys.readouterr()
 
-        # Remove the symlink.
-        output.unlink()
+        # Remove the reconstructed directory.
+        import shutil
+
+        shutil.rmtree(output)
         assert not output.exists()
 
         result = evaluate(write_folder_task(output_dir=str(output)))
         captured = capsys.readouterr()
         assert '"status": "cached"' in captured.err
-        assert Path(str(result)).is_symlink()
+        assert Path(str(result)).is_dir()
 
 
 # ---------------------------------------------------------------------------

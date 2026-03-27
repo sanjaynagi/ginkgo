@@ -32,6 +32,7 @@ import yaml
 
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
+from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
 from ginkgo.core.script import ScriptExpr
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
@@ -55,6 +56,7 @@ from ginkgo.runtime.events import (
     TaskLog,
     TaskReady,
     TaskRetrying,
+    TaskStaging,
     TaskStarted,
 )
 from ginkgo.runtime.module_loader import load_module, resolve_module_file
@@ -279,7 +281,9 @@ class _ConcurrentEvaluator:
         if self.memory is not None and self.memory < 1:
             raise ValueError("memory must be at least 1 when provided")
 
-        self._cache_store = CacheStore(backend=self.backend)
+        publisher = self._load_remote_publisher()
+        self._cache_store = CacheStore(backend=self.backend, publisher=publisher)
+        self._staging_cache = None  # Lazily created on first remote ref.
 
     def evaluate(self, expr: Any) -> Any:
         """Resolve a root expression or nested container concurrently."""
@@ -491,6 +495,7 @@ class _ConcurrentEvaluator:
         resolved_args = self._resolve_task_args(
             expr=node.expr,
             task_def=node.task_def,
+            node=node,
             include_tmp_dirs=False,
         )
         self._validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
@@ -651,6 +656,21 @@ class _ConcurrentEvaluator:
             node = self._nodes[node_id]
             node.attempt += 1
             node.state = "running"
+            node.resolved_args = self._resolve_task_args(
+                expr=node.expr,
+                task_def=node.task_def,
+                node=node,
+                include_tmp_dirs=True,
+                existing_args=node.resolved_args,
+                tmp_paths=node.tmp_paths,
+            )
+            node.execution_args = self._resolve_execution_args(node=node)
+            node.secret_values = collect_resolved_secret_values(
+                template=node.resolved_args,
+                resolved=node.execution_args,
+            )
+            self._record_task_metadata(node)
+            self._validate_task_contract(node=node)
             self._emit_event(
                 TaskStarted(
                     run_id=self._run_id,
@@ -675,20 +695,6 @@ class _ConcurrentEvaluator:
                     attempt=node.attempt,
                     retries=node.task_def.retries,
                 )
-            node.resolved_args = self._resolve_task_args(
-                expr=node.expr,
-                task_def=node.task_def,
-                include_tmp_dirs=True,
-                existing_args=node.resolved_args,
-                tmp_paths=node.tmp_paths,
-            )
-            node.execution_args = self._resolve_execution_args(node=node)
-            node.secret_values = collect_resolved_secret_values(
-                template=node.resolved_args,
-                resolved=node.execution_args,
-            )
-            self._record_task_metadata(node)
-            self._validate_task_contract(node=node)
 
             if node.task_def.kind in {"notebook", "script", "shell"}:
                 assert self._shell_executor is not None
@@ -888,6 +894,7 @@ class _ConcurrentEvaluator:
         *,
         expr: Expr,
         task_def: TaskDef,
+        node: _TaskNode | None = None,
         include_tmp_dirs: bool,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
@@ -919,7 +926,135 @@ class _ConcurrentEvaluator:
 
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
 
+        # Stage remote references and coerce remote URI strings.
+        resolved_args = self._stage_remote_refs(
+            node=node,
+            task_def=task_def,
+            resolved_args=resolved_args,
+        )
+
         return resolved_args
+
+    def _stage_remote_refs(
+        self,
+        *,
+        node: _TaskNode | None,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Stage remote references into local paths.
+
+        Handles two cases:
+
+        1. Explicit ``RemoteFileRef`` / ``RemoteFolderRef`` values.
+        2. Annotation-aware coercion: raw ``s3://`` or ``oci://`` strings
+           passed to ``file`` or ``folder`` parameters.
+        """
+        remote_input_count = _count_remote_inputs(resolved_args)
+        if node is not None and remote_input_count > 0:
+            self._emit_event(
+                TaskStaging(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    remote_input_count=remote_input_count,
+                )
+            )
+
+        staged: dict[str, Any] = {}
+        for name, value in resolved_args.items():
+            annotation = task_def.type_hints.get(
+                name,
+                task_def.signature.parameters[name].annotation
+                if name in task_def.signature.parameters
+                else Any,
+            )
+            staged[name] = self._stage_remote_value(annotation=annotation, value=value)
+        return staged
+
+    def _stage_remote_value(self, *, annotation: Any, value: Any) -> Any:
+        """Stage a single value, recursing into containers."""
+        # Explicit remote refs.
+        if isinstance(value, RemoteFileRef):
+            return file(str(self._get_staging_cache().stage_file(ref=value)))
+        if isinstance(value, RemoteFolderRef):
+            return folder(str(self._get_staging_cache().stage_folder(ref=value)))
+
+        # Annotation-aware coercion: raw URI string → remote ref → staged path.
+        if isinstance(value, str) and is_remote_uri(value):
+            if annotation is file:
+                from ginkgo.core.remote import remote_file
+
+                ref = remote_file(value)
+                return file(str(self._get_staging_cache().stage_file(ref=ref)))
+            if annotation is folder:
+                from ginkgo.core.remote import remote_folder
+
+                ref = remote_folder(value)
+                return folder(str(self._get_staging_cache().stage_folder(ref=ref)))
+
+        # Recurse into typed containers.
+        origin = get_origin(annotation)
+        if origin in {list, tuple} and isinstance(value, (list, tuple)):
+            inner_args = get_args(annotation)
+            inner_annotation = inner_args[0] if inner_args else Any
+            staged_items = [
+                self._stage_remote_value(annotation=inner_annotation, value=item) for item in value
+            ]
+            return type(value)(staged_items)
+
+        return value
+
+    def _get_staging_cache(self) -> Any:
+        """Lazily create and return the staging cache."""
+        if self._staging_cache is None:
+            from ginkgo.remote.staging import StagingCache
+
+            self._staging_cache = StagingCache()
+        return self._staging_cache
+
+    def _load_remote_publisher(self) -> Any | None:
+        """Load a remote publisher from ginkgo.toml if configured.
+
+        Looks for a ``[remote] store`` key containing a remote URI string
+        (e.g. ``s3://bucket/prefix/``).
+
+        Returns
+        -------
+        RemotePublisher | None
+            A publisher instance, or ``None`` if not configured.
+        """
+        from ginkgo.config import load_runtime_config
+
+        config = load_runtime_config(project_root=Path.cwd())
+        store_uri = config.get("remote", {}).get("store")
+        if store_uri is None:
+            return None
+
+        from ginkgo.core.remote import _parse_uri
+        from ginkgo.remote.publisher import RemotePublisher
+        from ginkgo.remote.resolve import resolve_backend
+
+        parsed = _parse_uri(store_uri)
+        backend = resolve_backend(parsed["scheme"])
+
+        # The key from the URI becomes the prefix for all published artifacts.
+        prefix = parsed["key"]
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+
+        # Artifact store directories.
+        artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
+        return RemotePublisher(
+            backend=backend,
+            bucket=parsed["bucket"],
+            prefix=prefix,
+            local_blobs_dir=artifacts_root / "blobs",
+            local_trees_dir=artifacts_root / "trees",
+            local_refs_dir=artifacts_root / "refs",
+        )
 
     def _resolve_execution_args(self, *, node: _TaskNode) -> dict[str, Any]:
         """Resolve runtime-only inputs such as secret references."""
@@ -1975,10 +2110,14 @@ class _ConcurrentEvaluator:
             return
 
         if annotation is file:
+            if _is_remote_path_value(value):
+                return
             self._validate_file_path(path=value, label=label)
             return
 
         if annotation is folder:
+            if _is_remote_path_value(value):
+                return
             self._validate_folder_path(path=value, label=label)
             return
 
@@ -2233,6 +2372,14 @@ class _ConcurrentEvaluator:
                 "node_id": int(event.task_id.split("_")[-1]),
                 "attempt": event.attempt,
                 "max_attempts": event.resources.get("max_attempts"),
+            }
+        elif isinstance(event, TaskStaging):
+            payload = {
+                "task": event.task_name,
+                "status": "staging",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+                "remote_input_count": event.remote_input_count,
             }
         elif isinstance(event, TaskCacheHit):
             payload = {
@@ -2607,6 +2754,26 @@ def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> lis
         ]
 
     return [{"name": name, "type": "value", "summary": summarise_value(value)}]
+
+
+def _is_remote_path_value(value: Any) -> bool:
+    """Return whether a value is a remote reference or supported remote URI."""
+    if isinstance(value, RemoteRef):
+        return True
+    return isinstance(value, str) and is_remote_uri(value)
+
+
+def _count_remote_inputs(value: Any) -> int:
+    """Count nested remote refs and supported remote URI strings."""
+    if isinstance(value, RemoteRef):
+        return 1
+    if isinstance(value, str) and is_remote_uri(value):
+        return 1
+    if isinstance(value, list | tuple):
+        return sum(_count_remote_inputs(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_count_remote_inputs(item) for item in value.values())
+    return 0
 
 
 def _classify_failure(*, exc: BaseException) -> dict[str, Any]:

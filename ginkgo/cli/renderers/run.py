@@ -167,7 +167,7 @@ class _CliRunRenderer:
         if isinstance(display_label, str):
             self._apply_display_label(node_id=node_id, display_label=display_label)
         row.status = status
-        if status == "running":
+        if status in {"staging", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
         elif status in {"cached", "succeeded", "failed"}:

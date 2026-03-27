@@ -13,42 +13,34 @@ Each phase is independently testable and follows the same structure:
 
 ## Tier 2 — Build on Foundations
 
-### Phase 6 — Remote Artifact Store
+### Phase 6 — Remote References and Staged Access
 
-**Goal:** Add a remote-capable artifact access layer that lets Ginkgo tasks read
-object storage inputs through normal filesystem paths, while remaining
-compatible with future remote execution.
+**Goal:** Add first-class remote object references and worker-local staged
+access so Ginkgo tasks can read object storage inputs through normal local
+filesystem paths, while remaining compatible with future remote execution.
 
 **Detailed design:** [`docs/phase6-remote-artifact-store-plan.md`](phase6-remote-artifact-store-plan.md)
 
 **Depends on:** Phase 2 (`ArtifactStore`, immutable artifact IDs, cache
 metadata). Hard prerequisite for Phase 14 (remote execution). Improves Phase 7,
-Phase 8, and Phase 9 by allowing artifacts to be stored and rehydrated outside
-the local machine.
+Phase 8, and Phase 9 by allowing remote inputs to be resolved consistently on
+workers outside the local machine.
 
 #### Deliverables
 
-- Refactor the artifact model from "local file or copied directory" into a
-  unified content-addressed store supporting:
-  - immutable file blobs
-  - immutable tree manifests for directory artifacts
-  - artifact metadata records that separate identity from local access paths
 - Distinguish between:
-  - managed artifacts published by Ginkgo
+  - managed local artifacts produced by Ginkgo
   - external remote object references such as `s3://...` and `oci://...`
 - Add canonical remote input constructors such as `remote_file(...)` and
   `remote_folder(...)`.
 - Add annotation-aware coercion so URI strings passed to parameters annotated as
   `file` or `folder` can be upgraded automatically to remote references.
-- Replace the current local-path-centric retrieval contract with a task-facing
-  resolution layer that can provide a local readable path by:
-  - local symlink
-  - staged local hydration
-  - mounted virtual filesystem access
-- Add a worker-local cache for remote reads and writes, with content-addressed
-  reuse across tasks on the same machine.
-- Publish task outputs into a remote-capable managed artifact store rather than
-  assuming the producer's local path is durable.
+- Materialize remote refs through a worker-local staging cache before task
+  execution.
+- Add a worker-local cache for remote reads, with content-addressed reuse
+  across tasks on the same machine.
+- Keep the remote backend abstraction compatible with `fsspec`-style adapters
+  such as `s3fs` and `ocifs`.
 - Record remote identity metadata in cache and provenance so reproducibility is
   preserved across machines.
 
@@ -59,17 +51,16 @@ the local machine.
 - `file` and `folder` should remain type-level input and output contracts.
   Remote values should be represented by explicit reference objects, with URI
   string auto-coercion limited to `file` and `folder` parameters only.
-- FUSE or Fusion-like mounted access is an optimization and UX layer, not the
-  correctness contract. A staging fallback must remain first-class.
+- Staging is the correctness path for remote inputs.
+- FUSE or Fusion-like mounted access remains a possible later optimization, but
+  is not part of the active Phase 6 scope.
 - Remote URIs are not stable cache identity by themselves. Cache keys must use
   version IDs, checksums, or materialized content hashes.
-- Directory artifacts must become tree manifests rather than opaque copied
-  folders if Ginkgo wants lazy mounted access and sparse hydration.
-- Object storage remains the durable source of truth. Local disk is a
-  transparent cache and writeback layer.
+- Worker-local staging must remain compatible with Kubernetes and other cloud
+  execution environments where workers do not share the scheduler filesystem.
 - Ginkgo should exploit workflow semantics such as known task inputs,
-  deterministic workdirs, and explicit artifact identity to enable prefetch and
-  deduplication.
+  deterministic workdirs, and explicit artifact identity to enable reuse and
+  later optimizations.
 
 #### Validation
 
@@ -83,10 +74,10 @@ the local machine.
 - Changing a remote object version invalidates the cache deterministically.
 - Two tasks on the same worker reuse the same local cached artifact instead of
   downloading it twice.
-- A produced output can be published to remote storage and consumed from a
-  different machine.
-- Environments that cannot use a mounted filesystem fall back to staging
-  without workflow changes.
+- The staging root can be configured for worker-local storage in future cloud
+  deployments.
+- The Phase 6 design remains compatible with a future FUSE-like optimization
+  without requiring mounted access today.
 
 ---
 
