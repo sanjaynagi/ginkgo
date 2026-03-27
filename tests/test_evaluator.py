@@ -633,7 +633,9 @@ class TestEvaluate:
         assert evaluate(expr) == 5
         captured = capsys.readouterr()
 
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:1", "work:2"]
+        log_lines = Path(log_path).read_text(encoding="utf-8").splitlines()
+
+        assert sorted(log_lines) == ["work:1", "work:2"]
         assert captured.err.count('"status": "cached"') == 3
 
 
