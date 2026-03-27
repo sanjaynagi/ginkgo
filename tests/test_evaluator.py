@@ -62,6 +62,11 @@ def logged_work_task(x: int, log_path: str) -> int:
     return x + 1
 
 
+@task()
+def sum_keyword_pair_task(*, left: int, right: int) -> int:
+    return left + right
+
+
 @task(retries=2)
 def flaky_retry_task(marker_path: str, log_path: str) -> str:
     _append_line(log_path, "attempt")
@@ -611,6 +616,25 @@ class TestEvaluate:
             "attempt",
             "attempt",
         ]
+
+    def test_cached_upstream_tasks_do_not_deadlock_newly_unblocked_downstream(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        log_path = "fanin-cache.log"
+        expr = sum_keyword_pair_task(
+            left=logged_work_task(x=1, log_path=log_path),
+            right=logged_work_task(x=2, log_path=log_path),
+        )
+
+        assert evaluate(expr) == 5
+        capsys.readouterr()
+
+        assert evaluate(expr) == 5
+        captured = capsys.readouterr()
+
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:1", "work:2"]
+        assert captured.err.count('"status": "cached"') == 3
 
 
 class TestShellTask:

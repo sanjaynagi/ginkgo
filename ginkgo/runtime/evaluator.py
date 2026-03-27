@@ -38,6 +38,7 @@ from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.config import load_runtime_config
 from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
@@ -176,6 +177,7 @@ class _TaskNode:
     attempt: int = 0
     secret_values: tuple[str, ...] = ()
     driver_sentinel: Any = None
+    extra_source_hash: str | None = None
 
     @property
     def task_def(self) -> TaskDef:
@@ -254,6 +256,7 @@ class _ConcurrentEvaluator:
         repr=False,
     )
     _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
+    _staging_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
     _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _active_subprocesses: dict[int, subprocess.Popen[str]] = field(
         default_factory=dict,
@@ -268,6 +271,13 @@ class _ConcurrentEvaluator:
         init=False,
         repr=False,
     )
+    _staging_jobs: int = field(default=0, init=False, repr=False)
+    _staging_inflight: dict[str, Future[Path]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -284,6 +294,7 @@ class _ConcurrentEvaluator:
         publisher = self._load_remote_publisher()
         self._cache_store = CacheStore(backend=self.backend, publisher=publisher)
         self._staging_cache = None  # Lazily created on first remote ref.
+        self._staging_jobs = _resolve_staging_jobs(jobs=self.jobs)
 
     def evaluate(self, expr: Any) -> Any:
         """Resolve a root expression or nested container concurrently."""
@@ -307,10 +318,14 @@ class _ConcurrentEvaluator:
             except PermissionError:
                 python_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
             shell_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
+            staging_executor = stack.enter_context(
+                ThreadPoolExecutor(max_workers=self._staging_jobs)
+            )
             log_manager = stack.enter_context(Manager())
             signals = stack.enter_context(_SignalMonitor())
             self._python_executor = python_executor
             self._shell_executor = shell_executor
+            self._staging_executor = staging_executor
             self._start_log_drain(queue=log_manager.Queue())
             try:
                 while True:
@@ -344,6 +359,9 @@ class _ConcurrentEvaluator:
 
                     if self._is_root_resolved():
                         return self._materialize(self._root_template)
+
+                    if self._can_make_scheduler_progress():
+                        continue
 
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             finally:
@@ -497,6 +515,7 @@ class _ConcurrentEvaluator:
             task_def=node.task_def,
             node=node,
             include_tmp_dirs=False,
+            stage_remote_refs=False,
         )
         self._validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
         self._validate_task_preconditions(
@@ -512,66 +531,10 @@ class _ConcurrentEvaluator:
             node.driver_sentinel = sentinel
             extra_source_hash = sentinel.source_hash
 
-        cache_key, input_hashes = self._cache_store.build_cache_key(
-            task_def=node.task_def,
-            resolved_args=resolved_args,
-            extra_source_hash=extra_source_hash,
-        )
         node.resolved_args = resolved_args
-        node.cache_key = cache_key
-        node.input_hashes = input_hashes
+        node.extra_source_hash = extra_source_hash
         node.display_label = self._display_label_for(node=node)
         self._record_task_metadata(node)
-        cached_result = self._cache_store.load(cache_key=cache_key)
-        if cached_result is not MISSING and self._is_valid_cached_result(
-            task_def=node.task_def,
-            value=cached_result,
-        ):
-            node.result = cached_result
-            node.state = "completed"
-            if self.provenance is not None:
-                self.provenance.mark_cached(
-                    node_id=node.node_id,
-                    task_name=node.task_def.name,
-                    env=node.task_def.env,
-                    value=cached_result,
-                    outputs=self._artifact_index_for(node=node, value=cached_result),
-                )
-            self._emit_event(
-                TaskCacheHit(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    cache_key=cache_key,
-                )
-            )
-            self._emit_event(
-                TaskCompleted(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    status="cached",
-                    cache_key=cache_key,
-                    outputs=self._artifact_index_for(node=node, value=cached_result),
-                )
-            )
-            return
-
-        self._emit_event(
-            TaskCacheMiss(
-                run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
-                task_name=node.task_def.name,
-                attempt=node.attempt,
-                display_label=node.display_label,
-                cache_key=cache_key,
-            )
-        )
-
         # Materialize Pixi environments before any parallel dispatch starts.
         self._prepare_task_environment(node=node)
 
@@ -655,7 +618,6 @@ class _ConcurrentEvaluator:
         for node_id in selected:
             node = self._nodes[node_id]
             node.attempt += 1
-            node.state = "running"
             node.resolved_args = self._resolve_task_args(
                 expr=node.expr,
                 task_def=node.task_def,
@@ -663,55 +625,31 @@ class _ConcurrentEvaluator:
                 include_tmp_dirs=True,
                 existing_args=node.resolved_args,
                 tmp_paths=node.tmp_paths,
+                stage_remote_refs=False,
             )
-            node.execution_args = self._resolve_execution_args(node=node)
-            node.secret_values = collect_resolved_secret_values(
-                template=node.resolved_args,
-                resolved=node.execution_args,
-            )
-            self._record_task_metadata(node)
-            self._validate_task_contract(node=node)
-            self._emit_event(
-                TaskStarted(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    kind=node.task_def.kind,
-                    env=node.task_def.env,
-                    resources={
-                        "cores": node.threads,
-                        "memory_gb": node.memory_gb,
-                        "max_attempts": node.task_def.retries + 1,
-                    },
+            remote_input_count = _count_remote_inputs(node.resolved_args)
+            if remote_input_count > 0:
+                node.state = "staging"
+                self._emit_event(
+                    TaskStaging(
+                        run_id=self._run_id,
+                        task_id=_task_id_for_node(node.node_id),
+                        task_name=node.task_def.name,
+                        attempt=node.attempt,
+                        display_label=node.display_label,
+                        remote_input_count=remote_input_count,
+                    )
                 )
-            )
-            if self.provenance is not None:
-                self.provenance.mark_running(
-                    node_id=node.node_id,
-                    task_name=node.task_def.name,
-                    env=node.task_def.env,
-                    attempt=node.attempt,
-                    retries=node.task_def.retries,
-                )
-
-            if node.task_def.kind in {"notebook", "script", "shell"}:
-                assert self._shell_executor is not None
-                future = self._shell_executor.submit(
-                    self._run_driver_task,
-                    node=node,
-                )
-                self._running_futures[future] = (node_id, "driver")
+                assert self._staging_executor is not None
+                future = self._staging_executor.submit(self._stage_task_inputs, node=node)
+                self._running_futures[future] = (node_id, "staging")
                 continue
 
-            node.transport_path = Path(
-                tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
+            self._start_task_execution(
+                node=node,
+                python_executor=python_executor,
+                shell_executor=shell_executor,
             )
-            payload = self._build_worker_payload(node=node)
-
-            future = python_executor.submit(run_task, payload)
-            self._running_futures[future] = (node_id, "python")
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
         """Handle finished worker futures from the thread pool."""
@@ -730,7 +668,11 @@ class _ConcurrentEvaluator:
                 continue
 
             try:
-                if phase == "python":
+                if phase == "staging":
+                    self._handle_completed_staging_phase(
+                        node=node, completed_value=completed_value
+                    )
+                elif phase == "python":
                     self._handle_completed_worker_phase(node=node, completed_value=completed_value)
                 elif phase == "driver":
                     self._handle_completed_driver_phase(node=node, completed_value=completed_value)
@@ -764,6 +706,21 @@ class _ConcurrentEvaluator:
         """Handle the result returned from a Python worker."""
         completed_value = self._decode_worker_result(node=node, payload=completed_value)
         self._handle_task_body_result(node=node, completed_value=completed_value)
+
+    def _handle_completed_staging_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
+        """Start task execution after remote inputs have been staged locally."""
+        if not isinstance(completed_value, dict):
+            raise TypeError("Expected staged task arguments from staging phase")
+
+        node.resolved_args = completed_value
+        self._validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
+        assert self._python_executor is not None
+        assert self._shell_executor is not None
+        self._start_task_execution(
+            node=node,
+            python_executor=self._python_executor,
+            shell_executor=self._shell_executor,
+        )
 
     def _handle_completed_driver_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Handle the result returned from a driver-executed task wrapper."""
@@ -824,6 +781,7 @@ class _ConcurrentEvaluator:
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
         node.secret_values = ()
+        node.extra_source_hash = None
 
         retries_remaining = node.task_def.retries - node.attempt
         if self.provenance is not None:
@@ -896,6 +854,7 @@ class _ConcurrentEvaluator:
         task_def: TaskDef,
         node: _TaskNode | None = None,
         include_tmp_dirs: bool,
+        stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
@@ -926,43 +885,21 @@ class _ConcurrentEvaluator:
 
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
 
-        # Stage remote references and coerce remote URI strings.
-        resolved_args = self._stage_remote_refs(
-            node=node,
-            task_def=task_def,
-            resolved_args=resolved_args,
-        )
+        if stage_remote_refs:
+            resolved_args = self._stage_remote_refs(
+                task_def=task_def,
+                resolved_args=resolved_args,
+            )
 
         return resolved_args
 
     def _stage_remote_refs(
         self,
         *,
-        node: _TaskNode | None,
         task_def: TaskDef,
         resolved_args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Stage remote references into local paths.
-
-        Handles two cases:
-
-        1. Explicit ``RemoteFileRef`` / ``RemoteFolderRef`` values.
-        2. Annotation-aware coercion: raw ``s3://`` or ``oci://`` strings
-           passed to ``file`` or ``folder`` parameters.
-        """
-        remote_input_count = _count_remote_inputs(resolved_args)
-        if node is not None and remote_input_count > 0:
-            self._emit_event(
-                TaskStaging(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    remote_input_count=remote_input_count,
-                )
-            )
-
+        """Stage remote references into local paths."""
         staged: dict[str, Any] = {}
         for name, value in resolved_args.items():
             annotation = task_def.type_hints.get(
@@ -978,9 +915,9 @@ class _ConcurrentEvaluator:
         """Stage a single value, recursing into containers."""
         # Explicit remote refs.
         if isinstance(value, RemoteFileRef):
-            return file(str(self._get_staging_cache().stage_file(ref=value)))
+            return file(str(self._stage_remote_ref(ref=value)))
         if isinstance(value, RemoteFolderRef):
-            return folder(str(self._get_staging_cache().stage_folder(ref=value)))
+            return folder(str(self._stage_remote_ref(ref=value)))
 
         # Annotation-aware coercion: raw URI string → remote ref → staged path.
         if isinstance(value, str) and is_remote_uri(value):
@@ -988,12 +925,12 @@ class _ConcurrentEvaluator:
                 from ginkgo.core.remote import remote_file
 
                 ref = remote_file(value)
-                return file(str(self._get_staging_cache().stage_file(ref=ref)))
+                return file(str(self._stage_remote_ref(ref=ref)))
             if annotation is folder:
                 from ginkgo.core.remote import remote_folder
 
                 ref = remote_folder(value)
-                return folder(str(self._get_staging_cache().stage_folder(ref=ref)))
+                return folder(str(self._stage_remote_ref(ref=ref)))
 
         # Recurse into typed containers.
         origin = get_origin(annotation)
@@ -1006,6 +943,50 @@ class _ConcurrentEvaluator:
             return type(value)(staged_items)
 
         return value
+
+    def _stage_task_inputs(self, *, node: _TaskNode) -> dict[str, Any]:
+        """Stage remote inputs for one task in the reserved worker slot."""
+        assert node.resolved_args is not None
+        return self._stage_remote_refs(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+        )
+
+    def _stage_remote_ref(self, *, ref: RemoteRef) -> Path:
+        """Stage one remote ref with in-flight deduplication."""
+        identity = _remote_ref_identity(ref=ref)
+
+        with self._staging_lock:
+            inflight = self._staging_inflight.get(identity)
+            if inflight is None:
+                inflight = Future()
+                self._staging_inflight[identity] = inflight
+                should_stage = True
+            else:
+                should_stage = False
+
+        if not should_stage:
+            return inflight.result()
+
+        try:
+            staged_path = self._stage_remote_ref_uncached(ref=ref)
+            inflight.set_result(staged_path)
+            return staged_path
+        except BaseException as exc:
+            inflight.set_exception(exc)
+            raise
+        finally:
+            with self._staging_lock:
+                self._staging_inflight.pop(identity, None)
+
+    def _stage_remote_ref_uncached(self, *, ref: RemoteRef) -> Path:
+        """Stage one remote ref through the worker-local staging cache."""
+        cache = self._get_staging_cache()
+        if isinstance(ref, RemoteFileRef):
+            return cache.stage_file(ref=ref)
+        if isinstance(ref, RemoteFolderRef):
+            return cache.stage_folder(ref=ref)
+        raise TypeError(f"Unsupported remote ref type: {type(ref).__name__}")
 
     def _get_staging_cache(self) -> Any:
         """Lazily create and return the staging cache."""
@@ -1100,6 +1081,19 @@ class _ConcurrentEvaluator:
         """Return whether all root dependencies have completed."""
         return self._dependencies_complete(self._root_dependency_ids)
 
+    def _can_make_scheduler_progress(self) -> bool:
+        """Return whether another scheduler pass could unblock more work."""
+        for node in self._nodes.values():
+            if node.state == "ready":
+                return True
+            if node.state == "pending" and self._dependencies_complete(node.dependency_ids):
+                return True
+            if node.state == "waiting_dynamic" and self._dependencies_complete(
+                node.dynamic_dependency_ids
+            ):
+                return True
+        return False
+
     def _cancel_pending_futures(self) -> None:
         """Cancel queued futures that have not started yet."""
         for future in self._running_futures:
@@ -1109,8 +1103,16 @@ class _ConcurrentEvaluator:
         """Stop queued and active work after an external interrupt."""
         self._cancel_pending_futures()
         self._terminate_active_subprocesses()
+        self._shutdown_staging_executor()
         self._shutdown_shell_executor()
         self._shutdown_python_executor()
+
+    def _shutdown_staging_executor(self) -> None:
+        """Shut down the staging executor without waiting for new tasks."""
+        if self._staging_executor is None:
+            return
+        with suppress(Exception):
+            self._staging_executor.shutdown(wait=False, cancel_futures=True)
 
     def _shutdown_shell_executor(self) -> None:
         """Shut down the shell executor without waiting for new tasks."""
@@ -1362,6 +1364,123 @@ class _ConcurrentEvaluator:
     def _running_memory_gb(self) -> int:
         """Return the declared memory footprint of currently running tasks."""
         return sum(self._nodes[node_id].memory_gb for node_id, _ in self._running_futures.values())
+
+    def _start_task_execution(
+        self,
+        *,
+        node: _TaskNode,
+        python_executor: ProcessPoolExecutor | ThreadPoolExecutor,
+        shell_executor: ThreadPoolExecutor,
+    ) -> None:
+        """Launch a task after its inputs have been staged locally."""
+        assert node.resolved_args is not None
+
+        cache_key, input_hashes = self._cache_store.build_cache_key(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+            extra_source_hash=node.extra_source_hash,
+        )
+        node.cache_key = cache_key
+        node.input_hashes = input_hashes
+        self._record_task_metadata(node)
+
+        cached_result = self._cache_store.load(cache_key=cache_key)
+        if cached_result is not MISSING and self._is_valid_cached_result(
+            task_def=node.task_def,
+            value=cached_result,
+        ):
+            node.result = cached_result
+            node.state = "completed"
+            for path in node.tmp_paths:
+                shutil.rmtree(path)
+            node.tmp_paths = []
+            if self.provenance is not None:
+                self.provenance.mark_cached(
+                    node_id=node.node_id,
+                    task_name=node.task_def.name,
+                    env=node.task_def.env,
+                    value=cached_result,
+                    outputs=self._artifact_index_for(node=node, value=cached_result),
+                )
+            self._emit_event(
+                TaskCacheHit(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    cache_key=cache_key,
+                )
+            )
+            self._emit_event(
+                TaskCompleted(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    display_label=node.display_label,
+                    status="cached",
+                    cache_key=cache_key,
+                    outputs=self._artifact_index_for(node=node, value=cached_result),
+                )
+            )
+            return
+
+        self._emit_event(
+            TaskCacheMiss(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                cache_key=cache_key,
+            )
+        )
+
+        node.state = "running"
+        node.execution_args = self._resolve_execution_args(node=node)
+        node.secret_values = collect_resolved_secret_values(
+            template=node.resolved_args,
+            resolved=node.execution_args,
+        )
+        self._validate_task_contract(node=node)
+        self._emit_event(
+            TaskStarted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                kind=node.task_def.kind,
+                env=node.task_def.env,
+                resources={
+                    "cores": node.threads,
+                    "memory_gb": node.memory_gb,
+                    "max_attempts": node.task_def.retries + 1,
+                },
+            )
+        )
+        if self.provenance is not None:
+            self.provenance.mark_running(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                env=node.task_def.env,
+                attempt=node.attempt,
+                retries=node.task_def.retries,
+            )
+
+        if node.task_def.kind in {"notebook", "script", "shell"}:
+            future = shell_executor.submit(
+                self._run_driver_task,
+                node=node,
+            )
+            self._running_futures[future] = (node.node_id, "driver")
+            return
+
+        node.transport_path = Path(tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-"))
+        payload = self._build_worker_payload(node=node)
+        future = python_executor.submit(run_task, payload)
+        self._running_futures[future] = (node.node_id, "python")
 
     def _task_threads(self, resolved_args: dict[str, Any]) -> int:
         """Return the scheduler core footprint for a task."""
@@ -2774,6 +2893,47 @@ def _count_remote_inputs(value: Any) -> int:
     if isinstance(value, dict):
         return sum(_count_remote_inputs(item) for item in value.values())
     return 0
+
+
+def _remote_ref_identity(*, ref: RemoteRef) -> str:
+    """Return a stable in-flight identity key for a remote ref."""
+    return "|".join(
+        [
+            type(ref).__name__,
+            ref.scheme,
+            ref.bucket,
+            ref.key,
+            ref.version_id or "",
+        ]
+    )
+
+
+def _resolve_staging_jobs(*, jobs: int) -> int:
+    """Return the configured staging concurrency."""
+    configured = os.environ.get("GINKGO_STAGING_JOBS")
+    if configured:
+        return _parse_positive_int(value=configured, label="GINKGO_STAGING_JOBS")
+
+    config = load_runtime_config(project_root=Path.cwd())
+    remote_config = config.get("remote", {})
+    if isinstance(remote_config, dict) and remote_config.get("staging_jobs") is not None:
+        return _parse_positive_int(
+            value=remote_config["staging_jobs"],
+            label="remote.staging_jobs",
+        )
+
+    return max(1, min(jobs, 4))
+
+
+def _parse_positive_int(*, value: Any, label: str) -> int:
+    """Parse a required positive integer config value."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return parsed
 
 
 def _classify_failure(*, exc: BaseException) -> dict[str, Any]:
