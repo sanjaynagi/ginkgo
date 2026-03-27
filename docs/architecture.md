@@ -233,6 +233,54 @@ The current evaluator is concurrent and futures-based:
 
 The scheduler performs explicit cycle detection when registering expressions.
 
+### Remote References and Staged Access
+
+Phase 6 introduced first-class remote input support without changing the
+task-facing path model.
+
+- Workflows can declare external object-store inputs with explicit immutable
+  remote reference values:
+  - `remote_file("s3://bucket/key")`
+  - `remote_folder("s3://bucket/prefix/")`
+- Parameters annotated as `file` or `folder` also support narrow
+  annotation-aware coercion from raw `s3://...` and `oci://...` strings.
+  Plain `str` parameters remain plain strings.
+- Remote references are kept distinct from Ginkgo-managed artifacts produced by
+  the local artifact store. Remote staging handles external inputs; the
+  artifact store handles managed outputs.
+- The evaluator resolves remote inputs into normal local filesystem paths
+  before task execution, so Python, shell, and notebook tasks continue to
+  consume ordinary local paths rather than provider-specific streams.
+- File-shaped refs are downloaded into a dedicated worker-local staging cache.
+  Folder-shaped refs are materialized as local directory trees rooted in the
+  same staging area.
+- Remote identity participates in cache and provenance metadata through
+  explicit reference identity, version IDs, and staged content metadata rather
+  than treating mutable URIs as stable cache keys.
+- The remote I/O layer is isolated behind backend and staging abstractions in
+  `ginkgo/core/remote.py`, `ginkgo/remote/backend.py`, and
+  `ginkgo/remote/staging.py`, which keeps object-store concerns out of task
+  code and out of the scheduler's general artifact logic.
+- This design is intentionally staging-first. Mounted or FUSE-like access
+  remains a possible later optimization, but staged local access is the current
+  correctness path and the compatibility model for future pod-local workers.
+
+### Worker-Affine Remote Staging
+
+Phase 6D made remote staging an explicit execution phase rather than hidden
+argument preprocessing.
+
+- Ready tasks now reserve scheduler capacity before any remote downloads begin.
+- Tasks with remote inputs transition through `waiting -> staging -> running`,
+  and `task_started` is emitted only after staging completes successfully.
+- Remote hydration runs on a dedicated bounded thread pool that is configured
+  independently from CPU task concurrency, with `GINKGO_STAGING_JOBS` and
+  `remote.staging_jobs` support.
+- Concurrent tasks deduplicate in-flight staging of the same remote reference,
+  so one download fan-outs to multiple waiting tasks on the same worker.
+- The staging root remains worker-local by contract, which keeps the local
+  runtime aligned with a future Kubernetes or pod-local execution model.
+
 ### Execution Backends
 
 The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.

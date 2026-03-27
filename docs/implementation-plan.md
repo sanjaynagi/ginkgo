@@ -11,83 +11,15 @@ Each phase is independently testable and follows the same structure:
 - Key design points
 - Validation
 
-## Tier 2 — Build on Foundations
-
-### Phase 6 — Remote References and Staged Access
-
-**Goal:** Add first-class remote object references and worker-local staged
-access so Ginkgo tasks can read object storage inputs through normal local
-filesystem paths, while remaining compatible with future remote execution.
-
-**Detailed design:** [`docs/phase6-remote-artifact-store-plan.md`](phase6-remote-artifact-store-plan.md)
-
-**Depends on:** Phase 2 (`ArtifactStore`, immutable artifact IDs, cache
-metadata). Hard prerequisite for Phase 14 (remote execution). Improves Phase 7,
-Phase 8, and Phase 9 by allowing remote inputs to be resolved consistently on
-workers outside the local machine.
-
-#### Deliverables
-
-- Distinguish between:
-  - managed local artifacts produced by Ginkgo
-  - external remote object references such as `s3://...` and `oci://...`
-- Add canonical remote input constructors such as `remote_file(...)` and
-  `remote_folder(...)`.
-- Add annotation-aware coercion so URI strings passed to parameters annotated as
-  `file` or `folder` can be upgraded automatically to remote references.
-- Materialize remote refs through a worker-local staging cache before task
-  execution.
-- Add a worker-local cache for remote reads, with content-addressed reuse
-  across tasks on the same machine.
-- Keep the remote backend abstraction compatible with `fsspec`-style adapters
-  such as `s3fs` and `ocifs`.
-- Record remote identity metadata in cache and provenance so reproducibility is
-  preserved across machines.
-
-#### Key design points
-
-- Tasks should continue to consume normal local paths. Phase 6 changes the
-  access layer, not the task programming model.
-- `file` and `folder` should remain type-level input and output contracts.
-  Remote values should be represented by explicit reference objects, with URI
-  string auto-coercion limited to `file` and `folder` parameters only.
-- Staging is the correctness path for remote inputs.
-- FUSE or Fusion-like mounted access remains a possible later optimization, but
-  is not part of the active Phase 6 scope.
-- Remote URIs are not stable cache identity by themselves. Cache keys must use
-  version IDs, checksums, or materialized content hashes.
-- Worker-local staging must remain compatible with Kubernetes and other cloud
-  execution environments where workers do not share the scheduler filesystem.
-- Ginkgo should exploit workflow semantics such as known task inputs,
-  deterministic workdirs, and explicit artifact identity to enable reuse and
-  later optimizations.
-
-#### Validation
-
-- A Python task can consume `remote_file("s3://...")` through a normal local
-  path without explicit staging code.
-- A Python task parameter annotated as `file` or `folder` can also accept a raw
-  `s3://...` or `oci://...` string through annotation-aware coercion.
-- A shell task can consume the same remote input through a normal local path.
-- A folder-shaped remote input is readable as a directory tree.
-- Re-running a task against the same pinned remote object yields a cache hit.
-- Changing a remote object version invalidates the cache deterministically.
-- Two tasks on the same worker reuse the same local cached artifact instead of
-  downloading it twice.
-- The staging root can be configured for worker-local storage in future cloud
-  deployments.
-- The Phase 6 design remains compatible with a future FUSE-like optimization
-  without requiring mounted access today.
-
----
-
 ## Tier 3 — Asset Layer
 
 ### Phase 7 — Asset Catalog and Lineage
 
 **Goal:** Introduce durable asset identity and lineage as a thin indexing layer over Phase 2's cache and artifact store, without changing Ginkgo's run-centric execution model.
 
-**Depends on:** Phase 2 (`ArtifactStore`, `artifact_id`). Benefits from Phase 6 (remote storage) when active.
+**Depends on:** Phase 2 (`ArtifactStore`, `artifact_id`). Benefits from the
+implemented remote references and staged-access layer when remote-backed
+storage is active.
 
 **Downstream consumers:** Phase 8 (DataFrame Assets) and Phase 9 (Model Assets) extend the catalog with type-specific backends. Phase 12 (Publishing) includes asset metadata in bundles.
 
@@ -111,7 +43,7 @@ workers outside the local machine.
 #### Key design points
 
 - The catalog is a pure index: it stores metadata and pointers, never artifact bytes. All bytes remain in the `ArtifactStore` from Phase 2 and are referenced by `artifact_id`.
-- "Current materialization" is a pointer to a specific Phase 2 cache entry. Resolving an asset key to a file path goes through `ArtifactStore.retrieve()`, keeping the backend abstraction intact for Phase 6 remote storage.
+- "Current materialization" is a pointer to a specific Phase 2 cache entry. Resolving an asset key to a file path goes through `ArtifactStore.retrieve()`, keeping the backend abstraction intact for future remote-backed storage.
 - The catalog must distinguish three separate things: logical asset identity (the key), physical materialization (the `artifact_id`), and the task-run cache entry (the cache key). These are not the same thing.
 - This phase does not introduce Dagster-style asset-driven scheduling.
 
@@ -128,7 +60,10 @@ workers outside the local machine.
 
 **Goal:** Give `pandas.DataFrame` assets Iceberg-like snapshot behavior by extending Phase 2's immutable artifact storage with a lineage manifest layer.
 
-**Depends on:** Phase 2 (`ArtifactStore`, immutable artifacts), Phase 7 (asset catalog for asset key resolution). Benefits from Phase 6 (remote storage) for time-travel reads.
+**Depends on:** Phase 2 (`ArtifactStore`, immutable artifacts), Phase 7 (asset
+catalog for asset key resolution). Benefits from the implemented remote
+references and staged-access layer for time-travel reads against remote-backed
+storage.
 
 #### Deliverables
 
@@ -151,7 +86,10 @@ workers outside the local machine.
 
 - Snapshot immutability is inherited directly from Phase 2: artifacts are read-only once written to the store. This phase adds the lineage manifest on top; it does not re-implement storage.
 - The snapshot id is the `artifact_id` from Phase 2 (`<sha256>.parquet`). No separate identity scheme is needed.
-- When Phase 6 (Remote Artifact Store) is active, snapshot Parquet files are stored remotely via the same `ArtifactStore` interface. Time-travel reads go through `retrieve()` and benefit from local staging cache automatically.
+- When remote-backed artifact storage is added, snapshot Parquet files should be
+  stored remotely via the same `ArtifactStore` interface. Time-travel reads
+  should go through `retrieve()` and benefit from the existing local staging
+  cache automatically.
 - The snapshot manifest is intentionally minimal — it is not Iceberg. The storage contract is immutable blobs plus a lightweight manifest, not a full table format.
 - The snapshot store is an implementation detail behind the asset abstraction so larger backends (e.g. Delta Lake, Iceberg) can be substituted later.
 
@@ -161,7 +99,8 @@ workers outside the local machine.
 - A downstream task pinned to an older snapshot id reads the historical data correctly even after a newer snapshot exists, via `ArtifactStore.retrieve()`.
 - Re-running a consumer task against the same snapshot id hits the cache without re-hashing the DataFrame.
 - Schema summaries and row counts are recorded in both the snapshot manifest and run provenance.
-- Assert that with a remote backend active (Phase 6), time-travel reads are served from the remote store and local staging cache correctly.
+- Assert that with a remote-backed artifact store active, time-travel reads are
+  served from the remote store and local staging cache correctly.
 
 ---
 
@@ -169,7 +108,11 @@ workers outside the local machine.
 
 **Goal:** Add three ML-specific capabilities through the existing `kind=` extension point: versioned model assets (`kind="model"`), structured evaluation records (`kind="eval"`), and parameter sweep fan-out (`.sweep()`). Together these let practitioners train, evaluate, compare, and promote models without manual metric logging or version tracking.
 
-**Depends on:** Phase 7 (asset catalog — provides asset identity, versioning, alias resolution, and the asset store that this phase registers model and eval assets into). Phase 2 (`ArtifactStore`, immutable artifacts). Benefits from Phase 6 (remote storage) and Phase 8 (upstream dataset snapshot IDs for lineage).
+**Depends on:** Phase 7 (asset catalog — provides asset identity, versioning,
+alias resolution, and the asset store that this phase registers model and eval
+assets into). Phase 2 (`ArtifactStore`, immutable artifacts). Benefits from the
+implemented remote references and staged-access layer plus Phase 8 (upstream
+dataset snapshot IDs for lineage).
 
 **Detailed design:** [`docs/phase9-ml-support-plan.md`](phase9-ml-support-plan.md)
 
@@ -242,7 +185,9 @@ def main():
 - Model and eval assets are registered in the Phase 7 asset catalog — this phase does not build a separate asset store. Phase 7 provides identity, versioning, alias resolution, and storage layout; this phase adds ML-specific sentinels, serializers, and evaluator dispatch.
 - `kind="model"` and `kind="eval"` both use `execution_mode = "driver"` (same as shell) — the task body runs on the scheduler, produces a sentinel, and the evaluator handles serialization and storage.
 - Model versions are immutable once written — immutability is inherited from Phase 2's read-only artifact store. Promotion is alias movement, not mutation.
-- When Phase 6 (Remote Artifact Store) is active, model and eval artifacts are stored and retrieved remotely via the same `ArtifactStore` interface, with no changes to registry logic.
+- When remote-backed artifact storage is added, model and eval artifacts should
+  be stored and retrieved remotely via the same `ArtifactStore` interface, with
+  no changes to registry logic.
 - Serializer logic is plugin-driven so framework-specific handling does not bloat the runtime core. Only pickle is zero-dependency; framework serializers use lazy imports and fail clearly if the framework is not installed.
 - `.sweep()` is deliberately simple (grid/zip only) — it is not a Bayesian optimization framework. Complex HPO should use external tools (Optuna, etc.) with Ginkgo tasks as the execution substrate.
 - Auto param capture records scalar inputs only; file, folder, and model ref inputs are skipped to avoid capturing large objects in the metadata dict.
@@ -271,7 +216,9 @@ def main():
 
 **Goal:** Run tasks on a remote scheduler such as Kubernetes Jobs or cloud batch services while preserving Ginkgo's dynamic DAG and cache semantics.
 
-**Depends on:** Phase 6 (Remote Artifact Store — hard prerequisite; remote jobs cannot access local `.ginkgo/cache/`), Phase 13 (Secrets — remote backends require credentials).
+**Depends on:** remote-backed artifact storage for managed outputs (hard
+prerequisite; remote jobs cannot access local `.ginkgo/cache/`), Phase 13
+(Secrets — remote backends require credentials).
 
 #### Deliverables
 
@@ -288,7 +235,8 @@ def main():
 
 - The main evaluator can remain the control plane, but it must treat remote jobs as asynchronous task futures.
 - Dynamic DAG expansion should still happen in the scheduler after parent-task results return.
-- Remote execution makes artifact storage mandatory; Phase 6 (Remote Artifact Store) must be complete and stable before this phase begins.
+- Remote execution makes remote-backed managed artifact storage mandatory; the
+  current remote-input staging layer is necessary but not sufficient on its own.
 
 #### Validation
 
