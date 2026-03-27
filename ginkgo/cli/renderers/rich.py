@@ -11,6 +11,7 @@ from ginkgo.runtime.events import (
     TaskCompleted,
     TaskFailed,
     TaskRetrying,
+    TaskStaging,
     TaskStarted,
 )
 
@@ -35,6 +36,18 @@ class RichEventRenderer:
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
                 "max_attempts": event.resources.get("max_attempts"),
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
+        if isinstance(event, TaskStaging):
+            payload = {
+                "task": event.task_name,
+                "status": "staging",
+                "node_id": _node_id_from_task_id(event.task_id),
+                "attempt": event.attempt,
+                "remote_input_count": event.remote_input_count,
             }
             if event.display_label is not None:
                 payload["display_label"] = event.display_label

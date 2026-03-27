@@ -274,13 +274,17 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
         for artifact_id in meta.get("artifact_ids", {}).values():
             referenced.add(artifact_id)
 
-    # Remove orphaned artifacts.
+    # Remove orphaned artifacts via the store's delete method.
     from ginkgo.runtime.artifact_store import LocalArtifactStore
 
     store = LocalArtifactStore(root=artifacts_root)
-    for child in list(artifacts_root.iterdir()):
-        if child.name not in referenced:
-            store.delete(artifact_id=child.name)
+    refs_dir = artifacts_root / "refs"
+    if not refs_dir.exists():
+        return
+    for ref_file in list(refs_dir.iterdir()):
+        artifact_id = ref_file.stem
+        if artifact_id not in referenced:
+            store.delete(artifact_id=artifact_id)
 
 
 def explain_run_cache(*, cache_root: Path, run_snapshot: dict[str, object]) -> dict[str, object]:

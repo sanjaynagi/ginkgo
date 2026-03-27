@@ -15,6 +15,7 @@ def _status_style(status: str) -> str:
     """Return the Rich style name for a task status."""
     return {
         "waiting": "yellow",
+        "staging": "bold magenta",
         "running": "bold cyan",
         "cached": "bold green",
         "succeeded": "green",
@@ -26,6 +27,7 @@ def _status_icon(status: str) -> str:
     """Return the icon used for a task status."""
     return {
         "waiting": "•",
+        "staging": "↓",
         "running": "◐",
         "cached": "↺",
         "succeeded": "✓",
