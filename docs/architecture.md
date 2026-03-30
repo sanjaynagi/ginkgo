@@ -440,17 +440,18 @@ fails explicitly instead of silently weakening cache correctness.
 File and folder outputs now flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
 `ginkgo/runtime/artifact_store.py`. Artifact identity is content-addressed:
-files use `<blake3-digest>.<ext>` and directories use `<blake3-digest>`. This identity is now
-recorded in cache metadata as `artifact_ids`, which gives later roadmap phases
-a stable contract for remote storage and lineage features.
+files use the blob digest and directories use a manifest digest. That identity
+is recorded in cache metadata as `artifact_ids`, which gives later roadmap
+phases a stable contract for remote storage and lineage features.
 
-The local cache is now the source of truth for path outputs. When a task
-produces a `file` or `folder`, Ginkgo copies the bytes into `.ginkgo/artifacts/`
-as a read-only artifact and replaces the original output path with a symlink to
-that artifact. On cache hit, symlink integrity is validated before reuse:
-missing symlinks are recreated from the stored artifact, while regular files or
-foreign symlinks at the output path are treated as external modification and
-force re-execution.
+The artifact store is the canonical immutable source of truth for managed path
+outputs, while the working tree is a writable materialized view. When a task
+produces a `file` or `folder`, Ginkgo copies the bytes into
+`.ginkgo/artifacts/` as a read-only artifact but leaves the working-tree output
+in place as an ordinary writable file or directory. On cache hit, Ginkgo
+compares each managed output path against the cached artifact content and
+restores only paths that are missing, type-mismatched, or have diverged. If a
+working-tree output already matches the cached artifact, it is left untouched.
 
 `ginkgo cache prune` and related cache cleanup paths are now artifact-aware:
 read-only artifacts have permissions restored before deletion so cache

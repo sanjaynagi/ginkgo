@@ -64,6 +64,34 @@ class ArtifactStore(Protocol):
         """
         ...
 
+    def restore(self, *, artifact_id: str, dest_path: Path) -> None:
+        """Materialise an artifact at *dest_path* as writable content.
+
+        Parameters
+        ----------
+        artifact_id : str
+            The artifact ID returned by :meth:`store`.
+        dest_path : Path
+            Location where the writable file or directory should be restored.
+        """
+        ...
+
+    def matches(self, *, artifact_id: str, path: Path) -> bool:
+        """Return whether *path* matches the stored artifact content.
+
+        Parameters
+        ----------
+        artifact_id : str
+            The artifact ID returned by :meth:`store`.
+        path : Path
+            Existing working-tree path to compare.
+
+        Returns
+        -------
+        bool
+        """
+        ...
+
     def exists(self, *, artifact_id: str) -> bool:
         """Return whether an artifact exists in the store.
 
@@ -197,6 +225,37 @@ class LocalArtifactStore:
             dest_path.symlink_to(blob_path)
         else:
             self._retrieve_tree(artifact_id=artifact_id, dest_path=dest_path)
+
+    def restore(self, *, artifact_id: str, dest_path: Path) -> None:
+        """Restore an artifact at *dest_path* as regular writable content."""
+        record = self._load_record(artifact_id=artifact_id)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Remove any prior materialization before restoring fresh content.
+        _remove_dest(dest_path)
+
+        if record.kind == "blob":
+            blob_path = self._blobs_dir / record.digest_hex
+            shutil.copy2(blob_path, dest_path)
+            dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+            return
+
+        self._restore_tree(record=record, dest_path=dest_path)
+
+    def matches(self, *, artifact_id: str, path: Path) -> bool:
+        """Return whether *path* matches the stored artifact content."""
+        if not path.exists():
+            return False
+
+        record = self._load_record(artifact_id=artifact_id)
+        if record.kind == "blob":
+            if not path.is_file():
+                return False
+            return hash_file(path) == record.digest_hex
+
+        if not path.is_dir():
+            return False
+        return self._tree_digest_for_path(path) == record.digest_hex
 
     def exists(self, *, artifact_id: str) -> bool:
         """Check whether an artifact exists in the store.
@@ -356,6 +415,67 @@ class LocalArtifactStore:
 
     def _store_directory(self, src_path: Path) -> ArtifactRecord:
         """Store a directory as individual blobs plus a tree manifest."""
+        tree_ref, total_size = self._build_tree_ref(src_path)
+
+        real_src = src_path.resolve()
+
+        # Store the blob content for each manifest entry.
+        for entry in tree_ref.entries:
+            child = real_src / Path(entry.relative_path)
+            # Store the blob.
+            blob_path = self._blobs_dir / entry.blob_digest
+            if not blob_path.exists():
+                shutil.copy2(child, blob_path)
+                blob_path.chmod(_READ_ONLY_FILE)
+
+        tree_path = self._trees_dir / f"{tree_ref.digest_hex}.json"
+        manifest_json = serialize_tree_manifest(tree_ref)
+        tree_path.write_text(manifest_json, encoding="utf-8")
+
+        record = ArtifactRecord(
+            artifact_id=tree_ref.digest_hex,
+            kind="tree",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=tree_ref.digest_hex,
+            extension="",
+            size=total_size,
+            created_at=_now_iso(),
+            storage_backend="local",
+        )
+        self._write_ref(record)
+        return record
+
+    def _retrieve_tree(self, *, artifact_id: str, dest_path: Path) -> None:
+        """Reconstruct a directory from its tree manifest."""
+        record = self._load_record(artifact_id=artifact_id)
+        tree_ref = self._load_tree_ref(record=record)
+
+        dest_path.mkdir(parents=True, exist_ok=True)
+
+        for entry in tree_ref.entries:
+            entry_dest = dest_path / entry.relative_path
+            entry_dest.parent.mkdir(parents=True, exist_ok=True)
+            blob_path = self._blobs_dir / entry.blob_digest
+
+            # Symlink each file to its blob.
+            if entry_dest.is_symlink() or entry_dest.exists():
+                entry_dest.unlink()
+            entry_dest.symlink_to(blob_path)
+
+    def _restore_tree(self, *, record: ArtifactRecord, dest_path: Path) -> None:
+        """Reconstruct a directory from its tree manifest as writable files."""
+        tree_ref = self._load_tree_ref(record=record)
+        dest_path.mkdir(parents=True, exist_ok=True)
+
+        for entry in tree_ref.entries:
+            entry_dest = dest_path / entry.relative_path
+            entry_dest.parent.mkdir(parents=True, exist_ok=True)
+            blob_path = self._blobs_dir / entry.blob_digest
+            shutil.copy2(blob_path, entry_dest)
+            entry_dest.chmod(entry.mode)
+
+    def _build_tree_ref(self, src_path: Path) -> tuple[TreeRef, int]:
+        """Return the manifest representation for a directory."""
         real_src = src_path.resolve()
         entries: list[TreeEntry] = []
         total_size = 0
@@ -369,13 +489,6 @@ class LocalArtifactStore:
             digest = hash_file(child)
             file_size = child.stat().st_size
             file_mode = child.stat().st_mode & 0o777
-
-            # Store the blob.
-            blob_path = self._blobs_dir / digest
-            if not blob_path.exists():
-                shutil.copy2(child, blob_path)
-                blob_path.chmod(_READ_ONLY_FILE)
-
             entries.append(
                 TreeEntry(
                     relative_path=rel,
@@ -386,61 +499,39 @@ class LocalArtifactStore:
             )
             total_size += file_size
 
-        # Build and store the tree manifest.
-        manifest_json = serialize_tree_manifest(
-            TreeRef(
-                digest_algorithm=DIGEST_ALGORITHM,
-                digest_hex="",  # placeholder, recomputed below
-                entries=tuple(entries),
-            )
-        )
-        tree_digest = hash_bytes(manifest_json.encode("utf-8"))
-
-        # Rewrite with the real digest.
-        tree_ref = TreeRef(
+        placeholder = TreeRef(
             digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=tree_digest,
+            digest_hex="",
             entries=tuple(entries),
         )
-        manifest_json = serialize_tree_manifest(tree_ref)
-        tree_path = self._trees_dir / f"{tree_digest}.json"
-        tree_path.write_text(manifest_json, encoding="utf-8")
-
-        record = ArtifactRecord(
-            artifact_id=tree_digest,
-            kind="tree",
-            digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=tree_digest,
-            extension="",
-            size=total_size,
-            created_at=_now_iso(),
-            storage_backend="local",
+        tree_digest = hash_bytes(serialize_tree_manifest(placeholder).encode("utf-8"))
+        return (
+            TreeRef(
+                digest_algorithm=DIGEST_ALGORITHM,
+                digest_hex=tree_digest,
+                entries=tuple(entries),
+            ),
+            total_size,
         )
-        self._write_ref(record)
-        return record
 
-    def _retrieve_tree(self, *, artifact_id: str, dest_path: Path) -> None:
-        """Reconstruct a directory from its tree manifest."""
+    def _tree_digest_for_path(self, path: Path) -> str:
+        """Return the manifest digest for a directory path."""
+        tree_ref, _ = self._build_tree_ref(path)
+        return tree_ref.digest_hex
+
+    def _load_record(self, *, artifact_id: str) -> ArtifactRecord:
+        """Load one artifact record or raise if it does not exist."""
         ref_path = self._refs_dir / f"{artifact_id}.json"
-        record = ArtifactRecord.from_path(ref_path)
-        tree_path = self._trees_dir / f"{record.digest_hex}.json"
+        if not ref_path.exists():
+            raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
+        return ArtifactRecord.from_path(ref_path)
 
+    def _load_tree_ref(self, *, record: ArtifactRecord) -> TreeRef:
+        """Load the tree manifest for one directory artifact."""
+        tree_path = self._trees_dir / f"{record.digest_hex}.json"
         if not tree_path.exists():
             raise FileNotFoundError(f"Tree manifest not found: {record.digest_hex}")
-
-        tree_ref = deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
-
-        dest_path.mkdir(parents=True, exist_ok=True)
-
-        for entry in tree_ref.entries:
-            entry_dest = dest_path / entry.relative_path
-            entry_dest.parent.mkdir(parents=True, exist_ok=True)
-            blob_path = self._blobs_dir / entry.blob_digest
-
-            # Symlink each file to its blob.
-            if entry_dest.is_symlink() or entry_dest.exists():
-                entry_dest.unlink()
-            entry_dest.symlink_to(blob_path)
+        return deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
 
     def _write_ref(self, record: ArtifactRecord) -> None:
         """Write an artifact metadata record to the refs directory."""

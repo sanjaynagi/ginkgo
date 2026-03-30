@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 
+import pandas as pd
 import yaml
 
 from ginkgo.cli.workspace import list_workflow_paths
+from ginkgo.core.asset import AssetKey
+from ginkgo.runtime.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifact_store import LocalArtifactStore
+from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.runtime.provenance import load_manifest, tail_text
 
 from .utils import (
@@ -210,6 +217,171 @@ def list_workflows(project_root: Path) -> list[str]:
     return workflows
 
 
+def list_assets(workspace: WorkspaceRecord) -> list[dict[str, Any]]:
+    """List cataloged assets for one workspace."""
+    store = AssetStore(root=workspace.project_root / ".ginkgo" / "assets")
+    artifact_store = LocalArtifactStore(root=workspace.project_root / ".ginkgo" / "artifacts")
+    assets: list[dict[str, Any]] = []
+    for key in store.list_asset_keys():
+        versions = store.list_versions(key=key)
+        latest = store.get_latest_version(key=key)
+        if latest is None:
+            continue
+        artifact_record = _artifact_record_for(
+            artifact_store=artifact_store,
+            artifact_id=latest.artifact_id,
+        )
+        artifact_path = _artifact_path_for(
+            artifact_store=artifact_store, artifact_id=latest.artifact_id
+        )
+        preview_kind = _infer_preview_kind(
+            path=artifact_path,
+            extension=artifact_record.extension if artifact_record is not None else "",
+        )
+        assets.append(
+            {
+                "asset_key": str(key),
+                "name": key.name,
+                "namespace": key.namespace,
+                "kind": latest.kind,
+                "latest_version_id": latest.version_id,
+                "latest_created_at": latest.created_at,
+                "latest_run_id": latest.run_id,
+                "metadata": latest.metadata,
+                "preview_kind": preview_kind,
+                "version_count": len(versions),
+            }
+        )
+    assets.sort(key=lambda item: (str(item["namespace"]), str(item["name"])))
+    return assets
+
+
+def asset_payload(
+    workspace: WorkspaceRecord,
+    *,
+    asset_key_text: str,
+    selector: str | None,
+) -> dict[str, Any] | None:
+    """Return one asset detail payload."""
+    store = AssetStore(root=workspace.project_root / ".ginkgo" / "assets")
+    artifact_store = LocalArtifactStore(root=workspace.project_root / ".ginkgo" / "artifacts")
+    key = _parse_asset_key(asset_key_text)
+    try:
+        version = store.resolve_version(key=key, selector=selector)
+    except FileNotFoundError:
+        return None
+    index = store._load_index(key)
+    aliases_by_version: dict[str, list[str]] = {}
+    for alias, version_id in dict(index.get("aliases", {})).items():
+        aliases_by_version.setdefault(str(version_id), []).append(str(alias))
+
+    artifact_path = _artifact_path_for(
+        artifact_store=artifact_store, artifact_id=version.artifact_id
+    )
+    artifact_record = _artifact_record_for(
+        artifact_store=artifact_store,
+        artifact_id=version.artifact_id,
+    )
+    versions = []
+    for item in store.list_versions(key=key):
+        versions.append(
+            {
+                "aliases": aliases_by_version.get(item.version_id, []),
+                "artifact_id": item.artifact_id,
+                "content_hash": item.content_hash,
+                "created_at": item.created_at,
+                "metadata": item.metadata,
+                "run_id": item.run_id,
+                "version_id": item.version_id,
+            }
+        )
+
+    lineage = store.lineage_for(key=key, version_id=version.version_id)
+    parents = []
+    if lineage is not None:
+        for parent in lineage.parents:
+            parents.append(
+                {
+                    "asset_key": str(parent.key),
+                    "name": parent.name,
+                    "namespace": parent.namespace,
+                    "version_id": parent.version_id,
+                }
+            )
+
+    content_url = (
+        f"/api/workspaces/{workspace.workspace_id}/assets/{quote(str(key), safe='')}/content"
+        f"?selector={quote(selector, safe='')}"
+        if selector
+        else f"/api/workspaces/{workspace.workspace_id}/assets/{quote(str(key), safe='')}/content"
+    )
+    extension = artifact_record.extension if artifact_record is not None else ""
+    preview = _build_asset_preview(
+        path=artifact_path, extension=extension, content_url=content_url
+    )
+    mime_source = (
+        f"asset{extension}"
+        if extension
+        else str(artifact_path)
+        if artifact_path is not None
+        else ""
+    )
+    mime_type, _ = mimetypes.guess_type(mime_source)
+    size_bytes = (
+        artifact_record.size
+        if artifact_record is not None
+        else (
+            artifact_path.stat().st_size
+            if artifact_path is not None and artifact_path.exists()
+            else None
+        )
+    )
+
+    return {
+        "asset_key": str(key),
+        "artifact": {
+            "artifact_id": version.artifact_id,
+            "artifact_path": str(artifact_path) if artifact_path is not None else None,
+            "extension": extension,
+            "mime_type": mime_type,
+            "size_bytes": size_bytes,
+        },
+        "kind": version.kind,
+        "lineage": {"parents": parents},
+        "metadata": version.metadata,
+        "name": key.name,
+        "namespace": key.namespace,
+        "preview": preview,
+        "selected_version": {
+            "aliases": aliases_by_version.get(version.version_id, []),
+            "artifact_id": version.artifact_id,
+            "content_hash": version.content_hash,
+            "created_at": version.created_at,
+            "producer_task": version.producer_task,
+            "run_id": version.run_id,
+            "version_id": version.version_id,
+        },
+        "versions": versions,
+    }
+
+
+def asset_content_path(
+    workspace: WorkspaceRecord,
+    *,
+    asset_key_text: str,
+    selector: str | None,
+) -> Path | None:
+    """Return the filesystem path for a selected asset version."""
+    payload = asset_payload(workspace, asset_key_text=asset_key_text, selector=selector)
+    if payload is None:
+        return None
+    artifact_path = payload.get("artifact", {}).get("artifact_path")
+    if not isinstance(artifact_path, str):
+        return None
+    path = Path(artifact_path)
+    return path if path.is_file() else None
+
+
 def clear_cache_entries(cache_root: Path) -> int:
     """Delete all cache entries for one workspace."""
     if not cache_root.exists():
@@ -387,3 +559,100 @@ def list_cache_entries(root: Path) -> list[dict[str, Any]]:
             }
         )
     return entries
+
+
+def _parse_asset_key(value: str) -> AssetKey:
+    """Parse ``namespace:name`` or a bare asset name."""
+    namespace, separator, name = value.partition(":")
+    if separator:
+        if not namespace or not name:
+            raise ValueError(f"Invalid asset key: {value!r}")
+        return AssetKey(namespace=namespace, name=name)
+    if not namespace:
+        raise ValueError(f"Invalid asset key: {value!r}")
+    return AssetKey(namespace="file", name=namespace)
+
+
+def _artifact_path_for(*, artifact_store: LocalArtifactStore, artifact_id: str) -> Path | None:
+    """Return the local artifact path when it exists."""
+    if not artifact_store.exists(artifact_id=artifact_id):
+        return None
+    return artifact_store.artifact_path(artifact_id=artifact_id)
+
+
+def _artifact_record_for(
+    *,
+    artifact_store: LocalArtifactStore,
+    artifact_id: str,
+) -> ArtifactRecord | None:
+    """Return stored artifact metadata when it exists."""
+    ref_path = artifact_store._refs_dir / f"{artifact_id}.json"
+    if not ref_path.is_file():
+        return None
+    return ArtifactRecord.from_path(ref_path)
+
+
+def _infer_preview_kind(*, path: Path | None, extension: str = "") -> str:
+    """Infer the best preview strategy for a file."""
+    suffix = extension.lower()
+    if path is None:
+        return "missing"
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+        return "image"
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".ndjson"}:
+        return "table"
+    if suffix in {".txt", ".log", ".md", ".yaml", ".yml", ".toml", ".py", ".sql"}:
+        return "text"
+    return "binary"
+
+
+def _build_asset_preview(*, path: Path | None, extension: str, content_url: str) -> dict[str, Any]:
+    """Build a preview payload for one asset artifact."""
+    kind = _infer_preview_kind(path=path, extension=extension)
+    if path is None or not path.exists():
+        return {"kind": "missing", "message": "Artifact content is unavailable."}
+    if kind == "image":
+        return {"kind": "image", "url": content_url}
+    if kind == "pdf":
+        return {"kind": "pdf", "url": content_url}
+    if kind == "table":
+        preview = _table_preview(path=path, extension=extension)
+        preview["kind"] = "table"
+        return preview
+    if kind == "text":
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return {
+            "kind": "text",
+            "text": text[:4000],
+            "truncated": len(text) > 4000,
+        }
+    return {
+        "download_url": content_url,
+        "kind": "binary",
+        "message": "Preview unavailable for this file type.",
+    }
+
+
+def _table_preview(*, path: Path, extension: str) -> dict[str, Any]:
+    """Return a compact row/column preview for a dataframe-like asset."""
+    suffix = extension.lower()
+    if suffix == ".csv":
+        frame = pd.read_csv(path, nrows=50)
+    elif suffix == ".tsv":
+        frame = pd.read_csv(path, sep="\t", nrows=50)
+    elif suffix == ".parquet":
+        frame = pd.read_parquet(path).head(50)
+    elif suffix == ".json":
+        frame = pd.read_json(path).head(50)
+    else:
+        frame = pd.read_json(path, lines=True).head(50)
+
+    frame = frame.where(pd.notnull(frame), None)
+    return {
+        "columns": [str(column) for column in frame.columns],
+        "row_count": len(frame.index),
+        "rows": frame.to_dict(orient="records"),
+        "truncated": len(frame.index) == 50,
+    }

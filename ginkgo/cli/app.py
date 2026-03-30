@@ -8,6 +8,7 @@ from typing import Sequence
 
 from rich.text import Text
 
+from ginkgo.cli.commands.asset import command_asset
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
@@ -31,6 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_run(args, output_mode=_run_mode_from_args(args))
         if args.command == "cache":
             return command_cache(args)
+        if args.command == "asset":
+            return command_asset(args)
         if args.command == "env":
             return command_env(args)
         if args.command == "debug":
@@ -80,6 +83,14 @@ def _build_parser() -> argparse.ArgumentParser:
     prune_parser = cache_subparsers.add_parser("prune")
     prune_parser.add_argument("--older-than", required=True)
     prune_parser.add_argument("--dry-run", action="store_true")
+
+    asset_parser = subparsers.add_parser("asset")
+    asset_subparsers = asset_parser.add_subparsers(dest="asset_command", required=True)
+    asset_subparsers.add_parser("ls")
+    asset_versions_parser = asset_subparsers.add_parser("versions")
+    asset_versions_parser.add_argument("key")
+    asset_inspect_parser = asset_subparsers.add_parser("inspect")
+    asset_inspect_parser.add_argument("ref")
 
     env_parser = subparsers.add_parser("env")
     env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+from ginkgo.core.asset import AssetRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
@@ -140,11 +141,10 @@ class CacheStore:
     ) -> None:
         """Atomically persist a task result and metadata.
 
-        File and folder outputs are copied into the artifact store and replaced
-        with read-only symlinks at their original paths.
+        File and folder outputs are copied into the artifact store, while the
+        working-tree materialization is left in place as writable content.
         """
-        # Always store output artifacts and create symlinks, even if the cache
-        # entry already exists (handles re-execution after symlink replacement).
+        # Always store output artifacts, even if the cache entry already exists.
         artifact_ids = self._store_output_artifacts(result=result, task_def=task_def)
 
         # Publish artifacts to remote store if a publisher is configured.
@@ -192,135 +192,107 @@ class CacheStore:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
 
-        # Replace original output paths with symlinks to the artifact store.
-        self._symlink_output_artifacts(result=result, task_def=task_def)
-
-    def validate_cached_outputs(self, *, task_def: TaskDef, value: Any) -> bool:
-        """Check whether cached file/folder outputs are valid symlinks.
+    def validate_cached_outputs(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
+        """Ensure cached file and folder outputs are materialized correctly.
 
         Returns
         -------
         bool
-            ``True`` if all file/folder outputs are intact symlinks to the
-            artifact store, or if missing symlinks were successfully recreated.
-            ``False`` if any output has been replaced with a regular file
-            (indicating external modification — cache miss).
+            ``True`` when all managed outputs either already match their cached
+            artifact content or were successfully restored from the artifact
+            store. ``False`` if the cached artifact metadata is incomplete or
+            a restore fails.
         """
         return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
-        return self._validate_output_value(annotation=return_annotation, value=value)
+        artifact_ids = self._load_artifact_ids(cache_key=cache_key)
+        if artifact_ids is None:
+            return False
+        return self._validate_output_value(
+            annotation=return_annotation,
+            value=value,
+            artifact_ids=artifact_ids,
+        )
 
-    def _validate_output_value(self, *, annotation: Any, value: Any) -> bool:
-        """Recursively validate symlink integrity for file/folder outputs."""
+    def _validate_output_value(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        artifact_ids: dict[str, str],
+    ) -> bool:
+        """Recursively validate or restore managed file and folder outputs."""
+        if isinstance(value, AssetRef):
+            return Path(value.artifact_path).exists()
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
             inner_args = get_args(annotation)
             inner_annotation = inner_args[0] if inner_args else Any
             for item in value:
-                if not self._validate_output_value(annotation=inner_annotation, value=item):
+                if not self._validate_output_value(
+                    annotation=inner_annotation,
+                    value=item,
+                    artifact_ids=artifact_ids,
+                ):
                     return False
             return True
 
         if isinstance(value, list | tuple):
             for item in value:
-                if not self._validate_output_value(annotation=annotation, value=item):
+                if not self._validate_output_value(
+                    annotation=annotation,
+                    value=item,
+                    artifact_ids=artifact_ids,
+                ):
                     return False
             return True
 
         if annotation is file or isinstance(value, file):
-            return self._validate_file_symlink(Path(str(value)))
+            return self._validate_file_output(Path(str(value)), artifact_ids=artifact_ids)
 
         if annotation is folder or isinstance(value, folder):
-            return self._validate_folder_symlink(Path(str(value)))
+            return self._validate_folder_output(Path(str(value)), artifact_ids=artifact_ids)
 
-        # Non-path types: no symlink validation needed.
+        # Non-path types: no output materialization needed.
         return True
 
-    def _validate_file_symlink(self, path: Path) -> bool:
-        """Validate a single file output symlink.
-
-        Returns ``True`` if the symlink is valid or was recreated.  Returns
-        ``False`` if the path is a regular file (external modification).
-        """
-        if path.is_symlink():
-            target = path.resolve()
-            # Symlink points into our artifact store blobs — valid.
-            if str(target).startswith(str(self._artifact_store._blobs_dir)):
-                return True
-            # Symlink to somewhere else — treat as modified.
+    def _validate_file_output(self, path: Path, *, artifact_ids: dict[str, str]) -> bool:
+        """Ensure one managed file output matches its cached artifact."""
+        artifact_id = artifact_ids.get(str(path))
+        if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
-
-        if path.exists():
-            # Regular file replaced the symlink — external modification.
-            return False
-
-        # Path is absent — try to recreate from the artifact store.
-        artifact_id = self._find_artifact_for_path(path, is_dir=False)
-        if artifact_id is not None and self._artifact_store.exists(artifact_id=artifact_id):
-            self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
+        if self._artifact_store.matches(artifact_id=artifact_id, path=path):
             return True
-        return False
+        self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
+        return self._artifact_store.matches(artifact_id=artifact_id, path=path)
 
-    def _validate_folder_symlink(self, path: Path) -> bool:
-        """Validate a single folder output.
-
-        Tree artifacts are reconstructed directories containing symlinks to
-        individual blobs.  A valid folder output is a directory whose file
-        entries are symlinks pointing into the artifact store's blob directory.
-        """
-        if path.is_symlink():
-            target = path.resolve()
-            if str(target).startswith(str(self._artifact_store._root)):
-                return True
+    def _validate_folder_output(self, path: Path, *, artifact_ids: dict[str, str]) -> bool:
+        """Ensure one managed folder output matches its cached artifact."""
+        artifact_id = artifact_ids.get(str(path))
+        if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
-
-        if path.is_dir():
-            # Tree artifacts: directory with symlinked files pointing to blobs.
-            blobs_prefix = str(self._artifact_store._blobs_dir)
-            for child in path.rglob("*"):
-                if child.is_dir() and not child.is_symlink():
-                    continue
-                if child.is_symlink():
-                    target = child.resolve()
-                    if not str(target).startswith(blobs_prefix):
-                        return False
-                else:
-                    # Regular file inside what should be a reconstructed tree.
-                    return False
+        if self._artifact_store.matches(artifact_id=artifact_id, path=path):
             return True
+        self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
+        return self._artifact_store.matches(artifact_id=artifact_id, path=path)
 
-        if path.exists():
-            return False
-
-        # Path is absent — try to recreate from the artifact store.
-        artifact_id = self._find_artifact_for_path(path, is_dir=True)
-        if artifact_id is not None and self._artifact_store.exists(artifact_id=artifact_id):
-            self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
-            return True
-        return False
-
-    def _find_artifact_for_path(self, path: Path, *, is_dir: bool) -> str | None:
-        """Look up the artifact ID for an output path from cache metadata.
-
-        Scans all cache entries for one whose artifact_ids map contains the
-        given path.  This is O(entries) but only triggered on symlink
-        recreation (rare path).
-        """
-        path_str = str(path)
-        for entry_dir in self._root.iterdir():
-            if not entry_dir.is_dir():
-                continue
-            meta_path = entry_dir / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            artifact_ids = meta.get("artifact_ids", {})
-            artifact_id = artifact_ids.get(path_str)
-            if artifact_id is not None:
-                return artifact_id
-        return None
+    def _load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
+        """Load output artifact mappings for one cache entry."""
+        meta_path = self._entry_dir(cache_key) / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        artifact_ids = meta.get("artifact_ids")
+        if not isinstance(artifact_ids, dict):
+            return None
+        return {
+            str(path): str(artifact_id)
+            for path, artifact_id in artifact_ids.items()
+            if isinstance(path, str) and isinstance(artifact_id, str)
+        }
 
     def _store_output_artifacts(
         self,
@@ -391,6 +363,9 @@ class CacheStore:
                 )
             return
 
+        if isinstance(value, AssetRef):
+            return
+
         if annotation is file or isinstance(value, file):
             path = Path(str(value))
             if path.is_symlink():
@@ -409,74 +384,6 @@ class CacheStore:
                 record = self._artifact_store.store(src_path=path)
                 artifact_ids[str(path)] = record.artifact_id
             return
-
-    def _symlink_output_artifacts(self, *, result: Any, task_def: TaskDef) -> None:
-        """Replace original output paths with symlinks to the artifact store."""
-        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
-        self._symlink_output_value(annotation=return_annotation, value=result)
-
-    def _symlink_output_value(self, *, annotation: Any, value: Any) -> None:
-        """Recursively replace file/folder outputs with symlinks."""
-        origin = get_origin(annotation)
-        if origin in {list, tuple}:
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
-            for item in value:
-                self._symlink_output_value(annotation=inner_annotation, value=item)
-            return
-
-        if isinstance(value, list | tuple):
-            for item in value:
-                self._symlink_output_value(annotation=annotation, value=item)
-            return
-
-        if annotation is file or isinstance(value, file):
-            path = Path(str(value))
-            if path.is_symlink():
-                return
-            self._replace_with_symlink(path, is_dir=False)
-            return
-
-        if annotation is folder or isinstance(value, folder):
-            path = Path(str(value))
-            if path.is_symlink():
-                return
-            self._replace_with_symlink(path, is_dir=True)
-            return
-
-    def _replace_with_symlink(self, path: Path, *, is_dir: bool) -> None:
-        """Replace a file or directory with a symlink to its artifact."""
-        path_str = str(path)
-
-        # Find the artifact ID from the most recently saved entry.
-        artifact_id: str | None = None
-        for entry_dir in self._root.iterdir():
-            if not entry_dir.is_dir():
-                continue
-            meta_path = entry_dir / "meta.json"
-            if not meta_path.exists():
-                continue
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            aids = meta.get("artifact_ids", {})
-            if path_str in aids:
-                artifact_id = aids[path_str]
-                break
-
-        if artifact_id is None:
-            return
-
-        # Remove the original and replace with a symlink.
-        if is_dir and path.is_dir():
-            shutil.rmtree(path)
-        elif path.is_file():
-            path.unlink()
-        else:
-            return
-
-        self._artifact_store.retrieve(artifact_id=artifact_id, dest_path=path)
 
     def _entry_dir(self, cache_key: str) -> Path:
         """Return the cache directory for a given key."""
@@ -504,6 +411,12 @@ class CacheStore:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
+        if isinstance(value, AssetRef):
+            return {
+                "asset": str(value.key),
+                "type": "asset_ref",
+                "version_id": value.version_id,
+            }
         if isinstance(value, SecretRef):
             return secret_identity(value)
 
@@ -587,10 +500,7 @@ class CacheStore:
             if annotation is tmp_dir:
                 continue
             value = redact_value(resolved_args[name])
-            if isinstance(value, dict | list):
-                inputs[name] = value
-            else:
-                inputs[name] = summarise_value(value)
+            inputs[name] = summarise_value(value)
         return inputs
 
     def _hash_file_contents(self, path: Path) -> str:
