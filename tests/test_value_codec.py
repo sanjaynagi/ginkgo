@@ -5,10 +5,30 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ginkgo.runtime.value_codec import hash_value_bytes
+from ginkgo.core.asset import AssetKey, AssetRef
+from ginkgo.runtime.value_codec import decode_value, encode_value, hash_value_bytes
 
 
 class TestHashValueBytes:
+    def test_asset_ref_hash_uses_version_identity(self, tmp_path) -> None:
+        value = AssetRef(
+            key=AssetKey(namespace="file", name="prepared"),
+            version_id="version-123",
+            kind="file",
+            artifact_id="artifact-123",
+            content_hash="content-123",
+            artifact_path="/artifacts/prepared",
+            metadata={},
+        )
+
+        codec_name, digest = hash_value_bytes(value)
+        encoded = encode_value(value, base_dir=tmp_path)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert codec_name == "ginkgo.asset_ref"
+        assert digest
+        assert decoded == value
+
     def test_numpy_hash_is_stable_for_equal_values_with_different_layouts(self) -> None:
         base = np.arange(12, dtype=np.int64).reshape(3, 4)
         contiguous = np.array(base, order="C")

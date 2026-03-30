@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.types import file, folder, tmp_dir
 
 if TYPE_CHECKING:
@@ -52,6 +53,23 @@ def encode_value(
 
     if isinstance(value, folder):
         return {"__ginkgo_type__": "folder", "value": str(value)}
+
+    if isinstance(value, AssetRef):
+        return {"__ginkgo_type__": "asset_ref", "value": value.to_dict()}
+
+    if isinstance(value, AssetResult):
+        return {
+            "__ginkgo_type__": "asset_result",
+            "name": value.name,
+            "kind": value.kind,
+            "metadata": dict(value.metadata),
+            "value": encode_value(
+                value.value,
+                base_dir=base_dir,
+                artifact_store=artifact_store,
+                inline_limit=inline_limit,
+            ),
+        }
 
     if isinstance(value, tmp_dir):
         return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
@@ -143,6 +161,19 @@ def decode_value(
         return file(payload["value"])
     if kind == "folder":
         return folder(payload["value"])
+    if kind == "asset_ref":
+        return AssetRef.from_dict(payload["value"])
+    if kind == "asset_result":
+        return AssetResult(
+            value=decode_value(
+                payload["value"],
+                base_dir=base_dir,
+                artifact_store=artifact_store,
+            ),
+            name=payload.get("name"),
+            kind=str(payload.get("kind", "file")),
+            metadata=dict(payload.get("metadata", {})),
+        )
     if kind == "tmp_dir":
         return tmp_dir(payload["value"])
     if kind == "list":
@@ -182,14 +213,45 @@ def summarise_value(value: Any) -> Any:
         return {"type": "file", "value": str(value)}
     if isinstance(value, folder):
         return {"type": "folder", "value": str(value)}
+    if isinstance(value, AssetRef):
+        return {
+            "type": "asset_ref",
+            "asset": str(value.key),
+            "version_id": value.version_id,
+            "artifact_id": value.artifact_id,
+        }
+    if isinstance(value, AssetResult):
+        return {
+            "type": "asset_result",
+            "kind": value.kind,
+            "name": value.name,
+        }
     if isinstance(value, tmp_dir):
         return {"type": "tmp_dir", "value": str(value)}
     if isinstance(value, list):
-        return {"type": "list", "length": len(value)}
+        return {
+            "type": "list",
+            "items": [summarise_value(item) for item in value],
+            "length": len(value),
+        }
     if isinstance(value, tuple):
-        return {"type": "tuple", "length": len(value)}
+        return {
+            "type": "tuple",
+            "items": [summarise_value(item) for item in value],
+            "length": len(value),
+        }
     if isinstance(value, dict):
-        return {"type": "dict", "length": len(value)}
+        return {
+            "type": "dict",
+            "items": [
+                {
+                    "key": summarise_value(key),
+                    "value": summarise_value(item),
+                }
+                for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
+            ],
+            "length": len(value),
+        }
 
     if isinstance(value, np.ndarray):
         return {
@@ -210,6 +272,10 @@ def summarise_value(value: Any) -> Any:
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:
     """Return the codec name and BLAKE3 digest for a Python value."""
+    if isinstance(value, AssetRef):
+        from ginkgo.runtime.hashing import hash_str
+
+        return "ginkgo.asset_ref", hash_str(value.version_id)
     if isinstance(value, np.ndarray) and value.dtype.hasobject is False:
         return "numpy.ndarray", _hash_numpy_array(value)
     if isinstance(value, pd.DataFrame):
@@ -229,7 +295,10 @@ def hash_value_bytes(value: Any) -> tuple[str, str]:
 
 def ensure_serializable(value: Any, *, label: str) -> None:
     """Validate that a value can be encoded by the Ginkgo codec registry."""
-    if value is None or isinstance(value, (bool, int, float, str, file, folder, tmp_dir)):
+    if value is None or isinstance(
+        value,
+        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult),
+    ):
         return
 
     if isinstance(value, list | tuple):

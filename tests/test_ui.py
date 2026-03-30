@@ -10,13 +10,16 @@ import threading
 import time
 from base64 import b64encode
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import yaml
 
+from ginkgo.core.asset import AssetKey, make_asset_version
+from ginkgo.runtime.artifact_store import LocalArtifactStore
 from ginkgo.runtime.provenance import RunProvenanceRecorder
+from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.ui import create_ui_server
 from ginkgo.ui.server import payloads as server_payloads
 from ginkgo.ui.server.workspaces import (
@@ -175,6 +178,36 @@ def _add_notebook_artifact(run_dir: Path) -> None:
         }
     )
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+
+def _make_asset(
+    tmp_path: Path,
+    *,
+    name: str,
+    filename: str,
+    content: str,
+    run_id: str,
+    metadata: dict | None = None,
+    alias: str | None = None,
+) -> str:
+    asset_store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+    artifact_store = LocalArtifactStore(root=tmp_path / ".ginkgo" / "artifacts")
+    source = tmp_path / filename
+    source.write_text(content, encoding="utf-8")
+    record = artifact_store.store(src_path=source)
+    version = make_asset_version(
+        key=AssetKey(namespace="file", name=name),
+        kind="file",
+        artifact_id=record.artifact_id,
+        content_hash=record.digest_hex,
+        run_id=run_id,
+        producer_task="tests.seed",
+        metadata=metadata or {},
+    )
+    asset_store.register_version(version=version)
+    if alias is not None:
+        asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
+    return version.version_id
 
 
 class TestUiServer:
@@ -439,6 +472,60 @@ class TestUiServer:
         assert status == 200
         assert payload == {"deleted": 2, "ok": True}
         assert list(cache_root.iterdir()) == []
+
+    def test_asset_api_lists_assets_and_builds_table_preview(self, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        version_id = _make_asset(
+            tmp_path,
+            name="metrics",
+            filename="metrics.csv",
+            content="sample,value\nA,1\nB,2\n",
+            run_id="run-1",
+            metadata={"owner": "analytics"},
+            alias="latest",
+        )
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        encoded_key = quote("file:metrics", safe="")
+        try:
+            _, list_payload = _fetch_json(f"{base_url}/api/assets")
+            _, detail_payload = _fetch_json(f"{base_url}/api/assets/{encoded_key}?selector=latest")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert list_payload["assets"][0]["asset_key"] == "file:metrics"
+        assert list_payload["assets"][0]["preview_kind"] == "table"
+        assert detail_payload["selected_version"]["version_id"] == version_id
+        assert detail_payload["preview"]["kind"] == "table"
+        assert detail_payload["preview"]["columns"] == ["sample", "value"]
+        assert detail_payload["preview"]["rows"][0]["sample"] == "A"
+        assert detail_payload["metadata"]["owner"] == "analytics"
+
+    def test_asset_api_serves_figure_content(self, tmp_path: Path) -> None:
+        runs_root = tmp_path / ".ginkgo" / "runs"
+        _make_asset(
+            tmp_path,
+            name="plot",
+            filename="plot.svg",
+            content="<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>",
+            run_id="run-1",
+        )
+
+        server, thread, base_url = _start_server(runs_root=runs_root)
+        encoded_key = quote("file:plot", safe="")
+        try:
+            _, detail_payload = _fetch_json(f"{base_url}/api/assets/{encoded_key}")
+            status, body = _fetch_text(f"{base_url}{detail_payload['preview']['url']}")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        assert detail_payload["preview"]["kind"] == "image"
+        assert status == 200
+        assert "<svg" in body
 
     def test_workflows_api_lists_flow_modules(self, tmp_path: Path) -> None:
         runs_root = tmp_path / ".ginkgo" / "runs"

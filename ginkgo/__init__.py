@@ -9,6 +9,10 @@ from types import ModuleType
 from typing import Any
 
 _EXPORTS = {
+    "AssetKey": ("ginkgo.core.asset", "AssetKey"),
+    "AssetRef": ("ginkgo.core.asset", "AssetRef"),
+    "AssetResult": ("ginkgo.core.asset", "AssetResult"),
+    "AssetVersion": ("ginkgo.core.asset", "AssetVersion"),
     "Expr": ("ginkgo.core.expr", "Expr"),
     "ExprList": ("ginkgo.core.expr", "ExprList"),
     "FlowDef": ("ginkgo.core.flow", "FlowDef"),
@@ -18,6 +22,7 @@ _EXPORTS = {
     "SecretRef": ("ginkgo.core.secret", "SecretRef"),
     "ShellExpr": ("ginkgo.core.shell", "ShellExpr"),
     "TaskDef": ("ginkgo.core.task", "TaskDef"),
+    "asset": ("ginkgo.core.asset", "asset"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
     "expand": ("ginkgo.helpers", "expand"),
     "flatten": ("ginkgo.helpers", "flatten"),

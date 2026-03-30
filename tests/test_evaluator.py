@@ -1,17 +1,20 @@
 """Unit tests for the evaluator runtime."""
 
 from concurrent.futures import Future, ProcessPoolExecutor
-import subprocess
-from typing import Any
-import shutil
+import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from ginkgo import (
+    AssetRef,
+    asset,
     evaluate,
     file,
     folder,
@@ -24,6 +27,7 @@ from ginkgo import (
 )
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
+from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 from ginkgo.runtime.secrets import build_secret_resolver
 
@@ -238,6 +242,51 @@ def reveal_secret_task(secret_value: str, output_path: str) -> file:
 def fail_with_secret_task(secret_value: str) -> str:
     print(f"task-secret:{secret_value}")
     raise RuntimeError(f"failure:{secret_value}")
+
+
+@task()
+def write_asset_task(output_path: str, text: str = "payload") -> file:
+    Path(output_path).write_text(text, encoding="utf-8")
+    return asset(output_path, name="prepared_data")
+
+
+@task()
+def transform_asset_task(source: object, output_path: str) -> file:
+    assert isinstance(source, AssetRef)
+    payload = Path(source.artifact_path).read_text(encoding="utf-8").upper()
+    Path(output_path).write_text(payload, encoding="utf-8")
+    return asset(output_path, name="transformed_data")
+
+
+@task()
+def read_asset_task(source: object, log_path: str) -> str:
+    assert isinstance(source, AssetRef)
+    Path(log_path).write_text(source.version_id, encoding="utf-8")
+    return Path(source.artifact_path).read_text(encoding="utf-8")
+
+
+@task(kind="shell")
+def shell_asset_task(output_path: str) -> file:
+    return shell(
+        cmd=f"printf 'shell-payload' > {output_path}",
+        output=asset(output_path, name="shell_asset"),
+    )
+
+
+@task(kind="shell")
+def shell_asset_with_payload_task(output_path: str, payload: str) -> file:
+    return shell(
+        cmd=f"printf '{payload}' > {output_path}",
+        output=asset(output_path, name="shell_payload_asset"),
+    )
+
+
+@task()
+def nested_asset_inputs_task(sources: list[object], output_path: str) -> str:
+    first = sources[0]
+    assert isinstance(first, AssetRef)
+    Path(output_path).write_text(first.version_id, encoding="utf-8")
+    return first.version_id
 
 
 @task()
@@ -1029,6 +1078,192 @@ class TestSecrets:
         assert "super-secret" not in stdout_log.read_text(encoding="utf-8")
         assert "super-secret" not in stderr_log.read_text(encoding="utf-8")
         assert "super-secret" not in recorder.manifest_path.read_text(encoding="utf-8")
+
+
+class TestAssets:
+    def test_python_asset_result_registers_catalog_and_lineage(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
+
+        result = evaluator.evaluate(
+            transform_asset_task(
+                source=write_asset_task(output_path="prepared.txt", text="hello"),
+                output_path="transformed.txt",
+            )
+        )
+
+        assert isinstance(result, AssetRef)
+        assert Path(result.artifact_path).read_text(encoding="utf-8") == "HELLO"
+        assert (tmp_path / "prepared.txt").is_file()
+        assert not (tmp_path / "prepared.txt").is_symlink()
+        assert (tmp_path / "transformed.txt").is_file()
+        assert not (tmp_path / "transformed.txt").is_symlink()
+
+        manifest = load_manifest(recorder.run_dir)
+        tasks = list(manifest["tasks"].values())
+        assert tasks[0]["assets"][0]["asset_key"] == "file:prepared_data"
+        assert tasks[1]["assets"][0]["asset_key"] == "file:transformed_data"
+
+        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+        lineage = store.lineage_for(key=result.key, version_id=result.version_id)
+        assert lineage is not None
+        assert len(lineage.parents) == 1
+        assert lineage.parents[0].name == "prepared_data"
+
+    def test_asset_ref_cache_identity_drives_downstream_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        expr = read_asset_task(
+            source=write_asset_task(output_path="prepared.txt", text="hello"),
+            log_path="consumer.log",
+        )
+
+        first_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        first_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        assert first_evaluator.evaluate(expr) == "hello"
+
+        second_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        second_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        assert second_evaluator.evaluate(expr) == "hello"
+
+        manifest = load_manifest(second_recorder.run_dir)
+        statuses = [task["status"] for task in manifest["tasks"].values()]
+        assert statuses == ["cached", "cached"]
+
+    def test_shell_task_can_register_asset_output(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = evaluate(shell_asset_task(output_path="shell.txt"))
+
+        assert isinstance(result, AssetRef)
+        assert Path(result.artifact_path).read_text(encoding="utf-8") == "shell-payload"
+
+    def test_shell_rerun_leaves_writable_output_materialization(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+
+        first_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        first_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        first_result = first_evaluator.evaluate(
+            shell_asset_with_payload_task(output_path="shell.txt", payload="first")
+        )
+
+        assert isinstance(first_result, AssetRef)
+        assert (tmp_path / "shell.txt").is_file()
+        assert not (tmp_path / "shell.txt").is_symlink()
+
+        second_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        second_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        second_result = second_evaluator.evaluate(
+            shell_asset_with_payload_task(output_path="shell.txt", payload="second")
+        )
+
+        assert isinstance(second_result, AssetRef)
+        assert Path(second_result.artifact_path).read_text(encoding="utf-8") == "second"
+        assert (tmp_path / "shell.txt").is_file()
+        assert not (tmp_path / "shell.txt").is_symlink()
+
+    def test_nested_asset_refs_are_serialized_in_cache_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=workflow_path),
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+        evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
+
+        result = evaluator.evaluate(
+            nested_asset_inputs_task(
+                sources=[write_asset_task(output_path="prepared.txt", text="hello")],
+                output_path="asset_versions.txt",
+            )
+        )
+
+        manifest = load_manifest(recorder.run_dir)
+        consumer_task = next(
+            task
+            for task in manifest["tasks"].values()
+            if str(task["task"]).endswith(".nested_asset_inputs_task")
+        )
+        meta_path = tmp_path / ".ginkgo" / "cache" / consumer_task["cache_key"] / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        assert result
+        assert meta["inputs"]["sources"]["type"] == "list"
+        first_item = meta["inputs"]["sources"]["items"][0]
+        assert first_item["type"] == "asset_ref"
+        assert first_item["asset"] == "file:prepared_data"
 
 
 class TestValidation:

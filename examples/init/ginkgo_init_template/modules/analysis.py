@@ -6,7 +6,7 @@ import json
 import shlex
 from pathlib import Path
 
-from ginkgo import file, script, shell, task
+from ginkgo import AssetRef, file, script, shell, task
 
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -39,7 +39,7 @@ def build_brief(
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def package_brief(*, brief: file, output_path: str) -> file:
+def package_brief(*, brief: file | AssetRef, output_path: str) -> file:
     """Package one Markdown brief in a Docker-backed shell task.
 
     Parameters
@@ -56,7 +56,8 @@ def package_brief(*, brief: file, output_path: str) -> file:
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    quoted_brief = shlex.quote(str(brief))
+    brief_path = Path(brief.artifact_path) if isinstance(brief, AssetRef) else Path(str(brief))
+    quoted_brief = shlex.quote(str(brief_path))
     quoted_output = shlex.quote(str(output))
     cmd = (
         f"printf 'brief={quoted_brief}\\n' > {quoted_output} && "
@@ -70,7 +71,7 @@ def package_brief(*, brief: file, output_path: str) -> file:
 def write_summary(
     *,
     items: list[str],
-    seed_cards: list[file],
+    seed_paths: list[str],
     normalized_cards: list[file],
     checksums: list[file],
     briefs: list[file],
@@ -82,8 +83,8 @@ def write_summary(
     ----------
     items : list[str]
         Item identifiers for each fan-out branch.
-    seed_cards : list[file]
-        Seed text artifacts.
+    seed_paths : list[str]
+        Seed text artifact paths.
     normalized_cards : list[file]
         Normalized text artifacts.
     checksums : list[file]
@@ -99,9 +100,9 @@ def write_summary(
         JSON summary path.
     """
     rows = []
-    for item, seed_card, normalized_card, checksum, brief, package in zip(
+    for item, seed_path, normalized_card, checksum, brief, package in zip(
         items,
-        seed_cards,
+        seed_paths,
         normalized_cards,
         checksums,
         briefs,
@@ -111,7 +112,7 @@ def write_summary(
         rows.append(
             {
                 "item": item,
-                "seed_card": str(seed_card),
+                "seed_card": seed_path,
                 "normalized_card": str(normalized_card),
                 "checksum": str(checksum),
                 "brief": str(brief),
