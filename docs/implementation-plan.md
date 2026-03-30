@@ -13,48 +13,59 @@ Each phase is independently testable and follows the same structure:
 
 ## Tier 3 — Asset Layer
 
-### Phase 7 — Asset Catalog and Lineage
+### Phase 7 — Asset Runtime Foundation
 
-**Goal:** Introduce durable asset identity and lineage as a thin indexing layer over Phase 2's cache and artifact store, without changing Ginkgo's run-centric execution model.
+**Goal:** Introduce durable asset identity, immutable version records, aliases,
+and lineage as a thin indexing layer over Phase 2's cache and artifact store,
+without changing Ginkgo's run-centric execution model.
 
 **Depends on:** Phase 2 (`ArtifactStore`, `artifact_id`). Benefits from the
 implemented remote references and staged-access layer when remote-backed
 storage is active.
 
-**Downstream consumers:** Phase 8 (DataFrame Assets) and Phase 9 (Model Assets) extend the catalog with type-specific backends. Phase 12 (Publishing) includes asset metadata in bundles.
+**Downstream consumers:** Phase 8 (DataFrame Assets) and Phase 9 (Model Assets)
+extend the catalog with type-specific backends. Phase 10 adds richer read
+paths and lifecycle tooling. Phase 12 (Publishing) includes asset metadata in
+bundles.
 
 #### Deliverables
 
 - Add a first-class asset abstraction that can be attached to task outputs:
   - stable logical asset key (user-defined name)
-  - pointer to the producing cache entry (cache key + `artifact_id` from Phase 2)
+  - immutable asset version identity
+  - pointer to the stored `artifact_id` from Phase 2
   - materialization metadata (timestamp, run id, task id)
-  - optional storage backend metadata
 - Introduce an asset catalog under `.ginkgo/assets/`:
-  - current materialization per asset key: a pointer to the latest cache entry and `artifact_id`
+  - current materialization per asset key
   - historical materialization records, ordered by run
+  - alias pointers
   - lineage edges: links to upstream asset keys consumed by the producing task
-- Extend run provenance so task manifests record asset keys alongside the existing `artifact_id` and cache key.
-- Add CLI and UI read paths for:
-  - list assets
-  - inspect current materialization state (resolves to a specific cache entry and `artifact_id`)
-  - inspect upstream and downstream lineage
+- Integrate asset materialization with the evaluator for file outputs and return
+  `AssetRef` values to downstream tasks.
+- Extend caching and worker transport so `AssetRef` values are serializable and
+  invalidate by `version_id`.
+- Extend run provenance so task manifests record asset keys alongside the
+  existing `artifact_id` and cache key.
 
 #### Key design points
 
 - The catalog is a pure index: it stores metadata and pointers, never artifact bytes. All bytes remain in the `ArtifactStore` from Phase 2 and are referenced by `artifact_id`.
-- "Current materialization" is a pointer to a specific Phase 2 cache entry. Resolving an asset key to a file path goes through `ArtifactStore.retrieve()`, keeping the backend abstraction intact for future remote-backed storage.
-- The catalog must distinguish three separate things: logical asset identity (the key), physical materialization (the `artifact_id`), and the task-run cache entry (the cache key). These are not the same thing.
+- Resolving an asset version to a file path goes through
+  `ArtifactStore.retrieve()`, keeping the backend abstraction intact for future
+  remote-backed storage.
+- The catalog must distinguish three separate things: logical asset identity
+  (the key), physical materialization (the `artifact_id`), and the task-run
+  cache entry (the cache key). These are not the same thing.
 - This phase does not introduce Dagster-style asset-driven scheduling.
+- This phase supports file assets only. Programmatic browsing APIs, staleness
+  reporting, retention, and UI are deferred to Phase 10.
 
 #### Validation
 
 - Define a workflow where two tasks materialize named assets and a downstream task consumes them. Assert the catalog records the correct asset keys, `artifact_id` values, and lineage edges.
 - Re-run with unchanged inputs and assert the catalog points to the same current materialization (same `artifact_id`) while provenance records cached task reuse.
 - Update one upstream input and assert only the affected downstream asset lineage chain receives a new materialization with a new `artifact_id`.
-- Assert the UI/API renders an asset detail view showing current state, `artifact_id`, and upstream/downstream dependencies.
-
----
+- Assert downstream cache invalidation follows `AssetRef.version_id`.
 
 ### Phase 8 — Versioned DataFrame Assets
 
@@ -210,6 +221,134 @@ def main():
 
 ---
 
+### Phase 10 — Asset Read Paths and Lifecycle Tooling
+
+**Goal:** Add the user-facing read surfaces and maintenance workflows that sit
+on top of Phase 7's asset runtime foundation.
+
+**Depends on:** Phase 7 (asset runtime foundation). Benefits from Phase 8 and
+Phase 9 as additional asset kinds begin to use the shared catalog.
+
+#### Deliverables
+
+- Add a programmatic asset API for workspace-scoped inspection and loading:
+  - list asset keys
+  - inspect versions
+  - resolve aliases and version ids
+  - load materialized assets through kind-specific loaders
+- Add CLI read paths for:
+  - list assets
+  - inspect versions and aliases
+  - inspect upstream and downstream lineage
+- Add staleness reporting based on lineage and version timestamps.
+- Extend cache pruning to become asset-aware:
+  - preserve alias-pinned versions
+  - remove old unpinned versions by retention policy
+  - garbage-collect unreferenced artifacts
+- Add UI asset views:
+  - list view grouped by namespace
+  - version detail
+  - lineage view
+  - staleness indicators
+
+#### Key design points
+
+- Phase 10 is read- and lifecycle-oriented. It should not change Phase 7's core
+  storage model.
+- The programmatic API and CLI should be thin wrappers over the shared
+  `AssetStore` and loader registry, not parallel implementations.
+- Staleness is derived from lineage plus version timestamps; it should not
+  affect scheduling semantics.
+- Asset-aware pruning must respect alias-pinned versions and avoid deleting any
+  artifact still referenced by cache or asset metadata.
+
+#### Validation
+
+- A user can inspect asset keys, versions, aliases, and lineage from Python and
+  the CLI without reading raw catalog files.
+- Moving an alias updates CLI and programmatic resolution immediately without
+  mutating historical versions.
+- `ginkgo asset status` marks downstream assets stale when upstream versions are
+  newer, including transitive staleness.
+- Asset-aware pruning removes only unpinned old versions and leaves referenced
+  artifacts intact.
+- The UI renders an asset list and detail view backed by the same catalog data
+  as the CLI and programmatic API.
+
+---
+
+### Phase 11 — Data Quality and Profiling
+
+**Goal:** Add automated statistical profiling, data quality gates, and drift detection for DataFrame assets, giving data scientists built-in observability over their data without external tools.
+
+**Depends on:** Phase 8 (versioned DataFrame assets — profiling hooks into the DataFrame materialization path, drift detection compares version metadata).
+
+#### Deliverables
+
+**Statistical profiling at materialization time:**
+
+- When a `kind="dataframe"` task materializes a snapshot, automatically compute column-level statistics from the in-memory DataFrame before serialization:
+  - null count and null rate per column
+  - unique count / cardinality
+  - min / max / mean / std for numeric columns
+  - top-N frequent values for categorical columns
+  - approximate quantiles for numeric columns
+- Store the profile in `AssetVersion.metadata` under a `profile` key alongside the existing schema and row count fields.
+- Profiling adds negligible overhead since the DataFrame is already in memory for serialization.
+
+**Data quality gates:**
+
+- Add a `checks=` parameter to the `dataframe_asset()` builder:
+
+  ```python
+  return dataframe_asset(df, checks=[
+      check.row_count(min=1000),
+      check.no_nulls("user_id"),
+      check.unique("user_id"),
+      check.range("age", min=0, max=150),
+      check.schema_matches({"user_id": "int64", "age": "float64"}),
+      check.null_rate("email", max=0.05),
+  ])
+  ```
+
+- The evaluator runs checks after serialization. The asset version is always written (data is recorded even when quality fails), but tagged `quality: "pass" | "fail"` in metadata with individual check results.
+- Downstream tasks consuming the asset can declare `only_if_passing=True` to skip execution when upstream data quality fails, producing a clear skip reason in provenance rather than propagating bad data silently.
+- Quality check results are recorded in run provenance alongside the asset metadata.
+
+**Drift detection between versions:**
+
+- Add `ginkgo asset diff <key> <ver1> <ver2>` to compare profiling stats between two versions of the same asset:
+
+  ```
+  $ ginkgo asset diff dataframe/features v-a1b2c3 v-d4e5f6
+
+  COLUMN       METRIC       v-a1b2c3    v-d4e5f6    DELTA
+  row_count    -            10000       12500       +25.0%
+  age          mean         34.2        38.7        +13.2%
+  age          null_rate    0.01        0.12        +1100%  ⚠
+  category     cardinality  15          23          +53.3%
+  ```
+
+- Warning thresholds are configurable per metric. Defaults flag large relative changes in null rates, cardinality, and distribution statistics.
+- The UI data preview (from Phase 8) surfaces the profile alongside the data, and the version detail view shows drift indicators when comparing to the parent version.
+
+#### Key design points
+
+- Profiling runs synchronously during materialization while the DataFrame is in memory. This is a one-time cost at write time that avoids needing to re-read the Parquet artifact later.
+- Quality gates are advisory by default — the asset is always written. `only_if_passing` on downstream tasks is opt-in. This avoids data loss while still enabling fail-fast pipelines when desired.
+- The `check` namespace provides a small, opinionated set of common data quality assertions. This is not Great Expectations — complex validation should use external tools with Ginkgo tasks as the execution substrate.
+- Drift detection is pure metadata comparison — it never loads artifact bytes. This means it works for arbitrarily large DataFrames and is fast enough to show in the UI.
+
+#### Validation
+
+- A `kind="dataframe"` task produces a snapshot with a complete statistical profile in version metadata (null rates, cardinality, min/max for all columns).
+- A DataFrame asset with `checks=[check.no_nulls("id")]` passes quality when the column has no nulls and fails when it does. Both cases write the asset version; the failing case tags `quality: "fail"` with the check result.
+- A downstream task with `only_if_passing=True` skips execution when its upstream DataFrame asset failed quality checks, and runs normally when quality passes.
+- `ginkgo asset diff` renders correct deltas between two versions using only stored profile metadata.
+- The UI version detail view shows profile statistics and drift indicators relative to the parent version.
+
+---
+
 ## Tier 4 — Composition, Publishing, and Remote Execution
 
 ### Phase 14 — Kubernetes / Batch Executor
@@ -237,7 +376,7 @@ prerequisite; remote jobs cannot access local `.ginkgo/cache/`), Phase 13
 - Dynamic DAG expansion should still happen in the scheduler after parent-task results return.
 - Remote execution makes remote-backed managed artifact storage mandatory; the
   current remote-input staging layer is necessary but not sufficient on its own.
-
+p
 #### Validation
 
 - Re-run `VW-2`, `VW-3`, `VW-6`, `VW-7`, and `VW-8` through the remote executor.
@@ -328,7 +467,7 @@ refactor, workspace validation from non-workspace directories, age-based
 
 ---
 
-### Phase 11 — Public Documentation
+### Phase 12 — Public Documentation
 
 **Goal:** Produce clear, maintainable, and complete public documentation so new users can adopt Ginkgo without needing to read source code or ask for help.
 

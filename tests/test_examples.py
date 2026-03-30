@@ -197,6 +197,11 @@ class TestExamples:
         assert notebook_html.is_file()
         assert (example_dir / "results" / "summary.json").is_file()
         assert (example_dir / "results" / "delivery_manifest.md").is_file()
+        assert any(
+            task.get("assets")
+            for task in first_manifest["tasks"].values()
+            if str(task["task"]).endswith(".write_seed_card")
+        )
 
         with _mock_docker(), _mock_notebook_tools():
             _, second_manifest = _run_example(example_dir=example_dir)
@@ -237,6 +242,11 @@ class TestExamples:
         assert sorted(summary["sample_id"].unique().tolist()) == ["ERR3058522", "ERR3058532"]
         assert len(summary) == 4
         assert "read_count_r1" in summary.columns
+        assert any(
+            task.get("assets")
+            for task in first_manifest["tasks"].values()
+            if str(task["task"]).endswith(".filter_fastq")
+        )
 
         with _mock_docker():
             _, second_manifest = _run_example(example_dir=example_dir)

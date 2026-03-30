@@ -10,7 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
-ShellOutput: TypeAlias = str | list[str] | tuple[str, ...]
+from ginkgo.core.asset import AssetResult
+
+ShellOutput: TypeAlias = (
+    str | AssetResult | list[str | AssetResult] | tuple[str | AssetResult, ...]
+)
 
 
 @dataclass(frozen=True)

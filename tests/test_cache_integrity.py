@@ -1,6 +1,5 @@
-"""Integration tests for Phase 2 cache integrity: source hashing and symlink outputs."""
+"""Integration tests for cache integrity and working-tree materialization."""
 
-import stat
 import textwrap
 from pathlib import Path
 
@@ -113,86 +112,92 @@ def write_folder_task(output_dir: str) -> folder:
     )
 
 
-class TestFileOutputSymlinks:
-    def test_output_is_symlinked_after_execution(self, tmp_path):
+@task()
+def write_python_file_task(output_path: str, payload: str) -> file:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(payload, encoding="utf-8")
+    return str(output)
+
+
+class TestWritableFileOutputs:
+    def test_output_remains_writable_after_execution(self, tmp_path):
         output = tmp_path / "result.txt"
         result = evaluate(write_file_task(output_path=str(output)))
-        assert Path(str(result)).is_symlink()
-        assert Path(str(result)).read_text().strip() == "hello"
+        result_path = Path(str(result))
+        assert result_path.is_file()
+        assert not result_path.is_symlink()
+        assert result_path.read_text().strip() == "hello"
 
-    def test_symlink_target_is_read_only(self, tmp_path):
-        output = tmp_path / "readonly.txt"
+    def test_output_can_be_overwritten_locally(self, tmp_path):
+        output = tmp_path / "editable.txt"
         result = evaluate(write_file_task(output_path=str(output)))
-        target = Path(str(result)).resolve()
-        mode = target.stat().st_mode
-        assert not (mode & stat.S_IWUSR)
+        result_path = Path(str(result))
+        result_path.write_text("modified", encoding="utf-8")
+        assert result_path.read_text(encoding="utf-8") == "modified"
 
-    def test_writing_through_symlink_raises_permission_error(self, tmp_path):
-        output = tmp_path / "locked.txt"
-        result = evaluate(write_file_task(output_path=str(output)))
-        with pytest.raises(PermissionError):
-            Path(str(result)).write_text("modified")
-
-    def test_deleted_symlink_is_recreated_on_cache_hit(self, tmp_path, capsys):
+    def test_deleted_file_is_restored_on_cache_hit(self, tmp_path, capsys):
         output = tmp_path / "recreate.txt"
         evaluate(write_file_task(output_path=str(output)))
         capsys.readouterr()
 
-        # Delete the symlink.
         output.unlink()
         assert not output.exists()
 
-        # Re-evaluate: should be a cache hit that recreates the symlink.
         result = evaluate(write_file_task(output_path=str(output)))
         captured = capsys.readouterr()
         assert '"status": "cached"' in captured.err
-        assert Path(str(result)).is_symlink()
-        assert Path(str(result)).read_text().strip() == "hello"
+        result_path = Path(str(result))
+        assert result_path.is_file()
+        assert not result_path.is_symlink()
+        assert result_path.read_text().strip() == "hello"
 
-    def test_replaced_file_causes_cache_miss(self, tmp_path, capsys):
-        output = tmp_path / "replaced.txt"
+    def test_modified_file_is_restored_without_cache_miss(self, tmp_path, capsys):
+        output = tmp_path / "modified.txt"
         evaluate(write_file_task(output_path=str(output)))
         capsys.readouterr()
 
-        # Replace the symlink with a regular file.
-        output.unlink()
-        output.write_text("tampered")
+        output.write_text("tampered", encoding="utf-8")
 
-        # Re-evaluate: should be a cache miss (regular file, not symlink).
         result = evaluate(write_file_task(output_path=str(output)))
         captured = capsys.readouterr()
-        assert '"status": "running"' in captured.err
-        # After re-execution, should be symlinked again.
-        assert Path(str(result)).is_symlink()
+        assert '"status": "cached"' in captured.err
+        result_path = Path(str(result))
+        assert result_path.is_file()
+        assert result_path.read_text(encoding="utf-8").strip() == "hello"
+
+    def test_python_file_output_rerun_overwrites_previous_materialization(self, tmp_path):
+        output = tmp_path / "python.txt"
+        first = evaluate(write_python_file_task(output_path=str(output), payload="first"))
+        assert Path(str(first)).read_text(encoding="utf-8") == "first"
+
+        second = evaluate(write_python_file_task(output_path=str(output), payload="second"))
+        assert Path(str(second)).read_text(encoding="utf-8") == "second"
 
 
-class TestFolderOutputSymlinks:
-    def test_output_is_directory_with_symlinked_files_after_execution(self, tmp_path):
+class TestWritableFolderOutputs:
+    def test_output_is_directory_with_regular_files_after_execution(self, tmp_path):
         output = tmp_path / "outdir"
         result = evaluate(write_folder_task(output_dir=str(output)))
         result_path = Path(str(result))
-        # Tree artifacts are reconstructed directories, not symlinks.
         assert result_path.is_dir()
         assert (result_path / "a.txt").read_text().strip() == "a"
         assert (result_path / "b.txt").read_text().strip() == "b"
-        # Individual files are symlinks to blobs.
-        assert (result_path / "a.txt").is_symlink()
-        assert (result_path / "b.txt").is_symlink()
+        assert not (result_path / "a.txt").is_symlink()
+        assert not (result_path / "b.txt").is_symlink()
 
-    def test_folder_contents_are_read_only(self, tmp_path):
-        output = tmp_path / "ro_dir"
+    def test_folder_contents_are_writable(self, tmp_path):
+        output = tmp_path / "writable_dir"
         result = evaluate(write_folder_task(output_dir=str(output)))
         result_path = Path(str(result))
-        # Files are symlinks to read-only blobs.
-        file_mode = (result_path / "a.txt").resolve().stat().st_mode
-        assert not (file_mode & stat.S_IWUSR)
+        (result_path / "a.txt").write_text("updated", encoding="utf-8")
+        assert (result_path / "a.txt").read_text(encoding="utf-8") == "updated"
 
-    def test_deleted_folder_is_recreated(self, tmp_path, capsys):
+    def test_deleted_folder_is_restored(self, tmp_path, capsys):
         output = tmp_path / "dir_recreate"
         evaluate(write_folder_task(output_dir=str(output)))
         capsys.readouterr()
 
-        # Remove the reconstructed directory.
         import shutil
 
         shutil.rmtree(output)
@@ -201,7 +206,21 @@ class TestFolderOutputSymlinks:
         result = evaluate(write_folder_task(output_dir=str(output)))
         captured = capsys.readouterr()
         assert '"status": "cached"' in captured.err
-        assert Path(str(result)).is_dir()
+        result_path = Path(str(result))
+        assert result_path.is_dir()
+        assert (result_path / "a.txt").read_text().strip() == "a"
+
+    def test_modified_folder_is_restored_without_cache_miss(self, tmp_path, capsys):
+        output = tmp_path / "dir_modified"
+        evaluate(write_folder_task(output_dir=str(output)))
+        capsys.readouterr()
+
+        (output / "a.txt").write_text("tampered", encoding="utf-8")
+
+        result = evaluate(write_folder_task(output_dir=str(output)))
+        captured = capsys.readouterr()
+        assert '"status": "cached"' in captured.err
+        assert (Path(str(result)) / "a.txt").read_text(encoding="utf-8").strip() == "a"
 
 
 # ---------------------------------------------------------------------------
