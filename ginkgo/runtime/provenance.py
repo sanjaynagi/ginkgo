@@ -220,6 +220,7 @@ class RunProvenanceRecorder:
         env: str | None,
         value: Any,
         outputs: list[dict[str, Any]] | None = None,
+        assets: list[dict[str, Any]] | None = None,
     ) -> None:
         """Mark a task as served from cache."""
         with self._lock:
@@ -229,6 +230,8 @@ class RunProvenanceRecorder:
             task["exit_code"] = 0
             task["output"] = _render_value(value)
             task["outputs"] = _render_value(outputs or [])
+            if assets is not None:
+                task["assets"] = _render_value(assets)
             task["finished_at"] = _timestamp()
             task["status"] = "cached"
             task.pop("error", None)
@@ -244,6 +247,7 @@ class RunProvenanceRecorder:
         env: str | None,
         value: Any,
         outputs: list[dict[str, Any]] | None = None,
+        assets: list[dict[str, Any]] | None = None,
     ) -> None:
         """Mark a task as completed successfully."""
         with self._lock:
@@ -253,6 +257,8 @@ class RunProvenanceRecorder:
             task["exit_code"] = 0
             task["output"] = _render_value(value)
             task["outputs"] = _render_value(outputs or [])
+            if assets is not None:
+                task["assets"] = _render_value(assets)
             task["finished_at"] = _timestamp()
             task["status"] = "succeeded"
             task.pop("error", None)

@@ -30,6 +30,12 @@ class TestStoreFile:
         assert dest.is_symlink()
         assert dest.read_text() == "hello world"
 
+        restored = tmp_path / "restored-copy.txt"
+        store.restore(artifact_id=record.artifact_id, dest_path=restored)
+        assert restored.is_file()
+        assert not restored.is_symlink()
+        assert restored.read_text() == "hello world"
+
     def test_idempotent(self, store, tmp_path):
         src = tmp_path / "data.csv"
         src.write_text("a,b,c")
@@ -87,6 +93,14 @@ class TestStoreDirectory:
         # Individual files are symlinks to blobs.
         assert (dest / "a.txt").is_symlink()
         assert (dest / "sub" / "b.txt").is_symlink()
+
+        restored = tmp_path / "restored_copy"
+        store.restore(artifact_id=record.artifact_id, dest_path=restored)
+        assert restored.is_dir()
+        assert (restored / "a.txt").read_text() == "aaa"
+        assert (restored / "sub" / "b.txt").read_text() == "bbb"
+        assert not (restored / "a.txt").is_symlink()
+        assert not (restored / "sub" / "b.txt").is_symlink()
 
     def test_idempotent(self, store, tmp_path):
         src_dir = tmp_path / "mydir"
@@ -197,6 +211,75 @@ class TestRetrieve:
         dest = tmp_path / "deep" / "nested" / "link.txt"
         store.retrieve(artifact_id=record.artifact_id, dest_path=dest)
         assert dest.is_symlink()
+
+
+class TestRestore:
+    def test_creates_regular_file_for_blob(self, store, tmp_path):
+        src = tmp_path / "file.dat"
+        src.write_bytes(b"\x00\x01\x02")
+
+        record = store.store(src_path=src)
+        dest = tmp_path / "copy.dat"
+        store.restore(artifact_id=record.artifact_id, dest_path=dest)
+
+        assert dest.is_file()
+        assert not dest.is_symlink()
+        assert dest.read_bytes() == b"\x00\x01\x02"
+
+    def test_creates_regular_files_for_tree(self, store, tmp_path):
+        src_dir = tmp_path / "tree"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("aaa")
+        (src_dir / "sub").mkdir()
+        (src_dir / "sub" / "b.txt").write_text("bbb")
+
+        record = store.store(src_path=src_dir)
+        dest = tmp_path / "tree_copy"
+        store.restore(artifact_id=record.artifact_id, dest_path=dest)
+
+        assert dest.is_dir()
+        assert not (dest / "a.txt").is_symlink()
+        assert not (dest / "sub" / "b.txt").is_symlink()
+        assert (dest / "a.txt").read_text() == "aaa"
+        assert (dest / "sub" / "b.txt").read_text() == "bbb"
+
+
+class TestMatches:
+    def test_matches_blob_content(self, store, tmp_path):
+        src = tmp_path / "data.txt"
+        src.write_text("payload")
+        record = store.store(src_path=src)
+
+        same = tmp_path / "same.txt"
+        same.write_text("payload")
+        different = tmp_path / "different.txt"
+        different.write_text("other")
+
+        assert store.matches(artifact_id=record.artifact_id, path=same) is True
+        assert store.matches(artifact_id=record.artifact_id, path=different) is False
+
+    def test_matches_tree_content(self, store, tmp_path):
+        src_dir = tmp_path / "tree"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("aaa")
+        (src_dir / "sub").mkdir()
+        (src_dir / "sub" / "b.txt").write_text("bbb")
+        record = store.store(src_path=src_dir)
+
+        same = tmp_path / "same"
+        same.mkdir()
+        (same / "a.txt").write_text("aaa")
+        (same / "sub").mkdir()
+        (same / "sub" / "b.txt").write_text("bbb")
+
+        different = tmp_path / "different"
+        different.mkdir()
+        (different / "a.txt").write_text("aaa")
+        (different / "sub").mkdir()
+        (different / "sub" / "b.txt").write_text("changed")
+
+        assert store.matches(artifact_id=record.artifact_id, path=same) is True
+        assert store.matches(artifact_id=record.artifact_id, path=different) is False
 
 
 class TestDelete:

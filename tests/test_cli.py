@@ -10,6 +10,9 @@ from pathlib import Path
 
 import yaml
 
+from ginkgo.core.asset import AssetKey, make_asset_version
+from ginkgo.runtime.artifact_store import LocalArtifactStore
+from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.cli import (
     _core_unit_label,
     _environment_label,
@@ -37,6 +40,26 @@ def _extract_run_dir(output: str) -> Path:
     if match is None:
         raise AssertionError(f"Run directory not found in output:\n{output}")
     return Path(match.group(1).strip())
+
+
+def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
+    asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
+    artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
+    source = cwd / f"{name}.txt"
+    source.write_text(text, encoding="utf-8")
+    record = artifact_store.store(src_path=source)
+    version = make_asset_version(
+        key=AssetKey(namespace="file", name=name),
+        kind="file",
+        artifact_id=record.artifact_id,
+        content_hash=record.digest_hex,
+        run_id=run_id,
+        producer_task="tests.seed",
+    )
+    asset_store.register_version(version=version)
+    if alias is not None:
+        asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
+    return version.version_id
 
 
 class TestCliRunAndCache:
@@ -236,6 +259,49 @@ def main():
         result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
         assert result.returncode == 1
         assert "Invalid duration for --older-than" in result.stderr
+
+
+class TestCliAssets:
+    def test_asset_ls_empty_state_is_styled(self) -> None:
+        result = _run_cli("asset", "ls", cwd=Path.cwd())
+        assert result.returncode == 0
+        assert "🌿 ginkgo asset ls" in result.stdout
+        assert "No assets found." in result.stdout
+
+    def test_asset_ls_versions_and_inspect(self) -> None:
+        first_version = _seed_asset(
+            cwd=Path.cwd(),
+            name="prepared_data",
+            text="hello",
+            run_id="run-1",
+        )
+        second_version = _seed_asset(
+            cwd=Path.cwd(),
+            name="prepared_data",
+            text="goodbye",
+            run_id="run-2",
+            alias="latest",
+        )
+
+        listed = _run_cli("asset", "ls", cwd=Path.cwd())
+        assert listed.returncode == 0, listed.stderr
+        assert "Asset Key" in listed.stdout
+        assert "file:prepared_data" in listed.stdout
+        assert second_version in listed.stdout
+
+        versions = _run_cli("asset", "versions", "file:prepared_data", cwd=Path.cwd())
+        assert versions.returncode == 0, versions.stderr
+        assert "🌿 ginkgo asset versions" in versions.stdout
+        assert first_version in versions.stdout
+        assert second_version in versions.stdout
+        assert "latest" in versions.stdout
+
+        inspected = _run_cli("asset", "inspect", "file:prepared_data@latest", cwd=Path.cwd())
+        assert inspected.returncode == 0, inspected.stderr
+        assert "🌿 ginkgo asset inspect" in inspected.stdout
+        assert "Asset Key: file:prepared_data" in inspected.stdout
+        assert f"Version: {second_version}" in inspected.stdout
+        assert "Artifact Path:" in inspected.stdout
 
 
 class TestCliEnv:

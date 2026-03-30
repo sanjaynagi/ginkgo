@@ -12,7 +12,7 @@ from pathlib import Path
 
 import ginkgo
 import pandas as pd
-from ginkgo import file, flow, shell, task
+from ginkgo import AssetRef, asset, file, flow, shell, task
 
 
 cfg = ginkgo.config("ginkgo.toml")
@@ -31,24 +31,37 @@ def filter_fastq(
             f"seqkit seq -m {min_length} {fastq_1} -o {out_1} && "
             f"seqkit seq -m {min_length} {fastq_2} -o {out_2}"
         ),
-        output=[out_1, out_2],
+        output=[
+            asset(
+                out_1,
+                name=f"bioinfo/filtered_fastq/{sample_id}_r1",
+                metadata={"sample_id": sample_id, "read": "R1", "stage": "filter"},
+            ),
+            asset(
+                out_2,
+                name=f"bioinfo/filtered_fastq/{sample_id}_r2",
+                metadata={"sample_id": sample_id, "read": "R2", "stage": "filter"},
+            ),
+        ],
         log=f"logs/filter_{sample_id}.log",
     )
 
 
 @task(env="bioinfo_tools", kind="shell")
-def fastq_stats(sample_id: str, fastq_1: file, fastq_2: file) -> file:
+def fastq_stats(sample_id: str, fastq_1: file | AssetRef, fastq_2: file | AssetRef) -> file:
     """Compute per-sample paired-end FASTQ QC metrics with seqkit."""
     output = f"results/qc/{sample_id}.stats.tsv"
+    fastq_1_path = fastq_1.artifact_path if isinstance(fastq_1, AssetRef) else str(fastq_1)
+    fastq_2_path = fastq_2.artifact_path if isinstance(fastq_2, AssetRef) else str(fastq_2)
     return shell(
-        cmd=f"seqkit stats -T {fastq_1} {fastq_2} > {output}",
+        cmd=f"seqkit stats -T {fastq_1_path} {fastq_2_path} > {output}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def count_reads(sample_id: str, fastq_1: file, fastq_2: file) -> file:
+def count_reads(sample_id: str, fastq_1: file | AssetRef, fastq_2: file | AssetRef) -> file:
     """Count reads in paired-end FASTQs using grep inside a Docker container.
 
     Parameters
@@ -67,11 +80,13 @@ def count_reads(sample_id: str, fastq_1: file, fastq_2: file) -> file:
         ``read_count_r2`` columns.
     """
     output = f"results/read_counts/{sample_id}.counts.tsv"
+    fastq_1_path = fastq_1.artifact_path if isinstance(fastq_1, AssetRef) else str(fastq_1)
+    fastq_2_path = fastq_2.artifact_path if isinstance(fastq_2, AssetRef) else str(fastq_2)
     cmd = (
         f"printf 'sample_id\\tread_count_r1\\tread_count_r2\\n' > {shlex.quote(output)} && "
         f"printf '%s\\t%s\\t%s\\n' {shlex.quote(sample_id)} "
-        f"$(zgrep -c '^@' {shlex.quote(str(fastq_1))}) "
-        f"$(zgrep -c '^@' {shlex.quote(str(fastq_2))}) >> {shlex.quote(output)}"
+        f"$(zgrep -c '^@' {shlex.quote(fastq_1_path)}) "
+        f"$(zgrep -c '^@' {shlex.quote(fastq_2_path)}) >> {shlex.quote(output)}"
     )
     return shell(cmd=cmd, output=output)
 
@@ -79,8 +94,8 @@ def count_reads(sample_id: str, fastq_1: file, fastq_2: file) -> file:
 @task()
 def build_summary(
     sample_ids: list[str],
-    stats_tables: list[file],
-    count_tables: list[file],
+    stats_tables: list[file | AssetRef],
+    count_tables: list[file | AssetRef],
 ) -> file:
     """Merge per-sample QC tables and read counts into a single CSV summary.
 
@@ -101,14 +116,23 @@ def build_summary(
     # Merge QC stats.
     frames: list[pd.DataFrame] = []
     for sample_id, stats_path in zip(sample_ids, stats_tables, strict=True):
-        frame = pd.read_csv(stats_path, sep="\t")
+        stats_table_path = (
+            stats_path.artifact_path if isinstance(stats_path, AssetRef) else str(stats_path)
+        )
+        frame = pd.read_csv(stats_table_path, sep="\t")
         frame.insert(0, "sample_id", sample_id)
         frames.append(frame)
 
     summary = pd.concat(frames, ignore_index=True)
 
     # Merge container-produced read counts.
-    count_frames = [pd.read_csv(str(p), sep="\t") for p in count_tables]
+    count_frames = [
+        pd.read_csv(
+            p.artifact_path if isinstance(p, AssetRef) else str(p),
+            sep="\t",
+        )
+        for p in count_tables
+    ]
     counts = pd.concat(count_frames, ignore_index=True)
     summary = summary.merge(counts, on="sample_id", how="left")
 

@@ -32,6 +32,9 @@ function parseRoute(pathname) {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 0) return { page: "home" };
   if (parts[0] === "workspaces" && parts.length === 1) return { page: "workspaces" };
+  if (parts[0] === "workspaces" && parts[1] && parts[2] === "assets") {
+    return { page: "assets", workspaceId: parts[1] };
+  }
   if (parts[0] === "workspaces" && parts[1] && parts[2] === "cache") {
     return { page: "cache", workspaceId: parts[1] };
   }
@@ -85,6 +88,40 @@ function formatDateTimeLarge(value) {
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(d);
   const time = new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(d);
   return { date, time };
+}
+
+function formatAssetSize(sizeBytes) {
+  if (sizeBytes == null) return "—";
+  let value = Number(sizeBytes);
+  const units = ["B", "KB", "MB", "GB"];
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return index === 0 ? `${Math.round(value)} ${units[index]}` : `${value.toFixed(1)} ${units[index]}`;
+}
+
+function assetPreviewTone(kind) {
+  return {
+    image: "emerald",
+    pdf: "blue",
+    table: "gold",
+    text: "slate",
+    binary: "rose",
+    missing: "rose",
+  }[kind] || "slate";
+}
+
+function assetPreviewLabel(kind) {
+  return {
+    image: "Figure",
+    pdf: "PDF",
+    table: "Dataframe",
+    text: "Text",
+    binary: "Binary",
+    missing: "Missing",
+  }[kind] || "Asset";
 }
 
 function relativeWorkflowPath(workflowPath, projectRoot) {
@@ -260,6 +297,13 @@ function Sidebar({ route, activeWorkspaceId, navigate }) {
           Runs
         </button>
         <button
+          className={`sidebar-link ${route.page === "assets" ? "active" : ""}`}
+          onClick={() => activeWorkspaceId && navigate(`/workspaces/${activeWorkspaceId}/assets`)}
+          disabled={!activeWorkspaceId}
+        >
+          Assets
+        </button>
+        <button
           className={`sidebar-link ${route.page === "cache" ? "active" : ""}`}
           onClick={() => activeWorkspaceId && navigate(`/workspaces/${activeWorkspaceId}/cache`)}
           disabled={!activeWorkspaceId}
@@ -365,6 +409,12 @@ function Breadcrumbs({ route, activeWorkspace, runDetail, navigate }) {
           >
             {activeWorkspace.label}
           </button>
+        </>
+      ) : null}
+      {route.page === "assets" ? (
+        <>
+          <span className="breadcrumb-sep">/</span>
+          <span className="breadcrumb-current">Assets</span>
         </>
       ) : null}
       {route.page === "cache" ? (
@@ -922,6 +972,253 @@ function CacheBrowser({ entries, workspaceLabel, onDelete, onClearAll, clearing 
   );
 }
 
+function AssetExplorer({
+  assets,
+  assetDetail,
+  assetQuery,
+  onChangeQuery,
+  onSelectAsset,
+  onSelectVersion,
+  workspaceLabel,
+}) {
+  const filteredAssets = useMemo(() => {
+    const query = assetQuery.trim().toLowerCase();
+    if (!query) return assets;
+    return assets.filter((asset) => {
+      const haystack = [
+        asset.asset_key,
+        asset.name,
+        asset.namespace,
+        asset.preview_kind,
+        JSON.stringify(asset.metadata || {}),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [assetQuery, assets]);
+
+  const selectedKey = assetDetail?.asset_key || null;
+  const preview = assetDetail?.preview || null;
+  const selectedVersionId = assetDetail?.selected_version?.version_id || null;
+
+  return (
+    <section className="asset-explorer">
+      <section className="asset-hero">
+        <div className="asset-hero-copy">
+          <span className="asset-eyebrow">Asset Explorer</span>
+          <h1 className="asset-hero-title">{workspaceLabel ? `${workspaceLabel} catalog` : "Workspace catalog"}</h1>
+          <p className="asset-hero-subtitle">
+            Inspect versioned artifacts, preview dataframe-like files and figures, and trace metadata without leaving the workspace.
+          </p>
+        </div>
+        <div className="asset-hero-stats">
+          <MetricCard label="Assets" value={assets.length} subvalue="Cataloged in this workspace" accent="gold" />
+          <MetricCard
+            label="Selected"
+            value={assetDetail ? assetDetail.versions.length : 0}
+            subvalue={assetDetail ? "Versions on the active asset" : "Choose an asset to inspect"}
+            accent="blue"
+          />
+        </div>
+      </section>
+
+      <div className="asset-layout">
+        <section className="panel asset-list-panel">
+          <div className="panel-header">
+            <div>
+              <h2 className="panel-title">Catalog</h2>
+              <p className="panel-subtitle">Search by asset key, preview type, or metadata.</p>
+            </div>
+          </div>
+          <label className="asset-search-shell">
+            <span className="asset-search-label">Search</span>
+            <input
+              className="asset-search-input"
+              value={assetQuery}
+              onChange={(event) => onChangeQuery(event.target.value)}
+              placeholder="file:metrics, figure, owner, latest…"
+            />
+          </label>
+          {filteredAssets.length === 0 ? (
+            <div className="empty-state compact-empty">
+              <p>No assets match the current search.</p>
+            </div>
+          ) : (
+            <div className="asset-list">
+              {filteredAssets.map((asset) => (
+                <button
+                  key={asset.asset_key}
+                  className={`asset-row ${selectedKey === asset.asset_key ? "active" : ""}`}
+                  onClick={() => onSelectAsset(asset.asset_key)}
+                >
+                  <div className="asset-row-top">
+                    <strong>{asset.name}</strong>
+                    <span className={`asset-kind-chip tone-${assetPreviewTone(asset.preview_kind)}`}>
+                      {assetPreviewLabel(asset.preview_kind)}
+                    </span>
+                  </div>
+                  <div className="asset-row-key">{asset.asset_key}</div>
+                  <div className="asset-row-meta">
+                    <span>{asset.version_count} versions</span>
+                    <span>{asset.latest_run_id}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel asset-detail-panel">
+          {assetDetail ? (
+            <div className="asset-detail-stack">
+              <div className="asset-detail-header">
+                <div>
+                  <span className="asset-eyebrow">Selected Asset</span>
+                  <h2 className="asset-detail-title">{assetDetail.name}</h2>
+                  <div className="asset-detail-key">{assetDetail.asset_key}</div>
+                </div>
+                <div className="asset-detail-badges">
+                  <span className={`asset-kind-chip tone-${assetPreviewTone(preview?.kind)}`}>
+                    {assetPreviewLabel(preview?.kind)}
+                  </span>
+                  <span className="hero-pill">{assetDetail.kind}</span>
+                </div>
+              </div>
+
+              <div className="asset-version-rail">
+                {assetDetail.versions.map((version) => (
+                  <button
+                    key={version.version_id}
+                    className={`asset-version-card ${selectedVersionId === version.version_id ? "active" : ""}`}
+                    onClick={() => onSelectVersion(assetDetail.asset_key, version.version_id)}
+                  >
+                    <div className="asset-version-top">
+                      <strong>{version.aliases?.[0] || "version"}</strong>
+                      <span>{formatTimestamp(version.created_at)}</span>
+                    </div>
+                    <code>{version.version_id}</code>
+                    <div className="asset-version-meta">run {version.run_id}</div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="asset-preview-shell">
+                <div className="asset-preview-header">
+                  <div>
+                    <h3 className="panel-title">Preview</h3>
+                    <p className="panel-subtitle">Local-first rendering of the selected artifact.</p>
+                  </div>
+                  <div className="asset-preview-facts">
+                    <span>{formatAssetSize(assetDetail.artifact?.size_bytes)}</span>
+                    <span>{assetDetail.artifact?.extension || "no extension"}</span>
+                  </div>
+                </div>
+
+                {preview?.kind === "image" ? (
+                  <div className="asset-figure-frame">
+                    <img src={preview.url} alt={assetDetail.asset_key} className="asset-image-preview" />
+                  </div>
+                ) : null}
+
+                {preview?.kind === "pdf" ? (
+                  <iframe title={assetDetail.asset_key} src={preview.url} className="asset-pdf-preview" />
+                ) : null}
+
+                {preview?.kind === "table" ? (
+                  <div className="asset-table-shell">
+                    <div className="asset-table-headline">
+                      <strong>{preview.row_count} preview rows</strong>
+                      {preview.truncated ? <span>Showing the first 50 rows</span> : null}
+                    </div>
+                    <div className="table-shell asset-table-scroll">
+                      <table className="modern-table asset-preview-table">
+                        <thead>
+                          <tr>
+                            {preview.columns.map((column) => <th key={column}>{column}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {preview.rows.map((row, index) => (
+                            <tr key={index}>
+                              {preview.columns.map((column) => (
+                                <td key={column}>{row[column] == null ? "—" : String(row[column])}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                {preview?.kind === "text" ? (
+                  <pre className="asset-text-preview">{preview.text}</pre>
+                ) : null}
+
+                {preview?.kind === "binary" || preview?.kind === "missing" ? (
+                  <div className="asset-binary-preview">
+                    <p>{preview.message}</p>
+                    {preview.download_url ? (
+                      <a className="ghost-button asset-download-link" href={preview.download_url} target="_blank" rel="noreferrer">
+                        Open file
+                      </a>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="asset-detail-grid">
+                <section className="drawer-card asset-facts-card">
+                  <h4>Version facts</h4>
+                  <dl className="task-meta-list">
+                    <div><dt>Run</dt><dd>{assetDetail.selected_version.run_id}</dd></div>
+                    <div><dt>Producer</dt><dd>{assetDetail.selected_version.producer_task}</dd></div>
+                    <div><dt>Artifact</dt><dd><code>{assetDetail.selected_version.artifact_id}</code></dd></div>
+                    <div><dt>Hash</dt><dd><code>{assetDetail.selected_version.content_hash}</code></dd></div>
+                    <div><dt>Path</dt><dd>{assetDetail.artifact?.artifact_path || "—"}</dd></div>
+                  </dl>
+                </section>
+
+                <section className="drawer-card asset-facts-card">
+                  <h4>Metadata</h4>
+                  <pre>{JSON.stringify(assetDetail.metadata || {}, null, 2)}</pre>
+                </section>
+
+                <section className="drawer-card asset-facts-card">
+                  <h4>Lineage</h4>
+                  {assetDetail.lineage?.parents?.length ? (
+                    <div className="asset-lineage-list">
+                      {assetDetail.lineage.parents.map((parent) => (
+                        <button
+                          key={`${parent.asset_key}:${parent.version_id}`}
+                          className="asset-lineage-chip"
+                          onClick={() => onSelectAsset(parent.asset_key)}
+                        >
+                          <strong>{parent.asset_key}</strong>
+                          <span>{parent.version_id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="asset-lineage-empty">No upstream asset lineage recorded for this version.</p>
+                  )}
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-state asset-empty-state">
+              <GinkgoLeafIcon />
+              <h3>No asset selected</h3>
+              <p>Choose an asset from the catalog to inspect versions, metadata, lineage, and previews.</p>
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function RunWorkflowModal({ open, workflows, initialWorkflow, busy, onClose, onSubmit }) {
   const [workflow, setWorkflow] = useState(initialWorkflow || "");
   const [configLines, setConfigLines] = useState("");
@@ -1155,6 +1452,9 @@ export function App() {
   const [meta, setMeta] = useState(null);
   const [workspaces, setWorkspaces] = useState([]);
   const [runs, setRuns] = useState([]);
+  const [assets, setAssets] = useState([]);
+  const [assetDetail, setAssetDetail] = useState(null);
+  const [assetQuery, setAssetQuery] = useState("");
   const [cacheEntries, setCacheEntries] = useState([]);
   const [workflows, setWorkflows] = useState([]);
   const [runDetail, setRunDetail] = useState(null);
@@ -1279,6 +1579,8 @@ export function App() {
         const workspaceId = route.workspaceId || metaData.active_workspace_id;
         if (!workspaceId) {
           setRuns([]);
+          setAssets([]);
+          setAssetDetail(null);
           setCacheEntries([]);
           setWorkflows([]);
           setRunDetail(null);
@@ -1287,17 +1589,45 @@ export function App() {
           return;
         }
 
-        const [runsData, cacheData, workflowsData] = await Promise.all([
+        const [runsData, assetsData, cacheData, workflowsData] = await Promise.all([
           apiFetch(`/api/workspaces/${workspaceId}/runs`),
+          apiFetch(`/api/workspaces/${workspaceId}/assets`),
           apiFetch(`/api/workspaces/${workspaceId}/cache`),
           apiFetch(`/api/workspaces/${workspaceId}/workflows`),
         ]);
         if (cancelled) return;
         setRuns(runsData.runs || []);
+        const nextAssets = assetsData.assets || [];
+        setAssets(nextAssets);
         setCacheEntries(cacheData.entries || []);
         setWorkflows(workflowsData.workflows || []);
 
-        if (route.page === "workspaces" || route.page === "home" || route.page === "runs" || route.page === "cache") {
+        if (
+          route.page === "workspaces" ||
+          route.page === "home" ||
+          route.page === "runs" ||
+          route.page === "cache"
+        ) {
+          setAssetDetail(null);
+          setRunDetail(null);
+          setTaskDetail(null);
+          setTaskLog(null);
+          return;
+        }
+
+        if (route.page === "assets") {
+          const selectedAssetKey =
+            assetDetail?.asset_key && nextAssets.some((asset) => asset.asset_key === assetDetail.asset_key)
+              ? assetDetail.asset_key
+              : nextAssets[0]?.asset_key;
+          if (selectedAssetKey) {
+            const encodedAssetKey = encodeURIComponent(selectedAssetKey);
+            const detailData = await apiFetch(`/api/workspaces/${workspaceId}/assets/${encodedAssetKey}`);
+            if (cancelled) return;
+            setAssetDetail(detailData);
+          } else {
+            setAssetDetail(null);
+          }
           setRunDetail(null);
           setTaskDetail(null);
           setTaskLog(null);
@@ -1305,6 +1635,7 @@ export function App() {
         }
 
         if (!route.runId) {
+          setAssetDetail(null);
           setRunDetail(null);
           setTaskDetail(null);
           setTaskLog(null);
@@ -1380,7 +1711,9 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ workspace_id: workspaceId }),
       });
-      if (route.page === "cache") {
+      if (route.page === "assets") {
+        navigate(`/workspaces/${workspaceId}/assets`);
+      } else if (route.page === "cache") {
         navigate(`/workspaces/${workspaceId}/cache`);
       } else if (route.page === "workspaces" || route.page === "home" || route.page === "runs") {
         navigate(`/workspaces/${workspaceId}/runs`);
@@ -1418,6 +1751,19 @@ export function App() {
       await apiFetch(`/api/workspaces/${targetWorkspaceId}/cache/${cacheKey}`, { method: "DELETE" });
       setNotice(`Deleted cache entry ${cacheKey}.`);
       setRefreshTick((tick) => tick + 1);
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  }
+
+  async function selectAsset(assetKey, versionId) {
+    if (!targetWorkspaceId || !assetKey) return;
+    setError(null);
+    try {
+      const encodedAssetKey = encodeURIComponent(assetKey);
+      const selector = versionId ? `?selector=${encodeURIComponent(versionId)}` : "";
+      const detail = await apiFetch(`/api/workspaces/${targetWorkspaceId}/assets/${encodedAssetKey}${selector}`);
+      setAssetDetail(detail);
     } catch (err) {
       setError(err.message || String(err));
     }
@@ -1556,6 +1902,16 @@ export function App() {
               onDelete={deleteCacheEntry}
               onClearAll={clearCache}
               clearing={clearingCache}
+            />
+          ) : route.page === "assets" ? (
+            <AssetExplorer
+              assets={assets}
+              assetDetail={assetDetail}
+              assetQuery={assetQuery}
+              onChangeQuery={setAssetQuery}
+              onSelectAsset={(assetKey) => selectAsset(assetKey)}
+              onSelectVersion={(assetKey, versionId) => selectAsset(assetKey, versionId)}
+              workspaceLabel={targetWorkspace?.label}
             />
           ) : route.page === "run" || route.page === "task" ? (
             runDetail ? (

@@ -30,6 +30,15 @@ from typing import Any, get_args, get_origin
 
 import yaml
 
+from ginkgo.core.asset import (
+    AssetKey,
+    AssetRef,
+    AssetResult,
+    AssetVersion,
+    asset_ref_from_version,
+    collect_asset_refs,
+    make_asset_version,
+)
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
@@ -42,6 +51,7 @@ from ginkgo.config import load_runtime_config
 from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
+from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.runtime.cache import MISSING, CacheStore
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
@@ -178,6 +188,7 @@ class _TaskNode:
     secret_values: tuple[str, ...] = ()
     driver_sentinel: Any = None
     extra_source_hash: str | None = None
+    asset_versions: list[AssetVersion] = field(default_factory=list)
 
     @property
     def task_def(self) -> TaskDef:
@@ -238,6 +249,7 @@ class _ConcurrentEvaluator:
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
+    _asset_store: AssetStore = field(init=False, repr=False)
     _stderr: Any = field(default_factory=lambda: sys.stderr)
     _nodes: dict[int, _TaskNode] = field(default_factory=dict, init=False, repr=False)
     _expr_nodes: dict[int, int] = field(default_factory=dict, init=False, repr=False)
@@ -293,6 +305,7 @@ class _ConcurrentEvaluator:
 
         publisher = self._load_remote_publisher()
         self._cache_store = CacheStore(backend=self.backend, publisher=publisher)
+        self._asset_store = AssetStore(root=self._cache_store._root.parent / "assets")
         self._staging_cache = None  # Lazily created on first remote ref.
         self._staging_jobs = _resolve_staging_jobs(jobs=self.jobs)
 
@@ -782,6 +795,7 @@ class _ConcurrentEvaluator:
         node.dynamic_dependency_ids.clear()
         node.secret_values = ()
         node.extra_source_hash = None
+        node.asset_versions = []
 
         retries_remaining = node.task_def.retries - node.attempt
         if self.provenance is not None:
@@ -833,6 +847,7 @@ class _ConcurrentEvaluator:
                 env=node.task_def.env,
                 value=value,
                 outputs=self._artifact_index_for(node=node, value=value),
+                assets=self._asset_index_for(value=value),
             )
         self._emit_event(
             TaskCompleted(
@@ -1386,6 +1401,7 @@ class _ConcurrentEvaluator:
 
         cached_result = self._cache_store.load(cache_key=cache_key)
         if cached_result is not MISSING and self._is_valid_cached_result(
+            cache_key=cache_key,
             task_def=node.task_def,
             value=cached_result,
         ):
@@ -1401,6 +1417,7 @@ class _ConcurrentEvaluator:
                     env=node.task_def.env,
                     value=cached_result,
                     outputs=self._artifact_index_for(node=node, value=cached_result),
+                    assets=self._asset_index_for(value=cached_result),
                 )
             self._emit_event(
                 TaskCacheHit(
@@ -1656,8 +1673,9 @@ class _ConcurrentEvaluator:
     def _finalize_result_value(self, *, node: _TaskNode, value: Any) -> Any:
         """Coerce and validate a fully resolved task result."""
         coerced = self._coerce_return_value(task_def=node.task_def, value=value)
-        self._validate_return_value(task_def=node.task_def, value=coerced)
-        return coerced
+        finalized = self._materialize_asset_results(node=node, value=coerced)
+        self._validate_return_value(task_def=node.task_def, value=finalized)
+        return finalized
 
     def _run_shell(self, *, node: _TaskNode, shell_expr: ShellExpr) -> Any:
         """Execute a shell command and return its declared output path or paths."""
@@ -1665,6 +1683,7 @@ class _ConcurrentEvaluator:
         user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
 
         for output_path in self._iter_shell_output_paths(shell_expr.output):
+            _remove_declared_output(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
         completed = self._run_logged_command(
@@ -1710,6 +1729,10 @@ class _ConcurrentEvaluator:
 
         artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
         self._prepare_notebook_artifacts(artifacts=artifacts)
+        if notebook_expr.outputs is not None:
+            for output_path in self._iter_output_values(notebook_expr.outputs):
+                _remove_declared_output(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
         self._record_notebook_manifest(
             node=node,
             notebook_kind=notebook_kind,
@@ -1808,6 +1831,10 @@ class _ConcurrentEvaluator:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         user_log_path = Path(script_expr.log) if script_expr.log is not None else None
+        if script_expr.outputs is not None:
+            for output_path in self._iter_output_values(script_expr.outputs):
+                _remove_declared_output(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Resolve the interpreter: use sys.executable for Python to stay in the same env.
         interpreter_cmd = (
@@ -1849,11 +1876,11 @@ class _ConcurrentEvaluator:
         *,
         task_name: str,
         task_def: TaskDef,
-        outputs: str | list[str],
+        outputs: str | list[str] | AssetResult | list[AssetResult],
     ) -> Any:
         """Validate declared output paths exist and return coerced value."""
-        output_paths = [outputs] if isinstance(outputs, str) else list(outputs)
-        missing = [p for p in output_paths if not Path(p).exists()]
+        output_paths = self._iter_output_values(outputs)
+        missing = [str(path) for path in output_paths if not path.exists()]
         if missing:
             label = missing[0] if len(missing) == 1 else missing
             raise FileNotFoundError(
@@ -2229,12 +2256,16 @@ class _ConcurrentEvaluator:
             return
 
         if annotation is file:
+            if isinstance(value, AssetRef) and value.kind == "file":
+                return
             if _is_remote_path_value(value):
                 return
             self._validate_file_path(path=value, label=label)
             return
 
         if annotation is folder:
+            if isinstance(value, AssetRef) and value.kind == "folder":
+                return
             if _is_remote_path_value(value):
                 return
             self._validate_folder_path(path=value, label=label)
@@ -2331,23 +2362,125 @@ class _ConcurrentEvaluator:
 
         return value
 
-    def _iter_shell_output_paths(self, output: str | list[str] | tuple[str, ...]) -> list[Path]:
-        """Return concrete output paths for a shell task declaration."""
+    def _materialize_asset_results(self, *, node: _TaskNode, value: Any) -> Any:
+        """Register nested asset sentinels and replace them with asset refs."""
+        node.asset_versions = []
+        parent_refs = self._parent_asset_refs(node=node)
+        return self._replace_asset_results(node=node, value=value, parent_refs=parent_refs)
+
+    def _replace_asset_results(
+        self,
+        *,
+        node: _TaskNode,
+        value: Any,
+        parent_refs: list[AssetRef],
+    ) -> Any:
+        """Recursively replace nested asset sentinels with asset refs."""
+        if isinstance(value, AssetResult):
+            asset_ref, asset_version = self._register_asset_result(
+                node=node,
+                asset_result=value,
+                parent_refs=parent_refs,
+            )
+            node.asset_versions.append(asset_version)
+            return asset_ref
+
+        if isinstance(value, list):
+            return [
+                self._replace_asset_results(node=node, value=item, parent_refs=parent_refs)
+                for item in value
+            ]
+
+        if isinstance(value, tuple):
+            return tuple(
+                self._replace_asset_results(node=node, value=item, parent_refs=parent_refs)
+                for item in value
+            )
+
+        return value
+
+    def _register_asset_result(
+        self,
+        *,
+        node: _TaskNode,
+        asset_result: AssetResult,
+        parent_refs: list[AssetRef],
+    ) -> tuple[AssetRef, AssetVersion]:
+        """Store one file asset and register its immutable catalog version."""
+        source_path = asset_result.path
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"{node.task_def.name}.return asset file must exist: {str(source_path)!r}"
+            )
+
+        record = self._cache_store._artifact_store.store(src_path=source_path)
+
+        asset_name = asset_result.name or node.task_def.fn.__name__
+        version = make_asset_version(
+            key=_asset_key_for_result(name=asset_name, kind=asset_result.kind),
+            kind=asset_result.kind,
+            artifact_id=record.artifact_id,
+            content_hash=record.digest_hex,
+            run_id=self._run_id,
+            producer_task=node.task_def.name,
+            metadata=asset_result.metadata,
+        )
+        self._asset_store.register_version(version=version)
+        asset_ref = asset_ref_from_version(
+            version=version,
+            artifact_path=self._cache_store._artifact_store.artifact_path(
+                artifact_id=record.artifact_id
+            ),
+        )
+        if parent_refs:
+            self._asset_store.record_lineage(child=asset_ref, parents=parent_refs)
+        return asset_ref, version
+
+    def _parent_asset_refs(self, *, node: _TaskNode) -> list[AssetRef]:
+        """Collect unique upstream asset references consumed by one task."""
+        if node.resolved_args is None:
+            return []
+        unique: dict[tuple[str, str, str], AssetRef] = {}
+        for asset_ref in collect_asset_refs(node.resolved_args):
+            unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
+        return list(unique.values())
+
+    def _iter_output_values(
+        self,
+        output: str | list[str] | tuple[str, ...] | AssetResult | list[AssetResult],
+    ) -> list[Path]:
+        """Return concrete filesystem paths from declared output values."""
+        if isinstance(output, AssetResult):
+            return [output.path]
         if isinstance(output, str):
             return [Path(output)]
+        paths: list[Path] = []
+        for item in output:
+            if isinstance(item, AssetResult):
+                paths.append(item.path)
+            else:
+                paths.append(Path(item))
+        return paths
 
-        return [Path(item) for item in output]
+    def _iter_shell_output_paths(
+        self,
+        output: str | list[str] | tuple[str, ...] | AssetResult | list[AssetResult],
+    ) -> list[Path]:
+        """Return concrete output paths for a shell task declaration."""
+        return self._iter_output_values(output)
 
-    def _is_valid_cached_result(self, *, task_def: TaskDef, value: Any) -> bool:
+    def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
         """Return whether a cached value still satisfies return validation.
 
-        For file/folder outputs, checks symlink integrity via the cache store.
-        Missing symlinks are silently recreated; replaced regular files trigger
-        a cache miss.  Symlink validation runs first so that missing symlinks
-        can be recreated before the standard file-existence check.
+        For file/folder outputs, the cache store ensures the working tree has a
+        matching writable materialization before standard return validation
+        checks run.
         """
-        # Symlink-aware validation first: may recreate missing symlinks.
-        if not self._cache_store.validate_cached_outputs(task_def=task_def, value=value):
+        if not self._cache_store.validate_cached_outputs(
+            cache_key=cache_key,
+            task_def=task_def,
+            value=value,
+        ):
             return False
 
         try:
@@ -2466,6 +2599,26 @@ class _ConcurrentEvaluator:
             "return", node.task_def.signature.return_annotation
         )
         return _artifact_index(annotation=annotation, value=value)
+
+    def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
+        """Return recorded asset summaries for one task result."""
+        return [
+            self._render_asset_ref(asset_ref=asset_ref) for asset_ref in collect_asset_refs(value)
+        ]
+
+    def _render_asset_ref(self, *, asset_ref: AssetRef) -> dict[str, Any]:
+        """Render one asset reference for provenance and events."""
+        return {
+            "artifact_id": asset_ref.artifact_id,
+            "artifact_path": asset_ref.artifact_path,
+            "asset_key": str(asset_ref.key),
+            "content_hash": asset_ref.content_hash,
+            "kind": asset_ref.kind,
+            "metadata": dict(asset_ref.metadata),
+            "name": asset_ref.name,
+            "namespace": asset_ref.namespace,
+            "version_id": asset_ref.version_id,
+        }
 
     @property
     def _run_id(self) -> str:
@@ -2815,6 +2968,15 @@ def _render_label_value(value: Any) -> str | None:
     return compact
 
 
+def _remove_declared_output(path: Path) -> None:
+    """Remove one pre-existing declared output before task execution."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
 def _task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a node."""
     return f"task_{node_id:04d}"
@@ -2839,6 +3001,18 @@ def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> lis
         for index, item in enumerate(value):
             outputs.extend(_artifact_index(annotation, item, name=f"{name}[{index}]"))
         return outputs
+
+    if isinstance(value, AssetRef):
+        return [
+            {
+                "name": name,
+                "type": "asset",
+                "asset_key": str(value.key),
+                "version_id": value.version_id,
+                "artifact_id": value.artifact_id,
+                "path": value.artifact_path,
+            }
+        ]
 
     if annotation is file or isinstance(value, file):
         return [{"name": name, "type": "file", "path": str(value)}]
@@ -2893,6 +3067,13 @@ def _count_remote_inputs(value: Any) -> int:
     if isinstance(value, dict):
         return sum(_count_remote_inputs(item) for item in value.values())
     return 0
+
+
+def _asset_key_for_result(*, name: str, kind: str) -> AssetKey:
+    """Build one asset key for a supported asset result."""
+    if kind != "file":
+        raise ValueError(f"Unsupported asset kind in Phase 7: {kind!r}")
+    return AssetKey(namespace="file", name=name)
 
 
 def _remote_ref_identity(*, ref: RemoteRef) -> str:

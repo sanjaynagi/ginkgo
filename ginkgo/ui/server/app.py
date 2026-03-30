@@ -18,7 +18,9 @@ from ginkgo.runtime.provenance import load_manifest
 from .live import capture_live_state, diff_live_state
 from . import payloads
 from .payloads import (
+    asset_payload,
     clear_cache_entries,
+    list_assets,
     list_cache_entries,
     list_runs,
     list_runs_across_workspaces,
@@ -230,6 +232,13 @@ def create_ui_server(
                 self._send_json({"entries": list_cache_entries(workspace.cache_root)})
                 return
 
+            if parts == ["api", "assets"]:
+                workspace = self._active_workspace_or_404()
+                if workspace is None:
+                    return
+                self._send_json({"assets": list_assets(workspace)})
+                return
+
             if parts == ["api", "workflows"]:
                 workspace = self._active_workspace_or_404()
                 if workspace is None:
@@ -255,11 +264,81 @@ def create_ui_server(
                 self._send_json({"entries": list_cache_entries(workspace.cache_root)})
                 return
 
+            if len(parts) == 4 and parts[:2] == ["api", "workspaces"] and parts[3] == "assets":
+                workspace = self._workspace_or_404(parts[2])
+                if workspace is None:
+                    return
+                self._send_json({"assets": list_assets(workspace)})
+                return
+
             if len(parts) == 4 and parts[:2] == ["api", "workspaces"] and parts[3] == "workflows":
                 workspace = self._workspace_or_404(parts[2])
                 if workspace is None:
                     return
                 self._send_json({"workflows": list_workflows(workspace.project_root)})
+                return
+
+            if len(parts) == 3 and parts[:2] == ["api", "assets"]:
+                workspace = self._active_workspace_or_404()
+                if workspace is None:
+                    return
+                payload = asset_payload(
+                    workspace,
+                    asset_key_text=parts[2],
+                    selector=_query_scalar(query, "selector"),
+                )
+                if payload is None:
+                    self._send_json(
+                        {"error": f"Asset not found: {parts[2]}"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(payload)
+                return
+
+            if len(parts) == 4 and parts[:2] == ["api", "assets"] and parts[3] == "content":
+                workspace = self._active_workspace_or_404()
+                if workspace is None:
+                    return
+                self._serve_asset_content(
+                    workspace=workspace,
+                    asset_key_text=parts[2],
+                    selector=_query_scalar(query, "selector"),
+                )
+                return
+
+            if len(parts) == 5 and parts[:2] == ["api", "workspaces"] and parts[3] == "assets":
+                workspace = self._workspace_or_404(parts[2])
+                if workspace is None:
+                    return
+                payload = asset_payload(
+                    workspace,
+                    asset_key_text=parts[4],
+                    selector=_query_scalar(query, "selector"),
+                )
+                if payload is None:
+                    self._send_json(
+                        {"error": f"Asset not found: {parts[4]}"},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(payload)
+                return
+
+            if (
+                len(parts) == 6
+                and parts[:2] == ["api", "workspaces"]
+                and parts[3] == "assets"
+                and parts[5] == "content"
+            ):
+                workspace = self._workspace_or_404(parts[2])
+                if workspace is None:
+                    return
+                self._serve_asset_content(
+                    workspace=workspace,
+                    asset_key_text=parts[4],
+                    selector=_query_scalar(query, "selector"),
+                )
                 return
 
             if len(parts) == 5 and parts[:2] == ["api", "workspaces"] and parts[3] == "runs":
@@ -475,6 +554,37 @@ def create_ui_server(
             content = index_path.read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def _serve_asset_content(
+            self,
+            *,
+            workspace: WorkspaceRecord,
+            asset_key_text: str,
+            selector: str | None,
+        ) -> None:
+            payload = asset_payload(
+                workspace,
+                asset_key_text=asset_key_text,
+                selector=selector,
+            )
+            artifact = payload.get("artifact", {}) if payload is not None else {}
+            artifact_path = artifact.get("artifact_path")
+            path = Path(artifact_path) if isinstance(artifact_path, str) else None
+            if path is None or not path.is_file():
+                self._send_json(
+                    {"error": f"Asset content not found: {asset_key_text}"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            content = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header(
+                "Content-Type",
+                str(artifact.get("mime_type") or "application/octet-stream"),
+            )
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -753,3 +863,12 @@ def create_ui_server(
             self.wfile.write(encoded)
 
     return _UiServer((host, port), _UiHandler)
+
+
+def _query_scalar(query: dict[str, list[str]], key: str) -> str | None:
+    """Return the first query-string value for a key."""
+    values = query.get(key)
+    if not values:
+        return None
+    value = values[0]
+    return value if value else None

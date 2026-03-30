@@ -49,7 +49,7 @@ def main():
 
     summary = write_summary(
         items=items,
-        seed_cards=seed_cards,
+        seed_paths=seed_paths,
         normalized_cards=normalized_cards,
         checksums=checksums,
         briefs=briefs,

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ginkgo.core.asset import AssetResult
+
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
 
@@ -21,7 +23,7 @@ class NotebookExpr:
     ----------
     path : Path
         Resolved source notebook path (.ipynb or .py for marimo).
-    outputs : list[str] | str | None
+    outputs : list[str | AssetResult] | str | AssetResult | None
         Declared output paths. When provided, all paths are validated for
         existence after execution. When omitted, the managed HTML artifact
         path is returned as the task result.
@@ -32,7 +34,7 @@ class NotebookExpr:
     """
 
     path: Path
-    outputs: list[str] | str | None
+    outputs: list[str | AssetResult] | str | AssetResult | None
     log: str | None
     source_hash: str
 
@@ -40,7 +42,7 @@ class NotebookExpr:
 def notebook(
     path: str | Path,
     *,
-    outputs: list[str] | str | None = None,
+    outputs: list[str | AssetResult] | str | AssetResult | None = None,
     log: str | None = None,
 ) -> NotebookExpr:
     """Create a notebook execution expression.
@@ -53,7 +55,7 @@ def notebook(
     ----------
     path : str | Path
         Source notebook file (.ipynb for Jupyter/Papermill or .py for marimo).
-    outputs : list[str] | str | None
+    outputs : list[str | AssetResult] | str | AssetResult | None
         Declared output paths validated for existence after execution. When
         omitted, the managed rendered HTML artifact path is returned instead.
     log : str | None
