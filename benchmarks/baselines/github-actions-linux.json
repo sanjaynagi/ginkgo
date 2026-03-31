@@ -1,0 +1,90 @@
+{
+  "runner": "github-actions-ubuntu-latest",
+  "seed_note": "Temporarily seeded from GitHub Actions run 23792260130 observed timings before the workflow was pinned to jobs=2 cores=2.",
+  "benchmarks": [
+    {
+      "example": "init",
+      "mode": "cold",
+      "baseline_seconds": 6.0,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "init",
+      "mode": "cached",
+      "baseline_seconds": 1.9,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "bioinfo",
+      "mode": "cold",
+      "baseline_seconds": 15.0,
+      "max_regression_pct": 10.0
+    },
+    {
+      "example": "bioinfo",
+      "mode": "cached",
+      "baseline_seconds": 9.5,
+      "max_regression_pct": 10.0
+    },
+    {
+      "example": "chem",
+      "mode": "cold",
+      "baseline_seconds": 2.4,
+      "max_regression_pct": 10.0
+    },
+    {
+      "example": "chem",
+      "mode": "cached",
+      "baseline_seconds": 0.91,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "retail",
+      "mode": "cold",
+      "baseline_seconds": 2.9,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "retail",
+      "mode": "cached",
+      "baseline_seconds": 1.6,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "news",
+      "mode": "cold",
+      "baseline_seconds": 2.6,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "news",
+      "mode": "cached",
+      "baseline_seconds": 0.93,
+      "max_regression_pct": 20.0
+    },
+    {
+      "example": "supplychain",
+      "mode": "cold",
+      "baseline_seconds": 2.7,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "supplychain",
+      "mode": "cached",
+      "baseline_seconds": 1.4,
+      "max_regression_pct": 20.0
+    },
+    {
+      "example": "ml",
+      "mode": "cold",
+      "baseline_seconds": 2.4,
+      "max_regression_pct": 15.0
+    },
+    {
+      "example": "ml",
+      "mode": "cached",
+      "baseline_seconds": 1.5,
+      "max_regression_pct": 20.0
+    }
+  ]
+}

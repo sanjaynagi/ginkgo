@@ -73,9 +73,10 @@ default = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
 test = "pytest tests/ -v"
-lint = "ruff check ginkgo/ tests/"
-format = "ruff format ginkgo/ tests/"
-format-check = "ruff format --check ginkgo/ tests/"
+benchmark = ".pixi/envs/default/bin/python -m benchmarks.run"
+lint = "ruff check ginkgo/ tests/ benchmarks/"
+format = "ruff format ginkgo/ tests/ benchmarks/"
+format-check = "ruff format --check ginkgo/ tests/ benchmarks/"
 typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check ginkgo/config.py ginkgo/ui ginkgo/cli/app.py ginkgo/cli/commands/ui.py"
 precommit = "pre-commit run --all-files"
 docs-build = "sphinx-build -b dirhtml docs/site docs/_build/dirhtml"

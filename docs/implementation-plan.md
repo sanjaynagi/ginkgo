@@ -13,60 +13,6 @@ Each phase is independently testable and follows the same structure:
 
 ## Tier 3 — Asset Layer
 
-### Phase 7 — Asset Runtime Foundation
-
-**Goal:** Introduce durable asset identity, immutable version records, aliases,
-and lineage as a thin indexing layer over Phase 2's cache and artifact store,
-without changing Ginkgo's run-centric execution model.
-
-**Depends on:** Phase 2 (`ArtifactStore`, `artifact_id`). Benefits from the
-implemented remote references and staged-access layer when remote-backed
-storage is active.
-
-**Downstream consumers:** Phase 8 (DataFrame Assets) and Phase 9 (Model Assets)
-extend the catalog with type-specific backends. Phase 10 adds richer read
-paths and lifecycle tooling. Phase 12 (Publishing) includes asset metadata in
-bundles.
-
-#### Deliverables
-
-- Add a first-class asset abstraction that can be attached to task outputs:
-  - stable logical asset key (user-defined name)
-  - immutable asset version identity
-  - pointer to the stored `artifact_id` from Phase 2
-  - materialization metadata (timestamp, run id, task id)
-- Introduce an asset catalog under `.ginkgo/assets/`:
-  - current materialization per asset key
-  - historical materialization records, ordered by run
-  - alias pointers
-  - lineage edges: links to upstream asset keys consumed by the producing task
-- Integrate asset materialization with the evaluator for file outputs and return
-  `AssetRef` values to downstream tasks.
-- Extend caching and worker transport so `AssetRef` values are serializable and
-  invalidate by `version_id`.
-- Extend run provenance so task manifests record asset keys alongside the
-  existing `artifact_id` and cache key.
-
-#### Key design points
-
-- The catalog is a pure index: it stores metadata and pointers, never artifact bytes. All bytes remain in the `ArtifactStore` from Phase 2 and are referenced by `artifact_id`.
-- Resolving an asset version to a file path goes through
-  `ArtifactStore.retrieve()`, keeping the backend abstraction intact for future
-  remote-backed storage.
-- The catalog must distinguish three separate things: logical asset identity
-  (the key), physical materialization (the `artifact_id`), and the task-run
-  cache entry (the cache key). These are not the same thing.
-- This phase does not introduce Dagster-style asset-driven scheduling.
-- This phase supports file assets only. Programmatic browsing APIs, staleness
-  reporting, retention, and UI are deferred to Phase 10.
-
-#### Validation
-
-- Define a workflow where two tasks materialize named assets and a downstream task consumes them. Assert the catalog records the correct asset keys, `artifact_id` values, and lineage edges.
-- Re-run with unchanged inputs and assert the catalog points to the same current materialization (same `artifact_id`) while provenance records cached task reuse.
-- Update one upstream input and assert only the affected downstream asset lineage chain receives a new materialization with a new `artifact_id`.
-- Assert downstream cache invalidation follows `AssetRef.version_id`.
-
 ### Phase 8 — Versioned DataFrame Assets
 
 **Goal:** Give `pandas.DataFrame` assets Iceberg-like snapshot behavior by extending Phase 2's immutable artifact storage with a lineage manifest layer.
@@ -236,20 +182,15 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
   - inspect versions
   - resolve aliases and version ids
   - load materialized assets through kind-specific loaders
-- Add CLI read paths for:
-  - list assets
-  - inspect versions and aliases
-  - inspect upstream and downstream lineage
 - Add staleness reporting based on lineage and version timestamps.
 - Extend cache pruning to become asset-aware:
   - preserve alias-pinned versions
   - remove old unpinned versions by retention policy
   - garbage-collect unreferenced artifacts
-- Add UI asset views:
-  - list view grouped by namespace
-  - version detail
-  - lineage view
-  - staleness indicators
+- Extend the existing asset CLI and UI with the remaining lifecycle features:
+  - alias management and promotion flows
+  - lineage navigation beyond the current detail views
+  - staleness indicators and explanations
 
 #### Key design points
 
@@ -272,7 +213,7 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
   newer, including transitive staleness.
 - Asset-aware pruning removes only unpinned old versions and leaves referenced
   artifacts intact.
-- The UI renders an asset list and detail view backed by the same catalog data
+- The UI renders staleness and lifecycle state backed by the same catalog data
   as the CLI and programmatic API.
 
 ---
@@ -433,8 +374,6 @@ live WebSocket event channel, structured live-state diffing, UI server package
 refactor, workspace validation from non-workspace directories, age-based
 `ginkgo cache prune`.
 
-**Integration note:** The `benchmark` deliverable below produces structured per-task performance data. This data should be recorded in run provenance in a format that Phase 7 (Asset Catalog) can surface as asset metadata and Phase 12 (Publishing) can include in bundles without parsing benchmark files.
-
 #### Remaining Deliverables
 
 - Extend retry support with:
@@ -447,10 +386,6 @@ refactor, workspace validation from non-workspace directories, age-based
 - Add task priority declarations so users can express relative urgency between
   tasks in the same DAG tier; the scheduler should respect priority when
   multiple tasks are ready to run concurrently.
-- Add a `benchmark` argument to `@task()`: when set, the task runner collects
-  wall-clock time, CPU usage, and peak memory for the task execution and writes
-  a structured benchmark file alongside the run log. Benchmark data should also
-  be captured in run provenance so it is queryable without reading the file.
 - Tighten documentation around partial resume, dry-run behavior, and resource
   declarations.
 

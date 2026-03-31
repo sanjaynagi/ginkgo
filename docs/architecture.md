@@ -21,6 +21,8 @@ The repository currently implements:
   and multi-workspace browsing
 - A canonical package-oriented project layout with workflow autodiscovery and
   scaffolded project initialization
+- An example-driven benchmark harness with generated benchmark inputs, checked-
+  in baselines, and a separate CI lane for slowdown detection
 
 ## Agent Operability
 
@@ -189,6 +191,35 @@ End-user documentation now lives in a dedicated Sphinx + MyST site under
 This published docs site is intentionally separate from the repository's
 internal implementation plans and historical notes, which remain under `docs/`
 as development artifacts rather than end-user pages.
+
+## Benchmarking
+
+Ginkgo now includes a benchmark harness centered on the runnable workflows
+under `examples/`.
+
+- The benchmark entry point is `pixi run benchmark`, which runs
+  `python -m benchmarks.run`.
+- Structured benchmark results are written under `benchmarks/results/`.
+- Checked-in slowdown baselines live under `benchmarks/baselines/`.
+- A dedicated GitHub Actions workflow runs the benchmark lane separately from
+  correctness and quality checks.
+
+### Benchmark Input Provenance
+
+Benchmark-only source manifests live under `benchmarks/sources/`.
+
+- These manifests pin upstream repository, commit SHA, metadata URL, and read
+  URL base for generated benchmark datasets.
+- The heavier bioinformatics benchmark uses
+  [bioinfo_agam.toml](/Users/sanjay.nagi/Software/ginkgo/benchmarks/sources/bioinfo_agam.toml)
+  to fetch a pinned metadata table, inject `fastq_1` and `fastq_2`, download
+  the selected FASTQs into a benchmark workspace, and point the copied
+  `examples/bioinfo` workflow at the generated sample sheet via a config
+  overlay.
+
+This keeps the canonical checked-in examples stable for documentation and
+correctness tests while still allowing the benchmark lane to exercise a larger
+input set.
 
 ## Execution Model
 
@@ -457,6 +488,51 @@ working-tree output already matches the cached artifact, it is left untouched.
 read-only artifacts have permissions restored before deletion so cache
 maintenance can safely remove unreferenced stored outputs.
 
+## Assets
+
+Ginkgo now includes a file-backed asset catalog layered over the cache and
+artifact store. Assets add stable logical identity and lineage to managed
+outputs without changing the run-centric execution model.
+
+The asset layer is implemented by:
+
+- `ginkgo/core/asset.py` for the public asset types and builders
+- `ginkgo/runtime/asset_store.py` for the local catalog metadata store
+- evaluator integration in `ginkgo/runtime/evaluator.py`
+
+The current asset model supports:
+
+- `asset(path, name=..., metadata=...)` as a task return wrapper for file
+  outputs
+- immutable `AssetVersion` records keyed by logical `AssetKey`
+- resolved `AssetRef` values passed to downstream tasks
+- alias pointers and version history in `.ginkgo/assets/`
+- upstream lineage edges recorded from consumed `AssetRef` inputs
+- provenance records that include asset metadata alongside cache keys and
+  artifact identifiers
+
+The catalog is metadata-only. Asset bytes are never stored in the asset store
+itself; every asset version points to an immutable `artifact_id` in the
+artifact store. This keeps three identities distinct:
+
+- logical asset identity (`AssetKey`)
+- physical materialization (`artifact_id`)
+- cache entry identity (`cache_key`)
+
+`AssetRef` values participate directly in cache and transport semantics. The
+value codec can serialize and deserialize them, cache metadata summarizes them
+recursively, and downstream cache invalidation follows `AssetRef.version_id`
+rather than re-hashing artifact bytes.
+
+The current implementation is intentionally narrow:
+
+- only file assets are supported
+- assets do not drive scheduling
+- the asset store is local and file-backed
+
+DataFrame-native assets, model assets, staleness reporting, and asset-aware
+lifecycle policy remain future work.
+
 ## Value Transport
 
 Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/value_codec.py`.
@@ -505,6 +581,7 @@ The manifest records:
 - task dependencies and dynamic dependency ids
 - retries and attempts
 - outputs
+- asset versions and metadata for asset-producing tasks
 - notebook artifact metadata including rendered HTML paths, executed notebook paths where applicable, and render status
 - exit codes and errors
 - run-level CPU and RSS summaries
@@ -521,6 +598,9 @@ The current CLI supports:
 - `ginkgo secrets`
 - `ginkgo ui`
 - `ginkgo init`
+- `ginkgo asset ls`
+- `ginkgo asset versions`
+- `ginkgo asset inspect`
 - `ginkgo cache ls`
 - `ginkgo cache explain`
 - `ginkgo cache clear`
@@ -530,8 +610,8 @@ The current CLI supports:
 
 Implemented CLI features include dry-run validation, merged config overrides,
 human-readable run summaries, structured inspection and diagnostics, secret
-discovery and validation, cache inspection and eviction, and failed-task
-debugging.
+discovery and validation, cache inspection and eviction, failed-task
+debugging, and asset catalog inspection for local workspaces.
 
 ## Web UI
 
@@ -539,7 +619,7 @@ The local UI is implemented as a lightweight JSON API server plus a bundled Reac
 
 The current UI supports:
 
-- sidebar-first desktop shell with primary navigation (Runs, Cache, Workspaces)
+- sidebar-first desktop shell with primary navigation (Runs, Assets, Cache, Workspaces)
 - multi-workspace session: load any number of local Ginkgo workspaces, switch
   the active workspace via the top bar, and scope runs/cache/workflow-launch to
   that workspace
@@ -548,6 +628,9 @@ The current UI supports:
 - run history and run summaries
 - task tables, task-graph visualization using recorded dependencies, and notebook artifact links derived from run provenance
 - task detail drawers with full log retrieval
+- asset explorer with catalog list, version history, lineage, and metadata
+- asset previews for tables/dataframes, figures, PDFs, and text artifacts, plus
+  generic metadata views for other asset kinds
 - cache browsing and deletion
 - live updates via a WebSocket event channel (`/ws`): the server emits
   structured events derived from on-disk provenance changes; the frontend

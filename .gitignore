@@ -13,6 +13,7 @@ __pycache__/
 .ginkgo/
 examples/**/logs/
 examples/**/results/
+benchmarks/results/
 
 # Agent / local-instructions files
 AGENTS.md
