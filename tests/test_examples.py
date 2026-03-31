@@ -368,11 +368,17 @@ class TestExamples:
         scorecard = pd.read_csv(example_dir / "results" / "resilience_scorecard.csv")
 
         assert first_manifest["status"] == "succeeded"
-        assert len(first_manifest["tasks"]) == 13
-        assert len(scenario_outputs) == 4
+        assert len(first_manifest["tasks"]) == 19
+        assert len(scenario_outputs) == 10
         assert sorted(scorecard["scenario_id"].tolist()) == [
+            "customs_holdup",
+            "demand_surge",
             "fuel_spike",
+            "labour_strike",
+            "peak_season",
             "port_delay",
+            "rail_disruption",
+            "raw_material_shortage",
             "supplier_outage",
             "weather_shock",
         ]

@@ -18,12 +18,14 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.renderers.common import (
+    _MultiStateBar,
     _format_bytes,
     _format_cpu_percent,
     _core_unit_label,
     _format_duration,
     _status_label,
     _status_text,
+    _task_base_name,
     _task_duration_plain,
     _task_duration_text,
     _task_label_width,
@@ -34,8 +36,12 @@ from ginkgo.cli.renderers.models import (
     _FailureDetails,
     _ResourceRenderState,
     _RunSummary,
+    _TaskGroup,
     _TaskRow,
 )
+
+_GROUP_THRESHOLD = 6
+"""Minimum invocation count to collapse same-task rows into a group."""
 
 
 class _CliRunRenderer:
@@ -245,16 +251,43 @@ class _CliRunRenderer:
         table.add_column("Status", no_wrap=True)
         table.add_column("Environment", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
-        for row in self._ordered_rows():
-            table.add_row(
-                Text(
-                    _truncate_task_label(row.label, max_width=_task_label_width(self._console)),
-                    style="bold",
-                ),
-                _status_text(row.status),
-                Text(row.env_label, style="bold #134e4a"),
-                _task_duration_text(row, now=self._elapsed_clock()),
-            )
+        now = self._elapsed_clock()
+        max_label = _task_label_width(self._console)
+        for item in self._display_items():
+            if isinstance(item, _TaskGroup):
+                # Collapsed group row with multi-state progress bar.
+                counts = item.status_counts()
+                total = len(item.rows)
+                terminal = item.terminal_count()
+                bar_width = max(16, self._status_column_width() - len(f" {terminal}/{total}") - 1)
+                bar = _MultiStateBar(counts=counts, total=total, width=bar_width)
+                # Build status cell: bar + count label.
+                bar_text = Text()
+                for chunk in bar.__rich_console__(self._console, self._console.options):
+                    if isinstance(chunk, Text):
+                        bar_text.append_text(chunk)
+                bar_text.append(f" {terminal}/{total}", style="bold #134e4a")
+                elapsed = item.elapsed(now=now)
+                time_str = _format_duration(elapsed) if elapsed is not None else "--"
+                table.add_row(
+                    Text(
+                        _truncate_task_label(item.label, max_width=max_label),
+                        style="bold",
+                    ),
+                    bar_text,
+                    Text(item.env_label, style="bold #134e4a"),
+                    Text(time_str, style="dim"),
+                )
+            else:
+                table.add_row(
+                    Text(
+                        _truncate_task_label(item.label, max_width=max_label),
+                        style="bold",
+                    ),
+                    _status_text(item.status),
+                    Text(item.env_label, style="bold #134e4a"),
+                    _task_duration_text(item, now=now),
+                )
         return table
 
     def _render_progress_section(self) -> Table:
@@ -341,24 +374,97 @@ class _CliRunRenderer:
     def _ordered_rows(self) -> list[_TaskRow]:
         return [self._rows[node_id] for node_id in self._row_order]
 
-    def _task_table_width(self) -> int:
+    def _display_items(self) -> list[_TaskGroup | _TaskRow]:
+        """Build the grouped display list from ordered rows.
+
+        Tasks with ≥ _GROUP_THRESHOLD invocations sharing the same task_name
+        are collapsed into a single ``_TaskGroup``. Others remain as individual
+        ``_TaskRow`` entries. Display order follows first-seen position of each
+        task_name.
+        """
+        # Count invocations per task_name.
+        name_counts: Counter[str] = Counter(self._rows[nid].task_name for nid in self._row_order)
+
+        # Build groups for names that meet the threshold.
+        groups: dict[str, _TaskGroup] = {}
+        items: list[_TaskGroup | _TaskRow] = []
+        seen_names: set[str] = set()
+
+        for node_id in self._row_order:
+            row = self._rows[node_id]
+            name = row.task_name
+
+            if name_counts[name] < _GROUP_THRESHOLD:
+                items.append(row)
+                continue
+
+            if name not in seen_names:
+                # Determine common environment label.
+                env_labels = {
+                    self._rows[nid].env_label
+                    for nid in self._row_order
+                    if self._rows[nid].task_name == name
+                }
+                env_label = env_labels.pop() if len(env_labels) == 1 else "mixed"
+                base = _task_base_name(name)
+                group = _TaskGroup(
+                    task_name=name,
+                    label=f"{base} (×{name_counts[name]})",
+                    env_label=env_label,
+                    rows=[],
+                )
+                groups[name] = group
+                items.append(group)
+                seen_names.add(name)
+
+            groups[name].rows.append(row)
+
+        return items
+
+    def _status_column_width(self) -> int:
+        """Return the effective width available for the status column."""
         rows = self._ordered_rows()
-        task_width = max(
-            len("Task"),
-            *(
-                len(_truncate_task_label(row.label, max_width=_task_label_width(self._console)))
-                for row in rows
-            ),
-        )
-        status_width = max(len("Status"), *(len(_status_label(row.status)) for row in rows))
-        env_width = max(len("Environment"), *(len(row.env_label) for row in rows))
-        time_width = max(
-            len("Time"),
-            *(len(_task_duration_plain(row, now=self._elapsed_clock())) for row in rows),
-        )
+        if not rows:
+            return len("Status")
+        return max(len("Status"), *(len(_status_label(row.status)) for row in rows), 30)
+
+    def _task_table_width(self) -> int:
+        items = self._display_items()
+        if not items:
+            return len("Task") + len("Status") + len("Environment") + len("Time") + 13
+
+        max_label = _task_label_width(self._console)
+        now = self._elapsed_clock()
+        task_widths: list[int] = [len("Task")]
+        status_widths: list[int] = [len("Status")]
+        env_widths: list[int] = [len("Environment")]
+        time_widths: list[int] = [len("Time")]
+
+        for item in items:
+            if isinstance(item, _TaskGroup):
+                task_widths.append(len(_truncate_task_label(item.label, max_width=max_label)))
+                total = len(item.rows)
+                terminal = item.terminal_count()
+                status_widths.append(self._status_column_width() + len(f" {terminal}/{total}") + 1)
+                env_widths.append(len(item.env_label))
+                elapsed = item.elapsed(now=now)
+                time_widths.append(len(_format_duration(elapsed)) if elapsed is not None else 2)
+            else:
+                task_widths.append(len(_truncate_task_label(item.label, max_width=max_label)))
+                status_widths.append(len(_status_label(item.status)))
+                env_widths.append(len(item.env_label))
+                time_widths.append(len(_task_duration_plain(item, now=now)))
+
         column_padding = 8
         separators = 5
-        return task_width + status_width + env_width + time_width + column_padding + separators
+        return (
+            max(task_widths)
+            + max(status_widths)
+            + max(env_widths)
+            + max(time_widths)
+            + column_padding
+            + separators
+        )
 
     def _status_line_padding(self) -> int:
         status_width = len("Running") + 5
