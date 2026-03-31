@@ -17,14 +17,14 @@
     {
       "example": "bioinfo",
       "mode": "cold",
-      "baseline_seconds": 14.0,
-      "max_regression_pct": 35.0
+      "baseline_seconds": 15.0,
+      "max_regression_pct": 10.0
     },
     {
       "example": "bioinfo",
       "mode": "cached",
       "baseline_seconds": 9.5,
-      "max_regression_pct": 50.0
+      "max_regression_pct": 10.0
     },
     {
       "example": "chem",
