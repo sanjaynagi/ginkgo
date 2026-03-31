@@ -114,6 +114,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("directory", nargs="?", default=".")
+    init_parser.add_argument("--no-skills", action="store_true")
+    init_parser.add_argument("--skills-only", action="store_true")
     init_parser.add_argument("--force", action="store_true")
 
     inspect_parser = subparsers.add_parser("inspect")

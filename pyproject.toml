@@ -35,6 +35,9 @@ requires = ["hatchling"]
 [tool.hatch.build.targets.wheel]
 packages = ["ginkgo"]
 
+[tool.hatch.build]
+include = ["ginkgo/templates/**"]
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]

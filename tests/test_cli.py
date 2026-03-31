@@ -627,16 +627,66 @@ class TestCliInit:
         assert (project_dir / "demo_project" / "envs" / "analysis_tools" / "pixi.toml").is_file()
         assert (project_dir / "demo_project" / "scripts" / "build_brief.py").is_file()
         assert (project_dir / "demo_project" / "notebooks" / "overview.ipynb").is_file()
+        assert (project_dir / "skills" / "index.md").is_file()
+        assert (project_dir / "skills" / "commands.md").is_file()
+        assert (project_dir / "skills" / "project.md").is_file()
+        assert (project_dir / "skills" / "task-patterns.md").is_file()
+        assert (project_dir / "skills" / "local.md").is_file()
         assert (project_dir / "tests" / "workflows" / "smoke.py").is_file()
         assert not (project_dir / "agents.ginkgo.md").exists()
+        assert not (project_dir / "__init__.py").exists()
 
         workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
         readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
+        skills_index_text = (project_dir / "skills" / "index.md").read_text(encoding="utf-8")
+        commands_text = (project_dir / "skills" / "commands.md").read_text(encoding="utf-8")
+        patterns_text = (project_dir / "skills" / "task-patterns.md").read_text(encoding="utf-8")
         assert "@flow" in workflow_text
         assert "from demo_project.modules.pipeline import main" not in workflow_text
         assert "expand(" in workflow_text
         assert "ginkgo run --agent" in readme_text
         assert "demo_project/workflow.py" in readme_text
+        assert "See `skills/index.md`" in readme_text
+        assert "This project uses Ginkgo" in skills_index_text
+        assert "`project.md`:" in skills_index_text
+        assert "JSONL runtime events" in commands_text
+        assert '@task(kind="shell")' in patterns_text
+        assert "oci://registry/path:tag" in patterns_text
+
+    def test_init_can_skip_skills(self) -> None:
+        result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        project_dir = Path("demo-project")
+        assert not (project_dir / "skills").exists()
+
+    def test_init_can_create_skills_only_for_existing_project(self) -> None:
+        project_dir = Path("demo-project")
+        package_dir = project_dir / "demo_project"
+        (package_dir / "modules").mkdir(parents=True)
+        (project_dir / "tests" / "workflows").mkdir(parents=True)
+        (package_dir / "workflow.py").write_text("workflow\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert (project_dir / "skills" / "index.md").is_file()
+        assert not (project_dir / "README.md").exists()
+
+    def test_init_skills_only_refuses_to_overwrite_without_force(self) -> None:
+        project_dir = Path("demo-project")
+        skills_dir = project_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "index.md").write_text("existing\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
+        assert (skills_dir / "index.md").read_text(encoding="utf-8") == "existing\n"
+
+    def test_init_rejects_incompatible_skills_flags(self) -> None:
+        result = _run_cli("init", "demo-project", "--skills-only", "--no-skills", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "✖ Cannot combine --no-skills with --skills-only." in result.stderr
 
     def test_init_refuses_to_overwrite_without_force(self) -> None:
         project_dir = Path("demo-project")
