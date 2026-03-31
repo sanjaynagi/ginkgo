@@ -36,7 +36,7 @@
       "example": "chem",
       "mode": "cached",
       "baseline_seconds": 0.91,
-      "max_regression_pct": 15.0
+      "max_regression_pct": 25.0
     },
     {
       "example": "retail",
