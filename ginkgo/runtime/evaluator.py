@@ -564,9 +564,12 @@ class _ConcurrentEvaluator:
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash
         node.display_label = self._display_label_for(node=node)
-        self._record_task_metadata(node)
-        # Materialize Pixi environments before any parallel dispatch starts.
+        if self._try_prepare_cache_hit(node=node):
+            return
+
+        # Materialize Pixi environments only after a cache miss is confirmed.
         self._prepare_task_environment(node=node)
+        self._record_task_metadata(node=node)
 
         node.threads = self._task_threads(resolved_args)
         node.memory_gb = self._task_memory_gb(resolved_args)
@@ -1421,66 +1424,7 @@ class _ConcurrentEvaluator:
         if self.trust_workspace and self._try_stat_index_hit(node=node):
             return
 
-        cache_key, input_hashes = self._cache_store.build_cache_key(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-            extra_source_hash=node.extra_source_hash,
-            known_digests=self._known_digests,
-        )
-        node.cache_key = cache_key
-        node.input_hashes = input_hashes
-        self._record_task_metadata(node)
-
-        cached_result = self._cache_store.load(cache_key=cache_key)
-        if cached_result is not MISSING and self._is_valid_cached_result(
-            cache_key=cache_key,
-            task_def=node.task_def,
-            value=cached_result,
-        ):
-            # Propagate known artifact digests so downstream tasks can skip
-            # re-hashing this task's file outputs during cache key construction.
-            self._propagate_known_digests(cache_key=cache_key)
-
-            node.result = cached_result
-            node.state = "completed"
-            for path in node.tmp_paths:
-                shutil.rmtree(path)
-            node.tmp_paths = []
-            if self.provenance is not None:
-                self.provenance.mark_cached(
-                    node_id=node.node_id,
-                    task_name=node.task_def.name,
-                    env=node.task_def.env,
-                    value=cached_result,
-                    outputs=self._artifact_index_for(node=node, value=cached_result),
-                    assets=self._asset_index_for(value=cached_result),
-                )
-            self._emit_event(
-                TaskCacheHit(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    cache_key=cache_key,
-                )
-            )
-            self._emit_event(
-                TaskCompleted(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    status="cached",
-                    cache_key=cache_key,
-                    outputs=self._artifact_index_for(node=node, value=cached_result),
-                )
-            )
-
-            # Record stat-index entry so future --trust-workspace runs can
-            # find this cache key without content hashing.
-            self._record_stat_index_entry(node=node, cache_key=cache_key)
+        if self._try_content_cache_hit(node=node):
             return
 
         self._emit_event(
@@ -1490,7 +1434,7 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                cache_key=cache_key,
+                cache_key=node.cache_key,
             )
         )
 
@@ -2530,6 +2474,49 @@ class _ConcurrentEvaluator:
 
         return True
 
+    def _try_prepare_cache_hit(self, *, node: _TaskNode) -> bool:
+        """Attempt to complete a node from cache during preparation.
+
+        This fast path only runs when cache identity can be decided without
+        staging remote inputs first.
+        """
+        if node.resolved_args is None or self._cache_lookup_requires_staging(node=node):
+            return False
+
+        if self.trust_workspace and self._try_stat_index_hit(node=node):
+            return True
+
+        return self._try_content_cache_hit(node=node)
+
+    def _try_content_cache_hit(self, *, node: _TaskNode) -> bool:
+        """Attempt a content-addressed cache hit for one prepared node."""
+        assert node.resolved_args is not None
+
+        if node.cache_key is None or node.input_hashes is None:
+            cache_key, input_hashes = self._cache_store.build_cache_key(
+                task_def=node.task_def,
+                resolved_args=node.resolved_args,
+                extra_source_hash=node.extra_source_hash,
+                known_digests=self._known_digests,
+            )
+            node.cache_key = cache_key
+            node.input_hashes = input_hashes
+
+        self._record_task_metadata(
+            node=node,
+            include_env_metadata=False,
+        )
+        cached_result = self._cache_store.load(cache_key=node.cache_key)
+        if cached_result is MISSING or not self._is_valid_cached_result(
+            cache_key=node.cache_key,
+            task_def=node.task_def,
+            value=cached_result,
+        ):
+            return False
+
+        self._mark_node_cached(node=node, value=cached_result, cache_key=node.cache_key)
+        return True
+
     def _try_stat_index_hit(self, *, node: _TaskNode) -> bool:
         """Attempt a stat-index cache hit for ``--trust-workspace`` mode.
 
@@ -2553,45 +2540,11 @@ class _ConcurrentEvaluator:
 
         node.cache_key = content_key
         node.input_hashes = {}
-        self._record_task_metadata(node)
-        self._propagate_known_digests(cache_key=content_key)
-
-        node.result = cached_result
-        node.state = "completed"
-        for path in node.tmp_paths:
-            shutil.rmtree(path)
-        node.tmp_paths = []
-        if self.provenance is not None:
-            self.provenance.mark_cached(
-                node_id=node.node_id,
-                task_name=node.task_def.name,
-                env=node.task_def.env,
-                value=cached_result,
-                outputs=self._artifact_index_for(node=node, value=cached_result),
-                assets=self._asset_index_for(value=cached_result),
-            )
-        self._emit_event(
-            TaskCacheHit(
-                run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
-                task_name=node.task_def.name,
-                attempt=node.attempt,
-                display_label=node.display_label,
-                cache_key=content_key,
-            )
+        self._record_task_metadata(
+            node=node,
+            include_env_metadata=False,
         )
-        self._emit_event(
-            TaskCompleted(
-                run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
-                task_name=node.task_def.name,
-                attempt=node.attempt,
-                display_label=node.display_label,
-                status="cached",
-                cache_key=content_key,
-                outputs=self._artifact_index_for(node=node, value=cached_result),
-            )
-        )
+        self._mark_node_cached(node=node, value=cached_result, cache_key=content_key)
         return True
 
     def _record_stat_index_entry(self, *, node: _TaskNode, cache_key: str) -> None:
@@ -2618,7 +2571,59 @@ class _ConcurrentEvaluator:
             resolved_key = str(Path(path_str).resolve())
             self._known_digests[resolved_key] = artifact_id
 
-    def _record_task_metadata(self, node: _TaskNode) -> None:
+    def _mark_node_cached(self, *, node: _TaskNode, value: Any, cache_key: str) -> None:
+        """Mark one node complete from cache and emit cached completion events."""
+        if node.attempt == 0:
+            node.attempt = 1
+
+        self._propagate_known_digests(cache_key=cache_key)
+        node.result = value
+        node.state = "completed"
+        for path in node.tmp_paths:
+            shutil.rmtree(path)
+        node.tmp_paths = []
+        if self.provenance is not None:
+            self.provenance.mark_cached(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                env=node.task_def.env,
+                value=value,
+                outputs=self._artifact_index_for(node=node, value=value),
+                assets=self._asset_index_for(value=value),
+            )
+        self._emit_event(
+            TaskCacheHit(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                cache_key=cache_key,
+            )
+        )
+        self._emit_event(
+            TaskCompleted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                status="cached",
+                cache_key=cache_key,
+                outputs=self._artifact_index_for(node=node, value=value),
+            )
+        )
+
+        # Record stat-index entry so future --trust-workspace runs can
+        # find this cache key without content hashing.
+        self._record_stat_index_entry(node=node, cache_key=cache_key)
+
+    def _record_task_metadata(
+        self,
+        *,
+        node: _TaskNode,
+        include_env_metadata: bool = True,
+    ) -> None:
         """Update provenance inputs and environment copies for a task node."""
         if self.provenance is None:
             return
@@ -2634,6 +2639,9 @@ class _ConcurrentEvaluator:
             dependency_ids=sorted(node.dependency_ids),
             dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
         )
+        if not include_env_metadata:
+            return
+
         if node.task_def.env is not None and self.backend is not None:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
@@ -2656,6 +2664,19 @@ class _ConcurrentEvaluator:
                         env_name=node.task_def.env,
                         lock_path=lock_path,
                     )
+
+    def _cache_lookup_requires_staging(self, *, node: _TaskNode) -> bool:
+        """Return whether cache identity depends on staging remote inputs."""
+        assert node.resolved_args is not None
+
+        for name, value in node.resolved_args.items():
+            annotation = node.task_def.type_hints.get(
+                name,
+                node.task_def.signature.parameters[name].annotation,
+            )
+            if _remote_value_requires_staging(annotation=annotation, value=value):
+                return True
+        return False
 
     def _record_task_failure(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Persist task failure details to the run manifest."""
@@ -2895,7 +2916,7 @@ class _ConcurrentEvaluator:
                 node.state = "waiting_dynamic"
                 node.dynamic_template = completed_value
                 node.dynamic_dependency_ids = dynamic_dependencies
-                self._record_task_metadata(node)
+                self._record_task_metadata(node=node)
                 self._emit_event(
                     GraphExpanded(
                         run_id=self._run_id,
@@ -2953,7 +2974,7 @@ class _ConcurrentEvaluator:
             node.state = "waiting_dynamic"
             node.dynamic_template = completed_value
             node.dynamic_dependency_ids = dynamic_dependencies
-            self._record_task_metadata(node)
+            self._record_task_metadata(node=node)
             self._emit_event(
                 GraphExpanded(
                     run_id=self._run_id,
@@ -3182,6 +3203,46 @@ def _is_remote_path_value(value: Any) -> bool:
     if isinstance(value, RemoteRef):
         return True
     return isinstance(value, str) and is_remote_uri(value)
+
+
+def _remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value must be staged before cache identity is safe."""
+    if isinstance(value, RemoteRef):
+        return value.version_id is None
+
+    if isinstance(value, str) and is_remote_uri(value):
+        return True
+
+    origin = get_origin(annotation)
+    if origin in {list, tuple} and isinstance(value, (list, tuple)):
+        inner_args = get_args(annotation)
+        inner_annotation = inner_args[0] if inner_args else Any
+        return any(
+            _remote_value_requires_staging(annotation=inner_annotation, value=item)
+            for item in value
+        )
+
+    if origin is dict and isinstance(value, dict):
+        key_annotation, value_annotation = (
+            get_args(annotation) if len(get_args(annotation)) == 2 else (Any, Any)
+        )
+        return any(
+            _remote_value_requires_staging(annotation=key_annotation, value=key)
+            or _remote_value_requires_staging(annotation=value_annotation, value=item)
+            for key, item in value.items()
+        )
+
+    if isinstance(value, list | tuple):
+        return any(
+            _remote_value_requires_staging(annotation=annotation, value=item) for item in value
+        )
+
+    if isinstance(value, dict):
+        return any(
+            _remote_value_requires_staging(annotation=Any, value=item) for item in value.values()
+        )
+
+    return False
 
 
 def _count_remote_inputs(value: Any) -> int:

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from ginkgo import evaluate, file, task
+from ginkgo.core.remote import remote_file
 from ginkgo.runtime.hash_memo import HashMemo
 from ginkgo.runtime.hashing import hash_file
 from ginkgo.runtime.materialization_log import MaterializationLog
@@ -178,6 +180,11 @@ def reader_b(*, input_file: file) -> int:
     return len(Path(str(input_file)).read_text()) * 2
 
 
+@task()
+def read_versioned_remote_file(*, path: file) -> str:
+    return Path(str(path)).read_text()
+
+
 class TestWarmRunIntegration:
     """End-to-end test that layers 1-3 work together."""
 
@@ -206,6 +213,44 @@ class TestWarmRunIntegration:
 
         assert result[0] == 11  # len("shared data")
         assert result[1] == 22
+
+    def test_warm_run_completes_cached_dag_before_dispatch(self, tmp_path: Path) -> None:
+        """A fully cached DAG should not enter task execution on the warm run."""
+        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+
+        output = tmp_path / "output.txt"
+
+        expr1 = consume_file(input_file=produce_file(output_path=str(output)))
+        evaluator1 = _ConcurrentEvaluator()
+        assert evaluator1.evaluate(expr1) == 7
+
+        expr2 = consume_file(input_file=produce_file(output_path=str(output)))
+        evaluator2 = _ConcurrentEvaluator()
+        evaluator2._start_task_execution = MagicMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("warm cached DAG should not dispatch task execution")
+        )
+
+        assert evaluator2.evaluate(expr2) == 7
+        evaluator2._start_task_execution.assert_not_called()
+
+    def test_warm_run_skips_environment_preparation(self, tmp_path: Path) -> None:
+        """A warm cache hit should not prepare task environments."""
+        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+
+        output = tmp_path / "output.txt"
+
+        expr1 = consume_file(input_file=produce_file(output_path=str(output)))
+        evaluator1 = _ConcurrentEvaluator()
+        assert evaluator1.evaluate(expr1) == 7
+
+        expr2 = consume_file(input_file=produce_file(output_path=str(output)))
+        evaluator2 = _ConcurrentEvaluator()
+        evaluator2._prepare_task_environment = MagicMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("warm cached task should not prepare environments")
+        )
+
+        assert evaluator2.evaluate(expr2) == 7
+        evaluator2._prepare_task_environment.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +293,33 @@ class TestTrustWorkspace:
 
         captured = capsys.readouterr()
         assert '"status": "cached"' in captured.err
+
+    def test_versioned_remote_input_warm_run_skips_staging(self, tmp_path: Path) -> None:
+        """Pinned remote inputs can hit cache without staging on the warm run."""
+        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+
+        class _FakeStagingCache:
+            def __init__(self, *, root: Path, fail: bool = False) -> None:
+                self._root = root
+                self._fail = fail
+
+            def stage_file(self, *, ref) -> Path:
+                if self._fail:
+                    raise AssertionError("warm cached remote input should not stage")
+                staged = self._root / "staged.txt"
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                staged.write_text("cacheable")
+                return staged
+
+            def stage_folder(self, *, ref) -> Path:
+                raise AssertionError("folder staging is not used in this test")
+
+        ref = remote_file("s3://bucket/cacheable.txt", version_id="v1")
+
+        evaluator1 = _ConcurrentEvaluator()
+        evaluator1._staging_cache = _FakeStagingCache(root=tmp_path / "stage-cold")
+        assert evaluator1.evaluate(read_versioned_remote_file(path=ref)) == "cacheable"
+
+        evaluator2 = _ConcurrentEvaluator()
+        evaluator2._staging_cache = _FakeStagingCache(root=tmp_path / "stage-warm", fail=True)
+        assert evaluator2.evaluate(read_versioned_remote_file(path=ref)) == "cacheable"
