@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import datetime
 
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.text import Text
 
 from ginkgo.cli.renderers.models import _TaskRow
@@ -125,6 +126,59 @@ def _format_cpu_percent(value: float | None) -> str:
     if value >= 100:
         return f"{value:.0f}%"
     return f"{value:.1f}%"
+
+
+_SEGMENT_ORDER = ("succeeded", "cached", "running", "staging", "waiting", "failed")
+"""Display order for multi-state bar segments (left-to-right)."""
+
+
+class _MultiStateBar:
+    """A Rich renderable that draws a segmented bar coloured by task state.
+
+    Parameters
+    ----------
+    counts
+        Number of invocations in each status.
+    total
+        Total number of invocations (used for proportional sizing).
+    width
+        Character width of the bar (excluding the label).
+    """
+
+    def __init__(self, *, counts: Counter[str], total: int, width: int) -> None:
+        self._counts = counts
+        self._total = max(total, 1)
+        self._width = max(width, 1)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        text = Text()
+
+        # Compute proportional segment widths.
+        segments = [(status, self._counts.get(status, 0)) for status in _SEGMENT_ORDER]
+        segments = [(s, c) for s, c in segments if c > 0]
+
+        if not segments:
+            text.append("░" * self._width, style="dim")
+            yield text
+            return
+
+        # Allocate widths: guarantee minimum 1 char per non-zero segment.
+        raw = [(status, count / self._total * self._width) for status, count in segments]
+        widths = [(status, max(1, round(w))) for status, w in raw]
+
+        # Adjust to ensure total equals self._width.
+        total_allocated = sum(w for _, w in widths)
+        diff = self._width - total_allocated
+        if diff != 0:
+            # Adjust the largest segment to absorb the rounding error.
+            largest_idx = max(range(len(widths)), key=lambda i: widths[i][1])
+            status, w = widths[largest_idx]
+            widths[largest_idx] = (status, max(1, w + diff))
+
+        for status, w in widths:
+            text.append("█" * w, style=_status_style(status))
+
+        yield text
 
 
 def _format_bytes(value: int | float | None) -> str:

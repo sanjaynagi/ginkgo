@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -43,6 +44,51 @@ class _FailureDetails:
     log_tail: list[str]
     error: str | None = None
     inputs: dict[str, object] | None = None
+
+
+@dataclass
+class _TaskGroup:
+    """Render state for a collapsed group of same-task invocations.
+
+    Parameters
+    ----------
+    task_name
+        Fully-qualified task definition name shared by all invocations.
+    label
+        Display label shown in the task table (e.g. ``align (×200)``).
+    env_label
+        Common environment label, or ``"mixed"`` if invocations differ.
+    rows
+        Individual task rows belonging to this group.
+    """
+
+    task_name: str
+    label: str
+    env_label: str
+    rows: list[_TaskRow] = field(default_factory=list)
+
+    def status_counts(self) -> Counter[str]:
+        """Return a counter of task statuses across all invocations."""
+        return Counter(row.status for row in self.rows)
+
+    def is_terminal(self) -> bool:
+        """Return True if every invocation has reached a terminal state."""
+        return all(row.status in {"cached", "succeeded", "failed"} for row in self.rows)
+
+    def terminal_count(self) -> int:
+        """Return the number of invocations in a terminal state."""
+        return sum(1 for row in self.rows if row.status in {"cached", "succeeded", "failed"})
+
+    def elapsed(self, *, now: float) -> float | None:
+        """Return wall-clock seconds from earliest start to latest finish or *now*."""
+        starts = [row.started_at for row in self.rows if row.started_at is not None]
+        if not starts:
+            return None
+        earliest = min(starts)
+        if self.is_terminal():
+            finishes = [row.finished_at for row in self.rows if row.finished_at is not None]
+            return max(finishes) - earliest if finishes else None
+        return now - earliest
 
 
 @dataclass(frozen=True)
