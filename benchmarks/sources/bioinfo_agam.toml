@@ -1,0 +1,26 @@
+[source]
+name = "ampseeker-bioinfo"
+repo = "sanjaynagi/AmpSeeker"
+commit = "1121261fb4468482b33944a3b4908f640b0540ac"
+metadata_url = "https://raw.githubusercontent.com/sanjaynagi/AmpSeeker/1121261fb4468482b33944a3b4908f640b0540ac/tests/snakemake/config/metadata-nofq.tsv"
+reads_base_url = "https://raw.githubusercontent.com/sanjaynagi/AmpSeeker/1121261fb4468482b33944a3b4908f640b0540ac/tests/snakemake/resources/reads"
+metadata_format = "tsv"
+sample_id_column = "sample_id"
+read1_column = "fastq_1"
+read2_column = "fastq_2"
+read1_pattern = "{sample_id}_1.fastq.gz"
+read2_pattern = "{sample_id}_2.fastq.gz"
+
+[samples]
+ids = [
+    "ERR3058522",
+    "ERR3058532",
+    "ERR3058542",
+    "ERR3058552",
+    "ERR3058562",
+    "ERR3058572",
+    "ERR3058582",
+    "ERR3058982",
+    "ERR3058992",
+    "ERR3059002",
+]
