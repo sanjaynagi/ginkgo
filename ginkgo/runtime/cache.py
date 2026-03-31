@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
+from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
@@ -455,6 +456,18 @@ class CacheStore:
                 "type": "asset_ref",
                 "version_id": value.version_id,
             }
+        if isinstance(value, RemoteRef):
+            if value.version_id is None:
+                raise ValueError(
+                    "Remote inputs without version_id must be staged before cache lookup."
+                )
+            return {
+                "bucket": value.bucket,
+                "key": value.key,
+                "scheme": value.scheme,
+                "type": type(value).__name__,
+                "version_id": value.version_id,
+            }
         if isinstance(value, SecretRef):
             return secret_identity(value)
 
@@ -661,6 +674,23 @@ class CacheStore:
         """Build a stat-based representation for a value (no content reading)."""
         if annotation is tmp_dir:
             return None
+
+        if isinstance(value, RemoteRef):
+            if value.version_id is None:
+                return {
+                    "bucket": value.bucket,
+                    "key": value.key,
+                    "scheme": value.scheme,
+                    "type": type(value).__name__,
+                    "unversioned": True,
+                }
+            return {
+                "bucket": value.bucket,
+                "key": value.key,
+                "scheme": value.scheme,
+                "type": type(value).__name__,
+                "version_id": value.version_id,
+            }
 
         if annotation is file or isinstance(value, file):
             path = Path(str(value)).resolve()

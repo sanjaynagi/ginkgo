@@ -13,6 +13,9 @@ The repository currently implements:
   work
 - Content-addressed caching, artifact storage, and value transport for common
   Python values and path-based outputs
+- Early cache completion for warm runs, including prepare-phase cache hits that
+  avoid environment preparation for cached tasks and allow version-pinned
+  remote inputs to skip staging on warm reruns
 - Reproducible environment dispatch through Pixi for local shell execution and
   container-backed execution for shell tasks
 - Provenance capture, logs, machine-readable runtime events, and structured
