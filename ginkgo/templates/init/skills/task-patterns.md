@@ -28,7 +28,7 @@ from ginkgo import script, task
 
 @task("script", env="analysis_tools")
 def build_report(*, output_path: str):
-    return script(Path("scripts/build_report.py"), outputs=output_path)
+    return script(path="scripts/build_report.py", outputs=output_path)
 ```
 
 Use notebook tasks when the notebook is part of the workflow output:
@@ -38,15 +38,10 @@ from pathlib import Path
 from ginkgo import notebook, task
 
 @task("notebook")
-def render_report():
-    return notebook(Path("notebooks/report.ipynb"))
+def render_report(sample_id: str):
+    output=f"report_summary_{sample_id}.csv"
+    return notebook(path=f"notebooks/report_{sample_id}.ipynb", output=output)
 ```
-
-Notebook guidance:
-
-- keep notebooks deterministic and parameter-driven
-- avoid relying on hidden cell state
-- avoid large checked-in output blobs unless they are deliberate workflow inputs
 
 Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
 should flow through Ginkgo task inputs. Let the runtime stage them locally;

@@ -4,17 +4,17 @@ Start here:
 
 - `ginkgo test --dry-run`
   Validates test workflows in `{{ tests_relpath }}` without executing tasks.
-- `ginkgo doctor`
-  Validates workflow loading, configuration, and environment setup.
+- `ginkgo run --agent`
+  Executes and emits machine-readable JSONL runtime events on stdout for programmatic
+  consumers or agents.
 - `ginkgo run`
   Executes the default workflow from `{{ workflow_relpath }}`.
-- `ginkgo run --agent`
-  Emits machine-readable JSONL runtime events on stdout for programmatic
-  consumers.
 - `ginkgo inspect workflow`
   Shows the static workflow graph without running anything.
 - `ginkgo ui`
   Browse runs, tasks, and artifacts when you need a run id or visual context.
+- `ginkgo doctor`
+  Validates workflow loading, configuration, and environment setup.
 
 When you already have a run id:
 
