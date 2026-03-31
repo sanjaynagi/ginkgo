@@ -1,0 +1,7 @@
+[workspace]
+name = "analysis_tools"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+python = ">=3.11"
