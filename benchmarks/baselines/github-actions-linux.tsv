@@ -3,13 +3,13 @@ init	cold	6.0	15.0
 init	cached	1.9	15.0
 bioinfo	cold	15.0	10.0
 bioinfo	cached	9.5	10.0
-chem	cold	2.4	10.0
+chem	cold	3.0	10.0
 chem	cached	0.91	15.0
 retail	cold	2.9	15.0
 retail	cached	1.6	15.0
 news	cold	2.6	15.0
 news	cached	0.93	20.0
-supplychain	cold	2.7	15.0
-supplychain	cached	1.4	20.0
+supplychain	cold	3.7	15.0
+supplychain	cached	2.3	20.0
 ml	cold	2.4	15.0
 ml	cached	1.5	20.0
