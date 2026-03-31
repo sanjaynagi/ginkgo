@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ class RunProvenanceRecorder:
             "status": self.status,
             "started_at": _timestamp(),
             "resources": _empty_resources(),
+            "timings": _empty_timings(),
             "tasks": {},
         }
         self.write_params(self.params)
@@ -121,9 +123,32 @@ class RunProvenanceRecorder:
                     "stdout_log": str(stdout_path.relative_to(self.run_dir)),
                     "stderr_log": str(stderr_path.relative_to(self.run_dir)),
                     "status": "pending",
+                    "timings": {},
                 }
                 self._write_manifest()
             return self._task_logs[node_id]
+
+    def add_run_timing(self, *, phase: str, seconds: float) -> None:
+        """Accumulate one run-level timing bucket without writing immediately."""
+        if seconds <= 0:
+            return
+        with self._lock:
+            timings = self._manifest.setdefault("timings", _empty_timings())
+            run_timings = timings.setdefault("run", {})
+            run_timings[phase] = _rounded_seconds(run_timings.get(phase, 0.0) + seconds)
+
+    def add_task_timing(self, *, node_id: int, phase: str, seconds: float) -> None:
+        """Accumulate one task timing bucket without writing immediately."""
+        if seconds <= 0:
+            return
+        with self._lock:
+            task = self._task(node_id)
+            task_timings = task.setdefault("timings", {})
+            task_timings[phase] = _rounded_seconds(task_timings.get(phase, 0.0) + seconds)
+
+            timings = self._manifest.setdefault("timings", _empty_timings())
+            totals = timings.setdefault("task_phase_totals", {})
+            totals[phase] = _rounded_seconds(totals.get(phase, 0.0) + seconds)
 
     def update_task_inputs(
         self,
@@ -339,9 +364,16 @@ class RunProvenanceRecorder:
         return self._manifest["tasks"][_task_key(node_id)]
 
     def _write_manifest(self) -> None:
+        started = time.perf_counter()
         self.manifest_path.write_text(
             yaml.safe_dump(self._manifest, sort_keys=False),
             encoding="utf-8",
+        )
+        elapsed = time.perf_counter() - started
+        timings = self._manifest.setdefault("timings", _empty_timings())
+        run_timings = timings.setdefault("run", {})
+        run_timings["provenance_write_seconds"] = _rounded_seconds(
+            run_timings.get("provenance_write_seconds", 0.0) + elapsed
         )
 
 
@@ -412,3 +444,14 @@ def _empty_resources() -> dict[str, Any]:
         "average": None,
         "updated_at": None,
     }
+
+
+def _empty_timings() -> dict[str, Any]:
+    return {
+        "run": {},
+        "task_phase_totals": {},
+    }
+
+
+def _rounded_seconds(value: float) -> float:
+    return round(float(value), 6)

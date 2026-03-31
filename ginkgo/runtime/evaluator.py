@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import builtins
 import inspect
 from contextlib import ExitStack, suppress
@@ -540,6 +541,7 @@ class _ConcurrentEvaluator:
 
     def _prepare_node(self, node: _TaskNode) -> None:
         """Resolve non-ephemeral inputs, then either cache-hit or ready the task."""
+        prepare_started = time.perf_counter()
         resolved_args = self._resolve_task_args(
             expr=node.expr,
             task_def=node.task_def,
@@ -564,6 +566,11 @@ class _ConcurrentEvaluator:
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash
         node.display_label = self._display_label_for(node=node)
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="prepare_seconds",
+            started=prepare_started,
+        )
         if self._try_prepare_cache_hit(node=node):
             return
 
@@ -609,7 +616,13 @@ class _ConcurrentEvaluator:
                 env=node.task_def.env,
             )
         )
+        env_prepare_started = time.perf_counter()
         self.backend.prepare(env=node.task_def.env)
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="env_prepare_seconds",
+            started=env_prepare_started,
+        )
         self._emit_event(
             EnvPrepareCompleted(
                 run_id=self._run_id,
@@ -841,6 +854,7 @@ class _ConcurrentEvaluator:
 
     def _complete_node(self, *, node: _TaskNode, value: Any, tmp_paths: list[Path]) -> None:
         """Persist and mark a task node as fully completed."""
+        finalize_started = time.perf_counter()
         self._cleanup_transport(node)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
@@ -889,6 +903,11 @@ class _ConcurrentEvaluator:
                 cache_key=node.cache_key,
                 outputs=self._artifact_index_for(node=node, value=value),
             )
+        )
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="finalize_seconds",
+            started=finalize_started,
         )
 
     def _resolve_task_args(
@@ -991,10 +1010,17 @@ class _ConcurrentEvaluator:
     def _stage_task_inputs(self, *, node: _TaskNode) -> dict[str, Any]:
         """Stage remote inputs for one task in the reserved worker slot."""
         assert node.resolved_args is not None
-        return self._stage_remote_refs(
+        stage_started = time.perf_counter()
+        staged = self._stage_remote_refs(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
         )
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="remote_stage_seconds",
+            started=stage_started,
+        )
+        return staged
 
     def _stage_remote_ref(self, *, ref: RemoteRef) -> Path:
         """Stage one remote ref with in-flight deduplication."""
@@ -2491,6 +2517,7 @@ class _ConcurrentEvaluator:
     def _try_content_cache_hit(self, *, node: _TaskNode) -> bool:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
+        cache_lookup_started = time.perf_counter()
 
         if node.cache_key is None or node.input_hashes is None:
             cache_key, input_hashes = self._cache_store.build_cache_key(
@@ -2512,8 +2539,18 @@ class _ConcurrentEvaluator:
             task_def=node.task_def,
             value=cached_result,
         ):
+            self._record_task_timing(
+                node_id=node.node_id,
+                phase="cache_lookup_seconds",
+                started=cache_lookup_started,
+            )
             return False
 
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="cache_lookup_seconds",
+            started=cache_lookup_started,
+        )
         self._mark_node_cached(node=node, value=cached_result, cache_key=node.cache_key)
         return True
 
@@ -2523,6 +2560,7 @@ class _ConcurrentEvaluator:
         Returns ``True`` if the hit succeeded and the node was marked
         complete, ``False`` to fall through to the content-addressed path.
         """
+        cache_lookup_started = time.perf_counter()
         stat_key = self._cache_store.stat_fingerprint(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
@@ -2530,12 +2568,22 @@ class _ConcurrentEvaluator:
         )
         cached_result = self._cache_store.try_stat_index(stat_key=stat_key)
         if cached_result is MISSING:
+            self._record_task_timing(
+                node_id=node.node_id,
+                phase="cache_lookup_seconds",
+                started=cache_lookup_started,
+            )
             return False
 
         # In trust-workspace mode we only check that output files exist,
         # not that their content matches the artifact store.
         content_key = self._cache_store._stat_index.get(stat_key)
         if content_key is None:
+            self._record_task_timing(
+                node_id=node.node_id,
+                phase="cache_lookup_seconds",
+                started=cache_lookup_started,
+            )
             return False
 
         node.cache_key = content_key
@@ -2543,6 +2591,11 @@ class _ConcurrentEvaluator:
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
+        )
+        self._record_task_timing(
+            node_id=node.node_id,
+            phase="cache_lookup_seconds",
+            started=cache_lookup_started,
         )
         self._mark_node_cached(node=node, value=cached_result, cache_key=content_key)
         return True
@@ -2677,6 +2730,16 @@ class _ConcurrentEvaluator:
             if _remote_value_requires_staging(annotation=annotation, value=value):
                 return True
         return False
+
+    def _record_task_timing(self, *, node_id: int, phase: str, started: float) -> None:
+        """Record one task-phase timing bucket when provenance is enabled."""
+        if self.provenance is None:
+            return
+        self.provenance.add_task_timing(
+            node_id=node_id,
+            phase=phase,
+            seconds=time.perf_counter() - started,
+        )
 
     def _record_task_failure(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Persist task failure details to the run manifest."""
