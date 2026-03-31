@@ -44,6 +44,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         memory=args.memory,
         dry_run=args.dry_run,
         output_mode=output_mode,
+        trust_workspace=getattr(args, "trust_workspace", False),
     )
 
 
@@ -56,6 +57,7 @@ def run_workflow(
     memory: int | None,
     dry_run: bool,
     output_mode: RunMode = "default",
+    trust_workspace: bool = False,
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -209,6 +211,7 @@ def run_workflow(
                 provenance=recorder,
                 secret_resolver=secret_resolver,
                 event_bus=bus,
+                trust_workspace=trust_workspace,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)

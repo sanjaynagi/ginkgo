@@ -53,6 +53,8 @@ from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
 from ginkgo.runtime.asset_store import AssetStore
 from ginkgo.runtime.cache import MISSING, CacheStore
+from ginkgo.runtime.hash_memo import HashMemo
+from ginkgo.runtime.materialization_log import MaterializationLog
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareStarted,
@@ -248,6 +250,7 @@ class _ConcurrentEvaluator:
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
+    trust_workspace: bool = False
     _cache_store: CacheStore = field(init=False, repr=False)
     _asset_store: AssetStore = field(init=False, repr=False)
     _stderr: Any = field(default_factory=lambda: sys.stderr)
@@ -290,6 +293,7 @@ class _ConcurrentEvaluator:
         repr=False,
     )
     _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -304,7 +308,18 @@ class _ConcurrentEvaluator:
             raise ValueError("memory must be at least 1 when provided")
 
         publisher = self._load_remote_publisher()
-        self._cache_store = CacheStore(backend=self.backend, publisher=publisher)
+        self._hash_memo = HashMemo()
+        artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
+        self._materialization_log = MaterializationLog(
+            path=artifacts_root / "materializations.json"
+        )
+        self._cache_store = CacheStore(
+            backend=self.backend,
+            publisher=publisher,
+            hash_memo=self._hash_memo,
+            materialization_log=self._materialization_log,
+            trust_workspace=self.trust_workspace,
+        )
         self._asset_store = AssetStore(root=self._cache_store._root.parent / "assets")
         self._staging_cache = None  # Lazily created on first remote ref.
         self._staging_jobs = _resolve_staging_jobs(jobs=self.jobs)
@@ -381,6 +396,8 @@ class _ConcurrentEvaluator:
                 self._stop_log_drain()
                 self._python_executor = None
                 self._shell_executor = None
+                self._materialization_log.save()
+                self._cache_store.save_stat_index()
 
         assert self._failure is not None
         raise self._failure
@@ -822,13 +839,22 @@ class _ConcurrentEvaluator:
     def _complete_node(self, *, node: _TaskNode, value: Any, tmp_paths: list[Path]) -> None:
         """Persist and mark a task node as fully completed."""
         self._cleanup_transport(node)
-        self._cache_store.save(
+        artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
         )
+
+        # Propagate output digests so downstream tasks can skip re-hashing.
+        for path_str, artifact_id in artifact_ids.items():
+            resolved_key = str(Path(path_str).resolve())
+            self._known_digests[resolved_key] = artifact_id
+
+        # Record stat-index for future --trust-workspace runs.
+        self._record_stat_index_entry(node=node, cache_key=node.cache_key)
+
         for path in tmp_paths:
             shutil.rmtree(path)
 
@@ -1390,10 +1416,16 @@ class _ConcurrentEvaluator:
         """Launch a task after its inputs have been staged locally."""
         assert node.resolved_args is not None
 
+        # Fast path: in --trust-workspace mode, try a stat-based index lookup
+        # before computing content-addressed cache keys.
+        if self.trust_workspace and self._try_stat_index_hit(node=node):
+            return
+
         cache_key, input_hashes = self._cache_store.build_cache_key(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
+            known_digests=self._known_digests,
         )
         node.cache_key = cache_key
         node.input_hashes = input_hashes
@@ -1405,6 +1437,10 @@ class _ConcurrentEvaluator:
             task_def=node.task_def,
             value=cached_result,
         ):
+            # Propagate known artifact digests so downstream tasks can skip
+            # re-hashing this task's file outputs during cache key construction.
+            self._propagate_known_digests(cache_key=cache_key)
+
             node.result = cached_result
             node.state = "completed"
             for path in node.tmp_paths:
@@ -1441,6 +1477,10 @@ class _ConcurrentEvaluator:
                     outputs=self._artifact_index_for(node=node, value=cached_result),
                 )
             )
+
+            # Record stat-index entry so future --trust-workspace runs can
+            # find this cache key without content hashing.
+            self._record_stat_index_entry(node=node, cache_key=cache_key)
             return
 
         self._emit_event(
@@ -2489,6 +2529,94 @@ class _ConcurrentEvaluator:
             return False
 
         return True
+
+    def _try_stat_index_hit(self, *, node: _TaskNode) -> bool:
+        """Attempt a stat-index cache hit for ``--trust-workspace`` mode.
+
+        Returns ``True`` if the hit succeeded and the node was marked
+        complete, ``False`` to fall through to the content-addressed path.
+        """
+        stat_key = self._cache_store.stat_fingerprint(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+            extra_source_hash=node.extra_source_hash,
+        )
+        cached_result = self._cache_store.try_stat_index(stat_key=stat_key)
+        if cached_result is MISSING:
+            return False
+
+        # In trust-workspace mode we only check that output files exist,
+        # not that their content matches the artifact store.
+        content_key = self._cache_store._stat_index.get(stat_key)
+        if content_key is None:
+            return False
+
+        node.cache_key = content_key
+        node.input_hashes = {}
+        self._record_task_metadata(node)
+        self._propagate_known_digests(cache_key=content_key)
+
+        node.result = cached_result
+        node.state = "completed"
+        for path in node.tmp_paths:
+            shutil.rmtree(path)
+        node.tmp_paths = []
+        if self.provenance is not None:
+            self.provenance.mark_cached(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                env=node.task_def.env,
+                value=cached_result,
+                outputs=self._artifact_index_for(node=node, value=cached_result),
+                assets=self._asset_index_for(value=cached_result),
+            )
+        self._emit_event(
+            TaskCacheHit(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                cache_key=content_key,
+            )
+        )
+        self._emit_event(
+            TaskCompleted(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                status="cached",
+                cache_key=content_key,
+                outputs=self._artifact_index_for(node=node, value=cached_result),
+            )
+        )
+        return True
+
+    def _record_stat_index_entry(self, *, node: _TaskNode, cache_key: str) -> None:
+        """Record a stat-index entry for a completed task."""
+        if node.resolved_args is None:
+            return
+        stat_key = self._cache_store.stat_fingerprint(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+            extra_source_hash=node.extra_source_hash,
+        )
+        self._cache_store.record_stat_index(stat_key=stat_key, cache_key=cache_key)
+
+    def _propagate_known_digests(self, *, cache_key: str) -> None:
+        """Populate ``_known_digests`` from a cache entry's artifact IDs.
+
+        Called on cache hits so that downstream tasks can skip re-hashing
+        file outputs that this task produced.
+        """
+        artifact_ids = self._cache_store._load_artifact_ids(cache_key=cache_key)
+        if artifact_ids is None:
+            return
+        for path_str, artifact_id in artifact_ids.items():
+            resolved_key = str(Path(path_str).resolve())
+            self._known_digests[resolved_key] = artifact_id
 
     def _record_task_metadata(self, node: _TaskNode) -> None:
         """Update provenance inputs and environment copies for a task node."""
