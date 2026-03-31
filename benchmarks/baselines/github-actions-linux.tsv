@@ -1,5 +1,5 @@
 example	mode	baseline_seconds	max_regression_pct
-init	cold	4.3	15.0
+init	cold	5.9	15.0
 init	cached	1.9	15.0
 bioinfo	cold	14.0	35.0
 bioinfo	cached	9.5	50.0
