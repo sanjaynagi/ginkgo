@@ -22,3 +22,33 @@ capacity_multiplier = 0.7
 scenario_id = "fuel_spike"
 delay_days = 2
 capacity_multiplier = 0.95
+
+[[scenarios]]
+scenario_id = "demand_surge"
+delay_days = 1
+capacity_multiplier = 1.1
+
+[[scenarios]]
+scenario_id = "rail_disruption"
+delay_days = 6
+capacity_multiplier = 0.85
+
+[[scenarios]]
+scenario_id = "customs_holdup"
+delay_days = 4
+capacity_multiplier = 0.9
+
+[[scenarios]]
+scenario_id = "labour_strike"
+delay_days = 10
+capacity_multiplier = 0.6
+
+[[scenarios]]
+scenario_id = "peak_season"
+delay_days = 2
+capacity_multiplier = 1.05
+
+[[scenarios]]
+scenario_id = "raw_material_shortage"
+delay_days = 8
+capacity_multiplier = 0.75
