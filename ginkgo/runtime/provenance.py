@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -125,7 +126,14 @@ class RunProvenanceRecorder:
                     "status": "pending",
                     "timings": {},
                 }
-                self._write_manifest()
+                self._append_event(
+                    {
+                        "event": "provenance_task_created",
+                        "run_id": self.run_id,
+                        "task_id": task_key,
+                        "task": tasks[task_key],
+                    }
+                )
             return self._task_logs[node_id]
 
     def add_run_timing(self, *, phase: str, seconds: float) -> None:
@@ -136,6 +144,14 @@ class RunProvenanceRecorder:
             timings = self._manifest.setdefault("timings", _empty_timings())
             run_timings = timings.setdefault("run", {})
             run_timings[phase] = _rounded_seconds(run_timings.get(phase, 0.0) + seconds)
+            self._append_event(
+                {
+                    "event": "provenance_run_timing",
+                    "run_id": self.run_id,
+                    "phase": phase,
+                    "seconds": _rounded_seconds(seconds),
+                }
+            )
 
     def add_task_timing(self, *, node_id: int, phase: str, seconds: float) -> None:
         """Accumulate one task timing bucket without writing immediately."""
@@ -149,6 +165,15 @@ class RunProvenanceRecorder:
             timings = self._manifest.setdefault("timings", _empty_timings())
             totals = timings.setdefault("task_phase_totals", {})
             totals[phase] = _rounded_seconds(totals.get(phase, 0.0) + seconds)
+            self._append_event(
+                {
+                    "event": "provenance_task_timing",
+                    "run_id": self.run_id,
+                    "task_id": _task_key(node_id),
+                    "phase": phase,
+                    "seconds": _rounded_seconds(seconds),
+                }
+            )
 
     def update_task_inputs(
         self,
@@ -188,7 +213,22 @@ class RunProvenanceRecorder:
                 task["dependency_ids"] = dependency_ids
             if dynamic_dependency_ids is not None:
                 task["dynamic_dependency_ids"] = dynamic_dependency_ids
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    key: task[key]
+                    for key in (
+                        "kind",
+                        "execution_mode",
+                        "inputs",
+                        "input_hashes",
+                        "cache_key",
+                        "dependency_ids",
+                        "dynamic_dependency_ids",
+                    )
+                    if key in task
+                },
+            )
 
     def mark_running(
         self,
@@ -211,7 +251,19 @@ class RunProvenanceRecorder:
             task["status"] = "running"
             task.setdefault("started_at", _timestamp())
             task["last_started_at"] = _timestamp()
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    "attempt": task["attempt"],
+                    "attempts": task["attempts"],
+                    "retries": task["retries"],
+                    "max_attempts": task["max_attempts"],
+                    "retries_remaining": task["retries_remaining"],
+                    "status": task["status"],
+                    "started_at": task["started_at"],
+                    "last_started_at": task["last_started_at"],
+                },
+            )
 
     def mark_retrying(
         self,
@@ -235,7 +287,19 @@ class RunProvenanceRecorder:
             task["retries_remaining"] = retries_remaining
             task["status"] = "pending"
             task.pop("finished_at", None)
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    "cached": task["cached"],
+                    "attempt": task["attempt"],
+                    "attempts": task["attempts"],
+                    "last_error": task["last_error"],
+                    "last_exit_code": task["last_exit_code"],
+                    "retries_remaining": task["retries_remaining"],
+                    "status": task["status"],
+                    "finished_at": None,
+                },
+            )
 
     def mark_cached(
         self,
@@ -262,7 +326,21 @@ class RunProvenanceRecorder:
             task.pop("error", None)
             task.pop("last_error", None)
             task.pop("last_exit_code", None)
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    "cached": task["cached"],
+                    "exit_code": task["exit_code"],
+                    "output": task["output"],
+                    "outputs": task["outputs"],
+                    "assets": task.get("assets"),
+                    "finished_at": task["finished_at"],
+                    "status": task["status"],
+                    "error": None,
+                    "last_error": None,
+                    "last_exit_code": None,
+                },
+            )
 
     def mark_succeeded(
         self,
@@ -289,7 +367,21 @@ class RunProvenanceRecorder:
             task.pop("error", None)
             task.pop("last_error", None)
             task.pop("last_exit_code", None)
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    "cached": task["cached"],
+                    "exit_code": task["exit_code"],
+                    "output": task["output"],
+                    "outputs": task["outputs"],
+                    "assets": task.get("assets"),
+                    "finished_at": task["finished_at"],
+                    "status": task["status"],
+                    "error": None,
+                    "last_error": None,
+                    "last_exit_code": None,
+                },
+            )
 
     def mark_failed(
         self,
@@ -313,14 +405,27 @@ class RunProvenanceRecorder:
             task["retries_remaining"] = 0
             task["finished_at"] = _timestamp()
             task["status"] = "failed"
-            self._write_manifest()
+            self._append_task_update(
+                node_id=node_id,
+                fields={
+                    "cached": task["cached"],
+                    "exit_code": task["exit_code"],
+                    "error": task["error"],
+                    "failure": task["failure"],
+                    "last_error": task["last_error"],
+                    "last_exit_code": task["last_exit_code"],
+                    "retries_remaining": task["retries_remaining"],
+                    "finished_at": task["finished_at"],
+                    "status": task["status"],
+                },
+            )
 
     def update_task_extra(self, *, node_id: int, **fields: Any) -> None:
         """Merge additional metadata fields into a task entry."""
         with self._lock:
             task = self._task(node_id)
             task.update(fields)
-            self._write_manifest()
+            self._append_task_update(node_id=node_id, fields=fields)
 
     def copy_env_lock(self, *, env_name: str, lock_path: Path) -> None:
         """Copy a Pixi lockfile into the run provenance directory once."""
@@ -335,7 +440,13 @@ class RunProvenanceRecorder:
         """Persist the latest run-level resource summary."""
         with self._lock:
             self._manifest["resources"] = _render_value(resources)
-            self._write_manifest()
+            self._append_event(
+                {
+                    "event": "provenance_run_update",
+                    "run_id": self.run_id,
+                    "fields": {"resources": self._manifest["resources"]},
+                }
+            )
 
     def finalize(
         self,
@@ -363,18 +474,46 @@ class RunProvenanceRecorder:
     def _task(self, node_id: int) -> dict[str, Any]:
         return self._manifest["tasks"][_task_key(node_id)]
 
-    def _write_manifest(self) -> None:
-        started = time.perf_counter()
-        self.manifest_path.write_text(
-            yaml.safe_dump(self._manifest, sort_keys=False),
-            encoding="utf-8",
+    def _append_task_update(self, *, node_id: int, fields: dict[str, Any]) -> None:
+        task_key = _task_key(node_id)
+        self._append_event(
+            {
+                "event": "provenance_task_updated",
+                "run_id": self.run_id,
+                "task_id": task_key,
+                "fields": _render_value(fields),
+            }
         )
-        elapsed = time.perf_counter() - started
+
+    def _append_event(self, payload: dict[str, Any]) -> None:
+        started = time.perf_counter()
+        with self.events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True))
+            handle.write("\n")
+        self._record_provenance_write(seconds=time.perf_counter() - started)
+
+    def _record_provenance_write(self, *, seconds: float) -> None:
         timings = self._manifest.setdefault("timings", _empty_timings())
         run_timings = timings.setdefault("run", {})
         run_timings["provenance_write_seconds"] = _rounded_seconds(
-            run_timings.get("provenance_write_seconds", 0.0) + elapsed
+            run_timings.get("provenance_write_seconds", 0.0) + seconds
         )
+
+    def _write_manifest(self) -> None:
+        started = time.perf_counter()
+        self.manifest_path.write_text(
+            yaml.safe_dump(
+                {
+                    **self._manifest,
+                    "_provenance_event_offset": (
+                        self.events_path.stat().st_size if self.events_path.is_file() else 0
+                    ),
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        self._record_provenance_write(seconds=time.perf_counter() - started)
 
 
 def latest_run_dir(root_dir: Path) -> Path | None:
@@ -395,7 +534,10 @@ def load_manifest(run_dir: Path) -> dict[str, Any]:
     data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise TypeError(f"Run manifest must contain a mapping: {manifest_path}")
-    return data
+    event_offset = data.get("_provenance_event_offset", 0)
+    if not isinstance(event_offset, int):
+        event_offset = 0
+    return _replay_provenance_events(run_dir=run_dir, manifest=data, start_offset=event_offset)
 
 
 def tail_text(path: Path, *, lines: int = 50) -> list[str]:
@@ -455,3 +597,86 @@ def _empty_timings() -> dict[str, Any]:
 
 def _rounded_seconds(value: float) -> float:
     return round(float(value), 6)
+
+
+def _replay_provenance_events(
+    *, run_dir: Path, manifest: dict[str, Any], start_offset: int
+) -> dict[str, Any]:
+    events_path = run_dir / "events.jsonl"
+    if not events_path.is_file():
+        return manifest
+
+    # Replay append-only provenance patches over the base manifest snapshot.
+    manifest.pop("_provenance_event_offset", None)
+    tasks = manifest.setdefault("tasks", {})
+    timings = manifest.setdefault("timings", _empty_timings())
+    run_timings = timings.setdefault("run", {})
+    totals = timings.setdefault("task_phase_totals", {})
+
+    with events_path.open("r", encoding="utf-8") as handle:
+        if start_offset > 0:
+            handle.seek(start_offset)
+        lines = handle.read().splitlines()
+
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_name = event.get("event")
+        if event_name == "provenance_task_created":
+            task_id = event.get("task_id")
+            task_payload = event.get("task")
+            if isinstance(task_id, str) and isinstance(task_payload, dict):
+                tasks[task_id] = dict(task_payload)
+            continue
+
+        if event_name == "provenance_task_updated":
+            task_id = event.get("task_id")
+            fields = event.get("fields")
+            if isinstance(task_id, str) and isinstance(fields, dict):
+                task = tasks.setdefault(task_id, {})
+                for key, value in fields.items():
+                    if value is None:
+                        task.pop(key, None)
+                    else:
+                        task[key] = value
+            continue
+
+        if event_name == "provenance_run_update":
+            fields = event.get("fields")
+            if isinstance(fields, dict):
+                for key, value in fields.items():
+                    if value is None:
+                        manifest.pop(key, None)
+                    else:
+                        manifest[key] = value
+            continue
+
+        if event_name == "provenance_run_timing":
+            phase = event.get("phase")
+            seconds = event.get("seconds")
+            if isinstance(phase, str) and isinstance(seconds, int | float):
+                run_timings[phase] = _rounded_seconds(run_timings.get(phase, 0.0) + seconds)
+            continue
+
+        if event_name == "provenance_task_timing":
+            task_id = event.get("task_id")
+            phase = event.get("phase")
+            seconds = event.get("seconds")
+            if (
+                isinstance(task_id, str)
+                and isinstance(phase, str)
+                and isinstance(seconds, int | float)
+            ):
+                task = tasks.setdefault(task_id, {})
+                task_timings = task.setdefault("timings", {})
+                task_timings[phase] = _rounded_seconds(task_timings.get(phase, 0.0) + seconds)
+                totals[phase] = _rounded_seconds(totals.get(phase, 0.0) + seconds)
+
+    return manifest

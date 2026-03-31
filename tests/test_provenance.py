@@ -8,7 +8,7 @@ import yaml
 
 from ginkgo import file, secret, task
 from ginkgo.cli.commands.inspect import inspect_run
-from ginkgo.runtime.provenance import RunProvenanceRecorder
+from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest
 
 
 @task()
@@ -100,7 +100,7 @@ class TestRunProvenanceRecorder:
             cache_key=None,
         )
 
-        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = load_manifest(recorder.run_dir)
         assert manifest["tasks"]["task_0000"]["inputs"]["token"]["redacted"] is True
         assert manifest["tasks"]["task_0000"]["inputs"]["token"]["secret"]["name"] == "API_TOKEN"
 
@@ -136,3 +136,62 @@ class TestRunProvenanceRecorder:
         payload = inspect_run(run_dir=recorder.run_dir)
         assert payload["timings"]["run"]["workflow_load_seconds"] == 1.25
         assert payload["tasks"][0]["timings"]["cache_lookup_seconds"] == 0.5
+
+    def test_load_manifest_replays_task_updates_before_finalize(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="20260312_000000_deadbeef",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+
+        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
+        recorder.mark_running(
+            node_id=0,
+            task_name="demo.task",
+            env=None,
+            attempt=1,
+            retries=0,
+        )
+
+        raw_manifest = yaml.safe_load(
+            (recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8")
+        )
+        assert raw_manifest["tasks"] == {}
+
+        manifest = load_manifest(recorder.run_dir)
+        assert manifest["tasks"]["task_0000"]["status"] == "running"
+        assert manifest["tasks"]["task_0000"]["attempt"] == 1
+
+    def test_manifest_is_flushed_with_latest_state_on_finalize(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# placeholder\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="20260312_000000_deadbeef",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            memory=None,
+            params={},
+        )
+
+        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
+        recorder.mark_cached(
+            node_id=0,
+            task_name="demo.task",
+            env=None,
+            value="ok",
+        )
+        recorder.finalize(status="succeeded")
+
+        raw_manifest = yaml.safe_load(
+            (recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8")
+        )
+        assert raw_manifest["status"] == "succeeded"
+        assert raw_manifest["tasks"]["task_0000"]["status"] == "cached"
