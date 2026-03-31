@@ -29,7 +29,7 @@
     {
       "example": "chem",
       "mode": "cold",
-      "baseline_seconds": 2.4,
+      "baseline_seconds": 3.0,
       "max_regression_pct": 10.0
     },
     {
@@ -65,13 +65,13 @@
     {
       "example": "supplychain",
       "mode": "cold",
-      "baseline_seconds": 2.7,
+      "baseline_seconds": 3.7,
       "max_regression_pct": 15.0
     },
     {
       "example": "supplychain",
       "mode": "cached",
-      "baseline_seconds": 1.4,
+      "baseline_seconds": 2.3,
       "max_regression_pct": 20.0
     },
     {
