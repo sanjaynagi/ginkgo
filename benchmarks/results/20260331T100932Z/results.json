@@ -1,0 +1,53 @@
+{
+  "comparisons": [
+    {
+      "allowed_seconds": 2.8185000000000002,
+      "baseline_seconds": 1.879,
+      "example": "chem",
+      "max_regression_pct": 50.0,
+      "mode": "cold",
+      "observed_seconds": 1.9514552910113707,
+      "status": "passed"
+    },
+    {
+      "allowed_seconds": 1.272,
+      "baseline_seconds": 0.848,
+      "example": "chem",
+      "max_regression_pct": 50.0,
+      "mode": "cached",
+      "observed_seconds": 0.8206714169937186,
+      "status": "passed"
+    }
+  ],
+  "generated_at": "2026-03-31T10:09:37.264742+00:00",
+  "records": [
+    {
+      "cached_task_count": 0,
+      "case": "default",
+      "example": "chem",
+      "executed_task_count": 11,
+      "mode": "cold",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "python_version": "3.14.3",
+      "run_id": "20260331_100932_6e7ce19a",
+      "status": "succeeded",
+      "task_count": 11,
+      "timestamp_utc": "2026-03-31T10:09:34.520982+00:00",
+      "wall_time_seconds": 1.9514552910113707
+    },
+    {
+      "cached_task_count": 7,
+      "case": "default",
+      "example": "chem",
+      "executed_task_count": 0,
+      "mode": "cached",
+      "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+      "python_version": "3.14.3",
+      "run_id": "20260331_100936_b3208eb8",
+      "status": "succeeded",
+      "task_count": 7,
+      "timestamp_utc": "2026-03-31T10:09:37.264686+00:00",
+      "wall_time_seconds": 0.8206714169937186
+    }
+  ]
+}
