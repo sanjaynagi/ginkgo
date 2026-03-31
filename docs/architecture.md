@@ -19,7 +19,9 @@ The repository currently implements:
 - Reproducible environment dispatch through Pixi for local shell execution and
   container-backed execution for shell tasks
 - Provenance capture, logs, machine-readable runtime events, and structured
-  inspection and diagnostics through the CLI
+  inspection and diagnostics through the CLI, with append-only hot-path
+  provenance updates in `events.jsonl` and a reconstructed/finalized
+  `manifest.yaml`
 - A local-first web UI for runs, cache inspection, graphs, notebook artifacts,
   and multi-workspace browsing
 - A canonical package-oriented project layout with workflow autodiscovery and
