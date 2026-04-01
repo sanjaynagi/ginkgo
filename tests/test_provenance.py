@@ -8,7 +8,8 @@ import yaml
 
 from ginkgo import file, secret, task
 from ginkgo.cli.commands.inspect import inspect_run
-from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest
+import ginkgo.runtime.provenance as provenance_module
+from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 
 
 @task()
@@ -18,6 +19,28 @@ def fake_output_task(output_path: str) -> file:
 
 
 class TestRunProvenanceRecorder:
+    def test_make_run_id_remains_unique_under_fixed_clock(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        real_datetime = provenance_module.datetime
+
+        class _FixedDatetime:
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime(2026, 4, 1, 12, 0, 0, 123456, tzinfo=tz)
+
+        tokens = iter(["aaaaaaaa", "bbbbbbbb"])
+        monkeypatch.setattr(provenance_module, "datetime", _FixedDatetime)
+        monkeypatch.setattr(provenance_module.secrets, "token_hex", lambda _: next(tokens))
+
+        workflow_path = tmp_path / "workflow.py"
+        first = make_run_id(workflow_path=workflow_path)
+        second = make_run_id(workflow_path=workflow_path)
+
+        assert first != second
+        assert first.startswith("20260401_120000_123456_")
+        assert second.startswith("20260401_120000_123456_")
+
     def test_marker_type_outputs_are_serialized_as_plain_strings(self, tmp_path: Path) -> None:
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text("# placeholder\n", encoding="utf-8")
