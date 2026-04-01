@@ -257,7 +257,6 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
 - Quality check results are recorded in run provenance alongside the asset metadata.
 
 **Drift detection between versions:**
-
 - Add `ginkgo asset diff <key> <ver1> <ver2>` to compare profiling stats between two versions of the same asset:
 
   ```
@@ -399,6 +398,46 @@ refactor, workspace validation from non-workspace directories, age-based
 
 - Re-run `VW-4`, `VW-5`, `VW-6`, and `VW-8` through the polished CLI and UI paths and assert the richer retry, cache, and resource behavior is visible in both CLI output and persisted provenance.
 - Assert the improved diagnostics distinguish common classes of failure such as env mismatch, invalid paths, and packaging/importability errors.
+
+---
+
+### Phase 16 — UI Performance and Responsiveness
+
+**Goal:** Keep the local web UI fast and predictable as run history, task counts, event volume, and artifact metadata grow.
+
+#### Problem definition
+
+The current UI is local-first and provenance-backed, which keeps the architecture simple, but that model can still become sluggish when a workspace accumulates many runs, large manifests, dense task graphs, or high-frequency live events. Notebook artifacts and richer asset metadata will increase that pressure. UI responsiveness should be treated as an explicit workstream rather than an incidental cleanup item.
+
+#### Deliverables
+
+- Profile the UI server and frontend against larger synthetic and real workspaces to identify the dominant latency and rendering costs.
+- Reduce run-list and run-detail load latency by avoiding full manifest reads when summary data is sufficient.
+- Add pagination, windowing, or incremental loading for large run collections and task lists.
+- Make live updates cheaper by sending targeted diffs and limiting unnecessary client-side recomputation.
+- Improve graph rendering performance for large DAGs through layout caching, viewport-aware rendering, or progressive expansion.
+- Ensure notebook and asset detail views remain responsive even when runs contain many artifacts.
+- Add benchmark-style regression checks for UI server payload construction and selected frontend interactions.
+
+#### Key design points
+
+- Performance work should preserve the current provenance-first architecture; optimisations should improve data access patterns rather than introduce a second source of truth.
+- The server should distinguish between summary payloads and detail payloads so the frontend does not pay full-cost reads for overview screens.
+- Frontend rendering work should favour incremental rendering and bounded DOM size over cosmetic complexity.
+- UI performance should be measured with repeatable fixtures and checked into the repository where practical, so regressions are visible.
+
+#### Risks and tradeoffs
+
+- Aggressive caching can make the UI appear fast while serving stale data if invalidation rules are weak.
+- Progressive loading improves responsiveness but can complicate navigation and empty-state handling if the UX is not deliberate.
+- Optimising graph rendering may require simplifying some visual affordances for very large workflows.
+
+#### Success criteria
+
+- Large workspaces with many historical runs remain navigable without noticeable stalls in the run list.
+- Opening a run with a large task graph or many artifacts does not block the UI for multiple seconds on routine hardware.
+- Live runs continue to update smoothly without flooding the browser with redundant state changes.
+- Notebook and artifact views remain responsive enough to be practical on real workflow runs rather than only toy examples.
 
 ---
 

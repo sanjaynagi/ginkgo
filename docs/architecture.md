@@ -23,7 +23,7 @@ The repository currently implements:
   provenance updates in `events.jsonl` and a reconstructed/finalized
   `manifest.yaml`
 - A local-first web UI for runs, cache inspection, graphs, notebook artifacts,
-  and multi-workspace browsing
+  embedded notebook viewing, and multi-workspace browsing
 - A canonical package-oriented project layout with workflow autodiscovery and
   scaffolded project initialization
 - An example-driven benchmark harness with generated benchmark inputs, checked-
@@ -205,7 +205,9 @@ under `examples/`.
 - The benchmark entry point is `pixi run benchmark`, which runs
   `python -m benchmarks.run`.
 - Structured benchmark results are written under `benchmarks/results/`.
-- Checked-in slowdown baselines live under `benchmarks/baselines/`.
+- Checked-in slowdown baselines live under `benchmarks/baselines/` as JSON.
+- Benchmark runs print a readable terminal summary table in addition to writing
+  structured JSON results.
 - A dedicated GitHub Actions workflow runs the benchmark lane separately from
   correctness and quality checks.
 
@@ -396,11 +398,19 @@ def analyze_data(*, input_file: file) -> file:
 Implemented notebook behavior includes:
 
 - `.ipynb` execution through Papermill with standard parameters-cell injection
+- managed Ginkgo kernelspecs under `.ginkgo/jupyter/` for `.ipynb` execution,
+  with explicit `ipykernel` validation and deterministic kernel naming derived
+  from the selected execution environment
 - marimo notebook execution through a CLI/script invocation with resolved task arguments forwarded as CLI parameters
 - stable run-scoped notebook artifacts under `.ginkgo/runs/<run_id>/notebooks/`
 - HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
 - notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
 - explicit `outputs=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `outputs` is omitted)
+
+For Papermill-backed notebooks, Ginkgo now prefers the runtime-selected task
+environment over embedded notebook kernelspec metadata. When a notebook task
+declares `env=...`, the managed kernelspec is prepared from that environment;
+otherwise the current interpreter environment is used.
 
 Notebook tasks run on the same driver-side execution path as shell tasks,
 preserving scheduler semantics for dependency resolution, retries, environment
