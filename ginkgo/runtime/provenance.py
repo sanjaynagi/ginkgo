@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -20,9 +21,10 @@ from ginkgo.runtime.value_codec import summarise_value
 
 def make_run_id(*, workflow_path: str | Path | None = None) -> str:
     """Return a timestamped run identifier."""
-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
     token_source = str(Path(workflow_path).resolve()) if workflow_path is not None else timestamp
-    suffix = abs(hash((token_source, timestamp))) % (16**8)
+    discriminator = secrets.token_hex(4)
+    suffix = abs(hash((token_source, timestamp, discriminator))) % (16**8)
     return f"{timestamp}_{suffix:08x}"
 
 

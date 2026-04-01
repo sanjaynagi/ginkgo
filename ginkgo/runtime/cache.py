@@ -360,12 +360,15 @@ class CacheStore:
         artifact_ids : dict[str, str]
             Mapping from output path strings to artifact IDs.
         """
+        publisher = self.publisher
+        if publisher is None:
+            return
         refs_dir = self._artifact_store._refs_dir
         for artifact_id in artifact_ids.values():
             ref_path = refs_dir / f"{artifact_id}.json"
             if ref_path.exists():
                 record = ArtifactRecord.from_path(ref_path)
-                self.publisher.publish(record=record)
+                publisher.publish(record=record)
 
     def _collect_output_artifacts(
         self,
@@ -451,6 +454,10 @@ class CacheStore:
         if annotation is tmp_dir:
             return None
         if isinstance(value, AssetRef):
+            if _annotation_includes(annotation=annotation, expected=file):
+                return {"sha256": value.content_hash, "type": "file"}
+            if _annotation_includes(annotation=annotation, expected=folder):
+                return {"sha256": value.content_hash, "type": "folder"}
             return {
                 "asset": str(value.key),
                 "type": "asset_ref",
@@ -530,7 +537,7 @@ class CacheStore:
                 "type": "tuple",
             }
 
-        if annotation is file or isinstance(value, file):
+        if _annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
             # Use pre-computed digest from upstream task output when available.
             if known_digests is not None:
                 resolved_key = str(Path(str(value)).resolve())
@@ -539,7 +546,9 @@ class CacheStore:
                     return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if annotation is folder or isinstance(value, folder):
+        if _annotation_includes(annotation=annotation, expected=folder) or isinstance(
+            value, folder
+        ):
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
@@ -761,3 +770,15 @@ def _save_stat_index(*, root: Path, index: dict[str, str]) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def _annotation_includes(*, annotation: Any, expected: Any) -> bool:
+    """Return whether an annotation directly or indirectly allows ``expected``."""
+    if annotation is expected:
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(
+        _annotation_includes(annotation=item, expected=expected) for item in get_args(annotation)
+    )
