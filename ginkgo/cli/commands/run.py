@@ -44,6 +44,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         memory=args.memory,
         dry_run=args.dry_run,
         output_mode=output_mode,
+        trust_workspace=getattr(args, "trust_workspace", False),
     )
 
 
@@ -56,6 +57,7 @@ def run_workflow(
     memory: int | None,
     dry_run: bool,
     output_mode: RunMode = "default",
+    trust_workspace: bool = False,
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -99,7 +101,9 @@ def run_workflow(
         backend=backend,
         secret_resolver=secret_resolver,
     )
+    validate_started = time.perf_counter()
     evaluator.validate(expr)
+    validate_elapsed = time.perf_counter() - validate_started
     task_count = len(evaluator._nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
     env_count = len({node.task_def.env for node in evaluator._nodes.values() if node.task_def.env})
@@ -160,6 +164,8 @@ def run_workflow(
         memory=memory,
         params=params,
     )
+    recorder.add_run_timing(phase="workflow_load_seconds", seconds=load_elapsed)
+    recorder.add_run_timing(phase="workflow_validate_seconds", seconds=validate_elapsed)
     resource_monitor = RunResourceMonitor(
         root_pid=os.getpid(),
         sink=recorder.update_resources,
@@ -209,6 +215,7 @@ def run_workflow(
                 provenance=recorder,
                 secret_resolver=secret_resolver,
                 event_bus=bus,
+                trust_workspace=trust_workspace,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)
@@ -225,6 +232,10 @@ def run_workflow(
             try:
                 evaluator.evaluate(expr)
             except BaseException as exc:
+                recorder.add_run_timing(
+                    phase="workflow_execute_seconds",
+                    seconds=time.perf_counter() - run_started,
+                )
                 resource_summary = resource_monitor.stop()
                 recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
                 bus.emit(
@@ -251,6 +262,10 @@ def run_workflow(
                 raise
 
             resource_summary = resource_monitor.stop()
+            recorder.add_run_timing(
+                phase="workflow_execute_seconds",
+                seconds=time.perf_counter() - run_started,
+            )
             recorder.finalize(status="succeeded", resources=resource_summary)
             manifest = load_manifest(recorder.run_dir)
             bus.emit(

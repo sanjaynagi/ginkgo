@@ -101,7 +101,8 @@ def main():
         )
         assert first.returncode == 0, first.stderr
         assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", first.stdout
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            first.stdout,
         )
         assert "📦 Loading workflow...  done" in first.stdout
         assert "🌱 Building expression tree...  1 tasks" in first.stdout
@@ -384,7 +385,7 @@ def main():
         failed = _run_cli("run", "failing_workflow.py", cwd=Path.cwd())
         assert failed.returncode == 1
         assert re.search(
-            r"🌿 ginkgo run failing_workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)",
+            r"🌿 ginkgo run failing_workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
             failed.stdout,
         )
         assert "explode" in failed.stdout
@@ -725,7 +726,8 @@ def main():
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            result.stdout,
         )
         assert "✓ succeeded" in result.stdout
 
@@ -751,7 +753,8 @@ def main():
         result = _run_cli("run", "workflow.py", "--verbose", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9a-f]{8}\)", result.stdout
+            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            result.stdout,
         )
         assert "Run Summary" not in result.stdout
         assert re.search(r"Running locally on \d+ Cores", result.stdout)

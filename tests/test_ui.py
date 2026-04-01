@@ -812,22 +812,22 @@ class TestUiServer:
             _recv_ws_json(client, buffer)
 
             stdout_path.write_text("live stdout chunk\n", encoding="utf-8")
-            recorder.events_path.write_text(
-                json.dumps(
-                    {
-                        "event": "task_log",
-                        "run_id": recorder.run_id,
-                        "task_id": "task_0000",
-                        "task_name": "demo.stream",
-                        "attempt": 1,
-                        "stream": "stdout",
-                        "chunk": "live stdout chunk\n",
-                        "sequence": 1,
-                    }
+            with recorder.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "event": "task_log",
+                            "run_id": recorder.run_id,
+                            "task_id": "task_0000",
+                            "task_name": "demo.stream",
+                            "attempt": 1,
+                            "stream": "stdout",
+                            "chunk": "live stdout chunk\n",
+                            "sequence": 1,
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n",
-                encoding="utf-8",
-            )
             recorder.mark_succeeded(
                 node_id=0,
                 task_name="demo.stream",

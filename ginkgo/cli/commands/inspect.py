@@ -110,6 +110,7 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
                     "stderr_log": task.get("stderr_log"),
                     "started_at": task.get("started_at"),
                     "finished_at": task.get("finished_at"),
+                    "timings": task.get("timings", {}),
                 }
             )
 
@@ -121,6 +122,7 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
         "finished_at": manifest.get("finished_at"),
         "error": manifest.get("error"),
         "resources": manifest.get("resources"),
+        "timings": manifest.get("timings", {}),
         "tasks": task_rows,
         "dynamic_expansions": dynamic_expansions,
     }

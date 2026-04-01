@@ -12,12 +12,15 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
+from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifact_store import LocalArtifactStore
+from ginkgo.runtime.hash_memo import HashMemo
 from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file, hash_str
+from ginkgo.runtime.materialization_log import MaterializationLog
 from ginkgo.runtime.secrets import redact_value, secret_identity
 from ginkgo.runtime.value_codec import (
     decode_value,
@@ -54,8 +57,12 @@ class CacheStore:
     backend: Any | None = None  # TaskBackend; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
+    hash_memo: HashMemo | None = None
+    materialization_log: MaterializationLog | None = None
+    trust_workspace: bool = False
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
+    _stat_index: dict[str, str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else Path.cwd() / ".ginkgo" / "cache"
@@ -67,7 +74,17 @@ class CacheStore:
         else:
             # Default: sibling directory to the cache root.
             artifacts_root = self._root.parent / "artifacts"
-            object.__setattr__(self, "_artifact_store", LocalArtifactStore(root=artifacts_root))
+            object.__setattr__(
+                self,
+                "_artifact_store",
+                LocalArtifactStore(
+                    root=artifacts_root,
+                    hash_memo=self.hash_memo,
+                    materialization_log=self.materialization_log,
+                ),
+            )
+
+        object.__setattr__(self, "_stat_index", _load_stat_index(self._root))
 
     def build_cache_key(
         self,
@@ -75,6 +92,7 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         extra_source_hash: str | None = None,
+        known_digests: dict[str, str] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Build a stable content-addressed cache key for a task call.
 
@@ -89,13 +107,21 @@ class CacheStore:
             notebook and script tasks to incorporate the source hash of the
             underlying notebook or script file, which is not known at
             decoration time.
+        known_digests : dict[str, str] | None
+            Pre-computed content digests for managed file outputs from
+            upstream tasks, keyed by resolved absolute path.  When present,
+            file inputs whose path appears here skip disk hashing entirely.
         """
         input_hashes: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir:
                 continue
-            input_hashes[name] = self._hash_value(annotation=annotation, value=resolved_args[name])
+            input_hashes[name] = self._hash_value(
+                annotation=annotation,
+                value=resolved_args[name],
+                known_digests=known_digests,
+            )
 
         env_hash = self._env_hash(task_def=task_def)
 
@@ -138,11 +164,16 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         input_hashes: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, str]:
         """Atomically persist a task result and metadata.
 
         File and folder outputs are copied into the artifact store, while the
         working-tree materialization is left in place as writable content.
+
+        Returns
+        -------
+        dict[str, str]
+            Mapping from output path strings to artifact IDs.
         """
         # Always store output artifacts, even if the cache entry already exists.
         artifact_ids = self._store_output_artifacts(result=result, task_def=task_def)
@@ -191,6 +222,8 @@ class CacheStore:
             finally:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
+
+        return artifact_ids
 
     def validate_cached_outputs(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
         """Ensure cached file and folder outputs are materialized correctly.
@@ -327,12 +360,15 @@ class CacheStore:
         artifact_ids : dict[str, str]
             Mapping from output path strings to artifact IDs.
         """
+        publisher = self.publisher
+        if publisher is None:
+            return
         refs_dir = self._artifact_store._refs_dir
         for artifact_id in artifact_ids.values():
             ref_path = refs_dir / f"{artifact_id}.json"
             if ref_path.exists():
                 record = ArtifactRecord.from_path(ref_path)
-                self.publisher.publish(record=record)
+                publisher.publish(record=record)
 
     def _collect_output_artifacts(
         self,
@@ -407,14 +443,36 @@ class CacheStore:
             "pixi_lock": lock_digest,
         }
 
-    def _hash_value(self, *, annotation: Any, value: Any) -> Any:
+    def _hash_value(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        known_digests: dict[str, str] | None = None,
+    ) -> Any:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
         if isinstance(value, AssetRef):
+            if _annotation_includes(annotation=annotation, expected=file):
+                return {"sha256": value.content_hash, "type": "file"}
+            if _annotation_includes(annotation=annotation, expected=folder):
+                return {"sha256": value.content_hash, "type": "folder"}
             return {
                 "asset": str(value.key),
                 "type": "asset_ref",
+                "version_id": value.version_id,
+            }
+        if isinstance(value, RemoteRef):
+            if value.version_id is None:
+                raise ValueError(
+                    "Remote inputs without version_id must be staged before cache lookup."
+                )
+            return {
+                "bucket": value.bucket,
+                "key": value.key,
+                "scheme": value.scheme,
+                "type": type(value).__name__,
                 "version_id": value.version_id,
             }
         if isinstance(value, SecretRef):
@@ -426,7 +484,12 @@ class CacheStore:
             inner_annotation = inner_args[0] if inner_args else Any
             return {
                 "items": [
-                    self._hash_value(annotation=inner_annotation, value=item) for item in value
+                    self._hash_value(
+                        annotation=inner_annotation,
+                        value=item,
+                        known_digests=known_digests,
+                    )
+                    for item in value
                 ],
                 "type": origin.__name__,
             }
@@ -436,8 +499,16 @@ class CacheStore:
             return {
                 "items": [
                     {
-                        "key": self._hash_value(annotation=key_annotation, value=key),
-                        "value": self._hash_value(annotation=value_annotation, value=item),
+                        "key": self._hash_value(
+                            annotation=key_annotation,
+                            value=key,
+                            known_digests=known_digests,
+                        ),
+                        "value": self._hash_value(
+                            annotation=value_annotation,
+                            value=item,
+                            known_digests=known_digests,
+                        ),
                     }
                     for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
                 ],
@@ -446,20 +517,38 @@ class CacheStore:
 
         if isinstance(value, list):
             return {
-                "items": [self._hash_value(annotation=annotation, value=item) for item in value],
+                "items": [
+                    self._hash_value(
+                        annotation=annotation, value=item, known_digests=known_digests
+                    )
+                    for item in value
+                ],
                 "type": "list",
             }
 
         if isinstance(value, tuple):
             return {
-                "items": [self._hash_value(annotation=annotation, value=item) for item in value],
+                "items": [
+                    self._hash_value(
+                        annotation=annotation, value=item, known_digests=known_digests
+                    )
+                    for item in value
+                ],
                 "type": "tuple",
             }
 
-        if annotation is file or isinstance(value, file):
+        if _annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+            # Use pre-computed digest from upstream task output when available.
+            if known_digests is not None:
+                resolved_key = str(Path(str(value)).resolve())
+                known = known_digests.get(resolved_key)
+                if known is not None:
+                    return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if annotation is folder or isinstance(value, folder):
+        if _annotation_includes(annotation=annotation, expected=folder) or isinstance(
+            value, folder
+        ):
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
@@ -507,13 +596,137 @@ class CacheStore:
         """Return the BLAKE3 digest of a file's contents.
 
         Follows symlinks so that hashing a symlinked output reads the artifact
-        store content transparently.
+        store content transparently.  Uses run-scoped memoization when
+        available.
         """
+        if self.hash_memo is not None:
+            return self.hash_memo.hash_file(path)
         return hash_file(path)
 
     def _hash_folder_contents(self, path: Path) -> str:
-        """Return the BLAKE3 digest of a folder's recursive contents."""
+        """Return the BLAKE3 digest of a folder's recursive contents.
+
+        Uses run-scoped memoization when available.
+        """
+        if self.hash_memo is not None:
+            return self.hash_memo.hash_directory(path)
         return hash_directory(path)
+
+    def stat_fingerprint(
+        self,
+        *,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any],
+        extra_source_hash: str | None = None,
+    ) -> str:
+        """Build a stat-based fingerprint for ``--trust-workspace`` mode.
+
+        Uses file/folder stat metadata instead of content hashes to build
+        a fast cache-key surrogate.
+
+        Parameters
+        ----------
+        task_def : TaskDef
+            The task definition.
+        resolved_args : dict[str, Any]
+            Resolved input argument values.
+        extra_source_hash : str | None
+            Additional source hash (notebook/script).
+
+        Returns
+        -------
+        str
+            Hex-encoded BLAKE3 digest of the stat-based payload.
+        """
+        stat_parts: dict[str, Any] = {}
+        for name, parameter in task_def.signature.parameters.items():
+            annotation = task_def.type_hints.get(name, parameter.annotation)
+            if annotation is tmp_dir:
+                continue
+            stat_parts[name] = self._stat_value(annotation=annotation, value=resolved_args[name])
+
+        source_hash = task_def.cache_source_hash
+        if extra_source_hash is not None:
+            source_hash = hash_str(f"{source_hash}:{extra_source_hash}")
+
+        payload = {
+            "inputs": stat_parts,
+            "source_hash": source_hash,
+            "task": task_def.name,
+            "version": task_def.version,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hash_bytes(encoded)
+
+    def try_stat_index(self, *, stat_key: str) -> Any:
+        """Look up a stat-based fingerprint in the persistent index.
+
+        Returns
+        -------
+        Any
+            Cached result if found, or ``MISSING``.
+        """
+        content_key = self._stat_index.get(stat_key)
+        if content_key is None:
+            return MISSING
+        return self.load(cache_key=content_key)
+
+    def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
+        """Record a mapping from stat fingerprint to content cache key."""
+        self._stat_index[stat_key] = cache_key
+
+    def save_stat_index(self) -> None:
+        """Persist the stat index to disk."""
+        _save_stat_index(root=self._root, index=self._stat_index)
+
+    def _stat_value(self, *, annotation: Any, value: Any) -> Any:
+        """Build a stat-based representation for a value (no content reading)."""
+        if annotation is tmp_dir:
+            return None
+
+        if isinstance(value, RemoteRef):
+            if value.version_id is None:
+                return {
+                    "bucket": value.bucket,
+                    "key": value.key,
+                    "scheme": value.scheme,
+                    "type": type(value).__name__,
+                    "unversioned": True,
+                }
+            return {
+                "bucket": value.bucket,
+                "key": value.key,
+                "scheme": value.scheme,
+                "type": type(value).__name__,
+                "version_id": value.version_id,
+            }
+
+        if annotation is file or isinstance(value, file):
+            path = Path(str(value)).resolve()
+            if path.is_file():
+                st = path.stat()
+                return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
+            return {"type": "file", "missing": True}
+
+        if annotation is folder or isinstance(value, folder):
+            path = Path(str(value)).resolve()
+            if path.is_dir():
+                parts: list[str] = []
+                for child in sorted(
+                    path.rglob("*"),
+                    key=lambda p: str(p.relative_to(path)),
+                ):
+                    rel = child.relative_to(path).as_posix()
+                    if child.is_dir():
+                        parts.append(f"D:{rel}")
+                    else:
+                        st = child.stat()
+                        parts.append(f"F:{rel}:{st.st_size}:{st.st_mtime_ns}")
+                return {"fingerprint": hash_str("\n".join(parts)), "type": "folder"}
+            return {"type": "folder", "missing": True}
+
+        # For non-path types, use the same hash as the content-addressed path.
+        return self._hash_value(annotation=annotation, value=value)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""
@@ -521,3 +734,51 @@ class CacheStore:
         if len(args) == 2:
             return args[0], args[1]
         return Any, Any
+
+
+# -- stat index helpers --------------------------------------------------------
+
+
+def _stat_index_path(root: Path) -> Path:
+    """Return the path for the persistent stat-to-content key index."""
+    return root / "stat_index.json"
+
+
+def _load_stat_index(root: Path) -> dict[str, str]:
+    """Load the stat index from disk."""
+    path = _stat_index_path(root)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _save_stat_index(*, root: Path, index: dict[str, str]) -> None:
+    """Persist the stat index atomically."""
+    path = _stat_index_path(root)
+    fd, tmp = tempfile.mkstemp(dir=str(root), suffix=".tmp", prefix="stat-idx-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(index, f, separators=(",", ":"))
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _annotation_includes(*, annotation: Any, expected: Any) -> bool:
+    """Return whether an annotation directly or indirectly allows ``expected``."""
+    if annotation is expected:
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(
+        _annotation_includes(annotation=item, expected=expected) for item in get_args(annotation)
+    )

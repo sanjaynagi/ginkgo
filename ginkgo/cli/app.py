@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
     run_parser.add_argument("--agent", action="store_true")
+    run_parser.add_argument(
+        "--trust-workspace",
+        action="store_true",
+        help="Skip content hashing; use stat-based checks only (faster warm runs)",
+    )
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)

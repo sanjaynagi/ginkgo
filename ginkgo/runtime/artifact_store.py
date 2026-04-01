@@ -27,7 +27,9 @@ from ginkgo.runtime.artifact_model import (
     deserialize_tree_manifest,
     serialize_tree_manifest,
 )
+from ginkgo.runtime.hash_memo import HashMemo
 from ginkgo.runtime.hashing import hash_bytes, hash_file
+from ginkgo.runtime.materialization_log import MaterializationLog
 
 
 DIGEST_ALGORITHM = "blake3"
@@ -171,11 +173,19 @@ class LocalArtifactStore:
         ``.ginkgo/artifacts`` under the current working directory.
     """
 
-    def __init__(self, *, root: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        hash_memo: HashMemo | None = None,
+        materialization_log: MaterializationLog | None = None,
+    ) -> None:
         self._root = root if root is not None else Path.cwd() / ".ginkgo" / "artifacts"
         self._blobs_dir = self._root / "blobs"
         self._trees_dir = self._root / "trees"
         self._refs_dir = self._root / "refs"
+        self._hash_memo = hash_memo
+        self._materialization_log = materialization_log
         for directory in (self._blobs_dir, self._trees_dir, self._refs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -193,8 +203,11 @@ class LocalArtifactStore:
             Metadata record for the stored artifact.
         """
         if src_path.is_dir():
-            return self._store_directory(src_path)
-        return self._store_file(src_path)
+            record = self._store_directory(src_path)
+        else:
+            record = self._store_file(src_path)
+        self._record_materialization(path=src_path, artifact_id=record.artifact_id)
+        return record
 
     def retrieve(self, *, artifact_id: str, dest_path: Path) -> None:
         """Create a symlink at *dest_path* pointing to the stored artifact.
@@ -238,9 +251,11 @@ class LocalArtifactStore:
             blob_path = self._blobs_dir / record.digest_hex
             shutil.copy2(blob_path, dest_path)
             dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+            self._record_materialization(path=dest_path, artifact_id=artifact_id)
             return
 
         self._restore_tree(record=record, dest_path=dest_path)
+        self._record_materialization(path=dest_path, artifact_id=artifact_id)
 
     def matches(self, *, artifact_id: str, path: Path) -> bool:
         """Return whether *path* matches the stored artifact content."""
@@ -251,7 +266,15 @@ class LocalArtifactStore:
         if record.kind == "blob":
             if not path.is_file():
                 return False
-            return hash_file(path) == record.digest_hex
+            # Stat-gated fast path: reliable for files because any content
+            # change updates the file's own mtime.  Not used for directories
+            # because a directory's mtime only changes on add/remove, not on
+            # child content modification.
+            if self._materialization_log is not None and self._materialization_log.check(
+                path=path, artifact_id=artifact_id
+            ):
+                return True
+            return self._hash_file(path) == record.digest_hex
 
         if not path.is_dir():
             return False
@@ -390,7 +413,7 @@ class LocalArtifactStore:
 
     def _store_file(self, src_path: Path) -> ArtifactRecord:
         """Store a single file as a blob."""
-        digest = hash_file(src_path)
+        digest = self._hash_file(src_path)
         blob_path = self._blobs_dir / digest
 
         if not blob_path.exists():
@@ -486,7 +509,7 @@ class LocalArtifactStore:
                 continue
 
             rel = child.relative_to(real_src).as_posix()
-            digest = hash_file(child)
+            digest = self._hash_file(child)
             file_size = child.stat().st_size
             file_mode = child.stat().st_mode & 0o777
             entries.append(
@@ -513,6 +536,17 @@ class LocalArtifactStore:
             ),
             total_size,
         )
+
+    def _hash_file(self, path: Path) -> str:
+        """Hash a file, using run-scoped memoization when available."""
+        if self._hash_memo is not None:
+            return self._hash_memo.hash_file(path)
+        return hash_file(path)
+
+    def _record_materialization(self, *, path: Path, artifact_id: str) -> None:
+        """Record stat metadata for a materialized artifact path."""
+        if self._materialization_log is not None:
+            self._materialization_log.record(path=path, artifact_id=artifact_id)
 
     def _tree_digest_for_path(self, path: Path) -> str:
         """Return the manifest digest for a directory path."""
