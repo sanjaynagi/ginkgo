@@ -74,6 +74,12 @@ from ginkgo.runtime.events import (
     TaskStarted,
 )
 from ginkgo.runtime.module_loader import load_module, resolve_module_file
+from ginkgo.runtime.notebook_kernels import (
+    ExecutionCommand,
+    NotebookCommandBuilder,
+    NotebookKernelManager,
+    build_jupyter_env_prefix,
+)
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.secrets import (
@@ -209,6 +215,38 @@ class _NotebookArtifacts:
     params_path: Path
 
 
+@dataclass(kw_only=True, frozen=True)
+class _EvaluatorNotebookCommandBuilder(NotebookCommandBuilder):
+    """Build Python subprocess invocations for notebook helper commands."""
+
+    backend: TaskBackend | None
+
+    def command_for_python(self, *, env: str | None, args: list[str]) -> ExecutionCommand:
+        """Return a subprocess invocation for one Python command."""
+
+        # Use the current interpreter directly when no task env is declared.
+        if env is None:
+            argv = [sys.executable, *args]
+            return ExecutionCommand(
+                argv=argv,
+                use_shell=False,
+                display=" ".join(shlex.quote(part) for part in argv),
+            )
+
+        if self.backend is None:
+            raise RuntimeError(
+                f"Notebook task environment {env!r} requires a backend, but none is configured."
+            )
+
+        # Reuse the backend shell wrapper so env-backed notebook helpers run inside Pixi.
+        cmd = " ".join(shlex.quote(part) for part in ["python", *args])
+        return ExecutionCommand(
+            argv=self.backend.exec_argv(env=env, cmd=cmd),
+            use_shell=False,
+            display=cmd,
+        )
+
+
 class _SignalMonitor:
     """Temporary signal handler that requests a graceful scheduler stop."""
 
@@ -295,6 +333,7 @@ class _ConcurrentEvaluator:
     )
     _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _notebook_kernel_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -1743,6 +1782,9 @@ class _ConcurrentEvaluator:
             for output_path in self._iter_output_values(notebook_expr.outputs):
                 _remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
+        kernel_spec = (
+            self._managed_notebook_kernel(node=node) if notebook_kind == "ipynb" else None
+        )
         self._record_notebook_manifest(
             node=node,
             notebook_kind=notebook_kind,
@@ -1752,6 +1794,7 @@ class _ConcurrentEvaluator:
             rendered_html=artifacts.html_path,
             render_status="pending",
             render_error=None,
+            managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
         )
 
         # Build and run the execution command.
@@ -1761,6 +1804,8 @@ class _ConcurrentEvaluator:
                 executed_path=artifacts.executed_path,
                 params_path=artifacts.params_path,
                 resolved_args=node.execution_args,
+                kernel_name=kernel_spec.name if kernel_spec is not None else "",
+                jupyter_path=kernel_spec.jupyter_path if kernel_spec is not None else Path(),
             )
             executed_artifact = artifacts.executed_path
         else:
@@ -1781,6 +1826,7 @@ class _ConcurrentEvaluator:
                 rendered_html=artifacts.html_path,
                 render_status="not_started",
                 render_error=None,
+                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
             raise NotebookTaskError(
                 task_name=node.task_def.name,
@@ -1813,6 +1859,7 @@ class _ConcurrentEvaluator:
                 rendered_html=artifacts.html_path,
                 render_status="failed",
                 render_error=render_error,
+                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
         else:
             self._record_notebook_manifest(
@@ -1824,6 +1871,7 @@ class _ConcurrentEvaluator:
                 rendered_html=artifacts.html_path,
                 render_status="succeeded",
                 render_error=None,
+                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
 
         # Validate and return declared outputs, or fall back to HTML artifact.
@@ -1989,6 +2037,48 @@ class _ConcurrentEvaluator:
             if path.exists():
                 path.unlink()
 
+    def _notebook_runtime_root(self) -> Path:
+        """Return the shared runtime root for notebook support files."""
+
+        if self.provenance is not None:
+            return self.provenance.root_dir.parent
+        return Path.cwd() / ".ginkgo"
+
+    def _managed_notebook_kernel(self, *, node: _TaskNode):
+        """Prepare and return the managed kernelspec for one notebook task."""
+
+        env = node.task_def.env
+        env_identity = None
+        if env is not None and self.backend is not None:
+            env_identity = self.backend.env_identity(env=env)
+
+        manager = NotebookKernelManager(
+            runtime_root=self._notebook_runtime_root(),
+            command_builder=_EvaluatorNotebookCommandBuilder(backend=self.backend),
+        )
+        # Serialize cold-start kernel preparation so concurrent notebook tasks in the
+        # same env do not race to install the same managed kernelspec twice.
+        with self._notebook_kernel_lock:
+            return manager.ensure_kernel(
+                env=env,
+                env_identity=env_identity,
+                run_command=self._run_execution_command,
+            )
+
+    def _run_execution_command(
+        self,
+        command: ExecutionCommand,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one notebook helper command without attaching task logs."""
+
+        completed, _ = self._call_run_subprocess(
+            argv=command.argv,
+            use_shell=command.use_shell,
+            on_stdout=lambda _chunk: None,
+            on_stderr=lambda _chunk: None,
+        )
+        return completed
+
     def _build_ipynb_execute_command(
         self,
         *,
@@ -1996,6 +2086,8 @@ class _ConcurrentEvaluator:
         executed_path: Path | None,
         params_path: Path,
         resolved_args: dict[str, Any],
+        kernel_name: str,
+        jupyter_path: Path,
     ) -> str:
         """Build the Papermill execution command for one Jupyter notebook."""
         if executed_path is None:
@@ -2009,6 +2101,7 @@ class _ConcurrentEvaluator:
         )
         return " ".join(
             [
+                build_jupyter_env_prefix(jupyter_path=jupyter_path),
                 shlex.quote(sys.executable),
                 "-m",
                 "papermill",
@@ -2016,6 +2109,8 @@ class _ConcurrentEvaluator:
                 shlex.quote(str(executed_path)),
                 "-f",
                 shlex.quote(str(params_path)),
+                "-k",
+                shlex.quote(kernel_name),
             ]
         )
 
@@ -2084,6 +2179,7 @@ class _ConcurrentEvaluator:
         rendered_html: Path,
         render_status: str,
         render_error: str | None,
+        managed_kernel_name: str | None = None,
     ) -> None:
         """Persist notebook-specific metadata to the task manifest.
 
@@ -2128,6 +2224,8 @@ class _ConcurrentEvaluator:
             extra["render_error"] = render_error
         elif render_status != "failed":
             extra["render_error"] = None
+        if managed_kernel_name is not None:
+            extra["managed_kernel_name"] = managed_kernel_name
         self.provenance.update_task_extra(node_id=node.node_id, **extra)
 
     def _render_notebook_failure_page(

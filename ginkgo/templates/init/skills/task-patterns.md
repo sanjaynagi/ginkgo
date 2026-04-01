@@ -46,3 +46,29 @@ def render_report(sample_id: str):
 Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
 should flow through Ginkgo task inputs. Let the runtime stage them locally;
 avoid manual download code inside tasks.
+
+Use `.map()` for zip-style fan-out across aligned inputs:
+
+```python
+reports = build_report(type='html').map(
+    sample_id=["s1", "s2", "s3"],
+    output_path=[
+        "results/s1.txt",
+        "results/s2.txt",
+        "results/s3.txt",
+    ],
+)
+```
+
+Use `.product_map()` for Cartesian fan-out when every value on one axis should
+pair with every value on another:
+
+```python
+comparisons = compare_thresholds(metrics=['accuracy', 'f1']).product_map(
+    sample_id=["s1", "s2"],
+    threshold=[0.1, 0.2, 0.3],
+)
+```
+
+Choose `.map()` when lists are meant to line up positionally. Choose
+`.product_map()` when you want all combinations.

@@ -12,7 +12,8 @@ Key files and directories:
 
 Keep `workflow.py` thin:
 
-- good: flow definitions, config lookups, task composition, `expand(...)`
+- good: flow definitions, config lookups, task composition, `.map()`,
+  `.product_map()`, `expand(...)`
 - move to `modules/`: task bodies, shell command construction, parsing, heavy
   transformation logic
 

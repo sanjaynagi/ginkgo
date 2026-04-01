@@ -17,7 +17,8 @@ you can inspect from the CLI or UI.
 
 - A `@task()` does not run immediately. It builds a deferred computation node.
 - A `@flow` wires task nodes together into a workflow graph.
-- `.map()` provides fan-out across many independent task invocations.
+- `.map()` provides zip-style fan-out across many independent task invocations.
+- `.product_map()` provides Cartesian fan-out across parameter combinations.
 - Python tasks are useful for orchestration, data transformation, and analytics.
 - Shell tasks let you call CLI tools with explicit declared outputs.
 - Notebook tasks let you execute notebooks as part of the workflow and render them to html, which are then displayed in the UI.

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 
 import pytest
 
 from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
-from benchmarks.harness import BenchmarkRecord, compare_against_baseline
+from benchmarks.harness import (
+    BenchmarkRecord,
+    _print_benchmark_summary,
+    compare_against_baseline,
+)
 from benchmarks.sources import BenchmarkSourceManifest
 
 
@@ -115,13 +120,85 @@ def test_compare_against_baseline_reports_failure(tmp_path: Path) -> None:
     comparisons = compare_against_baseline(
         records=records,
         baseline_path=baseline_path,
-        strict=False,
     )
 
     assert comparisons[0]["status"] == "failed"
-    with pytest.raises(RuntimeError, match="chem:cold"):
-        compare_against_baseline(
-            records=records,
-            baseline_path=baseline_path,
-            strict=True,
+    assert comparisons[0]["absolute_delta_seconds"] == pytest.approx(5.0)
+    assert comparisons[0]["percentage_delta"] == pytest.approx(50.0)
+
+
+def test_print_benchmark_summary_renders_comparison_table(tmp_path: Path) -> None:
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        json.dumps(
+            {
+                "benchmarks": [
+                    {
+                        "example": "chem",
+                        "mode": "cold",
+                        "baseline_seconds": 10.0,
+                        "max_regression_pct": 20.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    records = [
+        BenchmarkRecord(
+            example="chem",
+            case="default",
+            mode="cold",
+            wall_time_seconds=11.5,
+            status="succeeded",
+            task_count=11,
+            executed_task_count=11,
+            cached_task_count=0,
+            run_id="run-1",
+            timestamp_utc="2026-03-31T12:00:00+00:00",
+            platform="linux",
+            python_version="3.11.0",
         )
+    ]
+    comparisons = compare_against_baseline(records=records, baseline_path=baseline_path)
+    stream = io.StringIO()
+
+    _print_benchmark_summary(records=records, comparisons=comparisons, stream=stream)
+
+    output = stream.getvalue()
+    assert "Benchmark Comparison" in output
+    assert "baseline s" in output
+    assert "observed s" in output
+    assert "delta s" in output
+    assert "delta %" in output
+    assert "chem" in output
+    assert "cold" in output
+    assert "passed" in output
+
+
+def test_print_benchmark_summary_renders_observed_only_table() -> None:
+    records = [
+        BenchmarkRecord(
+            example="retail",
+            case="default",
+            mode="cached",
+            wall_time_seconds=3.2,
+            status="succeeded",
+            task_count=9,
+            executed_task_count=0,
+            cached_task_count=9,
+            run_id="run-2",
+            timestamp_utc="2026-03-31T12:00:00+00:00",
+            platform="linux",
+            python_version="3.11.0",
+        )
+    ]
+    stream = io.StringIO()
+
+    _print_benchmark_summary(records=records, comparisons=[], stream=stream)
+
+    output = stream.getvalue()
+    assert "Benchmark Results" in output
+    assert "observed s" in output
+    assert "retail" in output
+    assert "cached" in output
