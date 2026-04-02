@@ -10,6 +10,7 @@ from ginkgo.runtime.events import (
     TaskCacheHit,
     TaskCompleted,
     TaskFailed,
+    TaskNotice,
     TaskRetrying,
     TaskStaging,
     TaskStarted,
@@ -94,6 +95,18 @@ class RichEventRenderer:
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
                 "retries_remaining": event.retries_remaining,
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
+        if isinstance(event, TaskNotice):
+            payload = {
+                "task": event.task_name,
+                "status": "notice",
+                "node_id": _node_id_from_task_id(event.task_id),
+                "attempt": event.attempt,
+                "message": event.message,
             }
             if event.display_label is not None:
                 payload["display_label"] = event.display_label

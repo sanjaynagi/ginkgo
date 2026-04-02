@@ -68,6 +68,7 @@ from ginkgo.runtime.events import (
     TaskCompleted,
     TaskFailed,
     TaskLog,
+    TaskNotice,
     TaskReady,
     TaskRetrying,
     TaskStaging,
@@ -2063,6 +2064,16 @@ class _ConcurrentEvaluator:
                 env=env,
                 env_identity=env_identity,
                 run_command=self._run_execution_command,
+                on_installing=lambda spec: self._emit_event(
+                    TaskNotice(
+                        run_id=self._run_id,
+                        task_id=_task_id_for_node(node.node_id),
+                        task_name=node.task_def.name,
+                        attempt=node.attempt,
+                        display_label=node.display_label,
+                        message=f"📦 Installing ipykernel for {spec.env_label}...",
+                    )
+                ),
             )
 
     def _run_execution_command(
@@ -2977,6 +2988,14 @@ class _ConcurrentEvaluator:
                 "node_id": int(event.task_id.split("_")[-1]),
                 "attempt": event.attempt,
                 "retries_remaining": event.retries_remaining,
+            }
+        elif isinstance(event, TaskNotice):
+            payload = {
+                "task": event.task_name,
+                "status": "notice",
+                "node_id": int(event.task_id.split("_")[-1]),
+                "attempt": event.attempt,
+                "message": event.message,
             }
         elif isinstance(event, TaskCompleted) and event.status == "success":
             payload = {

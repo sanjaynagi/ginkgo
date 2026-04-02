@@ -66,6 +66,7 @@ class _CliRunRenderer:
         self._run_started_at: float | None = None
         self._final_elapsed: float | None = None
         self._success: bool | None = None
+        self._notices: list[str] = []
         self._activity_spinner = Spinner("dots", style="bold #0f766e")
         self._time_spinner = Spinner(_time_of_day_spinner(), style="bold #0f766e")
 
@@ -159,6 +160,13 @@ class _CliRunRenderer:
         task_name = str(payload["task"])
         status = str(payload["status"])
         display_label = payload.get("display_label")
+        if status == "notice":
+            message = payload.get("message")
+            if isinstance(message, str) and message:
+                self._notices.append(message)
+                if self._live is not None:
+                    self._live.refresh()
+            return
         event_time = time.perf_counter()
         if node_id not in self._rows:
             label = self._label_for(node_id=node_id, task_name=task_name)
@@ -207,6 +215,7 @@ class _CliRunRenderer:
         return Group(
             self._render_resource_info_line(),
             Text(""),
+            self._render_notice_lines(),
             self._render_status_line(),
             self._render_task_table(),
             self._render_progress_section(),
@@ -225,6 +234,15 @@ class _CliRunRenderer:
             self._time_spinner,
         )
         return line
+
+    def _render_notice_lines(self) -> Text:
+        """Render task-scoped runtime notices above the live table."""
+        text = Text()
+        for index, notice in enumerate(self._notices):
+            if index > 0:
+                text.append("\n")
+            text.append(notice, style="bold")
+        return text
 
     def _render_resource_info_line(self) -> Text:
         """Render the live locality and resource summary line."""

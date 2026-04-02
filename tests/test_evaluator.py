@@ -30,6 +30,7 @@ from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 from ginkgo.runtime.secrets import build_secret_resolver
 
@@ -531,6 +532,59 @@ class TestEvaluate:
         assert any("python -m ipykernel install" in call for call in calls)
         assert any("JUPYTER_PATH=" in call and "papermill" in call for call in calls)
         assert any("nbconvert" in call for call in calls)
+
+    def test_ipynb_notebook_task_emits_kernel_install_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        nb_path = tmp_path / "report.ipynb"
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
+
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+        events: list[object] = []
+        bus = EventBus()
+        bus.subscribe(events.append)
+
+        def fake_run_subprocess(
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+        ) -> subprocess.CompletedProcess[str]:
+            command = " ".join(argv) if isinstance(argv, list) else str(argv)
+            if "import ipykernel" in command:
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "ipykernel install" in command:
+                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
+                kernel_name = command.split("--name", 1)[1].strip().split()[0]
+                kernel_dir = kernel_root / kernel_name
+                kernel_dir.mkdir(parents=True, exist_ok=True)
+                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "papermill" in command:
+                output_path = recorder.run_dir / "notebooks" / "task_0000.ipynb"
+                output_path.write_text("executed", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "nbconvert" in command:
+                html_path = recorder.run_dir / "notebooks" / "task_0000.html"
+                html_path.write_text("<html>report</html>", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            raise AssertionError(command)
+
+        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
+        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+
+        result = evaluator.evaluate(expr)
+
+        assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        notices = [event for event in events if isinstance(event, TaskNotice)]
+        assert len(notices) == 1
+        assert notices[0].message == "📦 Installing ipykernel for local..."
 
     def test_ipynb_notebook_task_fails_early_when_ipykernel_is_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

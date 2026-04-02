@@ -86,6 +86,7 @@ class NotebookKernelManager:
         env: str | None,
         env_identity: str | None,
         run_command: Callable[[ExecutionCommand], subprocess.CompletedProcess[str]],
+        on_installing: Callable[[NotebookKernelSpec], None] | None = None,
     ) -> NotebookKernelSpec:
         """Validate ``ipykernel`` and install a managed kernelspec when needed."""
 
@@ -112,6 +113,8 @@ class NotebookKernelManager:
 
         # Install the managed kernelspec into .ginkgo rather than user-global paths.
         spec.prefix_dir.mkdir(parents=True, exist_ok=True)
+        if on_installing is not None:
+            on_installing(spec)
         install_command = self.command_builder.command_for_python(
             env=env,
             args=[

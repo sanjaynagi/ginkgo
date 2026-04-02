@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 import subprocess
 from datetime import datetime
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
+from rich.console import Console
 
 from ginkgo.core.asset import AssetKey, make_asset_version
 from ginkgo.runtime.artifact_store import LocalArtifactStore
@@ -19,6 +22,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
+from ginkgo.cli.renderers.common import _MultiStateBar
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +172,31 @@ def main():
         assert f"✓ Removed cache entry {cache_key}" in cleared.stdout
         assert not (Path(".ginkgo") / "cache" / cache_key).exists()
 
+    def test_run_notebook_reports_managed_ipykernel_install(self) -> None:
+        Path("report.ipynb").write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, notebook, task
+
+@task("notebook")
+def render_report() -> str:
+    return notebook("report.ipynb")
+
+@flow
+def main():
+    return render_report()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "📦 Installing ipykernel for local..." in result.stdout
+
     def test_cache_ls_empty_state_is_styled(self) -> None:
         result = _run_cli("cache", "ls", cwd=Path.cwd())
         assert result.returncode == 0
@@ -260,6 +289,80 @@ def main():
         result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
         assert result.returncode == 1
         assert "Invalid duration for --older-than" in result.stderr
+
+    def test_notebooks_lists_pairs_in_most_recent_run_order(self) -> None:
+        older_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
+        newer_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
+        older_run.mkdir(parents=True)
+        newer_run.mkdir(parents=True)
+
+        older_notebook = older_run / "notebooks" / "task_0000.ipynb"
+        older_html = older_run / "notebooks" / "task_0000.html"
+        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
+        newer_html = newer_run / "notebooks" / "task_0001.html"
+        older_notebook.parent.mkdir(parents=True)
+        newer_notebook.parent.mkdir(parents=True)
+        older_notebook.write_text("{}", encoding="utf-8")
+        older_html.write_text("<html></html>", encoding="utf-8")
+        newer_notebook.write_text("{}", encoding="utf-8")
+        newer_html.write_text("<html></html>", encoding="utf-8")
+
+        older_manifest = {
+            "run_id": older_run.name,
+            "workflow": "workflow.py",
+            "status": "succeeded",
+            "started_at": "2026-03-01T09:00:00+00:00",
+            "finished_at": "2026-03-01T09:01:00+00:00",
+            "tasks": {
+                "task_0000": {
+                    "task": "demo.render_old",
+                    "task_type": "notebook",
+                    "executed_notebook": "notebooks/task_0000.ipynb",
+                    "rendered_html": "notebooks/task_0000.html",
+                }
+            },
+        }
+        newer_manifest = {
+            "run_id": newer_run.name,
+            "workflow": "workflow.py",
+            "status": "succeeded",
+            "started_at": "2026-03-02T09:00:00+00:00",
+            "finished_at": "2026-03-02T09:01:00+00:00",
+            "tasks": {
+                "task_0001": {
+                    "task": "demo.render_new",
+                    "task_type": "notebook",
+                    "executed_notebook": "notebooks/task_0001.ipynb",
+                    "rendered_html": "notebooks/task_0001.html",
+                }
+            },
+        }
+        (older_run / "manifest.yaml").write_text(
+            yaml.safe_dump(older_manifest, sort_keys=False),
+            encoding="utf-8",
+        )
+        (newer_run / "manifest.yaml").write_text(
+            yaml.safe_dump(newer_manifest, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        result = _run_cli("notebooks", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo notebooks" in result.stdout
+        assert "render_new" in result.stdout
+        assert "render_old" in result.stdout
+        assert result.stdout.index("render_new") < result.stdout.index("render_old")
+        assert str(newer_html.resolve()) in result.stdout
+        assert str(newer_notebook.resolve()) in result.stdout
+        assert newer_html.resolve().as_uri() in result.stdout
+        assert f"vscode://file{quote(str(newer_notebook.resolve()))}" in result.stdout
+
+    def test_notebooks_empty_state_is_styled(self) -> None:
+        result = _run_cli("notebooks", cwd=Path.cwd())
+        assert result.returncode == 0
+        assert "🌿 ginkgo notebooks" in result.stdout
+        assert "No executed notebooks found." in result.stdout
 
 
 class TestCliAssets:
@@ -981,6 +1084,30 @@ def main():
         result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 1
         assert "Missing secrets: env:MISSING_TOKEN" in result.stderr
+
+
+class TestCliGroupedProgressBars:
+    def test_grouped_bar_renders_waiting_as_empty_space(self) -> None:
+        console = Console(width=80, record=True)
+        bar = _MultiStateBar(counts=Counter({"waiting": 4}), total=4, width=8)
+
+        rendered = list(bar.__rich_console__(console, console.options))
+
+        assert len(rendered) == 1
+        assert rendered[0].plain == " " * 8
+
+    def test_grouped_bar_uses_slab_fill_for_active_segments(self) -> None:
+        console = Console(width=80, record=True)
+        bar = _MultiStateBar(
+            counts=Counter({"running": 2, "staging": 1, "cached": 1}),
+            total=4,
+            width=8,
+        )
+
+        rendered = list(bar.__rich_console__(console, console.options))
+
+        assert len(rendered) == 1
+        assert "█" in rendered[0].plain
 
 
 class TestCliAgentAndInspection:

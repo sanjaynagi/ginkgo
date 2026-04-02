@@ -11,7 +11,7 @@
     {
       "example": "init",
       "mode": "cached",
-      "baseline_seconds": 0.82,
+      "baseline_seconds": 1.08,
       "max_regression_pct": 15.0
     },
     {

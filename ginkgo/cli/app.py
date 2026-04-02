@@ -15,6 +15,7 @@ from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
+from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.run import command_run
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
@@ -46,6 +47,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_init(args)
         if args.command == "inspect":
             return command_inspect(args)
+        if args.command == "notebooks":
+            return command_notebooks(args)
         if args.command == "secrets":
             return command_secrets(args)
         if args.command == "ui":
@@ -130,6 +133,8 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_workflow_parser.add_argument("--config", action="append", default=[])
     inspect_run_parser = inspect_subparsers.add_parser("run")
     inspect_run_parser.add_argument("run_id")
+
+    subparsers.add_parser("notebooks")
 
     ui_parser = subparsers.add_parser("ui")
     ui_parser.add_argument("run_id", nargs="?")

@@ -131,6 +131,9 @@ def _format_cpu_percent(value: float | None) -> str:
 _SEGMENT_ORDER = ("succeeded", "cached", "running", "staging", "waiting", "failed")
 """Display order for multi-state bar segments (left-to-right)."""
 
+_BAR_FILL_CHAR = "█"
+"""Low-profile fill glyph for grouped task progress bars."""
+
 
 class _MultiStateBar:
     """A Rich renderable that draws a segmented bar coloured by task state.
@@ -155,10 +158,10 @@ class _MultiStateBar:
 
         # Compute proportional segment widths.
         segments = [(status, self._counts.get(status, 0)) for status in _SEGMENT_ORDER]
-        segments = [(s, c) for s, c in segments if c > 0]
+        segments = [(status, count) for status, count in segments if count > 0]
 
         if not segments:
-            text.append("░" * self._width, style="dim")
+            text.append(" " * self._width)
             yield text
             return
 
@@ -176,7 +179,10 @@ class _MultiStateBar:
             widths[largest_idx] = (status, max(1, w + diff))
 
         for status, w in widths:
-            text.append("█" * w, style=_status_style(status))
+            if status == "waiting":
+                text.append(" " * w)
+                continue
+            text.append(_BAR_FILL_CHAR * w, style=_status_style(status))
 
         yield text
 
