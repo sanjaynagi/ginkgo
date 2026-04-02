@@ -2,7 +2,7 @@
 
 Key files and directories:
 
-- `ginkgo.toml`: project config loaded by `ginkgo.config(...)`
+- `ginkgo.toml`: project config file
 - `pixi.toml`: project development environment
 - `{{ workflow_relpath }}`: flow wiring, config loading, and task composition
 - `{{ modules_relpath }}`: reusable task implementations

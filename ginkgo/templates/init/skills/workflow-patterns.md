@@ -1,4 +1,4 @@
-# Task patterns
+# Workflow patterns
 
 Use normal Python tasks for orchestration and Python logic:
 
@@ -42,6 +42,40 @@ def render_report(sample_id: str):
     output=f"report_summary_{sample_id}.csv"
     return notebook(path=f"notebooks/report_{sample_id}.ipynb", output=output)
 ```
+
+## Ginkgo types and cache correctness
+
+Annotate file and folder parameters with `file` / `folder` instead of `str` so
+that ginkgo hashes the **contents** of those paths when building the cache key.
+A plain `str` annotation hashes only the path string — if an upstream task
+overwrites the file at the same path with new results, any downstream task whose
+inputs are typed `str` will see a spurious cache hit and silently return stale
+output.
+
+```python
+from ginkgo import file, folder, task
+
+# CORRECT — cache invalidates when file content changes
+@task()
+def analyse(*, manifest: file, output_dir: folder) -> file:
+    ...
+
+# WRONG — cache key depends only on the path string, not the file contents
+@task()
+def analyse(*, manifest: str, output_dir: str) -> str:
+    ...
+```
+
+Use `file` for any single-file path that flows between tasks. Use `folder` for
+directory outputs. Ginkgo uses these types to:
+
+1. Hash file/folder contents into the cache key, so the cache correctly
+   invalidates when upstream outputs change.
+2. Copy outputs into the artifact store for provenance and remote caching.
+
+The type annotation on the *return value* matters too — a task returning a
+`file`-typed path will have its output stored as an artifact; a task returning
+`str` will not.
 
 Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
 should flow through Ginkgo task inputs. Let the runtime stage them locally;
