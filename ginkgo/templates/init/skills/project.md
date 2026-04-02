@@ -2,7 +2,7 @@
 
 Key files and directories:
 
-- `ginkgo.toml`: project config loaded by `ginkgo.config(...)`
+- `ginkgo.toml`: project config file
 - `pixi.toml`: project development environment
 - `{{ workflow_relpath }}`: flow wiring, config loading, and task composition
 - `{{ modules_relpath }}`: reusable task implementations
@@ -12,7 +12,8 @@ Key files and directories:
 
 Keep `workflow.py` thin:
 
-- good: flow definitions, config lookups, task composition, `expand(...)`
+- good: flow definitions, config lookups, task composition, `.map()`,
+  `.product_map()`, `expand(...)`
 - move to `modules/`: task bodies, shell command construction, parsing, heavy
   transformation logic
 

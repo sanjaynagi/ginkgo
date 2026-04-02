@@ -1,89 +1,89 @@
 {
   "runner": "github-actions-ubuntu-latest",
-  "seed_note": "Temporarily seeded from GitHub Actions run 23792260130 observed timings before the workflow was pinned to jobs=2 cores=2.",
+  "seed_note": "Updated from the faster post-optimization benchmark run with jobs=2 cores=2.",
   "benchmarks": [
     {
       "example": "init",
       "mode": "cold",
-      "baseline_seconds": 6.0,
+      "baseline_seconds": 5.07,
       "max_regression_pct": 15.0
     },
     {
       "example": "init",
       "mode": "cached",
-      "baseline_seconds": 1.9,
+      "baseline_seconds": 1.08,
       "max_regression_pct": 15.0
     },
     {
       "example": "bioinfo",
       "mode": "cold",
-      "baseline_seconds": 15.0,
+      "baseline_seconds": 6.35,
       "max_regression_pct": 10.0
     },
     {
       "example": "bioinfo",
       "mode": "cached",
-      "baseline_seconds": 9.5,
+      "baseline_seconds": 0.864,
       "max_regression_pct": 10.0
     },
     {
       "example": "chem",
       "mode": "cold",
-      "baseline_seconds": 3.0,
+      "baseline_seconds": 2.079,
       "max_regression_pct": 10.0
     },
     {
       "example": "chem",
       "mode": "cached",
-      "baseline_seconds": 0.91,
+      "baseline_seconds": 0.696,
       "max_regression_pct": 25.0
     },
     {
       "example": "retail",
       "mode": "cold",
-      "baseline_seconds": 2.9,
+      "baseline_seconds": 2.325,
       "max_regression_pct": 15.0
     },
     {
       "example": "retail",
       "mode": "cached",
-      "baseline_seconds": 1.6,
+      "baseline_seconds": 0.859,
       "max_regression_pct": 15.0
     },
     {
       "example": "news",
       "mode": "cold",
-      "baseline_seconds": 2.6,
+      "baseline_seconds": 2.1,
       "max_regression_pct": 15.0
     },
     {
       "example": "news",
       "mode": "cached",
-      "baseline_seconds": 0.93,
+      "baseline_seconds": 0.714,
       "max_regression_pct": 20.0
     },
     {
       "example": "supplychain",
       "mode": "cold",
-      "baseline_seconds": 3.7,
+      "baseline_seconds": 1.858,
       "max_regression_pct": 15.0
     },
     {
       "example": "supplychain",
       "mode": "cached",
-      "baseline_seconds": 2.3,
+      "baseline_seconds": 0.78,
       "max_regression_pct": 20.0
     },
     {
       "example": "ml",
       "mode": "cold",
-      "baseline_seconds": 2.4,
+      "baseline_seconds": 2.055,
       "max_regression_pct": 15.0
     },
     {
       "example": "ml",
       "mode": "cached",
-      "baseline_seconds": 1.5,
+      "baseline_seconds": 0.747,
       "max_regression_pct": 20.0
     }
   ]

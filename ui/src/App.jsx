@@ -624,6 +624,21 @@ function TaskDrawer({ taskDetail, taskLog, onClose }) {
               <div><dt>Log file</dt><dd>{task.log || "—"}</dd></div>
               <div><dt>Cache key</dt><dd><code>{task.cache_key || "—"}</code></dd></div>
               <div><dt>Error</dt><dd>{task.error || "—"}</dd></div>
+              <div>
+                <dt>Notebook</dt>
+                <dd>
+                  {taskDetail.notebook_html_url ? (
+                    <a
+                      className="inline-link"
+                      href={taskDetail.notebook_html_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open rendered HTML
+                    </a>
+                  ) : "—"}
+                </dd>
+              </div>
             </dl>
           </section>
         </div>
@@ -664,6 +679,93 @@ function TaskDrawer({ taskDetail, taskLog, onClose }) {
         </div>
       ) : null}
     </aside>
+  );
+}
+
+function NotebookPanel({ notebooks }) {
+  const [selectedTaskKey, setSelectedTaskKey] = useState(null);
+
+  useEffect(() => {
+    setSelectedTaskKey(notebooks[0]?.task_key || null);
+  }, [notebooks]);
+
+  const selectedNotebook =
+    notebooks.find((entry) => entry.task_key === selectedTaskKey) || notebooks[0] || null;
+
+  if (!notebooks.length) {
+    return (
+      <section className="panel">
+        <div className="empty-state compact-empty">
+          <p>No notebook artifacts were recorded for this run.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="notebook-layout">
+      <section className="panel notebook-list-panel">
+        <div className="panel-header">
+          <div>
+            <h3 className="panel-title">Notebook artifacts</h3>
+            <p className="panel-subtitle">Rendered notebook outputs recorded in provenance.</p>
+          </div>
+        </div>
+        <div className="notebook-list">
+          {notebooks.map((entry) => (
+            <button
+              key={entry.task_key}
+              className={`notebook-row ${entry.task_key === selectedNotebook?.task_key ? "active" : ""}`}
+              onClick={() => setSelectedTaskKey(entry.task_key)}
+            >
+              <div className="notebook-row-top">
+                <strong>{entry.task_name}</strong>
+                <Badge status={entry.render_status || entry.status} />
+              </div>
+              <div className="micro-copy">{entry.task_key}</div>
+              <div className="notebook-row-meta">
+                <span>{entry.notebook_kind || "notebook"}</span>
+                <span>{entry.description || "Notebook artifact"}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel notebook-viewer-panel">
+        {selectedNotebook ? (
+          <div className="notebook-viewer-stack">
+            <div className="panel-header notebook-viewer-header">
+              <div>
+                <h3 className="panel-title">{selectedNotebook.task_name}</h3>
+                <p className="panel-subtitle">{selectedNotebook.notebook_path}</p>
+              </div>
+              {selectedNotebook.rendered_html_url ? (
+                <a
+                  className="ghost-button"
+                  href={selectedNotebook.rendered_html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open in tab
+                </a>
+              ) : null}
+            </div>
+            {selectedNotebook.rendered_html_url ? (
+              <iframe
+                title={selectedNotebook.task_name}
+                src={selectedNotebook.rendered_html_url}
+                className="notebook-frame"
+              />
+            ) : (
+              <div className="empty-state compact-empty">
+                <p>No rendered notebook HTML is available for this task.</p>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </section>
+    </section>
   );
 }
 
@@ -1322,6 +1424,7 @@ function RunWorkflowModal({ open, workflows, initialWorkflow, busy, onClose, onS
 function RunDetail({ run, projectRoot, onOpenTask, activeTaskKey, nowValue }) {
   const [detailTab, setDetailTab] = useState("graph");
   const tasks = run.tasks || [];
+  const notebooks = run.notebooks || [];
   const summary = useMemo(() => summarizeRunTasks(run), [run]);
 
   const started = formatDateTimeLarge(run.manifest.started_at);
@@ -1368,6 +1471,7 @@ function RunDetail({ run, projectRoot, onOpenTask, activeTaskKey, nowValue }) {
         {[
           ["graph", "Graph"],
           ["tasks", "Tasks"],
+          ...(notebooks.length > 0 ? [["notebooks", "Notebooks"]] : []),
           ["config", "Config"],
         ].map(([key, label]) => (
           <button
@@ -1430,6 +1534,8 @@ function RunDetail({ run, projectRoot, onOpenTask, activeTaskKey, nowValue }) {
           </div>
         </section>
       ) : null}
+
+      {detailTab === "notebooks" ? <NotebookPanel notebooks={notebooks} /> : null}
 
       {detailTab === "config" ? (
         <section className="panel">

@@ -7,9 +7,10 @@ CLI and UI.
 This directory is concise operational guidance for contributors and coding
 agents working in this repository.
 
-- `project.md`: canonical layout, config files, and where code should live
+- `project.md`: canonical layout and where code should live
+- `config.md`: config loading and CLI overlay patterns
 - `commands.md`: validation, execution, inspection, and testing commands
-- `task-patterns.md`: task-kind syntax, env usage, notebook guidance, and
+- `workflow-patterns.md`: task-kind syntax, env usage, notebook guidance, and
   remote staging
 - `local.md`: repository-specific conventions that refine or override the
   defaults above

@@ -13,6 +13,7 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Iterator
 from unittest.mock import patch
@@ -129,13 +130,19 @@ def run_example_benchmarks(
         result_payload["comparisons"] = compare_against_baseline(
             records=records,
             baseline_path=baseline_path,
-            strict=strict,
         )
 
     results_path = result_dir / "results.json"
     results_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
     latest_path = results_root / "latest.json"
     latest_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    _print_benchmark_summary(
+        records=records,
+        comparisons=result_payload["comparisons"],
+        stream=sys.stdout,
+    )
+    _raise_for_strict_regressions(comparisons=result_payload["comparisons"], strict=strict)
     return results_path
 
 
@@ -143,7 +150,6 @@ def compare_against_baseline(
     *,
     records: list[BenchmarkRecord],
     baseline_path: Path,
-    strict: bool,
 ) -> list[dict[str, object]]:
     """Compare benchmark records against a checked-in baseline.
 
@@ -153,9 +159,6 @@ def compare_against_baseline(
         Newly observed benchmark records.
     baseline_path : Path
         Baseline JSON file.
-    strict : bool
-        When ``True``, raise on failures.
-
     Returns
     -------
     list[dict[str, object]]
@@ -167,7 +170,6 @@ def compare_against_baseline(
         for entry in baseline_data.get("benchmarks", [])
     }
     comparisons: list[dict[str, object]] = []
-    failures: list[str] = []
 
     # Compare each benchmark record to its matching baseline entry.
     for record in records:
@@ -177,6 +179,10 @@ def compare_against_baseline(
             comparison = {
                 "example": record.example,
                 "mode": record.mode,
+                "observed_seconds": record.wall_time_seconds,
+                "baseline_seconds": None,
+                "absolute_delta_seconds": None,
+                "percentage_delta": None,
                 "status": "missing_baseline",
             }
             comparisons.append(comparison)
@@ -185,6 +191,10 @@ def compare_against_baseline(
         baseline_seconds = float(entry["baseline_seconds"])
         max_regression_pct = float(entry["max_regression_pct"])
         allowed_seconds = baseline_seconds * (1.0 + (max_regression_pct / 100.0))
+        absolute_delta_seconds = record.wall_time_seconds - baseline_seconds
+        percentage_delta = (
+            (absolute_delta_seconds / baseline_seconds) * 100.0 if baseline_seconds > 0 else None
+        )
         passed = record.wall_time_seconds <= allowed_seconds
         comparison = {
             "example": record.example,
@@ -192,19 +202,135 @@ def compare_against_baseline(
             "status": "passed" if passed else "failed",
             "observed_seconds": record.wall_time_seconds,
             "baseline_seconds": baseline_seconds,
+            "absolute_delta_seconds": absolute_delta_seconds,
+            "percentage_delta": percentage_delta,
             "allowed_seconds": allowed_seconds,
             "max_regression_pct": max_regression_pct,
         }
         comparisons.append(comparison)
-        if not passed:
-            failures.append(
-                f"{record.example}:{record.mode} observed {record.wall_time_seconds:.3f}s "
-                f"above allowed {allowed_seconds:.3f}s"
-            )
-
-    if strict and failures:
-        raise RuntimeError("Benchmark regressions detected:\n" + "\n".join(failures))
     return comparisons
+
+
+def _print_benchmark_summary(
+    *,
+    records: list[BenchmarkRecord],
+    comparisons: object,
+    stream: Any,
+) -> None:
+    """Print a readable benchmark summary table."""
+
+    if not isinstance(comparisons, list) or len(comparisons) == 0:
+        print(_render_observed_table(records=records), file=stream)
+        return
+
+    print(_render_comparison_table(comparisons=comparisons), file=stream)
+
+
+def _render_comparison_table(*, comparisons: list[dict[str, object]]) -> str:
+    """Return a fixed-width benchmark comparison table."""
+
+    headers = [
+        "example",
+        "mode",
+        "baseline s",
+        "observed s",
+        "delta s",
+        "delta %",
+        "status",
+    ]
+    rows = [
+        [
+            str(item.get("example", "—")),
+            str(item.get("mode", "—")),
+            _format_seconds(item.get("baseline_seconds")),
+            _format_seconds(item.get("observed_seconds")),
+            _format_delta_seconds(item.get("absolute_delta_seconds")),
+            _format_percentage(item.get("percentage_delta")),
+            str(item.get("status", "unknown")),
+        ]
+        for item in comparisons
+    ]
+    return _render_table(title="Benchmark Comparison", headers=headers, rows=rows)
+
+
+def _render_observed_table(*, records: list[BenchmarkRecord]) -> str:
+    """Return a fixed-width observed-results table."""
+
+    headers = ["example", "mode", "observed s", "status"]
+    rows = [
+        [
+            record.example,
+            record.mode,
+            _format_seconds(record.wall_time_seconds),
+            record.status,
+        ]
+        for record in records
+    ]
+    return _render_table(title="Benchmark Results", headers=headers, rows=rows)
+
+
+def _render_table(*, title: str, headers: list[str], rows: list[list[str]]) -> str:
+    """Return one plain-text table."""
+
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    separator = "  ".join("-" * width for width in widths)
+    lines = [
+        title,
+        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)),
+        separator,
+    ]
+    lines.extend(
+        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in rows
+    )
+    return "\n".join(lines)
+
+
+def _raise_for_strict_regressions(*, comparisons: object, strict: bool) -> None:
+    """Raise after summary printing when strict regression checks fail."""
+
+    if not strict or not isinstance(comparisons, list):
+        return
+
+    failures = []
+    for item in comparisons:
+        if not isinstance(item, dict) or item.get("status") != "failed":
+            continue
+        example = str(item.get("example", "unknown"))
+        mode = str(item.get("mode", "unknown"))
+        observed = _format_seconds(item.get("observed_seconds"))
+        allowed = _format_seconds(item.get("allowed_seconds"))
+        failures.append(f"{example}:{mode} observed {observed} above allowed {allowed}")
+
+    if failures:
+        raise RuntimeError("Benchmark regressions detected:\n" + "\n".join(failures))
+
+
+def _format_seconds(value: object) -> str:
+    """Return one benchmark duration cell."""
+
+    if value is None:
+        return "—"
+    return f"{float(value):.3f}"
+
+
+def _format_delta_seconds(value: object) -> str:
+    """Return one absolute-delta cell."""
+
+    if value is None:
+        return "—"
+    return f"{float(value):+,.3f}"
+
+
+def _format_percentage(value: object) -> str:
+    """Return one percentage-delta cell."""
+
+    if value is None:
+        return "—"
+    return f"{float(value):+,.1f}%"
 
 
 def _benchmark_example(*, example: str, mode: str, jobs: int, cores: int) -> BenchmarkRecord:

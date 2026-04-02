@@ -116,6 +116,14 @@ class TaskLog(TaskEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class TaskNotice(TaskEvent):
+    """Task-scoped runtime notice."""
+
+    event: str = "task_notice"
+    message: str = ""
+
+
+@dataclass(kw_only=True, frozen=True)
 class TaskRetrying(TaskEvent):
     """Task retry scheduling event."""
 

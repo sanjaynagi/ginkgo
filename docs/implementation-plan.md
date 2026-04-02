@@ -257,7 +257,6 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
 - Quality check results are recorded in run provenance alongside the asset metadata.
 
 **Drift detection between versions:**
-
 - Add `ginkgo asset diff <key> <ver1> <ver2>` to compare profiling stats between two versions of the same asset:
 
   ```
@@ -402,35 +401,106 @@ refactor, workspace validation from non-workspace directories, age-based
 
 ---
 
-### Phase 12 — Public Documentation
+### Phase 16 — UI Performance and Responsiveness
 
-**Goal:** Produce clear, maintainable, and complete public documentation so new users can adopt Ginkgo without needing to read source code or ask for help.
+**Goal:** Keep the local web UI fast and predictable as run history, task counts, event volume, and artifact metadata grow.
 
-**Integration note:** Phase 4's structured inspection output, DAG export schemas, and doctor commands should be documented as first-class reference material. Documentation should be updated incrementally as each phase lands.
+#### Problem definition
+
+The current UI is local-first and provenance-backed, which keeps the architecture simple, but that model can still become sluggish when a workspace accumulates many runs, large manifests, dense task graphs, or high-frequency live events. Notebook artifacts and richer asset metadata will increase that pressure. UI responsiveness should be treated as an explicit workstream rather than an incidental cleanup item.
 
 #### Deliverables
 
-- Publish a documentation site built with MyST Markdown covering:
-  - **Getting started**: installation, first workflow, running and inspecting results
-  - **Core concepts**: tasks, DAGs, caching, provenance, resources, environments
-  - **How-to guides**: one topic per common use case (retry, dry-run, partial resume, secrets, notifications, workflow composition, asset materialization)
-  - **Reference**: full CLI command reference, config schema, Python API surface
-  - **Architecture**: internal design overview for contributors
-- Write a changelog that captures major version milestones and breaking changes.
-- Add inline docstrings to all public Python APIs that do not already have them (consistent with the project's numpydoc convention).
-- Add `--help` text review pass to ensure every CLI command and flag has accurate, up-to-date help text.
-- Establish a documentation CI check so undocumented public APIs and broken internal links are caught automatically.
+- Profile the UI server and frontend against larger synthetic and real workspaces to identify the dominant latency and rendering costs.
+- Reduce run-list and run-detail load latency by avoiding full manifest reads when summary data is sufficient.
+- Add pagination, windowing, or incremental loading for large run collections and task lists.
+- Make live updates cheaper by sending targeted diffs and limiting unnecessary client-side recomputation.
+- Improve graph rendering performance for large DAGs through layout caching, viewport-aware rendering, or progressive expansion.
+- Ensure notebook and asset detail views remain responsive even when runs contain many artifacts.
+- Add benchmark-style regression checks for UI server payload construction and selected frontend interactions.
 
 #### Key design points
 
-- Documentation should be written for users first, contributors second.
-- How-to guides should be task-oriented and runnable end-to-end from a clean checkout.
-- Reference documentation should be generated from source where possible to avoid drift.
-- The documentation site should be deployable from the existing `pixi` environment without requiring separate tooling.
+- Performance work should preserve the current provenance-first architecture; optimisations should improve data access patterns rather than introduce a second source of truth.
+- The server should distinguish between summary payloads and detail payloads so the frontend does not pay full-cost reads for overview screens.
+- Frontend rendering work should favour incremental rendering and bounded DOM size over cosmetic complexity.
+- UI performance should be measured with repeatable fixtures and checked into the repository where practical, so regressions are visible.
 
-#### Validation
+#### Risks and tradeoffs
 
-- A new user following only the Getting Started guide can install Ginkgo, write a two-task workflow, run it, and inspect the cached result without consulting any other source.
-- All CLI commands and flags have non-empty `--help` text that matches current behavior.
-- The documentation CI check catches at least one intentionally introduced undocumented public function and one broken internal link.
-- The full documentation site builds without warnings from a clean `pixi` environment.
+- Aggressive caching can make the UI appear fast while serving stale data if invalidation rules are weak.
+- Progressive loading improves responsiveness but can complicate navigation and empty-state handling if the UX is not deliberate.
+- Optimising graph rendering may require simplifying some visual affordances for very large workflows.
+
+#### Success criteria
+
+- Large workspaces with many historical runs remain navigable without noticeable stalls in the run list.
+- Opening a run with a large task graph or many artifacts does not block the UI for multiple seconds on routine hardware.
+- Live runs continue to update smoothly without flooding the browser with redundant state changes.
+- Notebook and artifact views remain responsive enough to be practical on real workflow runs rather than only toy examples.
+
+---
+
+### Phase 20 — Task-Level Concurrency Limits
+
+**Goal:** Let workflows limit concurrency for specific classes of tasks, including `.map()` fan-out branches, without abusing `threads` or global `cores`.
+
+#### Problem definition
+
+Ginkgo already expands `.map()` and `.product_map()` into independent task
+nodes, and the evaluator already enforces global `jobs`, `cores`, and optional
+`memory` limits during dispatch. That is sufficient for broad resource control,
+but it does not express policies such as "train only one model at a time" while
+still allowing unrelated work to run concurrently. The current workaround is to
+inflate a task's `threads` requirement until it monopolizes the global core
+budget, but that conflates CPU demand with concurrency intent and can leave the
+machine underutilized.
+
+#### Deliverables
+
+- Add first-class task-level concurrency metadata so a task can declare
+  membership in a named concurrency group.
+- Add run-time configuration for integer limits per concurrency group.
+- Enforce concurrency-group limits in scheduler selection alongside existing
+  `jobs`, `cores`, and `memory` constraints.
+- Ensure the policy applies uniformly to all task dispatch, including ordinary
+  tasks, `.map()` fan-out, and `.product_map()` fan-out.
+- Surface concurrency-group metadata in runtime events and provenance where it
+  improves debuggability.
+- Document the recommended authoring pattern and the difference from
+  `threads`-based CPU budgeting.
+
+#### Key design points
+
+- This should be implemented as a scheduler primitive, not as a `.map()` API
+  option. Fan-out already produces normal task nodes; the scheduler should
+  decide how many of those nodes may run at once.
+- The initial scope should use named concurrency groups with integer limits,
+  for example `model_training: 1`.
+- Task metadata should remain explicit and static at definition time unless a
+  stronger use case emerges for per-invocation overrides.
+- Scheduler selection should account for both currently running group members
+  and newly selected ready tasks in the same dispatch cycle.
+- `threads` should remain a declaration of CPU footprint, not a hidden mutex or
+  singleton mechanism.
+
+#### Risks and tradeoffs
+
+- This adds another axis to scheduler feasibility and increases the complexity
+  of dispatch selection.
+- Tasks that belong to multiple groups may make contention harder to reason
+  about if the API is too flexible too early.
+- Exposing both `threads` and concurrency groups requires clear documentation
+  so users understand when to use each control.
+
+#### Success criteria
+
+- A workflow can declare that all `train_model` tasks belong to a
+  `model_training` group with limit `1` and have that policy enforced across
+  mapped fan-out branches.
+- Unrelated tasks that do not belong to that group can still run concurrently
+  when `jobs`, `cores`, and `memory` permit.
+- Existing workflows that rely only on `jobs`, `cores`, and `memory` continue
+  to behave as before.
+- Scheduler tests cover single-group and mixed-group contention scenarios,
+  including mapped workloads.
