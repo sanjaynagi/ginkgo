@@ -438,3 +438,69 @@ The current UI is local-first and provenance-backed, which keeps the architectur
 - Opening a run with a large task graph or many artifacts does not block the UI for multiple seconds on routine hardware.
 - Live runs continue to update smoothly without flooding the browser with redundant state changes.
 - Notebook and artifact views remain responsive enough to be practical on real workflow runs rather than only toy examples.
+
+---
+
+### Phase 20 — Task-Level Concurrency Limits
+
+**Goal:** Let workflows limit concurrency for specific classes of tasks, including `.map()` fan-out branches, without abusing `threads` or global `cores`.
+
+#### Problem definition
+
+Ginkgo already expands `.map()` and `.product_map()` into independent task
+nodes, and the evaluator already enforces global `jobs`, `cores`, and optional
+`memory` limits during dispatch. That is sufficient for broad resource control,
+but it does not express policies such as "train only one model at a time" while
+still allowing unrelated work to run concurrently. The current workaround is to
+inflate a task's `threads` requirement until it monopolizes the global core
+budget, but that conflates CPU demand with concurrency intent and can leave the
+machine underutilized.
+
+#### Deliverables
+
+- Add first-class task-level concurrency metadata so a task can declare
+  membership in a named concurrency group.
+- Add run-time configuration for integer limits per concurrency group.
+- Enforce concurrency-group limits in scheduler selection alongside existing
+  `jobs`, `cores`, and `memory` constraints.
+- Ensure the policy applies uniformly to all task dispatch, including ordinary
+  tasks, `.map()` fan-out, and `.product_map()` fan-out.
+- Surface concurrency-group metadata in runtime events and provenance where it
+  improves debuggability.
+- Document the recommended authoring pattern and the difference from
+  `threads`-based CPU budgeting.
+
+#### Key design points
+
+- This should be implemented as a scheduler primitive, not as a `.map()` API
+  option. Fan-out already produces normal task nodes; the scheduler should
+  decide how many of those nodes may run at once.
+- The initial scope should use named concurrency groups with integer limits,
+  for example `model_training: 1`.
+- Task metadata should remain explicit and static at definition time unless a
+  stronger use case emerges for per-invocation overrides.
+- Scheduler selection should account for both currently running group members
+  and newly selected ready tasks in the same dispatch cycle.
+- `threads` should remain a declaration of CPU footprint, not a hidden mutex or
+  singleton mechanism.
+
+#### Risks and tradeoffs
+
+- This adds another axis to scheduler feasibility and increases the complexity
+  of dispatch selection.
+- Tasks that belong to multiple groups may make contention harder to reason
+  about if the API is too flexible too early.
+- Exposing both `threads` and concurrency groups requires clear documentation
+  so users understand when to use each control.
+
+#### Success criteria
+
+- A workflow can declare that all `train_model` tasks belong to a
+  `model_training` group with limit `1` and have that policy enforced across
+  mapped fan-out branches.
+- Unrelated tasks that do not belong to that group can still run concurrently
+  when `jobs`, `cores`, and `memory` permit.
+- Existing workflows that rely only on `jobs`, `cores`, and `memory` continue
+  to behave as before.
+- Scheduler tests cover single-group and mixed-group contention scenarios,
+  including mapped workloads.

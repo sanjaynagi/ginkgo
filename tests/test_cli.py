@@ -8,7 +8,6 @@ import subprocess
 from datetime import datetime
 import json
 from pathlib import Path
-from urllib.parse import quote
 
 import yaml
 from rich.console import Console
@@ -355,8 +354,6 @@ def main():
         assert result.stdout.index("render_new") < result.stdout.index("render_old")
         assert str(newer_html.resolve()) in result.stdout
         assert str(newer_notebook.resolve()) in result.stdout
-        assert newer_html.resolve().as_uri() in result.stdout
-        assert f"vscode://file{quote(str(newer_notebook.resolve()))}" in result.stdout
 
     def test_notebooks_empty_state_is_styled(self) -> None:
         result = _run_cli("notebooks", cwd=Path.cwd())
@@ -734,7 +731,7 @@ class TestCliInit:
         assert (project_dir / "skills" / "index.md").is_file()
         assert (project_dir / "skills" / "commands.md").is_file()
         assert (project_dir / "skills" / "project.md").is_file()
-        assert (project_dir / "skills" / "task-patterns.md").is_file()
+        assert (project_dir / "skills" / "workflow-patterns.md").is_file()
         assert (project_dir / "skills" / "local.md").is_file()
         assert (project_dir / "tests" / "workflows" / "smoke.py").is_file()
         assert not (project_dir / "agents.ginkgo.md").exists()
@@ -744,7 +741,9 @@ class TestCliInit:
         readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
         skills_index_text = (project_dir / "skills" / "index.md").read_text(encoding="utf-8")
         commands_text = (project_dir / "skills" / "commands.md").read_text(encoding="utf-8")
-        patterns_text = (project_dir / "skills" / "task-patterns.md").read_text(encoding="utf-8")
+        patterns_text = (project_dir / "skills" / "workflow-patterns.md").read_text(
+            encoding="utf-8"
+        )
         assert "@flow" in workflow_text
         assert "from demo_project.modules.pipeline import main" not in workflow_text
         assert "expand(" in workflow_text

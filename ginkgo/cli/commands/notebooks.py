@@ -5,9 +5,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
-
-from rich.text import Text
 
 from ginkgo.cli.common import RUNS_ROOT, console
 from ginkgo.runtime.provenance import load_manifest
@@ -46,11 +43,7 @@ def command_notebooks(args) -> int:
             f"[bold]{entry.task_name}[/]  [dim]run={entry.run_id} task={entry.task_key}[/]"
         )
         rich_console.print(f"HTML: {entry.html_path}")
-        rich_console.print(_link_line(label="HTML Link", url=entry.html_path.as_uri()))
         rich_console.print(f"Notebook: {entry.notebook_path}")
-        rich_console.print(
-            _link_line(label="Notebook Link", url=_vscode_file_uri(entry.notebook_path))
-        )
     return 0
 
 
@@ -106,16 +99,3 @@ def _task_base_name(task_name: object) -> str:
     """Return the final dotted segment of a task identifier."""
     text = str(task_name or "unknown")
     return text.rsplit(".", maxsplit=1)[-1]
-
-
-def _vscode_file_uri(path: Path) -> str:
-    """Return a VS Code URI for a local file path."""
-    resolved = path.resolve()
-    return f"vscode://file{quote(str(resolved))}"
-
-
-def _link_line(*, label: str, url: str) -> Text:
-    """Render one clickable link line."""
-    line = Text(f"{label}: ")
-    line.append(url, style=f"link {url}")
-    return line
