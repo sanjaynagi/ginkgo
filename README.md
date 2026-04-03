@@ -82,8 +82,8 @@ from ginkgo import file, flow, notebook, shell, task
 POPULATIONS = ["YRI", "CEU", "CHB"]
 
 
-# (b) shell task — runs bcftools in a subprocess
-@task("shell")
+# shell task — runs bcftools in a subprocess
+@task("shell", env="genomics_tools")
 def filter_snps(vcf_path: file, min_maf: float) -> file:
     """Filter to biallelic SNPs above a minor-allele-frequency threshold."""
     output = "results/filtered.vcf.gz"
@@ -96,7 +96,7 @@ def filter_snps(vcf_path: file, min_maf: float) -> file:
     )
 
 
-# (a) python task — uses scikit-allel, fanned out per population via .map()
+# python task — uses scikit-allel, fanned out per population via .map()
 @task()
 def allele_frequencies(vcf_path: file, population: str) -> file:
     """Compute per-SNP alt-allele frequencies for one population."""
@@ -111,14 +111,14 @@ def allele_frequencies(vcf_path: file, population: str) -> file:
     return file(output)
 
 
-# (c) notebook task — renders an HTML report from a Jupyter notebook
+# notebook task — renders an HTML report from a Jupyter notebook
 @task("notebook")
 def population_structure(af_files: list[file], populations: list[str]) -> file:
     """Render an HTML population-genetics summary notebook."""
     return notebook("notebooks/population_structure.ipynb")
 
 
-# (d) flow
+# flow
 @flow
 def main():
     filtered = filter_snps(vcf_path="data/chr22.vcf.gz", min_maf=0.05)
