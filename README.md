@@ -113,9 +113,9 @@ def allele_frequencies(vcf_path: file, population: str) -> file:
 
 # (c) notebook task — renders an HTML report from a Jupyter notebook
 @task("notebook")
-def population_report(af_files: list[file], populations: list[str]) -> file:
+def population_structure(af_files: list[file], populations: list[str]) -> file:
     """Render an HTML population-genetics summary notebook."""
-    return notebook("notebooks/population_report.ipynb")
+    return notebook("notebooks/population_structure.ipynb")
 
 
 # (d) flow
@@ -123,7 +123,7 @@ def population_report(af_files: list[file], populations: list[str]) -> file:
 def main():
     filtered = filter_snps(vcf_path="data/chr22.vcf.gz", min_maf=0.05)
     af_results = allele_frequencies(vcf_path=filtered).map(population=POPULATIONS)
-    return population_report(af_files=af_results, populations=POPULATIONS)
+    return population_structure(af_files=af_results, populations=POPULATIONS)
 ```
 
 Run it with:
