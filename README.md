@@ -4,6 +4,8 @@
 
 Ginkgo is a scientific workflow orchestrator built for the AI agent era.
 
+**Python-native. Dynamic. Reproducible. Agent-ready.**
+
 - `@flow` and `@task()` — define workflows in plain Python, no DSL to learn
 - natively dynamic workflows — expand workflows during runtime from resolved tasks
 - content-addressed caching — never recompute what hasn't changed
