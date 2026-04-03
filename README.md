@@ -9,6 +9,7 @@ Ginkgo is a scientific workflow orchestrator built for the AI agent era.
 - content-addressed caching — never recompute what hasn't changed
 - isolated environments — pixi or containers, per task
 - agent-friendly — built from the ground up for workflows to be built and operated by AI agents
+- cloud-native I/O — stream inputs directly from S3, GCS, or Azure and stage outputs back, without local copies
 - deep observability — provenance, CLI tooling, and a local UI
 
 ## Documentation
