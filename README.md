@@ -2,17 +2,17 @@
 
 <p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a></p>
 
-Ginkgo is a Python workflow orchestrator for scientific, analytical, and
-research workflows.
+Ginkgo is a scientific workflow orchestrator built for the AI agent era.
 
-It is built around four ideas:
+**Python-native. Dynamic. Reproducible. Agent-ready.**
 
-- a Python-native authoring model with `@flow` and `@task()`
-- dynamic workflow expansion from resolved task results
-- reproducible execution through content-addressed caching
-- isolated environments with pixi or container images
-- an agent-friendly interface for autonomous analytics
-- clear post-run inspection through provenance, CLI tooling, and a UI
+- `@flow` and `@task()` — define workflows in plain Python, no DSL to learn
+- natively dynamic workflows — expand workflows during runtime from resolved tasks
+- content-addressed caching — never recompute what hasn't changed
+- isolated environments — pixi or containers, per task
+- agent-friendly — built from the ground up for workflows to be built and operated by AI agents
+- cloud-native I/O — stream inputs directly from S3, GCS, or Azure and stage outputs back, without local copies
+- deep observability — provenance, CLI tooling, and a local UI
 
 ## Documentation
 
