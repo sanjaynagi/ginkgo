@@ -71,27 +71,59 @@ pip install -e .
 
 ## Minimal Example
 
+A population-genetics workflow that filters a VCF, computes per-population
+allele frequencies, and renders a summary notebook.
+
 ```python
-from ginkgo import flow, task
+import numpy as np
 
-SAMPLES = {
-    "ERR_001": "ATCGATCGTAGCTAGCATCGATCG",
-    "ERR_002": "GCGCGCATATGCGCATATGCGCAT",
-    "ERR_003": "TTTTAAAACCCCGGGGTTTTAAAA",
-}
+from ginkgo import file, flow, notebook, shell, task
+
+POPULATIONS = ["YRI", "CEU", "CHB"]
 
 
+# (b) shell task — runs bcftools in a subprocess
+@task("shell")
+def filter_snps(vcf_path: file, min_maf: float) -> file:
+    """Filter to biallelic SNPs above a minor-allele-frequency threshold."""
+    output = "results/filtered.vcf.gz"
+    return shell(
+        cmd=(
+            f"bcftools view -m2 -M2 -v snps -i 'MAF>={min_maf}' "
+            f"{vcf_path} -Oz -o {output} && bcftools index {output}"
+        ),
+        output=output,
+    )
+
+
+# (a) python task — uses scikit-allel, fanned out per population via .map()
 @task()
-def gc_content(sample_id: str, sequence: str) -> dict:
-    gc = sum(1 for b in sequence.upper() if b in "GC")
-    return {"sample_id": sample_id, "gc_content": round(gc / len(sequence), 4)}
+def allele_frequencies(vcf_path: file, population: str) -> file:
+    """Compute per-SNP alt-allele frequencies for one population."""
+    import allel
+
+    callset = allel.read_vcf(str(vcf_path), fields=["calldata/GT"])
+    ac = allel.GenotypeArray(callset["calldata/GT"]).count_alleles()
+    freqs = ac.to_frequencies()[:, 1]  # alt allele frequency
+
+    output = f"results/af_{population}.npy"
+    np.save(output, freqs)
+    return file(output)
 
 
+# (c) notebook task — renders an HTML report from a Jupyter notebook
+@task("notebook")
+def population_report(af_files: list[file], populations: list[str]) -> file:
+    """Render an HTML population-genetics summary notebook."""
+    return notebook("notebooks/population_report.ipynb")
+
+
+# (d) flow
 @flow
 def main():
-    return gc_content().map(
-        sample_id=list(SAMPLES), sequence=list(SAMPLES.values())
-    )
+    filtered = filter_snps(vcf_path="data/chr22.vcf.gz", min_maf=0.05)
+    af_results = allele_frequencies(vcf_path=filtered).map(population=POPULATIONS)
+    return population_report(af_files=af_results, populations=POPULATIONS)
 ```
 
 Run it with:
