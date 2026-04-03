@@ -72,22 +72,26 @@ pip install -e .
 ## Minimal Example
 
 ```python
-from pathlib import Path
-
 from ginkgo import flow, task
+
+SAMPLES = {
+    "ERR_001": "ATCGATCGTAGCTAGCATCGATCG",
+    "ERR_002": "GCGCGCATATGCGCATATGCGCAT",
+    "ERR_003": "TTTTAAAACCCCGGGGTTTTAAAA",
+}
 
 
 @task()
-def write_text(message: str, output_path: str) -> str:
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(message, encoding="utf-8")
-    return str(output)
+def gc_content(sample_id: str, sequence: str) -> dict:
+    gc = sum(1 for b in sequence.upper() if b in "GC")
+    return {"sample_id": sample_id, "gc_content": round(gc / len(sequence), 4)}
 
 
 @flow
 def main():
-    return write_text(message="hello from ginkgo", output_path="results/hello.txt")
+    return gc_content().map(
+        sample_id=list(SAMPLES), sequence=list(SAMPLES.values())
+    )
 ```
 
 Run it with:
