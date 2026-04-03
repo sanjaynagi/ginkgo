@@ -2,7 +2,7 @@
 
 <p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a></p>
 
-Ginkgo is a scientific workflow orchestrator built for the AI agent era.
+Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
 **Python-native. Dynamic. Reproducible. Agent-ready.**
 
