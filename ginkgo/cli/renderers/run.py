@@ -369,10 +369,7 @@ class _CliRunRenderer:
         text = Text()
         text.append(f"\n📦 Assets materialised ({len(assets)})\n", style="bold")
         for asset in assets:
-            text.append(f"  {asset.asset_key}", style="bold #134e4a")
-            if asset.artifact_path:
-                text.append(f"  {asset.artifact_path}", style="dim")
-            text.append("\n")
+            text.append(f"  {asset.name}\n", style="bold #134e4a")
         return text
 
     def _render_failure_details(self, details: list[_FailureDetails]):

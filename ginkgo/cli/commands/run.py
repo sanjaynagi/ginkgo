@@ -404,13 +404,8 @@ def _load_run_assets(*, manifest: dict[str, Any]) -> list[_AssetSummary]:
             if not isinstance(key, str) or key in seen_keys:
                 continue
             seen_keys.add(key)
-            path = asset.get("artifact_path")
-            assets.append(
-                _AssetSummary(
-                    asset_key=key,
-                    artifact_path=str(path) if path is not None else None,
-                )
-            )
+            name = asset.get("name") or asset.get("asset_key") or key
+            assets.append(_AssetSummary(name=str(name)))
     return assets
 
 

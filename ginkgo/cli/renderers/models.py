@@ -110,5 +110,4 @@ class _NotebookSummary:
 class _AssetSummary:
     """Asset materialised in a run."""
 
-    asset_key: str
-    artifact_path: str | None
+    name: str
