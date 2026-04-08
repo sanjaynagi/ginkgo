@@ -372,14 +372,25 @@ def _load_run_notebooks(
     for task in tasks.values():
         if not isinstance(task, dict):
             continue
+
+        # Executed tasks record rendered_html (relative to run_dir).
+        # Cached tasks skip _record_notebook_manifest, but the return value
+        # stored in "output" is the HTML path from the original run.
         rendered_html = task.get("rendered_html")
-        if not isinstance(rendered_html, str):
+        if isinstance(rendered_html, str):
+            html_path = (run_dir / rendered_html).resolve()
+        elif task.get("kind") == "notebook":
+            output = task.get("output")
+            if not isinstance(output, str) or not output.endswith(".html"):
+                continue
+            html_path = Path(output)
+        else:
             continue
+
         node_id = task.get("node_id")
         task_label = (
             renderer.label_for_node(int(node_id)) if isinstance(node_id, int) else None
         ) or _task_base_name(task.get("task"))
-        html_path = (run_dir / rendered_html).resolve()
         notebooks.append(_NotebookSummary(task_label=task_label, html_path=html_path))
     return notebooks
 
