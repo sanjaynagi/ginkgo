@@ -33,7 +33,9 @@ from ginkgo.cli.renderers.common import (
     _truncate_task_label,
 )
 from ginkgo.cli.renderers.models import (
+    _AssetSummary,
     _FailureDetails,
+    _NotebookSummary,
     _ResourceRenderState,
     _RunSummary,
     _TaskGroup,
@@ -107,6 +109,8 @@ class _CliRunRenderer:
         success: bool,
         resources: dict[str, object] | None = None,
         failure_details: list[_FailureDetails] | None = None,
+        notebooks: list[_NotebookSummary] | None = None,
+        assets: list[_AssetSummary] | None = None,
     ) -> None:
         """Print the final run summary."""
         if self._buffer.strip():
@@ -144,6 +148,10 @@ class _CliRunRenderer:
             self._console.print(self._render_failure_separator())
             self._console.print(self._render_failure_details(failure_details))
         if success:
+            if notebooks:
+                self._console.print(self._render_notebooks(notebooks))
+            if assets:
+                self._console.print(self._render_assets(assets))
             self._console.print(f"Run directory: {self._summary.run_dir}")
 
     def label_for_node(self, node_id: int) -> str | None:
@@ -344,6 +352,28 @@ class _CliRunRenderer:
             f"RSS {_format_bytes(_as_int(current.get('rss_bytes')))}   "
             f"Procs {_format_count(current.get('process_count'))}"
         )
+
+    def _render_notebooks(self, notebooks: list[_NotebookSummary]) -> Text:
+        """Render the list of notebooks materialised in this run."""
+        text = Text()
+        text.append(f"\n📓 Notebooks materialised ({len(notebooks)})\n", style="bold")
+        for nb in notebooks:
+            url = nb.html_path.as_uri()
+            text.append(f"  {nb.task_label}  ", style="bold #134e4a")
+            text.append(str(nb.html_path), style=f"link {url} #0f766e")
+            text.append("\n")
+        return text
+
+    def _render_assets(self, assets: list[_AssetSummary]) -> Text:
+        """Render the list of assets materialised in this run."""
+        text = Text()
+        text.append(f"\n📦 Assets materialised ({len(assets)})\n", style="bold")
+        for asset in assets:
+            text.append(f"  {asset.asset_key}", style="bold #134e4a")
+            if asset.artifact_path:
+                text.append(f"  {asset.artifact_path}", style="dim")
+            text.append("\n")
+        return text
 
     def _render_failure_details(self, details: list[_FailureDetails]):
         panels = [self._render_failure_panel(item) for item in details]
