@@ -11,169 +11,301 @@ Each phase is independently testable and follows the same structure:
 - Key design points
 - Validation
 
-## Tier 3 — Asset Layer
+---
 
-### Phase 8 — Versioned DataFrame Assets
+## Tier 1 — Runtime Maturity
 
-**Goal:** Give `pandas.DataFrame` assets Iceberg-like snapshot behavior by extending Phase 2's immutable artifact storage with a lineage manifest layer.
+These phases polish and extend existing subsystems without introducing new
+architectural layers.
 
-**Depends on:** Phase 2 (`ArtifactStore`, immutable artifacts), Phase 7 (asset
-catalog for asset key resolution). Benefits from the implemented remote
-references and staged-access layer for time-travel reads against remote-backed
-storage.
+### Phase 1 — Hardening and UI Polish
+
+**Goal:** Finish the production-readiness and local UI work that remains.
 
 #### Deliverables
 
-- Add a versioned tabular asset backend for DataFrame-producing tasks. Each successful materialization calls `ArtifactStore.store()` to write an immutable Parquet artifact, then records a snapshot manifest entry alongside it.
-- Snapshot manifest entries extend Phase 2's `meta.json` structure with tabular-specific fields:
-  - snapshot id (derived from the `artifact_id`)
-  - parent snapshot id
-  - asset key
-  - schema summary
-  - row count
-  - producing run id and task id
-- Add a head-pointer file per asset key that records the latest snapshot id, enabling resolution of:
-  - latest snapshot
-  - specific snapshot id by lookup
-  - historical lineage chain by following parent pointers
-- Downstream task cache keys consume snapshot identity (`artifact_id`) rather than re-hashing the full DataFrame in memory, so cache invalidation happens exactly when the upstream data changes.
-- Add time-travel reads for tabular assets by snapshot id, resolved via `ArtifactStore.retrieve()`.
+- Extend retry support with:
+  - selective retry policies
+  - retry backoff
+- Broaden cache-management policy beyond age-based pruning (size- or
+  count-based eviction).
+- Polish the UI task-graph experience:
+  - richer DAG layout (fit-to-view, failure focus, better spacing)
+- Add task priority declarations so users can express relative urgency between
+  tasks in the same DAG tier; the scheduler should respect priority when
+  multiple tasks are ready to run concurrently.
+- Tighten documentation around partial resume, dry-run behavior, and resource
+  declarations.
 
 #### Key design points
 
-- Snapshot immutability is inherited directly from Phase 2: artifacts are read-only once written to the store. This phase adds the lineage manifest on top; it does not re-implement storage.
-- The snapshot id is the `artifact_id` from Phase 2 (`<sha256>.parquet`). No separate identity scheme is needed.
-- When remote-backed artifact storage is added, snapshot Parquet files should be
-  stored remotely via the same `ArtifactStore` interface. Time-travel reads
-  should go through `retrieve()` and benefit from the existing local staging
-  cache automatically.
-- The snapshot manifest is intentionally minimal — it is not Iceberg. The storage contract is immutable blobs plus a lightweight manifest, not a full table format.
-- The snapshot store is an implementation detail behind the asset abstraction so larger backends (e.g. Delta Lake, Iceberg) can be substituted later.
+- This phase is explicitly for remaining gaps in areas that already exist.
+- The goal is to reduce ambiguity and operational rough edges before the runtime
+  surface area expands further.
+- UI work should remain local-first and should build on the current file-backed
+  provenance model.
 
 #### Validation
 
-- A task materializing a DataFrame asset twice with different inputs produces two distinct snapshots with the correct parent-child relationship and distinct `artifact_id` values.
-- A downstream task pinned to an older snapshot id reads the historical data correctly even after a newer snapshot exists, via `ArtifactStore.retrieve()`.
-- Re-running a consumer task against the same snapshot id hits the cache without re-hashing the DataFrame.
-- Schema summaries and row counts are recorded in both the snapshot manifest and run provenance.
-- Assert that with a remote-backed artifact store active, time-travel reads are
-  served from the remote store and local staging cache correctly.
+- Re-run `VW-4`, `VW-5`, `VW-6`, and `VW-8` through the polished CLI and UI
+  paths and assert the richer retry, cache, and resource behavior is visible in
+  both CLI output and persisted provenance.
+- Assert the improved diagnostics distinguish common classes of failure such as
+  env mismatch, invalid paths, and packaging/importability errors.
 
 ---
 
-### Phase 9 — ML Model and Evaluation Support
+### Phase 2 — Runtime Profiling and Resource Controls
 
-**Goal:** Add three ML-specific capabilities through the existing `kind=` extension point: versioned model assets (`kind="model"`), structured evaluation records (`kind="eval"`), and parameter sweep fan-out (`.sweep()`). Together these let practitioners train, evaluate, compare, and promote models without manual metric logging or version tracking.
+**Goal:** Add opt-in runtime profiling, explicit per-task thread declarations,
+and task-level concurrency limits so workflows can be diagnosed and scheduled
+with precision.
 
-**Depends on:** Phase 7 (asset catalog — provides asset identity, versioning,
-alias resolution, and the asset store that this phase registers model and eval
-assets into). Phase 2 (`ArtifactStore`, immutable artifacts). Benefits from the
-implemented remote references and staged-access layer plus Phase 8 (upstream
-dataset snapshot IDs for lineage).
+**Detailed design:** [`docs/phase20-profiling-and-resource-controls-plan.md`](phase20-profiling-and-resource-controls-plan.md)
+(workstreams 1–3; workstream 4 — benchmark comparison table — is shipped)
 
-**Detailed design:** [`docs/phase9-ml-support-plan.md`](phase9-ml-support-plan.md)
+#### Deliverables
+
+**`--profile` mode (workstream 1):**
+
+- Add an opt-in `--profile` flag to `ginkgo run` that enables wider timing
+  coverage across runtime phases (CLI startup, module import, flow construction,
+  scheduler loop overhead, event emission, resource monitor lifecycle, final
+  reporting).
+- Persist the profile in run provenance and surface it in CLI output at run end.
+- `ginkgo inspect run` includes the full timing structure.
+- Profiling remains coarse-grained and cheap enough for routine diagnostic use.
+
+**First-class per-task thread control (workstream 2):**
+
+- Formalize task CPU footprint as an explicit resource declaration rather than
+  the current implicit `threads` argument convention.
+- Ensure shell tasks can access the resolved thread count through a standard
+  contract (e.g. `GINKGO_THREADS` environment variable).
+- Preserve compatibility with existing workflows that use a `threads` parameter.
+
+**Task-level concurrency limits (workstream 3):**
+
+- Add named concurrency groups with integer limits (e.g.
+  `model_training: 1`).
+- Allow tasks to declare membership in a named concurrency group.
+- Enforce concurrency-group limits in scheduler selection alongside existing
+  `jobs`, `cores`, and `memory` constraints.
+- Ensure the policy applies uniformly to ordinary tasks, `.map()` fan-out, and
+  `.product_map()` fan-out.
+- Surface concurrency-group metadata in runtime events and provenance.
+
+#### Key design points
+
+- `--profile` should not add measurable overhead or distort the runs it
+  explains.
+- Thread control must not break existing workflows that already use a `threads`
+  parameter — provide a clear migration path or backwards-compatible layering.
+- Concurrency groups are a scheduler primitive, not a `.map()` API option.
+  Fan-out already produces normal task nodes; the scheduler decides how many run
+  at once.
+- `threads` remains a declaration of CPU footprint, not a hidden mutex.
+
+#### Validation
+
+- `ginkgo run --profile` produces an attributable timing breakdown that explains
+  nearly all non-user-code runtime overhead.
+- Shell tasks can consume the scheduled thread budget through a standard
+  contract.
+- A workflow declaring `model_training` group with limit `1` enforces singleton
+  execution across mapped fan-out while unrelated tasks still run concurrently.
+- Existing workflows using the implicit `threads` convention continue to work.
+
+---
+
+### Phase 3 — UI Performance and Responsiveness
+
+**Goal:** Keep the local web UI fast and predictable as run history, task
+counts, event volume, and artifact metadata grow.
+
+#### Deliverables
+
+- Profile the UI server and frontend against larger synthetic and real
+  workspaces to identify dominant latency and rendering costs.
+- Reduce run-list and run-detail load latency by avoiding full manifest reads
+  when summary data is sufficient.
+- Add pagination, windowing, or incremental loading for large run collections
+  and task lists.
+- Make live updates cheaper by sending targeted diffs and limiting unnecessary
+  client-side recomputation.
+- Improve graph rendering performance for large DAGs through layout caching,
+  viewport-aware rendering, or progressive expansion.
+- Ensure notebook and asset detail views remain responsive even when runs
+  contain many artifacts.
+- Add benchmark-style regression checks for UI server payload construction and
+  selected frontend interactions.
+
+#### Key design points
+
+- Performance work should preserve the current provenance-first architecture;
+  optimisations should improve data access patterns rather than introduce a
+  second source of truth.
+- The server should distinguish between summary payloads and detail payloads so
+  the frontend does not pay full-cost reads for overview screens.
+- Frontend rendering should favour incremental rendering and bounded DOM size
+  over cosmetic complexity.
+- UI performance should be measured with repeatable fixtures and checked into the
+  repository where practical, so regressions are visible.
+
+#### Validation
+
+- Large workspaces with many historical runs remain navigable without noticeable
+  stalls in the run list.
+- Opening a run with a large task graph or many artifacts does not block the UI
+  for multiple seconds on routine hardware.
+- Live runs continue to update smoothly without flooding the browser with
+  redundant state changes.
+- Notebook and artifact views remain responsive on real workflow runs rather than
+  only toy examples.
+
+---
+
+## Tier 2 — Asset Layer
+
+These phases extend the existing asset catalog (file-backed, with `AssetKey`,
+`AssetVersion`, alias pointers, and lineage) into richer asset kinds and
+lifecycle tooling.
+
+### Phase 4 — DataFrame Assets
+
+**Goal:** Add a DataFrame-aware asset kind so that DataFrame-producing tasks
+record schema and shape metadata alongside immutable Parquet artifacts, and
+downstream tasks can consume them through the existing asset catalog without
+re-hashing the full DataFrame in memory.
+
+**Depends on:** the existing `ArtifactStore` (immutable artifacts) and asset
+catalog (asset key resolution).
+
+#### Deliverables
+
+- Add a `kind="dataframe"` asset backend for DataFrame-producing tasks. Each
+  successful materialization calls `ArtifactStore.store()` to write an immutable
+  Parquet artifact and registers an `AssetVersion` in the catalog with
+  tabular-specific metadata:
+  - schema summary (column names and dtypes)
+  - row count
+  - producing run id and task id
+- Downstream task cache keys consume `artifact_id` rather than re-hashing the
+  full DataFrame in memory, so cache invalidation happens exactly when the
+  upstream data changes.
+- Asset resolution always returns the latest version for a given asset key.
+
+#### Key design points
+
+- Immutability is inherited from the artifact store: artifacts are read-only
+  once written. This phase adds DataFrame-specific metadata; it does not
+  re-implement storage.
+- No snapshot chains, time-travel, or head-pointer files — the latest version
+  is always the one consumers read.
+- The asset kind is an implementation detail behind the asset abstraction so
+  richer backends (e.g. Delta Lake, Iceberg) can be substituted later if
+  versioning becomes a real need.
+
+#### Validation
+
+- A `kind="dataframe"` task materializes a DataFrame as an immutable Parquet
+  artifact with schema and row-count metadata in the asset catalog.
+- Re-running a consumer task against the same `artifact_id` hits the cache
+  without re-hashing the DataFrame.
+- Schema summaries and row counts are recorded in both asset metadata and run
+  provenance.
+
+---
+
+### Phase 5 — ML Model Training Support
+
+**Goal:** Add model-aware task support so that training progress is observable
+in real time, trained models are cataloged and listable, and parameter sweeps
+are a first-class fan-out primitive.
+
+**Depends on:** the existing asset catalog and `ArtifactStore`. Benefits from
+Phase 4 for upstream dataset lineage.
 
 #### Target DSL
 
 ```python
-from ginkgo import task, flow, model, eval, file
+from ginkgo import task, flow, model, file
 
 @task(kind="model")
 def train(data: file, *, lr: float, epochs: int):
     clf = fit(load(data), lr=lr, epochs=epochs)
     return model(clf, framework="sklearn")
 
-@task(kind="eval")
-def evaluate(m: model, test_data: file):
-    clf = m.load()
-    preds = clf.predict(load(test_data))
-    return eval(metrics={"accuracy": acc, "f1": f1, "auc": auc})
-
 @flow
 def main():
     data = prepare_data(raw=file("data/raw.csv"))
-    test = prepare_test(raw=file("data/test.csv"))
-    models = train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50, 100])
-    evals = evaluate.map(m=models, test_data=test)
-    return evals
+    models = train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50])
+    return models
 ```
 
 #### Deliverables
 
-**`kind="model"` — versioned model assets:**
+**`kind="model"` — model assets with training progress:**
 
-- Add a `ModelResult` sentinel (following the `shell()` / `ShellExpr` pattern) returned from `kind="model"` task bodies via a `model()` builder function. The sentinel carries the model object, framework name, optional metrics, and optional metadata.
-- Add a `ModelRef` resolved output type that downstream tasks receive, carrying the asset key, version ID, artifact path, metrics, and a `.load()` method for deserialization.
-- Add a `model.ref("name@alias")` factory for resolving a model by alias or version ID at graph build time, enabling downstream consumption of promoted models.
-- Add a pluggable `ModelSerializer` protocol with initial implementations for pickle (universal fallback), sklearn (joblib), and torch (state_dict). Serializers are registered by framework name; unknown names raise a clear error at task completion time.
-- On task completion, the evaluator serializes the model object, computes a content hash, registers an immutable asset version in the Phase 7 asset catalog (namespace `"model"`), and returns a `ModelRef` as the resolved output.
-- Auto-capture resolved task input arguments as `params` in the asset version metadata — the practitioner does not need to pass params explicitly.
-- When a task input is a `ModelRef`, hash the `version_id` for cache keys (not the serialized bytes), giving cheap and stable cache invalidation.
-
-**`kind="eval"` — structured evaluation records:**
-
-- Add an `EvalResult` sentinel returned from `kind="eval"` task bodies via an `eval()` builder function. The sentinel carries structured metrics and optional artifact paths (confusion matrices, plots, etc.).
-- Add an `EvalRecord` resolved output type carrying the asset key, version ID, metrics, auto-captured params, linked model version (if any input was a `ModelRef`), and artifact paths.
-- On task completion, the evaluator inspects resolved inputs — if any is a `ModelRef`, it records the model's `version_id` as `model_version`, linking the eval to the model automatically. Register an immutable asset version in the catalog (namespace `"eval"`).
+- Add a `ModelResult` sentinel (following the `shell()` / `ShellExpr` pattern)
+  returned from `kind="model"` task bodies via a `model()` builder function.
+  The sentinel carries the model object, framework name, and optional metrics.
+- On task completion, the evaluator serializes the model, registers an immutable
+  asset version in the catalog (namespace `"model"`), and auto-captures scalar
+  task inputs as `params` in the version metadata.
+- Expose real-time training progress through runtime events so the Rich CLI
+  renderer can display per-task training status (e.g. epoch, loss) alongside
+  the existing task progress output.
+- `ginkgo model ls` — list trained model assets with latest metrics summary.
 
 **`.sweep()` — parameter exploration:**
 
-- Add a `.sweep()` method on `TaskDef` / `PartialCall`, parallel to `.map()`. It partitions kwargs into fixed (scalar) and swept (list) arguments, computes combinations via `itertools.product` (grid) or `zip` (positional), and delegates to `.map()` to produce an `ExprList`.
-- Attach `SweepMeta` (strategy, axes, combination count) to the `ExprList` so the evaluator can record sweep provenance on each constituent task.
-- Support `strategy="grid"` (Cartesian product, default) and `strategy="zip"` (positional pairing, equal-length lists required).
-
-**CLI:**
-
-- `ginkgo model ls` — list model asset keys.
-- `ginkgo model versions <name>` — list versions with metrics summary.
-- `ginkgo model inspect <name>@<ver|alias>` — full metadata, params, lineage.
-- `ginkgo model promote <name> <ver> <alias>` — move alias pointer.
-- `ginkgo eval ls` — list eval asset keys.
-- `ginkgo eval compare <name>` — tabular comparison of all versions (metrics columns from eval records, param columns from auto-captured inputs, model version from linked `ModelRef`).
-- `ginkgo eval inspect <name>@<ver>` — full detail.
-
-**UI:**
-
-- Add a **Models** sidebar section: list view with latest version summary, version detail with metrics/params/alias badges, and a promote action.
-- Add an **Evals** sidebar section: sortable comparison table (rows = eval versions, columns = metrics + params), run/model linkage per row, and version detail view.
+- Add a `.sweep()` method on `TaskDef` / `PartialCall`, parallel to `.map()`.
+  It partitions kwargs into fixed (scalar) and swept (list) arguments, computes
+  combinations via `itertools.product` (grid) or `zip` (positional), and
+  delegates to `.map()` to produce an `ExprList`.
+- Support `strategy="grid"` (Cartesian product, default) and `strategy="zip"`
+  (positional pairing, equal-length lists required).
 
 #### Key design points
 
-- Model and eval assets are registered in the Phase 7 asset catalog — this phase does not build a separate asset store. Phase 7 provides identity, versioning, alias resolution, and storage layout; this phase adds ML-specific sentinels, serializers, and evaluator dispatch.
-- `kind="model"` and `kind="eval"` both use `execution_mode = "driver"` (same as shell) — the task body runs on the scheduler, produces a sentinel, and the evaluator handles serialization and storage.
-- Model versions are immutable once written — immutability is inherited from Phase 2's read-only artifact store. Promotion is alias movement, not mutation.
-- When remote-backed artifact storage is added, model and eval artifacts should
-  be stored and retrieved remotely via the same `ArtifactStore` interface, with
-  no changes to registry logic.
-- Serializer logic is plugin-driven so framework-specific handling does not bloat the runtime core. Only pickle is zero-dependency; framework serializers use lazy imports and fail clearly if the framework is not installed.
-- `.sweep()` is deliberately simple (grid/zip only) — it is not a Bayesian optimization framework. Complex HPO should use external tools (Optuna, etc.) with Ginkgo tasks as the execution substrate.
-- Auto param capture records scalar inputs only; file, folder, and model ref inputs are skipped to avoid capturing large objects in the metadata dict.
-- The initial scope is offline training and batch inference composition, not online serving or deployment orchestration.
+- Model assets are registered in the existing asset catalog — this phase does
+  not build a separate model registry. Serialization, versioning, and storage
+  go through the existing `ArtifactStore` and `AssetStore`.
+- `kind="model"` uses `execution_mode = "driver"` (same as shell) — the task
+  body runs on the scheduler, produces a sentinel, and the evaluator handles
+  serialization and storage.
+- Training progress events are emitted through the existing runtime event bus.
+  The Rich renderer displays them; `--agent` mode includes them in JSONL output.
+- `.sweep()` is deliberately simple (grid/zip only) — it is not a Bayesian
+  optimization framework. Complex HPO should use external tools with Ginkgo
+  tasks as the execution substrate.
+- Evaluation, model promotion, alias management, and comparison tooling are
+  deferred. If needed, they can be added incrementally without changing the
+  core model asset contract.
 
 #### Validation
 
-- A `kind="model"` task with `framework="sklearn"` serializes and registers an immutable model version with correct auto-captured params and metrics.
-- Re-running with identical inputs hits the cache and does not create a duplicate version.
-- Re-running with changed inputs creates a new version; latest version pointer updates.
-- A downstream task consuming `model` receives a `ModelRef` with a working `.load()` method.
-- `model.ref("train@production")` resolves to the promoted version and invalidates downstream cache when the alias moves.
-- `train.sweep(data=d, lr=[0.01, 0.1], epochs=[10, 50], strategy="grid")` produces 4 tasks with correct parameter combinations and sweep metadata in provenance.
-- `strategy="zip"` with equal-length lists produces N tasks; unequal lengths raise a clear error.
-- A `kind="eval"` task stores structured metrics and automatically links to the upstream model version.
-- `ginkgo eval compare` renders correct columns from metrics and inherited params without manual metric logging.
-- Promote a model version to `staging`, then another, and assert alias resolution changes without mutating historical model versions.
-- Framework-aware serialization and deserialization round-trips correctly for at least sklearn and records the serializer metadata in provenance.
-- UI Models sidebar lists model keys and versions; Evals comparison table renders sortable metric columns with model version and run linkage.
+- A `kind="model"` task serializes and registers an immutable model version with
+  auto-captured params and metrics.
+- Training progress events appear in Rich CLI output during execution.
+- `ginkgo model ls` lists trained models with metrics.
+- `train.sweep(data=d, lr=[0.01, 0.1], epochs=[10, 50], strategy="grid")`
+  produces 4 tasks with correct parameter combinations.
+- `strategy="zip"` with equal-length lists produces N tasks; unequal lengths
+  raise a clear error.
+- Re-running with identical inputs hits the cache; changed inputs create a new
+  version.
 
 ---
 
-### Phase 10 — Asset Read Paths and Lifecycle Tooling
+### Phase 6 — Asset Read Paths and Lifecycle Tooling
 
 **Goal:** Add the user-facing read surfaces and maintenance workflows that sit
-on top of Phase 7's asset runtime foundation.
+on top of the asset catalog.
 
-**Depends on:** Phase 7 (asset runtime foundation). Benefits from Phase 8 and
-Phase 9 as additional asset kinds begin to use the shared catalog.
+**Depends on:** the existing asset catalog. Benefits from Phase 4 and Phase 5 as
+additional asset kinds begin to use the shared catalog.
 
 #### Deliverables
 
@@ -194,7 +326,7 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
 
 #### Key design points
 
-- Phase 10 is read- and lifecycle-oriented. It should not change Phase 7's core
+- Phase 6 is read- and lifecycle-oriented. It should not change the core asset
   storage model.
 - The programmatic API and CLI should be thin wrappers over the shared
   `AssetStore` and loader registry, not parallel implementations.
@@ -218,10 +350,11 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
 
 ---
 
-### Phase 11 — Data Quality and Profiling
+## Tier 3 — Composition and Remote Execution
 
-**Goal:** Add automated statistical profiling, data quality gates, and drift detection for DataFrame assets, giving data scientists built-in observability over their data without external tools.
+### Phase 7 — Kubernetes / Batch Executor
 
+<<<<<<< Updated upstream
 **Depends on:** Phase 8 (versioned DataFrame assets — profiling hooks into the DataFrame materialization path, drift detection compares version metadata).
 
 #### Deliverables
@@ -294,10 +427,13 @@ Phase 9 as additional asset kinds begin to use the shared catalog.
 ### Phase 14 — Kubernetes / Batch Executor
 
 **Goal:** Run tasks on a remote scheduler such as Kubernetes Jobs or cloud batch services while preserving Ginkgo's dynamic DAG and cache semantics.
+=======
+**Goal:** Run tasks on a remote scheduler such as Kubernetes Jobs or cloud batch
+services while preserving Ginkgo's dynamic DAG and cache semantics.
+>>>>>>> Stashed changes
 
 **Depends on:** remote-backed artifact storage for managed outputs (hard
-prerequisite; remote jobs cannot access local `.ginkgo/cache/`), Phase 13
-(Secrets — remote backends require credentials).
+prerequisite; remote jobs cannot access local `.ginkgo/cache/`).
 
 #### Deliverables
 
@@ -312,45 +448,59 @@ prerequisite; remote jobs cannot access local `.ginkgo/cache/`), Phase 13
 
 #### Key design points
 
-- The main evaluator can remain the control plane, but it must treat remote jobs as asynchronous task futures.
-- Dynamic DAG expansion should still happen in the scheduler after parent-task results return.
+- The main evaluator can remain the control plane, but it must treat remote jobs
+  as asynchronous task futures.
+- Dynamic DAG expansion should still happen in the scheduler after parent-task
+  results return.
 - Remote execution makes remote-backed managed artifact storage mandatory; the
   current remote-input staging layer is necessary but not sufficient on its own.
-p
+
 #### Validation
 
-- Re-run `VW-2`, `VW-3`, `VW-6`, `VW-7`, and `VW-8` through the remote executor.
-- Assert remote logs, exit codes, and declared resources are reflected in the local run manifest.
+- Re-run `VW-2`, `VW-3`, `VW-6`, `VW-7`, and `VW-8` through the remote
+  executor.
+- Assert remote logs, exit codes, and declared resources are reflected in the
+  local run manifest.
 - Assert cancellation from the CLI propagates to in-flight remote jobs.
 
 ---
 
-### Phase 15 — Workflow Composition
+### Phase 8 — Workflow Composition
 
-**Goal:** Allow Ginkgo workflows to invoke other Ginkgo workflows as first-class sub-workflows, enabling reuse and composition without duplicating task logic.
-
-**Depends on:** Phase 13 (Secrets — secrets must pass through sub-workflow call boundaries).
+**Goal:** Allow Ginkgo workflows to invoke other Ginkgo workflows as first-class
+sub-workflows, enabling reuse and composition without duplicating task logic.
 
 #### Deliverables
 
-- Add a `call_workflow` primitive that invokes a named Ginkgo workflow from within a parent workflow task.
+- Add a `call_workflow` primitive that invokes a named Ginkgo workflow from
+  within a parent workflow task.
 - Support two composition modes:
-  - **Inline expansion**: the sub-workflow's DAG is expanded into the parent DAG at plan time, making its tasks visible in the parent's provenance and UI.
-  - **Opaque invocation**: the sub-workflow runs as a self-contained execution unit and its result is returned as an artifact to the parent.
-- Pass parameters, secrets, and resource declarations through the call boundary consistently.
-- Propagate sub-workflow run ids and provenance back into the parent run manifest so lineage is fully traceable.
+  - **Inline expansion**: the sub-workflow's DAG is expanded into the parent DAG
+    at plan time, making its tasks visible in the parent's provenance and UI.
+  - **Opaque invocation**: the sub-workflow runs as a self-contained execution
+    unit and its result is returned as an artifact to the parent.
+- Pass parameters, secrets, and resource declarations through the call boundary
+  consistently.
+- Propagate sub-workflow run ids and provenance back into the parent run
+  manifest so lineage is fully traceable.
 - Detect and reject circular workflow dependencies at plan time.
-- Extend the UI and `ginkgo inspect` to show sub-workflow boundaries and nested task graphs.
+- Extend the UI and `ginkgo inspect` to show sub-workflow boundaries and nested
+  task graphs.
 
 #### Key design points
 
-- Inline expansion is preferred for small, reusable task groups where joint caching and visibility matter.
-- Opaque invocation is preferred for independently versioned or cross-team workflows where internal structure should be encapsulated.
-- Sub-workflow cache semantics must be consistent with top-level workflow semantics: the same inputs should hit cache regardless of call depth.
-- Recursive or indirect circular dependencies must be caught before any execution begins.
+- Inline expansion is preferred for small, reusable task groups where joint
+  caching and visibility matter.
+- Opaque invocation is preferred for independently versioned or cross-team
+  workflows where internal structure should be encapsulated.
+- Sub-workflow cache semantics must be consistent with top-level workflow
+  semantics: the same inputs should hit cache regardless of call depth.
+- Recursive or indirect circular dependencies must be caught before any
+  execution begins.
 
 #### Validation
 
+<<<<<<< Updated upstream
 - Define a parent workflow that calls a sub-workflow in inline mode and assert that sub-workflow tasks appear in the parent DAG, share the same run manifest, and are individually cached.
 - Define a parent workflow that calls a sub-workflow in opaque mode and assert that only the sub-workflow's result artifact appears in the parent provenance, not its internal tasks.
 - Assert that circular workflow references are detected at plan time with a clear error message.
@@ -504,3 +654,18 @@ machine underutilized.
   to behave as before.
 - Scheduler tests cover single-group and mixed-group contention scenarios,
   including mapped workloads.
+=======
+- Define a parent workflow that calls a sub-workflow in inline mode and assert
+  that sub-workflow tasks appear in the parent DAG, share the same run manifest,
+  and are individually cached.
+- Define a parent workflow that calls a sub-workflow in opaque mode and assert
+  that only the sub-workflow's result artifact appears in the parent provenance,
+  not its internal tasks.
+- Assert that circular workflow references are detected at plan time with a
+  clear error message.
+- Assert that parameters and secrets passed to a sub-workflow are correctly
+  scoped and do not leak into unrelated tasks in the parent workflow.
+- Re-run the parent workflow with unchanged inputs and assert that sub-workflow
+  tasks are served from cache at the appropriate granularity for each
+  composition mode.
+>>>>>>> Stashed changes
