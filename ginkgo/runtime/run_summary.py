@@ -77,7 +77,6 @@ class TaskSummary:
     cache_key: str | None
     stdout_log: str | None
     stderr_log: str | None
-    log_path: str | None
     rendered_html: str | None
     executed_notebook: str | None
     notebook_kind: str | None
@@ -291,7 +290,6 @@ def _build_task_summary(*, task_key: str, task: dict[str, Any]) -> TaskSummary:
 
     stdout_log = task.get("stdout_log") if isinstance(task.get("stdout_log"), str) else None
     stderr_log = task.get("stderr_log") if isinstance(task.get("stderr_log"), str) else None
-    legacy_log = task.get("log") if isinstance(task.get("log"), str) else None
 
     return TaskSummary(
         task_key=task_key,
@@ -309,7 +307,6 @@ def _build_task_summary(*, task_key: str, task: dict[str, Any]) -> TaskSummary:
         cache_key=task.get("cache_key") if isinstance(task.get("cache_key"), str) else None,
         stdout_log=stdout_log,
         stderr_log=stderr_log,
-        log_path=legacy_log,
         rendered_html=task.get("rendered_html")
         if isinstance(task.get("rendered_html"), str)
         else None,

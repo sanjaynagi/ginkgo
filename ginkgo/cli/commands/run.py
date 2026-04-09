@@ -334,17 +334,12 @@ def _load_failure_details(
 
 def _combined_log_tail(*, run_dir: Path, task: TaskSummary, lines: int) -> list[str]:
     """Combine stdout and stderr tails for failure display."""
-    if task.stdout_log or task.stderr_log:
-        combined: list[str] = []
-        if isinstance(task.stdout_log, str):
-            combined.extend(tail_text(run_dir / task.stdout_log, lines=lines))
-        if isinstance(task.stderr_log, str):
-            combined.extend(tail_text(run_dir / task.stderr_log, lines=lines))
-        return combined[-lines:]
-
-    if isinstance(task.log_path, str):
-        return tail_text(run_dir / task.log_path, lines=lines)
-    return []
+    combined: list[str] = []
+    if isinstance(task.stdout_log, str):
+        combined.extend(tail_text(run_dir / task.stdout_log, lines=lines))
+    if isinstance(task.stderr_log, str):
+        combined.extend(tail_text(run_dir / task.stderr_log, lines=lines))
+    return combined[-lines:]
 
 
 def _discover_flow(module: ModuleType) -> FlowDef:

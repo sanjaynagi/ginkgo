@@ -45,25 +45,15 @@ def command_debug(args) -> int:
 
 
 def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
-    """Combine stdout and stderr tails for failure display.
-
-    Falls back to the legacy combined ``log`` field for old manifests.
-    """
+    """Combine stdout and stderr tails for failure display."""
+    combined: list[str] = []
     stdout_rel = task.get("stdout_log")
     stderr_rel = task.get("stderr_log")
-    legacy_rel = task.get("log")
-
-    if stdout_rel or stderr_rel:
-        combined: list[str] = []
-        if isinstance(stdout_rel, str):
-            combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
-        if isinstance(stderr_rel, str):
-            combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
-        return combined[-lines:]
-
-    if isinstance(legacy_rel, str):
-        return tail_text(run_dir / legacy_rel, lines=lines)
-    return []
+    if isinstance(stdout_rel, str):
+        combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
+    if isinstance(stderr_rel, str):
+        combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
+    return combined[-lines:]
 
 
 def _debug_failure_details(

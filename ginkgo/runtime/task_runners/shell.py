@@ -8,7 +8,6 @@ notebook runner reuse the logged-command machinery.
 
 from __future__ import annotations
 
-import inspect
 import os
 import shutil
 import signal
@@ -332,30 +331,6 @@ class ShellRunner:
             stderr="".join(stderr_chunks),
         )
 
-    def _call_run_subprocess(
-        self,
-        *,
-        argv: str | list[str],
-        use_shell: bool,
-        on_stdout: Any,
-        on_stderr: Any,
-    ) -> tuple[subprocess.CompletedProcess[str], bool]:
-        """Call ``_run_subprocess`` while tolerating legacy test doubles."""
-        run_subprocess = self._run_subprocess
-        parameters = inspect.signature(run_subprocess).parameters
-        supports_stream_callbacks = "on_stdout" in parameters and "on_stderr" in parameters
-        if supports_stream_callbacks:
-            completed = run_subprocess(
-                argv=argv,
-                use_shell=use_shell,
-                on_stdout=on_stdout,
-                on_stderr=on_stderr,
-            )
-            return completed, True
-
-        completed = run_subprocess(argv=argv, use_shell=use_shell)
-        return completed, False
-
     # Logged command --------------------------------------------------------
 
     def run_logged_command(
@@ -394,17 +369,12 @@ class ShellRunner:
             self.log_emitter_factory(node=node, stream=stream)(chunk)
 
         try:
-            completed, streamed = self._call_run_subprocess(
+            completed = self._run_subprocess(
                 argv=argv,
                 use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
             )
-            if not streamed:
-                if completed.stdout:
-                    emit_chunk(stream="stdout", chunk=completed.stdout)
-                if completed.stderr:
-                    emit_chunk(stream="stderr", chunk=completed.stderr)
         finally:
             if stdout_handle is not None:
                 stdout_handle.close()

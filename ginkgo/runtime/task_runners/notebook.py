@@ -486,13 +486,12 @@ class NotebookRunner:
         command: ExecutionCommand,
     ) -> subprocess.CompletedProcess[str]:
         """Run one notebook helper command without attaching task logs."""
-        completed, _ = self.shell_runner._call_run_subprocess(
+        return self.shell_runner._run_subprocess(
             argv=command.argv,
             use_shell=command.use_shell,
             on_stdout=lambda _chunk: None,
             on_stderr=lambda _chunk: None,
         )
-        return completed
 
     def _build_ipynb_execute_command(
         self,

@@ -30,8 +30,7 @@ from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
-from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import LocalBackend, TaskBackend
+from ginkgo.runtime.backend import TaskBackend
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.output_index import artifact_index
@@ -115,7 +114,6 @@ def evaluate(
     cores: int | None = None,
     memory: int | None = None,
     backend: TaskBackend | None = None,
-    pixi_registry: PixiRegistry | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
     event_bus: EventBus | None = None,
@@ -133,12 +131,7 @@ def evaluate(
     memory : int | None
         Maximum total declared memory budget across running tasks in GiB.
     backend : TaskBackend | None
-        Execution backend for environment-isolated tasks.  When ``None`` and
-        *pixi_registry* is provided, a ``LocalBackend`` is created
-        automatically for backward compatibility.
-    pixi_registry : PixiRegistry | None
-        Deprecated — use *backend* instead.  Registry for resolving Pixi
-        environments.  Ignored when *backend* is provided.
+        Execution backend for environment-isolated tasks.
     event_bus : EventBus | None
         Optional event bus to receive lifecycle events. Useful for tests
         and ad-hoc programmatic callers that want to observe task progress.
@@ -148,9 +141,6 @@ def evaluate(
     Any
         The concrete result of evaluating the input.
     """
-    if backend is None and pixi_registry is not None:
-        backend = LocalBackend(pixi_registry=pixi_registry)
-
     return _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,

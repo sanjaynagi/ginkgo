@@ -22,7 +22,7 @@ import pytest
 
 from ginkgo import flow, shell, task
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.pixi import (
+from ginkgo.envs.pixi import (
     PixiEnvImportError,
     PixiEnvNotFoundError,
     PixiEnvPrepareError,
@@ -46,8 +46,9 @@ def _make_registry(tmp_path: Path) -> PixiRegistry:
 def _evaluate(expr, *, registry: PixiRegistry):
     """Evaluate an expression without importing the evaluator at module import time."""
     from ginkgo import evaluate
+    from ginkgo.runtime.backend import LocalBackend
 
-    return evaluate(expr, pixi_registry=registry)
+    return evaluate(expr, backend=LocalBackend(pixi_registry=registry))
 
 
 def _pixi_available() -> bool:
@@ -282,7 +283,7 @@ class TestPixiShellTask:
     @pixi_required
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
-        from ginkgo.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
         from ginkgo.runtime.backend import LocalBackend
         from ginkgo.runtime.events import EventBus, TaskCacheHit
 

@@ -26,7 +26,7 @@ from ginkgo import (
     task,
     tmp_dir,
 )
-from ginkgo.pixi import PixiRegistry
+from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
 from tests.conftest import EventCollector
@@ -843,7 +843,7 @@ class TestEvaluate:
         expr_v1 = notebook_ipynb_task(notebook_path=str(nb_path), value=1)
 
         def fake_subprocess_ok(
-            *, argv: str | list[str], use_shell: bool
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
@@ -1204,7 +1204,7 @@ class TestShellTask:
         outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
         result = evaluate(
             [pixi_shell_output_task(output_path=str(path)) for path in outputs],
-            pixi_registry=registry,
+            backend=LocalBackend(pixi_registry=registry),
         )
 
         assert result == [file(str(path)) for path in outputs]

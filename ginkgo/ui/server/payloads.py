@@ -515,10 +515,7 @@ def task_payload(
 
     stdout_path = resolve_log_path(run_dir, task, "stdout_log")
     stderr_path = resolve_log_path(run_dir, task, "stderr_log")
-    legacy_path = resolve_log_path(run_dir, task, "log")
     notebook_html = resolve_task_path(run_dir, task, "rendered_html")
-    if stdout_path is None and legacy_path is not None:
-        stdout_path = legacy_path
 
     return {
         "workspace_id": workspace.workspace_id,
