@@ -96,3 +96,18 @@ class _ResourceRenderState:
     """Live resource summary provider for CLI rendering."""
 
     provider: Callable[[], dict[str, object]]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _NotebookSummary:
+    """Rendered notebook artifact produced in a run."""
+
+    task_label: str
+    html_path: Path
+
+
+@dataclass(frozen=True, kw_only=True)
+class _AssetSummary:
+    """Asset materialised in a run."""
+
+    name: str

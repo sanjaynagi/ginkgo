@@ -8,11 +8,18 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import _environment_label, _format_duration
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
-from ginkgo.cli.renderers.models import _FailureDetails, _ResourceRenderState, _RunSummary
+from ginkgo.cli.renderers.models import (
+    _AssetSummary,
+    _FailureDetails,
+    _NotebookSummary,
+    _ResourceRenderState,
+    _RunSummary,
+)
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
@@ -280,6 +287,12 @@ def run_workflow(
                     elapsed=time.perf_counter() - run_started,
                     success=True,
                     resources=resource_summary,
+                    notebooks=_load_run_notebooks(
+                        run_dir=recorder.run_dir,
+                        manifest=manifest,
+                        renderer=renderer,
+                    ),
+                    assets=_load_run_assets(manifest=manifest),
                 )
     finally:
         if notification_service is not None:
@@ -343,6 +356,68 @@ def _discover_flow(module: ModuleType) -> FlowDef:
     if len(flows) != 1:
         raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
     return next(iter(flows.values()))
+
+
+def _load_run_notebooks(
+    *,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    renderer: _CliRunRenderer,
+) -> list[_NotebookSummary]:
+    """Extract notebook HTML artifacts from a completed run manifest.
+
+    Reads ``rendered_html`` from each task entry. Freshly executed notebooks
+    record a path relative to ``run_dir``; cache hits replay an absolute
+    path pointing at the original run's HTML. ``Path /`` handles both.
+    """
+    notebooks: list[_NotebookSummary] = []
+    tasks = manifest.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return notebooks
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        rendered_html = task.get("rendered_html")
+        if not isinstance(rendered_html, str):
+            continue
+        html_path = (run_dir / rendered_html).resolve()
+        node_id = task.get("node_id")
+        task_label = (
+            renderer.label_for_node(int(node_id)) if isinstance(node_id, int) else None
+        ) or _task_base_name(task.get("task"))
+        notebooks.append(_NotebookSummary(task_label=task_label, html_path=html_path))
+    return notebooks
+
+
+def _load_run_assets(*, manifest: dict[str, Any]) -> list[_AssetSummary]:
+    """Extract asset materialisations from a completed run manifest."""
+    assets: list[_AssetSummary] = []
+    seen_keys: set[str] = set()
+    tasks = manifest.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return assets
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        task_assets = task.get("assets")
+        if not isinstance(task_assets, list):
+            continue
+        for asset in task_assets:
+            if not isinstance(asset, dict):
+                continue
+            key = asset.get("asset_key")
+            if not isinstance(key, str) or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            name = asset.get("name") or asset.get("asset_key") or key
+            assets.append(_AssetSummary(name=str(name)))
+    return assets
+
+
+def _task_base_name(task_name: object) -> str:
+    """Return the final dotted segment of a task identifier."""
+    text = str(task_name or "unknown")
+    return text.rsplit(".", maxsplit=1)[-1]
 
 
 def _task_counts(manifest: dict[str, object]) -> dict[str, int]:

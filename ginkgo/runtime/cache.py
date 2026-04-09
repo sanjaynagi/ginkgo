@@ -164,11 +164,19 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         input_hashes: dict[str, Any],
+        extra_meta: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Atomically persist a task result and metadata.
 
         File and folder outputs are copied into the artifact store, while the
         working-tree materialization is left in place as writable content.
+
+        Parameters
+        ----------
+        extra_meta : dict[str, Any] | None
+            Optional task-kind-specific metadata to persist alongside the
+            cache entry. Stored under the top-level ``"extra"`` field of
+            ``meta.json`` and retrievable via :meth:`load_extra_meta`.
 
         Returns
         -------
@@ -210,6 +218,8 @@ class CacheStore:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "version": task_def.version,
                 }
+                if extra_meta is not None:
+                    meta["extra"] = extra_meta
                 (temp_dir / "meta.json").write_text(
                     json.dumps(meta, indent=2, sort_keys=True),
                     encoding="utf-8",
@@ -308,6 +318,30 @@ class CacheStore:
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
+
+    def load_extra_meta(self, *, cache_key: str) -> dict[str, Any] | None:
+        """Return task-kind-specific metadata persisted with a cache entry.
+
+        Parameters
+        ----------
+        cache_key : str
+            The content-addressed cache key.
+
+        Returns
+        -------
+        dict[str, Any] | None
+            The dict previously passed as ``extra_meta`` to :meth:`save`,
+            or ``None`` when the entry is missing or recorded no extras.
+        """
+        meta_path = self._entry_dir(cache_key) / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        extra = meta.get("extra")
+        return extra if isinstance(extra, dict) else None
 
     def _load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
         """Load output artifact mappings for one cache entry."""

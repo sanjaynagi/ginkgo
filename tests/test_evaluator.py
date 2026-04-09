@@ -47,6 +47,12 @@ def notebook_ipynb_task(*, notebook_path: str, value: int) -> Path:
 
 
 @task("notebook")
+def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: str) -> Path:
+    """Run an ipynb notebook that declares an output file."""
+    return notebook(notebook_path, outputs=output_path)
+
+
+@task("notebook")
 def notebook_marimo_task(*, notebook_path: str, sample_id: str) -> Path:
     """Run a marimo notebook by path."""
     return notebook(notebook_path)
@@ -459,6 +465,95 @@ class TestEvaluate:
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
         assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+
+    def test_cached_notebook_with_declared_output_replays_rendered_html(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cache hits on notebook tasks with declared outputs must still
+        populate ``rendered_html`` so the run summary can list the notebook.
+        """
+        nb_path = tmp_path / "report.ipynb"
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        output_path = tmp_path / "output.txt"
+        expr = notebook_ipynb_with_output_task(
+            notebook_path=str(nb_path), output_path=str(output_path)
+        )
+
+        first_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+
+        def fake_run_subprocess(
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+        ) -> subprocess.CompletedProcess[str]:
+            command = " ".join(argv) if isinstance(argv, list) else str(argv)
+            if "import ipykernel" in command:
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "ipykernel install" in command:
+                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
+                kernel_name = command.split("--name", 1)[1].strip().split()[0]
+                kernel_dir = kernel_root / kernel_name
+                kernel_dir.mkdir(parents=True, exist_ok=True)
+                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "papermill" in command:
+                executed = first_recorder.run_dir / "notebooks" / "task_0000.ipynb"
+                executed.write_text("executed", encoding="utf-8")
+                # Honour the declared output by creating it during execution.
+                output_path.write_text("declared output", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            if "nbconvert" in command:
+                html = first_recorder.run_dir / "notebooks" / "task_0000.html"
+                html.write_text("<html>report</html>", encoding="utf-8")
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+            raise AssertionError(command)
+
+        first_evaluator = _ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
+        monkeypatch.setattr(first_evaluator, "_run_subprocess", fake_run_subprocess)
+        first_result = first_evaluator.evaluate(expr)
+        first_manifest = load_manifest(first_recorder.run_dir)
+        first_html = first_recorder.run_dir / "notebooks" / "task_0000.html"
+
+        assert first_result == output_path
+        assert first_manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
+
+        # Second run reuses the same cwd-scoped cache but a fresh recorder
+        # (and therefore a fresh run_dir). The notebook body must be skipped
+        # entirely yet rendered_html still has to surface in the new manifest.
+        second_recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py") + "-2",
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+        cached_evaluator = _ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
+        monkeypatch.setattr(
+            cached_evaluator,
+            "_run_subprocess",
+            lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
+        )
+
+        cached_result = cached_evaluator.evaluate(expr)
+        second_manifest = load_manifest(second_recorder.run_dir)
+        replayed_html = second_manifest["tasks"]["task_0000"].get("rendered_html")
+
+        assert cached_result == output_path
+        assert second_manifest["tasks"]["task_0000"].get("cached") is True
+        assert isinstance(replayed_html, str)
+        # Absolute path pointing back at the original run's HTML artifact.
+        assert Path(replayed_html) == first_html
+        assert (second_recorder.run_dir / replayed_html).resolve() == first_html.resolve()
 
     def test_ipynb_notebook_task_uses_env_managed_kernel(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
