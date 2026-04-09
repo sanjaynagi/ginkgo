@@ -8,7 +8,6 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import _environment_label, _format_duration
@@ -33,13 +32,13 @@ from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.caching.provenance import (
     RunProvenanceRecorder,
-    load_manifest,
     make_run_id,
     tail_text,
 )
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
 from ginkgo.runtime.notifications.notifications import build_notification_service
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -250,17 +249,19 @@ def run_workflow(
                 )
                 resource_summary = resource_monitor.stop()
                 recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
+                run_summary = RunSummary.load(recorder.run_dir)
                 bus.emit(
                     RunCompleted(
                         run_id=run_id,
                         status="failed",
-                        task_counts=_task_counts(load_manifest(recorder.run_dir)),
+                        task_counts=dict(run_summary.task_counts()),
                         error=str(exc),
                     )
                 )
                 if renderer is not None:
                     failure_details = _load_failure_details(
                         run_dir=recorder.run_dir,
+                        run_summary=run_summary,
                         renderer=renderer,
                         verbose=output_mode == "verbose",
                     )
@@ -279,12 +280,12 @@ def run_workflow(
                 seconds=time.perf_counter() - run_started,
             )
             recorder.finalize(status="succeeded", resources=resource_summary)
-            manifest = load_manifest(recorder.run_dir)
+            run_summary = RunSummary.load(recorder.run_dir)
             bus.emit(
                 RunCompleted(
                     run_id=run_id,
                     status="success",
-                    task_counts=_task_counts(manifest),
+                    task_counts=dict(run_summary.task_counts()),
                 )
             )
             if renderer is not None:
@@ -292,12 +293,11 @@ def run_workflow(
                     elapsed=time.perf_counter() - run_started,
                     success=True,
                     resources=resource_summary,
-                    notebooks=_load_run_notebooks(
-                        run_dir=recorder.run_dir,
-                        manifest=manifest,
+                    notebooks=_render_notebooks(
+                        run_summary=run_summary,
                         renderer=renderer,
                     ),
-                    assets=_load_run_assets(manifest=manifest),
+                    assets=_render_assets(run_summary=run_summary),
                 )
     finally:
         if notification_service is not None:
@@ -308,51 +308,42 @@ def run_workflow(
 def _load_failure_details(
     *,
     run_dir: Path,
+    run_summary: RunSummary,
     renderer: _CliRunRenderer,
     verbose: bool,
 ) -> list[_FailureDetails]:
-    """Load failed-task diagnostics from a completed run manifest."""
-    manifest = load_manifest(run_dir)
-    failed_tasks = sorted(
-        (task for task in manifest.get("tasks", {}).values() if task.get("status") == "failed"),
-        key=lambda item: int(item.get("node_id", -1)),
-    )
+    """Load failed-task diagnostics from a finished run."""
     details: list[_FailureDetails] = []
     tail_lines = 20 if verbose else 10
-    for task in failed_tasks:
-        node_id = int(task.get("node_id", -1))
-        log_tail = _combined_log_tail(run_dir, task, lines=tail_lines)
-        stderr_rel = task.get("stderr_log")
-        stderr_path = run_dir / stderr_rel if isinstance(stderr_rel, str) else None
+    for task in run_summary.failed_tasks:
+        node_id = task.node_id if task.node_id is not None else -1
+        log_tail = _combined_log_tail(run_dir=run_dir, task=task, lines=tail_lines)
+        stderr_path = run_dir / task.stderr_log if isinstance(task.stderr_log, str) else None
         details.append(
             _FailureDetails(
-                task_label=renderer.label_for_node(node_id) or task.get("task", f"node-{node_id}"),
-                exit_code=task.get("exit_code"),
+                task_label=renderer.label_for_node(node_id) or task.name,
+                exit_code=task.exit_code,
                 log_path=stderr_path,
                 log_tail=log_tail,
-                error=task.get("error"),
-                inputs=task.get("inputs") if verbose else None,
+                error=task.error,
+                inputs=task.inputs if verbose else None,
             )
         )
     return details
 
 
-def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
+def _combined_log_tail(*, run_dir: Path, task: TaskSummary, lines: int) -> list[str]:
     """Combine stdout and stderr tails for failure display."""
-    stdout_rel = task.get("stdout_log")
-    stderr_rel = task.get("stderr_log")
-    legacy_rel = task.get("log")
-
-    if stdout_rel or stderr_rel:
+    if task.stdout_log or task.stderr_log:
         combined: list[str] = []
-        if isinstance(stdout_rel, str):
-            combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
-        if isinstance(stderr_rel, str):
-            combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
+        if isinstance(task.stdout_log, str):
+            combined.extend(tail_text(run_dir / task.stdout_log, lines=lines))
+        if isinstance(task.stderr_log, str):
+            combined.extend(tail_text(run_dir / task.stderr_log, lines=lines))
         return combined[-lines:]
 
-    if isinstance(legacy_rel, str):
-        return tail_text(run_dir / legacy_rel, lines=lines)
+    if isinstance(task.log_path, str):
+        return tail_text(run_dir / task.log_path, lines=lines)
     return []
 
 
@@ -363,77 +354,33 @@ def _discover_flow(module: ModuleType) -> FlowDef:
     return next(iter(flows.values()))
 
 
-def _load_run_notebooks(
+def _render_notebooks(
     *,
-    run_dir: Path,
-    manifest: dict[str, Any],
+    run_summary: RunSummary,
     renderer: _CliRunRenderer,
 ) -> list[_NotebookSummary]:
-    """Extract notebook HTML artifacts from a completed run manifest.
+    """Build CLI-renderer notebook rows from a run summary.
 
-    Reads ``rendered_html`` from each task entry. Freshly executed notebooks
-    record a path relative to ``run_dir``; cache hits replay an absolute
-    path pointing at the original run's HTML. ``Path /`` handles both.
+    Resolves rendered HTML paths against the run directory and substitutes
+    runtime task labels when the renderer has them.
     """
-    notebooks: list[_NotebookSummary] = []
-    tasks = manifest.get("tasks", {})
-    if not isinstance(tasks, dict):
-        return notebooks
-    for task in tasks.values():
-        if not isinstance(task, dict):
+    rows: list[_NotebookSummary] = []
+    for notebook in run_summary.notebooks:
+        if notebook.rendered_html is None:
             continue
-        rendered_html = task.get("rendered_html")
-        if not isinstance(rendered_html, str):
-            continue
-        html_path = (run_dir / rendered_html).resolve()
-        node_id = task.get("node_id")
+        html_path = (run_summary.run_dir / notebook.rendered_html).resolve()
+        task_summary = next(
+            (task for task in run_summary.tasks if task.task_key == notebook.task_key),
+            None,
+        )
+        node_id = task_summary.node_id if task_summary is not None else None
         task_label = (
-            renderer.label_for_node(int(node_id)) if isinstance(node_id, int) else None
-        ) or _task_base_name(task.get("task"))
-        notebooks.append(_NotebookSummary(task_label=task_label, html_path=html_path))
-    return notebooks
+            renderer.label_for_node(node_id) if isinstance(node_id, int) else None
+        ) or notebook.base_name
+        rows.append(_NotebookSummary(task_label=task_label, html_path=html_path))
+    return rows
 
 
-def _load_run_assets(*, manifest: dict[str, Any]) -> list[_AssetSummary]:
-    """Extract asset materialisations from a completed run manifest."""
-    assets: list[_AssetSummary] = []
-    seen_keys: set[str] = set()
-    tasks = manifest.get("tasks", {})
-    if not isinstance(tasks, dict):
-        return assets
-    for task in tasks.values():
-        if not isinstance(task, dict):
-            continue
-        task_assets = task.get("assets")
-        if not isinstance(task_assets, list):
-            continue
-        for asset in task_assets:
-            if not isinstance(asset, dict):
-                continue
-            key = asset.get("asset_key")
-            if not isinstance(key, str) or key in seen_keys:
-                continue
-            seen_keys.add(key)
-            name = asset.get("name") or asset.get("asset_key") or key
-            assets.append(_AssetSummary(name=str(name)))
-    return assets
-
-
-def _task_base_name(task_name: object) -> str:
-    """Return the final dotted segment of a task identifier."""
-    text = str(task_name or "unknown")
-    return text.rsplit(".", maxsplit=1)[-1]
-
-
-def _task_counts(manifest: dict[str, object]) -> dict[str, int]:
-    """Return task counts by manifest status."""
-    counts: dict[str, int] = {}
-    tasks = manifest.get("tasks", {})
-    if not isinstance(tasks, dict):
-        return counts
-    for task in tasks.values():
-        if not isinstance(task, dict):
-            continue
-        status = str(task.get("status", "unknown"))
-        counts[status] = counts.get(status, 0) + 1
-    return counts
+def _render_assets(*, run_summary: RunSummary) -> list[_AssetSummary]:
+    """Build CLI-renderer asset rows from a run summary."""
+    return [_AssetSummary(name=asset.name) for asset in run_summary.assets]
