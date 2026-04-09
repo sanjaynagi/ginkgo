@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
-import signal
-import subprocess
 import sys
 import tempfile
 import time
 import builtins
-import inspect
 from contextlib import ExitStack, suppress
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -25,11 +21,8 @@ from dataclasses import dataclass, field
 from multiprocessing import Manager, get_context
 from pathlib import Path
 from queue import Empty
-from threading import Event, Lock, Thread, current_thread, main_thread
-from types import FrameType
+from threading import Event, Lock, Thread
 from typing import Any, get_args, get_origin
-
-import yaml
 
 from ginkgo.core.asset import (
     AssetKey,
@@ -44,7 +37,6 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
 from ginkgo.core.script import ScriptExpr
-from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
@@ -74,27 +66,29 @@ from ginkgo.runtime.events import (
     TaskStaging,
     TaskStarted,
 )
-from ginkgo.runtime.module_loader import load_module, resolve_module_file
-from ginkgo.runtime.notebook_kernels import (
-    ExecutionCommand,
-    NotebookCommandBuilder,
-    NotebookKernelManager,
-    build_jupyter_env_prefix,
-)
+from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.secrets import (
     SecretResolver,
-    collect_secret_refs,
     collect_resolved_secret_values,
-    redact_text,
     resolve_secret_refs,
 )
+from ginkgo.runtime.task_runners.notebook import (
+    NotebookRunner,
+    first_label_param_name,
+    render_label_value,
+)
+from ginkgo.runtime.task_runners.shell import (
+    ShellRunner,
+    SignalMonitor,
+    classify_failure,
+    sanitize_exception,
+)
+from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
 from ginkgo.runtime.value_codec import (
-    CodecError,
     decode_value,
     encode_value,
-    ensure_serializable,
     summarise_value,
 )
 from ginkgo.runtime.worker import _task_log_context, run_task
@@ -207,79 +201,6 @@ class _TaskNode:
         return self.expr.task_def
 
 
-@dataclass(frozen=True, kw_only=True)
-class _NotebookArtifacts:
-    """Run-scoped artifact locations for one notebook task."""
-
-    root_dir: Path
-    html_path: Path
-    executed_path: Path | None
-    params_path: Path
-
-
-@dataclass(kw_only=True, frozen=True)
-class _EvaluatorNotebookCommandBuilder(NotebookCommandBuilder):
-    """Build Python subprocess invocations for notebook helper commands."""
-
-    backend: TaskBackend | None
-
-    def command_for_python(self, *, env: str | None, args: list[str]) -> ExecutionCommand:
-        """Return a subprocess invocation for one Python command."""
-
-        # Use the current interpreter directly when no task env is declared.
-        if env is None:
-            argv = [sys.executable, *args]
-            return ExecutionCommand(
-                argv=argv,
-                use_shell=False,
-                display=" ".join(shlex.quote(part) for part in argv),
-            )
-
-        if self.backend is None:
-            raise RuntimeError(
-                f"Notebook task environment {env!r} requires a backend, but none is configured."
-            )
-
-        # Reuse the backend shell wrapper so env-backed notebook helpers run inside Pixi.
-        cmd = " ".join(shlex.quote(part) for part in ["python", *args])
-        return ExecutionCommand(
-            argv=self.backend.exec_argv(env=env, cmd=cmd),
-            use_shell=False,
-            display=cmd,
-        )
-
-
-class _SignalMonitor:
-    """Temporary signal handler that requests a graceful scheduler stop."""
-
-    def __init__(self) -> None:
-        self.exception: BaseException | None = None
-        self._installed = False
-        self._previous: dict[int, Any] = {}
-
-    def __enter__(self) -> _SignalMonitor:
-        if current_thread() is not main_thread():
-            return self
-
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            self._previous[signum] = signal.getsignal(signum)
-            signal.signal(signum, self._handler)
-
-        self._installed = True
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        if not self._installed:
-            return
-
-        for signum, previous in self._previous.items():
-            signal.signal(signum, previous)
-
-    def _handler(self, signum: int, _frame: FrameType | None) -> None:
-        if self.exception is None:
-            self.exception = KeyboardInterrupt(f"Received signal {signum}")
-
-
 @dataclass(kw_only=True)
 class _ConcurrentEvaluator:
     """Concurrent evaluator with dependency tracking and cache integration."""
@@ -313,12 +234,6 @@ class _ConcurrentEvaluator:
     )
     _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
     _staging_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
-    _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)
-    _active_subprocesses: dict[int, subprocess.Popen[str]] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
     _log_event_queue: Any = field(default=None, init=False, repr=False)
     _log_drain_stop: Event | None = field(default=None, init=False, repr=False)
     _log_drain_thread: Thread | None = field(default=None, init=False, repr=False)
@@ -335,7 +250,6 @@ class _ConcurrentEvaluator:
     )
     _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
-    _notebook_kernel_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -366,6 +280,27 @@ class _ConcurrentEvaluator:
         self._staging_cache = None  # Lazily created on first remote ref.
         self._staging_jobs = _resolve_staging_jobs(jobs=self.jobs)
 
+        # Helper runners. Constructed once per evaluation so unit tests can
+        # exercise them in isolation and substitute fakes.
+        self._validator = TaskValidator(
+            backend=self.backend,
+            secret_resolver=self.secret_resolver,
+        )
+        self._shell_runner = ShellRunner(
+            backend=self.backend,
+            validator=self._validator,
+            log_emitter_factory=self._task_log_emitter,
+        )
+        self._notebook_runner = NotebookRunner(
+            backend=self.backend,
+            shell_runner=self._shell_runner,
+            validator=self._validator,
+            cache_store=self._cache_store,
+            provenance=self.provenance,
+            notice_emitter=self._emit_notebook_notice,
+            runtime_root_factory=self._notebook_runtime_root,
+        )
+
     def evaluate(self, expr: Any) -> Any:
         """Resolve a root expression or nested container concurrently."""
         self._root_template = expr
@@ -374,8 +309,8 @@ class _ConcurrentEvaluator:
             return self._materialize(expr)
 
         # Validate all statically declared environments before any work starts.
-        self._validate_declared_envs()
-        self._validate_declared_secrets()
+        self._validator.validate_declared_envs(nodes=self._nodes.values())
+        self._validator.validate_declared_secrets(nodes=self._nodes.values())
 
         with ExitStack() as stack:
             try:
@@ -392,7 +327,7 @@ class _ConcurrentEvaluator:
                 ThreadPoolExecutor(max_workers=self._staging_jobs)
             )
             log_manager = stack.enter_context(Manager())
-            signals = stack.enter_context(_SignalMonitor())
+            signals = stack.enter_context(SignalMonitor())
             self._python_executor = python_executor
             self._shell_executor = shell_executor
             self._staging_executor = staging_executor
@@ -590,8 +525,8 @@ class _ConcurrentEvaluator:
             include_tmp_dirs=False,
             stage_remote_refs=False,
         )
-        self._validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
-        self._validate_task_preconditions(
+        self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
+        self._validator.validate_task_preconditions(
             task_def=node.task_def,
             resolved_args=resolved_args,
         )
@@ -800,7 +735,7 @@ class _ConcurrentEvaluator:
             raise TypeError("Expected staged task arguments from staging phase")
 
         node.resolved_args = completed_value
-        self._validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
+        self._validator.validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
         assert self._python_executor is not None
         assert self._shell_executor is not None
         self._start_task_execution(
@@ -820,7 +755,7 @@ class _ConcurrentEvaluator:
 
     def _handle_task_exception(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Either retry a failed task attempt or fail the run."""
-        sanitized_exc = self._sanitize_exception(exc=exc, secret_values=node.secret_values)
+        sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
         if self._failure is None and self._should_retry(node=node):
             self._schedule_retry(node=node, exc=sanitized_exc)
             return
@@ -839,7 +774,7 @@ class _ConcurrentEvaluator:
                 attempt=node.attempt,
                 display_label=node.display_label,
                 exit_code=getattr(sanitized_exc, "exit_code", None),
-                failure=_classify_failure(exc=sanitized_exc),
+                failure=classify_failure(exc=sanitized_exc),
             )
         )
 
@@ -889,7 +824,7 @@ class _ConcurrentEvaluator:
                 attempt=node.attempt,
                 display_label=node.display_label,
                 retries_remaining=retries_remaining,
-                failure=_classify_failure(exc=exc),
+                failure=classify_failure(exc=exc),
             )
         )
 
@@ -1217,7 +1152,7 @@ class _ConcurrentEvaluator:
     def _interrupt_running_work(self) -> None:
         """Stop queued and active work after an external interrupt."""
         self._cancel_pending_futures()
-        self._terminate_active_subprocesses()
+        self._shell_runner.terminate_all()
         self._shutdown_staging_executor()
         self._shutdown_shell_executor()
         self._shutdown_python_executor()
@@ -1267,50 +1202,6 @@ class _ConcurrentEvaluator:
             with suppress(Exception):
                 if process.is_alive():
                     process.kill()
-
-    def _register_subprocess(self, *, process: subprocess.Popen[str]) -> None:
-        """Track a subprocess so interrupts can terminate it."""
-        with self._subprocess_lock:
-            self._active_subprocesses[process.pid] = process
-
-    def _unregister_subprocess(self, *, process: subprocess.Popen[str]) -> None:
-        """Stop tracking a subprocess after it exits."""
-        with self._subprocess_lock:
-            self._active_subprocesses.pop(process.pid, None)
-
-    def _terminate_active_subprocesses(self) -> None:
-        """Terminate all active shell and Pixi subprocesses."""
-        with self._subprocess_lock:
-            processes = list(self._active_subprocesses.values())
-
-        for process in processes:
-            self._terminate_subprocess(process=process)
-
-    def _terminate_subprocess(self, *, process: subprocess.Popen[str]) -> None:
-        """Terminate one subprocess, escalating to kill if needed."""
-        if process.poll() is not None:
-            return
-
-        if os.name == "posix":
-            with suppress(ProcessLookupError, OSError):
-                os.killpg(process.pid, signal.SIGTERM)
-        else:
-            with suppress(Exception):
-                process.terminate()
-
-        with suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=0.2)
-            return
-
-        if os.name == "posix":
-            with suppress(ProcessLookupError, OSError):
-                os.killpg(process.pid, signal.SIGKILL)
-        else:
-            with suppress(Exception):
-                process.kill()
-
-        with suppress(Exception):
-            process.wait(timeout=0.2)
 
     def _start_log_drain(self, *, queue: Any) -> None:
         """Start draining worker log chunks from the multiprocessing queue."""
@@ -1375,103 +1266,6 @@ class _ConcurrentEvaluator:
                 )
             )
 
-    def _run_subprocess(
-        self,
-        *,
-        argv: str | list[str],
-        use_shell: bool,
-        on_stdout: Any = None,
-        on_stderr: Any = None,
-    ) -> subprocess.CompletedProcess[str]:
-        """Run a subprocess while tracking it for interrupt-time termination."""
-        popen_kwargs: dict[str, Any] = {
-            "shell": use_shell,
-            "stderr": subprocess.PIPE,
-            "stdout": subprocess.PIPE,
-            "text": True,
-        }
-        if os.name == "posix":
-            popen_kwargs["start_new_session"] = True
-
-        process = subprocess.Popen(argv, **popen_kwargs)
-        self._register_subprocess(process=process)
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-
-        if not hasattr(process, "stdout") or not hasattr(process, "stderr"):
-            try:
-                stdout_text, stderr_text = process.communicate()
-            finally:
-                self._unregister_subprocess(process=process)
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=process.returncode,
-                stdout=stdout_text,
-                stderr=stderr_text,
-            )
-
-        def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
-            try:
-                while True:
-                    chunk = pipe.readline()
-                    if chunk == "":
-                        break
-                    sink.append(chunk)
-                    if callback is not None:
-                        callback(chunk)
-            finally:
-                pipe.close()
-
-        stdout_thread = Thread(
-            target=consume_stream,
-            kwargs={"pipe": process.stdout, "sink": stdout_chunks, "callback": on_stdout},
-            daemon=True,
-        )
-        stderr_thread = Thread(
-            target=consume_stream,
-            kwargs={"pipe": process.stderr, "sink": stderr_chunks, "callback": on_stderr},
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-        try:
-            returncode = process.wait()
-        finally:
-            stdout_thread.join()
-            stderr_thread.join()
-            self._unregister_subprocess(process=process)
-
-        return subprocess.CompletedProcess(
-            args=argv,
-            returncode=returncode,
-            stdout="".join(stdout_chunks),
-            stderr="".join(stderr_chunks),
-        )
-
-    def _call_run_subprocess(
-        self,
-        *,
-        argv: str | list[str],
-        use_shell: bool,
-        on_stdout: Any,
-        on_stderr: Any,
-    ) -> tuple[subprocess.CompletedProcess[str], bool]:
-        """Call ``_run_subprocess`` while tolerating legacy test doubles."""
-        run_subprocess = self._run_subprocess
-        parameters = inspect.signature(run_subprocess).parameters
-        supports_stream_callbacks = "on_stdout" in parameters and "on_stderr" in parameters
-        if supports_stream_callbacks:
-            completed = run_subprocess(
-                argv=argv,
-                use_shell=use_shell,
-                on_stdout=on_stdout,
-                on_stderr=on_stderr,
-            )
-            return completed, True
-
-        completed = run_subprocess(argv=argv, use_shell=use_shell)
-        return completed, False
-
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
         return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
@@ -1515,7 +1309,10 @@ class _ConcurrentEvaluator:
             template=node.resolved_args,
             resolved=node.execution_args,
         )
-        self._validate_task_contract(node=node)
+        self._validator.validate_task_contract(
+            task_def=node.task_def,
+            execution_args=node.execution_args,
+        )
         self._emit_event(
             TaskStarted(
                 run_id=self._run_id,
@@ -1637,882 +1434,42 @@ class _ConcurrentEvaluator:
             shutil.rmtree(node.transport_path)
         node.transport_path = None
 
-    def _validate_task_contract(self, *, node: _TaskNode) -> None:
-        """Validate that a task can run safely under its declared contract."""
-        assert node.execution_args is not None
-        self._validate_task_preconditions(
-            task_def=node.task_def,
-            resolved_args=node.execution_args,
-        )
-
-    def _validate_task_preconditions(
-        self,
-        *,
-        task_def: TaskDef,
-        resolved_args: dict[str, Any],
-    ) -> None:
-        """Validate top-level importability and serializable input types."""
-        self._validate_task_importable(task_def=task_def)
-        for name, value in resolved_args.items():
-            if task_def.type_hints.get(name) is tmp_dir:
-                continue
-            self._validate_process_safe_value(
-                value=value,
-                label=f"{task_def.name}.{name}",
-            )
-
-    def _validate_static_inputs(self, *, node: _TaskNode) -> None:
-        """Validate literal-only task inputs during dry-run mode."""
-        for name, parameter in node.task_def.signature.parameters.items():
-            annotation = node.task_def.type_hints.get(name, parameter.annotation)
-            if annotation is tmp_dir or name not in node.expr.args:
-                continue
-            value = node.expr.args[name]
-            if self._contains_dynamic_expression(value):
-                continue
-            if collect_secret_refs(value):
-                continue
-            self._validate_annotated_value(
-                annotation=annotation,
-                value=value,
-                label=f"{node.task_def.name}.{name}",
-            )
-
-    def _contains_dynamic_expression(self, value: Any) -> bool:
-        """Return whether a nested value contains unresolved expressions."""
-        if isinstance(value, (Expr, ExprList, OutputIndex)):
-            return True
-        if isinstance(value, list | tuple):
-            return any(self._contains_dynamic_expression(item) for item in value)
-        if isinstance(value, dict):
-            return any(
-                self._contains_dynamic_expression(key) or self._contains_dynamic_expression(item)
-                for key, item in value.items()
-            )
-        return False
-
-    def _validate_task_importable(self, *, task_def: TaskDef) -> None:
-        """Require Python tasks to be plain top-level importable functions."""
-        fn = task_def.fn
-        if fn.__qualname__ != fn.__name__:
-            raise TypeError(
-                f"{task_def.name} is not a top-level function. "
-                "Define tasks at module scope for process execution."
-            )
-
-        if fn.__closure__:
-            raise TypeError(
-                f"{task_def.name} closes over local state. "
-                "Pass required values as task arguments instead."
-            )
-
-        module = load_module(fn.__module__, module_file=resolve_module_file(fn.__module__))
-        imported = getattr(module, fn.__name__, None)
-        if imported is not fn and getattr(imported, "fn", None) is not fn:
-            raise TypeError(
-                f"{task_def.name} is not importable by module path. "
-                "Define tasks as plain module-level functions."
-            )
-
-    def _validate_process_safe_value(self, *, value: Any, label: str) -> None:
-        """Reject values that are not supported across process and cache boundaries."""
-        if isinstance(value, (Expr, ExprList, ShellExpr, SecretRef)):
-            return
-        if collect_secret_refs(value):
-            return
-        try:
-            ensure_serializable(value, label=label)
-        except CodecError as exc:
-            raise TypeError(str(exc)) from exc
-
     def _finalize_result_value(self, *, node: _TaskNode, value: Any) -> Any:
         """Coerce and validate a fully resolved task result."""
-        coerced = self._coerce_return_value(task_def=node.task_def, value=value)
+        coerced = self._validator.coerce_return_value(task_def=node.task_def, value=value)
         finalized = self._materialize_asset_results(node=node, value=coerced)
-        self._validate_return_value(task_def=node.task_def, value=finalized)
+        self._validator.validate_return_value(task_def=node.task_def, value=finalized)
         return finalized
-
-    def _run_shell(self, *, node: _TaskNode, shell_expr: ShellExpr) -> Any:
-        """Execute a shell command and return its declared output path or paths."""
-        task_def = node.task_def
-        user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
-
-        for output_path in self._iter_shell_output_paths(shell_expr.output):
-            _remove_declared_output(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        completed = self._run_logged_command(
-            node=node,
-            cmd=shell_expr.cmd,
-            user_log_path=user_log_path,
-        )
-        combined_output = (completed.stdout or "") + (completed.stderr or "")
-        if completed.returncode != 0:
-            raise ShellTaskError(
-                task_name=task_def.name,
-                cmd=self._redact_text(shell_expr.cmd, secret_values=node.secret_values),
-                exit_code=completed.returncode,
-                output=combined_output,
-                log=shell_expr.log,
-            )
-
-        missing_outputs = [
-            str(output_path)
-            for output_path in self._iter_shell_output_paths(shell_expr.output)
-            if not output_path.exists()
-        ]
-        if missing_outputs:
-            missing_label = missing_outputs[0] if len(missing_outputs) == 1 else missing_outputs
-            raise FileNotFoundError(
-                f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
-            )
-
-        return self._coerce_return_value(task_def=task_def, value=shell_expr.output)
-
-    def _run_notebook_expr(self, *, node: _TaskNode, notebook_expr: NotebookExpr) -> Any:
-        """Execute a notebook task from a ``NotebookExpr`` sentinel.
-
-        Determines the notebook backend from the file extension, runs
-        execution, renders HTML, validates any declared outputs, and
-        returns the appropriate result value.
-        """
-        assert node.execution_args is not None
-        notebook_path = notebook_expr.path
-        notebook_kind = "ipynb" if notebook_path.suffix.lower() == ".ipynb" else "marimo"
-        user_log_path = Path(notebook_expr.log) if notebook_expr.log is not None else None
-        description = _fn_description(node.task_def.fn)
-
-        artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
-        self._prepare_notebook_artifacts(artifacts=artifacts)
-        if notebook_expr.outputs is not None:
-            for output_path in self._iter_output_values(notebook_expr.outputs):
-                _remove_declared_output(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-        kernel_spec = (
-            self._managed_notebook_kernel(node=node) if notebook_kind == "ipynb" else None
-        )
-        self._record_notebook_manifest(
-            node=node,
-            notebook_kind=notebook_kind,
-            notebook_path=notebook_path,
-            notebook_description=description,
-            executed_path=artifacts.executed_path,
-            rendered_html=artifacts.html_path,
-            render_status="pending",
-            render_error=None,
-            managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
-        )
-
-        # Build and run the execution command.
-        if notebook_kind == "ipynb":
-            command = self._build_ipynb_execute_command(
-                notebook_path=notebook_path,
-                executed_path=artifacts.executed_path,
-                params_path=artifacts.params_path,
-                resolved_args=node.execution_args,
-                kernel_name=kernel_spec.name if kernel_spec is not None else "",
-                jupyter_path=kernel_spec.jupyter_path if kernel_spec is not None else Path(),
-            )
-            executed_artifact = artifacts.executed_path
-        else:
-            command = self._build_marimo_execute_command(
-                notebook_path=notebook_path,
-                resolved_args=node.execution_args,
-            )
-            executed_artifact = None
-
-        completed = self._run_logged_command(node=node, cmd=command, user_log_path=user_log_path)
-        if completed.returncode != 0:
-            self._record_notebook_manifest(
-                node=node,
-                notebook_kind=notebook_kind,
-                notebook_path=notebook_path,
-                notebook_description=description,
-                executed_path=executed_artifact,
-                rendered_html=artifacts.html_path,
-                render_status="not_started",
-                render_error=None,
-                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
-            )
-            raise NotebookTaskError(
-                task_name=node.task_def.name,
-                phase="execute",
-                cmd=command,
-                exit_code=completed.returncode,
-                output=(completed.stdout or "") + (completed.stderr or ""),
-            )
-
-        # Render notebook to HTML.
-        render_command = self._build_notebook_render_command(
-            notebook_path=notebook_path,
-            notebook_kind=notebook_kind,
-            executed_path=artifacts.executed_path,
-            html_path=artifacts.html_path,
-        )
-        render_result = self._run_logged_command(node=node, cmd=render_command)
-        if render_result.returncode != 0 or not artifacts.html_path.is_file():
-            render_error = self._render_notebook_failure_page(
-                html_path=artifacts.html_path,
-                task_name=node.task_def.name,
-                error_output=(render_result.stdout or "") + (render_result.stderr or ""),
-            )
-            self._record_notebook_manifest(
-                node=node,
-                notebook_kind=notebook_kind,
-                notebook_path=notebook_path,
-                notebook_description=description,
-                executed_path=executed_artifact,
-                rendered_html=artifacts.html_path,
-                render_status="failed",
-                render_error=render_error,
-                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
-            )
-        else:
-            self._record_notebook_manifest(
-                node=node,
-                notebook_kind=notebook_kind,
-                notebook_path=notebook_path,
-                notebook_description=description,
-                executed_path=executed_artifact,
-                rendered_html=artifacts.html_path,
-                render_status="succeeded",
-                render_error=None,
-                managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
-            )
-
-        # Validate and return declared outputs, or fall back to HTML artifact.
-        if notebook_expr.outputs is None:
-            return self._coerce_return_value(
-                task_def=node.task_def, value=str(artifacts.html_path)
-            )
-        return self._validate_and_return_outputs(
-            task_name=node.task_def.name,
-            task_def=node.task_def,
-            outputs=notebook_expr.outputs,
-        )
-
-    def _run_script(self, *, node: _TaskNode, script_expr: ScriptExpr) -> Any:
-        """Execute a script task, forwarding task inputs as CLI arguments."""
-        assert node.execution_args is not None
-        user_log_path = Path(script_expr.log) if script_expr.log is not None else None
-        if script_expr.outputs is not None:
-            for output_path in self._iter_output_values(script_expr.outputs):
-                _remove_declared_output(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Resolve the interpreter: use sys.executable for Python to stay in the same env.
-        interpreter_cmd = (
-            shlex.quote(sys.executable)
-            if script_expr.interpreter == "python"
-            else shlex.quote(script_expr.interpreter)
-        )
-
-        # Build command: interpreter script_path --arg-name value ...
-        cmd_parts = [interpreter_cmd, shlex.quote(str(script_expr.path))]
-        for name, value in node.execution_args.items():
-            option = f"--{name.replace('_', '-')}"
-            cmd_parts.extend(
-                [shlex.quote(option), shlex.quote(_stringify_notebook_argument(value))]
-            )
-        cmd = " ".join(cmd_parts)
-
-        completed = self._run_logged_command(node=node, cmd=cmd, user_log_path=user_log_path)
-        combined_output = (completed.stdout or "") + (completed.stderr or "")
-        if completed.returncode != 0:
-            raise ShellTaskError(
-                task_name=node.task_def.name,
-                cmd=self._redact_text(cmd, secret_values=node.secret_values),
-                exit_code=completed.returncode,
-                output=combined_output,
-                log=script_expr.log,
-            )
-
-        if script_expr.outputs is None:
-            return None
-        return self._validate_and_return_outputs(
-            task_name=node.task_def.name,
-            task_def=node.task_def,
-            outputs=script_expr.outputs,
-        )
-
-    def _validate_and_return_outputs(
-        self,
-        *,
-        task_name: str,
-        task_def: TaskDef,
-        outputs: str | list[str] | AssetResult | list[AssetResult],
-    ) -> Any:
-        """Validate declared output paths exist and return coerced value."""
-        output_paths = self._iter_output_values(outputs)
-        missing = [str(path) for path in output_paths if not path.exists()]
-        if missing:
-            label = missing[0] if len(missing) == 1 else missing
-            raise FileNotFoundError(
-                f"Task {task_name} completed but did not create declared output {label!r}"
-            )
-        return self._coerce_return_value(task_def=task_def, value=outputs)
-
-    def _run_logged_command(
-        self,
-        *,
-        node: _TaskNode,
-        cmd: str,
-        user_log_path: Path | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        """Run one command while appending to provenance logs."""
-        for path in (node.stdout_path, node.stderr_path, user_log_path):
-            if path is not None:
-                path.parent.mkdir(parents=True, exist_ok=True)
-
-        if node.task_def.env is not None and self.backend is not None:
-            argv = self.backend.exec_argv(env=node.task_def.env, cmd=cmd)
-            use_shell = False
-        else:
-            argv = cmd
-            use_shell = True
-
-        stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
-        stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
-        user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
-
-        def emit_chunk(*, stream: str, chunk: str) -> None:
-            if stream == "stdout" and stdout_handle is not None:
-                stdout_handle.write(chunk)
-                stdout_handle.flush()
-            if stream == "stderr" and stderr_handle is not None:
-                stderr_handle.write(chunk)
-                stderr_handle.flush()
-            if user_log_handle is not None:
-                user_log_handle.write(chunk)
-                user_log_handle.flush()
-            self._task_log_emitter(node=node, stream=stream)(chunk)
-
-        try:
-            completed, streamed = self._call_run_subprocess(
-                argv=argv,
-                use_shell=use_shell,
-                on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
-                on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
-            )
-            if not streamed:
-                if completed.stdout:
-                    emit_chunk(stream="stdout", chunk=completed.stdout)
-                if completed.stderr:
-                    emit_chunk(stream="stderr", chunk=completed.stderr)
-        finally:
-            if stdout_handle is not None:
-                stdout_handle.close()
-            if stderr_handle is not None:
-                stderr_handle.close()
-            if user_log_handle is not None:
-                user_log_handle.close()
-
-        return completed
-
-    def _notebook_artifacts(self, *, node: _TaskNode, notebook_kind: str) -> _NotebookArtifacts:
-        """Return deterministic artifact paths for one notebook task.
-
-        Parameters
-        ----------
-        node : _TaskNode
-            The task node being executed.
-        notebook_kind : str
-            Either ``"ipynb"`` (Jupyter/Papermill) or ``"marimo"``.
-        """
-        task_key = f"task_{node.node_id:04d}"
-        root_dir = (
-            self.provenance.run_dir / "notebooks"
-            if self.provenance is not None
-            else Path.cwd() / ".ginkgo" / "notebooks"
-        )
-        root_dir.mkdir(parents=True, exist_ok=True)
-        executed_path = root_dir / f"{task_key}.ipynb" if notebook_kind == "ipynb" else None
-        return _NotebookArtifacts(
-            root_dir=root_dir,
-            html_path=root_dir / f"{task_key}.html",
-            executed_path=executed_path,
-            params_path=root_dir / f"{task_key}.params.yaml",
-        )
-
-    def _prepare_notebook_artifacts(self, *, artifacts: _NotebookArtifacts) -> None:
-        """Clear stale notebook artifacts before a fresh execution attempt."""
-        artifacts.root_dir.mkdir(parents=True, exist_ok=True)
-        for path in (artifacts.html_path, artifacts.executed_path, artifacts.params_path):
-            if path is None:
-                continue
-            if path.exists():
-                path.unlink()
 
     def _notebook_runtime_root(self) -> Path:
         """Return the shared runtime root for notebook support files."""
-
         if self.provenance is not None:
             return self.provenance.root_dir.parent
         return Path.cwd() / ".ginkgo"
 
-    def _managed_notebook_kernel(self, *, node: _TaskNode):
-        """Prepare and return the managed kernelspec for one notebook task."""
-
-        env = node.task_def.env
-        env_identity = None
-        if env is not None and self.backend is not None:
-            env_identity = self.backend.env_identity(env=env)
-
-        manager = NotebookKernelManager(
-            runtime_root=self._notebook_runtime_root(),
-            command_builder=_EvaluatorNotebookCommandBuilder(backend=self.backend),
-        )
-        # Serialize cold-start kernel preparation so concurrent notebook tasks in the
-        # same env do not race to install the same managed kernelspec twice.
-        with self._notebook_kernel_lock:
-            return manager.ensure_kernel(
-                env=env,
-                env_identity=env_identity,
-                run_command=self._run_execution_command,
-                on_installing=lambda spec: self._emit_event(
-                    TaskNotice(
-                        run_id=self._run_id,
-                        task_id=_task_id_for_node(node.node_id),
-                        task_name=node.task_def.name,
-                        attempt=node.attempt,
-                        display_label=node.display_label,
-                        message=f"📦 Installing ipykernel for {spec.env_label}...",
-                    )
-                ),
+    def _emit_notebook_notice(self, node: _TaskNode, message: str) -> None:
+        """Surface a notebook runner notice (e.g. ipykernel install) as an event."""
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=message,
             )
-
-    def _run_execution_command(
-        self,
-        command: ExecutionCommand,
-    ) -> subprocess.CompletedProcess[str]:
-        """Run one notebook helper command without attaching task logs."""
-
-        completed, _ = self._call_run_subprocess(
-            argv=command.argv,
-            use_shell=command.use_shell,
-            on_stdout=lambda _chunk: None,
-            on_stderr=lambda _chunk: None,
         )
-        return completed
-
-    def _build_ipynb_execute_command(
-        self,
-        *,
-        notebook_path: Path,
-        executed_path: Path | None,
-        params_path: Path,
-        resolved_args: dict[str, Any],
-        kernel_name: str,
-        jupyter_path: Path,
-    ) -> str:
-        """Build the Papermill execution command for one Jupyter notebook."""
-        if executed_path is None:
-            raise RuntimeError("ipynb notebooks require an executed output path")
-        params_path.write_text(
-            yaml.safe_dump(
-                _serialize_notebook_value(resolved_args),
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        return " ".join(
-            [
-                build_jupyter_env_prefix(jupyter_path=jupyter_path),
-                shlex.quote(sys.executable),
-                "-m",
-                "papermill",
-                shlex.quote(str(notebook_path)),
-                shlex.quote(str(executed_path)),
-                "-f",
-                shlex.quote(str(params_path)),
-                "-k",
-                shlex.quote(kernel_name),
-            ]
-        )
-
-    def _build_marimo_execute_command(
-        self,
-        *,
-        notebook_path: Path,
-        resolved_args: dict[str, Any],
-    ) -> str:
-        """Build the command used to execute one marimo notebook script."""
-        args: list[str] = [shlex.quote(sys.executable), shlex.quote(str(notebook_path))]
-        for name, value in resolved_args.items():
-            option = f"--{name.replace('_', '-')}"
-            args.extend([shlex.quote(option), shlex.quote(_stringify_notebook_argument(value))])
-        return " ".join(args)
-
-    def _build_notebook_render_command(
-        self,
-        *,
-        notebook_path: Path,
-        notebook_kind: str,
-        executed_path: Path | None,
-        html_path: Path,
-    ) -> str:
-        """Build the HTML render command for one notebook task."""
-        if notebook_kind == "ipynb":
-            if executed_path is None:
-                raise RuntimeError("ipynb notebooks require an executed output path")
-            return " ".join(
-                [
-                    shlex.quote(sys.executable),
-                    "-m",
-                    "jupyter",
-                    "nbconvert",
-                    "--to",
-                    "html",
-                    "--output",
-                    shlex.quote(html_path.stem),
-                    "--output-dir",
-                    shlex.quote(str(html_path.parent)),
-                    shlex.quote(str(executed_path)),
-                ]
-            )
-
-        return " ".join(
-            [
-                shlex.quote(sys.executable),
-                "-m",
-                "marimo",
-                "export",
-                "html",
-                shlex.quote(str(notebook_path)),
-                "-o",
-                shlex.quote(str(html_path)),
-            ]
-        )
-
-    def _record_notebook_manifest(
-        self,
-        *,
-        node: _TaskNode,
-        notebook_kind: str,
-        notebook_path: Path,
-        notebook_description: str | None,
-        executed_path: Path | None,
-        rendered_html: Path,
-        render_status: str,
-        render_error: str | None,
-        managed_kernel_name: str | None = None,
-    ) -> None:
-        """Persist notebook-specific metadata to the task manifest.
-
-        Parameters
-        ----------
-        node : _TaskNode
-            The task node being recorded.
-        notebook_kind : str
-            Either ``"ipynb"`` or ``"marimo"``.
-        notebook_path : Path
-            Resolved path to the source notebook file.
-        notebook_description : str | None
-            Human-readable description from the task function docstring.
-        executed_path : Path | None
-            Path to the executed notebook artifact (ipynb only).
-        rendered_html : Path
-            Path to the rendered HTML artifact.
-        render_status : str
-            One of ``"pending"``, ``"not_started"``, ``"failed"``, ``"succeeded"``.
-        render_error : str | None
-            Error message when rendering fails.
-        """
-        if self.provenance is None:
-            return
-        extra: dict[str, Any] = {
-            "task_type": "notebook",
-            "notebook_kind": notebook_kind,
-            "notebook_path": str(notebook_path),
-            "notebook_description": notebook_description,
-            "render_status": render_status,
-            "rendered_html": _relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
-                path=rendered_html,
-            ),
-        }
-        if executed_path is not None:
-            extra["executed_notebook"] = _relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
-                path=executed_path,
-            )
-        if render_error is not None:
-            extra["render_error"] = render_error
-        elif render_status != "failed":
-            extra["render_error"] = None
-        if managed_kernel_name is not None:
-            extra["managed_kernel_name"] = managed_kernel_name
-        self.provenance.update_task_extra(node_id=node.node_id, **extra)
-
-        # Stash an absolute-path version of the extras on the node so that
-        # _complete_node can persist them in the cache entry. Replaying these
-        # on a future cache hit lets us populate the new run's manifest with
-        # the rendered HTML pointer even when the task body is skipped.
-        cache_extras = dict(extra)
-        cache_extras["rendered_html"] = str(rendered_html)
-        if executed_path is not None:
-            cache_extras["executed_notebook"] = str(executed_path)
-        node.notebook_extras = cache_extras
-
-    def _replay_cached_notebook_extras(self, *, node: _TaskNode, cache_key: str) -> None:
-        """Replay notebook manifest extras stored on a previous cache save.
-
-        Notebook tasks render an HTML artifact whose path is not part of the
-        cached return value. To keep cache hits visible in the run summary
-        and downstream tooling, we persist the notebook manifest extras
-        alongside the cache entry on save and re-apply them here on hit.
-        """
-        if self.provenance is None or node.task_def.kind != "notebook":
-            return
-        cached_extra = self._cache_store.load_extra_meta(cache_key=cache_key)
-        if cached_extra is None:
-            return
-        notebook_extras = cached_extra.get("notebook_extras")
-        if not isinstance(notebook_extras, dict):
-            return
-        self.provenance.update_task_extra(node_id=node.node_id, **notebook_extras)
-
-    def _render_notebook_failure_page(
-        self,
-        *,
-        html_path: Path,
-        task_name: str,
-        error_output: str,
-    ) -> str:
-        """Write a fallback HTML page when notebook rendering fails."""
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        message = error_output.strip() or "Notebook HTML export failed."
-        html_path.write_text(
-            "\n".join(
-                [
-                    "<html><body>",
-                    f"<h1>{task_name}</h1>",
-                    "<p>Notebook execution succeeded, but HTML export failed.</p>",
-                    "<pre>",
-                    _escape_html(message),
-                    "</pre>",
-                    "</body></html>",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        return message
-
-    def _validate_declared_envs(self) -> None:
-        """Raise before any work starts if a declared env cannot be resolved.
-
-        Only statically registered nodes are checked here. Dynamic nodes
-        (discovered mid-run via conditional branching) are validated when
-        ``_prepare_node`` is called for them.
-        """
-        # Foreign execution environments only support shell-like tasks.
-        for node in self._nodes.values():
-            if node.task_def.env is not None and node.task_def.kind not in {
-                "notebook",
-                "script",
-                "shell",
-            }:
-                raise TypeError(
-                    f"{node.task_def.name} uses env {node.task_def.env!r} "
-                    "but is declared with kind='python'. Foreign environments "
-                    "only support driver tasks — use @task('shell'), "
-                    "@task('notebook'), or @task('script')."
-                )
-
-        if self.backend is None:
-            return
-
-        env_names: set[str] = {
-            node.task_def.env for node in self._nodes.values() if node.task_def.env is not None
-        }
-        if env_names:
-            self.backend.validate_envs(env_names=env_names)
-
-    def _validate_declared_secrets(self) -> None:
-        """Raise before execution if any statically declared secrets are missing."""
-        if self.secret_resolver is None:
-            return
-
-        missing: list[SecretRef] = []
-        seen: set[SecretRef] = set()
-        for node in self._nodes.values():
-            for ref in collect_secret_refs(node.expr.args):
-                if ref in seen:
-                    continue
-                seen.add(ref)
-                try:
-                    self.secret_resolver.resolve(ref=ref)
-                except BaseException:
-                    missing.append(ref)
-
-        if missing:
-            rendered = ", ".join(f"{ref.backend}:{ref.name}" for ref in sorted(missing, key=str))
-            raise RuntimeError(f"Missing secrets: {rendered}")
 
     def validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
-        self._validate_declared_envs()
-        self._validate_declared_secrets()
+        self._validator.validate_declared_envs(nodes=self._nodes.values())
+        self._validator.validate_declared_secrets(nodes=self._nodes.values())
 
         for node in self._nodes.values():
-            self._validate_task_importable(task_def=node.task_def)
-            self._validate_static_inputs(node=node)
-
-    def _validate_inputs(self, *, task_def: TaskDef, resolved_args: dict[str, Any]) -> None:
-        """Validate resolved task inputs against Ginkgo path types."""
-        for name, parameter in task_def.signature.parameters.items():
-            annotation = task_def.type_hints.get(name, parameter.annotation)
-            if annotation is tmp_dir or name not in resolved_args:
-                continue
-            self._validate_annotated_value(
-                annotation=annotation,
-                value=resolved_args[name],
-                label=f"{task_def.name}.{name}",
-            )
-
-    def _validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
-        """Validate a task return value when it uses a Ginkgo path type."""
-        annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
-        self._validate_annotated_value(
-            annotation=annotation,
-            value=value,
-            label=f"{task_def.name}.return",
-        )
-
-    def _validate_annotated_value(self, *, annotation: Any, value: Any, label: str) -> None:
-        """Validate a value for direct and container-wrapped Ginkgo types."""
-        if annotation in {None, Any}:
-            return
-
-        origin = get_origin(annotation)
-        if origin in {list, tuple}:
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            for index, item in enumerate(value):
-                self._validate_annotated_value(
-                    annotation=inner_annotation,
-                    value=item,
-                    label=f"{label}[{index}]",
-                )
-            return
-
-        if isinstance(value, list | tuple):
-            for index, item in enumerate(value):
-                self._validate_annotated_value(
-                    annotation=annotation,
-                    value=item,
-                    label=f"{label}[{index}]",
-                )
-            return
-
-        if annotation is file:
-            if isinstance(value, AssetRef) and value.kind == "file":
-                return
-            if _is_remote_path_value(value):
-                return
-            self._validate_file_path(path=value, label=label)
-            return
-
-        if annotation is folder:
-            if isinstance(value, AssetRef) and value.kind == "folder":
-                return
-            if _is_remote_path_value(value):
-                return
-            self._validate_folder_path(path=value, label=label)
-            return
-
-        if annotation is tmp_dir:
-            self._validate_tmp_dir_path(path=value, label=label)
-            return
-
-        if _is_path_annotation(annotation):
-            if not Path(value).exists():
-                raise FileNotFoundError(f"{label} must exist: {str(value)!r}")
-
-    def _validate_file_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete file path argument or return value."""
-        path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
-        if not Path(path_str).is_file():
-            raise FileNotFoundError(f"{label} must exist and be a file: {path_str!r}")
-
-    def _validate_folder_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete folder path argument or return value."""
-        path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
-        path_obj = Path(path_str)
-        if not path_obj.exists() or not path_obj.is_dir():
-            raise FileNotFoundError(f"{label} must exist and be a directory: {path_str!r}")
-
-    def _validate_tmp_dir_path(self, *, path: Any, label: str) -> None:
-        """Validate an auto-created scratch directory."""
-        path_obj = Path(str(path))
-        if not path_obj.exists() or not path_obj.is_dir():
-            raise FileNotFoundError(f"{label} tmp_dir does not exist: {str(path)!r}")
-
-    def _coerce_return_value(self, *, task_def: TaskDef, value: Any) -> Any:
-        """Coerce string returns into the declared Ginkgo path marker type."""
-        annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
-        return self._coerce_annotated_value(annotation=annotation, value=value)
-
-    def _coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:
-        """Coerce values recursively for direct and container-wrapped path types."""
-        if annotation in {None, Any}:
-            return value
-
-        origin = get_origin(annotation)
-        if origin is list and isinstance(value, list):
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return [
-                self._coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
-            ]
-
-        if origin is tuple and isinstance(value, tuple):
-            inner_annotations = get_args(annotation)
-            if len(inner_annotations) == 2 and inner_annotations[1] is Ellipsis:
-                inner_annotation = inner_annotations[0]
-                return tuple(
-                    self._coerce_annotated_value(annotation=inner_annotation, value=item)
-                    for item in value
-                )
-
-            if inner_annotations and len(inner_annotations) == len(value):
-                return tuple(
-                    self._coerce_annotated_value(annotation=item_annotation, value=item)
-                    for item_annotation, item in zip(inner_annotations, value, strict=True)
-                )
-
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return tuple(
-                self._coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
-            )
-
-        if isinstance(value, list):
-            return [
-                self._coerce_annotated_value(annotation=annotation, value=item) for item in value
-            ]
-
-        if isinstance(value, tuple):
-            return tuple(
-                self._coerce_annotated_value(annotation=annotation, value=item) for item in value
-            )
-
-        if annotation in {file, folder, tmp_dir} and isinstance(value, str):
-            return annotation(value)
-
-        if _is_path_annotation(annotation) and isinstance(value, str):
-            return Path(value)
-
-        return value
+            self._validator.validate_task_importable(task_def=node.task_def)
+            self._validator.validate_static_inputs(node=node)
 
     def _materialize_asset_results(self, *, node: _TaskNode, value: Any) -> Any:
         """Register nested asset sentinels and replace them with asset refs."""
@@ -2597,30 +1554,6 @@ class _ConcurrentEvaluator:
             unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
         return list(unique.values())
 
-    def _iter_output_values(
-        self,
-        output: str | list[str] | tuple[str, ...] | AssetResult | list[AssetResult],
-    ) -> list[Path]:
-        """Return concrete filesystem paths from declared output values."""
-        if isinstance(output, AssetResult):
-            return [output.path]
-        if isinstance(output, str):
-            return [Path(output)]
-        paths: list[Path] = []
-        for item in output:
-            if isinstance(item, AssetResult):
-                paths.append(item.path)
-            else:
-                paths.append(Path(item))
-        return paths
-
-    def _iter_shell_output_paths(
-        self,
-        output: str | list[str] | tuple[str, ...] | AssetResult | list[AssetResult],
-    ) -> list[Path]:
-        """Return concrete output paths for a shell task declaration."""
-        return self._iter_output_values(output)
-
     def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
         """Return whether a cached value still satisfies return validation.
 
@@ -2636,7 +1569,7 @@ class _ConcurrentEvaluator:
             return False
 
         try:
-            self._validate_return_value(task_def=task_def, value=value)
+            self._validator.validate_return_value(task_def=task_def, value=value)
         except (FileNotFoundError, ValueError):
             return False
 
@@ -2786,7 +1719,7 @@ class _ConcurrentEvaluator:
                 outputs=self._artifact_index_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
-            self._replay_cached_notebook_extras(node=node, cache_key=cache_key)
+            self._notebook_runner.replay_cached_extras(node=node, cache_key=cache_key)
         self._emit_event(
             TaskCacheHit(
                 run_id=self._run_id,
@@ -2893,40 +1826,8 @@ class _ConcurrentEvaluator:
             task_name=node.task_def.name,
             env=node.task_def.env,
             exc=exc,
-            failure=_classify_failure(exc=exc),
+            failure=classify_failure(exc=exc),
         )
-
-    def _redact_text(self, text: str, *, secret_values: tuple[str, ...]) -> str:
-        """Redact known secret values from text."""
-        return redact_text(text=text, secret_values=secret_values)
-
-    def _sanitize_exception(
-        self,
-        *,
-        exc: BaseException,
-        secret_values: tuple[str, ...],
-    ) -> BaseException:
-        """Return an exception with redacted message text."""
-        if not secret_values:
-            return exc
-
-        message = self._redact_text(str(exc), secret_values=secret_values)
-        try:
-            exc.args = (message,)
-        except Exception:
-            return RuntimeError(message)
-
-        if hasattr(exc, "output"):
-            try:
-                exc.output = self._redact_text(str(exc.output), secret_values=secret_values)
-            except Exception:
-                pass
-        if hasattr(exc, "cmd"):
-            try:
-                exc.cmd = self._redact_text(str(exc.cmd), secret_values=secret_values)
-            except Exception:
-                pass
-        return exc
 
     def _display_label_for(self, *, node: _TaskNode) -> str | None:
         """Return a richer CLI label for mapped tasks once args are resolved."""
@@ -2937,11 +1838,11 @@ class _ConcurrentEvaluator:
             base_name = node.task_def.name.rsplit(".", 1)[-1]
             return f"{base_name}[{','.join(node.expr.display_label_parts)}]"
 
-        label_key = _first_label_param_name(task_def=node.task_def)
+        label_key = first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:
             return None
 
-        rendered = _render_label_value(node.resolved_args[label_key])
+        rendered = render_label_value(node.resolved_args[label_key])
         if rendered is None:
             return None
 
@@ -3100,7 +2001,7 @@ class _ConcurrentEvaluator:
         _driver_sentinels = (ShellExpr, NotebookExpr, ScriptExpr)
         if self._failure is not None and (
             isinstance(completed_value, _driver_sentinels)
-            or self._contains_dynamic_expression(completed_value)
+            or contains_dynamic_expression(completed_value)
         ):
             self._cleanup_transport(node)
             for path in node.tmp_paths:
@@ -3119,7 +2020,7 @@ class _ConcurrentEvaluator:
                     "@task('script') for the appropriate task kind."
                 )
 
-            self._validate_process_safe_value(
+            self._validator.validate_process_safe_value(
                 value=completed_value,
                 label=f"{node.task_def.name}.return",
             )
@@ -3153,7 +2054,7 @@ class _ConcurrentEvaluator:
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._shell_executor.submit(
-                self._run_shell,
+                self._shell_runner.run_shell,
                 node=node,
                 shell_expr=completed_value,
             )
@@ -3164,7 +2065,7 @@ class _ConcurrentEvaluator:
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._shell_executor.submit(
-                self._run_notebook_expr,
+                self._notebook_runner.run_notebook,
                 node=node,
                 notebook_expr=completed_value,
             )
@@ -3175,7 +2076,7 @@ class _ConcurrentEvaluator:
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._shell_executor.submit(
-                self._run_script,
+                self._notebook_runner.run_script,
                 node=node,
                 script_expr=completed_value,
             )
@@ -3207,137 +2108,6 @@ class _ConcurrentEvaluator:
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
             f"{_expected.get(kind, 'the appropriate sentinel')} or dynamic task expressions."
         )
-
-
-class ShellTaskError(RuntimeError):
-    """Shell task execution failure."""
-
-    def __init__(
-        self,
-        *,
-        task_name: str,
-        cmd: str,
-        exit_code: int,
-        output: str,
-        log: str | None,
-    ) -> None:
-        self.exit_code = exit_code
-
-        details = f"Shell task {task_name} failed with exit code {exit_code}: {cmd}"
-        if log is not None:
-            details = f"{details} (log: {log})"
-        elif output:
-            details = f"{details}\n{output.strip()}"
-
-        super().__init__(details)
-
-
-class NotebookTaskError(RuntimeError):
-    """Notebook task execution failure."""
-
-    def __init__(
-        self,
-        *,
-        task_name: str,
-        phase: str,
-        cmd: str,
-        exit_code: int,
-        output: str,
-    ) -> None:
-        self.exit_code = exit_code
-        details = (
-            f"Notebook task {task_name} failed during {phase} with exit code {exit_code}: {cmd}"
-        )
-        if output:
-            details = f"{details}\n{output.strip()}"
-        super().__init__(details)
-
-
-def _fn_description(fn: Any) -> str | None:
-    """Return the first line of a function's docstring, or None."""
-    import inspect
-
-    return inspect.getdoc(fn)
-
-
-def _serialize_notebook_value(value: Any) -> Any:
-    """Convert runtime values into YAML/CLI-safe notebook parameters."""
-    if isinstance(value, Path | file | folder | tmp_dir):
-        return str(value)
-    if value is None or isinstance(value, bool | int | float | str):
-        return value
-    if isinstance(value, list):
-        return [_serialize_notebook_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_serialize_notebook_value(item) for item in value]
-    if isinstance(value, dict):
-        return {
-            str(_serialize_notebook_value(key)): _serialize_notebook_value(item)
-            for key, item in value.items()
-        }
-    return value
-
-
-def _stringify_notebook_argument(value: Any) -> str:
-    """Render one notebook argument for a CLI invocation."""
-    serialized = _serialize_notebook_value(value)
-    if isinstance(serialized, str):
-        return serialized
-    return json.dumps(serialized, sort_keys=True)
-
-
-def _relativize_to_run_dir(*, run_dir: Path, path: Path) -> str:
-    """Return a run-relative path when possible."""
-    try:
-        return str(path.relative_to(run_dir))
-    except ValueError:
-        return str(path)
-
-
-def _escape_html(value: str) -> str:
-    """Escape plain text for a tiny fallback HTML page."""
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _is_path_annotation(annotation: Any) -> bool:
-    """Return whether an annotation is a pathlib path type."""
-    return isinstance(annotation, type) and issubclass(annotation, Path)
-
-
-def _first_label_param_name(*, task_def: TaskDef) -> str | None:
-    """Return the first user-declared parameter name for CLI labeling."""
-    for name, parameter in task_def.signature.parameters.items():
-        annotation = task_def.type_hints.get(name, parameter.annotation)
-        if annotation is tmp_dir:
-            continue
-        return name
-    return None
-
-
-def _render_label_value(value: Any) -> str | None:
-    """Return a compact string for a mapped-task display label."""
-    if isinstance(value, Path):
-        text = value.name or str(value)
-    elif isinstance(value, (str, int, float, bool)):
-        text = str(value)
-    else:
-        text = repr(value)
-
-    compact = " ".join(text.split()).strip()
-    if not compact:
-        return None
-    if len(compact) > 24:
-        compact = f"{compact[:21]}..."
-    return compact
-
-
-def _remove_declared_output(path: Path) -> None:
-    """Remove one pre-existing declared output before task execution."""
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-        return
-    if path.is_dir():
-        shutil.rmtree(path)
 
 
 def _task_id_for_node(node_id: int) -> str:
@@ -3410,13 +2180,6 @@ def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> lis
         ]
 
     return [{"name": name, "type": "value", "summary": summarise_value(value)}]
-
-
-def _is_remote_path_value(value: Any) -> bool:
-    """Return whether a value is a remote reference or supported remote URI."""
-    if isinstance(value, RemoteRef):
-        return True
-    return isinstance(value, str) and is_remote_uri(value)
 
 
 def _remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
@@ -3518,33 +2281,3 @@ def _parse_positive_int(*, value: Any, label: str) -> int:
     if parsed < 1:
         raise ValueError(f"{label} must be a positive integer")
     return parsed
-
-
-def _classify_failure(*, exc: BaseException) -> dict[str, Any]:
-    """Return a structured task failure summary."""
-    message = str(exc)
-    if isinstance(exc, CycleError):
-        kind = "cycle_detected"
-    elif isinstance(exc, CodecError):
-        kind = "serialization_error"
-    elif isinstance(exc, (ShellTaskError, NotebookTaskError)):
-        kind = "shell_command_error"
-    elif isinstance(exc, FileNotFoundError):
-        kind = "missing_input" if "did not create" not in message else "output_validation_error"
-    elif isinstance(exc, (TypeError, ValueError)):
-        kind = "user_code_error"
-    else:
-        exc_name = exc.__class__.__name__.lower()
-        if "env" in exc_name or "container" in exc_name:
-            kind = "environment_error"
-        elif "cache" in exc_name:
-            kind = "cache_error"
-        else:
-            kind = "scheduler_error"
-
-    return {
-        "kind": kind,
-        "message": message,
-        "retryable": False,
-        "code": exc.__class__.__name__,
-    }
