@@ -55,6 +55,31 @@ class ShellTaskError(RuntimeError):
 # ----- Helpers --------------------------------------------------------------
 
 
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+
+
+def build_shell_subprocess_env(*, task_def: Any) -> dict[str, str]:
+    """Return the environment for a shell-task subprocess.
+
+    Always exports ``GINKGO_THREADS`` carrying the task's declared thread
+    count. When ``task_def.export_thread_env`` is ``True``, also exports the
+    common BLAS/OpenMP thread variables so off-the-shelf tools pick up the
+    declared budget without per-workflow boilerplate.
+    """
+    env = dict(os.environ)
+    threads = int(getattr(task_def, "threads", 1))
+    env["GINKGO_THREADS"] = str(threads)
+    if getattr(task_def, "export_thread_env", False):
+        for name in _THREAD_ENV_VARS:
+            env[name] = str(threads)
+    return env
+
+
 def remove_declared_output(path: Path) -> None:
     """Remove one pre-existing declared output before task execution."""
     if path.is_symlink() or path.is_file():
@@ -265,6 +290,7 @@ class ShellRunner:
         use_shell: bool,
         on_stdout: Any = None,
         on_stderr: Any = None,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a subprocess while tracking it for interrupt-time termination."""
         popen_kwargs: dict[str, Any] = {
@@ -275,6 +301,8 @@ class ShellRunner:
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
+        if env is not None:
+            popen_kwargs["env"] = env
 
         process = subprocess.Popen(argv, **popen_kwargs)
         self.register(process=process)
@@ -352,6 +380,8 @@ class ShellRunner:
             argv = cmd
             use_shell = True
 
+        subprocess_env = build_shell_subprocess_env(task_def=node.task_def)
+
         stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
         stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
         user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
@@ -374,6 +404,7 @@ class ShellRunner:
                 use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
+                env=subprocess_env,
             )
         finally:
             if stdout_handle is not None:

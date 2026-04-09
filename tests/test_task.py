@@ -370,3 +370,43 @@ class TestPartialCallMap:
 
         result = process().map(sample=["s1"]).product_map(lr=[0.01], epochs=[10])
         assert result[0].display_label_parts == ("s1", "lr=0.01", "epochs=10")
+
+
+class TestTaskThreadsContract:
+    def test_threads_default_is_one(self):
+        @task()
+        def f() -> int:
+            return 0
+
+        assert f.threads == 1
+        assert f.export_thread_env is False
+
+    def test_threads_decorator_value(self):
+        @task(threads=4)
+        def f() -> int:
+            return 0
+
+        assert f.threads == 4
+
+    def test_threads_must_be_at_least_one(self):
+        with pytest.raises(ValueError, match="threads must be at least 1"):
+
+            @task(threads=0)
+            def f() -> int:
+                return 0
+
+    def test_threads_kwarg_at_call_warns(self):
+        @task(threads=2)
+        def f(x: int = 1, threads: int = 1) -> int:
+            return x
+
+        with pytest.warns(UserWarning, match="passing 'threads' as a function argument"):
+            f(threads=4)
+
+    def test_threads_in_map_warns(self):
+        @task(threads=2)
+        def f(x: int, threads: int = 1) -> int:
+            return x
+
+        with pytest.warns(UserWarning, match="passing 'threads' as a fan-out argument"):
+            f().map(x=[1, 2], threads=[1, 2])

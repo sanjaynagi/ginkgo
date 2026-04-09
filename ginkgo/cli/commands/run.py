@@ -38,6 +38,7 @@ from ginkgo.runtime.caching.provenance import (
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
 from ginkgo.runtime.notifications.notifications import build_notification_service
+from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 
@@ -56,6 +57,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         dry_run=args.dry_run,
         output_mode=output_mode,
         trust_workspace=getattr(args, "trust_workspace", False),
+        profile=getattr(args, "profile", False),
     )
 
 
@@ -69,7 +71,11 @@ def run_workflow(
     dry_run: bool,
     output_mode: RunMode = "default",
     trust_workspace: bool = False,
+    profile: bool = False,
 ) -> int:
+    profiler = ProfileRecorder(enabled=profile)
+    cli_startup_started = time.perf_counter()
+
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
@@ -81,13 +87,18 @@ def run_workflow(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
 
+    profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
+
     load_started = time.perf_counter()
     with _config_session(override_paths=config_paths) as session:
-        module = load_module_from_path(workflow_path)
-        flow = _discover_flow(module)
-        expr = flow()
+        with profiler.timed("workflow_module_import"):
+            module = load_module_from_path(workflow_path)
+        with profiler.timed("flow_construction"):
+            flow = _discover_flow(module)
+            expr = flow()
         params = session.merged_loaded_values()
-    runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
+    with profiler.timed("runtime_config_load"):
+        runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
     runtime_params = dict(runtime_config)
     runtime_params.update(params)
     load_elapsed = time.perf_counter() - load_started
@@ -111,9 +122,11 @@ def run_workflow(
         memory=memory,
         backend=backend,
         secret_resolver=secret_resolver,
+        profiler=profiler,
     )
     validate_started = time.perf_counter()
-    evaluator.validate(expr)
+    with profiler.timed("evaluator_validate"):
+        evaluator.validate(expr)
     validate_elapsed = time.perf_counter() - validate_started
     task_count = len(evaluator._nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
@@ -181,7 +194,8 @@ def run_workflow(
         root_pid=os.getpid(),
         sink=recorder.update_resources,
     )
-    resource_monitor.start()
+    with profiler.timed("resource_monitor_startup"):
+        resource_monitor.start()
     warning_console = console(sys.stderr)
     notification_service = build_notification_service(
         config=runtime_params,
@@ -227,6 +241,7 @@ def run_workflow(
                 secret_resolver=secret_resolver,
                 event_bus=bus,
                 trust_workspace=trust_workspace,
+                profiler=profiler,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)
@@ -247,9 +262,12 @@ def run_workflow(
                     phase="workflow_execute_seconds",
                     seconds=time.perf_counter() - run_started,
                 )
-                resource_summary = resource_monitor.stop()
-                recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
-                run_summary = RunSummary.load(recorder.run_dir)
+                with profiler.timed("resource_monitor_shutdown"):
+                    resource_summary = resource_monitor.stop()
+                with profiler.timed("provenance_finalize"):
+                    recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
+                with profiler.timed("manifest_load"):
+                    run_summary = RunSummary.load(recorder.run_dir)
                 bus.emit(
                     RunCompleted(
                         run_id=run_id,
@@ -265,22 +283,29 @@ def run_workflow(
                         renderer=renderer,
                         verbose=output_mode == "verbose",
                     )
-                    renderer.finish(
-                        elapsed=time.perf_counter() - run_started,
-                        success=False,
-                        resources=resource_summary,
-                        failure_details=failure_details,
-                    )
+                    with profiler.timed("renderer_finish"):
+                        renderer.finish(
+                            elapsed=time.perf_counter() - run_started,
+                            success=False,
+                            resources=resource_summary,
+                            failure_details=failure_details,
+                        )
                     print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+                if profiler.enabled:
+                    recorder.set_profile(profile=profiler.snapshot())
+                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
                 raise
 
-            resource_summary = resource_monitor.stop()
+            with profiler.timed("resource_monitor_shutdown"):
+                resource_summary = resource_monitor.stop()
             recorder.add_run_timing(
                 phase="workflow_execute_seconds",
                 seconds=time.perf_counter() - run_started,
             )
-            recorder.finalize(status="succeeded", resources=resource_summary)
-            run_summary = RunSummary.load(recorder.run_dir)
+            with profiler.timed("provenance_finalize"):
+                recorder.finalize(status="succeeded", resources=resource_summary)
+            with profiler.timed("manifest_load"):
+                run_summary = RunSummary.load(recorder.run_dir)
             bus.emit(
                 RunCompleted(
                     run_id=run_id,
@@ -289,16 +314,20 @@ def run_workflow(
                 )
             )
             if renderer is not None:
-                renderer.finish(
-                    elapsed=time.perf_counter() - run_started,
-                    success=True,
-                    resources=resource_summary,
-                    notebooks=_render_notebooks(
-                        run_summary=run_summary,
-                        renderer=renderer,
-                    ),
-                    assets=_render_assets(run_summary=run_summary),
-                )
+                with profiler.timed("renderer_finish"):
+                    renderer.finish(
+                        elapsed=time.perf_counter() - run_started,
+                        success=True,
+                        resources=resource_summary,
+                        notebooks=_render_notebooks(
+                            run_summary=run_summary,
+                            renderer=renderer,
+                        ),
+                        assets=_render_assets(run_summary=run_summary),
+                    )
+            if profiler.enabled:
+                recorder.set_profile(profile=profiler.snapshot())
+                _print_profile_table(console=rich_console, profile=profiler.snapshot())
     finally:
         if notification_service is not None:
             notification_service.close()
@@ -340,6 +369,34 @@ def _combined_log_tail(*, run_dir: Path, task: TaskSummary, lines: int) -> list[
     if isinstance(task.stderr_log, str):
         combined.extend(tail_text(run_dir / task.stderr_log, lines=lines))
     return combined[-lines:]
+
+
+def _print_profile_table(
+    *,
+    console,
+    profile: dict[str, dict[str, float | int]],
+) -> None:
+    """Print a Rich profile table summarising recorded phase timings."""
+    from rich.table import Table
+
+    table = Table(title="Runtime Profile", show_lines=False)
+    table.add_column("phase")
+    table.add_column("seconds", justify="right")
+    table.add_column("count", justify="right")
+
+    rows = sorted(
+        profile.items(),
+        key=lambda item: float(item[1].get("seconds", 0.0)),
+        reverse=True,
+    )
+    for phase, values in rows:
+        table.add_row(
+            phase,
+            f"{float(values.get('seconds', 0.0)):.4f}",
+            str(int(values.get("count", 0))),
+        )
+    console.print("")
+    console.print(table)
 
 
 def _discover_flow(module: ModuleType) -> FlowDef:

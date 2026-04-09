@@ -80,6 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
+    run_parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Record a coarse runtime phase profile and print it at run end",
+    )
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)

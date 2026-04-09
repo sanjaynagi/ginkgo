@@ -377,7 +377,9 @@ class TestContainerShellE2E:
         output_file = tmp_path / "result.txt"
         captured_argv: list[Any] = []
 
-        def mock_run_subprocess(self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None):
+        def mock_run_subprocess(
+            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
+        ):
             captured_argv.append(argv)
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
@@ -434,7 +436,9 @@ class TestContainerShellE2E:
 
         from ginkgo.runtime.task_runners.shell import ShellRunner
 
-        def mock_run_subprocess(self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None):
+        def mock_run_subprocess(
+            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
+        ):
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 

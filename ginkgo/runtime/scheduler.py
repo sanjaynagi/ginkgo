@@ -20,11 +20,16 @@ class SchedulableTask:
         Core footprint for the task.
     memory_gb : int
         Declared memory footprint for the task in GiB.
+    concurrency_group : str | None
+        Optional named concurrency group. When set, the scheduler will
+        respect the corresponding entry in ``available_group_slots`` when
+        selecting tasks to dispatch.
     """
 
     node_id: int
     threads: int
     memory_gb: int
+    concurrency_group: str | None = None
 
 
 def select_dispatch_subset(
@@ -33,6 +38,7 @@ def select_dispatch_subset(
     jobs: int,
     cores: int,
     memory: int | None = None,
+    available_group_slots: dict[str, int] | None = None,
 ) -> list[int]:
     """Select a feasible subset of ready tasks to dispatch.
 
@@ -47,6 +53,10 @@ def select_dispatch_subset(
     memory : int | None
         Available memory budget in GiB for this cycle, or ``None`` when
         memory-aware scheduling is disabled.
+    available_group_slots : dict[str, int] | None
+        Remaining concurrency-group budgets after accounting for in-flight
+        tasks. The scheduler enforces ``sum(selected in group) <= slot``
+        for each group present in this mapping.
 
     Returns
     -------
@@ -57,7 +67,13 @@ def select_dispatch_subset(
     if jobs <= 0 or cores <= 0 or (memory is not None and memory < 0) or not tasks:
         return []
 
-    return _select_with_cp_sat(tasks=tasks, jobs=jobs, cores=cores, memory=memory)
+    return _select_with_cp_sat(
+        tasks=tasks,
+        jobs=jobs,
+        cores=cores,
+        memory=memory,
+        available_group_slots=available_group_slots or {},
+    )
 
 
 def _select_with_cp_sat(
@@ -66,6 +82,7 @@ def _select_with_cp_sat(
     jobs: int,
     cores: int,
     memory: int | None,
+    available_group_slots: dict[str, int],
 ) -> list[int]:
     """Select tasks using OR-Tools CP-SAT when available."""
     model = cp_model.CpModel()
@@ -75,6 +92,20 @@ def _select_with_cp_sat(
     model.Add(sum(task.threads * selected[task.node_id] for task in tasks) <= cores)
     if memory is not None:
         model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= memory)
+
+    # Per-group concurrency limits — each named group consumes one slot per
+    # selected task; tasks already in flight have already been deducted from
+    # the caller-provided remaining budget.
+    grouped: dict[str, list[SchedulableTask]] = {}
+    for task in tasks:
+        if task.concurrency_group is None:
+            continue
+        grouped.setdefault(task.concurrency_group, []).append(task)
+    for group_id, group_tasks in grouped.items():
+        slot = available_group_slots.get(group_id)
+        if slot is None:
+            continue
+        model.Add(sum(selected[task.node_id] for task in group_tasks) <= max(0, int(slot)))
 
     total_selected = sum(selected.values())
     total_cores = sum(task.threads * selected[task.node_id] for task in tasks)

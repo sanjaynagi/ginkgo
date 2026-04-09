@@ -63,7 +63,7 @@ def _compute_peaks(intervals: list[dict[str, object]]) -> tuple[int, int, int]:
     return peak_tasks, peak_cores, peak_heavy
 
 
-@task()
+@task(threads=8)
 def heavy(item: str, events_dir: str, threads: int = 8) -> str:
     started_at = time.time()
     time.sleep(0.15)

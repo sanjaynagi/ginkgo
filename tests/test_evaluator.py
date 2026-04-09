@@ -400,7 +400,12 @@ class TestEvaluate:
         calls: list[str] = []
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             calls.append(command)
@@ -483,6 +488,7 @@ class TestEvaluate:
             use_shell: bool,
             on_stdout: Any = None,
             on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
@@ -577,7 +583,12 @@ class TestEvaluate:
         calls: list[str] = []
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             calls.append(command)
@@ -637,7 +648,12 @@ class TestEvaluate:
         bus.subscribe(events.append)
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
@@ -680,7 +696,12 @@ class TestEvaluate:
         evaluator = _ConcurrentEvaluator(jobs=1, cores=1)
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
@@ -730,7 +751,12 @@ class TestEvaluate:
         install_calls = 0
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal install_calls
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
@@ -794,7 +820,12 @@ class TestEvaluate:
         )
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = str(argv)
             if "export html" in command:
@@ -823,7 +854,12 @@ class TestEvaluate:
         expr = python_script_task(script_path=str(script_path), output_path=str(output_path))
 
         def fake_run_subprocess(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             # Simulate the script creating its declared output.
             output_path.write_text("done\n", encoding="utf-8")
@@ -843,7 +879,12 @@ class TestEvaluate:
         expr_v1 = notebook_ipynb_task(notebook_path=str(nb_path), value=1)
 
         def fake_subprocess_ok(
-            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
