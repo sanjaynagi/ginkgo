@@ -14,7 +14,7 @@ from ginkgo.config import _config_session
 from ginkgo.core.flow import FlowDef
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.runtime.provenance import load_manifest
+from ginkgo.runtime.caching.provenance import load_manifest
 
 
 def command_inspect(args) -> int:

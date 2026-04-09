@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.cli.common import RUNS_ROOT, console
-from ginkgo.runtime.provenance import load_manifest
+from ginkgo.runtime.caching.provenance import load_manifest
 
 
 @dataclass(frozen=True, kw_only=True)

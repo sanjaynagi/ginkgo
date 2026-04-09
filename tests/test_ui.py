@@ -17,9 +17,9 @@ from urllib.request import Request, urlopen
 import yaml
 
 from ginkgo.core.asset import AssetKey, make_asset_version
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.provenance import RunProvenanceRecorder
-from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.ui import create_ui_server
 from ginkgo.ui.server import payloads as server_payloads
 from ginkgo.ui.server.workspaces import (

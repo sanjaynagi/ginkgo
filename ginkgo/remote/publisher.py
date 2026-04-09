@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.remote.backend import RemoteStorageBackend
-from ginkgo.runtime.artifact_model import ArtifactRecord, deserialize_tree_manifest
+from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord, deserialize_tree_manifest
 
 
 @dataclass(kw_only=True)

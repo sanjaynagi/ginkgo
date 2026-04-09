@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 
 from ginkgo.core.secret import SecretRef
 from ginkgo.runtime.events import GinkgoEvent, RunCompleted, RunStarted, TaskFailed
-from ginkgo.runtime.notification_slack import (
+from ginkgo.runtime.notifications.slack import (
     SlackTaskFailure,
     build_retry_exhausted_payload,
     build_run_failed_payload,
@@ -19,8 +19,8 @@ from ginkgo.runtime.notification_slack import (
     build_run_succeeded_payload,
     post_slack_message,
 )
-from ginkgo.runtime.provenance import load_manifest, tail_text
-from ginkgo.runtime.secrets import SecretResolutionError, SecretResolver
+from ginkgo.runtime.caching.provenance import load_manifest, tail_text
+from ginkgo.runtime.environment.secrets import SecretResolutionError, SecretResolver
 
 
 VALID_NOTIFICATION_EVENTS = frozenset(

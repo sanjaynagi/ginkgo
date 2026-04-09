@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ginkgo.core.asset import AssetKey, AssetRef
-from ginkgo.runtime.value_codec import decode_value, encode_value, hash_value_bytes
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value, hash_value_bytes
 
 
 class TestHashValueBytes:

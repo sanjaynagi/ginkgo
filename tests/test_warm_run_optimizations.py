@@ -14,9 +14,10 @@ from unittest.mock import MagicMock
 
 from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
-from ginkgo.runtime.hash_memo import HashMemo
-from ginkgo.runtime.hashing import hash_file
-from ginkgo.runtime.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.caching.hashing import hash_file
+from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from tests.conftest import EventCollector
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +189,7 @@ def read_versioned_remote_file(*, path: file) -> str:
 class TestWarmRunIntegration:
     """End-to-end test that layers 1-3 work together."""
 
-    def test_warm_run_caches_all_tasks(self, tmp_path: Path, capsys) -> None:
+    def test_warm_run_caches_all_tasks(self, tmp_path: Path) -> None:
         """A second run should hit cache for all tasks."""
         output = tmp_path / "output.txt"
 
@@ -197,12 +198,18 @@ class TestWarmRunIntegration:
         assert result1 == 7  # len("content")
 
         # Warm run.
-        result2 = evaluate(consume_file(input_file=produce_file(output_path=str(output))))
+        collector = EventCollector()
+        result2 = evaluate(
+            consume_file(input_file=produce_file(output_path=str(output))),
+            event_bus=collector.bus,
+        )
         assert result2 == 7
 
-        captured = capsys.readouterr()
         # On warm run, both tasks should be cached.
-        assert captured.err.count('"status": "cached"') >= 2
+        from ginkgo.runtime.events import TaskCacheHit
+
+        cache_hits = [e for e in collector.events if isinstance(e, TaskCacheHit)]
+        assert len(cache_hits) >= 2
 
     def test_file_hash_memoization_reduces_reads(self, tmp_path: Path) -> None:
         """When a file is consumed by multiple tasks, it should be hashed once."""
@@ -263,7 +270,7 @@ class TestTrustWorkspace:
 
     def test_stat_index_round_trip(self, tmp_path: Path) -> None:
         """Stat index can be saved and loaded."""
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
 
         store = CacheStore(root=tmp_path / "cache")
         store.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
@@ -273,7 +280,7 @@ class TestTrustWorkspace:
         store2 = CacheStore(root=tmp_path / "cache")
         assert store2._stat_index.get("stat_abc") == "content_xyz"
 
-    def test_trust_workspace_warm_run(self, tmp_path: Path, capsys) -> None:
+    def test_trust_workspace_warm_run(self, tmp_path: Path) -> None:
         """A --trust-workspace warm run should hit cache via stat index."""
         from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 
@@ -286,13 +293,13 @@ class TestTrustWorkspace:
         assert result1 == 7
 
         # Warm run with trust_workspace.
+        collector = EventCollector()
         expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = _ConcurrentEvaluator(trust_workspace=True)
+        evaluator2 = _ConcurrentEvaluator(trust_workspace=True, event_bus=collector.bus)
         result2 = evaluator2.evaluate(expr2)
         assert result2 == 7
 
-        captured = capsys.readouterr()
-        assert '"status": "cached"' in captured.err
+        assert collector.cached()
 
     def test_versioned_remote_input_warm_run_skips_staging(self, tmp_path: Path) -> None:
         """Pinned remote inputs can hit cache without staging on the warm run."""
@@ -317,9 +324,11 @@ class TestTrustWorkspace:
         ref = remote_file("s3://bucket/cacheable.txt", version_id="v1")
 
         evaluator1 = _ConcurrentEvaluator()
-        evaluator1._staging_cache = _FakeStagingCache(root=tmp_path / "stage-cold")
+        evaluator1._stager._staging_cache = _FakeStagingCache(root=tmp_path / "stage-cold")
         assert evaluator1.evaluate(read_versioned_remote_file(path=ref)) == "cacheable"
 
         evaluator2 = _ConcurrentEvaluator()
-        evaluator2._staging_cache = _FakeStagingCache(root=tmp_path / "stage-warm", fail=True)
+        evaluator2._stager._staging_cache = _FakeStagingCache(
+            root=tmp_path / "stage-warm", fail=True
+        )
         assert evaluator2.evaluate(read_versioned_remote_file(path=ref)) == "cacheable"

@@ -26,13 +26,14 @@ from ginkgo import (
     task,
     tmp_dir,
 )
-from ginkgo.pixi import PixiRegistry
+from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
-from ginkgo.runtime.asset_store import AssetStore
+from tests.conftest import EventCollector
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
-from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
-from ginkgo.runtime.secrets import build_secret_resolver
+from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+from ginkgo.runtime.environment.secrets import build_secret_resolver
 
 
 def _append_line(path: str, line: str) -> None:
@@ -369,27 +370,14 @@ class TestEvaluate:
         )
         assert result == [10 + 100, 20 + 200, 30 + 300]
 
-    def test_structured_logs_are_emitted_to_stderr(self, capsys: pytest.CaptureFixture[str]):
-        log_path = "work-events.log"
-        result = evaluate(logged_work_task(x=2, log_path=log_path))
-        captured = capsys.readouterr()
-
-        assert result == 3
-        assert '"status": "running"' in captured.err
-        assert '"status": "succeeded"' in captured.err
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
-
-    def test_second_run_is_served_from_cache(self, capsys: pytest.CaptureFixture[str]):
+    def test_second_run_is_served_from_cache(self) -> None:
         log_path = "work-events.log"
 
         assert evaluate(logged_work_task(x=2, log_path=log_path)) == 3
-        capsys.readouterr()
-
         assert evaluate(logged_work_task(x=2, log_path=log_path)) == 3
-        captured = capsys.readouterr()
 
+        # The second run reuses the cached result, so the task body only ran once.
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
-        assert '"status": "cached"' in captured.err
         assert (Path(".ginkgo") / "cache").exists()
 
     def test_ipynb_notebook_task_records_html_and_uses_cache(
@@ -442,7 +430,7 @@ class TestEvaluate:
             raise AssertionError(command)
 
         evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
         manifest = load_manifest(recorder.run_dir)
 
@@ -460,7 +448,7 @@ class TestEvaluate:
         # Re-evaluating with the same notebook hits cache.
         cached = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(
-            cached,
+            cached._shell_runner,
             "_run_subprocess",
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
@@ -519,7 +507,7 @@ class TestEvaluate:
             raise AssertionError(command)
 
         first_evaluator = _ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
-        monkeypatch.setattr(first_evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(first_evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         first_result = first_evaluator.evaluate(expr)
         first_manifest = load_manifest(first_recorder.run_dir)
         first_html = first_recorder.run_dir / "notebooks" / "task_0000.html"
@@ -539,7 +527,7 @@ class TestEvaluate:
         )
         cached_evaluator = _ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
         monkeypatch.setattr(
-            cached_evaluator,
+            cached_evaluator._shell_runner,
             "_run_subprocess",
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
@@ -618,7 +606,7 @@ class TestEvaluate:
             cores=1,
             backend=LocalBackend(pixi_registry=registry),
         )
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
 
@@ -672,7 +660,7 @@ class TestEvaluate:
             raise AssertionError(command)
 
         evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
 
@@ -704,7 +692,7 @@ class TestEvaluate:
                 )
             raise AssertionError(command)
 
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         with pytest.raises(RuntimeError, match="ipykernel"):
             evaluator.evaluate(expr)
@@ -783,7 +771,7 @@ class TestEvaluate:
             cores=2,
             backend=LocalBackend(pixi_registry=registry),
         )
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(notebooks)
 
@@ -816,7 +804,7 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
         evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
         html_path = Path(result)
@@ -842,7 +830,7 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
         evaluator = _ConcurrentEvaluator(jobs=1, cores=1)
-        monkeypatch.setattr(evaluator, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
         assert Path(result).is_file()
@@ -855,7 +843,7 @@ class TestEvaluate:
         expr_v1 = notebook_ipynb_task(notebook_path=str(nb_path), value=1)
 
         def fake_subprocess_ok(
-            *, argv: str | list[str], use_shell: bool
+            *, argv: str | list[str], use_shell: bool, on_stdout: Any = None, on_stderr: Any = None
         ) -> subprocess.CompletedProcess[str]:
             command = " ".join(argv) if isinstance(argv, list) else str(argv)
             if "import ipykernel" in command:
@@ -880,7 +868,7 @@ class TestEvaluate:
 
         ev1 = _ConcurrentEvaluator(jobs=1, cores=1)
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(ev1, "_run_subprocess", fake_subprocess_ok)
+        monkeypatch.setattr(ev1._shell_runner, "_run_subprocess", fake_subprocess_ok)
         try:
             ev1.evaluate(expr_v1)
         finally:
@@ -892,7 +880,7 @@ class TestEvaluate:
             encoding="utf-8",
         )
         # The cache keys should differ because the notebook source changed.
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
         from pathlib import Path as _Path
 
         cache = CacheStore(root=_Path(".ginkgo") / "cache")
@@ -945,19 +933,19 @@ class TestEvaluate:
 
     def test_dataframe_results_are_cached_and_restored(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ):
         log_path = "dataframe-events.log"
 
         first = evaluate(dataframe_task(log_path=log_path, start=3))
-        capsys.readouterr()
 
-        second = evaluate(dataframe_task(log_path=log_path, start=3))
-        captured = capsys.readouterr()
+        second = evaluate(
+            dataframe_task(log_path=log_path, start=3), event_bus=event_collector.bus
+        )
 
         assert first.equals(second)
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["df:3"]
-        assert '"status": "cached"' in captured.err
+        assert event_collector.cached()
 
     def test_dataframe_can_flow_into_downstream_python_task(self):
         result = evaluate(dataframe_total_task(df=dataframe_task(log_path="df.log", start=4)))
@@ -999,23 +987,37 @@ class TestEvaluate:
 
     def test_task_retries_allow_transient_python_failures_and_cache_success(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ):
         marker_path = "flaky.marker"
         log_path = "flaky.log"
 
-        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
-        captured = capsys.readouterr()
+        first_collector = EventCollector()
+        assert (
+            evaluate(
+                flaky_retry_task(marker_path=marker_path, log_path=log_path),
+                event_bus=first_collector.bus,
+            )
+            == "ok"
+        )
+
+        from ginkgo.runtime.events import TaskRetrying
+
+        retry_events = [e for e in first_collector.events if isinstance(e, TaskRetrying)]
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
+        assert retry_events
+        assert any(e.attempt == 1 for e in retry_events)
+
+        assert (
+            evaluate(
+                flaky_retry_task(marker_path=marker_path, log_path=log_path),
+                event_bus=event_collector.bus,
+            )
+            == "ok"
+        )
 
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
-        assert '"status": "waiting"' in captured.err
-        assert '"attempt": 1' in captured.err
-
-        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
-        cached = capsys.readouterr()
-
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
-        assert '"status": "cached"' in cached.err
+        assert event_collector.cached()
 
     def test_task_retries_fail_after_final_attempt(self):
         log_path = "always-fail.log"
@@ -1031,7 +1033,7 @@ class TestEvaluate:
 
     def test_cached_upstream_tasks_do_not_deadlock_newly_unblocked_downstream(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ) -> None:
         log_path = "fanin-cache.log"
         expr = sum_keyword_pair_task(
@@ -1040,15 +1042,15 @@ class TestEvaluate:
         )
 
         assert evaluate(expr) == 5
-        capsys.readouterr()
 
-        assert evaluate(expr) == 5
-        captured = capsys.readouterr()
+        assert evaluate(expr, event_bus=event_collector.bus) == 5
 
         log_lines = Path(log_path).read_text(encoding="utf-8").splitlines()
 
         assert sorted(log_lines) == ["work:1", "work:2"]
-        assert captured.err.count('"status": "cached"') == 3
+        # Three tasks (left, right, and the parent) should each report a cache hit.
+        cache_hits = [e for e in event_collector.events if type(e).__name__ == "TaskCacheHit"]
+        assert len(cache_hits) == 3
 
 
 class TestShellTask:
@@ -1202,7 +1204,7 @@ class TestShellTask:
         outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
         result = evaluate(
             [pixi_shell_output_task(output_path=str(path)) for path in outputs],
-            pixi_registry=registry,
+            backend=LocalBackend(pixi_registry=registry),
         )
 
         assert result == [file(str(path)) for path in outputs]
@@ -1251,7 +1253,7 @@ class TestInterruptHandling:
             future_one: (0, "shell"),
             future_two: (1, "python"),
         }
-        evaluator._active_subprocesses = {
+        evaluator._shell_runner._active_subprocesses = {
             tracked_one.pid: tracked_one,  # type: ignore[assignment]
             tracked_two.pid: tracked_two,  # type: ignore[assignment]
         }
@@ -1259,7 +1261,7 @@ class TestInterruptHandling:
         evaluator._python_executor = python_executor
 
         monkeypatch.setattr(
-            evaluator,
+            evaluator._shell_runner,
             "_terminate_subprocess",
             lambda *, process: terminated.append(process.pid),
         )
@@ -1292,17 +1294,17 @@ class TestInterruptHandling:
                 self.returncode = 0
 
             def communicate(self) -> tuple[str, str]:
-                assert 31337 in evaluator._active_subprocesses
+                assert 31337 in evaluator._shell_runner._active_subprocesses
                 return ("stdout", "stderr")
 
-        monkeypatch.setattr("ginkgo.runtime.evaluator.subprocess.Popen", FakePopen)
+        monkeypatch.setattr("ginkgo.runtime.task_runners.shell.subprocess.Popen", FakePopen)
 
-        completed = evaluator._run_subprocess(argv=["echo", "hi"], use_shell=False)
+        completed = evaluator._shell_runner._run_subprocess(argv=["echo", "hi"], use_shell=False)
 
         assert completed.returncode == 0
         assert completed.stdout == "stdout"
         assert completed.stderr == "stderr"
-        assert evaluator._active_subprocesses == {}
+        assert evaluator._shell_runner._active_subprocesses == {}
         assert popen_calls[0][0] == ["echo", "hi"]
 
         if Path("/").anchor == "/":

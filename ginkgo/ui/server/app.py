@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from ginkgo.runtime.provenance import load_manifest
+from ginkgo.runtime.caching.provenance import load_manifest
 
 from .live import capture_live_state, diff_live_state
 from . import payloads

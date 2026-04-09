@@ -22,8 +22,7 @@ from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.envs.container import ContainerBackend
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
-from ginkgo.runtime.provenance import latest_run_dir, load_manifest
+from ginkgo.runtime.caching.provenance import latest_run_dir, load_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -509,10 +508,12 @@ def _benchmark_runtime(*, example: str) -> Iterator[None]:
 @contextmanager
 def _mock_docker() -> Iterator[None]:
     """Mock Docker execution so container shell tasks run locally."""
-    original_run_subprocess = _ConcurrentEvaluator._run_subprocess
+    from ginkgo.runtime.task_runners.shell import ShellRunner
+
+    original_run_subprocess = ShellRunner._run_subprocess
 
     def _patched_run_subprocess(
-        self_eval: Any,
+        self_runner: Any,
         *,
         argv: str | list[str],
         use_shell: bool,
@@ -537,7 +538,7 @@ def _mock_docker() -> Iterator[None]:
                 stderr=completed.stderr or "",
             )
         return original_run_subprocess(
-            self_eval,
+            self_runner,
             argv=argv,
             use_shell=use_shell,
             on_stdout=on_stdout,
@@ -545,7 +546,7 @@ def _mock_docker() -> Iterator[None]:
         )
 
     with (
-        patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess),
+        patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess),
         patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
         patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:benchmark_digest"),
@@ -556,10 +557,12 @@ def _mock_docker() -> Iterator[None]:
 @contextmanager
 def _mock_notebook_tools() -> Iterator[None]:
     """Mock notebook tooling so notebook examples remain benchmarkable."""
-    original_run_subprocess = _ConcurrentEvaluator._run_subprocess
+    from ginkgo.runtime.task_runners.shell import ShellRunner
+
+    original_run_subprocess = ShellRunner._run_subprocess
 
     def _patched_run_subprocess(
-        self_eval: Any,
+        self_runner: Any,
         *,
         argv: str | list[str],
         use_shell: bool,
@@ -595,12 +598,12 @@ def _mock_notebook_tools() -> Iterator[None]:
                 stderr="",
             )
         return original_run_subprocess(
-            self_eval,
+            self_runner,
             argv=argv,
             use_shell=use_shell,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
         )
 
-    with patch.object(_ConcurrentEvaluator, "_run_subprocess", _patched_run_subprocess):
+    with patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess):
         yield

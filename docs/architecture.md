@@ -154,16 +154,34 @@ ginkgo/
 │   └── types.py
 ├── runtime/
 │   ├── backend.py        # TaskBackend protocol, LocalBackend, CompositeBackend
-│   ├── cache.py
-│   ├── evaluator.py
+│   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
 │   ├── module_loader.py
-│   ├── notification_slack.py
-│   ├── notifications.py
-│   ├── provenance.py
-│   ├── resources.py
+│   ├── notebook_kernels.py
 │   ├── scheduler.py
-│   ├── value_codec.py
-│   └── worker.py
+│   ├── worker.py
+│   ├── events.py
+│   ├── diagnostics.py
+│   ├── task_validation.py     # TaskValidator: contracts, inputs, coercion
+│   ├── task_runners/
+│   │   ├── shell.py           # ShellRunner: subprocess + shell driver tasks
+│   │   └── notebook.py        # NotebookRunner: notebook + script driver tasks
+│   ├── caching/
+│   │   ├── cache.py           # CacheStore (content-addressed)
+│   │   ├── provenance.py      # RunProvenanceRecorder
+│   │   ├── hash_memo.py
+│   │   ├── hashing.py
+│   │   └── materialization_log.py
+│   ├── artifacts/
+│   │   ├── artifact_store.py  # content-addressed artifact storage
+│   │   ├── artifact_model.py
+│   │   ├── asset_store.py     # asset catalog metadata
+│   │   └── value_codec.py     # cross-process value serialization
+│   ├── notifications/
+│   │   ├── notifications.py
+│   │   └── slack.py
+│   └── environment/
+│       ├── secrets.py         # SecretResolver and redaction
+│       └── resources.py
 ├── envs/
 │   ├── container.py      # ContainerBackend (Docker/Podman)
 │   └── pixi.py
@@ -485,7 +503,7 @@ fails explicitly instead of silently weakening cache correctness.
 
 File and folder outputs now flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
-`ginkgo/runtime/artifact_store.py`. Artifact identity is content-addressed:
+`ginkgo/runtime/artifacts/artifact_store.py`. Artifact identity is content-addressed:
 files use the blob digest and directories use a manifest digest. That identity
 is recorded in cache metadata as `artifact_ids`, which gives later roadmap
 phases a stable contract for remote storage and lineage features.
@@ -512,7 +530,7 @@ outputs without changing the run-centric execution model.
 The asset layer is implemented by:
 
 - `ginkgo/core/asset.py` for the public asset types and builders
-- `ginkgo/runtime/asset_store.py` for the local catalog metadata store
+- `ginkgo/runtime/artifacts/asset_store.py` for the local catalog metadata store
 - evaluator integration in `ginkgo/runtime/evaluator.py`
 
 The current asset model supports:
@@ -550,7 +568,7 @@ lifecycle policy remain future work.
 
 ## Value Transport
 
-Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/value_codec.py`.
+Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/artifacts/value_codec.py`.
 
 The current implementation supports:
 

@@ -291,7 +291,7 @@ class TestContainerKindRestriction:
         # It may raise ContainerRuntimeNotFoundError from validate_envs
         # if docker is not installed — that's expected and fine.
         try:
-            evaluator._validate_declared_envs()
+            evaluator._validator.validate_declared_envs(nodes=evaluator._nodes.values())
         except ContainerRuntimeNotFoundError:
             pass  # Expected when docker is not on PATH.
 
@@ -372,18 +372,18 @@ class TestContainerShellE2E:
     def test_shell_task_executes_through_container_backend(self, tmp_path: Path):
         """A shell task with a container env runs via ``docker run``."""
         from ginkgo import evaluate
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.task_runners.shell import ShellRunner
 
         output_file = tmp_path / "result.txt"
         captured_argv: list[Any] = []
 
-        def mock_run_subprocess(self_eval, *, argv, use_shell):
+        def mock_run_subprocess(self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None):
             captured_argv.append(argv)
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
         with (
-            patch.object(_ConcurrentEvaluator, "_run_subprocess", mock_run_subprocess),
+            patch.object(ShellRunner, "_run_subprocess", mock_run_subprocess),
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         ):
             result = evaluate(
@@ -409,7 +409,11 @@ class TestContainerShellE2E:
     def test_provenance_records_container_metadata(self, tmp_path: Path):
         """Provenance manifest includes backend type and image digest."""
         from ginkgo import evaluate
-        from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+        from ginkgo.runtime.caching.provenance import (
+            RunProvenanceRecorder,
+            load_manifest,
+            make_run_id,
+        )
 
         output_file = tmp_path / "result.txt"
         runs_dir = tmp_path / ".ginkgo" / "runs"
@@ -428,14 +432,14 @@ class TestContainerShellE2E:
             pull_policy="never",
         )
 
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.task_runners.shell import ShellRunner
 
-        def mock_run_subprocess(self_eval, *, argv, use_shell):
+        def mock_run_subprocess(self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None):
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
         with (
-            patch.object(_ConcurrentEvaluator, "_run_subprocess", mock_run_subprocess),
+            patch.object(ShellRunner, "_run_subprocess", mock_run_subprocess),
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch("ginkgo.envs.container.subprocess.run") as mock_container_run,
         ):
@@ -463,7 +467,7 @@ class TestContainerShellE2E:
 
     def test_container_cache_uses_image_digest(self, tmp_path: Path):
         """Cache key incorporates the container image digest."""
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
 
         container_backend = ContainerBackend(
             project_root=tmp_path,

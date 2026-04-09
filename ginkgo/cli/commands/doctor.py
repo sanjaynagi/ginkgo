@@ -11,7 +11,7 @@ from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
 from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
-from ginkgo.runtime.secrets import build_secret_resolver
+from ginkgo.runtime.environment.secrets import build_secret_resolver
 
 
 def command_doctor(args) -> int:

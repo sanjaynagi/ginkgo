@@ -65,7 +65,7 @@ def notebook(
     -------
     NotebookExpr
     """
-    from ginkgo.runtime.hashing import hash_file
+    from ginkgo.runtime.caching.hashing import hash_file
 
     resolved = Path(path).resolve()
     if not resolved.is_file():

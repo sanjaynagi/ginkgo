@@ -466,7 +466,7 @@ def _compute_source_hash(fn: Callable[..., Any]) -> str:
     ValueError
         If the source cannot be extracted (lambdas, dynamic functions).
     """
-    from ginkgo.runtime.hashing import hash_str
+    from ginkgo.runtime.caching.hashing import hash_str
 
     try:
         source = inspect.getsource(fn)

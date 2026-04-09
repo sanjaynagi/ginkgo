@@ -22,7 +22,7 @@ import pytest
 
 from ginkgo import flow, shell, task
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.pixi import (
+from ginkgo.envs.pixi import (
     PixiEnvImportError,
     PixiEnvNotFoundError,
     PixiEnvPrepareError,
@@ -46,8 +46,9 @@ def _make_registry(tmp_path: Path) -> PixiRegistry:
 def _evaluate(expr, *, registry: PixiRegistry):
     """Evaluate an expression without importing the evaluator at module import time."""
     from ginkgo import evaluate
+    from ginkgo.runtime.backend import LocalBackend
 
-    return evaluate(expr, pixi_registry=registry)
+    return evaluate(expr, backend=LocalBackend(pixi_registry=registry))
 
 
 def _pixi_available() -> bool:
@@ -282,7 +283,9 @@ class TestPixiShellTask:
     @pixi_required
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
-        import io
+        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.backend import LocalBackend
+        from ginkgo.runtime.events import EventBus, TaskCacheHit
 
         output = str(tmp_path / "sentinel.txt")
         registry = _make_registry(tmp_path)
@@ -291,14 +294,19 @@ class TestPixiShellTask:
         _evaluate(shell_touch(output_path=output), registry=registry)
         assert Path(output).exists()
 
-        # Capture log output on run 2 to confirm the task was served from cache.
-        log = io.StringIO()
-        from ginkgo.evaluator import _ConcurrentEvaluator
-        from ginkgo.runtime.backend import LocalBackend
+        # Subscribe to runtime events on run 2 to confirm the task was served from cache.
+        cache_events: list[TaskCacheHit] = []
+        bus = EventBus()
+        bus.subscribe(
+            lambda event: cache_events.append(event) if isinstance(event, TaskCacheHit) else None
+        )
 
-        evaluator = _ConcurrentEvaluator(backend=LocalBackend(pixi_registry=registry), _stderr=log)
+        evaluator = _ConcurrentEvaluator(
+            backend=LocalBackend(pixi_registry=registry),
+            event_bus=bus,
+        )
         evaluator.evaluate(shell_touch(output_path=output))
-        assert '"cached"' in log.getvalue()
+        assert len(cache_events) == 1
 
     @pixi_required
     def test_shell_tasks_do_not_import_workflow_module_inside_pixi_env(

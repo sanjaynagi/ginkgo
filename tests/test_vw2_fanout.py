@@ -41,7 +41,7 @@ def _peak_overlap(intervals: list[tuple[float, float]]) -> int:
 @task()
 def process(item: str, multiplier: int, events_dir: str) -> str:
     started_at = time.time()
-    time.sleep(0.1)
+    time.sleep(0.3)
     ended_at = time.time()
     _write_interval(events_dir, f"process-{item}", started_at, ended_at)
     return item * multiplier
@@ -76,7 +76,7 @@ class TestVW2ConcurrentEvaluation:
         assert result == ",".join(sorted(item * 2 for item in items))
         assert len(intervals) == 10
         assert _peak_overlap(intervals) >= 5
-        assert process_makespan < 1.0
+        assert process_makespan < 1.5
 
     def test_merge_receives_resolved_results(self):
         items = ["a", "b", "c"]

@@ -1,4 +1,4 @@
-"""Ginkgo — a dynamic, reproducible workflow orchestrator for scientific and data workflows."""
+"""Ginkgo — a dynamic, reproducible workflow orchestrator for scientific and data analyses."""
 
 from __future__ import annotations
 
@@ -41,39 +41,6 @@ _EXPORTS = {
     "zip_expand": ("ginkgo.helpers", "zip_expand"),
 }
 
-_LEGACY_MODULE_ALIASES = {
-    "ginkgo.cache": "ginkgo.runtime.cache",
-    "ginkgo.evaluator": "ginkgo.runtime.evaluator",
-    "ginkgo.expr": "ginkgo.core.expr",
-    "ginkgo.flow": "ginkgo.core.flow",
-    "ginkgo.pixi": "ginkgo.envs.pixi",
-    "ginkgo.scheduler": "ginkgo.runtime.scheduler",
-    "ginkgo.shell": "ginkgo.core.shell",
-    "ginkgo.task": "ginkgo.core.task",
-    "ginkgo.types": "ginkgo.core.types",
-    "ginkgo.value_codec": "ginkgo.runtime.value_codec",
-    "ginkgo.worker": "ginkgo.runtime.worker",
-}
-
-
-class _LazyAliasModule(ModuleType):
-    """Module proxy that loads a legacy alias target on first attribute access."""
-
-    def __init__(self, *, alias_name: str, target_name: str) -> None:
-        super().__init__(alias_name)
-        self._target_name = target_name
-
-    def _resolve(self) -> ModuleType:
-        module = import_module(self._target_name)
-        sys.modules[self.__name__] = module
-        return module
-
-    def __getattr__(self, name: str):
-        return getattr(self._resolve(), name)
-
-    def __dir__(self) -> list[str]:
-        return sorted(dir(self._resolve()))
-
 
 class _GinkgoModule(ModuleType):
     """Package module that preserves callable exports across submodule imports."""
@@ -114,13 +81,6 @@ def __getattr__(name: str):
 def __dir__() -> list[str]:
     """Return the names exposed by this package."""
     return sorted(list(globals().keys()) + list(_EXPORTS.keys()))
-
-
-for legacy_name, current_name in _LEGACY_MODULE_ALIASES.items():
-    sys.modules.setdefault(
-        legacy_name,
-        _LazyAliasModule(alias_name=legacy_name, target_name=current_name),
-    )
 
 
 _package = sys.modules[__name__]

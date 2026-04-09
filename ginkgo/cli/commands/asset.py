@@ -9,8 +9,8 @@ from rich import box
 from rich.table import Table
 
 from ginkgo.cli.common import ASSETS_ROOT, console
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
 
 

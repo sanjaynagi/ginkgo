@@ -20,16 +20,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ginkgo.runtime.artifact_model import (
+from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
     TreeEntry,
     TreeRef,
     deserialize_tree_manifest,
     serialize_tree_manifest,
 )
-from ginkgo.runtime.hash_memo import HashMemo
-from ginkgo.runtime.hashing import hash_bytes, hash_file
-from ginkgo.runtime.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.caching.hashing import hash_bytes, hash_file
+from ginkgo.runtime.caching.materialization_log import MaterializationLog
 
 
 DIGEST_ALGORITHM = "blake3"

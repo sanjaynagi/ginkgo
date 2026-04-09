@@ -11,7 +11,7 @@ from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.runtime.secrets import build_secret_resolver, collect_secret_refs
+from ginkgo.runtime.environment.secrets import build_secret_resolver, collect_secret_refs
 
 
 def command_secrets(args) -> int:

@@ -9,8 +9,8 @@ import traceback
 from typing import Any
 
 from ginkgo.runtime.module_loader import load_module
-from ginkgo.runtime.secrets import redact_text
-from ginkgo.runtime.value_codec import decode_value, encode_value
+from ginkgo.runtime.environment.secrets import redact_text
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 
 
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:

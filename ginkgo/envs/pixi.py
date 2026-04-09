@@ -362,7 +362,7 @@ class PixiRegistry:
 
 def _hash_file(path: Path) -> str:
     """Return the BLAKE3 hex digest of a file's contents."""
-    from ginkgo.runtime.hashing import hash_file
+    from ginkgo.runtime.caching.hashing import hash_file
 
     return hash_file(path)
 

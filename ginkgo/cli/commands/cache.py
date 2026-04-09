@@ -17,7 +17,7 @@ from rich.text import Text
 
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import _task_base_name
-from ginkgo.runtime.artifact_store import _make_writable_recursive
+from ginkgo.runtime.artifacts.artifact_store import _make_writable_recursive
 
 
 def command_cache(args) -> int:
@@ -275,7 +275,7 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
             referenced.add(artifact_id)
 
     # Remove orphaned artifacts via the store's delete method.
-    from ginkgo.runtime.artifact_store import LocalArtifactStore
+    from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 
     store = LocalArtifactStore(root=artifacts_root)
     refs_dir = artifacts_root / "refs"

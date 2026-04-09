@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ginkgo.runtime.provenance import latest_run_dir
+from ginkgo.runtime.caching.provenance import latest_run_dir
 
 
 def run_count(runs_root: Path) -> int:
@@ -27,47 +27,6 @@ def task_base_name(value: Any) -> str:
     if not isinstance(value, str) or not value:
         return "unknown"
     return value.rsplit(".", 1)[-1]
-
-
-def base_name(value: Any) -> str:
-    """Return the basename for a path-like string."""
-    if not isinstance(value, str) or not value:
-        return "unknown"
-    return Path(value).name
-
-
-def status_count(tasks: Any, status: str) -> int:
-    """Count tasks in one status."""
-    if not isinstance(tasks, dict):
-        return 0
-    return sum(
-        1 for item in tasks.values() if isinstance(item, dict) and item.get("status") == status
-    )
-
-
-def cached_count(tasks: Any) -> int:
-    """Count cached tasks."""
-    if not isinstance(tasks, dict):
-        return 0
-    return sum(
-        1 for item in tasks.values() if isinstance(item, dict) and item.get("cached") is True
-    )
-
-
-def duration_seconds(started_at: Any, finished_at: Any) -> float | None:
-    """Return a run/task duration in seconds when both timestamps are valid."""
-    if not isinstance(started_at, str) or not isinstance(finished_at, str):
-        return None
-    try:
-        start = datetime.fromisoformat(started_at)
-        end = datetime.fromisoformat(finished_at)
-    except ValueError:
-        return None
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=UTC)
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=UTC)
-    return max(0.0, (end - start).total_seconds())
 
 
 def runs_signature(runs_root: Path) -> str:

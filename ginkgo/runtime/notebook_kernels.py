@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
-from ginkgo.runtime.hashing import hash_str
+from ginkgo.runtime.caching.hashing import hash_str
 
 
 class NotebookKernelError(RuntimeError):

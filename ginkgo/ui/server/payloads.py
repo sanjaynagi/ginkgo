@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.parse import quote
 
 import pandas as pd
@@ -16,22 +16,19 @@ import yaml
 
 from ginkgo.cli.workspace import list_workflow_paths
 from ginkgo.core.asset import AssetKey
-from ginkgo.runtime.artifact_model import ArtifactRecord
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.asset_store import AssetStore
-from ginkgo.runtime.provenance import load_manifest, tail_text
+from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.caching.provenance import load_manifest, tail_text
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 from .utils import (
-    base_name,
-    cached_count,
     dir_size,
-    duration_seconds,
     format_age,
     format_size,
     latest_run_id,
     parse_timestamp,
     run_count,
-    status_count,
     task_base_name,
 )
 from .workspaces import WorkspaceRecord
@@ -71,29 +68,25 @@ def list_runs(workspace: WorkspaceRecord) -> list[dict[str, Any]]:
         reverse=True,
     ):
         try:
-            manifest = load_manifest(run_dir)
+            summary = RunSummary.load(run_dir)
         except Exception:
             continue
-        tasks = manifest.get("tasks", {})
         runs.append(
             {
                 "workspace_id": workspace.workspace_id,
                 "workspace_label": workspace.label,
                 "project_root": str(workspace.project_root),
-                "run_id": run_dir.name,
-                "workflow": base_name(manifest.get("workflow")),
-                "workflow_path": manifest.get("workflow"),
-                "status": manifest.get("status", "unknown"),
-                "started_at": manifest.get("started_at"),
-                "finished_at": manifest.get("finished_at"),
-                "task_count": len(tasks) if isinstance(tasks, dict) else 0,
-                "failed_count": status_count(tasks, "failed"),
-                "cached_count": cached_count(tasks),
-                "succeeded_count": status_count(tasks, "succeeded"),
-                "duration_seconds": duration_seconds(
-                    manifest.get("started_at"),
-                    manifest.get("finished_at"),
-                ),
+                "run_id": summary.run_id,
+                "workflow": summary.workflow_label,
+                "workflow_path": summary.workflow,
+                "status": summary.status,
+                "started_at": summary.raw_manifest.get("started_at"),
+                "finished_at": summary.raw_manifest.get("finished_at"),
+                "task_count": summary.task_count,
+                "failed_count": summary.failed_count,
+                "cached_count": summary.cached_count,
+                "succeeded_count": summary.succeeded_count,
+                "duration_seconds": summary.duration_s,
             }
         )
     return runs
@@ -120,86 +113,102 @@ def run_payload(workspace: WorkspaceRecord, run_id: str) -> dict[str, Any] | Non
     if not run_dir.is_dir():
         return None
 
-    manifest = load_manifest(run_dir)
-    params_path = run_dir / "params.yaml"
-    params = (
-        yaml.safe_load(params_path.read_text(encoding="utf-8")) if params_path.is_file() else {}
-    )
-    tasks_raw = manifest.get("tasks", {})
-    tasks: list[dict[str, Any]] = []
-    notebooks: list[dict[str, Any]] = []
-    if isinstance(tasks_raw, dict):
-        task_items: list[tuple[str, dict[str, Any]]] = []
-        for task_key, task in tasks_raw.items():
-            if not isinstance(task_key, str) or not isinstance(task, dict):
-                continue
-            task_items.append((task_key, cast(dict[str, Any], task)))
+    summary = RunSummary.load(run_dir)
+    tasks: list[dict[str, Any]] = [
+        _task_dict(workspace=workspace, run_id=run_id, run_dir=run_dir, task=task)
+        for task in summary.tasks
+    ]
+    notebooks: list[dict[str, Any]] = [
+        _notebook_dict(workspace=workspace, run_id=run_id, run_dir=run_dir, task=task)
+        for task in summary.tasks
+        if task.task_type == "notebook"
+    ]
 
-        for task_key, task in sorted(task_items, key=lambda item: int(item[1].get("node_id", -1))):
-            rendered_html = resolve_task_path(run_dir, task, "rendered_html")
-            executed_notebook = resolve_task_path(run_dir, task, "executed_notebook")
-            tasks.append(
-                {
-                    "task_key": task_key,
-                    "node_id": task.get("node_id"),
-                    "task": task.get("task"),
-                    "task_name": task_base_name(task.get("task")),
-                    "status": task.get("status", "unknown"),
-                    "env": task.get("env") or "local",
-                    "cached": task.get("cached", False),
-                    "exit_code": task.get("exit_code"),
-                    "stdout_log": task.get("stdout_log"),
-                    "stderr_log": task.get("stderr_log"),
-                    "started_at": task.get("started_at"),
-                    "finished_at": task.get("finished_at"),
-                    "cache_key": task.get("cache_key"),
-                    "dependency_ids": task.get("dependency_ids", []),
-                    "dynamic_dependency_ids": task.get("dynamic_dependency_ids", []),
-                    "task_type": task.get("task_type", "task"),
-                    "notebook_kind": task.get("notebook_kind"),
-                    "notebook_description": task.get("notebook_description"),
-                    "render_status": task.get("render_status"),
-                    "rendered_html": str(rendered_html) if rendered_html is not None else None,
-                    "rendered_html_url": (
-                        f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
-                        if rendered_html is not None
-                        else None
-                    ),
-                    "executed_notebook": (
-                        str(executed_notebook) if executed_notebook is not None else None
-                    ),
-                }
-            )
-            if task.get("task_type") == "notebook":
-                notebooks.append(
-                    {
-                        "task_key": task_key,
-                        "task": task.get("task"),
-                        "task_name": task_base_name(task.get("task")),
-                        "description": task.get("notebook_description"),
-                        "status": task.get("status", "unknown"),
-                        "render_status": task.get("render_status"),
-                        "notebook_kind": task.get("notebook_kind"),
-                        "notebook_path": task.get("notebook_path"),
-                        "rendered_html": str(rendered_html) if rendered_html is not None else None,
-                        "rendered_html_url": (
-                            f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
-                            if rendered_html is not None
-                            else None
-                        ),
-                    }
-                )
     return {
         "workspace_id": workspace.workspace_id,
         "workspace_label": workspace.label,
         "project_root": str(workspace.project_root),
-        "run_id": run_dir.name,
+        "run_id": summary.run_id,
         "run_dir": str(run_dir),
-        "resources": manifest.get("resources", {}),
-        "manifest": manifest,
-        "params": params,
+        "resources": summary.resources,
+        "manifest": summary.raw_manifest,
+        "params": summary.params,
         "tasks": tasks,
         "notebooks": notebooks,
+    }
+
+
+def _notebook_url(*, workspace: WorkspaceRecord, run_id: str, task_key: str) -> str:
+    """Return the API URL for a rendered notebook artifact."""
+    return f"/api/workspaces/{workspace.workspace_id}/runs/{run_id}/tasks/{task_key}/notebook"
+
+
+def _task_dict(
+    *,
+    workspace: WorkspaceRecord,
+    run_id: str,
+    run_dir: Path,
+    task: TaskSummary,
+) -> dict[str, Any]:
+    """Render one ``TaskSummary`` as a UI payload dict."""
+    rendered_html = (run_dir / task.rendered_html) if task.rendered_html is not None else None
+    executed_notebook = (
+        (run_dir / task.executed_notebook) if task.executed_notebook is not None else None
+    )
+    return {
+        "task_key": task.task_key,
+        "node_id": task.node_id,
+        "task": task.name,
+        "task_name": task.base_name,
+        "status": task.status,
+        "env": task.env,
+        "cached": task.cached,
+        "exit_code": task.exit_code,
+        "stdout_log": task.stdout_log,
+        "stderr_log": task.stderr_log,
+        "started_at": task.raw.get("started_at"),
+        "finished_at": task.raw.get("finished_at"),
+        "cache_key": task.cache_key,
+        "dependency_ids": list(task.dependency_ids),
+        "dynamic_dependency_ids": list(task.dynamic_dependency_ids),
+        "task_type": task.task_type,
+        "notebook_kind": task.notebook_kind,
+        "notebook_description": task.notebook_description,
+        "render_status": task.render_status,
+        "rendered_html": str(rendered_html) if rendered_html is not None else None,
+        "rendered_html_url": (
+            _notebook_url(workspace=workspace, run_id=run_id, task_key=task.task_key)
+            if rendered_html is not None
+            else None
+        ),
+        "executed_notebook": str(executed_notebook) if executed_notebook is not None else None,
+    }
+
+
+def _notebook_dict(
+    *,
+    workspace: WorkspaceRecord,
+    run_id: str,
+    run_dir: Path,
+    task: TaskSummary,
+) -> dict[str, Any]:
+    """Render one notebook task entry as a UI payload dict."""
+    rendered_html = (run_dir / task.rendered_html) if task.rendered_html is not None else None
+    return {
+        "task_key": task.task_key,
+        "task": task.name,
+        "task_name": task.base_name,
+        "description": task.notebook_description,
+        "status": task.status,
+        "render_status": task.render_status,
+        "notebook_kind": task.notebook_kind,
+        "notebook_path": task.notebook_path,
+        "rendered_html": str(rendered_html) if rendered_html is not None else None,
+        "rendered_html_url": (
+            _notebook_url(workspace=workspace, run_id=run_id, task_key=task.task_key)
+            if rendered_html is not None
+            else None
+        ),
     }
 
 
@@ -506,10 +515,7 @@ def task_payload(
 
     stdout_path = resolve_log_path(run_dir, task, "stdout_log")
     stderr_path = resolve_log_path(run_dir, task, "stderr_log")
-    legacy_path = resolve_log_path(run_dir, task, "log")
     notebook_html = resolve_task_path(run_dir, task, "rendered_html")
-    if stdout_path is None and legacy_path is not None:
-        stdout_path = legacy_path
 
     return {
         "workspace_id": workspace.workspace_id,

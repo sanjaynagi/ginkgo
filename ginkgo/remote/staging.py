@@ -24,7 +24,7 @@ from ginkgo.config import load_runtime_config
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
 from ginkgo.remote.backend import RemoteObjectMeta, RemoteStorageBackend
 from ginkgo.remote.resolve import resolve_backend
-from ginkgo.runtime.hashing import hash_file, hash_str
+from ginkgo.runtime.caching.hashing import hash_file, hash_str
 
 
 @dataclass(frozen=True, kw_only=True)

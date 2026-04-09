@@ -13,8 +13,8 @@ import yaml
 from rich.console import Console
 
 from ginkgo.core.asset import AssetKey, make_asset_version
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.cli import (
     _core_unit_label,
     _environment_label,

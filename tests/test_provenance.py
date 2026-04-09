@@ -8,8 +8,8 @@ import yaml
 
 from ginkgo import file, secret, task
 from ginkgo.cli.commands.inspect import inspect_run
-import ginkgo.runtime.provenance as provenance_module
-from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+import ginkgo.runtime.caching.provenance as provenance_module
+from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 
 
 @task()
