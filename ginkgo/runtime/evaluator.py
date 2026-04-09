@@ -56,6 +56,7 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
+from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.environment.secrets import (
     SecretResolver,
@@ -166,6 +167,8 @@ class _TaskNode:
     input_hashes: dict[str, Any] | None = None
     threads: int = 1
     memory_gb: int = 0
+    concurrency_group: str | None = None
+    concurrency_group_limit: int | None = None
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
     transport_path: Path | None = None
@@ -199,6 +202,7 @@ class _ConcurrentEvaluator:
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
     trust_workspace: bool = False
+    profiler: ProfileRecorder | None = None
     _cache_store: CacheStore = field(init=False, repr=False)
     _asset_store: AssetStore = field(init=False, repr=False)
     _nodes: dict[int, _TaskNode] = field(default_factory=dict, init=False, repr=False)
@@ -231,6 +235,8 @@ class _ConcurrentEvaluator:
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.profiler is None:
+            self.profiler = ProfileRecorder(enabled=False)
         default_jobs = os.cpu_count() or 1
         self.jobs = default_jobs if self.jobs is None else self.jobs
         self.cores = self.jobs if self.cores is None else self.cores
@@ -322,12 +328,14 @@ class _ConcurrentEvaluator:
                         self._interrupt_running_work()
 
                     if self._failure is None:
-                        self._prepare_pending_nodes()
-                        self._finalize_dynamic_nodes()
-                        self._dispatch_ready_nodes(
-                            python_executor=python_executor,
-                            shell_executor=shell_executor,
-                        )
+                        with self.profiler.timed("scheduler_prepare"):
+                            self._prepare_pending_nodes()
+                            self._finalize_dynamic_nodes()
+                        with self.profiler.timed("scheduler_dispatch"):
+                            self._dispatch_ready_nodes(
+                                python_executor=python_executor,
+                                shell_executor=shell_executor,
+                            )
 
                         if self._is_root_resolved() and not self._running_futures:
                             return self._materialize(self._root_template)
@@ -335,11 +343,13 @@ class _ConcurrentEvaluator:
                         break
 
                     if self._running_futures:
-                        done, _ = wait(
-                            tuple(self._running_futures.keys()),
-                            return_when=FIRST_COMPLETED,
-                        )
-                        self._consume_completed_futures(done)
+                        with self.profiler.timed("scheduler_wait"):
+                            done, _ = wait(
+                                tuple(self._running_futures.keys()),
+                                return_when=FIRST_COMPLETED,
+                            )
+                        with self.profiler.timed("scheduler_consume_completed"):
+                            self._consume_completed_futures(done)
                         continue
 
                     if self._failure is not None:
@@ -457,6 +467,8 @@ class _ConcurrentEvaluator:
             node_id=node_id,
             expr=expr,
             dependency_ids=dependency_ids,
+            concurrency_group=expr.concurrency_group,
+            concurrency_group_limit=expr.concurrency_group_limit,
         )
         self._expr_nodes[expr_id] = node_id
         self._emit_event(
@@ -537,7 +549,7 @@ class _ConcurrentEvaluator:
         self._prepare_task_environment(node=node)
         self._record_task_metadata(node=node)
 
-        node.threads = self._task_threads(resolved_args)
+        node.threads = self._task_threads(node.task_def)
         node.memory_gb = self._task_memory_gb(resolved_args)
         if node.threads > self.cores:
             raise ValueError(
@@ -606,18 +618,21 @@ class _ConcurrentEvaluator:
         available_jobs = self.jobs - len(self._running_futures)
         available_cores = self.cores - self._running_cores()
         available_memory = None if self.memory is None else self.memory - self._running_memory_gb()
+        available_group_slots = self._available_group_slots(ready_nodes=ready_nodes)
         selected = select_dispatch_subset(
             ready_tasks=[
                 SchedulableTask(
                     node_id=node.node_id,
                     threads=node.threads,
                     memory_gb=node.memory_gb,
+                    concurrency_group=node.concurrency_group,
                 )
                 for node in ready_nodes
             ],
             jobs=available_jobs,
             cores=available_cores,
             memory=available_memory,
+            available_group_slots=available_group_slots,
         )
 
         for node_id in selected:
@@ -905,6 +920,12 @@ class _ConcurrentEvaluator:
                 resolved_args[name] = self._materialize(expr.args[name])
                 continue
 
+            if name == "threads":
+                # Inject the decorator-declared thread count so user code can
+                # use it for shell command interpolation or in-process work.
+                resolved_args[name] = task_def.threads
+                continue
+
             if parameter.default is not parameter.empty:
                 resolved_args[name] = parameter.default
                 continue
@@ -1102,6 +1123,36 @@ class _ConcurrentEvaluator:
         """Return the core footprint of currently running tasks."""
         return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
 
+    def _available_group_slots(self, *, ready_nodes: list[_TaskNode]) -> dict[str, int]:
+        """Return the remaining concurrency budget per active group.
+
+        For each named concurrency group represented in the ready set, the
+        result contains the group's declared limit minus the number of tasks
+        from that group currently in flight.
+        """
+        active_groups: dict[str, int] = {}
+        for node in ready_nodes:
+            if node.concurrency_group is None or node.concurrency_group_limit is None:
+                continue
+            active_groups[node.concurrency_group] = node.concurrency_group_limit
+
+        if not active_groups:
+            return {}
+
+        running_per_group: dict[str, int] = {}
+        for node_id, _ in self._running_futures.values():
+            running_node = self._nodes[node_id]
+            if running_node.concurrency_group is None:
+                continue
+            running_per_group[running_node.concurrency_group] = (
+                running_per_group.get(running_node.concurrency_group, 0) + 1
+            )
+
+        return {
+            group_id: max(0, limit - running_per_group.get(group_id, 0))
+            for group_id, limit in active_groups.items()
+        }
+
     def _running_memory_gb(self) -> int:
         """Return the declared memory footprint of currently running tasks."""
         return sum(self._nodes[node_id].memory_gb for node_id, _ in self._running_futures.values())
@@ -1183,18 +1234,9 @@ class _ConcurrentEvaluator:
         future = python_executor.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, "python")
 
-    def _task_threads(self, resolved_args: dict[str, Any]) -> int:
+    def _task_threads(self, task_def: TaskDef) -> int:
         """Return the scheduler core footprint for a task."""
-        raw_threads = resolved_args.get("threads", 1)
-        try:
-            threads = int(raw_threads)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(f"threads must be an integer, got {raw_threads!r}") from exc
-
-        if threads < 1:
-            raise ValueError(f"threads must be at least 1, got {threads}")
-
-        return threads
+        return task_def.threads
 
     def _task_memory_gb(self, resolved_args: dict[str, Any]) -> int:
         """Return the scheduler memory footprint for a task in GiB."""
@@ -1606,7 +1648,8 @@ class _ConcurrentEvaluator:
     def _emit_event(self, event: object) -> None:
         """Emit a runtime event to the attached event bus, if any."""
         if self.event_bus is not None:
-            self.event_bus.emit(event)
+            with self.profiler.timed("event_emit"):
+                self.event_bus.emit(event)
 
     def _task_log_emitter(self, *, node: _TaskNode, stream: str) -> Any:
         """Return a task-log callback bound to one task node and stream."""

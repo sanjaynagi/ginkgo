@@ -18,6 +18,9 @@ import time
 from typing import Any, Iterator
 from unittest.mock import patch
 
+from rich.console import Console
+from rich.table import Table
+
 from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.cli.workspace import discover_default_workflow
@@ -218,74 +221,71 @@ def _print_benchmark_summary(
 ) -> None:
     """Print a readable benchmark summary table."""
 
+    console = Console(file=stream, force_terminal=False, no_color=True, soft_wrap=True)
     if not isinstance(comparisons, list) or len(comparisons) == 0:
-        print(_render_observed_table(records=records), file=stream)
+        console.print(_render_observed_table(records=records))
         return
 
-    print(_render_comparison_table(comparisons=comparisons), file=stream)
+    console.print(_render_comparison_table(comparisons=comparisons))
 
 
-def _render_comparison_table(*, comparisons: list[dict[str, object]]) -> str:
-    """Return a fixed-width benchmark comparison table."""
+_PASS_STYLE = "green"
+_FAIL_STYLE = "red"
+_MISSING_STYLE = "yellow"
 
-    headers = [
-        "example",
-        "mode",
-        "baseline s",
-        "observed s",
-        "delta s",
-        "delta %",
-        "status",
-    ]
-    rows = [
-        [
+
+def _status_style(status: str) -> str:
+    """Return one Rich style for a comparison status."""
+    if status == "passed":
+        return _PASS_STYLE
+    if status == "failed":
+        return _FAIL_STYLE
+    return _MISSING_STYLE
+
+
+def _render_comparison_table(*, comparisons: list[dict[str, object]]) -> Table:
+    """Return a Rich benchmark comparison table."""
+
+    table = Table(title="Benchmark Comparison", show_lines=False)
+    table.add_column("example")
+    table.add_column("mode")
+    table.add_column("baseline s", justify="right")
+    table.add_column("observed s", justify="right")
+    table.add_column("delta s", justify="right")
+    table.add_column("delta %", justify="right")
+    table.add_column("status")
+
+    for item in comparisons:
+        status = str(item.get("status", "unknown"))
+        table.add_row(
             str(item.get("example", "—")),
             str(item.get("mode", "—")),
             _format_seconds(item.get("baseline_seconds")),
             _format_seconds(item.get("observed_seconds")),
             _format_delta_seconds(item.get("absolute_delta_seconds")),
             _format_percentage(item.get("percentage_delta")),
-            str(item.get("status", "unknown")),
-        ]
-        for item in comparisons
-    ]
-    return _render_table(title="Benchmark Comparison", headers=headers, rows=rows)
+            f"[{_status_style(status)}]{status}[/{_status_style(status)}]",
+        )
+    return table
 
 
-def _render_observed_table(*, records: list[BenchmarkRecord]) -> str:
-    """Return a fixed-width observed-results table."""
+def _render_observed_table(*, records: list[BenchmarkRecord]) -> Table:
+    """Return a Rich observed-results table."""
 
-    headers = ["example", "mode", "observed s", "status"]
-    rows = [
-        [
+    table = Table(title="Benchmark Results", show_lines=False)
+    table.add_column("example")
+    table.add_column("mode")
+    table.add_column("observed s", justify="right")
+    table.add_column("status")
+
+    for record in records:
+        table.add_row(
             record.example,
             record.mode,
             _format_seconds(record.wall_time_seconds),
             record.status,
-        ]
-        for record in records
-    ]
-    return _render_table(title="Benchmark Results", headers=headers, rows=rows)
-
-
-def _render_table(*, title: str, headers: list[str], rows: list[list[str]]) -> str:
-    """Return one plain-text table."""
-
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
-
-    separator = "  ".join("-" * width for width in widths)
-    lines = [
-        title,
-        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)),
-        separator,
-    ]
-    lines.extend(
-        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in rows
-    )
-    return "\n".join(lines)
+        )
+    return table
 
 
 def _raise_for_strict_regressions(*, comparisons: object, strict: bool) -> None:
@@ -519,6 +519,7 @@ def _mock_docker() -> Iterator[None]:
         use_shell: bool,
         on_stdout: Any = None,
         on_stderr: Any = None,
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(argv, list) and argv and argv[0] == "docker":
             completed = subprocess.run(
@@ -568,6 +569,7 @@ def _mock_notebook_tools() -> Iterator[None]:
         use_shell: bool,
         on_stdout: Any = None,
         on_stderr: Any = None,
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(argv, str) and "papermill" in argv:
             parts = shlex.split(argv)

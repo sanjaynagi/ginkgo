@@ -1293,3 +1293,69 @@ def main():
             "cache_key_changed",
             "source_hash_changed",
         }
+
+
+class TestCliRunProfile:
+    def test_run_profile_emits_table_and_persists_snapshot(self) -> None:
+        from ginkgo.runtime.caching.provenance import load_manifest
+
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def hello() -> str:
+    return "ok"
+
+@flow
+def main():
+    return hello()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--profile", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Runtime Profile" in result.stdout
+        assert "scheduler_dispatch" in result.stdout
+        assert "evaluator_validate" in result.stdout
+
+        run_dir = _extract_run_dir(result.stdout)
+        manifest = load_manifest(run_dir)
+        profile = manifest["timings"]["profile"]
+        assert "scheduler_dispatch" in profile
+        assert profile["scheduler_dispatch"]["seconds"] > 0
+        assert profile["scheduler_dispatch"]["count"] >= 1
+
+        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
+        assert inspect.returncode == 0, inspect.stderr
+        inspect_payload = json.loads(inspect.stdout)
+        assert "scheduler_dispatch" in inspect_payload["timings"]["profile"]
+
+    def test_run_without_profile_does_not_emit_table_or_snapshot(self) -> None:
+        from ginkgo.runtime.caching.provenance import load_manifest
+
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def hello() -> str:
+    return "ok"
+
+@flow
+def main():
+    return hello()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Runtime Profile" not in result.stdout
+
+        run_dir = _extract_run_dir(result.stdout)
+        manifest = load_manifest(run_dir)
+        assert manifest["timings"]["profile"] == {}

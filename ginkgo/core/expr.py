@@ -33,6 +33,8 @@ class Expr(Generic[T]):
     args: dict[str, object] = field(default_factory=dict)
     mapped: bool = False
     display_label_parts: tuple[str, ...] = field(default_factory=tuple, repr=False)
+    concurrency_group: str | None = field(default=None, repr=False)
+    concurrency_group_limit: int | None = field(default=None, repr=False)
 
     @property
     def output(self) -> _OutputProxy:
@@ -141,14 +143,43 @@ class ExprList(Generic[T]):
     def __iter__(self):
         return iter(self.exprs)
 
-    def map(self, **varying: Any) -> ExprList[T]:
-        """Extend each existing branch by zipping new varying arguments."""
+    def map(self, *, max_concurrent: int | None = None, **varying: Any) -> ExprList[T]:
+        """Extend each existing branch by zipping new varying arguments.
+
+        Parameters
+        ----------
+        max_concurrent : int | None
+            When set, the scheduler will run at most this many of the
+            generated branches concurrently. Independent of the global
+            ``--jobs`` and ``--cores`` budgets.
+        **varying
+            Per-branch keyword arguments.
+        """
         from ginkgo.core.task import _fan_out_expr_list
 
-        return _fan_out_expr_list(expr_list=self, varying=varying, mode="zip")
+        return _fan_out_expr_list(
+            expr_list=self,
+            varying=varying,
+            mode="zip",
+            max_concurrent=max_concurrent,
+        )
 
-    def product_map(self, **varying: Any) -> ExprList[T]:
-        """Extend each existing branch across Cartesian varying arguments."""
+    def product_map(self, *, max_concurrent: int | None = None, **varying: Any) -> ExprList[T]:
+        """Extend each existing branch across Cartesian varying arguments.
+
+        Parameters
+        ----------
+        max_concurrent : int | None
+            When set, the scheduler will run at most this many of the
+            generated branches concurrently.
+        **varying
+            Per-branch keyword arguments.
+        """
         from ginkgo.core.task import _fan_out_expr_list
 
-        return _fan_out_expr_list(expr_list=self, varying=varying, mode="product")
+        return _fan_out_expr_list(
+            expr_list=self,
+            varying=varying,
+            mode="product",
+            max_concurrent=max_concurrent,
+        )

@@ -79,6 +79,7 @@ def _mock_docker() -> Iterator[None]:
         use_shell: bool,
         on_stdout: Any = None,
         on_stderr: Any = None,
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         # Docker argv: ["docker", "run", ..., "bash", "-c", "<cmd>"]
         if isinstance(argv, list) and argv and argv[0] == "docker":
@@ -130,6 +131,7 @@ def _mock_notebook_tools() -> Iterator[None]:
         use_shell: bool,
         on_stdout: Any = None,
         on_stderr: Any = None,
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(argv, str) and "papermill" in argv:
             parts = shlex.split(argv)

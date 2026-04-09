@@ -289,6 +289,33 @@ The current evaluator is concurrent and futures-based:
 
 The scheduler performs explicit cycle detection when registering expressions.
 
+**Per-task thread declaration.** A task's CPU footprint is declared on the
+decorator (`@task(threads=4)`). The scheduler uses this value as the task's
+core budget against `--cores`. When a task function's signature includes a
+`threads` parameter, the declared value is injected automatically so the task
+body can reference it. Shell tasks additionally receive `GINKGO_THREADS` in
+their subprocess environment, and `@task(threads=N, export_thread_env=True)`
+also exports `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+and `NUMEXPR_NUM_THREADS` so ordinary BLAS/OpenMP tools honour the budget
+without per-workflow boilerplate.
+
+**Fan-out concurrency caps.** `.map()` and `.product_map()` accept an optional
+`max_concurrent=N` argument that caps how many branches from a single
+fan-out may run simultaneously, independent of the global `--jobs` and
+`--cores` budgets. The scheduler tracks one ephemeral concurrency group per
+fan-out and enforces the limit in the CP-SAT selection model alongside
+cores, jobs, and memory constraints.
+
+**Runtime profiling (`--profile`).** `ginkgo run --profile` enables a coarse
+phase-timer recorder that attributes wall time to CLI startup, workflow
+module import, flow construction, evaluator validation, scheduler prepare /
+dispatch / wait / consume phases, event emission, resource monitor lifecycle,
+provenance finalize, manifest load, and renderer finish. The recorder is a
+no-op when `--profile` is not set and does not run when disabled, so the
+default path is not instrumented. The phase totals are persisted under
+`timings.profile` in the run manifest, printed as a Rich summary table at
+the end of the run, and exposed by `ginkgo inspect run`.
+
 ### Remote References and Staged Access
 
 Phase 6 introduced first-class remote input support without changing the

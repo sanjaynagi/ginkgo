@@ -155,6 +155,31 @@ class RunProvenanceRecorder:
                 }
             )
 
+    def set_profile(self, *, profile: dict[str, dict[str, float | int]]) -> None:
+        """Replace the recorded profile snapshot with one provided by the caller.
+
+        Parameters
+        ----------
+        profile : dict
+            Mapping of phase name to ``{"seconds", "count"}`` records.
+        """
+        with self._lock:
+            timings = self._manifest.setdefault("timings", _empty_timings())
+            timings["profile"] = {
+                str(phase): {
+                    "seconds": _rounded_seconds(values.get("seconds", 0.0)),
+                    "count": int(values.get("count", 0)),
+                }
+                for phase, values in profile.items()
+            }
+            self._append_event(
+                {
+                    "event": "provenance_profile_set",
+                    "run_id": self.run_id,
+                    "profile": timings["profile"],
+                }
+            )
+
     def add_task_timing(self, *, node_id: int, phase: str, seconds: float) -> None:
         """Accumulate one task timing bucket without writing immediately."""
         if seconds <= 0:
@@ -594,6 +619,7 @@ def _empty_timings() -> dict[str, Any]:
     return {
         "run": {},
         "task_phase_totals": {},
+        "profile": {},
     }
 
 
@@ -665,6 +691,12 @@ def _replay_provenance_events(
             seconds = event.get("seconds")
             if isinstance(phase, str) and isinstance(seconds, int | float):
                 run_timings[phase] = _rounded_seconds(run_timings.get(phase, 0.0) + seconds)
+            continue
+
+        if event_name == "provenance_profile_set":
+            profile = event.get("profile")
+            if isinstance(profile, dict):
+                timings["profile"] = dict(profile)
             continue
 
         if event_name == "provenance_task_timing":

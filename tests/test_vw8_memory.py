@@ -74,7 +74,7 @@ def _compute_peaks(intervals: list[dict[str, object]]) -> tuple[int, int, int, i
     return peak_tasks, peak_cores, peak_memory, peak_high_memory
 
 
-@task()
+@task(threads=2)
 def high_mem(item: str, events_dir: str, threads: int = 2, memory_gb: int = 16) -> str:
     started_at = time.time()
     time.sleep(0.15)
