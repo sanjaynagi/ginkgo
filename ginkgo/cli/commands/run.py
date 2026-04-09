@@ -364,7 +364,12 @@ def _load_run_notebooks(
     manifest: dict[str, Any],
     renderer: _CliRunRenderer,
 ) -> list[_NotebookSummary]:
-    """Extract notebook HTML artifacts from a completed run manifest."""
+    """Extract notebook HTML artifacts from a completed run manifest.
+
+    Reads ``rendered_html`` from each task entry. Freshly executed notebooks
+    record a path relative to ``run_dir``; cache hits replay an absolute
+    path pointing at the original run's HTML. ``Path /`` handles both.
+    """
     notebooks: list[_NotebookSummary] = []
     tasks = manifest.get("tasks", {})
     if not isinstance(tasks, dict):
@@ -372,21 +377,10 @@ def _load_run_notebooks(
     for task in tasks.values():
         if not isinstance(task, dict):
             continue
-
-        # Executed tasks record rendered_html (relative to run_dir).
-        # Cached tasks skip _record_notebook_manifest, but the return value
-        # stored in "output" is the HTML path from the original run.
         rendered_html = task.get("rendered_html")
-        if isinstance(rendered_html, str):
-            html_path = (run_dir / rendered_html).resolve()
-        elif task.get("kind") == "notebook":
-            output = task.get("output")
-            if not isinstance(output, str) or not output.endswith(".html"):
-                continue
-            html_path = Path(output)
-        else:
+        if not isinstance(rendered_html, str):
             continue
-
+        html_path = (run_dir / rendered_html).resolve()
         node_id = task.get("node_id")
         task_label = (
             renderer.label_for_node(int(node_id)) if isinstance(node_id, int) else None

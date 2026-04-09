@@ -199,6 +199,7 @@ class _TaskNode:
     driver_sentinel: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
+    notebook_extras: dict[str, Any] | None = None
 
     @property
     def task_def(self) -> TaskDef:
@@ -896,12 +897,16 @@ class _ConcurrentEvaluator:
         """Persist and mark a task node as fully completed."""
         finalize_started = time.perf_counter()
         self._cleanup_transport(node)
+        extra_meta: dict[str, Any] | None = None
+        if node.notebook_extras is not None:
+            extra_meta = {"notebook_extras": node.notebook_extras}
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
+            extra_meta=extra_meta,
         )
 
         # Propagate output digests so downstream tasks can skip re-hashing.
@@ -2239,6 +2244,34 @@ class _ConcurrentEvaluator:
             extra["managed_kernel_name"] = managed_kernel_name
         self.provenance.update_task_extra(node_id=node.node_id, **extra)
 
+        # Stash an absolute-path version of the extras on the node so that
+        # _complete_node can persist them in the cache entry. Replaying these
+        # on a future cache hit lets us populate the new run's manifest with
+        # the rendered HTML pointer even when the task body is skipped.
+        cache_extras = dict(extra)
+        cache_extras["rendered_html"] = str(rendered_html)
+        if executed_path is not None:
+            cache_extras["executed_notebook"] = str(executed_path)
+        node.notebook_extras = cache_extras
+
+    def _replay_cached_notebook_extras(self, *, node: _TaskNode, cache_key: str) -> None:
+        """Replay notebook manifest extras stored on a previous cache save.
+
+        Notebook tasks render an HTML artifact whose path is not part of the
+        cached return value. To keep cache hits visible in the run summary
+        and downstream tooling, we persist the notebook manifest extras
+        alongside the cache entry on save and re-apply them here on hit.
+        """
+        if self.provenance is None or node.task_def.kind != "notebook":
+            return
+        cached_extra = self._cache_store.load_extra_meta(cache_key=cache_key)
+        if cached_extra is None:
+            return
+        notebook_extras = cached_extra.get("notebook_extras")
+        if not isinstance(notebook_extras, dict):
+            return
+        self.provenance.update_task_extra(node_id=node.node_id, **notebook_extras)
+
     def _render_notebook_failure_page(
         self,
         *,
@@ -2753,6 +2786,7 @@ class _ConcurrentEvaluator:
                 outputs=self._artifact_index_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
+            self._replay_cached_notebook_extras(node=node, cache_key=cache_key)
         self._emit_event(
             TaskCacheHit(
                 run_id=self._run_id,
