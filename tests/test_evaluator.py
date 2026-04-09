@@ -29,6 +29,7 @@ from ginkgo import (
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
+from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
@@ -369,27 +370,14 @@ class TestEvaluate:
         )
         assert result == [10 + 100, 20 + 200, 30 + 300]
 
-    def test_structured_logs_are_emitted_to_stderr(self, capsys: pytest.CaptureFixture[str]):
-        log_path = "work-events.log"
-        result = evaluate(logged_work_task(x=2, log_path=log_path))
-        captured = capsys.readouterr()
-
-        assert result == 3
-        assert '"status": "running"' in captured.err
-        assert '"status": "succeeded"' in captured.err
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
-
-    def test_second_run_is_served_from_cache(self, capsys: pytest.CaptureFixture[str]):
+    def test_second_run_is_served_from_cache(self) -> None:
         log_path = "work-events.log"
 
         assert evaluate(logged_work_task(x=2, log_path=log_path)) == 3
-        capsys.readouterr()
-
         assert evaluate(logged_work_task(x=2, log_path=log_path)) == 3
-        captured = capsys.readouterr()
 
+        # The second run reuses the cached result, so the task body only ran once.
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
-        assert '"status": "cached"' in captured.err
         assert (Path(".ginkgo") / "cache").exists()
 
     def test_ipynb_notebook_task_records_html_and_uses_cache(
@@ -945,19 +933,19 @@ class TestEvaluate:
 
     def test_dataframe_results_are_cached_and_restored(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ):
         log_path = "dataframe-events.log"
 
         first = evaluate(dataframe_task(log_path=log_path, start=3))
-        capsys.readouterr()
 
-        second = evaluate(dataframe_task(log_path=log_path, start=3))
-        captured = capsys.readouterr()
+        second = evaluate(
+            dataframe_task(log_path=log_path, start=3), event_bus=event_collector.bus
+        )
 
         assert first.equals(second)
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["df:3"]
-        assert '"status": "cached"' in captured.err
+        assert event_collector.cached()
 
     def test_dataframe_can_flow_into_downstream_python_task(self):
         result = evaluate(dataframe_total_task(df=dataframe_task(log_path="df.log", start=4)))
@@ -999,23 +987,37 @@ class TestEvaluate:
 
     def test_task_retries_allow_transient_python_failures_and_cache_success(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ):
         marker_path = "flaky.marker"
         log_path = "flaky.log"
 
-        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
-        captured = capsys.readouterr()
+        first_collector = EventCollector()
+        assert (
+            evaluate(
+                flaky_retry_task(marker_path=marker_path, log_path=log_path),
+                event_bus=first_collector.bus,
+            )
+            == "ok"
+        )
+
+        from ginkgo.runtime.events import TaskRetrying
+
+        retry_events = [e for e in first_collector.events if isinstance(e, TaskRetrying)]
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
+        assert retry_events
+        assert any(e.attempt == 1 for e in retry_events)
+
+        assert (
+            evaluate(
+                flaky_retry_task(marker_path=marker_path, log_path=log_path),
+                event_bus=event_collector.bus,
+            )
+            == "ok"
+        )
 
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
-        assert '"status": "waiting"' in captured.err
-        assert '"attempt": 1' in captured.err
-
-        assert evaluate(flaky_retry_task(marker_path=marker_path, log_path=log_path)) == "ok"
-        cached = capsys.readouterr()
-
-        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
-        assert '"status": "cached"' in cached.err
+        assert event_collector.cached()
 
     def test_task_retries_fail_after_final_attempt(self):
         log_path = "always-fail.log"
@@ -1031,7 +1033,7 @@ class TestEvaluate:
 
     def test_cached_upstream_tasks_do_not_deadlock_newly_unblocked_downstream(
         self,
-        capsys: pytest.CaptureFixture[str],
+        event_collector: EventCollector,
     ) -> None:
         log_path = "fanin-cache.log"
         expr = sum_keyword_pair_task(
@@ -1040,15 +1042,15 @@ class TestEvaluate:
         )
 
         assert evaluate(expr) == 5
-        capsys.readouterr()
 
-        assert evaluate(expr) == 5
-        captured = capsys.readouterr()
+        assert evaluate(expr, event_bus=event_collector.bus) == 5
 
         log_lines = Path(log_path).read_text(encoding="utf-8").splitlines()
 
         assert sorted(log_lines) == ["work:1", "work:2"]
-        assert captured.err.count('"status": "cached"') == 3
+        # Three tasks (left, right, and the parent) should each report a cache hit.
+        cache_hits = [e for e in event_collector.events if type(e).__name__ == "TaskCacheHit"]
+        assert len(cache_hits) == 3
 
 
 class TestShellTask:

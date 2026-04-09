@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 import builtins
@@ -21,30 +19,22 @@ from dataclasses import dataclass, field
 from multiprocessing import Manager, get_context
 from pathlib import Path
 from queue import Empty
-from threading import Event, Lock, Thread
-from typing import Any, get_args, get_origin
+from threading import Event, Thread
+from typing import Any
 
-from ginkgo.core.asset import (
-    AssetKey,
-    AssetRef,
-    AssetResult,
-    AssetVersion,
-    asset_ref_from_version,
-    collect_asset_refs,
-    make_asset_version,
-)
+from ginkgo.core.asset import AssetVersion
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
-from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
 from ginkgo.core.script import ScriptExpr
 from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.config import load_runtime_config
+from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
+from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.output_index import artifact_index
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
@@ -54,7 +44,6 @@ from ginkgo.runtime.events import (
     EventBus,
     GraphExpanded,
     GraphNodeRegistered,
-    GinkgoEvent,
     TaskCacheHit,
     TaskCacheMiss,
     TaskCompleted,
@@ -74,6 +63,12 @@ from ginkgo.runtime.environment.secrets import (
     collect_resolved_secret_values,
     resolve_secret_refs,
 )
+from ginkgo.runtime.staging import (
+    RemoteStager,
+    count_remote_inputs,
+    load_remote_publisher,
+    resolve_staging_jobs,
+)
 from ginkgo.runtime.task_runners.notebook import (
     NotebookRunner,
     first_label_param_name,
@@ -86,11 +81,7 @@ from ginkgo.runtime.task_runners.shell import (
     sanitize_exception,
 )
 from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
-from ginkgo.runtime.artifacts.value_codec import (
-    decode_value,
-    encode_value,
-    summarise_value,
-)
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 
 
@@ -127,6 +118,7 @@ def evaluate(
     pixi_registry: PixiRegistry | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
+    event_bus: EventBus | None = None,
 ) -> Any:
     """Resolve an expression tree to concrete values.
 
@@ -147,6 +139,9 @@ def evaluate(
     pixi_registry : PixiRegistry | None
         Deprecated — use *backend* instead.  Registry for resolving Pixi
         environments.  Ignored when *backend* is provided.
+    event_bus : EventBus | None
+        Optional event bus to receive lifecycle events. Useful for tests
+        and ad-hoc programmatic callers that want to observe task progress.
 
     Returns
     -------
@@ -163,6 +158,7 @@ def evaluate(
         backend=backend,
         provenance=provenance,
         secret_resolver=secret_resolver,
+        event_bus=event_bus,
     ).evaluate(expr)
 
 
@@ -215,7 +211,6 @@ class _ConcurrentEvaluator:
     trust_workspace: bool = False
     _cache_store: CacheStore = field(init=False, repr=False)
     _asset_store: AssetStore = field(init=False, repr=False)
-    _stderr: Any = field(default_factory=lambda: sys.stderr)
     _nodes: dict[int, _TaskNode] = field(default_factory=dict, init=False, repr=False)
     _expr_nodes: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     _running_futures: dict[Future[Any], tuple[int, str]] = field(
@@ -243,12 +238,6 @@ class _ConcurrentEvaluator:
         repr=False,
     )
     _staging_jobs: int = field(default=0, init=False, repr=False)
-    _staging_inflight: dict[str, Future[Path]] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
-    _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -263,7 +252,6 @@ class _ConcurrentEvaluator:
         if self.memory is not None and self.memory < 1:
             raise ValueError("memory must be at least 1 when provided")
 
-        publisher = self._load_remote_publisher()
         self._hash_memo = HashMemo()
         artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
         self._materialization_log = MaterializationLog(
@@ -271,14 +259,13 @@ class _ConcurrentEvaluator:
         )
         self._cache_store = CacheStore(
             backend=self.backend,
-            publisher=publisher,
+            publisher=load_remote_publisher(),
             hash_memo=self._hash_memo,
             materialization_log=self._materialization_log,
             trust_workspace=self.trust_workspace,
         )
         self._asset_store = AssetStore(root=self._cache_store._root.parent / "assets")
-        self._staging_cache = None  # Lazily created on first remote ref.
-        self._staging_jobs = _resolve_staging_jobs(jobs=self.jobs)
+        self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
 
         # Helper runners. Constructed once per evaluation so unit tests can
         # exercise them in isolation and substitute fakes.
@@ -299,6 +286,12 @@ class _ConcurrentEvaluator:
             provenance=self.provenance,
             notice_emitter=self._emit_notebook_notice,
             runtime_root_factory=self._notebook_runtime_root,
+        )
+        self._stager = RemoteStager(timing_recorder=self._record_task_timing)
+        self._asset_registrar = AssetRegistrar(
+            cache_store=self._cache_store,
+            asset_store=self._asset_store,
+            run_id_provider=lambda: self._run_id,
         )
 
     def evaluate(self, expr: Any) -> Any:
@@ -649,7 +642,7 @@ class _ConcurrentEvaluator:
                 tmp_paths=node.tmp_paths,
                 stage_remote_refs=False,
             )
-            remote_input_count = _count_remote_inputs(node.resolved_args)
+            remote_input_count = count_remote_inputs(node.resolved_args)
             if remote_input_count > 0:
                 node.state = "staging"
                 self._emit_event(
@@ -663,7 +656,7 @@ class _ConcurrentEvaluator:
                     )
                 )
                 assert self._staging_executor is not None
-                future = self._staging_executor.submit(self._stage_task_inputs, node=node)
+                future = self._staging_executor.submit(self._stager.stage_task_inputs, node=node)
                 self._running_futures[future] = (node_id, "staging")
                 continue
 
@@ -929,163 +922,12 @@ class _ConcurrentEvaluator:
             raise TypeError(f"{task_def.fn.__name__}() missing required argument: '{name}'")
 
         if stage_remote_refs:
-            resolved_args = self._stage_remote_refs(
+            resolved_args = self._stager.stage_remote_refs(
                 task_def=task_def,
                 resolved_args=resolved_args,
             )
 
         return resolved_args
-
-    def _stage_remote_refs(
-        self,
-        *,
-        task_def: TaskDef,
-        resolved_args: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Stage remote references into local paths."""
-        staged: dict[str, Any] = {}
-        for name, value in resolved_args.items():
-            annotation = task_def.type_hints.get(
-                name,
-                task_def.signature.parameters[name].annotation
-                if name in task_def.signature.parameters
-                else Any,
-            )
-            staged[name] = self._stage_remote_value(annotation=annotation, value=value)
-        return staged
-
-    def _stage_remote_value(self, *, annotation: Any, value: Any) -> Any:
-        """Stage a single value, recursing into containers."""
-        # Explicit remote refs.
-        if isinstance(value, RemoteFileRef):
-            return file(str(self._stage_remote_ref(ref=value)))
-        if isinstance(value, RemoteFolderRef):
-            return folder(str(self._stage_remote_ref(ref=value)))
-
-        # Annotation-aware coercion: raw URI string → remote ref → staged path.
-        if isinstance(value, str) and is_remote_uri(value):
-            if annotation is file:
-                from ginkgo.core.remote import remote_file
-
-                ref = remote_file(value)
-                return file(str(self._stage_remote_ref(ref=ref)))
-            if annotation is folder:
-                from ginkgo.core.remote import remote_folder
-
-                ref = remote_folder(value)
-                return folder(str(self._stage_remote_ref(ref=ref)))
-
-        # Recurse into typed containers.
-        origin = get_origin(annotation)
-        if origin in {list, tuple} and isinstance(value, (list, tuple)):
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
-            staged_items = [
-                self._stage_remote_value(annotation=inner_annotation, value=item) for item in value
-            ]
-            return type(value)(staged_items)
-
-        return value
-
-    def _stage_task_inputs(self, *, node: _TaskNode) -> dict[str, Any]:
-        """Stage remote inputs for one task in the reserved worker slot."""
-        assert node.resolved_args is not None
-        stage_started = time.perf_counter()
-        staged = self._stage_remote_refs(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-        )
-        self._record_task_timing(
-            node_id=node.node_id,
-            phase="remote_stage_seconds",
-            started=stage_started,
-        )
-        return staged
-
-    def _stage_remote_ref(self, *, ref: RemoteRef) -> Path:
-        """Stage one remote ref with in-flight deduplication."""
-        identity = _remote_ref_identity(ref=ref)
-
-        with self._staging_lock:
-            inflight = self._staging_inflight.get(identity)
-            if inflight is None:
-                inflight = Future()
-                self._staging_inflight[identity] = inflight
-                should_stage = True
-            else:
-                should_stage = False
-
-        if not should_stage:
-            return inflight.result()
-
-        try:
-            staged_path = self._stage_remote_ref_uncached(ref=ref)
-            inflight.set_result(staged_path)
-            return staged_path
-        except BaseException as exc:
-            inflight.set_exception(exc)
-            raise
-        finally:
-            with self._staging_lock:
-                self._staging_inflight.pop(identity, None)
-
-    def _stage_remote_ref_uncached(self, *, ref: RemoteRef) -> Path:
-        """Stage one remote ref through the worker-local staging cache."""
-        cache = self._get_staging_cache()
-        if isinstance(ref, RemoteFileRef):
-            return cache.stage_file(ref=ref)
-        if isinstance(ref, RemoteFolderRef):
-            return cache.stage_folder(ref=ref)
-        raise TypeError(f"Unsupported remote ref type: {type(ref).__name__}")
-
-    def _get_staging_cache(self) -> Any:
-        """Lazily create and return the staging cache."""
-        if self._staging_cache is None:
-            from ginkgo.remote.staging import StagingCache
-
-            self._staging_cache = StagingCache()
-        return self._staging_cache
-
-    def _load_remote_publisher(self) -> Any | None:
-        """Load a remote publisher from ginkgo.toml if configured.
-
-        Looks for a ``[remote] store`` key containing a remote URI string
-        (e.g. ``s3://bucket/prefix/``).
-
-        Returns
-        -------
-        RemotePublisher | None
-            A publisher instance, or ``None`` if not configured.
-        """
-        from ginkgo.config import load_runtime_config
-
-        config = load_runtime_config(project_root=Path.cwd())
-        store_uri = config.get("remote", {}).get("store")
-        if store_uri is None:
-            return None
-
-        from ginkgo.core.remote import _parse_uri
-        from ginkgo.remote.publisher import RemotePublisher
-        from ginkgo.remote.resolve import resolve_backend
-
-        parsed = _parse_uri(store_uri)
-        backend = resolve_backend(parsed["scheme"])
-
-        # The key from the URI becomes the prefix for all published artifacts.
-        prefix = parsed["key"]
-        if prefix and not prefix.endswith("/"):
-            prefix += "/"
-
-        # Artifact store directories.
-        artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
-        return RemotePublisher(
-            backend=backend,
-            bucket=parsed["bucket"],
-            prefix=prefix,
-            local_blobs_dir=artifacts_root / "blobs",
-            local_trees_dir=artifacts_root / "trees",
-            local_refs_dir=artifacts_root / "refs",
-        )
 
     def _resolve_execution_args(self, *, node: _TaskNode) -> dict[str, Any]:
         """Resolve runtime-only inputs such as secret references."""
@@ -1437,7 +1279,7 @@ class _ConcurrentEvaluator:
     def _finalize_result_value(self, *, node: _TaskNode, value: Any) -> Any:
         """Coerce and validate a fully resolved task result."""
         coerced = self._validator.coerce_return_value(task_def=node.task_def, value=value)
-        finalized = self._materialize_asset_results(node=node, value=coerced)
+        finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
         self._validator.validate_return_value(task_def=node.task_def, value=finalized)
         return finalized
 
@@ -1471,89 +1313,6 @@ class _ConcurrentEvaluator:
             self._validator.validate_task_importable(task_def=node.task_def)
             self._validator.validate_static_inputs(node=node)
 
-    def _materialize_asset_results(self, *, node: _TaskNode, value: Any) -> Any:
-        """Register nested asset sentinels and replace them with asset refs."""
-        node.asset_versions = []
-        parent_refs = self._parent_asset_refs(node=node)
-        return self._replace_asset_results(node=node, value=value, parent_refs=parent_refs)
-
-    def _replace_asset_results(
-        self,
-        *,
-        node: _TaskNode,
-        value: Any,
-        parent_refs: list[AssetRef],
-    ) -> Any:
-        """Recursively replace nested asset sentinels with asset refs."""
-        if isinstance(value, AssetResult):
-            asset_ref, asset_version = self._register_asset_result(
-                node=node,
-                asset_result=value,
-                parent_refs=parent_refs,
-            )
-            node.asset_versions.append(asset_version)
-            return asset_ref
-
-        if isinstance(value, list):
-            return [
-                self._replace_asset_results(node=node, value=item, parent_refs=parent_refs)
-                for item in value
-            ]
-
-        if isinstance(value, tuple):
-            return tuple(
-                self._replace_asset_results(node=node, value=item, parent_refs=parent_refs)
-                for item in value
-            )
-
-        return value
-
-    def _register_asset_result(
-        self,
-        *,
-        node: _TaskNode,
-        asset_result: AssetResult,
-        parent_refs: list[AssetRef],
-    ) -> tuple[AssetRef, AssetVersion]:
-        """Store one file asset and register its immutable catalog version."""
-        source_path = asset_result.path
-        if not source_path.is_file():
-            raise FileNotFoundError(
-                f"{node.task_def.name}.return asset file must exist: {str(source_path)!r}"
-            )
-
-        record = self._cache_store._artifact_store.store(src_path=source_path)
-
-        asset_name = asset_result.name or node.task_def.fn.__name__
-        version = make_asset_version(
-            key=_asset_key_for_result(name=asset_name, kind=asset_result.kind),
-            kind=asset_result.kind,
-            artifact_id=record.artifact_id,
-            content_hash=record.digest_hex,
-            run_id=self._run_id,
-            producer_task=node.task_def.name,
-            metadata=asset_result.metadata,
-        )
-        self._asset_store.register_version(version=version)
-        asset_ref = asset_ref_from_version(
-            version=version,
-            artifact_path=self._cache_store._artifact_store.artifact_path(
-                artifact_id=record.artifact_id
-            ),
-        )
-        if parent_refs:
-            self._asset_store.record_lineage(child=asset_ref, parents=parent_refs)
-        return asset_ref, version
-
-    def _parent_asset_refs(self, *, node: _TaskNode) -> list[AssetRef]:
-        """Collect unique upstream asset references consumed by one task."""
-        if node.resolved_args is None:
-            return []
-        unique: dict[tuple[str, str, str], AssetRef] = {}
-        for asset_ref in collect_asset_refs(node.resolved_args):
-            unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
-        return list(unique.values())
-
     def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
         """Return whether a cached value still satisfies return validation.
 
@@ -1581,7 +1340,7 @@ class _ConcurrentEvaluator:
         This fast path only runs when cache identity can be decided without
         staging remote inputs first.
         """
-        if node.resolved_args is None or self._cache_lookup_requires_staging(node=node):
+        if node.resolved_args is None or self._stager.cache_lookup_requires_staging(node=node):
             return False
 
         if self.trust_workspace and self._try_stat_index_hit(node=node):
@@ -1794,19 +1553,6 @@ class _ConcurrentEvaluator:
                         lock_path=lock_path,
                     )
 
-    def _cache_lookup_requires_staging(self, *, node: _TaskNode) -> bool:
-        """Return whether cache identity depends on staging remote inputs."""
-        assert node.resolved_args is not None
-
-        for name, value in node.resolved_args.items():
-            annotation = node.task_def.type_hints.get(
-                name,
-                node.task_def.signature.parameters[name].annotation,
-            )
-            if _remote_value_requires_staging(annotation=annotation, value=value):
-                return True
-        return False
-
     def _record_task_timing(self, *, node_id: int, phase: str, started: float) -> None:
         """Record one task-phase timing bucket when provenance is enabled."""
         if self.provenance is None:
@@ -1854,27 +1600,11 @@ class _ConcurrentEvaluator:
         annotation = node.task_def.type_hints.get(
             "return", node.task_def.signature.return_annotation
         )
-        return _artifact_index(annotation=annotation, value=value)
+        return artifact_index(annotation, value)
 
     def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
         """Return recorded asset summaries for one task result."""
-        return [
-            self._render_asset_ref(asset_ref=asset_ref) for asset_ref in collect_asset_refs(value)
-        ]
-
-    def _render_asset_ref(self, *, asset_ref: AssetRef) -> dict[str, Any]:
-        """Render one asset reference for provenance and events."""
-        return {
-            "artifact_id": asset_ref.artifact_id,
-            "artifact_path": asset_ref.artifact_path,
-            "asset_key": str(asset_ref.key),
-            "content_hash": asset_ref.content_hash,
-            "kind": asset_ref.kind,
-            "metadata": dict(asset_ref.metadata),
-            "name": asset_ref.name,
-            "namespace": asset_ref.namespace,
-            "version_id": asset_ref.version_id,
-        }
+        return asset_index_for(value=value)
 
     @property
     def _run_id(self) -> str:
@@ -1884,72 +1614,9 @@ class _ConcurrentEvaluator:
         return "validation"
 
     def _emit_event(self, event: object) -> None:
-        """Emit a runtime event when an event bus is attached."""
+        """Emit a runtime event to the attached event bus, if any."""
         if self.event_bus is not None:
             self.event_bus.emit(event)
-        elif isinstance(event, GinkgoEvent):
-            self._emit_legacy_log(event)
-
-    def _emit_legacy_log(self, event: GinkgoEvent) -> None:
-        """Emit the pre-Phase-4 stderr task stream for compatibility."""
-        payload: dict[str, object] | None = None
-        if isinstance(event, TaskStarted):
-            payload = {
-                "task": event.task_name,
-                "status": "running",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-                "max_attempts": event.resources.get("max_attempts"),
-            }
-        elif isinstance(event, TaskStaging):
-            payload = {
-                "task": event.task_name,
-                "status": "staging",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-                "remote_input_count": event.remote_input_count,
-            }
-        elif isinstance(event, TaskCacheHit):
-            payload = {
-                "task": event.task_name,
-                "status": "cached",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-            }
-        elif isinstance(event, TaskRetrying):
-            payload = {
-                "task": event.task_name,
-                "status": "waiting",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-                "retries_remaining": event.retries_remaining,
-            }
-        elif isinstance(event, TaskNotice):
-            payload = {
-                "task": event.task_name,
-                "status": "notice",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-                "message": event.message,
-            }
-        elif isinstance(event, TaskCompleted) and event.status == "success":
-            payload = {
-                "task": event.task_name,
-                "status": "succeeded",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-            }
-        elif isinstance(event, TaskFailed):
-            payload = {
-                "task": event.task_name,
-                "status": "failed",
-                "node_id": int(event.task_id.split("_")[-1]),
-                "attempt": event.attempt,
-                "exit_code": event.exit_code,
-            }
-
-        if payload is not None:
-            print(json.dumps(payload, sort_keys=True), file=self._stderr)
 
     def _task_log_emitter(self, *, node: _TaskNode, stream: str) -> Any:
         """Return a task-log callback bound to one task node and stream."""
@@ -2113,171 +1780,3 @@ class _ConcurrentEvaluator:
 def _task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a node."""
     return f"task_{node_id:04d}"
-
-
-def _artifact_index(annotation: Any, value: Any, *, name: str = "return") -> list[dict[str, Any]]:
-    """Return a compact typed output index for a task result."""
-    if value is None:
-        return []
-
-    origin = get_origin(annotation)
-    if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        inner_args = get_args(annotation)
-        inner_annotation = inner_args[0] if inner_args else Any
-        outputs: list[dict[str, Any]] = []
-        for index, item in enumerate(value):
-            outputs.extend(_artifact_index(inner_annotation, item, name=f"{name}[{index}]"))
-        return outputs
-
-    if isinstance(value, (list, tuple)):
-        outputs: list[dict[str, Any]] = []
-        for index, item in enumerate(value):
-            outputs.extend(_artifact_index(annotation, item, name=f"{name}[{index}]"))
-        return outputs
-
-    if isinstance(value, AssetRef):
-        return [
-            {
-                "name": name,
-                "type": "asset",
-                "asset_key": str(value.key),
-                "version_id": value.version_id,
-                "artifact_id": value.artifact_id,
-                "path": value.artifact_path,
-            }
-        ]
-
-    if annotation is file or isinstance(value, file):
-        return [{"name": name, "type": "file", "path": str(value)}]
-
-    if annotation is folder or isinstance(value, folder):
-        return [{"name": name, "type": "folder", "path": str(value)}]
-
-    if isinstance(value, Path):
-        return [{"name": name, "type": "path", "path": str(value)}]
-
-    shape = getattr(value, "shape", None)
-    dtype = getattr(value, "dtype", None)
-    if shape is not None and dtype is not None:
-        return [
-            {
-                "name": name,
-                "type": "ndarray",
-                "shape": list(shape),
-                "dtype": str(dtype),
-                "summary": summarise_value(value),
-            }
-        ]
-
-    if value.__class__.__module__.startswith("pandas") and value.__class__.__name__ == "DataFrame":
-        return [
-            {
-                "name": name,
-                "type": "dataframe",
-                "shape": [int(value.shape[0]), int(value.shape[1])],
-                "summary": summarise_value(value),
-            }
-        ]
-
-    return [{"name": name, "type": "value", "summary": summarise_value(value)}]
-
-
-def _remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
-    """Return whether a value must be staged before cache identity is safe."""
-    if isinstance(value, RemoteRef):
-        return value.version_id is None
-
-    if isinstance(value, str) and is_remote_uri(value):
-        return True
-
-    origin = get_origin(annotation)
-    if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        inner_args = get_args(annotation)
-        inner_annotation = inner_args[0] if inner_args else Any
-        return any(
-            _remote_value_requires_staging(annotation=inner_annotation, value=item)
-            for item in value
-        )
-
-    if origin is dict and isinstance(value, dict):
-        key_annotation, value_annotation = (
-            get_args(annotation) if len(get_args(annotation)) == 2 else (Any, Any)
-        )
-        return any(
-            _remote_value_requires_staging(annotation=key_annotation, value=key)
-            or _remote_value_requires_staging(annotation=value_annotation, value=item)
-            for key, item in value.items()
-        )
-
-    if isinstance(value, list | tuple):
-        return any(
-            _remote_value_requires_staging(annotation=annotation, value=item) for item in value
-        )
-
-    if isinstance(value, dict):
-        return any(
-            _remote_value_requires_staging(annotation=Any, value=item) for item in value.values()
-        )
-
-    return False
-
-
-def _count_remote_inputs(value: Any) -> int:
-    """Count nested remote refs and supported remote URI strings."""
-    if isinstance(value, RemoteRef):
-        return 1
-    if isinstance(value, str) and is_remote_uri(value):
-        return 1
-    if isinstance(value, list | tuple):
-        return sum(_count_remote_inputs(item) for item in value)
-    if isinstance(value, dict):
-        return sum(_count_remote_inputs(item) for item in value.values())
-    return 0
-
-
-def _asset_key_for_result(*, name: str, kind: str) -> AssetKey:
-    """Build one asset key for a supported asset result."""
-    if kind != "file":
-        raise ValueError(f"Unsupported asset kind in Phase 7: {kind!r}")
-    return AssetKey(namespace="file", name=name)
-
-
-def _remote_ref_identity(*, ref: RemoteRef) -> str:
-    """Return a stable in-flight identity key for a remote ref."""
-    return "|".join(
-        [
-            type(ref).__name__,
-            ref.scheme,
-            ref.bucket,
-            ref.key,
-            ref.version_id or "",
-        ]
-    )
-
-
-def _resolve_staging_jobs(*, jobs: int) -> int:
-    """Return the configured staging concurrency."""
-    configured = os.environ.get("GINKGO_STAGING_JOBS")
-    if configured:
-        return _parse_positive_int(value=configured, label="GINKGO_STAGING_JOBS")
-
-    config = load_runtime_config(project_root=Path.cwd())
-    remote_config = config.get("remote", {})
-    if isinstance(remote_config, dict) and remote_config.get("staging_jobs") is not None:
-        return _parse_positive_int(
-            value=remote_config["staging_jobs"],
-            label="remote.staging_jobs",
-        )
-
-    return max(1, min(jobs, 4))
-
-
-def _parse_positive_int(*, value: Any, label: str) -> int:
-    """Parse a required positive integer config value."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a positive integer") from exc
-    if parsed < 1:
-        raise ValueError(f"{label} must be a positive integer")
-    return parsed

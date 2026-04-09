@@ -10,6 +10,7 @@ from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache
+from tests.conftest import EventCollector
 
 
 @task()
@@ -61,16 +62,16 @@ class TestRemoteFileEvaluator:
         self,
         tmp_path,
         monkeypatch,
-        capsys,
     ) -> None:
         monkeypatch.chdir(tmp_path)
         cache, backend = _make_mock_staging_cache(tmp_path, b"hello from s3")
 
         ref = remote_file("s3://test-bucket/data/greeting.txt")
+        collector = EventCollector()
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -78,11 +79,10 @@ class TestRemoteFileEvaluator:
                 return_value=backend,
             ),
         ):
-            result = evaluate(read_file_content(path=ref))
-            captured = capsys.readouterr()
+            result = evaluate(read_file_content(path=ref), event_bus=collector.bus)
 
         assert result == "hello from s3"
-        assert '"status": "staging"' in captured.err
+        assert collector.staging()
 
     def test_raw_s3_uri_string_coerced_for_file_param(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -91,7 +91,7 @@ class TestRemoteFileEvaluator:
         # Pass a raw s3:// string to a file-annotated parameter.
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -114,7 +114,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -135,16 +135,17 @@ class TestRemoteFileEvaluator:
         result = evaluate(read_file_content(path=file(str(local))))
         assert result == "local content"
 
-    def test_cache_hit_with_remote_input(self, tmp_path, monkeypatch, capsys) -> None:
+    def test_cache_hit_with_remote_input(self, tmp_path, monkeypatch) -> None:
         """Remote input should produce a cache hit on rerun with same content."""
         monkeypatch.chdir(tmp_path)
         cache, backend = _make_mock_staging_cache(tmp_path, b"cacheable")
 
         ref = remote_file("s3://bucket/cacheable.txt")
+        collector = EventCollector()
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -153,20 +154,19 @@ class TestRemoteFileEvaluator:
             ),
         ):
             result1 = evaluate(read_file_content(path=ref))
-            capsys.readouterr()
-            result2 = evaluate(read_file_content(path=ref))
-            captured = capsys.readouterr()
+            result2 = evaluate(read_file_content(path=ref), event_bus=collector.bus)
 
         assert result1 == result2 == "cacheable"
-        assert '"status": "cached"' in captured.err
+        assert collector.cached()
 
-    def test_task_started_is_emitted_after_staging(self, tmp_path, monkeypatch, capsys) -> None:
+    def test_task_started_is_emitted_after_staging(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
         cache, backend = _make_mock_staging_cache(tmp_path, b"ordered")
+        collector = EventCollector()
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -174,12 +174,24 @@ class TestRemoteFileEvaluator:
                 return_value=backend,
             ),
         ):
-            evaluate(read_file_content(path=remote_file("s3://bucket/ordered.txt")))
-            captured = capsys.readouterr()
+            evaluate(
+                read_file_content(path=remote_file("s3://bucket/ordered.txt")),
+                event_bus=collector.bus,
+            )
 
-        assert captured.err.index('"status": "staging"') < captured.err.index(
-            '"status": "running"'
+        # Each task should report staging before running.
+        from ginkgo.runtime.events import TaskStaging, TaskStarted
+
+        first_staging = next(
+            (i for i, e in enumerate(collector.events) if isinstance(e, TaskStaging)),
+            None,
         )
+        first_started = next(
+            (i for i, e in enumerate(collector.events) if isinstance(e, TaskStarted)),
+            None,
+        )
+        assert first_staging is not None and first_started is not None
+        assert first_staging < first_started
 
     def test_independent_remote_inputs_stage_concurrently(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -217,7 +229,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -273,7 +285,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.evaluator._ConcurrentEvaluator._get_staging_cache",
+                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(

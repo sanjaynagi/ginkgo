@@ -7,6 +7,7 @@ import pytest
 
 from ginkgo import evaluate, file, folder, shell, task
 from ginkgo.core.task import TaskDef
+from tests.conftest import EventCollector
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ class TestSourceHash:
 class TestSourceHashCacheInvalidation:
     """Verify that modifying a task function body causes a cache miss."""
 
-    def test_modified_source_causes_cache_miss(self, tmp_path, capsys):
+    def test_modified_source_causes_cache_miss(self, tmp_path):
         """Write two versions of a task module and verify cache miss on change."""
         module_dir = tmp_path / "pkg"
         module_dir.mkdir()
@@ -68,7 +69,6 @@ class TestSourceHashCacheInvalidation:
             mod = importlib.import_module("pkg.tasks")
             result1 = evaluate(mod.compute(x=5))
             assert result1 == 6
-            capsys.readouterr()
 
             # Version 2: change the function body.
             v2_source = textwrap.dedent("""\
@@ -82,12 +82,13 @@ class TestSourceHashCacheInvalidation:
 
             # Reload the module to pick up the new source.
             importlib.reload(mod)
-            result2 = evaluate(mod.compute(x=5))
+            collector = EventCollector()
+            result2 = evaluate(mod.compute(x=5), event_bus=collector.bus)
             assert result2 == 15
-            captured = capsys.readouterr()
 
             # Should have re-executed, not served from cache.
-            assert '"status": "running"' in captured.err
+            assert collector.started()
+            assert not collector.cached()
         finally:
             sys.path.remove(str(tmp_path))
             sys.modules.pop("pkg.tasks", None)
@@ -136,32 +137,30 @@ class TestWritableFileOutputs:
         result_path.write_text("modified", encoding="utf-8")
         assert result_path.read_text(encoding="utf-8") == "modified"
 
-    def test_deleted_file_is_restored_on_cache_hit(self, tmp_path, capsys):
+    def test_deleted_file_is_restored_on_cache_hit(self, tmp_path):
         output = tmp_path / "recreate.txt"
         evaluate(write_file_task(output_path=str(output)))
-        capsys.readouterr()
 
         output.unlink()
         assert not output.exists()
 
-        result = evaluate(write_file_task(output_path=str(output)))
-        captured = capsys.readouterr()
-        assert '"status": "cached"' in captured.err
+        collector = EventCollector()
+        result = evaluate(write_file_task(output_path=str(output)), event_bus=collector.bus)
+        assert collector.cached()
         result_path = Path(str(result))
         assert result_path.is_file()
         assert not result_path.is_symlink()
         assert result_path.read_text().strip() == "hello"
 
-    def test_modified_file_is_restored_without_cache_miss(self, tmp_path, capsys):
+    def test_modified_file_is_restored_without_cache_miss(self, tmp_path):
         output = tmp_path / "modified.txt"
         evaluate(write_file_task(output_path=str(output)))
-        capsys.readouterr()
 
         output.write_text("tampered", encoding="utf-8")
 
-        result = evaluate(write_file_task(output_path=str(output)))
-        captured = capsys.readouterr()
-        assert '"status": "cached"' in captured.err
+        collector = EventCollector()
+        result = evaluate(write_file_task(output_path=str(output)), event_bus=collector.bus)
+        assert collector.cached()
         result_path = Path(str(result))
         assert result_path.is_file()
         assert result_path.read_text(encoding="utf-8").strip() == "hello"
@@ -193,33 +192,31 @@ class TestWritableFolderOutputs:
         (result_path / "a.txt").write_text("updated", encoding="utf-8")
         assert (result_path / "a.txt").read_text(encoding="utf-8") == "updated"
 
-    def test_deleted_folder_is_restored(self, tmp_path, capsys):
+    def test_deleted_folder_is_restored(self, tmp_path):
         output = tmp_path / "dir_recreate"
         evaluate(write_folder_task(output_dir=str(output)))
-        capsys.readouterr()
 
         import shutil
 
         shutil.rmtree(output)
         assert not output.exists()
 
-        result = evaluate(write_folder_task(output_dir=str(output)))
-        captured = capsys.readouterr()
-        assert '"status": "cached"' in captured.err
+        collector = EventCollector()
+        result = evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
+        assert collector.cached()
         result_path = Path(str(result))
         assert result_path.is_dir()
         assert (result_path / "a.txt").read_text().strip() == "a"
 
-    def test_modified_folder_is_restored_without_cache_miss(self, tmp_path, capsys):
+    def test_modified_folder_is_restored_without_cache_miss(self, tmp_path):
         output = tmp_path / "dir_modified"
         evaluate(write_folder_task(output_dir=str(output)))
-        capsys.readouterr()
 
         (output / "a.txt").write_text("tampered", encoding="utf-8")
 
-        result = evaluate(write_folder_task(output_dir=str(output)))
-        captured = capsys.readouterr()
-        assert '"status": "cached"' in captured.err
+        collector = EventCollector()
+        result = evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
+        assert collector.cached()
         assert (Path(str(result)) / "a.txt").read_text(encoding="utf-8").strip() == "a"
 
 

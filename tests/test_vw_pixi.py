@@ -282,7 +282,9 @@ class TestPixiShellTask:
     @pixi_required
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
-        import io
+        from ginkgo.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.backend import LocalBackend
+        from ginkgo.runtime.events import EventBus, TaskCacheHit
 
         output = str(tmp_path / "sentinel.txt")
         registry = _make_registry(tmp_path)
@@ -291,14 +293,19 @@ class TestPixiShellTask:
         _evaluate(shell_touch(output_path=output), registry=registry)
         assert Path(output).exists()
 
-        # Capture log output on run 2 to confirm the task was served from cache.
-        log = io.StringIO()
-        from ginkgo.evaluator import _ConcurrentEvaluator
-        from ginkgo.runtime.backend import LocalBackend
+        # Subscribe to runtime events on run 2 to confirm the task was served from cache.
+        cache_events: list[TaskCacheHit] = []
+        bus = EventBus()
+        bus.subscribe(
+            lambda event: cache_events.append(event) if isinstance(event, TaskCacheHit) else None
+        )
 
-        evaluator = _ConcurrentEvaluator(backend=LocalBackend(pixi_registry=registry), _stderr=log)
+        evaluator = _ConcurrentEvaluator(
+            backend=LocalBackend(pixi_registry=registry),
+            event_bus=bus,
+        )
         evaluator.evaluate(shell_touch(output_path=output))
-        assert '"cached"' in log.getvalue()
+        assert len(cache_events) == 1
 
     @pixi_required
     def test_shell_tasks_do_not_import_workflow_module_inside_pixi_env(
