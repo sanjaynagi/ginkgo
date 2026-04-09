@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ginkgo.runtime.artifact_model import (
+from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
     BlobRef,
     TreeEntry,

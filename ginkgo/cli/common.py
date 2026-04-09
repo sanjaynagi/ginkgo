@@ -7,7 +7,7 @@ from typing import Literal
 
 from rich.console import Console
 
-from ginkgo.runtime.provenance import latest_run_dir
+from ginkgo.runtime.caching.provenance import latest_run_dir
 
 RUNS_ROOT = Path(".ginkgo") / "runs"
 CACHE_ROOT = Path(".ginkgo") / "cache"

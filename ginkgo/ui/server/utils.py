@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ginkgo.runtime.provenance import latest_run_dir
+from ginkgo.runtime.caching.provenance import latest_run_dir
 
 
 def run_count(runs_root: Path) -> int:

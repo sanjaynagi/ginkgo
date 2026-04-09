@@ -14,9 +14,9 @@ from unittest.mock import MagicMock
 
 from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
-from ginkgo.runtime.hash_memo import HashMemo
-from ginkgo.runtime.hashing import hash_file
-from ginkgo.runtime.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.caching.hashing import hash_file
+from ginkgo.runtime.caching.materialization_log import MaterializationLog
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ class TestTrustWorkspace:
 
     def test_stat_index_round_trip(self, tmp_path: Path) -> None:
         """Stat index can be saved and loaded."""
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
 
         store = CacheStore(root=tmp_path / "cache")
         store.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")

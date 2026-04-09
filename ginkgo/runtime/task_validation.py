@@ -21,8 +21,8 @@ from ginkgo.core.shell import ShellExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import TaskBackend
-from ginkgo.runtime.secrets import SecretResolver, collect_secret_refs
-from ginkgo.runtime.value_codec import CodecError, ensure_serializable
+from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
+from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 
 
 def is_path_annotation(annotation: Any) -> bool:

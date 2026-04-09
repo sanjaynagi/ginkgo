@@ -10,7 +10,7 @@ from ginkgo.cli.common import console, resolve_run_dir
 from ginkgo.cli.renderers.common import _task_base_name
 from ginkgo.cli.renderers.debug import render_debug_failure_panel, render_debug_header
 from ginkgo.cli.renderers.models import _FailureDetails
-from ginkgo.runtime.provenance import load_manifest, tail_text
+from ginkgo.runtime.caching.provenance import load_manifest, tail_text
 
 
 def command_debug(args) -> int:

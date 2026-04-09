@@ -16,13 +16,13 @@ from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.runtime.artifact_model import ArtifactRecord
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.hash_memo import HashMemo
-from ginkgo.runtime.hashing import hash_bytes, hash_directory, hash_file, hash_str
-from ginkgo.runtime.materialization_log import MaterializationLog
-from ginkgo.runtime.secrets import redact_value, secret_identity
-from ginkgo.runtime.value_codec import (
+from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.caching.hashing import hash_bytes, hash_directory, hash_file, hash_str
+from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.runtime.environment.secrets import redact_value, secret_identity
+from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
     encode_value,
     hash_value_bytes,
@@ -128,7 +128,7 @@ class CacheStore:
         # Combine wrapper source hash with optional extra (notebook/script) source hash.
         source_hash = task_def.cache_source_hash
         if extra_source_hash is not None:
-            from ginkgo.runtime.hashing import hash_str
+            from ginkgo.runtime.caching.hashing import hash_str
 
             source_hash = hash_str(f"{source_hash}:{extra_source_hash}")
 

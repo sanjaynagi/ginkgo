@@ -30,11 +30,16 @@ from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeBackend, LocalBackend
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.runtime.resources import RunResourceMonitor
-from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id, tail_text
-from ginkgo.runtime.secrets import build_secret_resolver
+from ginkgo.runtime.environment.resources import RunResourceMonitor
+from ginkgo.runtime.caching.provenance import (
+    RunProvenanceRecorder,
+    load_manifest,
+    make_run_id,
+    tail_text,
+)
+from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
-from ginkgo.runtime.notifications import build_notification_service
+from ginkgo.runtime.notifications.notifications import build_notification_service
 
 
 def command_run(args, *, output_mode: RunMode) -> int:

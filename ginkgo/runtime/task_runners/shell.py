@@ -22,9 +22,9 @@ from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.runtime.backend import TaskBackend
-from ginkgo.runtime.secrets import redact_text
+from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
-from ginkgo.runtime.value_codec import CodecError
+from ginkgo.runtime.artifacts.value_codec import CodecError
 
 
 # ----- Exceptions -----------------------------------------------------------

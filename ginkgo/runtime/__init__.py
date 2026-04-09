@@ -5,27 +5,27 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORTS = {
-    "CacheStore": ("ginkgo.runtime.cache", "CacheStore"),
-    "CodecError": ("ginkgo.runtime.value_codec", "CodecError"),
+    "CacheStore": ("ginkgo.runtime.caching.cache", "CacheStore"),
+    "CodecError": ("ginkgo.runtime.artifacts.value_codec", "CodecError"),
     "CompositeBackend": ("ginkgo.runtime.backend", "CompositeBackend"),
     "LocalBackend": ("ginkgo.runtime.backend", "LocalBackend"),
-    "MISSING": ("ginkgo.runtime.cache", "MISSING"),
-    "RunProvenanceRecorder": ("ginkgo.runtime.provenance", "RunProvenanceRecorder"),
+    "MISSING": ("ginkgo.runtime.caching.cache", "MISSING"),
+    "RunProvenanceRecorder": ("ginkgo.runtime.caching.provenance", "RunProvenanceRecorder"),
     "SchedulableTask": ("ginkgo.runtime.scheduler", "SchedulableTask"),
     "TaskBackend": ("ginkgo.runtime.backend", "TaskBackend"),
-    "decode_value": ("ginkgo.runtime.value_codec", "decode_value"),
-    "encode_value": ("ginkgo.runtime.value_codec", "encode_value"),
-    "ensure_serializable": ("ginkgo.runtime.value_codec", "ensure_serializable"),
+    "decode_value": ("ginkgo.runtime.artifacts.value_codec", "decode_value"),
+    "encode_value": ("ginkgo.runtime.artifacts.value_codec", "encode_value"),
+    "ensure_serializable": ("ginkgo.runtime.artifacts.value_codec", "ensure_serializable"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
-    "hash_value_bytes": ("ginkgo.runtime.value_codec", "hash_value_bytes"),
-    "latest_run_dir": ("ginkgo.runtime.provenance", "latest_run_dir"),
-    "load_manifest": ("ginkgo.runtime.provenance", "load_manifest"),
+    "hash_value_bytes": ("ginkgo.runtime.artifacts.value_codec", "hash_value_bytes"),
+    "latest_run_dir": ("ginkgo.runtime.caching.provenance", "latest_run_dir"),
+    "load_manifest": ("ginkgo.runtime.caching.provenance", "load_manifest"),
     "load_module": ("ginkgo.runtime.module_loader", "load_module"),
     "load_module_from_path": ("ginkgo.runtime.module_loader", "load_module_from_path"),
     "module_name_for_path": ("ginkgo.runtime.module_loader", "module_name_for_path"),
     "run_task": ("ginkgo.runtime.worker", "run_task"),
     "select_dispatch_subset": ("ginkgo.runtime.scheduler", "select_dispatch_subset"),
-    "summarise_value": ("ginkgo.runtime.value_codec", "summarise_value"),
+    "summarise_value": ("ginkgo.runtime.artifacts.value_codec", "summarise_value"),
 }
 
 

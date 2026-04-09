@@ -29,10 +29,10 @@ from ginkgo import (
 from ginkgo.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
-from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
-from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
-from ginkgo.runtime.secrets import build_secret_resolver
+from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+from ginkgo.runtime.environment.secrets import build_secret_resolver
 
 
 def _append_line(path: str, line: str) -> None:
@@ -892,7 +892,7 @@ class TestEvaluate:
             encoding="utf-8",
         )
         # The cache keys should differ because the notebook source changed.
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
         from pathlib import Path as _Path
 
         cache = CacheStore(root=_Path(".ginkgo") / "cache")

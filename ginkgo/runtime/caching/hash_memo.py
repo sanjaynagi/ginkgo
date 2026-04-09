@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ginkgo.runtime.hashing import hash_directory, hash_file, hash_str
+from ginkgo.runtime.caching.hashing import hash_directory, hash_file, hash_str
 
 
 @dataclass(frozen=True)

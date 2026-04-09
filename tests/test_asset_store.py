@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ginkgo.core.asset import AssetKey, AssetRef, make_asset_version
-from ginkgo.runtime.asset_store import AssetStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 
 
 def _asset_ref(*, key: AssetKey, version_id: str) -> AssetRef:

@@ -44,10 +44,10 @@ from ginkgo.config import load_runtime_config
 from ginkgo.envs.container import is_container_env
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend, TaskBackend
-from ginkgo.runtime.asset_store import AssetStore
-from ginkgo.runtime.cache import MISSING, CacheStore
-from ginkgo.runtime.hash_memo import HashMemo
-from ginkgo.runtime.materialization_log import MaterializationLog
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.caching.cache import MISSING, CacheStore
+from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.caching.materialization_log import MaterializationLog
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareStarted,
@@ -67,9 +67,9 @@ from ginkgo.runtime.events import (
     TaskStarted,
 )
 from ginkgo.runtime.module_loader import resolve_module_file
-from ginkgo.runtime.provenance import RunProvenanceRecorder
+from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
-from ginkgo.runtime.secrets import (
+from ginkgo.runtime.environment.secrets import (
     SecretResolver,
     collect_resolved_secret_values,
     resolve_secret_refs,
@@ -86,7 +86,7 @@ from ginkgo.runtime.task_runners.shell import (
     sanitize_exception,
 )
 from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
-from ginkgo.runtime.value_codec import (
+from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
     encode_value,
     summarise_value,

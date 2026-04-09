@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.publisher import RemotePublisher
-from ginkgo.runtime.artifact_model import (
+from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
     TreeEntry,
     TreeRef,

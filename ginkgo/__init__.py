@@ -42,7 +42,7 @@ _EXPORTS = {
 }
 
 _LEGACY_MODULE_ALIASES = {
-    "ginkgo.cache": "ginkgo.runtime.cache",
+    "ginkgo.cache": "ginkgo.runtime.caching.cache",
     "ginkgo.evaluator": "ginkgo.runtime.evaluator",
     "ginkgo.expr": "ginkgo.core.expr",
     "ginkgo.flow": "ginkgo.core.flow",
@@ -51,7 +51,7 @@ _LEGACY_MODULE_ALIASES = {
     "ginkgo.shell": "ginkgo.core.shell",
     "ginkgo.task": "ginkgo.core.task",
     "ginkgo.types": "ginkgo.core.types",
-    "ginkgo.value_codec": "ginkgo.runtime.value_codec",
+    "ginkgo.value_codec": "ginkgo.runtime.artifacts.value_codec",
     "ginkgo.worker": "ginkgo.runtime.worker",
 }
 

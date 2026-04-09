@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.types import file
-from ginkgo.runtime.hashing import hash_str
+from ginkgo.runtime.caching.hashing import hash_str
 
 
 @dataclass(frozen=True, kw_only=True)

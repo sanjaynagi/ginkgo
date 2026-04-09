@@ -25,14 +25,14 @@ from ginkgo.core.script import ScriptExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import TaskBackend
-from ginkgo.runtime.cache import CacheStore
+from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.notebook_kernels import (
     ExecutionCommand,
     NotebookCommandBuilder,
     NotebookKernelManager,
     build_jupyter_env_prefix,
 )
-from ginkgo.runtime.secrets import redact_text
+from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     ShellTaskError,

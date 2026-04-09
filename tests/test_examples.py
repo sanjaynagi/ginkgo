@@ -17,7 +17,7 @@ import pytest
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.envs.container import ContainerBackend
-from ginkgo.runtime.provenance import latest_run_dir, load_manifest
+from ginkgo.runtime.caching.provenance import latest_run_dir, load_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

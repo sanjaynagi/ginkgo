@@ -409,7 +409,11 @@ class TestContainerShellE2E:
     def test_provenance_records_container_metadata(self, tmp_path: Path):
         """Provenance manifest includes backend type and image digest."""
         from ginkgo import evaluate
-        from ginkgo.runtime.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+        from ginkgo.runtime.caching.provenance import (
+            RunProvenanceRecorder,
+            load_manifest,
+            make_run_id,
+        )
 
         output_file = tmp_path / "result.txt"
         runs_dir = tmp_path / ".ginkgo" / "runs"
@@ -463,7 +467,7 @@ class TestContainerShellE2E:
 
     def test_container_cache_uses_image_digest(self, tmp_path: Path):
         """Cache key incorporates the container image digest."""
-        from ginkgo.runtime.cache import CacheStore
+        from ginkgo.runtime.caching.cache import CacheStore
 
         container_backend = ContainerBackend(
             project_root=tmp_path,

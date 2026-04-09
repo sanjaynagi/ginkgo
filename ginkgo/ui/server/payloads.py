@@ -16,10 +16,10 @@ import yaml
 
 from ginkgo.cli.workspace import list_workflow_paths
 from ginkgo.core.asset import AssetKey
-from ginkgo.runtime.artifact_model import ArtifactRecord
-from ginkgo.runtime.artifact_store import LocalArtifactStore
-from ginkgo.runtime.asset_store import AssetStore
-from ginkgo.runtime.provenance import load_manifest, tail_text
+from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.caching.provenance import load_manifest, tail_text
 
 from .utils import (
     base_name,
