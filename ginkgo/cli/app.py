@@ -85,6 +85,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Record a coarse runtime phase profile and print it at run end",
     )
+    run_parser.add_argument(
+        "--executor",
+        choices=["local", "k8s", "batch"],
+        default="local",
+        help="Task execution backend: 'local' (default), 'k8s' for Kubernetes, or 'batch' for GCP Batch",
+    )
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)

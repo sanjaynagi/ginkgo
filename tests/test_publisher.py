@@ -50,6 +50,7 @@ def _make_publisher(tmp_path: Path) -> tuple[RemotePublisher, MagicMock]:
         backend=backend,
         bucket="test-bucket",
         prefix="artifacts/",
+        scheme="s3",
         local_blobs_dir=blobs_dir,
         local_trees_dir=trees_dir,
         local_refs_dir=refs_dir,

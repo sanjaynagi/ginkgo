@@ -9,6 +9,7 @@ Supported URI schemes:
 
 - ``s3://bucket/key`` — AWS S3
 - ``oci://namespace/bucket/key`` — Oracle Cloud Infrastructure Object Storage
+- ``gs://bucket/key`` — Google Cloud Storage
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-_SUPPORTED_SCHEMES = frozenset({"s3", "oci"})
+_SUPPORTED_SCHEMES = frozenset({"s3", "oci", "gs"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -170,6 +171,8 @@ def _parse_uri(uri: str) -> dict[str, str]:
         return _parse_s3_uri(parsed, uri)
     if scheme == "oci":
         return _parse_oci_uri(parsed, uri)
+    if scheme == "gs":
+        return _parse_gs_uri(parsed, uri)
 
     raise ValueError(f"Unsupported scheme: {scheme!r}")
 
@@ -256,3 +259,28 @@ def _parse_oci_uri(parsed: object, uri: str) -> dict[str, str]:
         "key": object_key,
         "namespace": namespace,
     }
+
+
+def _parse_gs_uri(parsed: object, uri: str) -> dict[str, str]:
+    """Parse a GCS URI: ``gs://bucket/key``.
+
+    Parameters
+    ----------
+    parsed : ParseResult
+        Result from ``urlparse``.
+    uri : str
+        Original URI for error messages.
+
+    Returns
+    -------
+    dict[str, str]
+    """
+    bucket = parsed.netloc  # type: ignore[union-attr]
+    if not bucket:
+        raise ValueError(f"GCS URI missing bucket: {uri!r}")
+
+    key = parsed.path.lstrip("/")  # type: ignore[union-attr]
+    if not key:
+        raise ValueError(f"GCS URI missing key: {uri!r}")
+
+    return {"scheme": "gs", "bucket": bucket, "key": key}

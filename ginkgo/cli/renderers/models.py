@@ -19,6 +19,7 @@ class _RunSummary:
     run_dir: Path
     cores: int
     memory: int | None = None
+    executor: str = "local"
 
 
 @dataclass

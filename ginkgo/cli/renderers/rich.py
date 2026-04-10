@@ -12,6 +12,7 @@ from ginkgo.runtime.events import (
     TaskFailed,
     TaskNotice,
     TaskRetrying,
+    TaskRunning,
     TaskStaging,
     TaskStarted,
 )
@@ -31,12 +32,24 @@ class RichEventRenderer:
 
     def _event_payload(self, *, event: GinkgoEvent) -> dict[str, object] | None:
         if isinstance(event, TaskStarted):
+            status = "submitted" if event.execution_backend == "remote" else "running"
+            payload = {
+                "task": event.task_name,
+                "status": status,
+                "node_id": _node_id_from_task_id(event.task_id),
+                "attempt": event.attempt,
+                "max_attempts": event.resources.get("max_attempts"),
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
+        if isinstance(event, TaskRunning):
             payload = {
                 "task": event.task_name,
                 "status": "running",
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
-                "max_attempts": event.resources.get("max_attempts"),
             }
             if event.display_label is not None:
                 payload["display_label"] = event.display_label

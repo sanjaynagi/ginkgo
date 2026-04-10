@@ -9,12 +9,86 @@ from typing import Any
 from ginkgo.remote.backend import RemoteObjectMeta
 
 
-class S3FileSystemBackend:
-    """S3 backend implemented with ``s3fs``."""
+class FsspecBackend:
+    """Base class for fsspec-based remote storage backends.
+
+    Subclasses must implement ``_get_filesystem()`` and set ``self._scheme``
+    to the URI scheme they handle (e.g. ``"s3"``, ``"oci"``, ``"gs"``).
+
+    Parameters
+    ----------
+    scheme : str
+        URI scheme for this backend (used in metadata construction).
+    """
+
+    def __init__(self, *, scheme: str) -> None:
+        self._scheme = scheme
+        self._filesystem: Any | None = None
+
+    def _get_filesystem(self) -> Any:
+        """Return the fsspec filesystem instance (lazy-initialized)."""
+        raise NotImplementedError
+
+    def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:
+        """Return metadata for a remote object without downloading it."""
+        fs = self._get_filesystem()
+        path = _join_remote_path(bucket=bucket, key=key)
+        info = fs.info(path)
+        return _remote_meta_from_info(
+            scheme=self._scheme,
+            bucket=bucket,
+            key=key,
+            info=info,
+        )
+
+    def download(self, *, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
+        """Download a remote object to a local path."""
+        fs = self._get_filesystem()
+        path = _join_remote_path(bucket=bucket, key=key)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with fs.open(path, "rb") as source, dest_path.open("wb") as destination:
+            while True:
+                chunk = source.read(65536)
+                if not chunk:
+                    break
+                destination.write(chunk)
+        return self.head(bucket=bucket, key=key)
+
+    def upload(self, *, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
+        """Upload a local file to a remote path."""
+        fs = self._get_filesystem()
+        path = _join_remote_path(bucket=bucket, key=key)
+        with src_path.open("rb") as source, fs.open(path, "wb") as destination:
+            while True:
+                chunk = source.read(65536)
+                if not chunk:
+                    break
+                destination.write(chunk)
+        return self.head(bucket=bucket, key=key)
+
+    def list_prefix(self, *, bucket: str, prefix: str) -> list[RemoteObjectMeta]:
+        """List all objects under a remote prefix."""
+        fs = self._get_filesystem()
+        base = _join_remote_path(bucket=bucket, key=prefix)
+        found = fs.find(base, detail=True)
+        return _list_results_to_meta(
+            scheme=self._scheme,
+            results=found,
+        )
+
+
+class S3FileSystemBackend(FsspecBackend):
+    """S3 backend implemented with ``s3fs``.
+
+    Parameters
+    ----------
+    region : str | None
+        AWS region override.
+    """
 
     def __init__(self, *, region: str | None = None) -> None:
+        super().__init__(scheme="s3")
         self._region = region
-        self._filesystem: Any | None = None
 
     def _get_filesystem(self) -> Any:
         if self._filesystem is not None:
@@ -38,52 +112,19 @@ class S3FileSystemBackend:
         self._filesystem = s3fs.S3FileSystem(**kwargs)
         return self._filesystem
 
-    def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        info = fs.info(path)
-        return _remote_meta_from_info(
-            scheme="s3",
-            bucket=bucket,
-            key=key,
-            info=info,
-        )
 
-    def download(self, *, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        with fs.open(path, "rb") as source, dest_path.open("wb") as destination:
-            while True:
-                chunk = source.read(65536)
-                if not chunk:
-                    break
-                destination.write(chunk)
-        return self.head(bucket=bucket, key=key)
+class OCIFileSystemBackend(FsspecBackend):
+    """OCI Object Storage backend implemented with ``ocifs``.
 
-    def upload(self, *, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        with src_path.open("rb") as source, fs.open(path, "wb") as destination:
-            while True:
-                chunk = source.read(65536)
-                if not chunk:
-                    break
-                destination.write(chunk)
-        return self.head(bucket=bucket, key=key)
-
-    def list_prefix(self, *, bucket: str, prefix: str) -> list[RemoteObjectMeta]:
-        fs = self._get_filesystem()
-        base = _join_remote_path(bucket=bucket, key=prefix)
-        found = fs.find(base, detail=True)
-        return _list_results_to_meta(
-            scheme="s3",
-            results=found,
-        )
-
-
-class OCIFileSystemBackend:
-    """OCI Object Storage backend implemented with ``ocifs``."""
+    Parameters
+    ----------
+    config_path : str | None
+        Path to the OCI config file.
+    profile : str | None
+        OCI config profile name.
+    region : str | None
+        OCI region override.
+    """
 
     def __init__(
         self,
@@ -92,10 +133,10 @@ class OCIFileSystemBackend:
         profile: str | None = None,
         region: str | None = None,
     ) -> None:
+        super().__init__(scheme="oci")
         self._config_path = config_path
         self._profile = profile
         self._region = region
-        self._filesystem: Any | None = None
 
     def _get_filesystem(self) -> Any:
         if self._filesystem is not None:
@@ -120,48 +161,38 @@ class OCIFileSystemBackend:
         self._filesystem = ocifs.OCIFileSystem(**kwargs)
         return self._filesystem
 
-    def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        info = fs.info(path)
-        return _remote_meta_from_info(
-            scheme="oci",
-            bucket=bucket,
-            key=key,
-            info=info,
-        )
 
-    def download(self, *, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        with fs.open(path, "rb") as source, dest_path.open("wb") as destination:
-            while True:
-                chunk = source.read(65536)
-                if not chunk:
-                    break
-                destination.write(chunk)
-        return self.head(bucket=bucket, key=key)
+class GCSFileSystemBackend(FsspecBackend):
+    """Google Cloud Storage backend implemented with ``gcsfs``.
 
-    def upload(self, *, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
-        fs = self._get_filesystem()
-        path = _join_remote_path(bucket=bucket, key=key)
-        with src_path.open("rb") as source, fs.open(path, "wb") as destination:
-            while True:
-                chunk = source.read(65536)
-                if not chunk:
-                    break
-                destination.write(chunk)
-        return self.head(bucket=bucket, key=key)
+    Parameters
+    ----------
+    project : str | None
+        GCP project ID override.
+    """
 
-    def list_prefix(self, *, bucket: str, prefix: str) -> list[RemoteObjectMeta]:
-        fs = self._get_filesystem()
-        base = _join_remote_path(bucket=bucket, key=prefix)
-        found = fs.find(base, detail=True)
-        return _list_results_to_meta(
-            scheme="oci",
-            results=found,
-        )
+    def __init__(self, *, project: str | None = None) -> None:
+        super().__init__(scheme="gs")
+        self._project = project
+
+    def _get_filesystem(self) -> Any:
+        if self._filesystem is not None:
+            return self._filesystem
+
+        try:
+            import gcsfs
+        except ImportError as exc:
+            raise ImportError(
+                "gcsfs is required for GCS remote storage support. "
+                "Install it with: pip install gcsfs or pip install ginkgo[cloud]"
+            ) from exc
+
+        kwargs: dict[str, Any] = {}
+        if self._project is not None:
+            kwargs["project"] = self._project
+
+        self._filesystem = gcsfs.GCSFileSystem(**kwargs)
+        return self._filesystem
 
 
 def _join_remote_path(*, bucket: str, key: str) -> str:
