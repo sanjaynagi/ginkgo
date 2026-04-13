@@ -144,6 +144,40 @@ Build for Linux (required for cloud VMs, even when building on macOS):
 docker buildx build --platform linux/amd64 -t <image-uri> --push .
 ```
 
+### Adding workflow dependencies on top of the base image
+
+Most workflows need extra Python packages (PyTorch, scikit-learn, biopython,
+...) that should not live in ginkgo's base image. The recommended pattern is
+to build a **project-specific image** that extends the ginkgo worker base with
+your `[project].dependencies` from `pyproject.toml`:
+
+```dockerfile
+FROM <registry>/ginkgo/worker:v2
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+```
+
+A helper script, `scripts/build-worker.sh` in the ginkgo repo, automates
+this. It reads `[project].dependencies` from your project's `pyproject.toml`,
+content-addresses the image tag by hashing the dependency list (so it rebuilds
+only when deps change), skips the build if the image already exists in the
+registry, and prints the exact `image = "..."` line to paste into
+`ginkgo.toml`:
+
+```bash
+export GINKGO_REGISTRY=europe-west2-docker.pkg.dev/my-project/ginkgo
+cp <ginkgo-repo>/scripts/build-worker.sh ./scripts/build-worker.sh
+./scripts/build-worker.sh
+```
+
+The script is registry-agnostic — it works against Artifact Registry, GHCR,
+ECR, Docker Hub, Harbor, and any other OCI-compliant registry (uses
+`docker manifest inspect` for the existence check, not cloud-specific CLIs).
+
+Optional overrides via env var:
+`GINKGO_BASE_IMAGE` (default: `${GINKGO_REGISTRY}/worker:v2`),
+`GINKGO_REPO_NAME` (default: `<project-dir>-worker`).
+
 ## CLI Feedback
 
 The CLI distinguishes remote task states:

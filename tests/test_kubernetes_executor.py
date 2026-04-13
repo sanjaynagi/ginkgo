@@ -174,7 +174,9 @@ class TestKubernetesJobHandle:
         mock_pod = MagicMock()
         mock_pod.metadata.name = "ginkgo-test-001-xyz"
         handle._core_api.list_namespaced_pod.return_value.items = [mock_pod]
-        handle._core_api.read_namespaced_pod_log.return_value = "line1\nline2\n"
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"line1\nline2\n"
+        handle._core_api.read_namespaced_pod_log.return_value = mock_response
 
         logs = handle.logs_tail(lines=50)
 
@@ -183,6 +185,7 @@ class TestKubernetesJobHandle:
             name="ginkgo-test-001-xyz",
             namespace="ginkgo",
             tail_lines=50,
+            _preload_content=False,
         )
 
     def test_logs_tail_empty_when_no_pods(self) -> None:

@@ -246,6 +246,8 @@ class _ConcurrentEvaluator:
     )
     _code_bundle_meta: dict[str, str] | None = field(default=None, init=False, repr=False)
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _remote_artifact_store: Any = field(default=None, init=False, repr=False)
+    _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.profiler is None:
@@ -1304,6 +1306,7 @@ class _ConcurrentEvaluator:
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
             self._ensure_code_bundle()
+            self._ensure_remote_artifact_store()
             payload = self._build_worker_payload(node=node)
             payload["resources"] = {
                 "threads": node.threads,
@@ -1312,6 +1315,20 @@ class _ConcurrentEvaluator:
             }
             if self._code_bundle_meta is not None:
                 payload["code_bundle"] = self._code_bundle_meta
+            if self._remote_artifact_store is not None:
+                from ginkgo.runtime.artifacts.remote_staging import stage_args_for_remote
+
+                payload["args"] = stage_args_for_remote(
+                    args=payload["args"],
+                    type_hints=node.task_def.type_hints,
+                    remote_store=self._remote_artifact_store,
+                    known_digests=self._known_digests,
+                )
+                payload["remote_artifact_store"] = {
+                    "scheme": self._remote_artifact_store.scheme,
+                    "bucket": self._remote_artifact_store.bucket,
+                    "prefix": self._remote_artifact_store.prefix,
+                }
             handle = self.remote_executor.submit(attempt=payload)
             self._remote_handles[node.node_id] = handle
             if self._remote_watcher_executor is None:
@@ -1452,6 +1469,26 @@ class _ConcurrentEvaluator:
             "package": package,
             "package_parent": str(package_path.parent.resolve()),
         }
+
+    def _ensure_remote_artifact_store(self) -> None:
+        """Lazily construct a ``RemoteArtifactStore`` from project config.
+
+        Uses the ``[remote.artifacts]`` store URI, wrapping the local
+        artifact store already owned by the cache. Called just before
+        dispatching a remote task so that ``file`` / ``folder`` inputs
+        can be uploaded to the shared object store and hydrated inside
+        the worker pod.
+        """
+        if self._remote_artifact_store_checked:
+            return
+        self._remote_artifact_store_checked = True
+        from ginkgo.runtime.artifacts.remote_artifact_store import (
+            load_remote_artifact_store,
+        )
+
+        self._remote_artifact_store = load_remote_artifact_store(
+            local=self._cache_store._artifact_store,
+        )
 
     def _task_threads(self, task_def: TaskDef) -> int:
         """Return the scheduler core footprint for a task."""

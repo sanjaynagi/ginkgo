@@ -57,12 +57,18 @@ def main() -> None:
     # Remove remote-only keys that the local worker doesn't expect.
     payload.pop("resources", None)
     code_bundle = payload.pop("code_bundle", None)
+    remote_artifact_config = payload.pop("remote_artifact_store", None)
 
     try:
         # Code-sync: download and extract the workflow package before import.
         if code_bundle is not None:
             dest_dir = _install_code_bundle(code_bundle)
             _rewrite_module_file(payload, code_bundle=code_bundle, dest_dir=dest_dir)
+
+        # Hydrate file / folder inputs that were uploaded to the shared
+        # remote artifact store on the client side.
+        if remote_artifact_config is not None:
+            _hydrate_remote_inputs(payload, config=remote_artifact_config)
 
         from ginkgo.runtime.worker import run_task
 
@@ -108,6 +114,29 @@ def _install_code_bundle(code_bundle: dict[str, str]):
     )
     sys.path.insert(0, str(dest_dir))
     return dest_dir
+
+
+def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
+    """Download remote-staged ``file`` / ``folder`` inputs into the pod."""
+    from pathlib import Path
+    from ginkgo.runtime.artifacts.remote_staging import (
+        build_worker_remote_store,
+        hydrate_args_from_remote,
+    )
+
+    local_root = Path("/tmp/ginkgo-remote-cas")
+    scratch_dir = Path("/tmp/ginkgo-inputs")
+    remote_store = build_worker_remote_store(
+        scheme=config["scheme"],
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        local_root=local_root,
+    )
+    payload["args"] = hydrate_args_from_remote(
+        args=payload.get("args", {}),
+        remote_store=remote_store,
+        scratch_dir=scratch_dir,
+    )
 
 
 def _rewrite_module_file(payload: dict, *, code_bundle: dict[str, str], dest_dir) -> None:
