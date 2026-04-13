@@ -58,20 +58,37 @@ def main() -> None:
     payload.pop("resources", None)
     code_bundle = payload.pop("code_bundle", None)
 
-    # Code-sync: download and extract the workflow package before import.
-    if code_bundle is not None:
-        _install_code_bundle(code_bundle)
+    try:
+        # Code-sync: download and extract the workflow package before import.
+        if code_bundle is not None:
+            dest_dir = _install_code_bundle(code_bundle)
+            _rewrite_module_file(payload, code_bundle=code_bundle, dest_dir=dest_dir)
 
-    from ginkgo.runtime.worker import run_task
+        from ginkgo.runtime.worker import run_task
 
-    result = run_task(payload)
+        result = run_task(payload)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "type": type(exc).__name__,
+                        "module": type(exc).__module__,
+                        "message": str(exc),
+                        "args": [str(a) for a in exc.args],
+                    },
+                }
+            )
+        )
+        sys.exit(1)
 
     # Print the result as a JSON line for the handle to parse.
     print(json.dumps(result, default=str))
     sys.exit(0 if result.get("ok", False) else 1)
 
 
-def _install_code_bundle(code_bundle: dict[str, str]) -> None:
+def _install_code_bundle(code_bundle: dict[str, str]):
     """Download and extract a code bundle, prepending it to sys.path."""
     from pathlib import Path
     from ginkgo.remote.code_bundle import download_and_extract
@@ -90,6 +107,29 @@ def _install_code_bundle(code_bundle: dict[str, str]) -> None:
         dest_dir=dest_dir,
     )
     sys.path.insert(0, str(dest_dir))
+    return dest_dir
+
+
+def _rewrite_module_file(payload: dict, *, code_bundle: dict[str, str], dest_dir) -> None:
+    """Rewrite payload['module_file'] to the extracted bundle path.
+
+    The payload carries the host-side absolute path to the workflow
+    module. After extracting the code bundle inside the pod, the file
+    lives at ``dest_dir/<relative path from package parent>``.
+    """
+    from pathlib import Path
+
+    module_file = payload.get("module_file")
+    package_parent = code_bundle.get("package_parent")
+    if not module_file or not package_parent:
+        return
+
+    try:
+        relative = Path(module_file).resolve().relative_to(Path(package_parent).resolve())
+    except ValueError:
+        return
+
+    payload["module_file"] = str(dest_dir / relative)
 
 
 if __name__ == "__main__":

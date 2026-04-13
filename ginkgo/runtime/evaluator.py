@@ -1449,6 +1449,8 @@ class _ConcurrentEvaluator:
             "bucket": parsed["bucket"],
             "key": remote_key,
             "digest": digest,
+            "package": package,
+            "package_parent": str(package_path.parent.resolve()),
         }
 
     def _task_threads(self, task_def: TaskDef) -> int:

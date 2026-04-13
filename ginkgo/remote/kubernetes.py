@@ -89,6 +89,11 @@ class KubernetesExecutor:
         Pod tolerations for scheduling on tainted nodes.
     ttl_seconds_after_finished : int
         Time before completed Jobs are cleaned up by the TTL controller.
+    unschedulable_timeout : float
+        Seconds to wait for a Pending pod to schedule before treating the
+        job as failed. Catches quota, capacity, and node-affinity issues
+        (e.g. GPU stockouts) that would otherwise leave pods Pending
+        indefinitely.
     """
 
     namespace: str = "default"
@@ -99,6 +104,7 @@ class KubernetesExecutor:
     node_selector: dict[str, str] | None = None
     tolerations: list[dict[str, Any]] | None = None
     ttl_seconds_after_finished: int = 300
+    unschedulable_timeout: float = 300.0
     _batch_api: Any = field(default=None, init=False, repr=False)
     _core_api: Any = field(default=None, init=False, repr=False)
 
@@ -213,6 +219,7 @@ class KubernetesExecutor:
         return KubernetesJobHandle(
             job_name=created.metadata.name,
             namespace=self.namespace,
+            unschedulable_timeout=self.unschedulable_timeout,
             _batch_api=batch_api,
             _core_api=core_api,
         )
@@ -232,8 +239,11 @@ class KubernetesJobHandle:
 
     job_name: str
     namespace: str
+    unschedulable_timeout: float = 300.0
     _batch_api: Any = field(repr=False)
     _core_api: Any = field(repr=False)
+    _unschedulable_since: float | None = field(default=None, init=False, repr=False)
+    _unschedulable_reason: str | None = field(default=None, init=False, repr=False)
 
     @property
     def job_id(self) -> str:
@@ -249,8 +259,39 @@ class KubernetesJobHandle:
         if status.failed and status.failed > 0:
             return RemoteJobState.FAILED
         if status.active and status.active > 0:
+            self._unschedulable_since = None
+            self._unschedulable_reason = None
             return RemoteJobState.RUNNING
+
+        # Pending: check whether the pod is stuck unschedulable. A pod
+        # stuck Pending beyond ``unschedulable_timeout`` (quota, capacity,
+        # or node-affinity failure) is failed explicitly so ginkgo does
+        # not wait forever.
+        if self._check_unschedulable_timeout():
+            return RemoteJobState.FAILED
         return RemoteJobState.PENDING
+
+    def _check_unschedulable_timeout(self) -> bool:
+        """Return True if the pod has been unschedulable for too long."""
+        pods = self._core_api.list_namespaced_pod(
+            namespace=self.namespace,
+            label_selector=f"job-name={self.job_name}",
+        )
+        if not pods.items:
+            return False
+        pod = pods.items[0]
+        conditions = pod.status.conditions or []
+        scheduled_condition = next((c for c in conditions if c.type == "PodScheduled"), None)
+        if scheduled_condition is None or scheduled_condition.status == "True":
+            self._unschedulable_since = None
+            self._unschedulable_reason = None
+            return False
+
+        now = time.monotonic()
+        if self._unschedulable_since is None:
+            self._unschedulable_since = now
+        self._unschedulable_reason = f"{scheduled_condition.reason}: {scheduled_condition.message}"
+        return now - self._unschedulable_since >= self.unschedulable_timeout
 
     def result(self) -> RemoteJobResult:
         """Read the worker result from pod logs.
@@ -268,7 +309,19 @@ class KubernetesJobHandle:
             poll_interval = min(poll_interval * 1.5, 30.0)
 
         logs = self.logs_tail(lines=1000)
-        payload = _parse_worker_output(logs)
+        if current == RemoteJobState.FAILED and self._unschedulable_since is not None:
+            reason = self._unschedulable_reason or "pod unschedulable"
+            payload = {
+                "ok": False,
+                "error": {
+                    "type": "RuntimeError",
+                    "module": "builtins",
+                    "message": f"Kubernetes pod unschedulable: {reason}",
+                    "args": [f"Kubernetes pod unschedulable: {reason}"],
+                },
+            }
+        else:
+            payload = _parse_worker_output(logs)
 
         exit_code = None
         if current == RemoteJobState.FAILED:
@@ -292,7 +345,13 @@ class KubernetesJobHandle:
         )
 
     def logs_tail(self, *, lines: int = 100) -> str:
-        """Return the last *lines* lines from the pod's container log."""
+        """Return the last *lines* lines from the pod's container log.
+
+        Uses ``_preload_content=False`` because the kubernetes Python
+        client's response deserializer mangles JSON log output into
+        Python-repr format when preloading (single-quoted keys,
+        capitalised ``False``), which breaks worker output parsing.
+        """
         pods = self._core_api.list_namespaced_pod(
             namespace=self.namespace,
             label_selector=f"job-name={self.job_name}",
@@ -302,10 +361,12 @@ class KubernetesJobHandle:
 
         pod_name = pods.items[0].metadata.name
         try:
-            return self._core_api.read_namespaced_pod_log(
+            resp = self._core_api.read_namespaced_pod_log(
                 name=pod_name,
                 namespace=self.namespace,
                 tail_lines=lines,
+                _preload_content=False,
             )
+            return resp.read().decode("utf-8", errors="replace")
         except Exception:
             return ""
