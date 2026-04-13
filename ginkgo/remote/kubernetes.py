@@ -94,6 +94,12 @@ class KubernetesExecutor:
         job as failed. Catches quota, capacity, and node-affinity issues
         (e.g. GPU stockouts) that would otherwise leave pods Pending
         indefinitely.
+    ephemeral_storage : str
+        Default ephemeral-storage request/limit for worker pods (e.g.
+        ``"50Gi"``). Must be large enough to hold the code bundle plus
+        any ``file``/``folder`` inputs hydrated from the remote artifact
+        store into ``/tmp``. GKE Autopilot defaults to 1Gi, which is far
+        too small for workflows that stage large datasets.
     """
 
     namespace: str = "default"
@@ -105,6 +111,7 @@ class KubernetesExecutor:
     tolerations: list[dict[str, Any]] | None = None
     ttl_seconds_after_finished: int = 300
     unschedulable_timeout: float = 300.0
+    ephemeral_storage: str = "50Gi"
     _batch_api: Any = field(default=None, init=False, repr=False)
     _core_api: Any = field(default=None, init=False, repr=False)
 
@@ -154,6 +161,9 @@ class KubernetesExecutor:
         if memory_gb > 0:
             resource_requests["memory"] = f"{memory_gb}Gi"
             resource_limits["memory"] = f"{memory_gb}Gi"
+        if self.ephemeral_storage:
+            resource_requests["ephemeral-storage"] = self.ephemeral_storage
+            resource_limits["ephemeral-storage"] = self.ephemeral_storage
 
         gpu = resources.get("gpu", 0)
         if gpu > 0:

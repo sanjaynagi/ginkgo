@@ -73,6 +73,16 @@ def main() -> None:
         from ginkgo.runtime.worker import run_task
 
         result = run_task(payload)
+
+        # Publish produced file/folder outputs back to the shared artifact
+        # store so the client can hydrate them. Skipped for dynamic results
+        # and failures — both contain no encoded file/folder leaves.
+        if (
+            remote_artifact_config is not None
+            and result.get("ok")
+            and result.get("result_encoding") == "encoded"
+        ):
+            _stage_remote_outputs(result, config=remote_artifact_config)
     except Exception as exc:
         print(
             json.dumps(
@@ -114,6 +124,24 @@ def _install_code_bundle(code_bundle: dict[str, str]):
     )
     sys.path.insert(0, str(dest_dir))
     return dest_dir
+
+
+def _stage_remote_outputs(result: dict, *, config: dict[str, str]) -> None:
+    """Upload encoded file/folder outputs to the shared remote store."""
+    from pathlib import Path
+    from ginkgo.runtime.artifacts.remote_staging import (
+        build_worker_remote_store,
+        stage_result_for_remote,
+    )
+
+    local_root = Path("/tmp/ginkgo-remote-cas")
+    remote_store = build_worker_remote_store(
+        scheme=config["scheme"],
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        local_root=local_root,
+    )
+    result["result"] = stage_result_for_remote(result=result["result"], remote_store=remote_store)
 
 
 def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:

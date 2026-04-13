@@ -1388,7 +1388,24 @@ class _ConcurrentEvaluator:
                 + (f"\n{result.logs}" if result.logs else "")
             )
 
-        return result.payload
+        payload = result.payload
+        if (
+            self._remote_artifact_store is not None
+            and isinstance(payload, dict)
+            and payload.get("ok")
+            and payload.get("result_encoding") == "encoded"
+            and "result" in payload
+        ):
+            from ginkgo.runtime.artifacts.remote_staging import hydrate_result_from_remote
+
+            scratch_dir = self._remote_artifact_store.local._root / "remote-outputs"
+            payload["result"] = hydrate_result_from_remote(
+                result=payload["result"],
+                remote_store=self._remote_artifact_store,
+                scratch_dir=scratch_dir,
+            )
+
+        return payload
 
     def _capture_remote_logs(self, *, node: _TaskNode, handle: RemoteJobHandle) -> None:
         """Fetch pod logs and write them to the standard task log paths."""

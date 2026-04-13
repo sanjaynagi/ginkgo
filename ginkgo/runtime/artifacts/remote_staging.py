@@ -251,6 +251,182 @@ def _hydrate_reference(
     return wrap(str(dest))
 
 
+def stage_result_for_remote(
+    *,
+    result: Any,
+    remote_store: RemoteArtifactStore,
+) -> Any:
+    """Rewrite file/folder values in an encoded task result into remote refs.
+
+    Called on the worker side after :func:`run_task` returns, to upload
+    any ``file`` / ``folder`` outputs to the shared remote artifact store.
+    The returned tree has the same shape, but encoded file/folder values
+    (``{"__ginkgo_type__": "file"|"folder", ...}``) are replaced with
+    remote-reference dicts that the client can hydrate.
+
+    Parameters
+    ----------
+    result : Any
+        The ``result`` payload produced by :func:`encode_value`.
+    remote_store : RemoteArtifactStore
+        Store to upload produced artifacts into.
+    """
+    return _stage_encoded_value(value=result, remote_store=remote_store)
+
+
+def _stage_encoded_value(*, value: Any, remote_store: RemoteArtifactStore) -> Any:
+    """Walk an encoded value tree, uploading file/folder leaves to remote."""
+    if not isinstance(value, dict):
+        return value
+
+    kind = value.get("__ginkgo_type__")
+    if kind == "file":
+        return _stage_encoded_path(
+            path_str=value["value"], tag=_REMOTE_FILE_TAG, remote_store=remote_store
+        )
+    if kind == "folder":
+        return _stage_encoded_path(
+            path_str=value["value"], tag=_REMOTE_FOLDER_TAG, remote_store=remote_store
+        )
+    if kind in {"list", "tuple"}:
+        return {
+            **value,
+            "items": [
+                _stage_encoded_value(value=item, remote_store=remote_store)
+                for item in value.get("items", [])
+            ],
+        }
+    if kind == "dict":
+        return {
+            **value,
+            "items": [
+                {
+                    "key": _stage_encoded_value(value=item["key"], remote_store=remote_store),
+                    "value": _stage_encoded_value(value=item["value"], remote_store=remote_store),
+                }
+                for item in value.get("items", [])
+            ],
+        }
+    if kind == "asset_result":
+        return {
+            **value,
+            "value": _stage_encoded_value(value=value["value"], remote_store=remote_store),
+        }
+    return value
+
+
+def _stage_encoded_path(
+    *, path_str: str, tag: str, remote_store: RemoteArtifactStore
+) -> dict[str, Any]:
+    """Upload a single pod-local path and return a remote-reference dict."""
+    resolved = Path(path_str).resolve()
+    record = remote_store.store(src_path=resolved)
+    return {
+        "__ginkgo_type__": tag,
+        "artifact_id": record.artifact_id,
+        "path": str(resolved),
+    }
+
+
+def hydrate_result_from_remote(
+    *,
+    result: Any,
+    remote_store: RemoteArtifactStore,
+    scratch_dir: Path,
+) -> Any:
+    """Rewrite remote-reference dicts in an encoded result into local values.
+
+    Called on the client side after the remote worker returns. Downloads
+    each referenced artifact into ``scratch_dir`` and replaces the remote
+    reference with a regular encoded ``file`` / ``folder`` value, so that
+    the evaluator's normal :func:`decode_value` pass works unchanged.
+
+    Parameters
+    ----------
+    result : Any
+        Encoded result payload from the remote worker.
+    remote_store : RemoteArtifactStore
+        Local-backed remote store used to fetch artifacts.
+    scratch_dir : Path
+        Directory into which hydrated outputs are materialised.
+    """
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    return _hydrate_encoded_value(value=result, remote_store=remote_store, scratch_dir=scratch_dir)
+
+
+def _hydrate_encoded_value(
+    *, value: Any, remote_store: RemoteArtifactStore, scratch_dir: Path
+) -> Any:
+    """Walk an encoded value tree, materialising remote references locally."""
+    if not isinstance(value, dict):
+        return value
+
+    kind = value.get("__ginkgo_type__")
+    if kind == _REMOTE_FILE_TAG:
+        local_path = _materialize_remote_output(
+            ref=value, remote_store=remote_store, scratch_dir=scratch_dir
+        )
+        return {"__ginkgo_type__": "file", "value": str(local_path)}
+    if kind == _REMOTE_FOLDER_TAG:
+        local_path = _materialize_remote_output(
+            ref=value, remote_store=remote_store, scratch_dir=scratch_dir
+        )
+        return {"__ginkgo_type__": "folder", "value": str(local_path)}
+    if kind in {"list", "tuple"}:
+        return {
+            **value,
+            "items": [
+                _hydrate_encoded_value(
+                    value=item, remote_store=remote_store, scratch_dir=scratch_dir
+                )
+                for item in value.get("items", [])
+            ],
+        }
+    if kind == "dict":
+        return {
+            **value,
+            "items": [
+                {
+                    "key": _hydrate_encoded_value(
+                        value=item["key"],
+                        remote_store=remote_store,
+                        scratch_dir=scratch_dir,
+                    ),
+                    "value": _hydrate_encoded_value(
+                        value=item["value"],
+                        remote_store=remote_store,
+                        scratch_dir=scratch_dir,
+                    ),
+                }
+                for item in value.get("items", [])
+            ],
+        }
+    if kind == "asset_result":
+        return {
+            **value,
+            "value": _hydrate_encoded_value(
+                value=value["value"], remote_store=remote_store, scratch_dir=scratch_dir
+            ),
+        }
+    return value
+
+
+def _materialize_remote_output(
+    *,
+    ref: dict[str, Any],
+    remote_store: RemoteArtifactStore,
+    scratch_dir: Path,
+) -> Path:
+    """Download a produced artifact into the client scratch dir."""
+    artifact_id = ref["artifact_id"]
+    original = Path(ref.get("path", artifact_id))
+    dest = scratch_dir / artifact_id / original.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        remote_store.retrieve(artifact_id=artifact_id, dest_path=dest)
+    return dest
+
+
 def build_worker_remote_store(
     *,
     scheme: str,

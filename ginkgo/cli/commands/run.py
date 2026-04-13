@@ -496,6 +496,7 @@ def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
         node_selector=k8s_config.get("node_selector"),
         tolerations=k8s_config.get("tolerations"),
         ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 300)),
+        ephemeral_storage=k8s_config.get("ephemeral_storage", "50Gi"),
     )
 
 
