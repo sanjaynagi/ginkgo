@@ -70,9 +70,12 @@ fi
 echo "→ Detected dependencies:"
 echo "$REQUIREMENTS" | sed 's/^/    /'
 
-# Content-addressed tag: rebuild only when deps change.
-DEPS_HASH=$(printf '%s' "$REQUIREMENTS" | shasum -a 256 | cut -c1-12)
-IMAGE_REF="${REGISTRY}/${REPO_NAME}:${DEPS_HASH}"
+# Content-addressed tag: rebuild when deps OR the base image change.
+# Hashing the base image ref guards against silently reusing a tag whose
+# bytes were built on top of an older base.
+HASH_INPUT=$(printf '%s\n%s' "$BASE_IMAGE" "$REQUIREMENTS")
+IMAGE_HASH=$(printf '%s' "$HASH_INPUT" | shasum -a 256 | cut -c1-12)
+IMAGE_REF="${REGISTRY}/${REPO_NAME}:${IMAGE_HASH}"
 
 echo "→ Base image: $BASE_IMAGE"
 echo "→ Target:     $IMAGE_REF"

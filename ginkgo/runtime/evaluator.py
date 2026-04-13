@@ -248,6 +248,7 @@ class _ConcurrentEvaluator:
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _remote_artifact_store: Any = field(default=None, init=False, repr=False)
     _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
+    _remote_published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.profiler is None:
@@ -1323,6 +1324,7 @@ class _ConcurrentEvaluator:
                     type_hints=node.task_def.type_hints,
                     remote_store=self._remote_artifact_store,
                     known_digests=self._known_digests,
+                    published_artifacts=self._remote_published_artifacts,
                 )
                 payload["remote_artifact_store"] = {
                     "scheme": self._remote_artifact_store.scheme,

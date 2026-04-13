@@ -46,6 +46,7 @@ def stage_args_for_remote(
     type_hints: dict[str, Any],
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str] | None = None,
+    published_artifacts: set[str] | None = None,
 ) -> dict[str, Any]:
     """Rewrite ``file`` / ``folder`` arguments into remote-artifact references.
 
@@ -59,10 +60,17 @@ def stage_args_for_remote(
     remote_store : RemoteArtifactStore
         Target store to upload artifacts into.
     known_digests : dict[str, str] | None
-        Optional path → artifact-id cache to skip re-uploading artifacts
-        already produced earlier in this run.
+        Optional path → artifact-id cache from the local artifact store.
+        A hit means the artifact exists locally but says nothing about
+        whether it has been published to the remote store yet.
+    published_artifacts : set[str] | None
+        Optional set of artifact ids already uploaded to ``remote_store``
+        during this run. Used to avoid redundant remote uploads without
+        conflating local-cache state with remote-publish state.
     """
     known_digests = known_digests or {}
+    if published_artifacts is None:
+        published_artifacts = set()
     staged: dict[str, Any] = {}
     for name, value in args.items():
         annotation = type_hints.get(name, Any)
@@ -71,6 +79,7 @@ def stage_args_for_remote(
             annotation=annotation,
             remote_store=remote_store,
             known_digests=known_digests,
+            published_artifacts=published_artifacts,
         )
     return staged
 
@@ -81,6 +90,7 @@ def _stage_value(
     annotation: Any,
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str],
+    published_artifacts: set[str],
 ) -> Any:
     """Stage a single argument value, recursing into typed containers."""
     # file / folder: upload content, emit a remote reference dict.
@@ -90,6 +100,7 @@ def _stage_value(
             tag=_REMOTE_FILE_TAG,
             remote_store=remote_store,
             known_digests=known_digests,
+            published_artifacts=published_artifacts,
         )
     if _annotation_matches(annotation=annotation, target=folder) and isinstance(value, str):
         return _stage_path(
@@ -97,6 +108,7 @@ def _stage_value(
             tag=_REMOTE_FOLDER_TAG,
             remote_store=remote_store,
             known_digests=known_digests,
+            published_artifacts=published_artifacts,
         )
 
     # Recurse into typed containers.
@@ -110,6 +122,7 @@ def _stage_value(
                 annotation=inner_annotation,
                 remote_store=remote_store,
                 known_digests=known_digests,
+                published_artifacts=published_artifacts,
             )
             for item in value
         ]
@@ -124,6 +137,7 @@ def _stage_value(
                 annotation=value_annotation,
                 remote_store=remote_store,
                 known_digests=known_digests,
+                published_artifacts=published_artifacts,
             )
             for key, item in value.items()
         }
@@ -137,15 +151,23 @@ def _stage_path(
     tag: str,
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str],
+    published_artifacts: set[str],
 ) -> dict[str, str]:
-    """Upload a single path and return its remote-reference dict."""
+    """Upload a single path and return its remote-reference dict.
+
+    ``known_digests`` records path → artifact-id resolved from the local
+    store. A hit there guarantees only that the artifact exists locally,
+    not that it has been published to the remote store — the two caches
+    must stay separate.
+    """
     resolved = path.resolve()
     key = str(resolved)
     artifact_id = known_digests.get(key)
-    if artifact_id is None:
+    if artifact_id is None or artifact_id not in published_artifacts:
         record = remote_store.store(src_path=resolved)
         artifact_id = record.artifact_id
         known_digests[key] = artifact_id
+        published_artifacts.add(artifact_id)
     return {
         "__ginkgo_type__": tag,
         "artifact_id": artifact_id,

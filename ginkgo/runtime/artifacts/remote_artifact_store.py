@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,7 @@ class RemoteArtifactStore:
     bucket: str
     prefix: str
     scheme: str
+    transfer_concurrency: int = 16
 
     # --- ArtifactStore protocol -----------------------------------------------
 
@@ -144,14 +146,20 @@ class RemoteArtifactStore:
             )
 
     def _upload_tree(self, digest_hex: str) -> None:
-        """Upload a tree manifest and all its constituent blobs to remote."""
+        """Upload a tree manifest and all its constituent blobs to remote.
+
+        Blob uploads are content-addressed and idempotent, so we fan them
+        out across a thread pool to saturate network bandwidth. The tree
+        manifest is uploaded last so it only becomes visible once every
+        referenced blob is present.
+        """
         tree_path = self.local._trees_dir / f"{digest_hex}.json"
         if not tree_path.exists():
             return
 
         tree_ref = deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
-        for entry in tree_ref.entries:
-            self._upload_blob(entry.blob_digest)
+        unique_digests = {entry.blob_digest for entry in tree_ref.entries}
+        self._run_parallel(self._upload_blob, unique_digests)
 
         self.backend.upload(
             src_path=tree_path,
@@ -214,8 +222,24 @@ class RemoteArtifactStore:
             )
 
         tree_ref = deserialize_tree_manifest(tree_dest.read_text(encoding="utf-8"))
-        for entry in tree_ref.entries:
-            self._download_blob(entry.blob_digest)
+        unique_digests = {entry.blob_digest for entry in tree_ref.entries}
+        self._run_parallel(self._download_blob, unique_digests)
+
+    def _run_parallel(self, fn, digests) -> None:
+        """Run a per-blob transfer callable across a bounded thread pool."""
+        digest_list = list(digests)
+        if not digest_list:
+            return
+        if self.transfer_concurrency <= 1 or len(digest_list) == 1:
+            for digest in digest_list:
+                fn(digest)
+            return
+        workers = min(self.transfer_concurrency, len(digest_list))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="ginkgo-artifact-transfer"
+        ) as pool:
+            # list() forces exceptions from any worker to propagate.
+            list(pool.map(fn, digest_list))
 
     def _remote_ref_exists(self, artifact_id: str) -> bool:
         """Check whether a ref JSON exists in remote storage."""
