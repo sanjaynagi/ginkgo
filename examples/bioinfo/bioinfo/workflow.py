@@ -12,7 +12,8 @@ from pathlib import Path
 
 import ginkgo
 import pandas as pd
-from ginkgo import AssetRef, asset, file, flow, shell, task
+from ginkgo import AssetRef, asset, file, flow, shell, table, task
+from ginkgo.core.wrappers import TableResult
 
 
 cfg = ginkgo.config("ginkgo.toml")
@@ -20,9 +21,7 @@ samples = pd.read_csv(cfg["paths"]["samples_csv"])
 
 
 @task(env="bioinfo_tools", kind="shell")
-def filter_fastq(
-    sample_id: str, fastq_1: file, fastq_2: file, min_length: int
-) -> list[file]:
+def filter_fastq(sample_id: str, fastq_1: file, fastq_2: file, min_length: int) -> list[file]:
     """Filter paired-end reads shorter than ``min_length`` with seqkit."""
     out_1 = f"results/filtered/{sample_id}_1.filtered.fastq.gz"
     out_2 = f"results/filtered/{sample_id}_2.filtered.fastq.gz"
@@ -96,8 +95,8 @@ def build_summary(
     sample_ids: list[str],
     stats_tables: list[file | AssetRef],
     count_tables: list[file | AssetRef],
-) -> file:
-    """Merge per-sample QC tables and read counts into a single CSV summary.
+) -> TableResult:
+    """Merge per-sample QC tables and read counts into a single summary table.
 
     Parameters
     ----------
@@ -110,8 +109,9 @@ def build_summary(
 
     Returns
     -------
-    file
-        Combined summary CSV.
+    TableResult
+        Wrapped tabular asset registered as ``build_summary.qc_summary`` in
+        the catalog, stored as Parquet with schema and row-count metadata.
     """
     # Merge QC stats.
     frames: list[pd.DataFrame] = []
@@ -136,10 +136,13 @@ def build_summary(
     counts = pd.concat(count_frames, ignore_index=True)
     summary = summary.merge(counts, on="sample_id", how="left")
 
+    # Keep the CSV on disk for external consumers that still read files
+    # directly; the wrapped asset below is the canonical catalog entry.
     output = Path("results/summary.csv")
     output.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output, index=False)
-    return file(str(output))
+
+    return table(summary, name="qc_summary")
 
 
 @flow
