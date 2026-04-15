@@ -268,7 +268,11 @@ def make_exploding_table_task() -> object:
 
 @task()
 def consumer_task(upstream: object) -> int:
-    assert isinstance(upstream, AssetRef)
+    # Phase 4.5: wrapped ``AssetRef`` inputs are rehydrated to the live
+    # payload at arg-binding time, so downstream tasks observe the
+    # canonical deserialised object rather than the reference.
+    assert isinstance(upstream, pd.DataFrame)
+    assert list(upstream.columns) == ["a", "b"]
     return 1
 
 
@@ -404,3 +408,151 @@ class TestAssetShow:
         assert "make_table_task.features" in output
         assert "Row count" in output
         assert "Column" in output  # schema table header
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.5 — rehydration-on-receive
+# ---------------------------------------------------------------------------
+
+
+@task()
+def produce_table() -> object:
+    return table(
+        pd.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}),
+        name="features",
+    )
+
+
+@task()
+def produce_array() -> object:
+    return array(np.arange(12, dtype=np.int64).reshape(3, 4), name="grid")
+
+
+@task()
+def produce_text() -> object:
+    return text("line one\nline two\n", name="notes")
+
+
+@task()
+def consume_dataframe_sum(upstream: object) -> int:
+    assert isinstance(upstream, pd.DataFrame)
+    assert list(upstream.columns) == ["x", "y"]
+    assert upstream.shape == (3, 2)
+    return int(upstream["x"].sum())
+
+
+@task()
+def consume_array_sum(upstream: object) -> int:
+    assert isinstance(upstream, np.ndarray)
+    assert upstream.shape == (3, 4)
+    return int(upstream.sum())
+
+
+@task()
+def consume_text_length(upstream: object) -> int:
+    assert isinstance(upstream, str)
+    return len(upstream)
+
+
+@task()
+def consume_scalar_expecting_int(upstream: int) -> int:
+    return upstream + 1
+
+
+class TestRehydration:
+    def test_table_ref_rehydrated_to_dataframe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consumer observes a live pandas DataFrame, not the AssetRef."""
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(consume_dataframe_sum(upstream=produce_table()))
+        assert result == 6  # 1 + 2 + 3
+
+    def test_array_ref_rehydrated_to_ndarray(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(consume_array_sum(upstream=produce_array()))
+        assert result == 66  # sum(range(12))
+
+    def test_text_ref_rehydrated_to_str(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(consume_text_length(upstream=produce_text()))
+        assert result == len("line one\nline two\n")
+
+    def test_live_payload_hit_skips_disk_loader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the live registry has the payload, the loader is not called."""
+        monkeypatch.chdir(tmp_path)
+
+        from ginkgo.runtime import evaluator as evaluator_mod
+
+        loader_call_count = {"n": 0}
+        original_loader = evaluator_mod.load_wrapped_ref
+
+        def _counting_loader(**kwargs: Any) -> Any:
+            loader_call_count["n"] += 1
+            return original_loader(**kwargs)
+
+        monkeypatch.setattr(evaluator_mod, "load_wrapped_ref", _counting_loader)
+
+        result = ginkgo.evaluate(consume_dataframe_sum(upstream=produce_table()))
+        assert result == 6
+        assert loader_call_count["n"] == 0  # live cache hit
+
+    def test_loader_fallback_when_live_cache_misses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the live cache is empty, rehydration falls back to disk."""
+        monkeypatch.chdir(tmp_path)
+
+        from ginkgo.runtime.artifacts import live_payloads as live_payloads_mod
+        from ginkgo.runtime import evaluator as evaluator_mod
+
+        # Force every lookup to miss.
+        monkeypatch.setattr(
+            live_payloads_mod.LivePayloadRegistry,
+            "get",
+            lambda self, *, artifact_id: None,
+        )
+
+        loader_call_count = {"n": 0}
+        original_loader = evaluator_mod.load_wrapped_ref
+
+        def _counting_loader(**kwargs: Any) -> Any:
+            loader_call_count["n"] += 1
+            return original_loader(**kwargs)
+
+        monkeypatch.setattr(evaluator_mod, "load_wrapped_ref", _counting_loader)
+
+        result = ginkgo.evaluate(consume_dataframe_sum(upstream=produce_table()))
+        assert result == 6
+        assert loader_call_count["n"] == 1  # exactly one disk load
+
+    def test_type_mismatch_still_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rehydration does not swallow genuine type errors."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(Exception):  # noqa: PT011 — any runtime failure is fine
+            ginkgo.evaluate(
+                consume_scalar_expecting_int(upstream=produce_table()),
+            )
+
+    def test_live_registry_capacity_eviction(self) -> None:
+        """The registry is bounded — oldest entries evict when full."""
+        from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
+
+        registry = LivePayloadRegistry(capacity=3)
+        registry.put(artifact_id="a", payload="first")
+        registry.put(artifact_id="b", payload="second")
+        registry.put(artifact_id="c", payload="third")
+        registry.put(artifact_id="d", payload="fourth")
+
+        assert registry.get(artifact_id="a") is None
+        assert registry.get(artifact_id="b") == "second"
+        assert registry.get(artifact_id="d") == "fourth"

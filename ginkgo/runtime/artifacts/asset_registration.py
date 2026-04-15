@@ -23,6 +23,7 @@ from ginkgo.core.asset import (
 )
 from ginkgo.core.wrappers import WrappedResult
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.artifacts.wrapper_serialization import (
     SerializedWrapper,
     WrapperSerializationError,
@@ -119,6 +120,7 @@ class AssetRegistrar:
     cache_store: CacheStore
     asset_store: AssetStore
     run_id_provider: Callable[[], str]
+    live_payloads: LivePayloadRegistry | None = None
 
     def materialize_results(self, *, node: Any, value: Any) -> Any:
         """Register nested asset sentinels and replace them with asset refs.
@@ -298,6 +300,16 @@ class AssetRegistrar:
         )
         if parent_refs:
             self.asset_store.record_lineage(child=asset_ref, parents=parent_refs)
+
+        # Cache the producer's live Python object so downstream tasks
+        # running in the same evaluator process can rehydrate without a
+        # disk round-trip. Falls back to the on-disk loader otherwise.
+        if self.live_payloads is not None:
+            self.live_payloads.put(
+                artifact_id=record.artifact_id,
+                payload=wrapper.payload,
+            )
+
         return asset_ref, version
 
     def _parent_asset_refs(self, *, node: Any) -> list[AssetRef]:

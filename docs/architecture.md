@@ -645,6 +645,33 @@ Kind-specific metadata stored on each `AssetVersion`:
 re-reading the stored bytes. The UI asset payload surfaces the same fields
 under a `kind_metadata` key for future frontend consumers.
 
+#### Rehydration on receive
+
+Downstream tasks that declare `pd.DataFrame`, `np.ndarray`, or `str`
+parameters receive the live Python object rather than the `AssetRef`
+produced by an upstream wrapper. The evaluator rehydrates wrapped refs
+in `_resolve_task_args` via `_rehydrate_wrapped_refs`, which consults a
+per-run `LivePayloadRegistry` before falling back to the on-disk
+`wrapper_loaders.load_from_ref` path.
+
+The live registry
+(`ginkgo/runtime/artifacts/live_payloads.py`) is a capped-LRU cache
+keyed by `artifact_id`. When `AssetRegistrar` serialises a wrapped
+payload it stores the producer's Python object in the registry, so a
+subsequent consumer in the same evaluator process is served from memory
+and avoids a Parquet/zarr round-trip. The on-disk loader path is the
+fallback for subprocess workers, cache resumes, and cross-run
+consumers. `fig` refs are left as `AssetRef` since binary image
+payloads are rarely consumed as live Python objects. `file` refs are
+untouched — the existing `file` coercion path handles them.
+
+Rehydration is transparent to task authors: a task annotated
+`compounds: pd.DataFrame` continues to work unchanged when its upstream
+switches from returning a raw DataFrame to `table(df, name="...")`.
+The examples in `examples/chem/.../inputs.py::annotate_compounds` and
+`examples/retail/.../inputs.py::enrich_orders` demonstrate this pattern
+in a real multi-stage workflow.
+
 ## Value Transport
 
 Python task inputs and outputs cross process boundaries through the codec layer in `ginkgo/runtime/artifacts/value_codec.py`.

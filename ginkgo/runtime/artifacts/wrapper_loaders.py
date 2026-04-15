@@ -12,7 +12,7 @@ import io
 from pathlib import Path
 from typing import Any
 
-from ginkgo.core.asset import AssetVersion
+from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
 
 
@@ -36,24 +36,72 @@ def load(
         Kind-specific materialised value (pandas DataFrame, numpy array,
         raw bytes plus format for figures, or the decoded string for text).
     """
-    namespace = version.key.namespace
+    return _dispatch(
+        namespace=version.key.namespace,
+        artifact_store=artifact_store,
+        artifact_id=version.artifact_id,
+        metadata=dict(version.metadata),
+    )
+
+
+def load_from_ref(
+    *,
+    artifact_store: ArtifactStore,
+    asset_ref: AssetRef,
+) -> Any:
+    """Rehydrate a wrapped asset reference into a live Python value.
+
+    Parameters
+    ----------
+    artifact_store : ArtifactStore
+        Store used to fetch the immutable artifact bytes.
+    asset_ref : AssetRef
+        Resolved reference produced by the asset registrar.
+
+    Returns
+    -------
+    Any
+        Kind-specific materialised value. See :func:`load` for the
+        per-namespace return types.
+    """
+    return _dispatch(
+        namespace=asset_ref.kind,
+        artifact_store=artifact_store,
+        artifact_id=asset_ref.artifact_id,
+        metadata=dict(asset_ref.metadata),
+    )
+
+
+def _dispatch(
+    *,
+    namespace: str,
+    artifact_store: ArtifactStore,
+    artifact_id: str,
+    metadata: dict[str, Any],
+) -> Any:
+    """Dispatch to the per-kind loader by namespace."""
     if namespace == "table":
-        return load_table(artifact_store=artifact_store, version=version)
+        return _load_table_bytes(artifact_store=artifact_store, artifact_id=artifact_id)
     if namespace == "array":
-        return load_array(artifact_store=artifact_store, version=version)
+        return _load_array_bytes(
+            artifact_store=artifact_store,
+            artifact_id=artifact_id,
+            metadata=metadata,
+        )
     if namespace == "fig":
-        return load_fig(artifact_store=artifact_store, version=version)
+        return _load_fig_bytes(
+            artifact_store=artifact_store,
+            artifact_id=artifact_id,
+            metadata=metadata,
+        )
     if namespace == "text":
-        return load_text(artifact_store=artifact_store, version=version)
+        return _load_text_bytes(artifact_store=artifact_store, artifact_id=artifact_id)
     raise ValueError(f"no loader registered for asset namespace {namespace!r}")
 
 
 def load_table(*, artifact_store: ArtifactStore, version: AssetVersion) -> Any:
     """Load a ``table`` asset version as a pandas DataFrame."""
-    import pandas as pd
-
-    data = artifact_store.read_bytes(artifact_id=version.artifact_id)
-    return pd.read_parquet(io.BytesIO(data))
+    return _load_table_bytes(artifact_store=artifact_store, artifact_id=version.artifact_id)
 
 
 def load_array(*, artifact_store: ArtifactStore, version: AssetVersion) -> Any:
@@ -63,19 +111,51 @@ def load_array(*, artifact_store: ArtifactStore, version: AssetVersion) -> Any:
     stores. Callers that need the live zarr handle can re-open the store
     themselves via :meth:`ArtifactStore.artifact_path`.
     """
+    return _load_array_bytes(
+        artifact_store=artifact_store,
+        artifact_id=version.artifact_id,
+        metadata=dict(version.metadata),
+    )
+
+
+def load_fig(*, artifact_store: ArtifactStore, version: AssetVersion) -> tuple[bytes, str]:
+    """Load a ``fig`` asset version as ``(bytes, source_format)``."""
+    return _load_fig_bytes(
+        artifact_store=artifact_store,
+        artifact_id=version.artifact_id,
+        metadata=dict(version.metadata),
+    )
+
+
+def load_text(*, artifact_store: ArtifactStore, version: AssetVersion) -> str:
+    """Load a ``text`` asset version as a decoded UTF-8 string."""
+    return _load_text_bytes(artifact_store=artifact_store, artifact_id=version.artifact_id)
+
+
+def _load_table_bytes(*, artifact_store: ArtifactStore, artifact_id: str) -> Any:
+    import pandas as pd
+
+    data = artifact_store.read_bytes(artifact_id=artifact_id)
+    return pd.read_parquet(io.BytesIO(data))
+
+
+def _load_array_bytes(
+    *,
+    artifact_store: ArtifactStore,
+    artifact_id: str,
+    metadata: dict[str, Any],
+) -> Any:
     import numpy as np
 
-    data = artifact_store.read_bytes(artifact_id=version.artifact_id)
-    sub_kind = version.metadata.get("sub_kind")
+    data = artifact_store.read_bytes(artifact_id=artifact_id)
+    sub_kind = metadata.get("sub_kind")
 
-    # Heuristic: ``.npy`` blobs are the only non-zarr path we write.
-    # Try numpy first when the stored form is numpy, otherwise open via zarr.
     if sub_kind == "numpy" and _looks_like_npy(data):
         return np.load(io.BytesIO(data), allow_pickle=False)
 
     import zarr  # type: ignore[import-not-found]
 
-    path = artifact_store.artifact_path(artifact_id=version.artifact_id)
+    path = artifact_store.artifact_path(artifact_id=artifact_id)
     store = zarr.storage.ZipStore(str(path), mode="r")
     try:
         root = zarr.open(store, mode="r")
@@ -84,16 +164,19 @@ def load_array(*, artifact_store: ArtifactStore, version: AssetVersion) -> Any:
         store.close()
 
 
-def load_fig(*, artifact_store: ArtifactStore, version: AssetVersion) -> tuple[bytes, str]:
-    """Load a ``fig`` asset version as ``(bytes, source_format)``."""
-    data = artifact_store.read_bytes(artifact_id=version.artifact_id)
-    source_format = str(version.metadata.get("source_format", "png"))
+def _load_fig_bytes(
+    *,
+    artifact_store: ArtifactStore,
+    artifact_id: str,
+    metadata: dict[str, Any],
+) -> tuple[bytes, str]:
+    data = artifact_store.read_bytes(artifact_id=artifact_id)
+    source_format = str(metadata.get("source_format", "png"))
     return data, source_format
 
 
-def load_text(*, artifact_store: ArtifactStore, version: AssetVersion) -> str:
-    """Load a ``text`` asset version as a decoded UTF-8 string."""
-    data = artifact_store.read_bytes(artifact_id=version.artifact_id)
+def _load_text_bytes(*, artifact_store: ArtifactStore, artifact_id: str) -> str:
+    data = artifact_store.read_bytes(artifact_id=artifact_id)
     return data.decode("utf-8")
 
 
