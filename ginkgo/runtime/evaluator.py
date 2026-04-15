@@ -22,7 +22,7 @@ from queue import Empty
 from threading import Event, Thread
 from typing import Any
 
-from ginkgo.core.asset import AssetVersion
+from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
 from ginkgo.core.script import ScriptExpr
@@ -33,7 +33,9 @@ from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import TaskBackend
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.artifacts.output_index import artifact_index
+from ginkgo.runtime.artifacts.wrapper_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
@@ -284,10 +286,12 @@ class _ConcurrentEvaluator:
             runtime_root_factory=self._notebook_runtime_root,
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
+        self._live_payloads = LivePayloadRegistry()
         self._asset_registrar = AssetRegistrar(
             cache_store=self._cache_store,
             asset_store=self._asset_store,
             run_id_provider=lambda: self._run_id,
+            live_payloads=self._live_payloads,
         )
 
     def evaluate(self, expr: Any) -> Any:
@@ -917,7 +921,8 @@ class _ConcurrentEvaluator:
                 continue
 
             if name in expr.args:
-                resolved_args[name] = self._materialize(expr.args[name])
+                materialised = self._materialize(expr.args[name])
+                resolved_args[name] = self._rehydrate_wrapped_refs(value=materialised)
                 continue
 
             if name == "threads":
@@ -974,6 +979,35 @@ class _ConcurrentEvaluator:
         if isinstance(value, dict):
             return {self._materialize(key): self._materialize(item) for key, item in value.items()}
 
+        return value
+
+    def _rehydrate_wrapped_refs(self, *, value: Any) -> Any:
+        """Replace wrapped ``AssetRef`` values with live Python payloads.
+
+        Recurses into lists, tuples, and dicts. ``AssetRef`` entries with a
+        wrapper kind (``table`` / ``array`` / ``text``) are rehydrated
+        either from the in-process live-payload cache (zero-copy handoff)
+        or from the on-disk loader as a fallback. ``file`` and ``fig``
+        refs are left as-is: the former flow through the existing file
+        coercion path, and the latter carry binary payloads that users
+        rarely consume as live Python objects.
+        """
+        if isinstance(value, AssetRef):
+            if value.kind in {"table", "array", "text"}:
+                cached = self._live_payloads.get(artifact_id=value.artifact_id)
+                if cached is not None:
+                    return cached
+                return load_wrapped_ref(
+                    artifact_store=self._cache_store._artifact_store,
+                    asset_ref=value,
+                )
+            return value
+        if isinstance(value, list):
+            return [self._rehydrate_wrapped_refs(value=item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._rehydrate_wrapped_refs(value=item) for item in value)
+        if isinstance(value, dict):
+            return {key: self._rehydrate_wrapped_refs(value=item) for key, item in value.items()}
         return value
 
     def _dependencies_complete(self, dependency_ids: set[int]) -> bool:

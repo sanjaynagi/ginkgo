@@ -104,6 +104,8 @@ def _build_parser() -> argparse.ArgumentParser:
     asset_versions_parser.add_argument("key")
     asset_inspect_parser = asset_subparsers.add_parser("inspect")
     asset_inspect_parser.add_argument("ref")
+    asset_show_parser = asset_subparsers.add_parser("show")
+    asset_show_parser.add_argument("ref")
 
     env_parser = subparsers.add_parser("env")
     env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)

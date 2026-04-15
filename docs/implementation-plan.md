@@ -109,52 +109,6 @@ These phases extend the existing asset catalog (file-backed, with `AssetKey`,
 `AssetVersion`, alias pointers, and lineage) into richer asset kinds and
 lifecycle tooling.
 
-### Phase 4 — DataFrame Assets
-
-**Goal:** Add a DataFrame-aware asset kind so that DataFrame-producing tasks
-record schema and shape metadata alongside immutable Parquet artifacts, and
-downstream tasks can consume them through the existing asset catalog without
-re-hashing the full DataFrame in memory.
-
-**Depends on:** the existing `ArtifactStore` (immutable artifacts) and asset
-catalog (asset key resolution).
-
-#### Deliverables
-
-- Add a `kind="dataframe"` asset backend for DataFrame-producing tasks. Each
-  successful materialization calls `ArtifactStore.store()` to write an immutable
-  Parquet artifact and registers an `AssetVersion` in the catalog with
-  tabular-specific metadata:
-  - schema summary (column names and dtypes)
-  - row count
-  - producing run id and task id
-- Downstream task cache keys consume `artifact_id` rather than re-hashing the
-  full DataFrame in memory, so cache invalidation happens exactly when the
-  upstream data changes.
-- Asset resolution always returns the latest version for a given asset key.
-
-#### Key design points
-
-- Immutability is inherited from the artifact store: artifacts are read-only
-  once written. This phase adds DataFrame-specific metadata; it does not
-  re-implement storage.
-- No snapshot chains, time-travel, or head-pointer files — the latest version
-  is always the one consumers read.
-- The asset kind is an implementation detail behind the asset abstraction so
-  richer backends (e.g. Delta Lake, Iceberg) can be substituted later if
-  versioning becomes a real need.
-
-#### Validation
-
-- A `kind="dataframe"` task materializes a DataFrame as an immutable Parquet
-  artifact with schema and row-count metadata in the asset catalog.
-- Re-running a consumer task against the same `artifact_id` hits the cache
-  without re-hashing the DataFrame.
-- Schema summaries and row counts are recorded in both asset metadata and run
-  provenance.
-
----
-
 ### Phase 5 — ML Model Training Support
 
 **Goal:** Add model-aware task support so that training progress is observable

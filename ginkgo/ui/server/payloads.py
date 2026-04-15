@@ -346,6 +346,8 @@ def asset_payload(
         )
     )
 
+    kind_metadata = _extract_kind_metadata(namespace=key.namespace, metadata=version.metadata)
+
     return {
         "asset_key": str(key),
         "artifact": {
@@ -356,6 +358,7 @@ def asset_payload(
             "size_bytes": size_bytes,
         },
         "kind": version.kind,
+        "kind_metadata": kind_metadata,
         "lineage": {"parents": parents},
         "metadata": version.metadata,
         "name": key.name,
@@ -565,6 +568,29 @@ def list_cache_entries(root: Path) -> list[dict[str, Any]]:
             }
         )
     return entries
+
+
+_WRAPPER_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
+    "table": ("sub_kind", "schema", "row_count", "byte_size"),
+    "array": ("sub_kind", "shape", "dtype", "chunks", "coordinates", "byte_size"),
+    "fig": ("sub_kind", "source_format", "byte_size", "dimensions"),
+    "text": ("sub_kind", "format", "byte_size", "line_count"),
+}
+
+
+def _extract_kind_metadata(*, namespace: str, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Return kind-specific metadata for wrapped asset versions.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        A mapping restricted to the fields declared by the wrapper kind, or
+        ``None`` for non-wrapped asset namespaces.
+    """
+    fields = _WRAPPER_METADATA_FIELDS.get(namespace)
+    if fields is None:
+        return None
+    return {field: metadata.get(field) for field in fields}
 
 
 def _parse_asset_key(value: str) -> AssetKey:

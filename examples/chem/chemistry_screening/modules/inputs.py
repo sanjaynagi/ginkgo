@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import file, task
+from ginkgo import file, table, task
+from ginkgo.core.wrappers import TableResult
 
 
 @task()
@@ -34,7 +35,7 @@ def annotate_compounds(
     solubility_floor_uM: float,
     permeability_floor: float,
     max_clearance: float,
-) -> pd.DataFrame:
+) -> TableResult:
     """Compute screening annotations used by downstream portfolio reviews.
 
     Parameters
@@ -52,8 +53,10 @@ def annotate_compounds(
 
     Returns
     -------
-    pandas.DataFrame
-        Annotated screening table with derived developability signals.
+    TableResult
+        Wrapped annotated table registered as
+        ``annotate_compounds.annotated_compounds`` in the asset catalog;
+        downstream tasks receive the rehydrated DataFrame transparently.
     """
     annotated = compounds.copy()
 
@@ -61,9 +64,9 @@ def annotate_compounds(
     annotated["pIC50"] = annotated["assay_ic50_nM"].map(
         lambda value: round(9.0 - math.log10(float(value)), 3)
     )
-    annotated["exposure_margin"] = (
-        annotated["solubility_uM"] / annotated["assay_ic50_nM"]
-    ).round(3)
+    annotated["exposure_margin"] = (annotated["solubility_uM"] / annotated["assay_ic50_nM"]).round(
+        3
+    )
     annotated["meets_potency"] = annotated["assay_ic50_nM"] <= potency_floor_nM
     annotated["meets_solubility"] = annotated["solubility_uM"] >= solubility_floor_uM
     annotated["meets_permeability"] = annotated["permeability_score"] >= permeability_floor
@@ -93,10 +96,11 @@ def annotate_compounds(
         ),
         axis=1,
     )
-    return annotated.sort_values(
+    sorted_annotated = annotated.sort_values(
         ["series", "developability_score", "compound_id"],
         ascending=[True, False, True],
     ).reset_index(drop=True)
+    return table(sorted_annotated, name="annotated_compounds")
 
 
 @task()
