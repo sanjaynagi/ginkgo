@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -244,12 +244,15 @@ def main():
         fresh_entry = cache_root / "fresh456"
         old_entry.mkdir(parents=True)
         fresh_entry.mkdir(parents=True)
+        now = datetime.now(timezone.utc)
+        old_ts = (now - timedelta(days=100)).isoformat()
+        fresh_ts = (now - timedelta(days=5)).isoformat()
         (old_entry / "meta.json").write_text(
-            '{"function":"demo.old","timestamp":"2026-01-01T00:00:00+00:00"}',
+            f'{{"function":"demo.old","timestamp":"{old_ts}"}}',
             encoding="utf-8",
         )
         (fresh_entry / "meta.json").write_text(
-            '{"function":"demo.fresh","timestamp":"2026-03-13T00:00:00+00:00"}',
+            f'{{"function":"demo.fresh","timestamp":"{fresh_ts}"}}',
             encoding="utf-8",
         )
         (old_entry / "output.json").write_text("{}", encoding="utf-8")
@@ -269,12 +272,15 @@ def main():
         fresh_entry = cache_root / "fresh456"
         old_entry.mkdir(parents=True)
         fresh_entry.mkdir(parents=True)
+        now = datetime.now(timezone.utc)
+        old_ts = (now - timedelta(days=100)).isoformat()
+        fresh_ts = (now - timedelta(days=5)).isoformat()
         (old_entry / "meta.json").write_text(
-            '{"function":"demo.old","timestamp":"2026-01-01T00:00:00+00:00"}',
+            f'{{"function":"demo.old","timestamp":"{old_ts}"}}',
             encoding="utf-8",
         )
         (fresh_entry / "meta.json").write_text(
-            '{"function":"demo.fresh","timestamp":"2026-03-13T00:00:00+00:00"}',
+            f'{{"function":"demo.fresh","timestamp":"{fresh_ts}"}}',
             encoding="utf-8",
         )
 
