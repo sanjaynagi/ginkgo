@@ -985,15 +985,15 @@ class _ConcurrentEvaluator:
         """Replace wrapped ``AssetRef`` values with live Python payloads.
 
         Recurses into lists, tuples, and dicts. ``AssetRef`` entries with a
-        wrapper kind (``table`` / ``array`` / ``text``) are rehydrated
-        either from the in-process live-payload cache (zero-copy handoff)
-        or from the on-disk loader as a fallback. ``file`` and ``fig``
-        refs are left as-is: the former flow through the existing file
-        coercion path, and the latter carry binary payloads that users
-        rarely consume as live Python objects.
+        wrapper kind (``table`` / ``array`` / ``text`` / ``model``) are
+        rehydrated either from the in-process live-payload cache
+        (zero-copy handoff) or from the on-disk loader as a fallback.
+        ``file`` and ``fig`` refs are left as-is: the former flow through
+        the existing file coercion path, and the latter carry binary
+        payloads that users rarely consume as live Python objects.
         """
         if isinstance(value, AssetRef):
-            if value.kind in {"table", "array", "text"}:
+            if value.kind in {"table", "array", "text", "model"}:
                 cached = self._live_payloads.get(artifact_id=value.artifact_id)
                 if cached is not None:
                     return cached

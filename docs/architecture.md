@@ -608,6 +608,14 @@ kind-specific metadata by wrapping them with one of four sentinel factories:
   bokeh (HTML), or a path to an existing PNG/SVG/HTML file.
 - `text(body, name=..., format=..., metadata=...)` — string, dict (stored as
   JSON), or a `Path` to a text document. Format is `{plain, markdown, json}`.
+- `model(clf, name=..., framework=..., metrics=..., metadata=...)` — trained
+  ML models. Supports scikit-learn estimators, xgboost/lightgbm sklearn
+  wrappers (all via `joblib`), PyTorch `nn.Module` (via `torch.save`), and
+  Keras/TensorFlow (via the native `.keras` archive). `metrics` is a
+  first-class `dict[str, float]` field stored on the asset version so the
+  UI and `ginkgo models` can render training metrics without walking
+  free-form metadata. Optional `ginkgo[ml]` extra pulls `joblib` and
+  `scikit-learn`; other backends stay fully optional and lazy-imported.
 
 Wrappers follow the same pattern as `shell()`/`ShellExpr`: the user calls a
 factory inside the task body, returns the sentinel, and the evaluator
@@ -626,7 +634,9 @@ Implementation is split between:
 - `ginkgo/runtime/artifacts/asset_registration.py` — extended to unwrap
   sentinels at task completion, serialising each payload, storing the bytes
   through `ArtifactStore.store_bytes`, and registering an `AssetVersion` in
-  the wrapper-specific namespace (`table` / `array` / `fig` / `text`).
+  the wrapper-specific namespace (`table` / `array` / `fig` / `text` /
+  `model`). Dict return values are walked recursively so sentinels nested
+  inside task-level result dicts register alongside list/tuple outputs.
 
 Named outputs use the asset key `<task_fn>.<name>`. Unnamed outputs are
 indexed per kind as `<task_fn>.<kind>[<index>]`. Duplicate explicit names
@@ -640,6 +650,7 @@ Kind-specific metadata stored on each `AssetVersion`:
 - `array`: `sub_kind`, `shape`, `dtype`, `chunks`, `coordinates`, `byte_size`
 - `fig`: `sub_kind`, `source_format`, `byte_size`, `dimensions`
 - `text`: `sub_kind`, `format`, `byte_size`, `line_count`
+- `model`: `sub_kind`, `framework`, `metrics`, `byte_size`
 
 `ginkgo asset show <key>` renders this metadata through the CLI without
 re-reading the stored bytes. The UI asset payload surfaces the same fields
@@ -647,9 +658,9 @@ under a `kind_metadata` key for future frontend consumers.
 
 #### Rehydration on receive
 
-Downstream tasks that declare `pd.DataFrame`, `np.ndarray`, or `str`
-parameters receive the live Python object rather than the `AssetRef`
-produced by an upstream wrapper. The evaluator rehydrates wrapped refs
+Downstream tasks that declare `pd.DataFrame`, `np.ndarray`, `str`, or a
+trained-model parameter receive the live Python object rather than the
+`AssetRef` produced by an upstream wrapper. The evaluator rehydrates wrapped refs
 in `_resolve_task_args` via `_rehydrate_wrapped_refs`, which consults a
 per-run `LivePayloadRegistry` before falling back to the on-disk
 `wrapper_loaders.load_from_ref` path.
@@ -740,6 +751,7 @@ The current CLI supports:
 - `ginkgo asset ls`
 - `ginkgo asset versions`
 - `ginkgo asset inspect`
+- `ginkgo models`
 - `ginkgo cache ls`
 - `ginkgo cache explain`
 - `ginkgo cache clear`

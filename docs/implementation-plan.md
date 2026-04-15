@@ -109,46 +109,33 @@ These phases extend the existing asset catalog (file-backed, with `AssetKey`,
 `AssetVersion`, alias pointers, and lineage) into richer asset kinds and
 lifecycle tooling.
 
-### Phase 5 — ML Model Training Support
+### Phase 5 — ML Model Training Support (remaining)
 
-**Goal:** Add model-aware task support so that training progress is observable
-in real time, trained models are cataloged and listable, and parameter sweeps
-are a first-class fan-out primitive.
+**Goal:** Fold out the remaining ergonomics for ML workflows: parameter
+sweeps as a first-class fan-out primitive and real-time training progress
+events. The `model()` asset wrapper, `ginkgo models` CLI, and associated
+serialisation/rehydration plumbing have already shipped.
 
-**Depends on:** the existing asset catalog and `ArtifactStore`. Benefits from
-Phase 4 for upstream dataset lineage.
+**Depends on:** the existing asset catalog, `ArtifactStore`, and the
+shipped `model()` wrapper.
 
 #### Target DSL
 
 ```python
 from ginkgo import task, flow, model, file
 
-@task(kind="model")
-def train(data: file, *, lr: float, epochs: int):
+@task()
+def train(*, data: file, lr: float, epochs: int):
     clf = fit(load(data), lr=lr, epochs=epochs)
-    return model(clf, framework="sklearn")
+    return model(clf, metrics={"final_loss": ...})
 
 @flow
 def main():
     data = prepare_data(raw=file("data/raw.csv"))
-    models = train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50])
-    return models
+    return train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50])
 ```
 
 #### Deliverables
-
-**`kind="model"` — model assets with training progress:**
-
-- Add a `ModelResult` sentinel (following the `shell()` / `ShellExpr` pattern)
-  returned from `kind="model"` task bodies via a `model()` builder function.
-  The sentinel carries the model object, framework name, and optional metrics.
-- On task completion, the evaluator serializes the model, registers an immutable
-  asset version in the catalog (namespace `"model"`), and auto-captures scalar
-  task inputs as `params` in the version metadata.
-- Expose real-time training progress through runtime events so the Rich CLI
-  renderer can display per-task training status (e.g. epoch, loss) alongside
-  the existing task progress output.
-- `ginkgo model ls` — list trained model assets with latest metrics summary.
 
 **`.sweep()` — parameter exploration:**
 
@@ -159,35 +146,34 @@ def main():
 - Support `strategy="grid"` (Cartesian product, default) and `strategy="zip"`
   (positional pairing, equal-length lists required).
 
+**Training progress events:**
+
+- Expose real-time training progress through runtime events so the Rich CLI
+  renderer can display per-task training status (e.g. epoch, loss) alongside
+  the existing task progress output. The `--agent` mode includes the same
+  events in JSONL output.
+
 #### Key design points
 
-- Model assets are registered in the existing asset catalog — this phase does
-  not build a separate model registry. Serialization, versioning, and storage
-  go through the existing `ArtifactStore` and `AssetStore`.
-- `kind="model"` uses `execution_mode = "driver"` (same as shell) — the task
-  body runs on the scheduler, produces a sentinel, and the evaluator handles
-  serialization and storage.
-- Training progress events are emitted through the existing runtime event bus.
-  The Rich renderer displays them; `--agent` mode includes them in JSONL output.
 - `.sweep()` is deliberately simple (grid/zip only) — it is not a Bayesian
   optimization framework. Complex HPO should use external tools with Ginkgo
   tasks as the execution substrate.
+- Training progress events are emitted through the existing runtime event bus.
+  Framework integration stays optional; the event contract is framework-agnostic
+  (step, metric, optional total).
 - Evaluation, model promotion, alias management, and comparison tooling are
   deferred. If needed, they can be added incrementally without changing the
   core model asset contract.
 
 #### Validation
 
-- A `kind="model"` task serializes and registers an immutable model version with
-  auto-captured params and metrics.
-- Training progress events appear in Rich CLI output during execution.
-- `ginkgo model ls` lists trained models with metrics.
 - `train.sweep(data=d, lr=[0.01, 0.1], epochs=[10, 50], strategy="grid")`
   produces 4 tasks with correct parameter combinations.
 - `strategy="zip"` with equal-length lists produces N tasks; unequal lengths
   raise a clear error.
 - Re-running with identical inputs hits the cache; changed inputs create a new
   version.
+- Training progress events appear in Rich CLI output during execution.
 
 ---
 

@@ -32,7 +32,7 @@ from ginkgo.runtime.artifacts.wrapper_serialization import (
 from ginkgo.runtime.caching.cache import CacheStore
 
 
-_WRAPPER_NAMESPACES = {"table", "array", "fig", "text"}
+_WRAPPER_NAMESPACES = {"table", "array", "fig", "text", "model"}
 
 
 def asset_key_for_result(*, name: str, kind: str) -> AssetKey:
@@ -44,7 +44,7 @@ def asset_key_for_result(*, name: str, kind: str) -> AssetKey:
         Local asset name.
     kind : str
         Asset kind. Supports ``"file"`` plus the wrapped kinds
-        (``"table"`` / ``"array"`` / ``"fig"`` / ``"text"``).
+        (``"table"`` / ``"array"`` / ``"fig"`` / ``"text"`` / ``"model"``).
 
     Returns
     -------
@@ -214,6 +214,17 @@ class AssetRegistrar:
                 )
                 for item in value
             )
+
+        if isinstance(value, dict):
+            return {
+                key: self._replace_asset_results(
+                    node=node,
+                    value=item,
+                    parent_refs=parent_refs,
+                    wrapper_state=wrapper_state,
+                )
+                for key, item in value.items()
+            }
 
         return value
 
