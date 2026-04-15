@@ -20,16 +20,18 @@ def local_store(tmp_path: Path) -> LocalArtifactStore:
 
 @pytest.fixture
 def mock_backend() -> MagicMock:
-    """Create a mock RemoteStorageBackend."""
+    """Create a mock RemoteStorageBackend.
+
+    ``head`` defaults to raising ``FileNotFoundError`` so that upload
+    paths exercised by tests actually call ``backend.upload``. Tests
+    that need existing-object behaviour override ``head`` explicitly.
+    """
     backend = MagicMock()
     backend.upload.return_value = RemoteObjectMeta(
         uri="gs://test-bucket/test-key",
         size=100,
     )
-    backend.head.return_value = RemoteObjectMeta(
-        uri="gs://test-bucket/test-key",
-        size=100,
-    )
+    backend.head.side_effect = FileNotFoundError("not found")
     return backend
 
 
@@ -104,6 +106,7 @@ class TestRemoteArtifactStore:
         mock_backend: MagicMock,
     ) -> None:
         # head() succeeds → exists remotely.
+        mock_backend.head.side_effect = None
         mock_backend.head.return_value = RemoteObjectMeta(
             uri="gs://test-bucket/artifacts/refs/fake-id.json",
             size=100,

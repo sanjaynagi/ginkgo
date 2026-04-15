@@ -136,14 +136,28 @@ class RemoteArtifactStore:
         return updated
 
     def _upload_blob(self, digest_hex: str) -> None:
-        """Upload a single blob to remote."""
+        """Upload a single blob to remote, skipping if already present.
+
+        Blobs are content-addressed, so a remote object at the same key
+        is guaranteed to hold the same bytes. Skipping re-uploads turns
+        a rerun from O(full dataset upload) into O(HEAD per blob), which
+        is the difference between minutes and hours for large folder
+        artifacts.
+        """
         blob_path = self.local._blobs_dir / digest_hex
-        if blob_path.exists():
-            self.backend.upload(
-                src_path=blob_path,
-                bucket=self.bucket,
-                key=f"{self.prefix}blobs/{digest_hex}",
-            )
+        if not blob_path.exists():
+            return
+        remote_key = f"{self.prefix}blobs/{digest_hex}"
+        try:
+            self.backend.head(bucket=self.bucket, key=remote_key)
+            return
+        except (FileNotFoundError, OSError):
+            pass
+        self.backend.upload(
+            src_path=blob_path,
+            bucket=self.bucket,
+            key=remote_key,
+        )
 
     def _upload_tree(self, digest_hex: str) -> None:
         """Upload a tree manifest and all its constituent blobs to remote.
@@ -157,6 +171,13 @@ class RemoteArtifactStore:
         if not tree_path.exists():
             return
 
+        remote_tree_key = f"{self.prefix}trees/{digest_hex}.json"
+        try:
+            self.backend.head(bucket=self.bucket, key=remote_tree_key)
+            return  # tree manifest already published; blobs too (content-addressed)
+        except (FileNotFoundError, OSError):
+            pass
+
         tree_ref = deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
         unique_digests = {entry.blob_digest for entry in tree_ref.entries}
         self._run_parallel(self._upload_blob, unique_digests)
@@ -164,7 +185,7 @@ class RemoteArtifactStore:
         self.backend.upload(
             src_path=tree_path,
             bucket=self.bucket,
-            key=f"{self.prefix}trees/{digest_hex}.json",
+            key=remote_tree_key,
         )
 
     # --- Downloading (remote → local) ----------------------------------------

@@ -94,22 +94,29 @@ def _stage_value(
 ) -> Any:
     """Stage a single argument value, recursing into typed containers."""
     # file / folder: upload content, emit a remote reference dict.
-    if _annotation_matches(annotation=annotation, target=file) and isinstance(value, str):
-        return _stage_path(
-            path=Path(value),
-            tag=_REMOTE_FILE_TAG,
-            remote_store=remote_store,
-            known_digests=known_digests,
-            published_artifacts=published_artifacts,
-        )
-    if _annotation_matches(annotation=annotation, target=folder) and isinstance(value, str):
-        return _stage_path(
-            path=Path(value),
-            tag=_REMOTE_FOLDER_TAG,
-            remote_store=remote_store,
-            known_digests=known_digests,
-            published_artifacts=published_artifacts,
-        )
+    # Inputs may arrive either as raw strings (unencoded) or as the
+    # ``{__ginkgo_type__: file/folder, value: <path>}`` dicts produced by
+    # ``encode_value``.
+    if _annotation_matches(annotation=annotation, target=file):
+        path_str = _file_path_from_value(value=value, tag="file")
+        if path_str is not None:
+            return _stage_path(
+                path=Path(path_str),
+                tag=_REMOTE_FILE_TAG,
+                remote_store=remote_store,
+                known_digests=known_digests,
+                published_artifacts=published_artifacts,
+            )
+    if _annotation_matches(annotation=annotation, target=folder):
+        path_str = _file_path_from_value(value=value, tag="folder")
+        if path_str is not None:
+            return _stage_path(
+                path=Path(path_str),
+                tag=_REMOTE_FOLDER_TAG,
+                remote_store=remote_store,
+                known_digests=known_digests,
+                published_artifacts=published_artifacts,
+            )
 
     # Recurse into typed containers.
     origin = get_origin(annotation)
@@ -143,6 +150,17 @@ def _stage_value(
         }
 
     return value
+
+
+def _file_path_from_value(*, value: Any, tag: str) -> str | None:
+    """Extract a path string from a raw or encoded file/folder argument."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and value.get("__ginkgo_type__") == tag:
+        path = value.get("value")
+        if isinstance(path, str):
+            return path
+    return None
 
 
 def _stage_path(

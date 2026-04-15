@@ -11,6 +11,7 @@ from ginkgo.remote.kubernetes import (
     _encode_payload,
     _generate_job_name,
     _parse_worker_output,
+    _RefreshingApi,
 )
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobState
 
@@ -121,43 +122,51 @@ class TestKubernetesJobHandle:
         handle = self._make_handle()
         assert handle.job_id == "ginkgo/ginkgo-test-001"
 
+    def _make_status(
+        self,
+        *,
+        succeeded: int | None = None,
+        active: int | None = None,
+        failed_condition: bool = False,
+    ) -> MagicMock:
+        """Build a job status mock with explicit fields for state()."""
+        status = MagicMock()
+        status.succeeded = succeeded
+        status.active = active
+        status.failed = None
+        if failed_condition:
+            condition = MagicMock()
+            condition.type = "Failed"
+            condition.status = "True"
+            status.conditions = [condition]
+        else:
+            status.conditions = []
+        return status
+
     def test_state_succeeded(self) -> None:
         handle = self._make_handle()
-        job_status = MagicMock()
-        job_status.succeeded = 1
-        job_status.failed = None
-        job_status.active = None
-        handle._batch_api.read_namespaced_job.return_value.status = job_status
+        handle._batch_api.read_namespaced_job.return_value.status = self._make_status(succeeded=1)
 
         assert handle.state() == RemoteJobState.SUCCEEDED
 
     def test_state_failed(self) -> None:
         handle = self._make_handle()
-        job_status = MagicMock()
-        job_status.succeeded = None
-        job_status.failed = 1
-        job_status.active = None
-        handle._batch_api.read_namespaced_job.return_value.status = job_status
+        handle._batch_api.read_namespaced_job.return_value.status = self._make_status(
+            failed_condition=True
+        )
 
         assert handle.state() == RemoteJobState.FAILED
 
     def test_state_running(self) -> None:
         handle = self._make_handle()
-        job_status = MagicMock()
-        job_status.succeeded = None
-        job_status.failed = None
-        job_status.active = 1
-        handle._batch_api.read_namespaced_job.return_value.status = job_status
+        handle._batch_api.read_namespaced_job.return_value.status = self._make_status(active=1)
 
         assert handle.state() == RemoteJobState.RUNNING
 
     def test_state_pending(self) -> None:
         handle = self._make_handle()
-        job_status = MagicMock()
-        job_status.succeeded = None
-        job_status.failed = None
-        job_status.active = None
-        handle._batch_api.read_namespaced_job.return_value.status = job_status
+        handle._batch_api.read_namespaced_job.return_value.status = self._make_status()
+        handle._core_api.list_namespaced_pod.return_value.items = []
 
         assert handle.state() == RemoteJobState.PENDING
 
@@ -193,6 +202,51 @@ class TestKubernetesJobHandle:
         handle._core_api.list_namespaced_pod.return_value.items = []
 
         assert handle.logs_tail() == ""
+
+
+class TestRefreshingApi:
+    """Verify that the 401-retry proxy rebuilds the inner API and retries."""
+
+    def _make_api_exception(self, status: int) -> Exception:
+        exc = Exception("api error")
+        exc.status = status  # type: ignore[attr-defined]
+        return exc
+
+    def test_passthrough_when_no_error(self) -> None:
+        inner = MagicMock()
+        inner.read_namespaced_job.return_value = "job-body"
+        factory = MagicMock()
+        api = _RefreshingApi(inner=inner, factory=factory)
+
+        assert api.read_namespaced_job(name="x") == "job-body"
+        factory.assert_not_called()
+
+    def test_retries_and_rebuilds_on_401(self) -> None:
+        stale = MagicMock()
+        stale.read_namespaced_job.side_effect = self._make_api_exception(401)
+        fresh = MagicMock()
+        fresh.read_namespaced_job.return_value = "job-body"
+        factory = MagicMock(return_value=fresh)
+        api = _RefreshingApi(inner=stale, factory=factory)
+
+        assert api.read_namespaced_job(name="x") == "job-body"
+        factory.assert_called_once()
+        # The wrapper must have swapped the inner api to the fresh one.
+        assert api._inner is fresh
+
+    def test_non_401_propagates(self) -> None:
+        inner = MagicMock()
+        inner.read_namespaced_job.side_effect = self._make_api_exception(500)
+        factory = MagicMock()
+        api = _RefreshingApi(inner=inner, factory=factory)
+
+        try:
+            api.read_namespaced_job(name="x")
+        except Exception as exc:
+            assert getattr(exc, "status", None) == 500
+        else:
+            raise AssertionError("expected exception")
+        factory.assert_not_called()
 
 
 class TestRemoteExecutorProtocol:

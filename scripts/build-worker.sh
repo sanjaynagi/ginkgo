@@ -34,7 +34,10 @@ BASE_IMAGE="${GINKGO_BASE_IMAGE:-${REGISTRY}/worker:v2}"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYPROJECT="${PROJECT_ROOT}/pyproject.toml"
-REPO_NAME="${GINKGO_REPO_NAME:-$(basename "$PROJECT_ROOT")-worker}"
+# Lowercase the derived name so the resulting tag satisfies Docker's
+# repository-name requirements when the project directory contains
+# uppercase characters.
+REPO_NAME="${GINKGO_REPO_NAME:-$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]')-worker}"
 
 if [[ ! -f "$PYPROJECT" ]]; then
   echo "error: $PYPROJECT not found." >&2
