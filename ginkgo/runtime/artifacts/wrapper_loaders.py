@@ -205,12 +205,24 @@ def _load_model_bytes(
     data = artifact_store.read_bytes(artifact_id=artifact_id)
 
     if sub_kind in {"sklearn", "xgboost", "lightgbm"}:
-        import joblib  # type: ignore[import-not-found]
+        try:
+            import joblib  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                f"Loading a model asset with framework={sub_kind!r} requires the "
+                "'joblib' package. Install with: pip install joblib scikit-learn"
+            ) from exc
 
         return joblib.load(io.BytesIO(data))
 
     if sub_kind == "pytorch":
-        import torch  # type: ignore[import-not-found]
+        try:
+            import torch  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "Loading a model asset with framework='pytorch' requires the "
+                "'torch' package. Install with: pip install torch"
+            ) from exc
 
         # ``weights_only=False`` is required for full-object reloads, which
         # is the symmetry we chose with sklearn/keras. The user accepts the
@@ -220,7 +232,13 @@ def _load_model_bytes(
     if sub_kind == "keras":
         import tempfile
 
-        import keras  # type: ignore[import-not-found]
+        try:
+            import keras  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "Loading a model asset with framework='keras' requires the "
+                "'keras' package. Install with: pip install keras"
+            ) from exc
 
         with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as handle:
             handle.write(data)

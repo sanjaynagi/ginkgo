@@ -510,13 +510,25 @@ def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
     payload = wrapper.payload
 
     if sub_kind in {"sklearn", "xgboost", "lightgbm"}:
-        import joblib  # type: ignore[import-not-found]
+        try:
+            import joblib  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                f"model() with framework={sub_kind!r} requires the 'joblib' package. "
+                "Install with: pip install joblib scikit-learn"
+            ) from exc
 
         buffer = io.BytesIO()
         joblib.dump(payload, buffer)
         data = buffer.getvalue()
     elif sub_kind == "pytorch":
-        import torch  # type: ignore[import-not-found]
+        try:
+            import torch  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "model() with framework='pytorch' requires the 'torch' package. "
+                "Install with: pip install torch"
+            ) from exc
 
         buffer = io.BytesIO()
         torch.save(payload, buffer)
