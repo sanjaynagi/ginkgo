@@ -3,6 +3,14 @@
 In *code-sync* mode, the workflow's project package is tarred up, hashed,
 uploaded to the remote artifact backend, and downloaded by the worker
 before importing the task callable.
+
+Filtering respects three layers (most-specific wins):
+
+1. **Built-in defaults** — ``__pycache__``, ``.git``, compiled extensions, etc.
+2. **``.gitignore``** — if present in the package or its parent, loaded via
+   ``pathspec`` so the bundle mirrors ``git ls-files``.
+3. **User ``exclude`` list** — extra glob patterns from
+   ``[remote.k8s.code] exclude``.
 """
 
 from __future__ import annotations
@@ -12,6 +20,7 @@ import logging
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from ginkgo.remote.backend import RemoteStorageBackend
 
@@ -44,18 +53,53 @@ _EXCLUDED_EXTENSIONS: frozenset[str] = frozenset(
 )
 
 
-def _should_exclude(member: tarfile.TarInfo, *, excludes: frozenset[str]) -> bool:
+def _load_gitignore_spec(root: Path) -> Any | None:
+    """Load ``.gitignore`` from *root* or its parent as a ``pathspec`` matcher.
+
+    Returns ``None`` if pathspec is unavailable or no ``.gitignore`` exists.
+    """
+    try:
+        import pathspec
+    except ImportError:
+        return None
+
+    for candidate in (root / ".gitignore", root.parent / ".gitignore"):
+        if candidate.is_file():
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+            spec = pathspec.PathSpec.from_lines("gitwildmatch", lines)
+            logger.debug("Loaded .gitignore from %s (%d patterns)", candidate, len(lines))
+            return spec
+    return None
+
+
+def _should_exclude(
+    member: tarfile.TarInfo,
+    *,
+    excludes: frozenset[str],
+    gitignore_spec: Any | None = None,
+    package_parent: Path | None = None,
+) -> bool:
     """Return True if a tar member should be excluded from the bundle."""
     parts = Path(member.name).parts
     for part in parts:
         if part in excludes:
             return True
-        # Glob-style matching for patterns like "*.egg-info".
         for pattern in excludes:
             if "*" in pattern and Path(part).match(pattern):
                 return True
     if any(member.name.endswith(ext) for ext in _EXCLUDED_EXTENSIONS):
         return True
+
+    # .gitignore matching — pathspec expects paths relative to the repo root.
+    if gitignore_spec is not None:
+        match_path = member.name
+        if package_parent is not None:
+            # arcname is relative to package_parent; .gitignore patterns are
+            # relative to the repo root which is typically package_parent.
+            match_path = member.name
+        if gitignore_spec.match_file(match_path):
+            return True
+
     return False
 
 
@@ -63,6 +107,7 @@ def create_code_bundle(
     *,
     package_path: Path,
     excludes: frozenset[str] | None = None,
+    extra_excludes: list[str] | None = None,
 ) -> tuple[Path, str]:
     """Create a tarball of a Python package directory.
 
@@ -72,6 +117,9 @@ def create_code_bundle(
         Path to the package directory to bundle.
     excludes : frozenset[str] | None
         Directory/file names to exclude. Uses sensible defaults if None.
+    extra_excludes : list[str] | None
+        Additional glob patterns from user config (e.g. ``[remote.k8s.code]
+        exclude``). Merged with *excludes*.
 
     Returns
     -------
@@ -84,6 +132,10 @@ def create_code_bundle(
 
     if excludes is None:
         excludes = _DEFAULT_EXCLUDES
+    if extra_excludes:
+        excludes = excludes | frozenset(extra_excludes)
+
+    gitignore_spec = _load_gitignore_spec(package_path)
 
     tmp = tempfile.NamedTemporaryFile(
         prefix="ginkgo-code-bundle-",
@@ -93,20 +145,36 @@ def create_code_bundle(
     tarball_path = Path(tmp.name)
     tmp.close()
 
+    included = 0
+    excluded_count = 0
     with tarfile.open(tarball_path, "w:gz") as tar:
         for item in sorted(package_path.rglob("*")):
             arcname = str(item.relative_to(package_path.parent))
             info = tar.gettarinfo(str(item), arcname=arcname)
-            if _should_exclude(info, excludes=excludes):
+            if _should_exclude(
+                info,
+                excludes=excludes,
+                gitignore_spec=gitignore_spec,
+                package_parent=package_path.parent,
+            ):
+                excluded_count += 1
                 continue
             if item.is_file():
                 with open(item, "rb") as fh:
                     tar.addfile(info, fh)
+                included += 1
             elif item.is_dir():
                 tar.addfile(info)
 
     digest = _sha256_file(tarball_path)
-    logger.debug("Created code bundle %s (digest=%s)", tarball_path, digest[:12])
+    size_mb = tarball_path.stat().st_size / (1024 * 1024)
+    logger.info(
+        "Code bundle: %d files included, %d excluded, %.1f MiB (digest=%s)",
+        included,
+        excluded_count,
+        size_mb,
+        digest[:12],
+    )
     return tarball_path, digest
 
 

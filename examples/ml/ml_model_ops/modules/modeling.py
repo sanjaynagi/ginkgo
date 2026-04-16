@@ -29,7 +29,7 @@ _FEATURE_COLUMNS = [
 ]
 
 
-@task()
+@task(remote=True)
 def evaluate_candidate(
     model_name: str,
     weight_scale: float,

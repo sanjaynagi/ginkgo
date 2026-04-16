@@ -8,7 +8,9 @@ infrastructure.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +19,8 @@ from ginkgo.runtime.remote_executor import (
     RemoteJobResult,
     RemoteJobState,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _encode_payload(attempt: dict[str, Any]) -> str:
@@ -30,11 +34,15 @@ def _generate_job_id(attempt: dict[str, Any]) -> str:
 
     GCP Batch job IDs must be lowercase, start with a letter, and contain
     only letters, numbers, and hyphens.  Max 63 characters.
+
+    Appends a short content hash to avoid collisions on resubmission.
     """
     run_id = attempt.get("run_id", "unknown")
     task_id = attempt.get("task_id", "unknown")
     attempt_num = attempt.get("attempt", 0)
-    name = f"ginkgo-{run_id}-{task_id}-{attempt_num}"
+    digest = hashlib.sha256(json.dumps(attempt, sort_keys=True, default=str).encode())
+    suffix = digest.hexdigest()[:6]
+    name = f"ginkgo-{run_id}-{task_id}-{attempt_num}-{suffix}"
     name = name.lower().replace("_", "-")
     if len(name) > 63:
         name = name[:63]
@@ -139,12 +147,14 @@ class GCPBatchExecutor:
         container = batch_v1.Runnable.Container(
             image_uri=self.image,
             commands=["python", "-m", "ginkgo.remote.worker"],
+        )
+
+        runnable = batch_v1.Runnable(
+            container=container,
             environment=batch_v1.Environment(
                 variables={"GINKGO_WORKER_PAYLOAD": _encode_payload(attempt)},
             ),
         )
-
-        runnable = batch_v1.Runnable(container=container)
 
         # Compute resources.
         compute = batch_v1.ComputeResource(
@@ -235,6 +245,9 @@ class GCPBatchJobHandle:
 
     job_name: str
     _client: Any = field(repr=False)
+    _terminal_state: RemoteJobState | None = field(default=None, init=False, repr=False)
+    _terminal_logs: str | None = field(default=None, init=False, repr=False)
+    _job_uid: str | None = field(default=None, init=False, repr=False)
 
     @property
     def job_id(self) -> str:
@@ -243,22 +256,40 @@ class GCPBatchJobHandle:
 
     def state(self) -> RemoteJobState:
         """Poll the current GCP Batch job status."""
+        if self._terminal_state is not None:
+            return self._terminal_state
+
         from google.cloud import batch_v1
 
         job = self._client.get_job(request=batch_v1.GetJobRequest(name=self.job_name))
         status = job.status.state
 
+        # Cache the job UID for log queries — it's only available from the
+        # API response, not from the job name.
+        if self._job_uid is None and job.uid:
+            self._job_uid = job.uid
+
         if status == batch_v1.JobStatus.State.SUCCEEDED:
-            return RemoteJobState.SUCCEEDED
+            return self._mark_terminal(RemoteJobState.SUCCEEDED)
         if status in {
             batch_v1.JobStatus.State.FAILED,
             batch_v1.JobStatus.State.DELETION_IN_PROGRESS,
         }:
-            return RemoteJobState.FAILED
+            return self._mark_terminal(RemoteJobState.FAILED)
         if status == batch_v1.JobStatus.State.RUNNING:
             return RemoteJobState.RUNNING
         # QUEUED, SCHEDULED, STATE_UNSPECIFIED
         return RemoteJobState.PENDING
+
+    def _mark_terminal(self, state: RemoteJobState) -> RemoteJobState:
+        """Cache a terminal state and snapshot the logs."""
+        if self._terminal_state is None:
+            self._terminal_state = state
+            try:
+                self._terminal_logs = self.logs_tail(lines=1000)
+            except Exception:
+                self._terminal_logs = ""
+        return state
 
     def result(self) -> RemoteJobResult:
         """Block until the job reaches a terminal state and return the result."""
@@ -270,7 +301,10 @@ class GCPBatchJobHandle:
             time.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, 30.0)
 
-        logs = self.logs_tail(lines=1000)
+        if self._terminal_logs is not None:
+            logs = self._terminal_logs
+        else:
+            logs = self.logs_tail(lines=1000)
         payload = _parse_worker_output(logs)
 
         exit_code = None
@@ -291,16 +325,26 @@ class GCPBatchJobHandle:
         self._client.delete_job(request=batch_v1.DeleteJobRequest(name=self.job_name))
 
     def logs_tail(self, *, lines: int = 100) -> str:
-        """Return the last *lines* lines from Cloud Logging for this job."""
+        """Return the last *lines* lines from Cloud Logging for this job.
+
+        Uses the job's ``uid`` (from the API response) rather than the
+        job ID to filter logs — the Batch service labels log entries with
+        ``batch.googleapis.com/job_uid``, not the human-readable job name.
+        """
         try:
             from google.cloud import logging as cloud_logging
         except ImportError:
             return ""
 
+        # The job UID is required for the log filter; fall back to the
+        # job name's last segment if we haven't observed a UID yet (e.g.
+        # the job was just created and state() hasn't been called).
+        uid = self._job_uid or self.job_name.split("/")[-1]
+
         try:
-            client = cloud_logging.Client(project=self._project_from_name())
-            job_uid = self.job_name.split("/")[-1]
-            log_filter = f'resource.type="batch.googleapis.com/Job" labels.job_uid="{job_uid}"'
+            project = self._project_from_name()
+            client = cloud_logging.Client(project=project)
+            log_filter = f'resource.type="batch.googleapis.com/Job" labels.job_uid="{uid}"'
             entries = list(
                 client.list_entries(
                     filter_=log_filter,
@@ -308,13 +352,20 @@ class GCPBatchJobHandle:
                     max_results=lines,
                 )
             )
-            # Entries come newest-first; reverse for chronological order.
             entries.reverse()
-            return "\n".join(
-                entry.payload if isinstance(entry.payload, str) else str(entry.payload)
-                for entry in entries
-            )
+            lines = []
+            for entry in entries:
+                if isinstance(entry.payload, str):
+                    lines.append(entry.payload)
+                elif isinstance(entry.payload, dict):
+                    # Cloud Logging stores structured output as jsonPayload;
+                    # serialize back to JSON so _parse_worker_output can find it.
+                    lines.append(json.dumps(entry.payload))
+                else:
+                    lines.append(str(entry.payload))
+            return "\n".join(lines)
         except Exception:
+            logger.debug("Failed to fetch logs for job %s", self.job_name, exc_info=True)
             return ""
 
     def _project_from_name(self) -> str:

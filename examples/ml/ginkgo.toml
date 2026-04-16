@@ -24,3 +24,15 @@ model_name = "expansion_focus"
 weight_scale = 1.22
 ticket_penalty = 0.18
 decision_threshold = 0.48
+
+[remote.batch]
+project = "project-f02462a0-79be-4c18-b26"
+region = "europe-west2"
+image = "europe-west2-docker.pkg.dev/project-f02462a0-79be-4c18-b26/ginkgo/ml-worker:v2"
+
+[remote.artifacts]
+store = "gs://ginkgo-remote-artifacts-f02462a0/ml-example/"
+
+[remote.batch.code]
+mode = "sync"
+package = "ml_model_ops"
