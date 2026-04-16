@@ -7,6 +7,7 @@ Kubernetes cluster.  One Job per attempt; Ginkgo handles retries.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import time
@@ -26,16 +27,22 @@ def _encode_payload(attempt: dict[str, Any]) -> str:
 
 
 def _generate_job_name(attempt: dict[str, Any]) -> str:
-    """Generate a unique Kubernetes Job name from the attempt payload."""
+    """Generate a unique Kubernetes Job name from the attempt payload.
+
+    Appends a short hash suffix derived from the payload content to avoid
+    collisions when the same (run_id, task_id, attempt) is resubmitted.
+    """
     run_id = attempt.get("run_id", "unknown")
     task_id = attempt.get("task_id", "unknown")
     attempt_num = attempt.get("attempt", 0)
+    # Short content-hash suffix for uniqueness across resubmissions.
+    digest = hashlib.sha256(json.dumps(attempt, sort_keys=True, default=str).encode())
+    suffix = digest.hexdigest()[:6]
     # K8s names must be <= 63 chars, lowercase alphanumeric + hyphens.
-    name = f"ginkgo-{run_id}-{task_id}-{attempt_num}"
+    name = f"ginkgo-{run_id}-{task_id}-{attempt_num}-{suffix}"
     name = name.lower().replace("_", "-")
     if len(name) > 63:
         name = name[:63]
-    # Strip trailing hyphens.
     return name.rstrip("-")
 
 
@@ -312,6 +319,8 @@ class KubernetesJobHandle:
     _job_observed: bool = field(default=False, init=False, repr=False)
     _terminal_state: Any = field(default=None, init=False, repr=False)
     _terminal_logs: str | None = field(default=None, init=False, repr=False)
+    _last_pod_check: float = field(default=0.0, init=False, repr=False)
+    _last_pod_list: Any = field(default=None, init=False, repr=False)
 
     @property
     def job_id(self) -> str:
@@ -383,12 +392,18 @@ class KubernetesJobHandle:
                 self._terminal_logs = ""
         return state
 
+    _POD_CHECK_INTERVAL = 15.0
+
     def _check_unschedulable_timeout(self) -> bool:
         """Return True if the pod has been unschedulable for too long."""
-        pods = self._core_api.list_namespaced_pod(
-            namespace=self.namespace,
-            label_selector=f"job-name={self.job_name}",
-        )
+        now = time.monotonic()
+        if now - self._last_pod_check >= self._POD_CHECK_INTERVAL or self._last_pod_list is None:
+            self._last_pod_list = self._core_api.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f"job-name={self.job_name}",
+            )
+            self._last_pod_check = now
+        pods = self._last_pod_list
         if not pods.items:
             return False
         pod = pods.items[0]

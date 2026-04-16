@@ -35,7 +35,7 @@ from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle, Remo
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
-from ginkgo.runtime.artifacts.output_index import artifact_index
+from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.wrapper_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -67,7 +67,7 @@ from ginkgo.runtime.environment.secrets import (
     collect_resolved_secret_values,
     resolve_secret_refs,
 )
-from ginkgo.runtime.staging import (
+from ginkgo.runtime.remote_input_resolver import (
     RemoteStager,
     count_remote_inputs,
     load_remote_publisher,
@@ -251,6 +251,7 @@ class _ConcurrentEvaluator:
     _remote_artifact_store: Any = field(default=None, init=False, repr=False)
     _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
     _remote_published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
+    _staging_cache_path: Path = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.profiler is None:
@@ -267,6 +268,8 @@ class _ConcurrentEvaluator:
             raise ValueError("memory must be at least 1 when provided")
 
         self._hash_memo = HashMemo()
+        self._staging_cache_path = Path.cwd() / ".ginkgo" / "remote-staged.json"
+        self._load_staging_cache()
         artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
         self._materialization_log = MaterializationLog(
             path=artifacts_root / "materializations.json"
@@ -388,6 +391,7 @@ class _ConcurrentEvaluator:
                 self._shell_executor = None
                 self._materialization_log.save()
                 self._cache_store.save_stat_index()
+                self._save_staging_cache()
 
         assert self._failure is not None
         raise self._failure
@@ -912,7 +916,7 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 env=node.task_def.env,
                 value=value,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
         self._emit_event(
@@ -924,7 +928,7 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="success",
                 cache_key=node.cache_key,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
                 remote_job_id=node.remote_job_id,
             )
         )
@@ -1351,7 +1355,7 @@ class _ConcurrentEvaluator:
             if self._code_bundle_meta is not None:
                 payload["code_bundle"] = self._code_bundle_meta
             if self._remote_artifact_store is not None:
-                from ginkgo.runtime.artifacts.remote_staging import stage_args_for_remote
+                from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
 
                 payload["args"] = stage_args_for_remote(
                     args=payload["args"],
@@ -1430,7 +1434,7 @@ class _ConcurrentEvaluator:
             and payload.get("result_encoding") == "encoded"
             and "result" in payload
         ):
-            from ginkgo.runtime.artifacts.remote_staging import hydrate_result_from_remote
+            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
 
             scratch_dir = self._remote_artifact_store.local._root / "remote-outputs"
             payload["result"] = hydrate_result_from_remote(
@@ -1450,10 +1454,32 @@ class _ConcurrentEvaluator:
         if not logs:
             return
 
-        # Write logs to stdout_path (remote workers merge stdout/stderr).
-        if node.stdout_path is not None:
-            node.stdout_path.parent.mkdir(parents=True, exist_ok=True)
-            node.stdout_path.write_text(logs, encoding="utf-8")
+        # Remote workers merge stdout/stderr into one stream — write to both
+        # paths so users find tracebacks where they expect them.
+        for log_path in (node.stdout_path, node.stderr_path):
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(logs, encoding="utf-8")
+
+    def _load_staging_cache(self) -> None:
+        """Restore persisted staging state from ``.ginkgo/remote-staged.json``."""
+        from ginkgo.runtime.artifacts.remote_arg_transfer import load_staging_cache
+
+        digests, published = load_staging_cache(cache_path=self._staging_cache_path)
+        self._known_digests.update(digests)
+        self._remote_published_artifacts.update(published)
+
+    def _save_staging_cache(self) -> None:
+        """Persist staging state so the next run skips re-hashing unchanged inputs."""
+        if not self._known_digests and not self._remote_published_artifacts:
+            return
+        from ginkgo.runtime.artifacts.remote_arg_transfer import save_staging_cache
+
+        save_staging_cache(
+            cache_path=self._staging_cache_path,
+            known_digests=self._known_digests,
+            published_artifacts=self._remote_published_artifacts,
+        )
 
     def _ensure_code_bundle(self) -> None:
         """Create and publish the code bundle on first remote dispatch.
@@ -1502,7 +1528,13 @@ class _ConcurrentEvaluator:
         if prefix and not prefix.endswith("/"):
             prefix += "/"
 
-        bundle_path, digest = create_code_bundle(package_path=package_path)
+        extra_excludes = self.code_bundle_config.get("exclude")
+        if isinstance(extra_excludes, str):
+            extra_excludes = [extra_excludes]
+        bundle_path, digest = create_code_bundle(
+            package_path=package_path,
+            extra_excludes=extra_excludes,
+        )
         try:
             remote_key = publish_code_bundle(
                 backend=backend,
@@ -1824,7 +1856,7 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 env=node.task_def.env,
                 value=value,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
             self._notebook_runner.replay_cached_extras(node=node, cache_key=cache_key)
@@ -1847,7 +1879,7 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="cached",
                 cache_key=cache_key,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
             )
         )
 
@@ -1944,12 +1976,12 @@ class _ConcurrentEvaluator:
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"
 
-    def _artifact_index_for(self, *, node: _TaskNode, value: Any) -> list[dict[str, Any]]:
-        """Return a compact typed artifact summary for one task result."""
+    def _output_summary_for(self, *, node: _TaskNode, value: Any) -> list[dict[str, Any]]:
+        """Return a compact typed output summary for one task result."""
         annotation = node.task_def.type_hints.get(
             "return", node.task_def.signature.return_annotation
         )
-        return artifact_index(annotation, value)
+        return output_summary(annotation, value)
 
     def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
         """Return recorded asset summaries for one task result."""

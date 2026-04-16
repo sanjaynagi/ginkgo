@@ -19,19 +19,13 @@ import sys
 
 def main() -> None:
     """Execute a task from a remote worker payload."""
+    from ginkgo.runtime.worker import error_response
+
     payload_b64 = os.environ.get("GINKGO_WORKER_PAYLOAD")
     if payload_b64 is None:
         print(
             json.dumps(
-                {
-                    "ok": False,
-                    "error": {
-                        "type": "RuntimeError",
-                        "module": "builtins",
-                        "message": "GINKGO_WORKER_PAYLOAD environment variable not set",
-                        "args": ["GINKGO_WORKER_PAYLOAD environment variable not set"],
-                    },
-                }
+                error_response(RuntimeError("GINKGO_WORKER_PAYLOAD environment variable not set"))
             )
         )
         sys.exit(1)
@@ -39,19 +33,8 @@ def main() -> None:
     try:
         payload = json.loads(base64.b64decode(payload_b64))
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": {
-                        "type": type(exc).__name__,
-                        "module": type(exc).__module__,
-                        "message": f"Failed to decode worker payload: {exc}",
-                        "args": [str(exc)],
-                    },
-                }
-            )
-        )
+        exc.args = (f"Failed to decode worker payload: {exc}",)
+        print(json.dumps(error_response(exc)))
         sys.exit(1)
 
     # Remove remote-only keys that the local worker doesn't expect.
@@ -84,19 +67,7 @@ def main() -> None:
         ):
             _stage_remote_outputs(result, config=remote_artifact_config)
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": {
-                        "type": type(exc).__name__,
-                        "module": type(exc).__module__,
-                        "message": str(exc),
-                        "args": [str(a) for a in exc.args],
-                    },
-                }
-            )
-        )
+        print(json.dumps(error_response(exc)))
         sys.exit(1)
 
     # Print the result as a JSON line for the handle to parse.
@@ -106,7 +77,6 @@ def main() -> None:
 
 def _install_code_bundle(code_bundle: dict[str, str]):
     """Download and extract a code bundle, prepending it to sys.path."""
-    from pathlib import Path
     from ginkgo.remote.code_bundle import download_and_extract
     from ginkgo.remote.resolve import resolve_backend
 
@@ -115,7 +85,7 @@ def _install_code_bundle(code_bundle: dict[str, str]):
     key = code_bundle["key"]
 
     backend = resolve_backend(scheme)
-    dest_dir = Path("/tmp/ginkgo-code-bundle")
+    dest_dir = _scratch_root() / "ginkgo-code-bundle"
     download_and_extract(
         backend=backend,
         bucket=bucket,
@@ -126,15 +96,29 @@ def _install_code_bundle(code_bundle: dict[str, str]):
     return dest_dir
 
 
+def _scratch_root():
+    """Return the base scratch directory for worker temp files.
+
+    Checks ``$GINKGO_SCRATCH_ROOT``, then ``$TMPDIR``, then ``/tmp``.
+    """
+    from pathlib import Path
+
+    for var in ("GINKGO_SCRATCH_ROOT", "TMPDIR"):
+        val = os.environ.get(var)
+        if val:
+            return Path(val)
+    return Path("/tmp")
+
+
 def _stage_remote_outputs(result: dict, *, config: dict[str, str]) -> None:
     """Upload encoded file/folder outputs to the shared remote store."""
-    from pathlib import Path
-    from ginkgo.runtime.artifacts.remote_staging import (
+    from ginkgo.runtime.artifacts.remote_arg_transfer import (
         build_worker_remote_store,
         stage_result_for_remote,
     )
 
-    local_root = Path("/tmp/ginkgo-remote-cas")
+    root = _scratch_root()
+    local_root = root / "ginkgo-remote-cas"
     remote_store = build_worker_remote_store(
         scheme=config["scheme"],
         bucket=config["bucket"],
@@ -146,14 +130,14 @@ def _stage_remote_outputs(result: dict, *, config: dict[str, str]) -> None:
 
 def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
     """Download remote-staged ``file`` / ``folder`` inputs into the pod."""
-    from pathlib import Path
-    from ginkgo.runtime.artifacts.remote_staging import (
+    from ginkgo.runtime.artifacts.remote_arg_transfer import (
         build_worker_remote_store,
         hydrate_args_from_remote,
     )
 
-    local_root = Path("/tmp/ginkgo-remote-cas")
-    scratch_dir = Path("/tmp/ginkgo-inputs")
+    root = _scratch_root()
+    local_root = root / "ginkgo-remote-cas"
+    scratch_dir = root / "ginkgo-inputs"
     remote_store = build_worker_remote_store(
         scheme=config["scheme"],
         bucket=config["bucket"],
