@@ -269,7 +269,6 @@ class _ConcurrentEvaluator:
 
         self._hash_memo = HashMemo()
         self._staging_cache_path = Path.cwd() / ".ginkgo" / "remote-staged.json"
-        self._load_staging_cache()
         artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
         self._materialization_log = MaterializationLog(
             path=artifacts_root / "materializations.json"
@@ -1567,6 +1566,7 @@ class _ConcurrentEvaluator:
         if self._remote_artifact_store_checked:
             return
         self._remote_artifact_store_checked = True
+        self._load_staging_cache()
         from ginkgo.runtime.artifacts.remote_artifact_store import (
             load_remote_artifact_store,
         )
