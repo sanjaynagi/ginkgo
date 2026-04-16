@@ -24,10 +24,6 @@ notebooks = [
     "marimo>=0.11",
     "nbconvert>=7.16",
 ]
-ml = [
-    "joblib>=1.3",
-    "scikit-learn>=1.3",
-]
 
 [project.scripts]
 ginkgo = "ginkgo.cli:main"
@@ -47,7 +43,7 @@ channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
-ginkgo = { path = ".", editable = true, extras = ["notebooks", "ml"] }
+ginkgo = { path = ".", editable = true, extras = ["notebooks"] }
 fsspec = ">=2024.10.0"
 numpy = ">=2.0"
 ocifs = ">=1.3.2"
@@ -74,6 +70,8 @@ sphinx = ">=8.0"
 myst-parser = ">=4.0"
 furo = ">=2024.8.6"
 sphinx-copybutton = ">=0.5.2"
+joblib = ">=1.3"
+scikit-learn = ">=1.3"
 
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }

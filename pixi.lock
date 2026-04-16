@@ -170,7 +170,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/b2/04/7b5705d5b3c0fab088f434f9c83edac1573830ca49ccf29fb83bf7178eec/tornado-6.5.5-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/00/c0/8f5d070730d7836adc9c9b6408dec68c6ced86b304a9b26a14df072a6e8c/traitlets-5.14.3-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/d9/c3/f89a9a42b47da108ed758ae9d065d10bf2acc2ea88e3d200b95511096b7b/ty-0.0.30-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c8/37/01eccd25d23f5aaa7f7ff1a87b5b215469f6b202cf689a1812b71c1e7f6b/ty-0.0.31-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/39/08/aaaad47bc4e9dc8c725e68f9d04865dbcb2052843ff09c97b08904852d84/urllib3-2.6.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b7/23/a5bbd9600dd607411fa644c06ff4951bec3a4d82c4b852374024359c19c0/uvicorn-0.44.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/27/8d/edd0bd910ff803c308ee9a6b7778621af0d10252219ad9f19ef4d4982a61/virtualenv-21.2.4-py3-none-any.whl
@@ -337,7 +337,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/59/8c/77f5097695f4dd8255ecbd08b2a1ed8ba8b953d337804dd7080f199e12bf/tornado-6.5.5-cp39-abi3-macosx_10_9_universal2.whl
       - pypi: https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/00/c0/8f5d070730d7836adc9c9b6408dec68c6ced86b304a9b26a14df072a6e8c/traitlets-5.14.3-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/e3/d2/a2649eb6841ebf946ac827e778b7e78b5ef63c3758bf2b9da13d927a53da/ty-0.0.30-py3-none-macosx_11_0_arm64.whl
+      - pypi: https://files.pythonhosted.org/packages/04/b0/4a5aff88d2544f19514a59c8f693d63144aa7307fe2ee5df608333ab5460/ty-0.0.31-py3-none-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/39/08/aaaad47bc4e9dc8c725e68f9d04865dbcb2052843ff09c97b08904852d84/urllib3-2.6.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b7/23/a5bbd9600dd607411fa644c06ff4951bec3a4d82c4b852374024359c19c0/uvicorn-0.44.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/27/8d/edd0bd910ff803c308ee9a6b7778621af0d10252219ad9f19ef4d4982a61/virtualenv-21.2.4-py3-none-any.whl
@@ -924,7 +924,7 @@ packages:
 - pypi: ./
   name: ginkgo
   version: 0.1.0
-  sha256: d6aadc4934283d2ab90ecdaa5444ee56eb42938b64d5bd4d8e5e0041d61add51
+  sha256: 775fa3abf91c6d1f6ffa517d3d604a3220f6afa49990d01831e8cbb129578ed6
   requires_dist:
   - blake3>=1.0.0
   - fsspec>=2024.10.0
@@ -940,8 +940,6 @@ packages:
   - ipykernel>=6.29 ; extra == 'notebooks'
   - marimo>=0.11 ; extra == 'notebooks'
   - nbconvert>=7.16 ; extra == 'notebooks'
-  - joblib>=1.3 ; extra == 'ml'
-  - scikit-learn>=1.3 ; extra == 'ml'
   requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
   name: h11
@@ -3169,15 +3167,15 @@ packages:
   - pytest-mypy-testing ; extra == 'test'
   - pytest>=7.0,<8.2 ; extra == 'test'
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/d9/c3/f89a9a42b47da108ed758ae9d065d10bf2acc2ea88e3d200b95511096b7b/ty-0.0.30-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+- pypi: https://files.pythonhosted.org/packages/04/b0/4a5aff88d2544f19514a59c8f693d63144aa7307fe2ee5df608333ab5460/ty-0.0.31-py3-none-macosx_11_0_arm64.whl
   name: ty
-  version: 0.0.30
-  sha256: a4b328ee332ec6276afc863ea7cf6d8167d9dd8d9f3d1c2e738ef39932511ac4
+  version: 0.0.31
+  sha256: 5f345df2b87d747859e72c2cbc9be607ea1bbc8bc93dd32fa3d03ea091cb4fee
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/e3/d2/a2649eb6841ebf946ac827e778b7e78b5ef63c3758bf2b9da13d927a53da/ty-0.0.30-py3-none-macosx_11_0_arm64.whl
+- pypi: https://files.pythonhosted.org/packages/c8/37/01eccd25d23f5aaa7f7ff1a87b5b215469f6b202cf689a1812b71c1e7f6b/ty-0.0.31-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
   name: ty
-  version: 0.0.30
-  sha256: fe3012af4d0714e7353fd3cf6d2d02d5b0f0fe6f1cb8beb2366ed9f621c2c349
+  version: 0.0.31
+  sha256: c906354ce441e342646582bc9b8f48a676f79f3d061e25de15ff870e015ca14e
   requires_python: '>=3.8'
 - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.15.0-pyhcf101f3_0.conda
   sha256: 032271135bca55aeb156cee361c81350c6f3fb203f57d024d7e5a1fc9ef18731

@@ -614,8 +614,9 @@ kind-specific metadata by wrapping them with one of four sentinel factories:
   Keras/TensorFlow (via the native `.keras` archive). `metrics` is a
   first-class `dict[str, float]` field stored on the asset version so the
   UI and `ginkgo models` can render training metrics without walking
-  free-form metadata. Optional `ginkgo[ml]` extra pulls `joblib` and
-  `scikit-learn`; other backends stay fully optional and lazy-imported.
+  free-form metadata. All ML backends (`joblib`/`scikit-learn`,
+  `torch`, `keras`, `xgboost`, `lightgbm`) are user-managed
+  dependencies, lazy-imported at serialisation/load time.
 
 Wrappers follow the same pattern as `shell()`/`ShellExpr`: the user calls a
 factory inside the task body, returns the sentinel, and the evaluator
