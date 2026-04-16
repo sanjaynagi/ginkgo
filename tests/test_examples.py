@@ -404,12 +404,20 @@ class TestExamples:
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
-        candidate_outputs = sorted((example_dir / "results" / "candidates").glob("*.json"))
         scorecard = pd.read_csv(example_dir / "results" / "candidate_scorecard.csv")
 
         assert first_manifest["status"] == "succeeded"
         assert len(first_manifest["tasks"]) == 13
-        assert len(candidate_outputs) == 4
+
+        # Candidates now return model() assets instead of JSON files.
+        model_assets = [
+            asset
+            for task in first_manifest["tasks"].values()
+            for asset in (task.get("assets") or [])
+            if asset.get("namespace") == "model"
+        ]
+        assert len(model_assets) == 4
+
         assert sorted(scorecard["model_name"].tolist()) == [
             "baseline_logit",
             "expansion_focus",
