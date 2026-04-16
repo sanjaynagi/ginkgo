@@ -68,6 +68,11 @@ def command_asset(args) -> int:
             )
         return 0
 
+    if args.asset_command == "show":
+        asset_ref = parse_asset_selector(args.ref)
+        version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
+        return render_asset_show(console=rich_console, version=version)
+
     asset_ref = parse_asset_selector(args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
     artifact_store = LocalArtifactStore(root=ASSETS_ROOT.parent / "artifacts")
@@ -145,3 +150,123 @@ def parse_asset_selector(value: str) -> AssetSelector:
     key_text, separator, selector = value.partition("@")
     key = parse_asset_key(key_text)
     return AssetSelector(key=key, selector=selector if separator else None)
+
+
+def render_asset_show(*, console, version) -> int:
+    """Render a Rich metadata summary for a wrapped asset version.
+
+    Parameters
+    ----------
+    console : rich.console.Console
+        Target console.
+    version : AssetVersion
+        Version resolved by ``asset show``.
+
+    Returns
+    -------
+    int
+        Process exit code.
+    """
+    from rich.panel import Panel
+
+    metadata = dict(version.metadata)
+    namespace = version.key.namespace
+
+    console.print("[bold green]🌿 ginkgo asset[/] [bold]show[/]\n")
+    console.print(f"Asset Key: [bold]{version.key}[/]")
+    console.print(f"Version: {version.version_id}")
+    console.print(f"Kind: {version.kind}")
+    console.print(f"Sub-kind: {metadata.get('sub_kind', '-')}")
+    console.print(f"Artifact ID: {version.artifact_id}")
+
+    if namespace == "table":
+        _render_table_metadata(console=console, metadata=metadata)
+    elif namespace == "array":
+        _render_array_metadata(console=console, metadata=metadata)
+    elif namespace == "fig":
+        _render_fig_metadata(console=console, metadata=metadata)
+    elif namespace == "text":
+        _render_text_metadata(console=console, metadata=metadata)
+    elif namespace == "model":
+        _render_model_metadata(console=console, metadata=metadata)
+    else:
+        console.print(Panel.fit(repr(metadata), title="metadata"))
+
+    return 0
+
+
+def _render_table_metadata(*, console, metadata: dict) -> None:
+    """Print schema and row-count for a table asset."""
+    console.print(f"Row count: {metadata.get('row_count', '-')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    schema = metadata.get("schema") or []
+    if not schema:
+        return
+    schema_table = Table(
+        box=box.SQUARE,
+        border_style="#0f766e",
+        header_style="bold #134e4a",
+        expand=False,
+    )
+    schema_table.add_column("Column", style="bold")
+    schema_table.add_column("Dtype")
+    for entry in schema:
+        schema_table.add_row(str(entry.get("name")), str(entry.get("dtype")))
+    console.print(schema_table)
+
+
+def _render_array_metadata(*, console, metadata: dict) -> None:
+    """Print shape, dtype, and chunking for an array asset."""
+    console.print(f"Shape: {metadata.get('shape')}")
+    console.print(f"Dtype: {metadata.get('dtype')}")
+    console.print(f"Chunks: {metadata.get('chunks')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    coords = metadata.get("coordinates")
+    if coords:
+        console.print("Coordinates:")
+        for name, sample in coords.items():
+            console.print(f"  {name}: {sample}")
+
+
+def _render_fig_metadata(*, console, metadata: dict) -> None:
+    """Print source format and dimensions for a figure asset."""
+    console.print(f"Source format: {metadata.get('source_format')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    dimensions = metadata.get("dimensions")
+    if dimensions:
+        console.print(f"Dimensions: {dimensions.get('width')}x{dimensions.get('height')}")
+
+
+def _render_text_metadata(*, console, metadata: dict) -> None:
+    """Print format, line count, and byte size for a text asset."""
+    console.print(f"Format: {metadata.get('format')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    console.print(f"Lines: {metadata.get('line_count', '-')}")
+
+
+def _render_model_metadata(*, console, metadata: dict) -> None:
+    """Print framework, byte size, and metrics for a model asset."""
+    console.print(f"Framework: {metadata.get('framework', '-')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    metrics = metadata.get("metrics") or {}
+    if not metrics:
+        console.print("Metrics: -")
+        return
+    metrics_table = Table(
+        box=box.SQUARE,
+        border_style="#0f766e",
+        header_style="bold #134e4a",
+        expand=False,
+    )
+    metrics_table.add_column("Metric", style="bold")
+    metrics_table.add_column("Value", justify="right")
+    for name in sorted(metrics):
+        metrics_table.add_row(str(name), _format_metric(metrics[name]))
+    console.print(metrics_table)
+
+
+def _format_metric(value: object) -> str:
+    """Format a metric value for CLI display."""
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)

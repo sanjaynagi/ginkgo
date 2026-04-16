@@ -67,5 +67,4 @@ def main() -> file:
         candidate_scorecard=candidate_scorecard,
         champion_report=champion_report,
         serving_checklist=serving_checklist,
-        candidate_reports=candidate_reports,
     )

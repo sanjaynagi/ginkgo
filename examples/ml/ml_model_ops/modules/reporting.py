@@ -40,12 +40,13 @@ def write_model_card(
     profile = pd.read_csv(feature_profile)
     holdout = pd.read_csv(holdout_summary)
     runner_up = scorecard.iloc[1]
+    champion_metrics = champion["metrics"]
 
     lines = [
         "# Champion Model Card",
         "",
         f"Champion: **{champion['model_name']}**",
-        f"Business score: **{champion['business_score']}**",
+        f"Business score: **{champion_metrics['business_score']}**",
         f"Decision threshold: **{champion['decision_threshold']}**",
         "",
         "## Dataset Profile",

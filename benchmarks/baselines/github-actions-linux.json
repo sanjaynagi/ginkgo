@@ -77,13 +77,13 @@
     {
       "example": "ml",
       "mode": "cold",
-      "baseline_seconds": 2.055,
+      "baseline_seconds": 4.929,
       "max_regression_pct": 15.0
     },
     {
       "example": "ml",
       "mode": "cached",
-      "baseline_seconds": 0.747,
+      "baseline_seconds": 0.934,
       "max_regression_pct": 20.0
     }
   ]

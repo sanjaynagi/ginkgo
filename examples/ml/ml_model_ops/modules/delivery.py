@@ -13,7 +13,6 @@ def write_delivery_manifest(
     candidate_scorecard: file,
     champion_report: file,
     serving_checklist: file,
-    candidate_reports: list[file],
 ) -> file:
     """Write a shell-generated artifact manifest for model review.
 
@@ -27,8 +26,6 @@ def write_delivery_manifest(
         JSON report for the promoted champion.
     serving_checklist : file
         CSV deployment checklist.
-    candidate_reports : list[file]
-        JSON evaluation reports for all candidates.
 
     Returns
     -------
@@ -41,7 +38,6 @@ def write_delivery_manifest(
         candidate_scorecard,
         champion_report,
         serving_checklist,
-        *candidate_reports,
     ]
     quoted_items = " ".join(shlex.quote(str(item)) for item in manifest_items)
     return shell(

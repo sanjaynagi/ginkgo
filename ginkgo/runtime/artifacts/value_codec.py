@@ -13,6 +13,7 @@ import pandas as pd
 
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.wrappers import WrappedResult
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -301,7 +302,7 @@ def ensure_serializable(value: Any, *, label: str) -> None:
     """Validate that a value can be encoded by the Ginkgo codec registry."""
     if value is None or isinstance(
         value,
-        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult),
+        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult, WrappedResult),
     ):
         return
 
