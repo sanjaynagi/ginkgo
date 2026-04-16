@@ -96,6 +96,12 @@ def _dispatch(
         )
     if namespace == "text":
         return _load_text_bytes(artifact_store=artifact_store, artifact_id=artifact_id)
+    if namespace == "model":
+        return _load_model_bytes(
+            artifact_store=artifact_store,
+            artifact_id=artifact_id,
+            metadata=metadata,
+        )
     raise ValueError(f"no loader registered for asset namespace {namespace!r}")
 
 
@@ -130,6 +136,15 @@ def load_fig(*, artifact_store: ArtifactStore, version: AssetVersion) -> tuple[b
 def load_text(*, artifact_store: ArtifactStore, version: AssetVersion) -> str:
     """Load a ``text`` asset version as a decoded UTF-8 string."""
     return _load_text_bytes(artifact_store=artifact_store, artifact_id=version.artifact_id)
+
+
+def load_model(*, artifact_store: ArtifactStore, version: AssetVersion) -> Any:
+    """Load a ``model`` asset version as the original trained-model object."""
+    return _load_model_bytes(
+        artifact_store=artifact_store,
+        artifact_id=version.artifact_id,
+        metadata=dict(version.metadata),
+    )
 
 
 def _load_table_bytes(*, artifact_store: ArtifactStore, artifact_id: str) -> Any:
@@ -178,6 +193,59 @@ def _load_fig_bytes(
 def _load_text_bytes(*, artifact_store: ArtifactStore, artifact_id: str) -> str:
     data = artifact_store.read_bytes(artifact_id=artifact_id)
     return data.decode("utf-8")
+
+
+def _load_model_bytes(
+    *,
+    artifact_store: ArtifactStore,
+    artifact_id: str,
+    metadata: dict[str, Any],
+) -> Any:
+    sub_kind = metadata.get("sub_kind")
+    data = artifact_store.read_bytes(artifact_id=artifact_id)
+
+    if sub_kind in {"sklearn", "xgboost", "lightgbm"}:
+        try:
+            import joblib  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                f"Loading a model asset with framework={sub_kind!r} requires the 'joblib' package."
+            ) from exc
+
+        return joblib.load(io.BytesIO(data))
+
+    if sub_kind == "pytorch":
+        try:
+            import torch  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "Loading a model asset with framework='pytorch' requires the 'torch' package."
+            ) from exc
+
+        # ``weights_only=False`` is required for full-object reloads, which
+        # is the symmetry we chose with sklearn/keras. The user accepts the
+        # pickle contract at save time.
+        return torch.load(io.BytesIO(data), weights_only=False)
+
+    if sub_kind == "keras":
+        import tempfile
+
+        try:
+            import keras  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "Loading a model asset with framework='keras' requires the 'keras' package."
+            ) from exc
+
+        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as handle:
+            handle.write(data)
+            tmp_path = Path(handle.name)
+        try:
+            return keras.models.load_model(str(tmp_path))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    raise ValueError(f"unknown model sub_kind {sub_kind!r}")
 
 
 def _looks_like_npy(data: bytes) -> bool:

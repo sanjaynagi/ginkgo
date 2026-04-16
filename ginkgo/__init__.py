@@ -25,6 +25,7 @@ _EXPORTS = {
     "array": ("ginkgo.core.wrappers", "array"),
     "asset": ("ginkgo.core.asset", "asset"),
     "fig": ("ginkgo.core.wrappers", "fig"),
+    "model": ("ginkgo.core.wrappers", "model"),
     "table": ("ginkgo.core.wrappers", "table"),
     "text": ("ginkgo.core.wrappers", "text"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),

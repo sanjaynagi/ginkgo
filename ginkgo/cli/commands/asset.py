@@ -187,6 +187,8 @@ def render_asset_show(*, console, version) -> int:
         _render_fig_metadata(console=console, metadata=metadata)
     elif namespace == "text":
         _render_text_metadata(console=console, metadata=metadata)
+    elif namespace == "model":
+        _render_model_metadata(console=console, metadata=metadata)
     else:
         console.print(Panel.fit(repr(metadata), title="metadata"))
 
@@ -240,3 +242,31 @@ def _render_text_metadata(*, console, metadata: dict) -> None:
     console.print(f"Format: {metadata.get('format')}")
     console.print(f"Byte size: {metadata.get('byte_size', '-')}")
     console.print(f"Lines: {metadata.get('line_count', '-')}")
+
+
+def _render_model_metadata(*, console, metadata: dict) -> None:
+    """Print framework, byte size, and metrics for a model asset."""
+    console.print(f"Framework: {metadata.get('framework', '-')}")
+    console.print(f"Byte size: {metadata.get('byte_size', '-')}")
+    metrics = metadata.get("metrics") or {}
+    if not metrics:
+        console.print("Metrics: -")
+        return
+    metrics_table = Table(
+        box=box.SQUARE,
+        border_style="#0f766e",
+        header_style="bold #134e4a",
+        expand=False,
+    )
+    metrics_table.add_column("Metric", style="bold")
+    metrics_table.add_column("Value", justify="right")
+    for name in sorted(metrics):
+        metrics_table.add_row(str(name), _format_metric(metrics[name]))
+    console.print(metrics_table)
+
+
+def _format_metric(value: object) -> str:
+    """Format a metric value for CLI display."""
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)

@@ -104,7 +104,29 @@ class TextResult(_WrappedResult):
     text_format: Literal["plain", "markdown", "json"] = "plain"
 
 
-WrappedResult = TableResult | ArrayResult | FigureResult | TextResult
+@dataclass(frozen=True, kw_only=True)
+class ModelResult(_WrappedResult):
+    """Sentinel for trained-model asset outputs.
+
+    Produced by :func:`ginkgo.model`. The kind name is ``"model"``. The
+    ``sub_kind`` field carries the detected framework
+    (``"sklearn"`` / ``"xgboost"`` / ``"lightgbm"`` / ``"pytorch"`` /
+    ``"keras"``).
+
+    Parameters
+    ----------
+    metrics : dict[str, float]
+        Optional training or validation metrics captured at return time.
+        Stored as a first-class field so downstream tooling (``ginkgo
+        models``, the UI) can render them without walking free-form
+        metadata.
+    """
+
+    kind: str = "model"
+    metrics: dict[str, float] = field(default_factory=dict)
+
+
+WrappedResult = TableResult | ArrayResult | FigureResult | TextResult | ModelResult
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +211,35 @@ def _detect_fig_sub_kind(payload: Any) -> str:
         f"fig() does not support payload of type "
         f"{type(payload).__module__}.{type(payload).__name__}"
     )
+
+
+_MODEL_MODULE_ROOTS: dict[str, str] = {
+    "sklearn": "sklearn",
+    "xgboost": "xgboost",
+    "lightgbm": "lightgbm",
+    "torch": "pytorch",
+    "keras": "keras",
+    "tensorflow": "keras",
+}
+
+
+def _detect_model_sub_kind(payload: Any) -> str:
+    """Detect the framework sub-kind for a model payload.
+
+    Uses the top-level module of the payload's class. Scikit-learn-style
+    wrappers in other libraries (``xgboost.sklearn.XGBClassifier``,
+    ``lightgbm.sklearn.LGBMClassifier``) resolve to their owning package
+    rather than ``sklearn``, which keeps serialisation consistent with
+    the library that produced them.
+    """
+    root = _module_root(payload)
+    try:
+        return _MODEL_MODULE_ROOTS[root]
+    except KeyError as exc:
+        raise TypeError(
+            f"model() does not support payload of type "
+            f"{type(payload).__module__}.{type(payload).__name__}"
+        ) from exc
 
 
 def _detect_text_sub_kind(
@@ -324,6 +375,58 @@ def fig(
         payload=payload,
         name=name,
         sub_kind=sub_kind,
+        metadata=dict(metadata or {}),
+    )
+
+
+def model(
+    payload: Any,
+    *,
+    name: str | None = None,
+    framework: str | None = None,
+    metrics: dict[str, float] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ModelResult:
+    """Wrap a trained model as an asset return.
+
+    Parameters
+    ----------
+    payload : Any
+        The trained model object. Supports scikit-learn estimators,
+        XGBoost and LightGBM sklearn-wrapped models, PyTorch ``nn.Module``
+        instances, and Keras/TensorFlow models.
+    name : str | None
+        Optional explicit local asset name.
+    framework : str | None
+        Optional explicit framework override, bypassing module-based
+        detection. Must be one of ``"sklearn"``, ``"xgboost"``,
+        ``"lightgbm"``, ``"pytorch"``, ``"keras"``.
+    metrics : dict[str, float] | None
+        Optional scalar metrics captured at training time. Stored as a
+        first-class field on the asset version for ``ginkgo models`` and
+        UI rendering.
+    metadata : dict[str, Any] | None
+        Optional free-form metadata stored on the asset version.
+
+    Returns
+    -------
+    ModelResult
+    """
+    if framework is not None:
+        if framework not in set(_MODEL_MODULE_ROOTS.values()):
+            raise ValueError(
+                f"model() framework must be one of "
+                f"{sorted(set(_MODEL_MODULE_ROOTS.values()))}, got {framework!r}"
+            )
+        sub_kind = framework
+    else:
+        sub_kind = _detect_model_sub_kind(payload)
+
+    return ModelResult(
+        payload=payload,
+        name=name,
+        sub_kind=sub_kind,
+        metrics=dict(metrics or {}),
         metadata=dict(metadata or {}),
     )
 

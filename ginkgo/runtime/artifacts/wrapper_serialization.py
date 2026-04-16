@@ -19,6 +19,7 @@ from typing import Any
 from ginkgo.core.wrappers import (
     ArrayResult,
     FigureResult,
+    ModelResult,
     TableResult,
     TextResult,
     WrappedResult,
@@ -106,6 +107,8 @@ def serialize_wrapper(
             return _serialize_fig(wrapper)
         if isinstance(wrapper, TextResult):
             return _serialize_text(wrapper)
+        if isinstance(wrapper, ModelResult):
+            return _serialize_model(wrapper)
     except WrapperSerializationError:
         raise
     except Exception as exc:
@@ -476,6 +479,76 @@ def _serialize_text(wrapper: TextResult) -> SerializedWrapper:
     return SerializedWrapper(
         data=data,
         extension=_TEXT_EXTENSION_BY_FORMAT[wrapper.text_format],
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+
+
+_MODEL_EXTENSION_BY_SUB_KIND = {
+    "sklearn": "joblib",
+    "xgboost": "joblib",
+    "lightgbm": "joblib",
+    "pytorch": "pt",
+    "keras": "keras",
+}
+
+
+def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
+    """Serialise a trained-model payload as a full-object blob.
+
+    Joblib covers the sklearn family (sklearn itself plus the sklearn
+    wrappers in xgboost/lightgbm); PyTorch uses ``torch.save`` with the
+    full model object so reloading does not require the original class
+    to be re-defined in the same import path; Keras writes the native
+    ``.keras`` archive via a temporary file.
+    """
+    sub_kind = wrapper.sub_kind
+    payload = wrapper.payload
+
+    if sub_kind in {"sklearn", "xgboost", "lightgbm"}:
+        try:
+            import joblib  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                f"model() with framework={sub_kind!r} requires the 'joblib' package."
+            ) from exc
+
+        buffer = io.BytesIO()
+        joblib.dump(payload, buffer)
+        data = buffer.getvalue()
+    elif sub_kind == "pytorch":
+        try:
+            import torch  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "model() with framework='pytorch' requires the 'torch' package."
+            ) from exc
+
+        buffer = io.BytesIO()
+        torch.save(payload, buffer)
+        data = buffer.getvalue()
+    elif sub_kind == "keras":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "model.keras"
+            payload.save(str(target))
+            data = target.read_bytes()
+    else:
+        raise ValueError(f"unknown model sub_kind {sub_kind!r}")
+
+    metadata: dict[str, Any] = {
+        "sub_kind": sub_kind,
+        "framework": sub_kind,
+        "metrics": dict(wrapper.metrics),
+        "byte_size": len(data),
+    }
+    metadata.update(wrapper.metadata)
+    return SerializedWrapper(
+        data=data,
+        extension=_MODEL_EXTENSION_BY_SUB_KIND[sub_kind],
         metadata=metadata,
     )
 
