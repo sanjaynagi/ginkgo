@@ -8,7 +8,8 @@ protocol instead of the local process-pool executor.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
@@ -52,6 +53,77 @@ class RemoteJobResult:
     payload: dict[str, Any]
     exit_code: int | None = None
     logs: str | None = None
+
+
+@dataclass(kw_only=True)
+class RemoteDispatchStats:
+    """Counters collected during remote task dispatch.
+
+    Thread-safe — multiple watcher threads may record concurrently.
+    """
+
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    jobs_submitted: int = 0
+    jobs_succeeded: int = 0
+    jobs_failed: int = 0
+    total_pending_seconds: float = 0.0
+    total_running_seconds: float = 0.0
+    upload_bytes: int = 0
+    download_bytes: int = 0
+
+    def record_submit(self) -> None:
+        with self._lock:
+            self.jobs_submitted += 1
+
+    def record_terminal(self, *, state: RemoteJobState) -> None:
+        with self._lock:
+            if state == RemoteJobState.SUCCEEDED:
+                self.jobs_succeeded += 1
+            else:
+                self.jobs_failed += 1
+
+    def record_phase_time(self, *, pending: float, running: float) -> None:
+        with self._lock:
+            self.total_pending_seconds += pending
+            self.total_running_seconds += running
+
+    def record_upload(self, *, nbytes: int) -> None:
+        with self._lock:
+            self.upload_bytes += nbytes
+
+    def record_download(self, *, nbytes: int) -> None:
+        with self._lock:
+            self.download_bytes += nbytes
+
+    def summary(self) -> str | None:
+        """One-line human-readable summary, or None if no remote work."""
+        if self.jobs_submitted == 0:
+            return None
+        parts = [f"{self.jobs_submitted} remote"]
+        if self.jobs_succeeded:
+            parts.append(f"{self.jobs_succeeded} succeeded")
+        if self.jobs_failed:
+            parts.append(f"{self.jobs_failed} failed")
+        if self.total_pending_seconds > 0:
+            parts.append(f"pending {self.total_pending_seconds:.0f}s")
+        if self.total_running_seconds > 0:
+            parts.append(f"running {self.total_running_seconds:.0f}s")
+        if self.upload_bytes > 0:
+            parts.append(f"{_fmt_bytes(self.upload_bytes)} uploaded")
+        if self.download_bytes > 0:
+            parts.append(f"{_fmt_bytes(self.download_bytes)} downloaded")
+        return ", ".join(parts)
+
+
+def _fmt_bytes(n: int) -> str:
+    """Format a byte count as a human-readable string."""
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GiB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.0f} MiB"
+    if n >= 1 << 10:
+        return f"{n / (1 << 10):.0f} KiB"
+    return f"{n} B"
 
 
 @runtime_checkable

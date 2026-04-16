@@ -31,7 +31,12 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import TaskBackend
-from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle, RemoteJobState
+from ginkgo.runtime.remote_executor import (
+    RemoteDispatchStats,
+    RemoteExecutor,
+    RemoteJobHandle,
+    RemoteJobState,
+)
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
@@ -251,6 +256,9 @@ class _ConcurrentEvaluator:
     _remote_artifact_store: Any = field(default=None, init=False, repr=False)
     _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
     _remote_published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
+    _remote_stats: RemoteDispatchStats = field(
+        default_factory=RemoteDispatchStats, init=False, repr=False
+    )
     _staging_cache_path: Path = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -1369,6 +1377,7 @@ class _ConcurrentEvaluator:
                     "prefix": self._remote_artifact_store.prefix,
                 }
             handle = self.remote_executor.submit(attempt=payload)
+            self._remote_stats.record_submit()
             self._remote_handles[node.node_id] = handle
             if self._remote_watcher_executor is None:
                 self._remote_watcher_executor = ThreadPoolExecutor(
@@ -1394,12 +1403,15 @@ class _ConcurrentEvaluator:
         poll_interval = 5.0
         max_interval = 30.0
         emitted_running = False
+        t_submit = time.monotonic()
+        t_running: float | None = None
         while True:
             state = handle.state()
             if state.is_terminal:
                 break
             if not emitted_running and state == RemoteJobState.RUNNING:
                 emitted_running = True
+                t_running = time.monotonic()
                 self._emit_event(
                     TaskRunning(
                         run_id=self._run_id,
@@ -1412,6 +1424,12 @@ class _ConcurrentEvaluator:
                 )
             time.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, max_interval)
+
+        t_done = time.monotonic()
+        pending_s = (t_running or t_done) - t_submit
+        running_s = t_done - t_running if t_running else 0.0
+        self._remote_stats.record_terminal(state=state)
+        self._remote_stats.record_phase_time(pending=pending_s, running=running_s)
 
         result = handle.result()
 

@@ -288,7 +288,7 @@ classification in `remote-execution.md`.
 
 ## Polish
 
-### 15. Metrics / observability for remote dispatch
+### ~~15. Metrics / observability for remote dispatch~~
 
 **What:** The evaluator has no counters for: number of K8s jobs
 submitted, number of preempted pods retried, time-in-pending vs

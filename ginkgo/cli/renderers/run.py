@@ -111,6 +111,7 @@ class _CliRunRenderer:
         failure_details: list[_FailureDetails] | None = None,
         notebooks: list[_NotebookSummary] | None = None,
         assets: list[_AssetSummary] | None = None,
+        remote_summary: str | None = None,
     ) -> None:
         """Print the final run summary."""
         if self._buffer.strip():
@@ -144,6 +145,8 @@ class _CliRunRenderer:
             resource_footer = self._render_resource_footer(resource_summary)
             if resource_footer is not None:
                 self._console.print(resource_footer)
+        if remote_summary is not None:
+            self._console.print(f"[dim]☁️  {remote_summary}[/dim]")
         if not success and failure_details:
             self._console.print(self._render_failure_separator())
             self._console.print(self._render_failure_details(failure_details))
