@@ -71,7 +71,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -91,7 +91,7 @@ class TestRemoteFileEvaluator:
         # Pass a raw s3:// string to a file-annotated parameter.
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -114,7 +114,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -145,7 +145,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -166,7 +166,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -229,7 +229,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(
@@ -285,7 +285,7 @@ class TestRemoteFileEvaluator:
 
         with (
             patch(
-                "ginkgo.runtime.staging.RemoteStager._get_staging_cache",
+                "ginkgo.runtime.remote_input_resolver.RemoteStager._get_staging_cache",
                 return_value=cache,
             ),
             patch(

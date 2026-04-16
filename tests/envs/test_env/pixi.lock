@@ -712,7 +712,7 @@ packages:
 - pypi: ../../..
   name: ginkgo
   version: 0.1.0
-  sha256: d6aadc4934283d2ab90ecdaa5444ee56eb42938b64d5bd4d8e5e0041d61add51
+  sha256: 4761de3627b623fcfb4f9e703607700c31dfc046edc207c6fdf6035f852d26df
   requires_dist:
   - blake3>=1.0.0
   - fsspec>=2024.10.0
@@ -728,8 +728,11 @@ packages:
   - ipykernel>=6.29 ; extra == 'notebooks'
   - marimo>=0.11 ; extra == 'notebooks'
   - nbconvert>=7.16 ; extra == 'notebooks'
-  - joblib>=1.3 ; extra == 'ml'
-  - scikit-learn>=1.3 ; extra == 'ml'
+  - kubernetes>=28.1 ; extra == 'cloud'
+  - gcsfs>=2024.10.0 ; extra == 'cloud'
+  - google-auth>=2.25 ; extra == 'cloud'
+  - google-cloud-batch>=0.17 ; extra == 'cloud'
+  - google-cloud-logging>=3.10 ; extra == 'cloud'
   requires_python: '>=3.11'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/icu-78.2-h33c6efd_0.conda
   sha256: 142a722072fa96cf16ff98eaaf641f54ab84744af81754c292cb81e0881c0329

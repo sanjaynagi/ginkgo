@@ -13,6 +13,19 @@ from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 
 
+def error_response(exc: BaseException) -> dict[str, Any]:
+    """Build the standard error response dict for a failed task."""
+    return {
+        "ok": False,
+        "error": {
+            "type": type(exc).__name__,
+            "module": type(exc).__module__,
+            "message": str(exc),
+            "args": [str(a) for a in exc.args],
+        },
+    }
+
+
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
     base_dir = Path(payload["transport_dir"])
@@ -48,15 +61,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                     file=_RedactingWriter(handle=handle, secret_values=secret_values)
                 )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
-        return {
-            "error": {
-                "args": exc.args,
-                "message": str(exc),
-                "module": type(exc).__module__,
-                "type": type(exc).__name__,
-            },
-            "ok": False,
-        }
+        return error_response(exc)
 
     if payload.get("dynamic_result", True) and _is_dynamic_result(result):
         return {"ok": True, "result": result, "result_encoding": "direct"}

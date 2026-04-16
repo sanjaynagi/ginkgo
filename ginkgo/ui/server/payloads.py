@@ -22,7 +22,7 @@ from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.provenance import load_manifest, tail_text
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
-from .utils import (
+from .formatting import (
     dir_size,
     format_age,
     format_size,

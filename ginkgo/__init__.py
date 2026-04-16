@@ -29,8 +29,8 @@ _EXPORTS = {
     "table": ("ginkgo.core.wrappers", "table"),
     "text": ("ginkgo.core.wrappers", "text"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
-    "expand": ("ginkgo.helpers", "expand"),
-    "flatten": ("ginkgo.helpers", "flatten"),
+    "expand": ("ginkgo.wildcards", "expand"),
+    "flatten": ("ginkgo.wildcards", "flatten"),
     "file": ("ginkgo.core.types", "file"),
     "flow": ("ginkgo.core.flow", "flow"),
     "folder": ("ginkgo.core.types", "folder"),
@@ -40,10 +40,10 @@ _EXPORTS = {
     "script": ("ginkgo.core.script", "script"),
     "secret": ("ginkgo.core.secret", "secret"),
     "shell": ("ginkgo.core.shell", "shell"),
-    "slug": ("ginkgo.helpers", "slug"),
+    "slug": ("ginkgo.wildcards", "slug"),
     "task": ("ginkgo.core.task", "task"),
     "tmp_dir": ("ginkgo.core.types", "tmp_dir"),
-    "zip_expand": ("ginkgo.helpers", "zip_expand"),
+    "zip_expand": ("ginkgo.wildcards", "zip_expand"),
 }
 
 

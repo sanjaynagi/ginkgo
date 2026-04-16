@@ -333,24 +333,16 @@ class CacheStore:
             The dict previously passed as ``extra_meta`` to :meth:`save`,
             or ``None`` when the entry is missing or recorded no extras.
         """
-        meta_path = self._entry_dir(cache_key) / "meta.json"
-        if not meta_path.exists():
-            return None
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        meta = self._load_meta(cache_key=cache_key)
+        if meta is None:
             return None
         extra = meta.get("extra")
         return extra if isinstance(extra, dict) else None
 
     def _load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
         """Load output artifact mappings for one cache entry."""
-        meta_path = self._entry_dir(cache_key) / "meta.json"
-        if not meta_path.exists():
-            return None
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        meta = self._load_meta(cache_key=cache_key)
+        if meta is None:
             return None
         artifact_ids = meta.get("artifact_ids")
         if not isinstance(artifact_ids, dict):
@@ -360,6 +352,16 @@ class CacheStore:
             for path, artifact_id in artifact_ids.items()
             if isinstance(path, str) and isinstance(artifact_id, str)
         }
+
+    def _load_meta(self, *, cache_key: str) -> dict[str, Any] | None:
+        """Load the parsed meta.json for one cache entry."""
+        meta_path = self._entry_dir(cache_key) / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def _store_output_artifacts(
         self,
