@@ -514,8 +514,7 @@ def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
             import joblib  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                f"model() with framework={sub_kind!r} requires the 'joblib' package. "
-                "Install with: pip install joblib scikit-learn"
+                f"model() with framework={sub_kind!r} requires the 'joblib' package."
             ) from exc
 
         buffer = io.BytesIO()
@@ -526,8 +525,7 @@ def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
             import torch  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                "model() with framework='pytorch' requires the 'torch' package. "
-                "Install with: pip install torch"
+                "model() with framework='pytorch' requires the 'torch' package."
             ) from exc
 
         buffer = io.BytesIO()

@@ -209,8 +209,7 @@ def _load_model_bytes(
             import joblib  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                f"Loading a model asset with framework={sub_kind!r} requires the "
-                "'joblib' package. Install with: pip install joblib scikit-learn"
+                f"Loading a model asset with framework={sub_kind!r} requires the 'joblib' package."
             ) from exc
 
         return joblib.load(io.BytesIO(data))
@@ -220,8 +219,7 @@ def _load_model_bytes(
             import torch  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                "Loading a model asset with framework='pytorch' requires the "
-                "'torch' package. Install with: pip install torch"
+                "Loading a model asset with framework='pytorch' requires the 'torch' package."
             ) from exc
 
         # ``weights_only=False`` is required for full-object reloads, which
@@ -236,8 +234,7 @@ def _load_model_bytes(
             import keras  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                "Loading a model asset with framework='keras' requires the "
-                "'keras' package. Install with: pip install keras"
+                "Loading a model asset with framework='keras' requires the 'keras' package."
             ) from exc
 
         with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as handle:
