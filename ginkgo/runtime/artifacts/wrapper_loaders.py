@@ -16,7 +16,7 @@ from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
 
 
-def load(
+def load_wrapped_asset(
     *,
     artifact_store: ArtifactStore,
     version: AssetVersion,

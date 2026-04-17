@@ -15,7 +15,7 @@ from ginkgo.core.types import file, folder
 from ginkgo.runtime.artifacts.value_codec import summarise_value
 
 
-def artifact_index(
+def output_summary(
     annotation: Any,
     value: Any,
     *,
@@ -31,13 +31,13 @@ def artifact_index(
         inner_annotation = inner_args[0] if inner_args else Any
         outputs: list[dict[str, Any]] = []
         for index, item in enumerate(value):
-            outputs.extend(artifact_index(inner_annotation, item, name=f"{name}[{index}]"))
+            outputs.extend(output_summary(inner_annotation, item, name=f"{name}[{index}]"))
         return outputs
 
     if isinstance(value, (list, tuple)):
         outputs: list[dict[str, Any]] = []
         for index, item in enumerate(value):
-            outputs.extend(artifact_index(annotation, item, name=f"{name}[{index}]"))
+            outputs.extend(output_summary(annotation, item, name=f"{name}[{index}]"))
         return outputs
 
     if isinstance(value, AssetRef):

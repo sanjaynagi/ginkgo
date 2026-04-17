@@ -1,0 +1,14 @@
+.git
+.pixi
+.ruff_cache
+.mypy_cache
+.pytest_cache
+__pycache__
+*.pyc
+*.egg-info
+docs
+tests
+benchmarks
+examples
+*.md
+.vscode

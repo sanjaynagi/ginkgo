@@ -924,7 +924,7 @@ packages:
 - pypi: ./
   name: ginkgo
   version: 0.1.0
-  sha256: 775fa3abf91c6d1f6ffa517d3d604a3220f6afa49990d01831e8cbb129578ed6
+  sha256: 4761de3627b623fcfb4f9e703607700c31dfc046edc207c6fdf6035f852d26df
   requires_dist:
   - blake3>=1.0.0
   - fsspec>=2024.10.0
@@ -940,6 +940,11 @@ packages:
   - ipykernel>=6.29 ; extra == 'notebooks'
   - marimo>=0.11 ; extra == 'notebooks'
   - nbconvert>=7.16 ; extra == 'notebooks'
+  - kubernetes>=28.1 ; extra == 'cloud'
+  - gcsfs>=2024.10.0 ; extra == 'cloud'
+  - google-auth>=2.25 ; extra == 'cloud'
+  - google-cloud-batch>=0.17 ; extra == 'cloud'
+  - google-cloud-logging>=3.10 ; extra == 'cloud'
   requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
   name: h11

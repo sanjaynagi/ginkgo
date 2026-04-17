@@ -29,8 +29,6 @@ architectural layers.
   - retry backoff
 - Broaden cache-management policy beyond age-based pruning (size- or
   count-based eviction).
-- Polish the UI task-graph experience:
-  - richer DAG layout (fit-to-view, failure focus, better spacing)
 - Add task priority declarations so users can express relative urgency between
   tasks in the same DAG tier; the scheduler should respect priority when
   multiple tasks are ready to run concurrently.
@@ -109,33 +107,225 @@ These phases extend the existing asset catalog (file-backed, with `AssetKey`,
 `AssetVersion`, alias pointers, and lineage) into richer asset kinds and
 lifecycle tooling.
 
-### Phase 5 — ML Model Training Support (remaining)
+### Phase 4 — Special Asset Wrappers (table / array / fig / text)
 
-**Goal:** Fold out the remaining ergonomics for ML workflows: parameter
-sweeps as a first-class fan-out primitive and real-time training progress
-events. The `model()` asset wrapper, `ginkgo models` CLI, and associated
-serialisation/rehydration plumbing have already shipped.
+**Goal:** Introduce a family of "special asset" wrappers that let task authors
+tag selected return values as tables, arrays, figures, or small structured
+documents. Wrapped outputs are stored as immutable artifacts with kind-specific
+metadata, get rapid previews in the CLI and UI, and form the substrate for
+later reporting.
 
-**Depends on:** the existing asset catalog, `ArtifactStore`, and the
-shipped `model()` wrapper.
+**Depends on:** the existing `ArtifactStore` (immutable artifacts) and asset
+catalog (asset key resolution).
+
+#### Target DSL
+
+```python
+from ginkgo import task, table, array, fig, text
+
+@task
+def analyse(raw):
+    my_tbl = to_frame(raw)              # pandas/polars/arrow/duckdb/csv
+    my_arr = to_matrix(raw)             # numpy/xarray/zarr/dask
+    my_fig = plot(raw)                  # mpl/plotly/bokeh
+    summary = summarise(raw)            # dict
+    scalar = len(raw)
+    return [
+        table(my_tbl, name="features"),
+        array(my_arr, name="embeddings"),
+        fig(my_fig, name="qc_plot"),
+        text(summary, name="summary", format="json"),
+        scalar,
+    ]
+```
+
+Wrappers are sentinels (following the existing `shell()` / `ShellExpr`
+pattern). Unwrapped return values continue to flow through the normal output
+path unchanged — wrapping is opt-in and local to the return site.
+
+#### Supported payloads
+
+- `table(...)` — pandas DataFrame, polars DataFrame/LazyFrame, pyarrow Table,
+  DuckDB relation, CSV path, TSV path. Stored as Parquet; preview renders
+  schema, dtypes, row count, head rows, and basic summary stats. `table()`
+  replaces the earlier `df()` proposal — tabular payloads are a single kind
+  regardless of which library produced them.
+- `array(...)` — numpy ndarray, xarray DataArray/Dataset, zarr group/array,
+  dask array. Stored as zarr (passthrough for existing zarr); preview renders
+  shape, dtype, chunking, coordinate/axis summary, and a small slice.
+- `fig(...)` — matplotlib Figure, plotly Figure, bokeh Figure, or a path to
+  an existing PNG/SVG/HTML. Stored in its native format plus a rasterised
+  thumbnail; rendered inline in the UI.
+- `text(...)` — str, dict, or path, with `format` in `{"plain", "markdown",
+  "json"}` (auto-detected from type when omitted). Stored as the raw bytes;
+  preview is the document itself, truncated for very large payloads. Enables
+  small structured outputs (run summaries, notes, JSON blobs) to render
+  inline in the UI and future reports without a separate mechanism.
+
+#### Named outputs and key derivation
+
+- All wrappers accept an optional `name=` kwarg. The name becomes the local
+  component of the asset key for the wrapped output.
+- When `name=` is omitted, the asset key is derived as
+  `<task_id>.<kind>[<index>]`, where `<index>` is the positional slot of the
+  wrapper in the task's returned list (first `table` → `[0]`, etc., counted
+  per-kind). This keeps auto-generated keys deterministic and debuggable
+  without forcing users to name every output.
+- Collisions between explicit names within a single task raise at task
+  completion, before any artifact is written.
+
+#### Lazy payloads
+
+- `table()` accepts polars `LazyFrame` and pyarrow dataset handles without
+  forcing a `.collect()` in user code; materialisation happens once inside
+  the wrapper's serialisation path, streaming to Parquet where the backend
+  supports it.
+- `array()` accepts dask arrays and xarray objects backed by dask; the
+  wrapper triggers computation during serialisation, not at return time.
+- Lazy payloads that fail to materialise surface as task failures with the
+  underlying backend error attached to the run manifest.
+
+#### Serialisation failure policy
+
+- If a wrapped payload cannot be serialised (e.g. an unpicklable plotly
+  figure with live callbacks, a corrupt lazy frame), the task fails with a
+  structured error identifying the offending wrapper by name and index.
+- Wrappers never silently fall through to the unwrapped output path — a task
+  author's explicit `table(...)` tag is a contract that the output is a
+  first-class asset, and degrading it quietly would hide data loss.
+
+#### Deliverables
+
+- Wrapper factories `table()`, `array()`, `fig()`, `text()` exported from
+  the top-level `ginkgo` package, each producing a typed sentinel carrying
+  the payload, optional `name`, and a detected sub-kind (e.g. `pandas`,
+  `polars`, `pyarrow`, `duckdb`, `numpy`, `xarray`, `zarr`, `dask`,
+  `matplotlib`, `plotly`, `bokeh`, `png`, `svg`, `html`, `markdown`,
+  `json`).
+- Evaluator support for unwrapping these sentinels after task completion:
+  each wrapped output is serialised through `ArtifactStore.store()` and
+  registered as an `AssetVersion` in the catalog with kind-specific
+  metadata:
+  - `table`: schema (column names + dtypes), row count, byte size.
+  - `array`: shape, dtype, chunking, coordinate labels where present.
+  - `fig`: source format, dimensions, thumbnail artifact id.
+  - `text`: format, byte size, line count.
+  All versions record producing run id, task id, and resolved asset key.
+- A loader registry so CLI and UI read paths can rehydrate wrapped assets
+  without each consumer reimplementing format detection.
+- Preview generation at materialisation time: compact JSON previews for
+  `table` / `array`, a rasterised thumbnail for `fig`, and a truncated body
+  for `text`. Previews are stored as sidecar artifacts so render paths never
+  need to load the full payload.
+- CLI `ginkgo asset show <key>` renders the preview:
+  - `table` — schema table, row count, head rows using the existing Rich
+    renderer.
+  - `array` — shape / dtype / chunk summary plus a truncated slice.
+  - `fig` — path to the artifact plus a hint to open it in the UI.
+  - `text` — the document body, truncated for very large payloads.
+- UI asset detail view renders the same previews inline, with figures shown
+  directly and markdown/json documents rendered in-place.
+- Downstream task cache keys consume `artifact_id` for wrapped outputs
+  rather than hashing the in-memory payload, so cache invalidation aligns
+  exactly with upstream artifact changes.
+
+#### Key design points
+
+- Wrappers are sentinels, not a new task `kind`. A single task may return
+  any mix of wrapped and unwrapped values; the evaluator inspects the return
+  list and dispatches per element. This keeps the task API uniform and
+  avoids forcing users to split tasks by output type.
+- Tabular payloads collapse into one wrapper (`table`) regardless of
+  frontend library. Sub-kind detection preserves the source library so the
+  loader can round-trip without losing type fidelity, but the asset kind,
+  preview, and storage format are shared.
+- Immutability is inherited from the artifact store. This phase adds
+  kind-specific metadata, previews, and loaders; it does not re-implement
+  storage or versioning.
+- Previews are generated once at write time and stored alongside the
+  artifact. CLI and UI read paths must never trigger a full load just to
+  render a preview — this is what makes "rapid glimpse" viable for large
+  tables and arrays.
+- The loader registry is the single integration point. Later Ginkgo reports
+  (a deferred feature) will consume the same loaders and previews, so the
+  registry must be usable outside CLI and UI contexts.
+- No snapshot chains, time-travel, or head-pointer files — the latest
+  version is always the one consumers read.
+- Kind-specific backends (e.g. Delta Lake, Iceberg, TileDB) can replace the
+  default Parquet/zarr storage later without changing the wrapper API.
+
+#### Validation
+
+- A task returning a mix of `table(pandas)`, `table(polars_lazy)`,
+  `table(arrow)`, `array(numpy)`, `array(xarray)`, `array(dask)`,
+  `fig(mpl)`, `fig(plotly)`, `text(dict, format="json")`, and an unwrapped
+  scalar materialises one asset per wrapper with the correct sub-kind, plus
+  the scalar on the normal output path.
+- Each wrapped asset records kind-specific metadata and a preview artifact
+  in the asset catalog and run provenance.
+- Explicit `name="features"` produces asset key `<task>.features`; omitted
+  names produce `<task>.table[0]`, `<task>.array[0]`, etc., deterministically
+  indexed per kind.
+- Duplicate explicit names within a single task raise before any artifact is
+  written.
+- `ginkgo asset show <key>` renders a table preview (schema + head) and an
+  array preview (shape + slice) without loading the full payload from disk;
+  timing is bounded by preview size, not artifact size.
+- The UI asset detail view renders figure artifacts inline for matplotlib,
+  plotly, bokeh, and static image/HTML inputs, and renders `text` assets in
+  plain/markdown/json form.
+- A `table(polars_lazy_frame)` payload is materialised to Parquet without
+  the user calling `.collect()`.
+- A wrapper whose payload fails to serialise raises a structured error
+  naming the offending wrapper; no partial asset version is left in the
+  catalog.
+- Re-running a consumer task against the same `artifact_id` hits the cache
+  without re-serialising the wrapped payload.
+- CSV/TSV path inputs to `table(...)` are round-tripped to Parquet and
+  loaded back with the original column names and dtypes preserved.
+
+---
+
+### Phase 5 — ML Model Training Support
+
+**Goal:** Add model-aware task support so that training progress is observable
+in real time, trained models are cataloged and listable, and parameter sweeps
+are a first-class fan-out primitive.
+
+**Depends on:** the existing asset catalog and `ArtifactStore`. Benefits from
+Phase 4 for upstream dataset lineage.
 
 #### Target DSL
 
 ```python
 from ginkgo import task, flow, model, file
 
-@task()
-def train(*, data: file, lr: float, epochs: int):
+@task(kind="model")
+def train(data: file, *, lr: float, epochs: int):
     clf = fit(load(data), lr=lr, epochs=epochs)
-    return model(clf, metrics={"final_loss": ...})
+    return model(clf, framework="sklearn")
 
 @flow
 def main():
     data = prepare_data(raw=file("data/raw.csv"))
-    return train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50])
+    models = train.sweep(data=data, lr=[0.001, 0.01, 0.1], epochs=[10, 50])
+    return models
 ```
 
 #### Deliverables
+
+**`kind="model"` — model assets with training progress:**
+
+- Add a `ModelResult` sentinel (following the `shell()` / `ShellExpr` pattern)
+  returned from `kind="model"` task bodies via a `model()` builder function.
+  The sentinel carries the model object, framework name, and optional metrics.
+- On task completion, the evaluator serializes the model, registers an immutable
+  asset version in the catalog (namespace `"model"`), and auto-captures scalar
+  task inputs as `params` in the version metadata.
+- Expose real-time training progress through runtime events so the Rich CLI
+  renderer can display per-task training status (e.g. epoch, loss) alongside
+  the existing task progress output.
+- `ginkgo model ls` — list trained model assets with latest metrics summary.
 
 **`.sweep()` — parameter exploration:**
 
@@ -146,34 +336,35 @@ def main():
 - Support `strategy="grid"` (Cartesian product, default) and `strategy="zip"`
   (positional pairing, equal-length lists required).
 
-**Training progress events:**
-
-- Expose real-time training progress through runtime events so the Rich CLI
-  renderer can display per-task training status (e.g. epoch, loss) alongside
-  the existing task progress output. The `--agent` mode includes the same
-  events in JSONL output.
-
 #### Key design points
 
+- Model assets are registered in the existing asset catalog — this phase does
+  not build a separate model registry. Serialization, versioning, and storage
+  go through the existing `ArtifactStore` and `AssetStore`.
+- `kind="model"` uses `execution_mode = "driver"` (same as shell) — the task
+  body runs on the scheduler, produces a sentinel, and the evaluator handles
+  serialization and storage.
+- Training progress events are emitted through the existing runtime event bus.
+  The Rich renderer displays them; `--agent` mode includes them in JSONL output.
 - `.sweep()` is deliberately simple (grid/zip only) — it is not a Bayesian
   optimization framework. Complex HPO should use external tools with Ginkgo
   tasks as the execution substrate.
-- Training progress events are emitted through the existing runtime event bus.
-  Framework integration stays optional; the event contract is framework-agnostic
-  (step, metric, optional total).
 - Evaluation, model promotion, alias management, and comparison tooling are
   deferred. If needed, they can be added incrementally without changing the
   core model asset contract.
 
 #### Validation
 
+- A `kind="model"` task serializes and registers an immutable model version with
+  auto-captured params and metrics.
+- Training progress events appear in Rich CLI output during execution.
+- `ginkgo model ls` lists trained models with metrics.
 - `train.sweep(data=d, lr=[0.01, 0.1], epochs=[10, 50], strategy="grid")`
   produces 4 tasks with correct parameter combinations.
 - `strategy="zip"` with equal-length lists produces N tasks; unequal lengths
   raise a clear error.
 - Re-running with identical inputs hits the cache; changed inputs create a new
   version.
-- Training progress events appear in Rich CLI output during execution.
 
 ---
 

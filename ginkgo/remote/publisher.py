@@ -36,6 +36,7 @@ class RemotePublisher:
     backend: RemoteStorageBackend
     bucket: str
     prefix: str
+    scheme: str
     local_blobs_dir: Path
     local_trees_dir: Path
     local_refs_dir: Path
@@ -69,7 +70,7 @@ class RemotePublisher:
         remote_key = f"{self.prefix}blobs/{record.digest_hex}"
         self.backend.upload(src_path=blob_path, bucket=self.bucket, key=remote_key)
 
-        remote_uri = f"s3://{self.bucket}/{remote_key}"
+        remote_uri = f"{self.scheme}://{self.bucket}/{remote_key}"
         updated = ArtifactRecord(
             artifact_id=record.artifact_id,
             kind=record.kind,
@@ -105,7 +106,7 @@ class RemotePublisher:
             manifest_key = f"{self.prefix}trees/{record.digest_hex}.json"
             self.backend.upload(src_path=tree_path, bucket=self.bucket, key=manifest_key)
 
-        remote_uri = f"s3://{self.bucket}/{self.prefix}trees/{record.digest_hex}.json"
+        remote_uri = f"{self.scheme}://{self.bucket}/{self.prefix}trees/{record.digest_hex}.json"
         updated = ArtifactRecord(
             artifact_id=record.artifact_id,
             kind=record.kind,

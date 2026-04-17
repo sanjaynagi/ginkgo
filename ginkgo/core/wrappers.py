@@ -37,7 +37,7 @@ def _module_root(value: Any) -> str:
 
 
 @dataclass(frozen=True, kw_only=True)
-class _WrappedResult:
+class _WrappedResultBase:
     """Base class for wrapped asset return values.
 
     Parameters
@@ -59,7 +59,7 @@ class _WrappedResult:
 
 
 @dataclass(frozen=True, kw_only=True)
-class TableResult(_WrappedResult):
+class TableResult(_WrappedResultBase):
     """Sentinel for tabular asset outputs.
 
     Produced by :func:`ginkgo.table`. The kind name is ``"table"``.
@@ -69,7 +69,7 @@ class TableResult(_WrappedResult):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ArrayResult(_WrappedResult):
+class ArrayResult(_WrappedResultBase):
     """Sentinel for n-dimensional array asset outputs.
 
     Produced by :func:`ginkgo.array`. The kind name is ``"array"``.
@@ -79,7 +79,7 @@ class ArrayResult(_WrappedResult):
 
 
 @dataclass(frozen=True, kw_only=True)
-class FigureResult(_WrappedResult):
+class FigureResult(_WrappedResultBase):
     """Sentinel for figure/plot asset outputs.
 
     Produced by :func:`ginkgo.fig`. The kind name is ``"fig"``.
@@ -89,7 +89,7 @@ class FigureResult(_WrappedResult):
 
 
 @dataclass(frozen=True, kw_only=True)
-class TextResult(_WrappedResult):
+class TextResult(_WrappedResultBase):
     """Sentinel for textual/structured document asset outputs.
 
     Produced by :func:`ginkgo.text`. The kind name is ``"text"``.
@@ -105,7 +105,7 @@ class TextResult(_WrappedResult):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ModelResult(_WrappedResult):
+class ModelResult(_WrappedResultBase):
     """Sentinel for trained-model asset outputs.
 
     Produced by :func:`ginkgo.model`. The kind name is ``"model"``. The

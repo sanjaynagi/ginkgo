@@ -46,14 +46,20 @@ def encode_value(
     inline_limit : int
         Byte threshold below which binary payloads are base64-inlined.
     """
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-
+    # file/folder/tmp_dir are str subclasses, so they must be checked
+    # before the generic str branch below short-circuits them into bare
+    # strings.
     if isinstance(value, file):
         return {"__ginkgo_type__": "file", "value": str(value)}
 
     if isinstance(value, folder):
         return {"__ginkgo_type__": "folder", "value": str(value)}
+
+    if isinstance(value, tmp_dir):
+        return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
 
     if isinstance(value, AssetRef):
         return {"__ginkgo_type__": "asset_ref", "value": value.to_dict()}
@@ -71,9 +77,6 @@ def encode_value(
                 inline_limit=inline_limit,
             ),
         }
-
-    if isinstance(value, tmp_dir):
-        return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
 
     if isinstance(value, list):
         return {
@@ -207,13 +210,16 @@ def decode_value(
 
 def summarise_value(value: Any) -> Any:
     """Return a compact metadata view of a value for cache manifests."""
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-
+    # file/folder are str subclasses — check before the generic str branch.
     if isinstance(value, file):
         return {"type": "file", "value": str(value)}
     if isinstance(value, folder):
         return {"type": "folder", "value": str(value)}
+    if isinstance(value, tmp_dir):
+        return {"type": "tmp_dir", "value": str(value)}
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
     if isinstance(value, AssetRef):
         return {
             "type": "asset_ref",
@@ -227,8 +233,6 @@ def summarise_value(value: Any) -> Any:
             "kind": value.kind,
             "name": value.name,
         }
-    if isinstance(value, tmp_dir):
-        return {"type": "tmp_dir", "value": str(value)}
     if isinstance(value, list):
         return {
             "type": "list",

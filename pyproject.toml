@@ -24,6 +24,13 @@ notebooks = [
     "marimo>=0.11",
     "nbconvert>=7.16",
 ]
+cloud = [
+    "kubernetes>=28.1",
+    "gcsfs>=2024.10.0",
+    "google-auth>=2.25",
+    "google-cloud-batch>=0.17",
+    "google-cloud-logging>=3.10",
+]
 
 [project.scripts]
 ginkgo = "ginkgo.cli:main"

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import os
+
+# Suppress gRPC fork-safety warnings on macOS. Must be set before grpc is imported.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
+
 import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import _environment_label, _format_duration
@@ -58,6 +63,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         output_mode=output_mode,
         trust_workspace=getattr(args, "trust_workspace", False),
         profile=getattr(args, "profile", False),
+        executor=getattr(args, "executor", "local"),
     )
 
 
@@ -72,6 +78,7 @@ def run_workflow(
     output_mode: RunMode = "default",
     trust_workspace: bool = False,
     profile: bool = False,
+    executor: str = "local",
 ) -> int:
     profiler = ProfileRecorder(enabled=profile)
     cli_startup_started = time.perf_counter()
@@ -116,11 +123,23 @@ def run_workflow(
         local=LocalBackend(pixi_registry=registry),
         container=ContainerBackend(project_root=Path.cwd()),
     )
+
+    remote_executor = None
+    code_bundle_config = None
+    if executor == "k8s":
+        remote_executor = _build_k8s_executor(runtime_config=runtime_config)
+        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
+    elif executor == "batch":
+        remote_executor = _build_batch_executor(runtime_config=runtime_config)
+        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
+
     evaluator = _ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
         memory=memory,
         backend=backend,
+        remote_executor=remote_executor,
+        code_bundle_config=code_bundle_config,
         secret_resolver=secret_resolver,
         profiler=profiler,
     )
@@ -228,6 +247,7 @@ def run_workflow(
                         run_dir=recorder.run_dir,
                         cores=evaluator.cores,
                         memory=memory,
+                        executor=executor,
                     ),
                     resources=_ResourceRenderState(provider=resource_monitor.current_summary),
                 )
@@ -237,6 +257,8 @@ def run_workflow(
                 cores=cores,
                 memory=memory,
                 backend=backend,
+                remote_executor=remote_executor,
+                code_bundle_config=code_bundle_config,
                 provenance=recorder,
                 secret_resolver=secret_resolver,
                 event_bus=bus,
@@ -289,6 +311,7 @@ def run_workflow(
                             success=False,
                             resources=resource_summary,
                             failure_details=failure_details,
+                            remote_summary=evaluator._remote_stats.summary(),
                         )
                     print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
                 if profiler.enabled:
@@ -324,6 +347,7 @@ def run_workflow(
                             renderer=renderer,
                         ),
                         assets=_render_assets(run_summary=run_summary),
+                        remote_summary=evaluator._remote_stats.summary(),
                     )
             if profiler.enabled:
                 recorder.set_profile(profile=profiler.snapshot())
@@ -436,3 +460,77 @@ def _render_notebooks(
 def _render_assets(*, run_summary: RunSummary) -> list[_AssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
     return [_AssetSummary(name=asset.name) for asset in run_summary.assets]
+
+
+def _load_code_bundle_config(*, runtime_config: dict[str, Any]) -> dict[str, Any] | None:
+    """Read code-sync configuration from ``[remote.k8s.code]`` or ``[remote.batch.code]``."""
+    remote = runtime_config.get("remote", {})
+    for section in ("k8s", "batch"):
+        backend_config = remote.get(section, {})
+        if not isinstance(backend_config, dict):
+            continue
+        code_config = backend_config.get("code")
+        if isinstance(code_config, dict):
+            return dict(code_config)
+    return None
+
+
+def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
+    """Construct a ``KubernetesExecutor`` from ``[remote.k8s]`` config."""
+    from ginkgo.remote.kubernetes import KubernetesExecutor
+
+    k8s_config = runtime_config.get("remote", {}).get("k8s", {})
+    if not isinstance(k8s_config, dict):
+        k8s_config = {}
+
+    image = k8s_config.get("image")
+    if not image:
+        raise ValueError(
+            "Kubernetes executor requires an image. Set [remote.k8s] image in ginkgo.toml."
+        )
+
+    return KubernetesExecutor(
+        namespace=k8s_config.get("namespace", "default"),
+        image=image,
+        service_account=k8s_config.get("service_account"),
+        pull_policy=k8s_config.get("pull_policy", "IfNotPresent"),
+        gpu_type=k8s_config.get("gpu_type"),
+        node_selector=k8s_config.get("node_selector"),
+        tolerations=k8s_config.get("tolerations"),
+        ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 3600)),
+        ephemeral_storage=k8s_config.get("ephemeral_storage", "10Gi"),
+        backoff_limit=int(k8s_config.get("backoff_limit", 2)),
+    )
+
+
+def _build_batch_executor(*, runtime_config: dict[str, Any]) -> Any:
+    """Construct a ``GCPBatchExecutor`` from ``[remote.batch]`` config."""
+    from ginkgo.remote.gcp_batch import GCPBatchExecutor
+
+    batch_config = runtime_config.get("remote", {}).get("batch", {})
+    if not isinstance(batch_config, dict):
+        batch_config = {}
+
+    project = batch_config.get("project")
+    if not project:
+        raise ValueError(
+            "GCP Batch executor requires a project. Set [remote.batch] project in ginkgo.toml."
+        )
+
+    image = batch_config.get("image")
+    if not image:
+        raise ValueError(
+            "GCP Batch executor requires an image. Set [remote.batch] image in ginkgo.toml."
+        )
+
+    region = batch_config.get("region", "europe-west2")
+
+    return GCPBatchExecutor(
+        project=project,
+        region=region,
+        image=image,
+        service_account=batch_config.get("service_account"),
+        gpu_type=batch_config.get("gpu_type"),
+        gpu_driver_version=batch_config.get("gpu_driver_version", "LATEST"),
+        max_run_duration=batch_config.get("max_run_duration", "3600s"),
+    )

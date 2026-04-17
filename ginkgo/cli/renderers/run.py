@@ -111,6 +111,7 @@ class _CliRunRenderer:
         failure_details: list[_FailureDetails] | None = None,
         notebooks: list[_NotebookSummary] | None = None,
         assets: list[_AssetSummary] | None = None,
+        remote_summary: str | None = None,
     ) -> None:
         """Print the final run summary."""
         if self._buffer.strip():
@@ -144,6 +145,8 @@ class _CliRunRenderer:
             resource_footer = self._render_resource_footer(resource_summary)
             if resource_footer is not None:
                 self._console.print(resource_footer)
+        if remote_summary is not None:
+            self._console.print(f"[dim]☁️  {remote_summary}[/dim]")
         if not success and failure_details:
             self._console.print(self._render_failure_separator())
             self._console.print(self._render_failure_details(failure_details))
@@ -189,13 +192,22 @@ class _CliRunRenderer:
         if isinstance(display_label, str):
             self._apply_display_label(node_id=node_id, display_label=display_label)
         row.status = status
-        if status in {"staging", "running"}:
+        if status in {"staging", "submitted", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
         elif status in {"cached", "succeeded", "failed"}:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
-        if self._live is not None:
+        # Only refresh on state transitions that the user needs to see
+        # immediately. Rapid cache hits are batched by Rich's internal
+        # refresh rate to avoid flicker.
+        if self._live is not None and status in {
+            "staging",
+            "submitted",
+            "running",
+            "succeeded",
+            "failed",
+        }:
             self._live.refresh()
 
     def _label_for(self, *, node_id: int, task_name: str) -> str:
@@ -255,11 +267,18 @@ class _CliRunRenderer:
     def _render_resource_info_line(self) -> Text:
         """Render the live locality and resource summary line."""
         text = Text()
-        text.append("💻 ", style="cyan")
-        text.append(
-            f"Running locally on {self._summary.cores} {_core_unit_label(self._summary.cores)}",
-            style="bold",
-        )
+        if self._summary.executor == "k8s":
+            text.append("☁️  ", style="cyan")
+            text.append("Running on Kubernetes", style="bold")
+        elif self._summary.executor == "batch":
+            text.append("☁️  ", style="cyan")
+            text.append("Running on GCP Batch", style="bold")
+        else:
+            text.append("💻 ", style="cyan")
+            text.append(
+                f"Running locally on {self._summary.cores} {_core_unit_label(self._summary.cores)}",
+                style="bold",
+            )
         text.append(" ")
         text.append("(")
         text.append(self._resource_label(), style="dim")

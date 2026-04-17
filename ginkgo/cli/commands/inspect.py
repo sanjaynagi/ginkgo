@@ -86,33 +86,39 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
                         ],
                     }
                 )
-            task_rows.append(
-                {
-                    "task_id": task_id,
-                    "task_name": _task_base_name(str(task.get("task", "unknown"))),
-                    "status": task.get("status"),
-                    "attempt": task.get("attempt"),
-                    "attempts": task.get("attempts"),
-                    "cache_key": task.get("cache_key"),
-                    "cached": task.get("cached"),
-                    "exit_code": task.get("exit_code"),
-                    "env": task.get("env"),
-                    "kind": task.get("kind"),
-                    "dependency_ids": [
-                        f"task_{int(dep_id):04d}" for dep_id in task.get("dependency_ids", [])
-                    ],
-                    "dynamic_dependency_ids": [
-                        f"task_{int(dep_id):04d}" for dep_id in dynamic_dependencies
-                    ],
-                    "failure": task.get("failure"),
-                    "outputs": task.get("outputs", []),
-                    "stdout_log": task.get("stdout_log"),
-                    "stderr_log": task.get("stderr_log"),
-                    "started_at": task.get("started_at"),
-                    "finished_at": task.get("finished_at"),
-                    "timings": task.get("timings", {}),
-                }
-            )
+            row: dict[str, Any] = {
+                "task_id": task_id,
+                "task_name": _task_base_name(str(task.get("task", "unknown"))),
+                "status": task.get("status"),
+                "attempt": task.get("attempt"),
+                "attempts": task.get("attempts"),
+                "cache_key": task.get("cache_key"),
+                "cached": task.get("cached"),
+                "exit_code": task.get("exit_code"),
+                "env": task.get("env"),
+                "kind": task.get("kind"),
+                "dependency_ids": [
+                    f"task_{int(dep_id):04d}" for dep_id in task.get("dependency_ids", [])
+                ],
+                "dynamic_dependency_ids": [
+                    f"task_{int(dep_id):04d}" for dep_id in dynamic_dependencies
+                ],
+                "failure": task.get("failure"),
+                "outputs": task.get("outputs", []),
+                "stdout_log": task.get("stdout_log"),
+                "stderr_log": task.get("stderr_log"),
+                "started_at": task.get("started_at"),
+                "finished_at": task.get("finished_at"),
+                "timings": task.get("timings", {}),
+            }
+            # Remote execution metadata (present only for remote tasks).
+            if task.get("remote_job_id") is not None:
+                row["remote_job_id"] = task["remote_job_id"]
+            if task.get("execution_backend") is not None:
+                row["execution_backend"] = task["execution_backend"]
+            if task.get("resources") is not None:
+                row["resources"] = task["resources"]
+            task_rows.append(row)
 
     return {
         "run_id": manifest.get("run_id", run_dir.name),

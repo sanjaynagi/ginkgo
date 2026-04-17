@@ -13,6 +13,9 @@ from importlib import import_module
 from itertools import product
 from typing import Any, Callable, Literal, get_type_hints
 
+import math
+import re
+
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.types import tmp_dir
 
@@ -41,6 +44,19 @@ class TaskDef:
         budget against ``--cores`` and made available to the task body when
         the function signature declares a ``threads`` parameter. Shell tasks
         also receive ``GINKGO_THREADS=<n>`` in the subprocess environment.
+    memory : str | None
+        Static memory footprint for the scheduler, in Kubernetes resource
+        notation (e.g. ``"4Gi"``, ``"512Mi"``). When set, the scheduler
+        reserves this amount against ``--memory`` and remote executors map
+        it to pod resource requests.
+    gpu : int
+        Number of GPUs to request for remote execution. Has no effect on
+        local runs. Remote executors map this to the appropriate accelerator
+        resource (e.g. ``nvidia.com/gpu`` on Kubernetes).
+    remote : bool
+        When ``True``, dispatch this task to the remote executor (if
+        configured via ``--executor``). Tasks with ``gpu > 0`` are
+        implicitly remote. Local-only tasks ignore this flag.
     export_thread_env : bool
         When ``True``, shell tasks additionally receive ``OMP_NUM_THREADS``,
         ``MKL_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, and
@@ -54,11 +70,15 @@ class TaskDef:
     retries: int = 0
     kind: str = "python"
     threads: int = 1
+    memory: str | None = None
+    gpu: int = 0
+    remote: bool = False
     export_thread_env: bool = False
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
     _source_hash: str = field(init=False, repr=False)
+    _memory_gb: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.retries < 0:
@@ -68,6 +88,11 @@ class TaskDef:
             raise ValueError(f"kind must be one of {{{supported}}}, got {self.kind!r}")
         if self.threads < 1:
             raise ValueError(f"threads must be at least 1, got {self.threads}")
+        if self.gpu < 0:
+            raise ValueError(f"gpu must be at least 0, got {self.gpu}")
+
+        parsed_memory = _parse_memory(self.memory)
+        object.__setattr__(self, "_memory_gb", parsed_memory)
 
         sig = inspect.signature(self.fn)
         hints = get_type_hints(self.fn)
@@ -119,6 +144,11 @@ class TaskDef:
     def source_hash(self) -> str:
         """BLAKE3 digest of the task function's source code."""
         return self._source_hash
+
+    @property
+    def memory_gb(self) -> int:
+        """Parsed memory footprint in whole GiB (0 when unset)."""
+        return self._memory_gb
 
     @property
     def cache_source_hash(self) -> str:
@@ -490,6 +520,9 @@ def task(
     retries: int = 0,
     kind: str = "python",
     threads: int = 1,
+    memory: str | None = None,
+    gpu: int = 0,
+    remote: bool = False,
     export_thread_env: bool = False,
 ) -> Callable[[Callable[..., Any]], TaskDef]:
     """Decorator that turns a function into a lazy task definition.
@@ -517,6 +550,16 @@ def task(
         same value when its function signature declares a ``threads``
         parameter; shell tasks also see ``GINKGO_THREADS=<n>`` in the
         subprocess environment.
+    memory : str | None
+        Static memory footprint for the scheduler in Kubernetes resource
+        notation (e.g. ``"4Gi"``, ``"512Mi"``).
+    gpu : int
+        Number of GPUs to request for remote execution. Has no effect on
+        local runs. Remote executors map this to the appropriate accelerator
+        resource (e.g. ``nvidia.com/gpu`` on Kubernetes).
+    remote : bool
+        When ``True``, dispatch this task to the remote executor. Tasks
+        with ``gpu > 0`` are implicitly remote.
     export_thread_env : bool
         Export common BLAS/OpenMP thread environment variables
         (``OMP_NUM_THREADS``, ``MKL_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``,
@@ -546,10 +589,59 @@ def task(
             retries=retries,
             kind=resolved_kind,
             threads=threads,
+            memory=memory,
+            gpu=gpu,
+            remote=remote,
             export_thread_env=export_thread_env,
         )
 
     return decorator
+
+
+_MEMORY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*(Gi|Mi|G|M|Ti|Ki)$")
+
+_MEMORY_MULTIPLIERS: dict[str, float] = {
+    "Ki": 1 / (1024 * 1024),
+    "Mi": 1 / 1024,
+    "Gi": 1,
+    "Ti": 1024,
+    "M": 1e6 / (1024**3),
+    "G": 1e9 / (1024**3),
+}
+
+
+def _parse_memory(value: str | None) -> int:
+    """Parse a Kubernetes-style memory string to whole GiB.
+
+    Parameters
+    ----------
+    value : str | None
+        Memory specification (e.g. ``"4Gi"``, ``"512Mi"``).
+
+    Returns
+    -------
+    int
+        Memory in GiB, rounded up. Returns 0 when *value* is ``None``.
+
+    Raises
+    ------
+    ValueError
+        If the string cannot be parsed.
+    """
+    if value is None:
+        return 0
+
+    match = _MEMORY_PATTERN.match(value.strip())
+    if match is None:
+        raise ValueError(
+            f"Invalid memory specification {value!r}. "
+            "Use Kubernetes resource notation, e.g. '4Gi', '512Mi', '8G'."
+        )
+
+    amount = float(match.group(1))
+    unit = match.group(2)
+    gib = amount * _MEMORY_MULTIPLIERS[unit]
+    return max(1, math.ceil(gib)) if gib > 0 else 0
 
 
 def _compute_source_hash(fn: Callable[..., Any]) -> str:

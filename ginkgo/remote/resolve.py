@@ -8,7 +8,11 @@ from typing import Any
 
 from ginkgo.config import load_runtime_config
 from ginkgo.remote.backend import RemoteStorageBackend
-from ginkgo.remote.fsspec_backends import OCIFileSystemBackend, S3FileSystemBackend
+from ginkgo.remote.fsspec_backends import (
+    GCSFileSystemBackend,
+    OCIFileSystemBackend,
+    S3FileSystemBackend,
+)
 
 
 def resolve_backend(
@@ -21,7 +25,7 @@ def resolve_backend(
     Parameters
     ----------
     scheme : str
-        URI scheme (``"s3"`` or ``"oci"``).
+        URI scheme (``"s3"``, ``"oci"``, or ``"gs"``).
     region : str | None
         Region override.  Falls back to environment variables or provider
         defaults.
@@ -47,6 +51,9 @@ def resolve_backend(
             region=region or settings.get("oci_region"),
         )
 
+    if scheme == "gs":
+        return GCSFileSystemBackend(project=settings.get("gcs_project"))
+
     raise ValueError(f"Unsupported remote scheme: {scheme!r}")
 
 
@@ -54,6 +61,7 @@ def _load_remote_settings(*, project_root: Path) -> dict[str, str]:
     config = load_runtime_config(project_root=project_root)
     remote_config = config.get("remote", {})
     oci_config = remote_config.get("oci", {}) if isinstance(remote_config, dict) else {}
+    gcs_config = remote_config.get("gcs", {}) if isinstance(remote_config, dict) else {}
 
     return {
         "s3_region": _first_defined(
@@ -77,6 +85,11 @@ def _load_remote_settings(*, project_root: Path) -> dict[str, str]:
             os.environ.get("OCI_REGION"),
             _config_string(oci_config, "region"),
             _config_string(remote_config, "region"),
+        ),
+        "gcs_project": _first_defined(
+            os.environ.get("GINKGO_REMOTE_GCS_PROJECT"),
+            os.environ.get("GOOGLE_CLOUD_PROJECT"),
+            _config_string(gcs_config, "project"),
         ),
     }
 

@@ -265,6 +265,7 @@ class RunProvenanceRecorder:
         env: str | None,
         attempt: int,
         retries: int,
+        execution_backend: str | None = None,
     ) -> None:
         """Mark a task as dispatched."""
         with self._lock:
@@ -276,21 +277,23 @@ class RunProvenanceRecorder:
             task["max_attempts"] = retries + 1
             task["retries_remaining"] = max(0, retries - (attempt - 1))
             task["status"] = "running"
+            if execution_backend is not None:
+                task["execution_backend"] = execution_backend
             task.setdefault("started_at", _timestamp())
             task["last_started_at"] = _timestamp()
-            self._append_task_update(
-                node_id=node_id,
-                fields={
-                    "attempt": task["attempt"],
-                    "attempts": task["attempts"],
-                    "retries": task["retries"],
-                    "max_attempts": task["max_attempts"],
-                    "retries_remaining": task["retries_remaining"],
-                    "status": task["status"],
-                    "started_at": task["started_at"],
-                    "last_started_at": task["last_started_at"],
-                },
-            )
+            fields = {
+                "attempt": task["attempt"],
+                "attempts": task["attempts"],
+                "retries": task["retries"],
+                "max_attempts": task["max_attempts"],
+                "retries_remaining": task["retries_remaining"],
+                "status": task["status"],
+                "started_at": task["started_at"],
+                "last_started_at": task["last_started_at"],
+            }
+            if execution_backend is not None:
+                fields["execution_backend"] = execution_backend
+            self._append_task_update(node_id=node_id, fields=fields)
 
     def mark_retrying(
         self,

@@ -31,10 +31,16 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import TaskBackend
+from ginkgo.runtime.remote_executor import (
+    RemoteDispatchStats,
+    RemoteExecutor,
+    RemoteJobHandle,
+    RemoteJobState,
+)
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
-from ginkgo.runtime.artifacts.output_index import artifact_index
+from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.wrapper_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -53,6 +59,7 @@ from ginkgo.runtime.events import (
     TaskNotice,
     TaskReady,
     TaskRetrying,
+    TaskRunning,
     TaskStaging,
     TaskStarted,
 )
@@ -65,7 +72,7 @@ from ginkgo.runtime.environment.secrets import (
     collect_resolved_secret_values,
     resolve_secret_refs,
 )
-from ginkgo.runtime.staging import (
+from ginkgo.runtime.remote_input_resolver import (
     RemoteStager,
     count_remote_inputs,
     load_remote_publisher,
@@ -169,6 +176,7 @@ class _TaskNode:
     input_hashes: dict[str, Any] | None = None
     threads: int = 1
     memory_gb: int = 0
+    gpu: int = 0
     concurrency_group: str | None = None
     concurrency_group_limit: int | None = None
     result: Any = MISSING
@@ -185,6 +193,7 @@ class _TaskNode:
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
     notebook_extras: dict[str, Any] | None = None
+    remote_job_id: str | None = None
 
     @property
     def task_def(self) -> TaskDef:
@@ -200,6 +209,7 @@ class _ConcurrentEvaluator:
     cores: int | None = None
     memory: int | None = None
     backend: TaskBackend | None = None
+    remote_executor: RemoteExecutor | None = None
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
@@ -234,7 +244,22 @@ class _ConcurrentEvaluator:
         repr=False,
     )
     _staging_jobs: int = field(default=0, init=False, repr=False)
+    code_bundle_config: dict[str, Any] | None = None
+    _remote_watcher_executor: ThreadPoolExecutor | None = field(
+        default=None, init=False, repr=False
+    )
+    _remote_handles: dict[int, RemoteJobHandle] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _code_bundle_meta: dict[str, str] | None = field(default=None, init=False, repr=False)
     _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _remote_artifact_store: Any = field(default=None, init=False, repr=False)
+    _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
+    _remote_published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
+    _remote_stats: RemoteDispatchStats = field(
+        default_factory=RemoteDispatchStats, init=False, repr=False
+    )
+    _staging_cache_path: Path = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.profiler is None:
@@ -251,6 +276,7 @@ class _ConcurrentEvaluator:
             raise ValueError("memory must be at least 1 when provided")
 
         self._hash_memo = HashMemo()
+        self._staging_cache_path = Path.cwd() / ".ginkgo" / "remote-staged.json"
         artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
         self._materialization_log = MaterializationLog(
             path=artifacts_root / "materializations.json"
@@ -372,6 +398,7 @@ class _ConcurrentEvaluator:
                 self._shell_executor = None
                 self._materialization_log.save()
                 self._cache_store.save_stat_index()
+                self._save_staging_cache()
 
         assert self._failure is not None
         raise self._failure
@@ -554,7 +581,8 @@ class _ConcurrentEvaluator:
         self._record_task_metadata(node=node)
 
         node.threads = self._task_threads(node.task_def)
-        node.memory_gb = self._task_memory_gb(resolved_args)
+        node.memory_gb = self._task_memory_gb(node.task_def, resolved_args)
+        node.gpu = node.task_def.gpu
         if node.threads > self.cores:
             raise ValueError(
                 f"{node.task_def.name} requires {node.threads} cores but only "
@@ -683,11 +711,19 @@ class _ConcurrentEvaluator:
 
             if future.cancelled():
                 node.state = "failed"
+                self._remote_handles.pop(node.node_id, None)
                 continue
+
+            # Capture remote job id for provenance before processing result.
+            if phase == "remote":
+                handle = self._remote_handles.get(node.node_id)
+                if handle is not None:
+                    node.remote_job_id = handle.job_id
 
             try:
                 completed_value = future.result()
             except BaseException as exc:
+                self._remote_handles.pop(node.node_id, None)
                 self._handle_task_exception(node=node, exc=exc)
                 continue
 
@@ -696,8 +732,15 @@ class _ConcurrentEvaluator:
                     self._handle_completed_staging_phase(
                         node=node, completed_value=completed_value
                     )
-                elif phase == "python":
-                    self._handle_completed_worker_phase(node=node, completed_value=completed_value)
+                elif phase in ("python", "remote"):
+                    remote_handle = self._remote_handles.pop(node.node_id, None)
+                    if phase == "remote" and remote_handle is not None:
+                        self._capture_remote_logs(node=node, handle=remote_handle)
+                    self._handle_completed_worker_phase(
+                        node=node,
+                        completed_value=completed_value,
+                        remote_job_id=remote_handle.job_id if remote_handle is not None else None,
+                    )
                 elif phase == "driver":
                     self._handle_completed_driver_phase(node=node, completed_value=completed_value)
                 else:
@@ -726,9 +769,16 @@ class _ConcurrentEvaluator:
             if not progressed:
                 return
 
-    def _handle_completed_worker_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
+    def _handle_completed_worker_phase(
+        self,
+        *,
+        node: _TaskNode,
+        completed_value: Any,
+        remote_job_id: str | None = None,
+    ) -> None:
         """Handle the result returned from a Python worker."""
         completed_value = self._decode_worker_result(node=node, payload=completed_value)
+        node.remote_job_id = remote_job_id
         self._handle_task_body_result(node=node, completed_value=completed_value)
 
     def _handle_completed_staging_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
@@ -777,6 +827,7 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 exit_code=getattr(sanitized_exc, "exit_code", None),
                 failure=classify_failure(exc=sanitized_exc),
+                remote_job_id=node.remote_job_id,
             )
         )
 
@@ -800,6 +851,7 @@ class _ConcurrentEvaluator:
         node.input_hashes = None
         node.threads = 1
         node.memory_gb = 0
+        node.gpu = 0
         node.tmp_paths = []
         node.transport_path = None
         node.dynamic_template = None
@@ -871,7 +923,7 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 env=node.task_def.env,
                 value=value,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
         self._emit_event(
@@ -883,9 +935,15 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="success",
                 cache_key=node.cache_key,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
+                remote_job_id=node.remote_job_id,
             )
         )
+        if self.provenance is not None and node.remote_job_id is not None:
+            self.provenance.update_task_extra(
+                node_id=node.node_id,
+                remote_job_id=node.remote_job_id,
+            )
         self._record_task_timing(
             node_id=node.node_id,
             phase="finalize_seconds",
@@ -1039,10 +1097,26 @@ class _ConcurrentEvaluator:
     def _interrupt_running_work(self) -> None:
         """Stop queued and active work after an external interrupt."""
         self._cancel_pending_futures()
+        self._cancel_remote_handles()
         self._shell_runner.terminate_all()
         self._shutdown_staging_executor()
         self._shutdown_shell_executor()
         self._shutdown_python_executor()
+        self._shutdown_remote_watcher_executor()
+
+    def _cancel_remote_handles(self) -> None:
+        """Cancel all in-flight remote job handles."""
+        for handle in self._remote_handles.values():
+            with suppress(Exception):
+                handle.cancel()
+        self._remote_handles.clear()
+
+    def _shutdown_remote_watcher_executor(self) -> None:
+        """Shut down the remote watcher executor."""
+        if self._remote_watcher_executor is None:
+            return
+        with suppress(Exception):
+            self._remote_watcher_executor.shutdown(wait=False, cancel_futures=True)
 
     def _shutdown_staging_executor(self) -> None:
         """Shut down the staging executor without waiting for new tasks."""
@@ -1230,6 +1304,12 @@ class _ConcurrentEvaluator:
             task_def=node.task_def,
             execution_args=node.execution_args,
         )
+        # Determine execution backend for events/provenance.
+        task_is_remote = node.task_def.remote or node.gpu > 0
+        execution_backend = (
+            "remote" if (task_is_remote and self.remote_executor is not None) else "local"
+        )
+
         self._emit_event(
             TaskStarted(
                 run_id=self._run_id,
@@ -1244,6 +1324,7 @@ class _ConcurrentEvaluator:
                     "memory_gb": node.memory_gb,
                     "max_attempts": node.task_def.retries + 1,
                 },
+                execution_backend=execution_backend,
             )
         )
         if self.provenance is not None:
@@ -1253,6 +1334,7 @@ class _ConcurrentEvaluator:
                 env=node.task_def.env,
                 attempt=node.attempt,
                 retries=node.task_def.retries,
+                execution_backend=execution_backend,
             )
 
         if node.task_def.kind in {"notebook", "script", "shell"}:
@@ -1263,17 +1345,268 @@ class _ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "driver")
             return
 
+        # Remote dispatch: submit to remote executor when the task opts in
+        # (via gpu > 0 or remote=True) and an executor is configured.
+        if task_is_remote and self.remote_executor is not None:
+            node.transport_path = Path(
+                tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
+            )
+            self._ensure_code_bundle()
+            self._ensure_remote_artifact_store()
+            payload = self._build_worker_payload(node=node)
+            payload["resources"] = {
+                "threads": node.threads,
+                "memory_gb": node.memory_gb,
+                "gpu": node.gpu,
+            }
+            if self._code_bundle_meta is not None:
+                payload["code_bundle"] = self._code_bundle_meta
+            if self._remote_artifact_store is not None:
+                from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
+
+                payload["args"] = stage_args_for_remote(
+                    args=payload["args"],
+                    type_hints=node.task_def.type_hints,
+                    remote_store=self._remote_artifact_store,
+                    known_digests=self._known_digests,
+                    published_artifacts=self._remote_published_artifacts,
+                )
+                payload["remote_artifact_store"] = {
+                    "scheme": self._remote_artifact_store.scheme,
+                    "bucket": self._remote_artifact_store.bucket,
+                    "prefix": self._remote_artifact_store.prefix,
+                }
+            handle = self.remote_executor.submit(attempt=payload)
+            self._remote_stats.record_submit()
+            self._remote_handles[node.node_id] = handle
+            if self._remote_watcher_executor is None:
+                self._remote_watcher_executor = ThreadPoolExecutor(
+                    max_workers=self.jobs or 8,
+                    thread_name_prefix="ginkgo-remote-watcher",
+                )
+            future = self._remote_watcher_executor.submit(self._poll_remote_job, handle, node=node)
+            self._running_futures[future] = (node.node_id, "remote")
+            return
+
         node.transport_path = Path(tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-"))
         payload = self._build_worker_payload(node=node)
         future = python_executor.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, "python")
 
+    def _poll_remote_job(self, handle: RemoteJobHandle, *, node: _TaskNode) -> dict[str, Any]:
+        """Poll a remote job handle until it reaches a terminal state.
+
+        Called on a watcher thread — blocks until the remote job finishes.
+        Returns the worker result payload for consumption by the evaluator
+        loop (same shape as a local ``run_task`` return value).
+        """
+        poll_interval = 5.0
+        max_interval = 30.0
+        emitted_running = False
+        t_submit = time.monotonic()
+        t_running: float | None = None
+        while True:
+            state = handle.state()
+            if state.is_terminal:
+                break
+            if not emitted_running and state == RemoteJobState.RUNNING:
+                emitted_running = True
+                t_running = time.monotonic()
+                self._emit_event(
+                    TaskRunning(
+                        run_id=self._run_id,
+                        task_id=_task_id_for_node(node.node_id),
+                        task_name=node.task_def.name,
+                        attempt=node.attempt,
+                        display_label=node.display_label,
+                        remote_job_id=handle.job_id,
+                    )
+                )
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, max_interval)
+
+        t_done = time.monotonic()
+        pending_s = (t_running or t_done) - t_submit
+        running_s = t_done - t_running if t_running else 0.0
+        self._remote_stats.record_terminal(state=state)
+        self._remote_stats.record_phase_time(pending=pending_s, running=running_s)
+
+        result = handle.result()
+
+        if result.state == RemoteJobState.CANCELLED:
+            raise KeyboardInterrupt("Remote job was cancelled")
+
+        if result.state == RemoteJobState.FAILED and not result.payload:
+            raise RuntimeError(
+                f"Remote job {handle.job_id} failed"
+                + (f" (exit code {result.exit_code})" if result.exit_code is not None else "")
+                + (f"\n{result.logs}" if result.logs else "")
+            )
+
+        payload = result.payload
+        if (
+            self._remote_artifact_store is not None
+            and isinstance(payload, dict)
+            and payload.get("ok")
+            and payload.get("result_encoding") == "encoded"
+            and "result" in payload
+        ):
+            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
+
+            scratch_dir = self._remote_artifact_store.local._root / "remote-outputs"
+            payload["result"] = hydrate_result_from_remote(
+                result=payload["result"],
+                remote_store=self._remote_artifact_store,
+                scratch_dir=scratch_dir,
+            )
+
+        return payload
+
+    def _capture_remote_logs(self, *, node: _TaskNode, handle: RemoteJobHandle) -> None:
+        """Fetch pod logs and write them to the standard task log paths."""
+        try:
+            logs = handle.logs_tail(lines=10000)
+        except Exception:
+            return
+        if not logs:
+            return
+
+        # Remote workers merge stdout/stderr into one stream — write to both
+        # paths so users find tracebacks where they expect them.
+        for log_path in (node.stdout_path, node.stderr_path):
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(logs, encoding="utf-8")
+
+    def _load_staging_cache(self) -> None:
+        """Restore persisted staging state from ``.ginkgo/remote-staged.json``."""
+        from ginkgo.runtime.artifacts.remote_arg_transfer import load_staging_cache
+
+        digests, published = load_staging_cache(cache_path=self._staging_cache_path)
+        self._known_digests.update(digests)
+        self._remote_published_artifacts.update(published)
+
+    def _save_staging_cache(self) -> None:
+        """Persist staging state so the next run skips re-hashing unchanged inputs."""
+        if not self._known_digests and not self._remote_published_artifacts:
+            return
+        from ginkgo.runtime.artifacts.remote_arg_transfer import save_staging_cache
+
+        save_staging_cache(
+            cache_path=self._staging_cache_path,
+            known_digests=self._known_digests,
+            published_artifacts=self._remote_published_artifacts,
+        )
+
+    def _ensure_code_bundle(self) -> None:
+        """Create and publish the code bundle on first remote dispatch.
+
+        Reads ``code_bundle_config`` (from ``[remote.k8s.code]``) to decide
+        whether to sync workflow code to the remote backend. The bundle is
+        created once per evaluator run and reused for all remote tasks.
+        """
+        if self._code_bundle_meta is not None:
+            return
+        if self.code_bundle_config is None:
+            return
+        mode = self.code_bundle_config.get("mode", "baked")
+        if mode != "sync":
+            return
+
+        package = self.code_bundle_config.get("package")
+        if not package:
+            raise ValueError(
+                "Code-sync mode requires [remote.k8s.code] package to be set "
+                'in ginkgo.toml (e.g. package = "my_workflow")'
+            )
+
+        from ginkgo.remote.code_bundle import create_code_bundle, publish_code_bundle
+        from ginkgo.remote.resolve import resolve_backend
+        from ginkgo.core.remote import _parse_uri
+
+        package_path = Path.cwd() / package
+        if not package_path.is_dir():
+            raise FileNotFoundError(f"Code-sync package directory not found: {package_path}")
+
+        # Determine remote storage from [remote.artifacts] config.
+        from ginkgo.config import load_runtime_config
+
+        config = load_runtime_config(project_root=Path.cwd())
+        artifacts_config = config.get("remote", {}).get("artifacts", {})
+        store_uri = artifacts_config.get("store") if isinstance(artifacts_config, dict) else None
+        if store_uri is None:
+            raise ValueError(
+                "Code-sync mode requires [remote.artifacts] store to be configured in ginkgo.toml"
+            )
+
+        parsed = _parse_uri(store_uri)
+        backend = resolve_backend(parsed["scheme"])
+        prefix = parsed["key"]
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+
+        extra_excludes = self.code_bundle_config.get("exclude")
+        if isinstance(extra_excludes, str):
+            extra_excludes = [extra_excludes]
+        bundle_path, digest = create_code_bundle(
+            package_path=package_path,
+            extra_excludes=extra_excludes,
+        )
+        try:
+            remote_key = publish_code_bundle(
+                backend=backend,
+                bucket=parsed["bucket"],
+                prefix=prefix,
+                bundle_path=bundle_path,
+                digest=digest,
+            )
+        finally:
+            Path(bundle_path).unlink(missing_ok=True)
+
+        self._code_bundle_meta = {
+            "scheme": parsed["scheme"],
+            "bucket": parsed["bucket"],
+            "key": remote_key,
+            "digest": digest,
+            "package": package,
+            "package_parent": str(package_path.parent.resolve()),
+        }
+
+    def _ensure_remote_artifact_store(self) -> None:
+        """Lazily construct a ``RemoteArtifactStore`` from project config.
+
+        Uses the ``[remote.artifacts]`` store URI, wrapping the local
+        artifact store already owned by the cache. Called just before
+        dispatching a remote task so that ``file`` / ``folder`` inputs
+        can be uploaded to the shared object store and hydrated inside
+        the worker pod.
+        """
+        if self._remote_artifact_store_checked:
+            return
+        self._remote_artifact_store_checked = True
+        self._load_staging_cache()
+        from ginkgo.runtime.artifacts.remote_artifact_store import (
+            load_remote_artifact_store,
+        )
+
+        self._remote_artifact_store = load_remote_artifact_store(
+            local=self._cache_store._artifact_store,
+        )
+
     def _task_threads(self, task_def: TaskDef) -> int:
         """Return the scheduler core footprint for a task."""
         return task_def.threads
 
-    def _task_memory_gb(self, resolved_args: dict[str, Any]) -> int:
-        """Return the scheduler memory footprint for a task in GiB."""
+    def _task_memory_gb(self, task_def: TaskDef, resolved_args: dict[str, Any]) -> int:
+        """Return the scheduler memory footprint for a task in GiB.
+
+        Prefers the ``memory`` declared on the ``@task`` decorator. Falls
+        back to a ``memory_gb`` key in *resolved_args* for backward
+        compatibility.
+        """
+        if task_def.memory_gb > 0:
+            return task_def.memory_gb
+
         raw_memory = resolved_args.get("memory_gb", 0)
         try:
             memory_gb = int(raw_memory)
@@ -1541,7 +1874,7 @@ class _ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 env=node.task_def.env,
                 value=value,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
                 assets=self._asset_index_for(value=value),
             )
             self._notebook_runner.replay_cached_extras(node=node, cache_key=cache_key)
@@ -1564,7 +1897,7 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="cached",
                 cache_key=cache_key,
-                outputs=self._artifact_index_for(node=node, value=value),
+                outputs=self._output_summary_for(node=node, value=value),
             )
         )
 
@@ -1661,12 +1994,12 @@ class _ConcurrentEvaluator:
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"
 
-    def _artifact_index_for(self, *, node: _TaskNode, value: Any) -> list[dict[str, Any]]:
-        """Return a compact typed artifact summary for one task result."""
+    def _output_summary_for(self, *, node: _TaskNode, value: Any) -> list[dict[str, Any]]:
+        """Return a compact typed output summary for one task result."""
         annotation = node.task_def.type_hints.get(
             "return", node.task_def.signature.return_annotation
         )
-        return artifact_index(annotation, value)
+        return output_summary(annotation, value)
 
     def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
         """Return recorded asset summaries for one task result."""

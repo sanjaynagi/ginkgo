@@ -74,13 +74,16 @@ def load_runtime_config(
     config. Otherwise the canonical project config file is loaded if present.
     """
     resolved_overrides = [Path(path).resolve() for path in override_paths or ()]
-    if resolved_overrides:
-        return _merge_top_level_dicts(_load_config_mapping(path) for path in resolved_overrides)
-
     default_path = _default_runtime_config_path(project_root=project_root)
-    if default_path is None:
+
+    mappings: list[dict[str, Any]] = []
+    if default_path is not None:
+        mappings.append(_load_config_mapping(default_path))
+    mappings.extend(_load_config_mapping(path) for path in resolved_overrides)
+
+    if not mappings:
         return {}
-    return _load_config_mapping(default_path)
+    return _merge_top_level_dicts(mappings)
 
 
 @contextmanager

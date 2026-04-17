@@ -17,6 +17,7 @@ def _status_style(status: str) -> str:
     return {
         "waiting": "yellow",
         "staging": "bold magenta",
+        "submitted": "bold blue",
         "running": "bold cyan",
         "cached": "bold green",
         "succeeded": "green",
@@ -29,6 +30,7 @@ def _status_icon(status: str) -> str:
     return {
         "waiting": "•",
         "staging": "↓",
+        "submitted": "↑",
         "running": "◐",
         "cached": "↺",
         "succeeded": "✓",
@@ -128,7 +130,7 @@ def _format_cpu_percent(value: float | None) -> str:
     return f"{value:.1f}%"
 
 
-_SEGMENT_ORDER = ("succeeded", "cached", "running", "staging", "waiting", "failed")
+_SEGMENT_ORDER = ("succeeded", "cached", "running", "submitted", "staging", "waiting", "failed")
 """Display order for multi-state bar segments (left-to-right)."""
 
 _BAR_FILL_CHAR = "█"

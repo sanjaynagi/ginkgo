@@ -94,6 +94,16 @@ class TaskStarted(TaskEvent):
     kind: str = "python"
     env: str | None = None
     resources: dict[str, int] = field(default_factory=dict)
+    remote_job_id: str | None = None
+    execution_backend: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskRunning(TaskEvent):
+    """Remote task pod has started executing."""
+
+    event: str = "task_running"
+    remote_job_id: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -140,6 +150,7 @@ class TaskCompleted(TaskEvent):
     status: Literal["success", "cached"] = "success"
     cache_key: str | None = None
     outputs: list[dict[str, Any]] = field(default_factory=list)
+    remote_job_id: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -149,6 +160,7 @@ class TaskFailed(TaskEvent):
     event: str = "task_failed"
     exit_code: int | None = None
     failure: dict[str, Any] = field(default_factory=dict)
+    remote_job_id: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)

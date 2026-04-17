@@ -40,7 +40,7 @@ main authoring surface that end users reach for directly.
 ## Authoring Helpers
 
 ```{eval-rst}
-.. automodule:: ginkgo.helpers
+.. automodule:: ginkgo.wildcards
    :members:
 ```
 

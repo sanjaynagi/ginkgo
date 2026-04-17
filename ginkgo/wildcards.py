@@ -1,4 +1,4 @@
-"""Workflow authoring helper utilities."""
+"""Template expansion and wildcard utilities for workflow authoring."""
 
 from __future__ import annotations
 
