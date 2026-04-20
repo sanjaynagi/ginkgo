@@ -46,3 +46,18 @@ working-tree output already matches the cached artifact, it is left untouched.
 `ginkgo cache prune` and related cache cleanup paths are artifact-aware:
 read-only artifacts have permissions restored before deletion so cache
 maintenance can safely remove unreferenced stored outputs.
+
+`ginkgo cache prune` supports three orthogonal policies, which may be
+combined:
+
+- `--older-than <duration>` — remove every entry older than the cutoff
+  (`45m`, `12h`, `30d`).
+- `--max-size <size>` — remove oldest entries until total cache size is at
+  or below the target (`500MB`, `2GB`, `10GB`).
+- `--max-entries <N>` — remove oldest entries until the total entry count
+  is at or below the target.
+
+At least one policy is required. When multiple are given, they are applied
+together: `--older-than` selects unconditionally, and `--max-size` /
+`--max-entries` then pick additional oldest-first entries until their
+budgets are met. Orphan artifacts are garbage-collected once at the end.

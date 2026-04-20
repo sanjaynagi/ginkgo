@@ -18,42 +18,6 @@ Each phase is independently testable and follows the same structure:
 These phases polish and extend existing subsystems without introducing new
 architectural layers.
 
-### Phase 1 — Hardening and UI Polish
-
-**Goal:** Finish the production-readiness and local UI work that remains.
-
-#### Deliverables
-
-- Extend retry support with:
-  - selective retry policies
-  - retry backoff
-- Broaden cache-management policy beyond age-based pruning (size- or
-  count-based eviction).
-- Add task priority declarations so users can express relative urgency between
-  tasks in the same DAG tier; the scheduler should respect priority when
-  multiple tasks are ready to run concurrently.
-- Tighten documentation around partial resume, dry-run behavior, and resource
-  declarations.
-
-#### Key design points
-
-- This phase is explicitly for remaining gaps in areas that already exist.
-- The goal is to reduce ambiguity and operational rough edges before the runtime
-  surface area expands further.
-- UI work should remain local-first and should build on the current file-backed
-  provenance model.
-
-#### Validation
-
-- Re-run `VW-4`, `VW-5`, `VW-6`, and `VW-8` through the polished CLI and UI
-  paths and assert the richer retry, cache, and resource behavior is visible in
-  both CLI output and persisted provenance.
-- Assert the improved diagnostics distinguish common classes of failure such as
-  env mismatch, invalid paths, and packaging/importability errors.
-
----
-
-
 ### Phase 3 — UI Performance and Responsiveness
 
 **Goal:** Keep the local web UI fast and predictable as run history, task

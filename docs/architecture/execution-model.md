@@ -60,6 +60,29 @@ fan-out may run simultaneously, independent of the global `--jobs` and
 fan-out and enforces the limit in the CP-SAT selection model alongside
 cores, jobs, and memory constraints.
 
+**Task priority.** `@task(priority=N)` declares a relative dispatch priority
+(range `[-1000, 1000]`, default `0`). When several tasks are ready
+simultaneously and contend for the same resources, the CP-SAT selection
+model prefers higher-priority tasks. Priority is a strict tiebreaker: it
+never overrides the scheduler's primary objective of dispatching as many
+ready tasks as possible, nor its secondary objective of filling the core
+budget. Workloads that do not set `priority` are unaffected.
+
+**Selective retries and backoff.** `@task(retries=N)` enables retries; the
+retry policy is narrowed by:
+
+- `retry_on=IOError` (or a tuple of exception classes) to retry only
+  specific failure modes;
+- `retry_on_exit_codes=(137,)` for shell tasks to retry only specific
+  exit codes;
+- `retry_backoff=<seconds>` with `retry_backoff_multiplier` and
+  `retry_backoff_max` to apply exponential delay between attempts.
+
+Retry-delayed tasks transition through a `waiting_retry` scheduler state
+with a ready-at deadline; the scheduler wakes on the earliest deadline
+without busy-looping. `TaskRetrying` events carry the scheduled
+`delay_seconds`.
+
 **Runtime profiling (`--profile`).** `ginkgo run --profile` enables a coarse
 phase-timer recorder that attributes wall time to CLI startup, workflow
 module import, flow construction, evaluator validation, scheduler prepare /

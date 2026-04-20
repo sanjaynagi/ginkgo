@@ -103,7 +103,18 @@ def _build_parser() -> argparse.ArgumentParser:
     explain_parser = cache_subparsers.add_parser("explain")
     explain_parser.add_argument("--run", required=True, dest="run_id")
     prune_parser = cache_subparsers.add_parser("prune")
-    prune_parser.add_argument("--older-than", required=True)
+    prune_parser.add_argument("--older-than", default=None)
+    prune_parser.add_argument(
+        "--max-size",
+        default=None,
+        help="Prune oldest entries until total size is at or below the target (e.g. 2GB, 500MB).",
+    )
+    prune_parser.add_argument(
+        "--max-entries",
+        type=int,
+        default=None,
+        help="Prune oldest entries until entry count is at or below this number.",
+    )
     prune_parser.add_argument("--dry-run", action="store_true")
 
     asset_parser = subparsers.add_parser("asset")

@@ -295,6 +295,57 @@ def main():
         assert result.returncode == 1
         assert "Invalid duration for --older-than" in result.stderr
 
+    def test_cache_prune_requires_at_least_one_policy(self) -> None:
+        result = _run_cli("cache", "prune", cwd=Path.cwd())
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "--older-than" in combined
+
+    def test_cache_prune_by_max_entries_removes_oldest(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        now = datetime.now(timezone.utc)
+        entries = []
+        for index, age_days in enumerate([100, 60, 30, 5]):
+            entry = cache_root / f"entry{index}"
+            entry.mkdir(parents=True)
+            ts = (now - timedelta(days=age_days)).isoformat()
+            (entry / "meta.json").write_text(
+                f'{{"function":"demo.x","timestamp":"{ts}"}}',
+                encoding="utf-8",
+            )
+            (entry / "output.json").write_text("{}", encoding="utf-8")
+            entries.append(entry)
+
+        result = _run_cli("cache", "prune", "--max-entries", "2", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert not entries[0].exists()
+        assert not entries[1].exists()
+        assert entries[2].exists()
+        assert entries[3].exists()
+
+    def test_cache_prune_by_max_size_removes_oldest_until_under_budget(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        now = datetime.now(timezone.utc)
+        entries = []
+        payload = "x" * 1024
+        for index, age_days in enumerate([100, 60, 5]):
+            entry = cache_root / f"sz{index}"
+            entry.mkdir(parents=True)
+            ts = (now - timedelta(days=age_days)).isoformat()
+            (entry / "meta.json").write_text(
+                f'{{"function":"demo.x","timestamp":"{ts}"}}',
+                encoding="utf-8",
+            )
+            (entry / "output.json").write_text(payload, encoding="utf-8")
+            entries.append(entry)
+
+        # Each entry holds ~1KB; cap total at 3KB so only the oldest must drop.
+        result = _run_cli("cache", "prune", "--max-size", "3KB", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert not entries[0].exists()
+        assert entries[1].exists()
+        assert entries[2].exists()
+
     def test_notebooks_lists_pairs_in_most_recent_run_order(self) -> None:
         older_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
         newer_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"

@@ -392,14 +392,33 @@ class _CliRunRenderer:
         return text
 
     def _render_failure_details(self, details: list[_FailureDetails]):
-        panels = [self._render_failure_panel(item) for item in details]
-        return Group(*panels)
+        parts: list[object] = []
+        category_summary = self._render_failure_category_summary(details)
+        if category_summary is not None:
+            parts.append(category_summary)
+        parts.extend(self._render_failure_panel(item) for item in details)
+        return Group(*parts)
+
+    def _render_failure_category_summary(self, details: list[_FailureDetails]) -> Text | None:
+        """Return a one-line summary grouping failures by category, if any."""
+        categorised = [item for item in details if item.failure_kind]
+        if not categorised:
+            return None
+        counts = Counter(item.failure_kind for item in categorised)
+        parts = [f"{kind}×{count}" for kind, count in sorted(counts.items())]
+        summary = Text()
+        summary.append("Failures by category: ", style="bold #7f1d1d")
+        summary.append(", ".join(parts), style="#7f1d1d")
+        summary.append("\n")
+        return summary
 
     def _render_failure_panel(self, details: _FailureDetails) -> Panel:
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
         summary.add_column()
         summary.add_row("Task", details.task_label)
+        if details.failure_kind:
+            summary.add_row("Category", details.failure_kind)
         summary.add_row(
             "Exit code", str(details.exit_code) if details.exit_code is not None else "?"
         )

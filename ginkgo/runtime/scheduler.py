@@ -20,6 +20,9 @@ class SchedulableTask:
         Core footprint for the task.
     memory_gb : int
         Declared memory footprint for the task in GiB.
+    priority : int
+        Declared scheduling priority. Higher values run first when multiple
+        ready tasks contend for the same resources. Default is ``0``.
     concurrency_group : str | None
         Optional named concurrency group. When set, the scheduler will
         respect the corresponding entry in ``available_group_slots`` when
@@ -29,6 +32,7 @@ class SchedulableTask:
     node_id: int
     threads: int
     memory_gb: int
+    priority: int = 0
     concurrency_group: str | None = None
 
 
@@ -109,10 +113,18 @@ def _select_with_cp_sat(
 
     total_selected = sum(selected.values())
     total_cores = sum(task.threads * selected[task.node_id] for task in tasks)
+    priority_sum = sum(task.priority * selected[task.node_id] for task in tasks)
     order_bias = sum(
         (len(tasks) - index) * selected[task.node_id] for index, task in enumerate(tasks)
     )
-    model.Maximize(total_selected * 100000 + total_cores * 100 + order_bias)
+    # Weights establish a strict lexicographic preference:
+    # (1) dispatch as many tasks as possible,
+    # (2) fill the core budget,
+    # (3) prefer higher-priority tasks when (1) and (2) are tied,
+    # (4) break remaining ties in declaration order.
+    model.Maximize(
+        total_selected * 10_000_000 + total_cores * 10_000 + priority_sum * 100 + order_bias
+    )
 
     solver = cp_model.CpSolver()
     status = solver.Solve(model)

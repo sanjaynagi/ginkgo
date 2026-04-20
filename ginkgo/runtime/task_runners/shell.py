@@ -137,16 +137,39 @@ def sanitize_exception(
 def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     """Return a structured task failure summary."""
     # Imported lazily to avoid a hard import cycle with the notebook runner.
+    from ginkgo.envs.container import ContainerPrepareError, ContainerRuntimeNotFoundError
+    from ginkgo.envs.pixi import (
+        PixiEnvImportError,
+        PixiEnvNotFoundError,
+        PixiEnvPrepareError,
+    )
     from ginkgo.runtime.evaluator import CycleError
     from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 
     message = str(exc)
     if isinstance(exc, CycleError):
         kind = "cycle_detected"
+    elif isinstance(
+        exc,
+        (
+            PixiEnvNotFoundError,
+            PixiEnvImportError,
+            PixiEnvPrepareError,
+            ContainerRuntimeNotFoundError,
+            ContainerPrepareError,
+        ),
+    ):
+        kind = "env_mismatch"
+    elif isinstance(exc, ModuleNotFoundError):
+        kind = "import_error"
+    elif isinstance(exc, ImportError):
+        kind = "import_error"
     elif isinstance(exc, CodecError):
         kind = "serialization_error"
     elif isinstance(exc, (ShellTaskError, NotebookTaskError)):
         kind = "shell_command_error"
+    elif isinstance(exc, (IsADirectoryError, NotADirectoryError, PermissionError)):
+        kind = "invalid_path"
     elif isinstance(exc, FileNotFoundError):
         kind = "missing_input" if "did not create" not in message else "output_validation_error"
     elif isinstance(exc, (TypeError, ValueError)):
@@ -154,7 +177,7 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     else:
         exc_name = exc.__class__.__name__.lower()
         if "env" in exc_name or "container" in exc_name:
-            kind = "environment_error"
+            kind = "env_mismatch"
         elif "cache" in exc_name:
             kind = "cache_error"
         else:

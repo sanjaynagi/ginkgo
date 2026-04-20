@@ -372,6 +372,11 @@ def _load_failure_details(
         node_id = task.node_id if task.node_id is not None else -1
         log_tail = _combined_log_tail(run_dir=run_dir, task=task, lines=tail_lines)
         stderr_path = run_dir / task.stderr_log if isinstance(task.stderr_log, str) else None
+        failure_kind = (
+            task.failure.get("kind")
+            if isinstance(task.failure, dict) and isinstance(task.failure.get("kind"), str)
+            else None
+        )
         details.append(
             _FailureDetails(
                 task_label=renderer.label_for_node(node_id) or task.name,
@@ -379,6 +384,7 @@ def _load_failure_details(
                 log_path=stderr_path,
                 log_tail=log_tail,
                 error=task.error,
+                failure_kind=failure_kind,
                 inputs=task.inputs if verbose else None,
             )
         )

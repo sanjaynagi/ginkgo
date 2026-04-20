@@ -163,6 +163,7 @@ class TaskRetrying(TaskEvent):
     event: str = "task_retrying"
     retries_remaining: int = 0
     failure: dict[str, Any] = field(default_factory=dict)
+    delay_seconds: float = 0.0
 
 
 @dataclass(kw_only=True, frozen=True)
