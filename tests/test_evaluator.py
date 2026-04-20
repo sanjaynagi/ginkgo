@@ -110,6 +110,46 @@ def always_fail_once_task(log_path: str) -> str:
     raise RuntimeError("no retry configured")
 
 
+@task(retries=2, retry_on=IOError)
+def retry_only_ioerror_task(log_path: str, kind: str) -> str:
+    _append_line(log_path, "attempt")
+    if kind == "ioerror":
+        raise IOError("transient io")
+    raise ValueError("unexpected value")
+
+
+@task(retries=3, retry_backoff=0.05, retry_backoff_multiplier=2.0)
+def flaky_with_backoff_task(marker_path: str, log_path: str) -> str:
+    import time as _time
+
+    _append_line(log_path, f"attempt:{_time.monotonic():.6f}")
+    marker = Path(marker_path)
+    failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
+    if failures < 2:
+        marker.write_text(str(failures + 1), encoding="utf-8")
+        raise RuntimeError("still transient")
+    return "ok"
+
+
+@task(kind="shell", retries=2, retry_on_exit_codes=(7,))
+def shell_retry_on_exit_code_task(marker_path: str, output_path: str, log_path: str) -> file:
+    return shell(
+        cmd=(
+            f"if [ ! -f {marker_path} ]; then "
+            f"touch {marker_path}; "
+            "exit 7; "
+            f"fi; printf 'payload' > {output_path}"
+        ),
+        output=output_path,
+        log=log_path,
+    )
+
+
+@task(kind="shell", retries=2, retry_on_exit_codes=(137,))
+def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: str) -> file:
+    return shell(cmd="exit 7", output=output_path, log=log_path)
+
+
 @task(kind="shell")
 def shell_write_output_task(output_path: str, log_path: str) -> file:
     return shell(
@@ -1071,6 +1111,69 @@ class TestEvaluate:
             "attempt",
             "attempt",
         ]
+
+    def test_retry_on_narrows_by_exception_class(self):
+        log_path = "retry-ioerror.log"
+
+        # IOError matches — task is retried.
+        with pytest.raises(IOError, match="transient io"):
+            evaluate(retry_only_ioerror_task(log_path=log_path, kind="ioerror"))
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == [
+            "attempt",
+            "attempt",
+            "attempt",
+        ]
+
+        # ValueError does not match — task fails immediately without retry.
+        log_path2 = "retry-skip.log"
+        with pytest.raises(ValueError, match="unexpected value"):
+            evaluate(retry_only_ioerror_task(log_path=log_path2, kind="value"))
+        assert Path(log_path2).read_text(encoding="utf-8").splitlines() == ["attempt"]
+
+    def test_retry_backoff_delays_attempts(self):
+        import time as _time
+
+        marker_path = "backoff.marker"
+        log_path = "backoff.log"
+
+        started = _time.monotonic()
+        assert (
+            evaluate(flaky_with_backoff_task(marker_path=marker_path, log_path=log_path)) == "ok"
+        )
+        elapsed = _time.monotonic() - started
+
+        # Two retries with base=0.05s and multiplier=2: delays 0.05 + 0.10 = 0.15s minimum.
+        assert elapsed >= 0.15
+        lines = Path(log_path).read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3
+
+        stamps = [float(line.split(":", 1)[1]) for line in lines]
+        assert stamps[1] - stamps[0] >= 0.04
+        assert stamps[2] - stamps[1] >= 0.09
+
+    def test_shell_retry_on_exit_codes_narrows(self, tmp_path: Path):
+        marker = tmp_path / "shell-retry.marker"
+        output = tmp_path / "shell-retry.out"
+        log = tmp_path / "shell-retry.log"
+
+        # Exit 7 matches — retried and succeeds.
+        result = evaluate(
+            shell_retry_on_exit_code_task(
+                marker_path=str(marker), output_path=str(output), log_path=str(log)
+            )
+        )
+        assert result == file(str(output))
+        assert output.read_text(encoding="utf-8") == "payload"
+
+        # Exit 7 does not match (policy expects 137) — fails immediately with no retry.
+        output2 = tmp_path / "shell-retry2.out"
+        log2 = tmp_path / "shell-retry2.log"
+        with pytest.raises(Exception):
+            evaluate(
+                shell_retry_skip_mismatched_exit_code_task(
+                    output_path=str(output2), log_path=str(log2)
+                )
+            )
 
     def test_cached_upstream_tasks_do_not_deadlock_newly_unblocked_downstream(
         self,

@@ -188,6 +188,7 @@ class _TaskNode:
     stderr_path: Path | None = None
     display_label: str | None = None
     attempt: int = 0
+    retry_ready_at: float | None = None
     secret_values: tuple[str, ...] = ()
     driver_sentinel: Any = None
     extra_source_hash: str | None = None
@@ -358,6 +359,7 @@ class _ConcurrentEvaluator:
                         self._interrupt_running_work()
 
                     if self._failure is None:
+                        self._promote_due_retries()
                         with self.profiler.timed("scheduler_prepare"):
                             self._prepare_pending_nodes()
                             self._finalize_dynamic_nodes()
@@ -369,14 +371,14 @@ class _ConcurrentEvaluator:
 
                         if self._is_root_resolved() and not self._running_futures:
                             return self._materialize(self._root_template)
-                    elif not self._running_futures:
-                        break
 
                     if self._running_futures:
+                        retry_wait = self._earliest_retry_wait() if self._failure is None else None
                         with self.profiler.timed("scheduler_wait"):
                             done, _ = wait(
                                 tuple(self._running_futures.keys()),
                                 return_when=FIRST_COMPLETED,
+                                timeout=retry_wait,
                             )
                         with self.profiler.timed("scheduler_consume_completed"):
                             self._consume_completed_futures(done)
@@ -387,6 +389,12 @@ class _ConcurrentEvaluator:
 
                     if self._is_root_resolved():
                         return self._materialize(self._root_template)
+
+                    retry_wait = self._earliest_retry_wait()
+                    if retry_wait is not None:
+                        # Short, signal-interruptable sleep until the next retry is due.
+                        time.sleep(min(retry_wait, 0.5))
+                        continue
 
                     if self._can_make_scheduler_progress():
                         continue
@@ -657,6 +665,7 @@ class _ConcurrentEvaluator:
                     node_id=node.node_id,
                     threads=node.threads,
                     memory_gb=node.memory_gb,
+                    priority=node.task_def.priority,
                     concurrency_group=node.concurrency_group,
                 )
                 for node in ready_nodes
@@ -810,7 +819,7 @@ class _ConcurrentEvaluator:
     def _handle_task_exception(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Either retry a failed task attempt or fail the run."""
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
-        if self._failure is None and self._should_retry(node=node):
+        if self._failure is None and self._should_retry(node=node, exc=sanitized_exc):
             self._schedule_retry(node=node, exc=sanitized_exc)
             return
 
@@ -833,9 +842,11 @@ class _ConcurrentEvaluator:
             )
         )
 
-    def _should_retry(self, *, node: _TaskNode) -> bool:
+    def _should_retry(self, *, node: _TaskNode, exc: BaseException) -> bool:
         """Return whether the current failed attempt should be retried."""
-        return node.attempt <= node.task_def.retries
+        if node.attempt > node.task_def.retries:
+            return False
+        return node.task_def.should_retry_exception(exc=exc)
 
     def _schedule_retry(self, *, node: _TaskNode, exc: BaseException) -> None:
         """Reset node state so the scheduler can rerun the task from scratch."""
@@ -846,7 +857,15 @@ class _ConcurrentEvaluator:
             if path.exists():
                 shutil.rmtree(path)
 
-        node.state = "pending"
+        # Attempt is incremented on dispatch, so the next attempt is node.attempt + 1.
+        delay = node.task_def.retry_delay_seconds(attempt=node.attempt)
+        if delay > 0:
+            node.state = "waiting_retry"
+            node.retry_ready_at = time.monotonic() + delay
+        else:
+            node.state = "pending"
+            node.retry_ready_at = None
+
         node.resolved_args = None
         node.execution_args = None
         node.cache_key = None
@@ -881,6 +900,7 @@ class _ConcurrentEvaluator:
                 display_label=node.display_label,
                 retries_remaining=retries_remaining,
                 failure=classify_failure(exc=exc),
+                delay_seconds=delay,
             )
         )
 
@@ -1089,7 +1109,30 @@ class _ConcurrentEvaluator:
                 node.dynamic_dependency_ids
             ):
                 return True
+            if node.state == "waiting_retry":
+                return True
         return False
+
+    def _promote_due_retries(self) -> None:
+        """Transition retry-delayed nodes back to pending once their deadline passes."""
+        now = time.monotonic()
+        for node in self._nodes.values():
+            if node.state != "waiting_retry":
+                continue
+            if node.retry_ready_at is not None and node.retry_ready_at <= now:
+                node.state = "pending"
+                node.retry_ready_at = None
+
+    def _earliest_retry_wait(self) -> float | None:
+        """Return seconds until the next retry deadline, or ``None`` if none waiting."""
+        deadlines = [
+            node.retry_ready_at
+            for node in self._nodes.values()
+            if node.state == "waiting_retry" and node.retry_ready_at is not None
+        ]
+        if not deadlines:
+            return None
+        return max(0.0, min(deadlines) - time.monotonic())
 
     def _cancel_pending_futures(self) -> None:
         """Cancel queued futures that have not started yet."""

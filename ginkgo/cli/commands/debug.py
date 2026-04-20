@@ -68,6 +68,12 @@ def _debug_failure_details(
         stderr_rel = task.get("stderr_log")
         stderr_path = run_dir / stderr_rel if isinstance(stderr_rel, str) else None
         task_name = str(task.get("task", "unknown"))
+        failure = task.get("failure")
+        failure_kind = (
+            failure.get("kind")
+            if isinstance(failure, dict) and isinstance(failure.get("kind"), str)
+            else None
+        )
         details.append(
             _FailureDetails(
                 task_label=_task_base_name(task_name),
@@ -75,6 +81,7 @@ def _debug_failure_details(
                 log_path=stderr_path,
                 log_tail=log_tail,
                 error=str(task.get("error")) if task.get("error") is not None else None,
+                failure_kind=failure_kind,
                 inputs=task.get("inputs") if isinstance(task.get("inputs"), dict) else None,
             )
         )

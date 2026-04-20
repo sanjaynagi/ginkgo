@@ -37,6 +37,25 @@ class TaskDef:
         Cache-busting version tag.
     retries : int
         Additional retry attempts after the initial execution.
+    retry_on : type[BaseException] | tuple[type[BaseException], ...] | None
+        When set, only retry failures matching these exception classes.
+        ``None`` (default) retries every failure up to ``retries``.
+    retry_backoff : float
+        Base delay in seconds between retry attempts. ``0.0`` (default)
+        reruns immediately.
+    retry_backoff_multiplier : float
+        Exponential factor applied to the base delay. Delay for attempt
+        *k* (1-indexed) is ``retry_backoff * retry_backoff_multiplier ** (k - 1)``,
+        capped at ``retry_backoff_max``.
+    retry_backoff_max : float
+        Upper bound on the computed retry delay, in seconds.
+    retry_on_exit_codes : tuple[int, ...] | None
+        Shell-task only. When set, only retry failures whose exit code is
+        in this tuple. Ignored for non-shell tasks.
+    priority : int
+        Relative scheduling priority. When several tasks are ready at the
+        same time, higher-priority tasks are dispatched first. Range is
+        ``[-1000, 1000]``; default ``0``.
     kind : str
         Execution contract for the task body.
     threads : int
@@ -68,6 +87,12 @@ class TaskDef:
     env: str | None = None
     version: int = 1
     retries: int = 0
+    retry_on: type[BaseException] | tuple[type[BaseException], ...] | None = None
+    retry_backoff: float = 0.0
+    retry_backoff_multiplier: float = 2.0
+    retry_backoff_max: float = 60.0
+    retry_on_exit_codes: tuple[int, ...] | None = None
+    priority: int = 0
     kind: str = "python"
     threads: int = 1
     memory: str | None = None
@@ -93,6 +118,25 @@ class TaskDef:
             raise ValueError(f"threads must be at least 1, got {self.threads}")
         if self.gpu < 0:
             raise ValueError(f"gpu must be at least 0, got {self.gpu}")
+        if self.retry_backoff < 0:
+            raise ValueError(f"retry_backoff must be at least 0, got {self.retry_backoff}")
+        if self.retry_backoff_multiplier < 1:
+            raise ValueError(
+                f"retry_backoff_multiplier must be at least 1, got {self.retry_backoff_multiplier}"
+            )
+        if self.retry_backoff_max < 0:
+            raise ValueError(f"retry_backoff_max must be at least 0, got {self.retry_backoff_max}")
+        _validate_retry_on(self.retry_on)
+        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+            raise TypeError(f"priority must be an integer, got {type(self.priority).__name__}")
+        if abs(self.priority) > 1000:
+            raise ValueError(f"priority must be in range [-1000, 1000], got {self.priority}")
+        if self.retry_on_exit_codes is not None:
+            if self.kind != "shell":
+                raise ValueError("retry_on_exit_codes is only valid for shell tasks")
+            for code in self.retry_on_exit_codes:
+                if not isinstance(code, int) or isinstance(code, bool):
+                    raise ValueError(f"retry_on_exit_codes must be integers, got {code!r}")
 
         parsed_memory = _parse_memory(self.memory)
         object.__setattr__(self, "_memory_gb", parsed_memory)
@@ -161,6 +205,29 @@ class TaskDef:
         at execution time via the ``NotebookExpr``/``ScriptExpr`` sentinel.
         """
         return self._source_hash
+
+    def should_retry_exception(self, *, exc: BaseException) -> bool:
+        """Return whether ``exc`` matches the configured retry policy."""
+        if self.retry_on is None and self.retry_on_exit_codes is None:
+            return True
+
+        class_match = self.retry_on is None or isinstance(exc, self.retry_on)
+        if self.retry_on_exit_codes is not None:
+            exit_code = getattr(exc, "exit_code", None)
+            code_match = isinstance(exit_code, int) and exit_code in self.retry_on_exit_codes
+        else:
+            code_match = True
+
+        if self.retry_on is not None and self.retry_on_exit_codes is not None:
+            return class_match and code_match
+        return class_match and code_match
+
+    def retry_delay_seconds(self, *, attempt: int) -> float:
+        """Return the retry delay to wait before ``attempt`` (1-indexed)."""
+        if self.retry_backoff <= 0 or attempt < 1:
+            return 0.0
+        delay = self.retry_backoff * (self.retry_backoff_multiplier ** (attempt - 1))
+        return min(delay, self.retry_backoff_max)
 
     def __call__(self, **kwargs: Any) -> Expr | PartialCall:
         """Build an ``Expr`` (all required args supplied) or ``PartialCall``.
@@ -521,6 +588,12 @@ def task(
     env: str | None = None,
     version: int = 1,
     retries: int = 0,
+    retry_on: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    retry_backoff: float = 0.0,
+    retry_backoff_multiplier: float = 2.0,
+    retry_backoff_max: float = 60.0,
+    retry_on_exit_codes: tuple[int, ...] | None = None,
+    priority: int = 0,
     kind: str = "python",
     threads: int = 1,
     memory: str | None = None,
@@ -549,6 +622,20 @@ def task(
         Cache-busting version tag.  Bump when task logic changes.
     retries : int
         Additional retry attempts after the initial execution.
+    retry_on : type[BaseException] | tuple[type[BaseException], ...] | None
+        Narrow retries to specific exception classes. ``None`` retries any
+        failure.
+    retry_backoff : float
+        Base delay (seconds) before each retry. ``0.0`` disables the delay.
+    retry_backoff_multiplier : float
+        Exponential factor applied between attempts.
+    retry_backoff_max : float
+        Upper bound on the computed delay, in seconds.
+    retry_on_exit_codes : tuple[int, ...] | None
+        Shell-task only. Narrow retries to specific exit codes.
+    priority : int
+        Relative scheduling priority. Higher runs first among ready tasks.
+        Range ``[-1000, 1000]``; default ``0``.
     kind : str
         Execution contract for the task body. Ignored when ``_kind`` is given.
     threads : int
@@ -600,6 +687,12 @@ def task(
             env=env,
             version=version,
             retries=retries,
+            retry_on=retry_on,
+            retry_backoff=retry_backoff,
+            retry_backoff_multiplier=retry_backoff_multiplier,
+            retry_backoff_max=retry_backoff_max,
+            retry_on_exit_codes=retry_on_exit_codes,
+            priority=priority,
             kind=resolved_kind,
             threads=threads,
             memory=memory,
@@ -612,6 +705,21 @@ def task(
         )
 
     return decorator
+
+
+def _validate_retry_on(
+    retry_on: type[BaseException] | tuple[type[BaseException], ...] | None,
+) -> None:
+    """Validate that ``retry_on`` names only exception classes."""
+    if retry_on is None:
+        return
+    candidates: tuple[Any, ...] = retry_on if isinstance(retry_on, tuple) else (retry_on,)
+    for candidate in candidates:
+        if not (isinstance(candidate, type) and issubclass(candidate, BaseException)):
+            raise ValueError(
+                "retry_on must be an exception class or tuple of exception "
+                f"classes, got {candidate!r}"
+            )
 
 
 _MEMORY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*(Gi|Mi|G|M|Ti|Ki)$")

@@ -55,23 +55,40 @@ def command_cache(args) -> int:
 
     if args.cache_command == "prune":
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]prune[/]\n")
-        cutoff = _prune_cutoff(args.older_than)
-        entries = [
-            entry
-            for entry in list_cache_entries(CACHE_ROOT)
-            if entry.created_at is not None and entry.created_at < cutoff
-        ]
+        if args.older_than is None and args.max_size is None and args.max_entries is None:
+            rich_console.print(
+                "[red]Error:[/] provide at least one of --older-than, --max-size, "
+                "or --max-entries."
+            )
+            return 2
+
+        max_size_bytes = _parse_size_bytes(args.max_size) if args.max_size else None
+        if args.max_entries is not None and args.max_entries < 0:
+            rich_console.print("[red]Error:[/] --max-entries must be at least 0.")
+            return 2
+
+        all_entries = list_cache_entries(CACHE_ROOT)
+        entries = select_prune_entries(
+            entries=all_entries,
+            older_than=args.older_than,
+            max_size_bytes=max_size_bytes,
+            max_entries=args.max_entries,
+        )
         total_bytes = sum(entry.size_bytes for entry in entries)
 
         if args.dry_run:
+            reason = _describe_prune_policy(
+                older_than=args.older_than,
+                max_size=args.max_size,
+                max_entries=args.max_entries,
+            )
             rich_console.print(
-                f"[cyan]Preview:[/] {len(entries)} entries older than "
-                f"[bold]{args.older_than}[/] "
+                f"[cyan]Preview:[/] {len(entries)} entries {reason} "
                 f"([bold]{_format_size(total_bytes)}[/]) would be removed."
             )
             for entry in entries:
                 rich_console.print(
-                    f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.size})"
+                    f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.created})"
                 )
             return 0
 
@@ -220,6 +237,94 @@ def _prune_cutoff(older_than: str) -> datetime:
     """Return the UTC cutoff timestamp implied by a duration string."""
     duration = _parse_duration_seconds(older_than)
     return datetime.now(UTC) - duration
+
+
+def select_prune_entries(
+    *,
+    entries: list[CacheEntryRow],
+    older_than: str | None,
+    max_size_bytes: int | None,
+    max_entries: int | None,
+) -> list[CacheEntryRow]:
+    """Return the cache entries that satisfy the combined prune policy.
+
+    Parameters
+    ----------
+    entries : list[CacheEntryRow]
+        Existing cache entries; may be unordered.
+    older_than : str | None
+        Optional duration string. Entries with ``created_at`` older than the
+        cutoff are always selected.
+    max_size_bytes : int | None
+        When set, additional oldest entries are selected until total cache
+        size drops to or below this target.
+    max_entries : int | None
+        When set, additional oldest entries are selected until the remaining
+        entry count drops to or below this target.
+
+    Returns
+    -------
+    list[CacheEntryRow]
+        Entries to remove. Order follows the original iteration order for
+        display stability.
+    """
+    by_age_oldest_first = sorted(
+        entries,
+        key=lambda entry: entry.created_at or datetime.min.replace(tzinfo=UTC),
+    )
+    selected: set[Path] = set()
+
+    if older_than is not None:
+        cutoff = _prune_cutoff(older_than)
+        for entry in by_age_oldest_first:
+            if entry.created_at is not None and entry.created_at < cutoff:
+                selected.add(entry.path)
+
+    if max_size_bytes is not None or max_entries is not None:
+        remaining = [entry for entry in by_age_oldest_first if entry.path not in selected]
+        remaining_size = sum(entry.size_bytes for entry in remaining)
+        remaining_count = len(remaining)
+        for entry in remaining:
+            size_ok = max_size_bytes is None or remaining_size <= max_size_bytes
+            count_ok = max_entries is None or remaining_count <= max_entries
+            if size_ok and count_ok:
+                break
+            selected.add(entry.path)
+            remaining_size -= entry.size_bytes
+            remaining_count -= 1
+
+    return [entry for entry in entries if entry.path in selected]
+
+
+def _describe_prune_policy(
+    *,
+    older_than: str | None,
+    max_size: str | None,
+    max_entries: int | None,
+) -> str:
+    """Describe the active prune policy for dry-run output."""
+    parts = []
+    if older_than is not None:
+        parts.append(f"older than {older_than}")
+    if max_size is not None:
+        parts.append(f"over {max_size} cache size")
+    if max_entries is not None:
+        parts.append(f"over {max_entries} entries")
+    return f"matching policy ({'; '.join(parts)})"
+
+
+_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|K|M|G|T)?\s*$", re.IGNORECASE)
+
+
+def _parse_size_bytes(value: str) -> int:
+    """Parse a compact size string (e.g. ``2GB``) to an integer byte count."""
+    match = _SIZE_PATTERN.fullmatch(value)
+    if match is None:
+        raise ValueError(f"Invalid --max-size {value!r}. Use e.g. 500MB, 2GB, 10GB.")
+    count = float(match.group(1))
+    unit = (match.group(2) or "B").upper().rstrip("B") or "B"
+    multipliers = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    return int(count * multipliers[unit])
 
 
 def _parse_duration_seconds(value: str):

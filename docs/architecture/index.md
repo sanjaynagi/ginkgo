@@ -36,6 +36,9 @@ The repository currently implements:
   scaffolded project initialization
 - An example-driven benchmark harness with generated benchmark inputs, checked-
   in baselines, and a separate CI lane for slowdown detection
+- Selective retry policies with exponential backoff, size- and count-based
+  cache eviction, task-level scheduling priority as a strict tiebreaker, and
+  end-of-run failure classification that groups diagnostics by category
 
 ## Topic Map
 

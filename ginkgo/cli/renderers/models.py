@@ -44,6 +44,7 @@ class _FailureDetails:
     log_path: Path | None
     log_tail: list[str]
     error: str | None = None
+    failure_kind: str | None = None
     inputs: dict[str, object] | None = None
 
 

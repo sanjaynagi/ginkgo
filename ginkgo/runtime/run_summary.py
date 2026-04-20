@@ -73,6 +73,7 @@ class TaskSummary:
     duration_s: float | None
     exit_code: int | None
     error: str | None
+    failure: dict[str, Any] | None
     env: str
     cache_key: str | None
     stdout_log: str | None
@@ -303,6 +304,7 @@ def _build_task_summary(*, task_key: str, task: dict[str, Any]) -> TaskSummary:
         duration_s=_duration_seconds(started, finished),
         exit_code=task.get("exit_code") if isinstance(task.get("exit_code"), int) else None,
         error=task.get("error") if isinstance(task.get("error"), str) else None,
+        failure=task.get("failure") if isinstance(task.get("failure"), dict) else None,
         env=str(task.get("env") or "local"),
         cache_key=task.get("cache_key") if isinstance(task.get("cache_key"), str) else None,
         stdout_log=stdout_log,
