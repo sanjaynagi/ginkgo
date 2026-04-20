@@ -27,6 +27,9 @@ The repository currently implements:
 - Remote task execution via Kubernetes (GKE, EKS, OKE) and GCP Batch, with
   per-task GPU/memory/CPU resource declarations, code-sync packaging, and
   full provenance integration
+- Remote-input access policy with staged download or FUSE streaming
+  (gcsfuse / mountpoint-s3 / rclone), per-ref / per-task / pattern / config
+  resolution, cache-stable mode switching, and graceful fallback
 - A local-first web UI for runs, cache inspection, graphs, notebook artifacts,
   embedded notebook viewing, and multi-workspace browsing
 - A canonical package-oriented project layout with workflow autodiscovery and

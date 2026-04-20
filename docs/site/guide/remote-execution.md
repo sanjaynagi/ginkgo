@@ -215,3 +215,88 @@ All of this is visible in `ginkgo inspect run <run_id>`.
   mechanism applies unchanged.
 - **Device portability.** Use `device = "auto"` in your config so PyTorch
   picks MPS on Mac, CUDA on cloud GPUs, or CPU as fallback.
+
+## Remote-Input Access: Stage or Stream
+
+Remote inputs (`gs://`, `s3://`, `oci://`, …) reach a worker in one of two
+modes. **Stage** (default) downloads the whole object to local disk before
+the task starts. **Fuse** mounts the bucket in-container and streams reads
+on demand — useful for sparse random access (BAM index lookups, Parquet
+column projection) or whole-file reads that would otherwise block on a
+multi-GB download.
+
+Declare the mode per input:
+
+```python
+from ginkgo import remote_file, task
+from ginkgo.core.types import file
+
+@task(remote=True, remote_input_access="fuse", streaming_compatible=True)
+def count_reads(*, bam: file) -> int:
+    import pysam
+    with pysam.AlignmentFile(str(bam), "rb") as f:
+        return sum(1 for _ in f.fetch("chr1", 1_000_000, 1_001_000))
+
+bam = remote_file("gs://my-bucket/sample.bam", access="fuse")
+count_reads(bam=bam)
+```
+
+The access policy resolves layered: `ref.access` → task decorator
+(`remote_input_access=`) → pattern match → config default.
+
+Config defaults live under `[remote.access]`:
+
+```toml
+[remote.access]
+default = "stage"     # or "fuse"
+auto_fuse = false     # enable pattern-based auto-fuse heuristics
+```
+
+### Worker image for streaming
+
+Fuse mode needs a worker image with `gcsfuse` / `mountpoint-s3` /
+`rclone` and (on most clouds) a privileged container. The repo ships
+`Dockerfile.worker-fuse`:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -f Dockerfile.worker-fuse \
+  -t <registry>/ginkgo/worker-fuse:latest --push .
+```
+
+Wire it in `ginkgo.toml`:
+
+```toml
+[remote.k8s]        # or [remote.batch]
+image = "<registry>/ginkgo/worker:v2"            # regular workloads
+fuse_image = "<registry>/ginkgo/worker-fuse:latest"  # swapped in when a
+                                                     # task needs fuse
+fuse_privileged = true   # required on EKS, GKE Standard, GCP Batch
+```
+
+GKE Autopilot rejects privileged pods; use the gcsfuse CSI sidecar by
+keeping `fuse_privileged = false` — Ginkgo emits the
+`gke-gcsfuse/volumes: "true"` annotation automatically.
+
+### When fuse falls back
+
+If a mount fails (driver missing, `/dev/fuse` not accessible, permission
+denied) the worker falls back to staged download and the CLI shows a
+`TaskNotice`:
+
+```
+⚠ FUSE access fell back to staging: gcsfuse failed: rc=1 ...
+```
+
+The fallback reason is also recorded in
+`manifest.yaml → tasks[*].remote_input_access.fallback_reason`, so silent
+downgrades can't hide.
+
+### Diagnostics
+
+```bash
+ginkgo doctor
+```
+
+reports available FUSE drivers, `/dev/fuse` presence, and whether
+`fuse_image` is configured.
