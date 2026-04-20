@@ -16,6 +16,11 @@ from ginkgo.runtime.task_runners.shell import (
     classify_failure,
     sanitize_exception,
 )
+from ginkgo.runtime.task_runners.subworkflow import (
+    SubWorkflowError,
+    SubWorkflowRecursionError,
+    SubworkflowRunner,
+)
 
 __all__ = [
     "NotebookRunner",
@@ -23,6 +28,9 @@ __all__ = [
     "ShellRunner",
     "ShellTaskError",
     "SignalMonitor",
+    "SubWorkflowError",
+    "SubWorkflowRecursionError",
+    "SubworkflowRunner",
     "classify_failure",
     "sanitize_exception",
 ]

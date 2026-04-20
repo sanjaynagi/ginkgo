@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from ginkgo.core.subworkflow import SubWorkflowResult
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.environment.secrets import redact_value
 from ginkgo.runtime.artifacts.value_codec import summarise_value
@@ -392,25 +393,30 @@ class RunProvenanceRecorder:
             task["outputs"] = _render_value(outputs or [])
             if assets is not None:
                 task["assets"] = _render_value(assets)
+            if isinstance(value, SubWorkflowResult):
+                task["sub_run_id"] = value.run_id
             task["finished_at"] = _timestamp()
             task["status"] = "succeeded"
             task.pop("error", None)
             task.pop("last_error", None)
             task.pop("last_exit_code", None)
+            update_fields: dict[str, Any] = {
+                "cached": task["cached"],
+                "exit_code": task["exit_code"],
+                "output": task["output"],
+                "outputs": task["outputs"],
+                "assets": task.get("assets"),
+                "finished_at": task["finished_at"],
+                "status": task["status"],
+                "error": None,
+                "last_error": None,
+                "last_exit_code": None,
+            }
+            if "sub_run_id" in task:
+                update_fields["sub_run_id"] = task["sub_run_id"]
             self._append_task_update(
                 node_id=node_id,
-                fields={
-                    "cached": task["cached"],
-                    "exit_code": task["exit_code"],
-                    "output": task["output"],
-                    "outputs": task["outputs"],
-                    "assets": task.get("assets"),
-                    "finished_at": task["finished_at"],
-                    "status": task["status"],
-                    "error": None,
-                    "last_error": None,
-                    "last_exit_code": None,
-                },
+                fields=update_fields,
             )
 
     def mark_failed(
@@ -435,19 +441,25 @@ class RunProvenanceRecorder:
             task["retries_remaining"] = 0
             task["finished_at"] = _timestamp()
             task["status"] = "failed"
+            child_run_id = getattr(exc, "child_run_id", None)
+            if child_run_id is not None:
+                task["sub_run_id"] = child_run_id
+            update_fields: dict[str, Any] = {
+                "cached": task["cached"],
+                "exit_code": task["exit_code"],
+                "error": task["error"],
+                "failure": task["failure"],
+                "last_error": task["last_error"],
+                "last_exit_code": task["last_exit_code"],
+                "retries_remaining": task["retries_remaining"],
+                "finished_at": task["finished_at"],
+                "status": task["status"],
+            }
+            if "sub_run_id" in task:
+                update_fields["sub_run_id"] = task["sub_run_id"]
             self._append_task_update(
                 node_id=node_id,
-                fields={
-                    "cached": task["cached"],
-                    "exit_code": task["exit_code"],
-                    "error": task["error"],
-                    "failure": task["failure"],
-                    "last_error": task["last_error"],
-                    "last_exit_code": task["last_exit_code"],
-                    "retries_remaining": task["retries_remaining"],
-                    "finished_at": task["finished_at"],
-                    "status": task["status"],
-                },
+                fields=update_fields,
             )
 
     def update_task_extra(self, *, node_id: int, **fields: Any) -> None:
@@ -597,6 +609,13 @@ def _render_value(value: Any) -> Any:
         return str(value)
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
+    if isinstance(value, SubWorkflowResult):
+        return {
+            "type": "subworkflow_result",
+            "run_id": value.run_id,
+            "status": value.status,
+            "manifest_path": value.manifest_path,
+        }
     if isinstance(value, list):
         return [_render_value(item) for item in value]
     if isinstance(value, tuple):

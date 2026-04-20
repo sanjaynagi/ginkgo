@@ -158,3 +158,66 @@ environment preparation before dispatch, and shell execution through Pixi.
 Foreign execution environments do not support Python tasks. Ginkgo treats `env=...` as a shell-task boundary only, which keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 
 Image digests (not mutable tags) are used for cache key identity, ensuring cache invalidation when image contents change.
+
+## Sub-workflow Composition (Opaque Mode)
+
+Ginkgo supports invoking one workflow from inside another as an opaque
+subprocess. A task declared with `kind="subworkflow"` returns a
+`subworkflow(path, params=..., config=...)` descriptor; the evaluator
+dispatches it by running `ginkgo run <path>` in a child process. The child
+run is self-contained: it writes its own `.ginkgo/runs/<child_id>/`
+directory, executes its own DAG, and exits. Its run id is returned to the
+parent task as a `SubWorkflowResult` and recorded on the parent manifest
+entry under `sub_run_id`.
+
+```python
+from ginkgo import flow, task, subworkflow, SubWorkflowResult
+
+
+@task(kind="subworkflow")
+def screen_region(region: str) -> SubWorkflowResult:
+    return subworkflow("workflows/screening.py", params={"region": region})
+
+
+@flow
+def parent():
+    return screen_region.map(region=["emea", "apac", "amer"])
+```
+
+Key properties:
+
+- **Opaque only.** The sub-workflow's DAG is not expanded into the parent.
+  Its internal tasks do not appear in the parent UI, and the parent
+  scheduler sees a single task per `call_workflow` invocation.
+- **Shared workspace cache.** Parent and child share `.ginkgo/cache/` by
+  construction, so identical sub-task work is reused across depth without
+  any cross-run cache key composition. The parent task's own cache key
+  hashes its inputs, source, and any declared `version=` — a change to
+  the child workflow file's contents alone does not invalidate the
+  parent's "skip the subprocess" short circuit. Users needing strict
+  invalidation should bump `version=` on the parent task or pass the
+  child workflow path as a `file` parameter.
+- **Parameters via `--config`.** `params={...}` is serialised to a
+  temporary YAML file and forwarded to the child as an extra `--config`
+  overlay. Additional config paths can be passed via `config=...`.
+- **Run-id stitching.** The child emits a machine-readable
+  `GINKGO_CHILD_RUN_ID=<id>` line on stdout when
+  `GINKGO_CALLED_FROM_PARENT_RUN` is set in its environment. The parent
+  runner captures this line and records the child id on the parent task's
+  manifest entry, making it discoverable via `ginkgo inspect run`.
+- **Failure propagation.** Non-zero child exit raises `SubWorkflowError`
+  in the parent task, which triggers normal retry / fail-fast behaviour.
+  The child run directory remains for debugging.
+- **Recursion guard.** `GINKGO_CALL_DEPTH` increments per hop. Dispatch
+  refuses to spawn a child when the next depth would exceed a small
+  default (8), catching accidental recursive workflow calls before they
+  exhaust the machine.
+
+Non-goals for this mode:
+
+- No inline expansion of sub-workflow tasks into the parent DAG.
+- No unified scheduling budget across parent and child processes — each
+  child honours its own `--jobs` / `--cores`, but the sum across siblings
+  is not bounded.
+- No plan-time cycle detection across workflows; the depth guard catches
+  recursion at dispatch time.

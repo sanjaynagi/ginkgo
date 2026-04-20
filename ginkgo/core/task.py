@@ -19,7 +19,7 @@ import re
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.types import tmp_dir
 
-_TASK_KINDS = frozenset({"notebook", "python", "script", "shell"})
+_TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
 _FanOutMode = Literal["zip", "product"]
 
 

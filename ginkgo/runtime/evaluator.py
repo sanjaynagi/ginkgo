@@ -27,6 +27,7 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookExpr
 from ginkgo.core.script import ScriptExpr
 from ginkgo.core.shell import ShellExpr
+from ginkgo.core.subworkflow import SubWorkflowExpr
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
@@ -89,6 +90,7 @@ from ginkgo.runtime.task_runners.shell import (
     classify_failure,
     sanitize_exception,
 )
+from ginkgo.runtime.task_runners.subworkflow import SubworkflowRunner
 from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
@@ -311,6 +313,15 @@ class _ConcurrentEvaluator:
             provenance=self.provenance,
             notice_emitter=self._emit_notebook_notice,
             runtime_root_factory=self._notebook_runtime_root,
+        )
+        self._subworkflow_runner = SubworkflowRunner(
+            shell_runner=self._shell_runner,
+            run_id_provider=lambda: self._run_id or "",
+            runs_root=(
+                self.provenance.root_dir
+                if self.provenance is not None
+                else Path.cwd() / ".ginkgo" / "runs"
+            ),
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
         self._live_payloads = LivePayloadRegistry()
@@ -2154,7 +2165,7 @@ class _ConcurrentEvaluator:
 
     def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Advance a task after its driver wrapper has finished."""
-        _driver_sentinels = (ShellExpr, NotebookExpr, ScriptExpr)
+        _driver_sentinels = (ShellExpr, NotebookExpr, ScriptExpr, SubWorkflowExpr)
         if self._failure is not None and (
             isinstance(completed_value, _driver_sentinels)
             or contains_dynamic_expression(completed_value)
@@ -2172,8 +2183,8 @@ class _ConcurrentEvaluator:
                 self._cleanup_transport(node)
                 raise TypeError(
                     f"{node.task_def.name} returned {sentinel_name}, but the task is declared "
-                    "with kind='python'. Use @task(kind='shell'), @task('notebook'), or "
-                    "@task('script') for the appropriate task kind."
+                    "with kind='python'. Use @task(kind='shell'), @task('notebook'), "
+                    "@task('script'), or @task('subworkflow') for the appropriate task kind."
                 )
 
             self._validator.validate_process_safe_value(
@@ -2239,6 +2250,17 @@ class _ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "shell")
             return
 
+        if isinstance(completed_value, SubWorkflowExpr):
+            self._cleanup_transport(node)
+            node.state = "running_shell"
+            future = self._shell_executor.submit(
+                self._subworkflow_runner.run_subworkflow,
+                node=node,
+                subworkflow_expr=completed_value,
+            )
+            self._running_futures[future] = (node.node_id, "shell")
+            return
+
         dynamic_dependencies = self._register_value(completed_value)
         if dynamic_dependencies:
             self._cleanup_transport(node)
@@ -2259,7 +2281,12 @@ class _ConcurrentEvaluator:
 
         self._cleanup_transport(node)
         kind = node.task_def.kind
-        _expected = {"shell": "shell(...)", "notebook": "notebook(...)", "script": "script(...)"}
+        _expected = {
+            "shell": "shell(...)",
+            "notebook": "notebook(...)",
+            "script": "script(...)",
+            "subworkflow": "subworkflow(...)",
+        }
         raise TypeError(
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
             f"{_expected.get(kind, 'the appropriate sentinel')} or dynamic task expressions."
