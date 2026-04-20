@@ -1,0 +1,7 @@
+<h2 id="env"><span class="num">08</span>Environment</h2>
+<dl class="kv">
+  {% for entry in report.environment %}
+  <dt>{{ entry.key }}</dt>
+  <dd>{{ entry.value }}</dd>
+  {% endfor %}
+</dl>

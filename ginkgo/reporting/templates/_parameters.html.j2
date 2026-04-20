@@ -1,0 +1,6 @@
+<h2 id="params"><span class="num">02</span>Parameters</h2>
+{% if report.params %}
+<pre class="code">{{ report.params|yaml }}</pre>
+{% else %}
+<p class="empty">No resolved parameters recorded for this run.</p>
+{% endif %}

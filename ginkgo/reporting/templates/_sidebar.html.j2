@@ -1,0 +1,45 @@
+<nav class="sidebar">
+  <div class="brand">ginkgo<span class="slash">/</span></div>
+  <div class="scope">Run report</div>
+
+  <div class="run-id">
+    <span class="label">run_id</span>
+    {{ report.sidebar_run_id }}
+  </div>
+
+  <div class="status-line status-{{ report.sidebar_status_tone }}">
+    <span class="glyph"></span>
+    {{ report.sidebar_status_label }}
+  </div>
+
+  <div class="toc-label">Execution</div>
+  <ul>
+    <li><a href="#summary"><span class="idx">01</span>Summary</a></li>
+    <li><a href="#params"><span class="idx">02</span>Parameters</a></li>
+    <li><a href="#graph"><span class="idx">03</span>Task graph</a></li>
+    <li><a href="#tasks"><span class="idx">04</span>Tasks</a></li>
+    {% if report.has_failures %}
+    <li><a href="#failure"><span class="idx">05</span>Failure</a></li>
+    {% endif %}
+  </ul>
+
+  <div class="toc-label">Results</div>
+  <ul>
+    <li><a href="#assets"><span class="idx">06</span>Assets</a></li>
+    {% if report.notebooks %}
+    <li><a href="#notebooks"><span class="idx">07</span>Notebooks</a></li>
+    {% endif %}
+  </ul>
+
+  <div class="toc-label">Appendix</div>
+  <ul>
+    <li><a href="#env"><span class="idx">08</span>Environment</a></li>
+  </ul>
+
+  {% if report.workspace_label %}
+  <div class="toc-label">Workspace</div>
+  <ul>
+    <li><a href="#"><span class="idx">·</span>{{ report.workspace_label }}</a></li>
+  </ul>
+  {% endif %}
+</nav>

@@ -1,0 +1,30 @@
+<h2 id="graph"><span class="num">03</span>Task graph</h2>
+{% if report.graph.nodes %}
+<div class="graph-card">
+  <svg viewBox="0 0 {{ report.graph.width }} {{ report.graph.height }}" width="{{ report.graph.width }}" height="{{ report.graph.height }}" xmlns="http://www.w3.org/2000/svg" class="taskgraph">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" class="graph-arrow"/>
+      </marker>
+    </defs>
+    <g class="graph-edges">
+      {% for edge in report.graph.edges %}
+      <line x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}" marker-end="url(#arr)"/>
+      {% endfor %}
+    </g>
+    <g class="graph-nodes">
+      {% for node in report.graph.nodes %}
+      <g class="graph-node tone-{{ node.tone }}">
+        <rect x="{{ node.x }}" y="{{ node.y }}" width="{{ node.width }}" height="{{ node.height }}"/>
+        <text x="{{ node.x + node.width // 2 }}" y="{{ node.y + (node.height // 2) + (3 if node.sub_label else 4) }}" text-anchor="middle" class="node-label">{{ node.label }}</text>
+        {% if node.sub_label %}
+        <text x="{{ node.x + node.width // 2 }}" y="{{ node.y + node.height - 8 }}" text-anchor="middle" class="node-sublabel">{{ node.sub_label }}</text>
+        {% endif %}
+      </g>
+      {% endfor %}
+    </g>
+  </svg>
+</div>
+{% else %}
+<p class="empty">No tasks recorded for this run.</p>
+{% endif %}

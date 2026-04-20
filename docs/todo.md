@@ -127,3 +127,109 @@ on top of the asset catalog.
 
 <!-- Phase 9 (Remote Input Streaming / FUSE) is complete. See
      docs/architecture/remote-input-access.md for the shipped design. -->
+
+---
+
+<!-- Phase 10 (Static HTML Report Export) is complete. See
+     docs/architecture/reporting.md for the shipped design. -->
+
+---
+
+### Phase 11 — Schema Validation and Asset Checks
+
+**Size:** Medium (~2–3 weeks)
+
+**Goal:** Let users declare typed contracts on task inputs, outputs, and
+assets, and fail fast with precise diagnostics when a contract is violated.
+
+#### Deliverables
+
+- Declarative schema hooks on task signatures and asset definitions (e.g.
+  column names / dtypes for tables, shape / dtype for arrays, pydantic-style
+  models for structured values).
+- Validation integrated into the task boundary so violations are raised as
+  structured task failures with category, location, and offending fields.
+- Optional per-asset invariants evaluated on write (e.g. row count bounds,
+  nullability, enum domains).
+- Validation results surfaced in provenance, CLI diagnostics, and the UI so
+  failures are discoverable without reading logs.
+- Minimal built-in adapters for common table/array libraries; third-party
+  schema libraries pluggable via a thin protocol.
+
+#### Key design points
+
+- Validation is a task-boundary concern, not a scheduling concern. The DAG and
+  cache keying should be unaffected beyond including schema identity in the
+  task hash.
+- Contracts should be expressible inline on the task / asset without forcing a
+  separate schema registry.
+- Diagnostics should point to the specific input/output and the specific field
+  that failed, not just "validation error".
+- The design must not couple Ginkgo to any one schema library; the built-in
+  adapters should be replaceable.
+
+#### Validation
+
+- A task with a declared input schema fails immediately and cleanly when an
+  upstream produces an incompatible value, with the offending field named.
+- Asset write-time invariants are enforced before the asset is published, and
+  violations prevent alias promotion.
+- Failure classification groups schema failures into a dedicated category in
+  end-of-run diagnostics.
+- Adding or changing a schema invalidates dependent cache entries in a
+  predictable, documented way.
+
+---
+
+## Tier 3 — Execution Backends
+
+### Phase 12 — SLURM / HPC Backend
+
+**Size:** Large (~4–6 weeks)
+
+**Goal:** Execute tasks on traditional HPC clusters (SLURM first; LSF / SGE
+as follow-ups) so Ginkgo is usable on academic and shared research
+infrastructure without requiring Kubernetes or cloud batch services.
+
+#### Deliverables
+
+- A `RemoteExecutor` implementation targeting SLURM via `sbatch` / `srun`,
+  integrated with the existing remote worker, code-sync packaging, and
+  provenance pathways.
+- Resource declaration mapping (CPU, memory, GPU, walltime, partition,
+  account, QoS) from the existing per-task resource model to SLURM
+  directives.
+- Shared-filesystem-aware staging: when the workspace lives on a shared POSIX
+  filesystem, avoid redundant code-sync and artifact transfer.
+- Job submission, polling, cancellation, and log retrieval integrated with
+  the scheduler's remote lifecycle and retry policies.
+- Compatibility with the remote-input access layer so FUSE / staged inputs
+  continue to work on HPC nodes where permitted, with clear fallbacks when
+  FUSE is unavailable.
+- Documented environment expectations (module system, container runtime
+  availability, Pixi usability on compute nodes).
+
+#### Key design points
+
+- Implement against the existing `RemoteExecutor` protocol; do not fork the
+  remote worker.
+- HPC environments vary widely — the backend must treat site-specific details
+  (partitions, accounts, module loads, container runtimes like Singularity /
+  Apptainer) as configuration, not hard-coded behaviour.
+- Respect HPC etiquette: bounded polling frequency, job arrays where
+  appropriate for large fan-outs, and cooperative cancellation.
+- Keep the SLURM implementation separable so LSF / SGE variants can be added
+  without a second rewrite of the shared machinery.
+
+#### Validation
+
+- A representative workflow (mixed Python and shell tasks, per-task
+  resources, at least one GPU task) runs end-to-end on a SLURM cluster with
+  correct provenance.
+- Cancellation from the client cleanly terminates submitted jobs.
+- Retry policies behave identically to Kubernetes / GCP Batch backends for
+  transient failures.
+- On a shared filesystem, warm reruns avoid redundant code-sync and artifact
+  transfer.
+- Large fan-outs are submitted efficiently (job arrays or equivalent) rather
+  than one `sbatch` per task where that would overwhelm the scheduler.

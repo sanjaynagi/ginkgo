@@ -1,0 +1,22 @@
+<div class="breadcrumb">
+  {% if report.workspace_label %}{{ report.workspace_label }}<span class="sep">/</span>{% endif %}runs<span class="sep">/</span>{{ report.workflow_label }}<span class="sep">/</span><span class="terminal">{{ report.run_id[-8:] }}</span>
+</div>
+<h1>{{ report.workflow_label }}<span class="run-tag">{{ report.run_id[-8:] }}</span></h1>
+
+<div class="masthead-sub">
+  {% for chip in report.masthead_chips %}
+  <span class="chip"><span class="k">{{ chip.key }}</span><span class="v">{{ chip.value }}</span></span>
+  {% endfor %}
+</div>
+
+<dl class="kv">
+  {% for entry in report.masthead_kv %}
+    {% if entry.key == "status" %}
+  <dt>{{ entry.key }}</dt>
+  <dd><span class="pill {{ report.status_tone }}"><span class="dot"></span>{{ report.status_label }}</span></dd>
+    {% else %}
+  <dt>{{ entry.key }}</dt>
+  <dd>{{ entry.value }}</dd>
+    {% endif %}
+  {% endfor %}
+</dl>
