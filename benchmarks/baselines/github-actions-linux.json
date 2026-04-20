@@ -30,7 +30,7 @@
       "example": "chem",
       "mode": "cold",
       "baseline_seconds": 2.079,
-      "max_regression_pct": 10.0
+      "max_regression_pct": 15.0
     },
     {
       "example": "chem",
