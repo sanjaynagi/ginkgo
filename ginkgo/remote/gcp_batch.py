@@ -49,6 +49,24 @@ def _generate_job_id(attempt: dict[str, Any]) -> str:
     return name.rstrip("-")
 
 
+def _payload_requires_fuse(attempt: dict[str, Any]) -> bool:
+    """Return True when the payload contains any fuse-marked inputs."""
+    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+
+    fuse_tags = {FUSE_FILE_TYPE, FUSE_FOLDER_TYPE}
+
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("__ginkgo_type__") in fuse_tags:
+                return True
+            return any(walk(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(item) for item in value)
+        return False
+
+    return walk(attempt.get("args"))
+
+
 def _parse_worker_output(logs: str) -> dict[str, Any]:
     """Parse the worker result from container log output.
 
@@ -105,6 +123,8 @@ class GCPBatchExecutor:
     gpu_type: str | None = None
     gpu_driver_version: str = "LATEST"
     max_run_duration: str = "3600s"
+    fuse_image: str | None = None
+    fuse_privileged: bool = False
     _client: Any = field(default=None, init=False, repr=False)
 
     def _get_client(self) -> Any:
@@ -142,12 +162,16 @@ class GCPBatchExecutor:
         threads = resources.get("threads", 1)
         memory_gb = resources.get("memory_gb", 0)
         gpu = resources.get("gpu", 0)
+        fuse_required = _payload_requires_fuse(attempt)
 
         # Container configuration.
-        container = batch_v1.Runnable.Container(
-            image_uri=self.image,
-            commands=["python", "-m", "ginkgo.remote.worker"],
-        )
+        container_kwargs: dict[str, Any] = {
+            "image_uri": self.fuse_image if (fuse_required and self.fuse_image) else self.image,
+            "commands": ["python", "-m", "ginkgo.remote.worker"],
+        }
+        if fuse_required and self.fuse_privileged:
+            container_kwargs["options"] = "--privileged"
+        container = batch_v1.Runnable.Container(**container_kwargs)
 
         runnable = batch_v1.Runnable(
             container=container,
@@ -202,9 +226,7 @@ class GCPBatchExecutor:
         if instances:
             policy_kwargs["instances"] = instances
         if self.service_account is not None:
-            policy_kwargs["service_account"] = batch_v1.AllocationPolicy.ServiceAccount(
-                email=self.service_account
-            )
+            policy_kwargs["service_account"] = batch_v1.ServiceAccount(email=self.service_account)
 
         allocation_policy = batch_v1.AllocationPolicy(**policy_kwargs)
 

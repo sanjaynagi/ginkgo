@@ -511,6 +511,28 @@ class CacheStore:
                 "type": type(value).__name__,
                 "version_id": value.version_id,
             }
+        # Fuse-streamed inputs carry their identity in a marker dict. Hash
+        # them the same as the equivalent ``RemoteRef`` so toggling
+        # streaming on/off does not perturb cache keys. The ``policy``
+        # field is deliberately excluded.
+        from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+
+        if isinstance(value, dict) and value.get("__ginkgo_type__") in {
+            FUSE_FILE_TYPE,
+            FUSE_FOLDER_TYPE,
+        }:
+            type_name = (
+                "RemoteFileRef"
+                if value["__ginkgo_type__"] == FUSE_FILE_TYPE
+                else "RemoteFolderRef"
+            )
+            return {
+                "bucket": value["bucket"],
+                "key": value["key"],
+                "scheme": value["scheme"],
+                "type": type_name,
+                "version_id": value.get("version_id"),
+            }
         if isinstance(value, SecretRef):
             return secret_identity(value)
 
@@ -736,6 +758,30 @@ class CacheStore:
                 "type": type(value).__name__,
                 "version_id": value.version_id,
             }
+
+        # Fuse marker dicts stand in for a RemoteRef at stat-index time.
+        from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+
+        if isinstance(value, dict) and value.get("__ginkgo_type__") in {
+            FUSE_FILE_TYPE,
+            FUSE_FOLDER_TYPE,
+        }:
+            type_name = (
+                "RemoteFileRef"
+                if value["__ginkgo_type__"] == FUSE_FILE_TYPE
+                else "RemoteFolderRef"
+            )
+            stat_entry = {
+                "bucket": value["bucket"],
+                "key": value["key"],
+                "scheme": value["scheme"],
+                "type": type_name,
+            }
+            if value.get("version_id") is None:
+                stat_entry["unversioned"] = True
+            else:
+                stat_entry["version_id"] = value["version_id"]
+            return stat_entry
 
         if annotation is file or isinstance(value, file):
             path = Path(str(value)).resolve()

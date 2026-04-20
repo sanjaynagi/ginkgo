@@ -107,6 +107,13 @@ def encode_value(
         }
 
     if isinstance(value, dict):
+        # Fuse-streamed marker dicts produced by the driver-side resolver
+        # are JSON-safe already; pass them through untouched so the worker
+        # receives the original payload unchanged.
+        from ginkgo.remote.access.protocol import is_fuse_ref
+
+        if is_fuse_ref(value):
+            return value
         return {
             "__ginkgo_type__": "dict",
             "items": [

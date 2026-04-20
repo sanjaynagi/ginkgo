@@ -1,0 +1,19 @@
+[remote.access]
+default = "stage"
+auto_fuse = false
+
+[remote.batch]
+project = "project-f02462a0-79be-4c18-b26"
+region = "europe-west2"
+image = "europe-west2-docker.pkg.dev/project-f02462a0-79be-4c18-b26/ginkgo/worker-fuse:phase9"
+fuse_image = "europe-west2-docker.pkg.dev/project-f02462a0-79be-4c18-b26/ginkgo/worker-fuse:phase9"
+service_account = "ginkgo-worker@project-f02462a0-79be-4c18-b26.iam.gserviceaccount.com"
+fuse_privileged = true
+max_run_duration = "1800s"
+
+[remote.artifacts]
+store = "gs://ginkgo-remote-artifacts-f02462a0/fuse-vs-stage/"
+
+[remote.batch.code]
+mode = "sync"
+package = "workflow"

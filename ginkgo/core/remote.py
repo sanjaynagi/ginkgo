@@ -14,10 +14,11 @@ Supported URI schemes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 _SUPPORTED_SCHEMES = frozenset({"s3", "oci", "gs"})
+_VALID_ACCESS_MODES = frozenset({"stage", "fuse"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -40,6 +41,10 @@ class RemoteRef:
         Optional OCI namespace. ``None`` for S3.
     version_id : str | None
         Optional immutable version pin.
+    access : str | None
+        Preferred access mode (``"stage"`` or ``"fuse"``). Participates in
+        ``__repr__`` but is excluded from equality / hashing so toggling
+        access does not invalidate cache entries.
     """
 
     uri: str
@@ -48,6 +53,7 @@ class RemoteRef:
     key: str
     namespace: str | None = None
     version_id: str | None = None
+    access: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -60,7 +66,12 @@ class RemoteFolderRef(RemoteRef):
     """Remote reference to a directory prefix."""
 
 
-def remote_file(uri: str, *, version_id: str | None = None) -> RemoteFileRef:
+def remote_file(
+    uri: str,
+    *,
+    version_id: str | None = None,
+    access: str | None = None,
+) -> RemoteFileRef:
     """Construct a remote file reference from a URI.
 
     Parameters
@@ -69,6 +80,9 @@ def remote_file(uri: str, *, version_id: str | None = None) -> RemoteFileRef:
         Remote URI (e.g. ``s3://bucket/key`` or ``oci://namespace/bucket/key``).
     version_id : str | None
         Optional version ID for immutable pinning.
+    access : str | None
+        Preferred access mode (``"stage"`` or ``"fuse"``). ``None`` defers
+        the choice to the configured default / policy resolver.
 
     Returns
     -------
@@ -77,9 +91,11 @@ def remote_file(uri: str, *, version_id: str | None = None) -> RemoteFileRef:
     Raises
     ------
     ValueError
-        If the URI scheme is unsupported or the URI is malformed.
+        If the URI scheme is unsupported or the URI is malformed, or if
+        ``access`` is not one of ``"stage"`` / ``"fuse"``.
     """
     parsed = _parse_uri(uri)
+    _validate_access(access)
     return RemoteFileRef(
         uri=uri,
         scheme=parsed["scheme"],
@@ -87,10 +103,16 @@ def remote_file(uri: str, *, version_id: str | None = None) -> RemoteFileRef:
         key=parsed["key"],
         namespace=parsed.get("namespace"),
         version_id=version_id,
+        access=access,
     )
 
 
-def remote_folder(uri: str, *, version_id: str | None = None) -> RemoteFolderRef:
+def remote_folder(
+    uri: str,
+    *,
+    version_id: str | None = None,
+    access: str | None = None,
+) -> RemoteFolderRef:
     """Construct a remote folder reference from a URI.
 
     Parameters
@@ -99,6 +121,9 @@ def remote_folder(uri: str, *, version_id: str | None = None) -> RemoteFolderRef
         Remote URI pointing to a prefix (e.g. ``s3://bucket/prefix/``).
     version_id : str | None
         Optional version ID for immutable pinning.
+    access : str | None
+        Preferred access mode (``"stage"`` or ``"fuse"``). ``None`` defers
+        the choice to the configured default / policy resolver.
 
     Returns
     -------
@@ -107,9 +132,11 @@ def remote_folder(uri: str, *, version_id: str | None = None) -> RemoteFolderRef
     Raises
     ------
     ValueError
-        If the URI scheme is unsupported or the URI is malformed.
+        If the URI scheme is unsupported or the URI is malformed, or if
+        ``access`` is not one of ``"stage"`` / ``"fuse"``.
     """
     parsed = _parse_uri(uri)
+    _validate_access(access)
     return RemoteFolderRef(
         uri=uri,
         scheme=parsed["scheme"],
@@ -117,7 +144,19 @@ def remote_folder(uri: str, *, version_id: str | None = None) -> RemoteFolderRef
         key=parsed["key"],
         namespace=parsed.get("namespace"),
         version_id=version_id,
+        access=access,
     )
+
+
+def _validate_access(access: str | None) -> None:
+    """Raise ``ValueError`` if ``access`` is not a supported mode."""
+    if access is None:
+        return
+    if access not in _VALID_ACCESS_MODES:
+        raise ValueError(
+            f"Unsupported access mode {access!r}. "
+            f"Supported modes: {', '.join(sorted(_VALID_ACCESS_MODES))}"
+        )
 
 
 def is_remote_uri(value: str) -> bool:

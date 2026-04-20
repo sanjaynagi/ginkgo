@@ -81,6 +81,24 @@ Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
 should flow through Ginkgo task inputs. Let the runtime stage them locally;
 avoid manual download code inside tasks.
 
+Wrap the URI in `remote_file(...)` / `remote_folder(...)` when you want to
+control *how* the input reaches the worker:
+
+```python
+from ginkgo import remote_file, task
+
+# Stream via FUSE for sparse/random access — no whole-file download.
+bam = remote_file("gs://bucket/sample.bam", access="fuse")
+
+# Force staged download (the default).
+ref = remote_file("gs://bucket/ref.fa", access="stage")
+```
+
+Fuse mode requires a worker image with FUSE drivers and `fuse_image` /
+`fuse_privileged` set in `[remote.k8s]` or `[remote.batch]`. If a mount
+fails the worker falls back to staging and the CLI surfaces a warning;
+cache keys are stable across modes so switching is free.
+
 Use `.map()` for zip-style fan-out across aligned inputs:
 
 ```python

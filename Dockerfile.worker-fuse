@@ -1,0 +1,73 @@
+# Ginkgo remote worker image with FUSE streaming drivers.
+#
+# Build:
+#   docker build -f Dockerfile.worker-fuse -t ginkgo-worker-fuse .
+#
+# This variant extends the base worker image with the OSS FUSE drivers
+# required for Phase 9 remote input streaming:
+#
+#   - gcsfuse         (Google Cloud Storage)
+#   - mountpoint-s3   (AWS S3 — the "mount-s3" binary)
+#   - rclone          (generic fallback for schemes without a first-class
+#                     driver, used today for oci://)
+#
+# The baseline `ginkgo-worker` image remains unchanged for users who do
+# not stream. Executor config selects which image runs a given pod via
+# the `fuse_image` field.
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Base system packages plus fuse.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        fuse3 \
+        gnupg \
+        lsb-release \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# gcsfuse (GCS). Use the Google-published apt package.
+RUN set -eux; \
+    export GCSFUSE_REPO=gcsfuse-$(lsb_release -c -s); \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt $GCSFUSE_REPO main" \
+        > /etc/apt/sources.list.d/gcsfuse.list; \
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gcsfuse; \
+    rm -rf /var/lib/apt/lists/*
+
+# mountpoint-s3 (AWS). Install the pre-built deb for glibc-based images.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64) url=https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount-s3.deb ;; \
+        arm64) url=https://s3.amazonaws.com/mountpoint-s3-release/latest/arm64/mount-s3.deb ;; \
+        *) echo "Unsupported architecture ${arch} for mountpoint-s3" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/mount-s3.deb "${url}"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/mount-s3.deb; \
+    rm -f /tmp/mount-s3.deb; \
+    rm -rf /var/lib/apt/lists/*
+
+# rclone (fallback).
+RUN set -eux; \
+    curl -fsSL https://downloads.rclone.org/rclone-current-linux-$(dpkg --print-architecture).zip \
+        -o /tmp/rclone.zip; \
+    unzip -j /tmp/rclone.zip "*/rclone" -d /usr/local/bin; \
+    chmod +x /usr/local/bin/rclone; \
+    rm -f /tmp/rclone.zip
+
+WORKDIR /app
+
+COPY pyproject.toml .
+COPY ginkgo/ ginkgo/
+RUN pip install --no-cache-dir ".[cloud]"
+
+ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]

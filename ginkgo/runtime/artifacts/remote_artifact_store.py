@@ -54,9 +54,14 @@ class RemoteArtifactStore:
 
     # --- ArtifactStore protocol -----------------------------------------------
 
-    def store(self, *, src_path: Path) -> ArtifactRecord:
+    def store(
+        self,
+        *,
+        src_path: Path,
+        src_is_readonly: bool = False,
+    ) -> ArtifactRecord:
         """Store locally and publish to remote."""
-        record = self.local.store(src_path=src_path)
+        record = self.local.store(src_path=src_path, src_is_readonly=src_is_readonly)
         return self._publish(record)
 
     def retrieve(self, *, artifact_id: str, dest_path: Path) -> None:
