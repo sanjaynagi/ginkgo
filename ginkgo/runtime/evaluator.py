@@ -682,6 +682,7 @@ class _ConcurrentEvaluator:
             remote_input_count = count_remote_inputs(node.resolved_args)
             if remote_input_count > 0:
                 node.state = "staging"
+                access_method = _classify_access_method(value=node.resolved_args)
                 self._emit_event(
                     TaskStaging(
                         run_id=self._run_id,
@@ -690,6 +691,7 @@ class _ConcurrentEvaluator:
                         attempt=node.attempt,
                         display_label=node.display_label,
                         remote_input_count=remote_input_count,
+                        access_method=access_method,
                     )
                 )
                 assert self._staging_executor is not None
@@ -1460,7 +1462,51 @@ class _ConcurrentEvaluator:
                 scratch_dir=scratch_dir,
             )
 
+        # Fold remote input-access stats (FUSE mount cost, cache hits, fallbacks)
+        # into provenance when the worker reported them.
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("remote_input_access"), dict)
+            and self.provenance is not None
+        ):
+            access_stats = payload["remote_input_access"]
+            self.provenance.update_task_extra(
+                node_id=node.node_id,
+                remote_input_access=access_stats,
+            )
+            self._warn_on_access_fallback(node=node, access_stats=access_stats)
+
         return payload
+
+    def _warn_on_access_fallback(
+        self,
+        *,
+        node: _TaskNode,
+        access_stats: dict[str, Any],
+    ) -> None:
+        """Surface a user-visible notice when fuse mounts fell back to staging.
+
+        ``access_stats["fallback_reason"]`` is populated by
+        :class:`~ginkgo.remote.access.mounted.MountedAccess` and the worker
+        hydration layer when a requested fuse mount could not be
+        established (missing driver, no ``/dev/fuse``, permission denied,
+        etc.). Without this notice, users who declared
+        ``access="fuse"`` would silently pay staging costs and never know
+        their policy was downgraded.
+        """
+        reason = access_stats.get("fallback_reason")
+        if not reason:
+            return
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=f"FUSE access fell back to staging: {reason}",
+            )
+        )
 
     def _capture_remote_logs(self, *, node: _TaskNode, handle: RemoteJobHandle) -> None:
         """Fetch pod logs and write them to the standard task log paths."""
@@ -2180,3 +2226,35 @@ class _ConcurrentEvaluator:
 def _task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a node."""
     return f"task_{node_id:04d}"
+
+
+def _classify_access_method(*, value: Any) -> str:
+    """Return ``"stage"``, ``"fuse"``, or ``"hybrid"`` for a resolved-args tree.
+
+    Walks the value recursively, inspecting explicit ``access`` hints on
+    :class:`RemoteRef` leaves. Refs without an explicit ``access`` hint
+    count as ``"stage"`` for reporting purposes; the auto-enable
+    heuristic may still promote them at staging time.
+    """
+    from ginkgo.core.remote import RemoteRef
+
+    seen: set[str] = set()
+
+    def walk(item: Any) -> None:
+        if isinstance(item, RemoteRef):
+            seen.add(item.access or "stage")
+            return
+        if isinstance(item, dict):
+            for v in item.values():
+                walk(v)
+            return
+        if isinstance(item, (list, tuple)):
+            for v in item:
+                walk(v)
+
+    walk(value)
+    if "fuse" in seen and len(seen) > 1:
+        return "hybrid"
+    if "fuse" in seen:
+        return "fuse"
+    return "stage"

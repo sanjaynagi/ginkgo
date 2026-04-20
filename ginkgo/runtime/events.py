@@ -113,6 +113,29 @@ class TaskStaging(TaskEvent):
     event: str = "task_staging"
     status: Literal["staging"] = "staging"
     remote_input_count: int = 0
+    access_method: Literal["stage", "fuse", "hybrid"] = "stage"
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskStreamingMounted(TaskEvent):
+    """A FUSE mount was established for a remote task input."""
+
+    event: str = "task_streaming_mounted"
+    scheme: str = ""
+    bucket: str = ""
+    mount_seconds: float = 0.0
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskStreamingUnmounted(TaskEvent):
+    """A FUSE mount was torn down after the task body finished."""
+
+    event: str = "task_streaming_unmounted"
+    scheme: str = ""
+    bucket: str = ""
+    unmount_seconds: float = 0.0
+    bytes_read: int = 0
+    range_requests: int = 0
 
 
 @dataclass(kw_only=True, frozen=True)

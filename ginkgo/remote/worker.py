@@ -42,6 +42,7 @@ def main() -> None:
     code_bundle = payload.pop("code_bundle", None)
     remote_artifact_config = payload.pop("remote_artifact_store", None)
 
+    mounted_access = None
     try:
         # Code-sync: download and extract the workflow package before import.
         if code_bundle is not None:
@@ -53,9 +54,16 @@ def main() -> None:
         if remote_artifact_config is not None:
             _hydrate_remote_inputs(payload, config=remote_artifact_config)
 
+        # Hydrate fuse-marked inputs by mounting their buckets on the pod.
+        mounted_access = _hydrate_fuse_inputs(payload)
+
         from ginkgo.runtime.worker import run_task
 
         result = run_task(payload)
+
+        # Fold remote-input-access stats into the envelope for provenance.
+        if mounted_access is not None and result.get("ok"):
+            result["remote_input_access"] = mounted_access.stats().to_dict()
 
         # Publish produced file/folder outputs back to the shared artifact
         # store so the client can hydrate them. Skipped for dynamic results
@@ -67,8 +75,19 @@ def main() -> None:
         ):
             _stage_remote_outputs(result, config=remote_artifact_config)
     except Exception as exc:
+        if mounted_access is not None:
+            try:
+                mounted_access.close()
+            except Exception:  # noqa: BLE001
+                pass
         print(json.dumps(error_response(exc)))
         sys.exit(1)
+    finally:
+        if mounted_access is not None:
+            try:
+                mounted_access.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     # Print the result as a JSON line for the handle to parse.
     print(json.dumps(result, default=str))
@@ -149,6 +168,37 @@ def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:
         remote_store=remote_store,
         scratch_dir=scratch_dir,
     )
+
+
+def _hydrate_fuse_inputs(payload: dict):
+    """Mount fuse-marked inputs and replace markers with local paths.
+
+    Returns the :class:`MountedAccess` instance used (or ``None`` when
+    the payload contained no fuse markers) so the caller can close the
+    mounts and collect stats.
+    """
+    args = payload.get("args")
+    if not isinstance(args, dict) or not _payload_has_fuse_markers(args):
+        return None
+
+    from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+
+    rewritten, mounted_access = hydrate_fuse_refs(args=args)
+    payload["args"] = rewritten
+    return mounted_access
+
+
+def _payload_has_fuse_markers(value) -> bool:
+    """Shallow/recursive scan for the fuse marker tag."""
+    from ginkgo.remote.access.protocol import is_fuse_ref
+
+    if is_fuse_ref(value):
+        return True
+    if isinstance(value, dict):
+        return any(_payload_has_fuse_markers(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_payload_has_fuse_markers(v) for v in value)
+    return False
 
 
 def _rewrite_module_file(payload: dict, *, code_bundle: dict[str, str], dest_dir) -> None:

@@ -46,6 +46,24 @@ def _generate_job_name(attempt: dict[str, Any]) -> str:
     return name.rstrip("-")
 
 
+def _payload_requires_fuse(attempt: dict[str, Any]) -> bool:
+    """Return True when the payload contains any fuse-marked inputs."""
+    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+
+    fuse_tags = {FUSE_FILE_TYPE, FUSE_FOLDER_TYPE}
+
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("__ginkgo_type__") in fuse_tags:
+                return True
+            return any(walk(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(item) for item in value)
+        return False
+
+    return walk(attempt.get("args"))
+
+
 def _parse_worker_output(logs: str) -> dict[str, Any]:
     """Parse the worker result from pod log output.
 
@@ -163,6 +181,9 @@ class KubernetesExecutor:
     unschedulable_timeout: float = 300.0
     ephemeral_storage: str = "10Gi"
     backoff_limit: int = 2
+    fuse_image: str | None = None
+    fuse_annotations: dict[str, str] | None = None
+    fuse_privileged: bool = False
     _batch_api: Any = field(default=None, init=False, repr=False)
     _core_api: Any = field(default=None, init=False, repr=False)
 
@@ -216,6 +237,7 @@ class KubernetesExecutor:
         resources = attempt.get("resources", {})
         threads = resources.get("threads", 1)
         memory_gb = resources.get("memory_gb", 0)
+        fuse_required = _payload_requires_fuse(attempt)
 
         # Build resource requests and limits.
         resource_requests: dict[str, str] = {"cpu": str(threads)}
@@ -231,22 +253,25 @@ class KubernetesExecutor:
         if gpu > 0:
             resource_limits["nvidia.com/gpu"] = str(gpu)
 
-        container = k8s_client.V1Container(
-            name="ginkgo-worker",
-            image=self.image,
-            image_pull_policy=self.pull_policy,
-            command=["python", "-m", "ginkgo.remote.worker"],
-            env=[
+        container_kwargs: dict[str, Any] = {
+            "name": "ginkgo-worker",
+            "image": self.fuse_image if (fuse_required and self.fuse_image) else self.image,
+            "image_pull_policy": self.pull_policy,
+            "command": ["python", "-m", "ginkgo.remote.worker"],
+            "env": [
                 k8s_client.V1EnvVar(
                     name="GINKGO_WORKER_PAYLOAD",
                     value=_encode_payload(attempt),
                 ),
             ],
-            resources=k8s_client.V1ResourceRequirements(
+            "resources": k8s_client.V1ResourceRequirements(
                 requests=resource_requests,
                 limits=resource_limits,
             ),
-        )
+        }
+        if fuse_required and self.fuse_privileged:
+            container_kwargs["security_context"] = k8s_client.V1SecurityContext(privileged=True)
+        container = k8s_client.V1Container(**container_kwargs)
 
         job_name = _generate_job_name(attempt)
         pod_spec_kwargs: dict[str, Any] = {
@@ -268,6 +293,17 @@ class KubernetesExecutor:
                 k8s_client.V1Toleration(**t) for t in self.tolerations
             ]
 
+        pod_annotations: dict[str, str] = {}
+        if fuse_required:
+            pod_annotations.update(self.fuse_annotations or {"gke-gcsfuse/volumes": "true"})
+
+        pod_template = k8s_client.V1PodTemplateSpec(
+            metadata=k8s_client.V1ObjectMeta(annotations=pod_annotations)
+            if pod_annotations
+            else None,
+            spec=k8s_client.V1PodSpec(**pod_spec_kwargs),
+        )
+
         job = k8s_client.V1Job(
             metadata=k8s_client.V1ObjectMeta(
                 name=job_name,
@@ -281,9 +317,7 @@ class KubernetesExecutor:
             spec=k8s_client.V1JobSpec(
                 backoff_limit=self.backoff_limit,
                 ttl_seconds_after_finished=self.ttl_seconds_after_finished,
-                template=k8s_client.V1PodTemplateSpec(
-                    spec=k8s_client.V1PodSpec(**pod_spec_kwargs),
-                ),
+                template=pod_template,
             ),
         )
 

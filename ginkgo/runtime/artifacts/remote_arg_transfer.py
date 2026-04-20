@@ -23,11 +23,24 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from ginkgo.core.types import file, folder
+from ginkgo.remote.access.protocol import (
+    is_fuse_ref,
+)
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 
 
 _REMOTE_FILE_TAG = "__ginkgo_remote_file__"
 _REMOTE_FOLDER_TAG = "__ginkgo_remote_folder__"
+
+# Parent directories whose contents are managed content-addressed blobs.
+# Paths resolving into these trees are safe to hardlink rather than copy.
+_MANAGED_BLOB_PARENTS = ("staging/blobs", "artifacts/blobs")
+
+
+def _is_managed_cas_blob(*, path: Path) -> bool:
+    """Return whether ``path`` resolves inside a Ginkgo CAS blob directory."""
+    resolved = str(path)
+    return any(f"/.ginkgo/{marker}/" in resolved for marker in _MANAGED_BLOB_PARENTS)
 
 
 def _annotation_matches(*, annotation: Any, target: type) -> bool:
@@ -93,6 +106,11 @@ def _stage_value(
     published_artifacts: set[str],
 ) -> Any:
     """Stage a single argument value, recursing into typed containers."""
+    # Fuse-streamed refs bypass CAS entirely — the worker mounts the
+    # bucket directly. Pass the marker dict through unchanged.
+    if is_fuse_ref(value):
+        return value
+
     # file / folder: upload content, emit a remote reference dict.
     # Inputs may arrive either as raw strings (unencoded) or as the
     # ``{__ginkgo_type__: file/folder, value: <path>}`` dicts produced by
@@ -182,7 +200,15 @@ def _stage_path(
     key = str(resolved)
     artifact_id = known_digests.get(key)
     if artifact_id is None or artifact_id not in published_artifacts:
-        record = remote_store.store(src_path=resolved)
+        # A source already inside a Ginkgo content-addressed cache
+        # (staging or artifact blobs) is immutable by construction, so
+        # the store can hardlink it into the artifact blob dir instead
+        # of duplicating the bytes. User-supplied paths do not qualify:
+        # chmod on a shared inode would make the user's file read-only.
+        record = remote_store.store(
+            src_path=resolved,
+            src_is_readonly=_is_managed_cas_blob(path=resolved),
+        )
         artifact_id = record.artifact_id
         known_digests[key] = artifact_id
         published_artifacts.add(artifact_id)

@@ -27,6 +27,7 @@ from ginkgo.runtime.artifacts.artifact_model import (
     deserialize_tree_manifest,
     serialize_tree_manifest,
 )
+from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.hashing import hash_bytes, hash_file
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
@@ -39,13 +40,22 @@ DIGEST_ALGORITHM = "blake3"
 class ArtifactStore(Protocol):
     """Protocol for content-addressed artifact storage."""
 
-    def store(self, *, src_path: Path) -> ArtifactRecord:
+    def store(
+        self,
+        *,
+        src_path: Path,
+        src_is_readonly: bool = False,
+    ) -> ArtifactRecord:
         """Copy bytes into the store and return an artifact record.
 
         Parameters
         ----------
         src_path : Path
             Source file or directory to store.
+        src_is_readonly : bool
+            When ``True`` the caller guarantees the source will not be
+            mutated. The store may then hardlink instead of copying.
+            Leave ``False`` for user-produced paths (task outputs).
 
         Returns
         -------
@@ -189,13 +199,23 @@ class LocalArtifactStore:
         for directory in (self._blobs_dir, self._trees_dir, self._refs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
-    def store(self, *, src_path: Path) -> ArtifactRecord:
+    def store(
+        self,
+        *,
+        src_path: Path,
+        src_is_readonly: bool = False,
+    ) -> ArtifactRecord:
         """Copy a file or directory into the store.
 
         Parameters
         ----------
         src_path : Path
             Source file or directory to store.
+        src_is_readonly : bool
+            When ``True`` the caller guarantees the source will not be
+            mutated, allowing the store to hardlink in preference to a
+            full copy when reflink is unavailable. Leave ``False`` for
+            user-produced paths.
 
         Returns
         -------
@@ -203,9 +223,9 @@ class LocalArtifactStore:
             Metadata record for the stored artifact.
         """
         if src_path.is_dir():
-            record = self._store_directory(src_path)
+            record = self._store_directory(src_path, src_is_readonly=src_is_readonly)
         else:
-            record = self._store_file(src_path)
+            record = self._store_file(src_path, src_is_readonly=src_is_readonly)
         self._record_materialization(path=src_path, artifact_id=record.artifact_id)
         return record
 
@@ -411,13 +431,26 @@ class LocalArtifactStore:
 
     # -- internal helpers --------------------------------------------------
 
-    def _store_file(self, src_path: Path) -> ArtifactRecord:
+    def _store_file(
+        self,
+        src_path: Path,
+        *,
+        src_is_readonly: bool = False,
+    ) -> ArtifactRecord:
         """Store a single file as a blob."""
         digest = self._hash_file(src_path)
         blob_path = self._blobs_dir / digest
 
         if not blob_path.exists():
-            shutil.copy2(src_path, blob_path)
+            # chmod on a hardlinked blob also flips the source's mode;
+            # that is intentional when ``src_is_readonly`` is set — the
+            # caller has promised immutability — and enforces the
+            # store's read-only invariant on the shared inode.
+            share_bytes(
+                src=src_path,
+                dst=blob_path,
+                allow_hardlink=src_is_readonly,
+            )
             blob_path.chmod(_READ_ONLY_FILE)
 
         size = blob_path.stat().st_size
@@ -436,7 +469,12 @@ class LocalArtifactStore:
         self._write_ref(record)
         return record
 
-    def _store_directory(self, src_path: Path) -> ArtifactRecord:
+    def _store_directory(
+        self,
+        src_path: Path,
+        *,
+        src_is_readonly: bool = False,
+    ) -> ArtifactRecord:
         """Store a directory as individual blobs plus a tree manifest."""
         tree_ref, total_size = self._build_tree_ref(src_path)
 
@@ -448,7 +486,7 @@ class LocalArtifactStore:
             # Store the blob.
             blob_path = self._blobs_dir / entry.blob_digest
             if not blob_path.exists():
-                shutil.copy2(child, blob_path)
+                share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
                 blob_path.chmod(_READ_ONLY_FILE)
 
         tree_path = self._trees_dir / f"{tree_ref.digest_hex}.json"

@@ -500,6 +500,9 @@ def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
         ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 3600)),
         ephemeral_storage=k8s_config.get("ephemeral_storage", "10Gi"),
         backoff_limit=int(k8s_config.get("backoff_limit", 2)),
+        fuse_image=k8s_config.get("fuse_image"),
+        fuse_annotations=k8s_config.get("fuse_annotations"),
+        fuse_privileged=bool(k8s_config.get("fuse_privileged", False)),
     )
 
 
@@ -533,4 +536,6 @@ def _build_batch_executor(*, runtime_config: dict[str, Any]) -> Any:
         gpu_type=batch_config.get("gpu_type"),
         gpu_driver_version=batch_config.get("gpu_driver_version", "LATEST"),
         max_run_duration=batch_config.get("max_run_duration", "3600s"),
+        fuse_image=batch_config.get("fuse_image"),
+        fuse_privileged=bool(batch_config.get("fuse_privileged", False)),
     )

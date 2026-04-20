@@ -31,10 +31,20 @@ def is_path_annotation(annotation: Any) -> bool:
 
 
 def is_remote_path_value(value: Any) -> bool:
-    """Return whether a value is a remote reference or supported remote URI."""
+    """Return whether a value is a remote reference or supported remote URI.
+
+    Also accepts fuse-streamed marker dicts produced by
+    :func:`ginkgo.remote.access.protocol.encode_fuse_ref` — those stand
+    in for a ``file`` / ``folder`` value from the driver's perspective
+    and are resolved to a local path on the worker.
+    """
     if isinstance(value, RemoteRef):
         return True
-    return isinstance(value, str) and is_remote_uri(value)
+    if isinstance(value, str) and is_remote_uri(value):
+        return True
+    from ginkgo.remote.access.protocol import is_fuse_ref
+
+    return is_fuse_ref(value)
 
 
 def contains_dynamic_expression(value: Any) -> bool:

@@ -74,6 +74,9 @@ class TaskDef:
     gpu: int = 0
     remote: bool = False
     export_thread_env: bool = False
+    remote_input_access: str | None = None
+    streaming_compatible: bool = True
+    fuse_prefetch: tuple[tuple[str, str], ...] = ()
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
@@ -524,6 +527,9 @@ def task(
     gpu: int = 0,
     remote: bool = False,
     export_thread_env: bool = False,
+    remote_input_access: str | None = None,
+    streaming_compatible: bool = True,
+    fuse_prefetch: dict[str, str] | None = None,
 ) -> Callable[[Callable[..., Any]], TaskDef]:
     """Decorator that turns a function into a lazy task definition.
 
@@ -581,6 +587,13 @@ def task(
     if _kind is not None and kind != "python" and _kind != kind:
         raise ValueError(f"task kind specified twice: positional {_kind!r} and keyword {kind!r}")
 
+    if remote_input_access is not None and remote_input_access not in {"stage", "fuse"}:
+        raise ValueError(
+            f"remote_input_access must be 'stage' or 'fuse', got {remote_input_access!r}"
+        )
+
+    prefetch_map = tuple(sorted((fuse_prefetch or {}).items()))
+
     def decorator(fn: Callable[..., Any]) -> TaskDef:
         return TaskDef(
             fn=fn,
@@ -593,6 +606,9 @@ def task(
             gpu=gpu,
             remote=remote,
             export_thread_env=export_thread_env,
+            remote_input_access=remote_input_access,
+            streaming_compatible=streaming_compatible,
+            fuse_prefetch=prefetch_map,
         )
 
     return decorator

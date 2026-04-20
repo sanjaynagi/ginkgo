@@ -24,6 +24,13 @@ from typing import Any, get_args, get_origin
 from ginkgo.config import load_runtime_config
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
 from ginkgo.core.types import file, folder
+from ginkgo.remote.access.protocol import encode_fuse_ref
+from ginkgo.remote.access.resolver import (
+    AccessConfig,
+    TaskAccessPolicy,
+    load_access_config,
+    resolve_access,
+)
 
 
 def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
@@ -165,9 +172,13 @@ class RemoteStager:
     timing_recorder : Callable[..., None] | None
         Optional callback ``timing_recorder(node_id=, phase=, started=)``
         used to record per-task staging duration when provenance is on.
+    access_config : AccessConfig | None
+        Workflow-level remote-access configuration. ``None`` triggers a
+        lazy load from ``ginkgo.toml``.
     """
 
     timing_recorder: Any = None
+    access_config: AccessConfig | None = None
     _staging_cache: Any = field(default=None, init=False, repr=False)
     _staging_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _staging_inflight: dict[str, Future[Path]] = field(
@@ -214,7 +225,28 @@ class RemoteStager:
         task_def: Any,
         resolved_args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Stage every remote reference in a resolved argument map."""
+        """Stage every remote reference in a resolved argument map.
+
+        Refs resolved to a ``fuse`` policy are emitted as encoded marker
+        dicts (see :func:`ginkgo.remote.access.protocol.encode_fuse_ref`)
+        and **not** staged locally; the worker mounts them on demand.
+        """
+        task_policy = TaskAccessPolicy.from_task_def(task_def)
+        access_config = self._get_access_config()
+
+        # Fuse streaming is only meaningful on the remote dispatch path.
+        # For local tasks (no remote executor will run them), force
+        # `stage` so downstream code receives a normal local path.
+        dispatches_remote = bool(
+            getattr(task_def, "remote", False) or getattr(task_def, "gpu", 0) > 0
+        )
+        if not dispatches_remote:
+            task_policy = TaskAccessPolicy(
+                remote_input_access="stage",
+                streaming_compatible=False,
+                fuse_prefetch=task_policy.fuse_prefetch,
+            )
+
         staged: dict[str, Any] = {}
         for name, value in resolved_args.items():
             annotation = task_def.type_hints.get(
@@ -223,15 +255,37 @@ class RemoteStager:
                 if name in task_def.signature.parameters
                 else Any,
             )
-            staged[name] = self.stage_remote_value(annotation=annotation, value=value)
+            staged[name] = self.stage_remote_value(
+                annotation=annotation,
+                value=value,
+                task_policy=task_policy,
+                access_config=access_config,
+            )
         return staged
 
-    def stage_remote_value(self, *, annotation: Any, value: Any) -> Any:
+    def stage_remote_value(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        task_policy: TaskAccessPolicy | None = None,
+        access_config: AccessConfig | None = None,
+    ) -> Any:
         """Stage a single value, recursing into typed containers."""
+        task_policy = task_policy or TaskAccessPolicy()
+        access_config = access_config or self._get_access_config()
+
         # Explicit remote refs.
-        if isinstance(value, RemoteFileRef):
-            return file(str(self._stage_remote_ref(ref=value)))
-        if isinstance(value, RemoteFolderRef):
+        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
+            policy = resolve_access(
+                ref=value,
+                task_policy=task_policy,
+                config=access_config,
+            )
+            if policy.startswith("fuse"):
+                return encode_fuse_ref(ref=value, policy=policy)
+            if isinstance(value, RemoteFileRef):
+                return file(str(self._stage_remote_ref(ref=value)))
             return folder(str(self._stage_remote_ref(ref=value)))
 
         # Annotation-aware coercion: raw URI string → remote ref → staged path.
@@ -240,11 +294,17 @@ class RemoteStager:
                 from ginkgo.core.remote import remote_file
 
                 ref = remote_file(value)
+                policy = resolve_access(ref=ref, task_policy=task_policy, config=access_config)
+                if policy.startswith("fuse"):
+                    return encode_fuse_ref(ref=ref, policy=policy)
                 return file(str(self._stage_remote_ref(ref=ref)))
             if annotation is folder:
                 from ginkgo.core.remote import remote_folder
 
                 ref = remote_folder(value)
+                policy = resolve_access(ref=ref, task_policy=task_policy, config=access_config)
+                if policy.startswith("fuse"):
+                    return encode_fuse_ref(ref=ref, policy=policy)
                 return folder(str(self._stage_remote_ref(ref=ref)))
 
         # Recurse into typed containers.
@@ -253,11 +313,23 @@ class RemoteStager:
             inner_args = get_args(annotation)
             inner_annotation = inner_args[0] if inner_args else Any
             staged_items = [
-                self.stage_remote_value(annotation=inner_annotation, value=item) for item in value
+                self.stage_remote_value(
+                    annotation=inner_annotation,
+                    value=item,
+                    task_policy=task_policy,
+                    access_config=access_config,
+                )
+                for item in value
             ]
             return type(value)(staged_items)
 
         return value
+
+    def _get_access_config(self) -> AccessConfig:
+        """Return the cached access config, loading it on first use."""
+        if self.access_config is None:
+            self.access_config = load_access_config()
+        return self.access_config
 
     # Internal: in-flight dedup -----------------------------------------------
 
