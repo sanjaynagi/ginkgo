@@ -5,6 +5,7 @@ from ginkgo.core.flow import FlowDef, flow
 from ginkgo.core.notebook import NotebookExpr, notebook
 from ginkgo.core.script import ScriptExpr, script
 from ginkgo.core.shell import ShellExpr, shell
+from ginkgo.core.subworkflow import SubWorkflowExpr, SubWorkflowResult, subworkflow
 from ginkgo.core.task import PartialCall, TaskDef, task
 from ginkgo.core.types import file, folder, tmp_dir
 
@@ -16,6 +17,8 @@ __all__ = [
     "PartialCall",
     "ScriptExpr",
     "ShellExpr",
+    "SubWorkflowExpr",
+    "SubWorkflowResult",
     "TaskDef",
     "file",
     "flow",
@@ -23,6 +26,7 @@ __all__ = [
     "notebook",
     "script",
     "shell",
+    "subworkflow",
     "task",
     "tmp_dir",
 ]

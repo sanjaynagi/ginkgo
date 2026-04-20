@@ -94,6 +94,12 @@ def run_workflow(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
 
+    # Machine-readable marker for sub-workflow parent runs to capture the
+    # child run id without parsing Rich-formatted output.
+    if os.environ.get("GINKGO_CALLED_FROM_PARENT_RUN"):
+        sys.stdout.write(f"GINKGO_CHILD_RUN_ID={run_id}\n")
+        sys.stdout.flush()
+
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
 
     load_started = time.perf_counter()

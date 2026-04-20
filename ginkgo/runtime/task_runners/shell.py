@@ -390,6 +390,7 @@ class ShellRunner:
         node: Any,
         cmd: str,
         user_log_path: Path | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run one command while appending to provenance logs."""
         for path in (node.stdout_path, node.stderr_path, user_log_path):
@@ -404,6 +405,8 @@ class ShellRunner:
             use_shell = True
 
         subprocess_env = build_shell_subprocess_env(task_def=node.task_def)
+        if extra_env:
+            subprocess_env.update(extra_env)
 
         stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
         stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None

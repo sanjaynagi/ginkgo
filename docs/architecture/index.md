@@ -39,6 +39,10 @@ The repository currently implements:
 - Selective retry policies with exponential backoff, size- and count-based
   cache eviction, task-level scheduling priority as a strict tiebreaker, and
   end-of-run failure classification that groups diagnostics by category
+- Sub-workflow composition via `@task(kind="subworkflow")` returning a
+  `subworkflow(path, params=..., config=...)` descriptor, running the
+  child workflow as an opaque `ginkgo run` subprocess with child run-id
+  stitched into the parent manifest
 
 ## Topic Map
 

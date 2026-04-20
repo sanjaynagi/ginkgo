@@ -121,58 +121,9 @@ on top of the asset catalog.
 
 ---
 
-## Tier 3 — Composition and Remote Execution
-
-### Phase 8 — Workflow Composition
-
-**Goal:** Allow Ginkgo workflows to invoke other Ginkgo workflows as first-class
-sub-workflows, enabling reuse and composition without duplicating task logic.
-
-#### Deliverables
-
-- Add a `call_workflow` primitive that invokes a named Ginkgo workflow from
-  within a parent workflow task.
-- Support two composition modes:
-  - **Inline expansion**: the sub-workflow's DAG is expanded into the parent DAG
-    at plan time, making its tasks visible in the parent's provenance and UI.
-  - **Opaque invocation**: the sub-workflow runs as a self-contained execution
-    unit and its result is returned as an artifact to the parent.
-- Pass parameters, secrets, and resource declarations through the call boundary
-  consistently.
-- Propagate sub-workflow run ids and provenance back into the parent run
-  manifest so lineage is fully traceable.
-- Detect and reject circular workflow dependencies at plan time.
-- Extend the UI and `ginkgo inspect` to show sub-workflow boundaries and nested
-  task graphs.
-
-#### Key design points
-
-- Inline expansion is preferred for small, reusable task groups where joint
-  caching and visibility matter.
-- Opaque invocation is preferred for independently versioned or cross-team
-  workflows where internal structure should be encapsulated.
-- Sub-workflow cache semantics must be consistent with top-level workflow
-  semantics: the same inputs should hit cache regardless of call depth.
-- Recursive or indirect circular dependencies must be caught before any
-  execution begins.
-
-#### Validation
-
-- Define a parent workflow that calls a sub-workflow in inline mode and assert
-  that sub-workflow tasks appear in the parent DAG, share the same run manifest,
-  and are individually cached.
-- Define a parent workflow that calls a sub-workflow in opaque mode and assert
-  that only the sub-workflow's result artifact appears in the parent provenance,
-  not its internal tasks.
-- Assert that circular workflow references are detected at plan time with a
-  clear error message.
-- Assert that parameters and secrets passed to a sub-workflow are correctly
-  scoped and do not leak into unrelated tasks in the parent workflow.
-- Re-run the parent workflow with unchanged inputs and assert that sub-workflow
-  tasks are served from cache at the appropriate granularity for each
-  composition mode.
-
----
+<!-- Phase 8 (Workflow Composition, opaque mode) is complete. See
+     docs/architecture/execution-model.md §Sub-workflow Composition for
+     the shipped design. Inline expansion was explicitly out of scope. -->
 
 <!-- Phase 9 (Remote Input Streaming / FUSE) is complete. See
      docs/architecture/remote-input-access.md for the shipped design. -->
