@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.wrappers import WrappedResult
 
-ShellOutput: TypeAlias = (
-    str | AssetResult | list[str | AssetResult] | tuple[str | AssetResult, ...]
-)
+ShellOutputItem: TypeAlias = str | AssetResult | WrappedResult
+ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 
 @dataclass(frozen=True)

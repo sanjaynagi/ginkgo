@@ -43,11 +43,6 @@ The repository currently implements:
   `subworkflow(path, params=..., config=...)` descriptor, running the
   child workflow as an opaque `ginkgo run` subprocess with child run-id
   stitched into the parent manifest
-- Static HTML report export (`ginkgo report <run-id>`) that bundles run
-  summary, parameters, task graph, task ledger, failure diagnostics,
-  asset previews, and rendered notebooks into a self-contained document
-  with bundled fonts, progressive-enhancement islands, and optional
-  single-file mode
 
 ## Topic Map
 
@@ -69,6 +64,5 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Agent Operability](agent-operability.md) — runtime event protocol, agent-mode output, structured inspection/diagnostics, Slack notifications.
 - [Documentation Stack](documentation-stack.md) — Sphinx + MyST site under `docs/site/`.
 - [Benchmarking](benchmarking.md) — benchmark harness and input provenance.
-- [Reporting](reporting.md) — static HTML report export for completed runs.
 - [Validation Workflows](validation.md) — canonical workflow families and example corpus.
 - [Current Constraints](constraints.md) — active runtime boundaries and tradeoffs.

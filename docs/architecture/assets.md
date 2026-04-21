@@ -73,6 +73,17 @@ factory inside the task body, returns the sentinel, and the evaluator
 replaces it with a resolved `AssetRef` after registering the serialised
 payload with the artifact store.
 
+Path-backed wrappers also work as asset shorthand in declared outputs of
+`shell` / `notebook` / `script` tasks. `fig("results/fig_pca.png", name="pca")`
+and `table("data/frame.csv", name="frame")` may appear in the `outputs=`
+list alongside plain strings and `AssetResult` values; the runner validates
+that the declared path exists after execution and the registrar stores the
+bytes under the wrapper's namespace so the report and `ginkgo inspect run`
+render rich previews. In-memory payloads (e.g. `fig(matplotlib_figure)`)
+are invalid in declared outputs and raise a clear error — they remain
+valid as Python-task return values where the evaluator serialises the
+object directly.
+
 Implementation is split between:
 
 - `ginkgo/core/wrappers.py` — sentinel dataclasses and factories, with
