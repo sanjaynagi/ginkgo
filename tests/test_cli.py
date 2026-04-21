@@ -1,4 +1,4 @@
-"""Phase 6 CLI and provenance integration tests."""
+"""CLI and provenance integration tests."""
 
 from __future__ import annotations
 

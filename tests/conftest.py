@@ -24,7 +24,7 @@ def isolate_working_directory(
 ) -> None:
     """Run each test in an isolated working directory.
 
-    This keeps phase 3 cache entries scoped to a single test and avoids
+    This keeps cache entries scoped to a single test and avoids
     cross-test interference from ``.ginkgo/cache``.
     """
     monkeypatch.chdir(tmp_path)

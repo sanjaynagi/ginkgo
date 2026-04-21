@@ -1,9 +1,9 @@
 """Asset identity and task-return wrappers.
 
-Phase 7 introduces a narrow file-asset model layered over the existing
-artifact store. Tasks return an :class:`AssetResult` sentinel via
-``asset(...)`` and the evaluator replaces it with an :class:`AssetRef` once
-the file has been registered in the catalog.
+Defines a narrow file-asset model layered over the existing artifact
+store. Tasks return an :class:`AssetResult` sentinel via ``asset(...)``
+and the evaluator replaces it with an :class:`AssetRef` once the file
+has been registered in the catalog.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class AssetKey:
     Parameters
     ----------
     namespace : str
-        Asset namespace. Phase 7 uses ``"file"`` only.
+        Asset namespace. Currently only ``"file"`` is supported.
     name : str
         Human-readable logical asset name within the namespace.
     """
@@ -67,7 +67,7 @@ class AssetVersion:
     version_id : str
         Immutable version identifier.
     kind : str
-        Physical asset kind. Phase 7 supports ``"file"`` only.
+        Physical asset kind. Currently only ``"file"`` is supported.
     artifact_id : str
         Backing content-addressed artifact identifier.
     content_hash : str
@@ -136,7 +136,7 @@ class AssetResult:
         Optional logical asset name. When omitted, the evaluator uses the
         producing task function name.
     kind : str
-        Asset kind. Phase 7 supports ``"file"`` only.
+        Asset kind. Currently only ``"file"`` is supported.
     metadata : dict[str, Any]
         Optional user-defined metadata stored with the version.
     """
@@ -163,7 +163,7 @@ class AssetRef:
     version_id : str
         Immutable version identifier.
     kind : str
-        Physical asset kind. Phase 7 supports ``"file"`` only.
+        Physical asset kind. Currently only ``"file"`` is supported.
     artifact_id : str
         Backing artifact identifier.
     content_hash : str
@@ -258,8 +258,7 @@ def asset(
     name : str | None
         Optional logical asset name.
     kind : str | None
-        Optional explicit asset kind. Only ``"file"`` is supported in
-        Phase 7.
+        Optional explicit asset kind. Only ``"file"`` is supported.
     metadata : dict[str, Any] | None
         Optional version metadata to persist in the catalog.
 
@@ -270,7 +269,7 @@ def asset(
     """
     resolved_kind = "file" if kind is None else kind
     if resolved_kind != "file":
-        raise ValueError(f"asset() only supports kind='file' in Phase 7, got {resolved_kind!r}")
+        raise ValueError(f"asset() only supports kind='file', got {resolved_kind!r}")
     if not isinstance(value, (str, Path)):
         raise TypeError(f"asset() expects a path-like value, got {type(value).__name__!r}")
     return AssetResult(

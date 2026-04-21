@@ -91,8 +91,8 @@ class TaskAccessPolicy:
         ``False`` when the task declares it cannot tolerate streaming;
         blocks fuse auto-promotion and explicit fuse selection.
     fuse_prefetch : dict[str, str]
-        ``glob → strategy`` map for predictive prefetch (Phase 9
-        follow-up; currently plumbed through events only).
+        ``glob → strategy`` map for predictive prefetch. Plumbed
+        through events only; no driver currently consumes them.
     """
 
     remote_input_access: str | None = None

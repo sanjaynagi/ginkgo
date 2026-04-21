@@ -1,7 +1,7 @@
 [workspace]
 name = "test_env"
 version = "0.1.0"
-description = "Minimal ginkgo test environment for Phase 5 Pixi integration tests"
+description = "Minimal ginkgo test environment for Pixi integration tests"
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 

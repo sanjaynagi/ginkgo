@@ -1,8 +1,8 @@
 """Ginkgo type markers for task argument and return type annotations.
 
 These are marker classes used as type annotations on task parameters and return
-values. They drive validation (Phase 2) and caching (Phase 3). In Phase 1 they
-carry no runtime behaviour.
+values. They drive argument validation and cache-key contribution; see each
+class for details.
 """
 
 from __future__ import annotations

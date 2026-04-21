@@ -315,9 +315,9 @@ def make_exploding_table_task() -> object:
 
 @task()
 def consumer_task(upstream: object) -> int:
-    # Phase 4.5: wrapped ``AssetRef`` inputs are rehydrated to the live
-    # payload at arg-binding time, so downstream tasks observe the
-    # canonical deserialised object rather than the reference.
+    # Wrapped ``AssetRef`` inputs are rehydrated to the live payload at
+    # arg-binding time, so downstream tasks observe the canonical
+    # deserialised object rather than the reference.
     assert isinstance(upstream, pd.DataFrame)
     assert list(upstream.columns) == ["a", "b"]
     return 1
@@ -543,7 +543,7 @@ def _run_with_provenance(tmp_path: Path, expr: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4.5 — rehydration-on-receive
+# Rehydration-on-receive
 # ---------------------------------------------------------------------------
 
 
