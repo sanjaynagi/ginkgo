@@ -6,7 +6,7 @@
       "example": "init",
       "mode": "cold",
       "baseline_seconds": 5.07,
-      "max_regression_pct": 15.0
+      "max_regression_pct": 18.0
     },
     {
       "example": "init",

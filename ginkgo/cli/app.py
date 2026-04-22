@@ -17,6 +17,7 @@ from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
 from ginkgo.cli.commands.models import command_models
 from ginkgo.cli.commands.notebooks import command_notebooks
+from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
@@ -56,6 +57,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_secrets(args)
         if args.command == "ui":
             return command_ui(args)
+        if args.command == "report":
+            return command_report(args)
     except BaseException as exc:
         rich_console = console(sys.stderr)
         rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
@@ -172,6 +175,32 @@ def _build_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument("--port", type=int, default=7777)
     ui_parser.add_argument("--open", dest="open", action="store_true", default=True)
     ui_parser.add_argument("--no-open", dest="open", action="store_false")
+
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("run_id", nargs="?")
+    report_parser.add_argument(
+        "--out",
+        default=None,
+        help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
+    )
+    report_parser.add_argument(
+        "--single-file",
+        action="store_true",
+        help="Emit one HTML file with CSS, fonts, and figures inlined as data URIs.",
+    )
+    report_parser.add_argument(
+        "--embed-full-assets",
+        action="store_true",
+        help="Copy full artifact bytes into the bundle alongside the rendered previews.",
+    )
+    report_parser.add_argument(
+        "--max-log-lines",
+        type=int,
+        default=80,
+        help="Trailing log lines to retain for failed tasks (default: 80).",
+    )
+    report_parser.add_argument("--open", dest="open", action="store_true", default=False)
+    report_parser.add_argument("--no-open", dest="open", action="store_false")
 
     secrets_parser = subparsers.add_parser("secrets")
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)

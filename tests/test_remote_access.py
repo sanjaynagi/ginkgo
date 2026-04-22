@@ -1,4 +1,4 @@
-"""Unit tests for the Phase 9 remote-input-access layer."""
+"""Unit tests for the remote-input-access layer."""
 
 from __future__ import annotations
 

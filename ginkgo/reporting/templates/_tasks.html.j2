@@ -1,0 +1,29 @@
+<h2 id="tasks"><span class="num">04</span>Tasks</h2>
+{% if report.tasks %}
+<table class="tbl sortable">
+  <thead>
+    <tr>
+      <th data-sort="string">Task</th>
+      <th data-sort="string">Kind</th>
+      <th data-sort="string">Status</th>
+      <th data-sort="string">Duration</th>
+      <th data-sort="string">Cache</th>
+      <th data-sort="string">Attempts</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in report.tasks %}
+    <tr{% if task.failed %} class="failed"{% endif %}>
+      <td class="name">{{ task.base_name }}</td>
+      <td><span class="tag">{{ task.kind_label }}</span></td>
+      <td><span class="pill {{ task.status_tone }}"><span class="dot"></span>{{ task.status_label }}</span></td>
+      <td class="mono">{{ task.duration_label }}</td>
+      <td class="mono">{{ task.cache_label }}</td>
+      <td class="mono">{{ task.attempts_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No tasks in this run.</p>
+{% endif %}

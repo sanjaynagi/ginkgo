@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.wrappers import WrappedResult
+
+_ScriptOutputItem = str | AssetResult | WrappedResult
+_ScriptOutputs = _ScriptOutputItem | list[_ScriptOutputItem] | None
 
 # Maps file extension (lower-case) to interpreter command.
 _EXTENSION_TO_INTERPRETER: dict[str, str] = {
@@ -28,7 +32,7 @@ class ScriptExpr:
     ----------
     path : Path
         Resolved source script path.
-    outputs : list[str | AssetResult] | str | AssetResult | None
+    outputs : str | AssetResult | WrappedResult | list[those] | None
         Declared output paths. When provided, all paths are validated for
         existence after execution.
     log : str | None
@@ -40,7 +44,7 @@ class ScriptExpr:
     """
 
     path: Path
-    outputs: list[str | AssetResult] | str | AssetResult | None
+    outputs: _ScriptOutputs
     log: str | None
     interpreter: str
     source_hash: str
@@ -49,7 +53,7 @@ class ScriptExpr:
 def script(
     path: str | Path,
     *,
-    outputs: list[str | AssetResult] | str | AssetResult | None = None,
+    outputs: _ScriptOutputs = None,
     log: str | None = None,
     interpreter: str | None = None,
 ) -> ScriptExpr:
@@ -64,7 +68,7 @@ def script(
     path : str | Path
         Source script file. Relative paths resolve from the current working
         directory at the time of the call.
-    outputs : list[str | AssetResult] | str | AssetResult | None
+    outputs : str | AssetResult | WrappedResult | list[those] | None
         Declared output paths validated for existence after execution.
     log : str | None
         Optional path to capture stdout/stderr during execution.

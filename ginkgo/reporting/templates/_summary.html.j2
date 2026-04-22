@@ -1,0 +1,10 @@
+<h2 id="summary"><span class="num">01</span>Summary</h2>
+<div class="stats">
+  {% for card in report.summary_cards %}
+  <div class="stat {{ card.tone }}">
+    <div class="stat-label">{{ card.label }}</div>
+    <div class="stat-value">{{ card.value }}</div>
+    <div class="stat-sub">{{ card.sub }}</div>
+  </div>
+  {% endfor %}
+</div>

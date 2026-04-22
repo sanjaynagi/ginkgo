@@ -315,9 +315,9 @@ def make_exploding_table_task() -> object:
 
 @task()
 def consumer_task(upstream: object) -> int:
-    # Phase 4.5: wrapped ``AssetRef`` inputs are rehydrated to the live
-    # payload at arg-binding time, so downstream tasks observe the
-    # canonical deserialised object rather than the reference.
+    # Wrapped ``AssetRef`` inputs are rehydrated to the live payload at
+    # arg-binding time, so downstream tasks observe the canonical
+    # deserialised object rather than the reference.
     assert isinstance(upstream, pd.DataFrame)
     assert list(upstream.columns) == ["a", "b"]
     return 1
@@ -543,7 +543,7 @@ def _run_with_provenance(tmp_path: Path, expr: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4.5 — rehydration-on-receive
+# Rehydration-on-receive
 # ---------------------------------------------------------------------------
 
 
@@ -714,3 +714,94 @@ class TestRehydration:
         assert registry.get(artifact_id="a") is None
         assert registry.get(artifact_id="b") == "second"
         assert registry.get(artifact_id="d") == "fourth"
+
+
+# ---------------------------------------------------------------------------
+# Path-based wrapper outputs (shell / notebook / script)
+# ---------------------------------------------------------------------------
+
+
+@task(kind="shell")
+def shell_write_fig_task(*, output_path: str) -> object:
+    from ginkgo import shell
+
+    cmd = (
+        f'python -c "import struct, zlib; open({output_path!r}, \\"wb\\").write('
+        'b\\"\\\\x89PNG\\\\r\\\\n\\\\x1a\\\\n\\")"'
+    )
+    return shell(cmd=cmd, output=fig(output_path, name="plot"))
+
+
+@task(kind="shell")
+def shell_write_table_task(*, output_path: str) -> object:
+    from ginkgo import shell
+
+    return shell(
+        cmd=f'python -c "open({output_path!r}, \\"w\\").write(\\"a,b\\\\n1,2\\\\n\\")"',
+        output=table(output_path, name="data"),
+    )
+
+
+@task(kind="shell")
+def shell_wrapper_bad_payload_task(*, output_path: str) -> object:
+    from ginkgo import shell
+
+    # Construct a FigureResult with an in-memory payload, bypassing the
+    # factory's sub-kind detection. Simulates a workflow author mistakenly
+    # putting a non-path wrapper into shell/notebook outputs.
+    bad_wrapper = FigureResult(payload=object(), name=None, sub_kind="matplotlib")
+    return shell(
+        cmd=f"touch {output_path}",
+        output=bad_wrapper,
+    )
+
+
+class TestPathWrappedOutputs:
+    """Shell / notebook / script tasks can declare outputs via ``fig(path)`` etc."""
+
+    def test_shell_fig_path_produces_fig_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        output = tmp_path / "plot.png"
+
+        result = ginkgo.evaluate(shell_write_fig_task(output_path=str(output)))
+
+        assert isinstance(result, AssetRef)
+        assert result.key.namespace == "fig"
+        assert result.key.name == "shell_write_fig_task.plot"
+        assert output.is_file()
+
+    def test_shell_table_path_produces_table_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        output = tmp_path / "data.csv"
+
+        result = ginkgo.evaluate(shell_write_table_task(output_path=str(output)))
+
+        assert isinstance(result, AssetRef)
+        assert result.key.namespace == "table"
+        assert result.key.name == "shell_write_table_task.data"
+
+    def test_wrapper_with_in_memory_payload_in_outputs_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``fig(dataframe)`` declared in outputs must raise a clear error."""
+        monkeypatch.chdir(tmp_path)
+        output = tmp_path / "irrelevant.png"
+
+        with pytest.raises(TypeError, match="wrap a declared file path"):
+            ginkgo.evaluate(shell_wrapper_bad_payload_task(output_path=str(output)))
+
+    def test_iter_output_values_handles_wrappers(self, tmp_path: Path) -> None:
+        """Unit check: iter_output_values extracts paths from path-wrapped results."""
+        from ginkgo.runtime.task_runners.shell import iter_output_values
+
+        png = tmp_path / "figure.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        csv = tmp_path / "frame.csv"
+        csv.write_text("a\n1\n", encoding="utf-8")
+
+        paths = iter_output_values([fig(png), table(csv, name="raw")])
+        assert paths == [png, csv]

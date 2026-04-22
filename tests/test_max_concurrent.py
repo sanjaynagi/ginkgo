@@ -1,4 +1,4 @@
-"""Phase 20 — ``.map(max_concurrent=N)`` scheduler tests."""
+"""``.map(max_concurrent=N)`` scheduler tests."""
 
 from __future__ import annotations
 

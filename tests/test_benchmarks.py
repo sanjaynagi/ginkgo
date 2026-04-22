@@ -1,4 +1,4 @@
-"""Tests for the Phase 16 benchmark harness."""
+"""Tests for the benchmark harness."""
 
 from __future__ import annotations
 

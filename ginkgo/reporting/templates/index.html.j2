@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>run · {{ report.run_id }} · {{ report.workflow_label }}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+{% if inline_css %}
+<style>{{ inline_css|safe }}</style>
+{% else %}
+<link rel="stylesheet" href="{{ css_href }}">
+{% endif %}
+</head>
+<body>
+<div class="layout">
+
+  {% include "_sidebar.html.j2" %}
+
+  <main>
+    {% include "_masthead.html.j2" %}
+
+    {% include "_summary.html.j2" %}
+
+    {% include "_parameters.html.j2" %}
+
+    {% include "_graph.html.j2" %}
+
+    {% include "_tasks.html.j2" %}
+
+    {% if report.has_failures %}
+      {% include "_failure.html.j2" %}
+    {% endif %}
+
+    {% include "_assets.html.j2" %}
+
+    {% include "_notebooks.html.j2" %}
+
+    {% include "_environment.html.j2" %}
+
+    {% include "_footer.html.j2" %}
+  </main>
+
+</div>
+{% if inline_islands %}
+<script type="module">{{ inline_islands|safe }}</script>
+{% else %}
+<script type="module" src="{{ islands_src }}"></script>
+{% endif %}
+</body>
+</html>

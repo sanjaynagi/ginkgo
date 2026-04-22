@@ -13,6 +13,12 @@ Python tasks always execute in the scheduler's own Python environment. If a
 task needs a different Pixi or container environment, it must be declared with
 `kind="shell"` and invoke the desired script or command explicitly.
 
+Task parameters use regular positional-or-keyword signatures — do not add a
+`*,` separator to force keyword-only. The runtime always binds task arguments
+by name (`fn(**resolved_args)`) at dispatch, and `.map()` / `.product_map()`
+accept keyword axes, so the `*,` form adds friction without changing
+behaviour.
+
 Python task bodies must be top-level importable functions for worker execution. Supported task inputs and outputs include:
 
 - scalars and nested containers
@@ -51,7 +57,7 @@ Task body pattern:
 
 ```python
 @task("notebook")
-def analyze_data(*, input_file: file) -> file:
+def analyze_data(input_file: file) -> file:
     return notebook(
         path="notebooks/analysis.ipynb",
         outputs="output.html"
@@ -89,7 +95,7 @@ Task body pattern:
 
 ```python
 @task("script")
-def process_data(*, input_file: file, threshold: float) -> file:
+def process_data(input_file: file, threshold: float) -> file:
     return script(
         path="scripts/analyze.py",
         outputs="results.csv"

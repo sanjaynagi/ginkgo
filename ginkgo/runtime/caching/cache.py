@@ -44,7 +44,8 @@ class CacheStore:
     backend : TaskBackend | None
         Execution backend used to resolve per-environment identity hashes.
         When ``None``, falls back to looking for a single ``pixi.lock`` in the
-        current working directory (pre-Phase-5 behaviour).
+        current working directory (legacy fallback used when no backend is
+        supplied, e.g. in tests).
     artifact_store : LocalArtifactStore | None
         Shared artifact store for content-addressed binary and file/folder
         artifacts.  Created automatically when ``None``.
@@ -469,7 +470,7 @@ class CacheStore:
         if self.backend is not None:
             lock_digest = self.backend.env_identity(env=task_def.env)
         else:
-            # Pre-Phase-5 fallback: single pixi.lock in cwd.
+            # Fallback: single pixi.lock in cwd (no backend supplied).
             pixi_lock = Path.cwd() / "pixi.lock"
             lock_digest = self._hash_file_contents(pixi_lock) if pixi_lock.is_file() else None
 

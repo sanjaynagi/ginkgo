@@ -32,7 +32,7 @@ class MountSpec:
     cache_max_bytes : int | None
         Upper bound on the read-through cache size.
     read_only : bool
-        Whether the mount should be read-only. Always ``True`` in Phase 9.
+        Whether the mount should be read-only.
     extra_args : tuple[str, ...]
         Additional driver-specific command-line arguments.
     """

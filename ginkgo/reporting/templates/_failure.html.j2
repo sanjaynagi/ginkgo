@@ -1,0 +1,30 @@
+<h2 id="failure"><span class="num">05</span>Failure</h2>
+{% for card in report.failures %}
+<div class="failure-card">
+  <div class="failure-head">
+    <div>
+      <h4>{{ card.base_name }}</h4>
+      <div class="meta">
+        {{ card.task_name }}
+        {% if card.exit_code is not none %} · exit {{ card.exit_code }}{% endif %}
+        {% if card.attempts_label %} · attempt {{ card.attempts_label }}{% endif %}
+      </div>
+    </div>
+    {% if card.category %}
+    <span class="pill fail"><span class="dot"></span>{{ card.category }}</span>
+    {% endif %}
+  </div>
+  {% if card.message %}
+  <p class="failure-message">{{ card.message }}</p>
+  {% endif %}
+  {% if card.log_tail %}
+  <pre class="log">{% for line in card.log_tail.lines %}{{ line }}
+{% endfor %}</pre>
+  <div class="trunc-note">
+    <strong>{% if card.log_tail.truncated %}truncated{% else %}full log{% endif %}:</strong>
+    last {{ card.log_tail.shown_lines }} of {{ card.log_tail.total_lines }} line{{ "" if card.log_tail.total_lines == 1 else "s" }}
+    {% if card.log_relpath %} · <code>{{ card.log_relpath }}</code>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endfor %}

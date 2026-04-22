@@ -1,4 +1,4 @@
-"""Phase 5 — Pixi environment backend tests.
+"""Pixi environment backend tests.
 
 These tests cover:
 - PixiRegistry resolution, lock hash, and argv helpers (unit).

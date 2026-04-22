@@ -1,4 +1,4 @@
-"""Phase 20 — explicit per-task thread declaration tests."""
+"""Explicit per-task thread declaration tests."""
 
 from __future__ import annotations
 

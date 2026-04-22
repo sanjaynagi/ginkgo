@@ -1,7 +1,7 @@
 """Core expression tree nodes for lazy workflow evaluation.
 
 Every ``@task``-decorated function, when called, returns an ``Expr[T]`` rather
-than executing.  The evaluator (Phase 2) recursively resolves these nodes.
+than executing. The evaluator recursively resolves these nodes.
 """
 
 from __future__ import annotations

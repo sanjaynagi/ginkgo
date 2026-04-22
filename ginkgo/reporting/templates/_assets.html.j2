@@ -1,0 +1,72 @@
+<h2 id="assets"><span class="num">06</span>Assets</h2>
+{% if report.assets %}
+  {% for card in report.assets %}
+<div class="asset">
+  <div class="asset-head">
+    <div>
+      <span class="kind-badge kind-{{ card.kind_tone }}">{{ card.kind_label }}</span>
+      <span class="name">{{ card.name }}</span>
+    </div>
+    <div class="meta">{{ card.meta_line }}</div>
+  </div>
+  <div class="asset-body">
+    {% set preview = card.preview %}
+    {% if preview.kind == "table" and preview.table %}
+      {% set tbl = preview.table %}
+    <div class="table-scroll">
+      <table class="data">
+        <thead>
+          <tr>
+            {% for column in tbl.columns %}<th>{{ column }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in tbl.rows %}
+          <tr>
+            {% for column in tbl.columns %}<td>{{ row[column] if row[column] is not none else "" }}</td>{% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+      {% if tbl.truncated %}
+    <div class="trunc-note"><strong>showing {{ tbl.shown_rows }} of {% if tbl.total_rows is not none %}{{ "{:,}".format(tbl.total_rows) }}{% else %}?{% endif %} rows</strong> · pass <code>--embed-full-assets</code> to include the full artifact</div>
+      {% else %}
+    <div class="trunc-note">showing all {{ tbl.shown_rows }} row{{ "" if tbl.shown_rows == 1 else "s" }}</div>
+      {% endif %}
+    {% elif preview.kind == "image" and preview.image_relpath %}
+    <div class="figure-wrap">
+      <img src="{{ image_inliner(preview.image_relpath) if image_inliner else preview.image_relpath }}" alt="{{ preview.image_alt or '' }}">
+    </div>
+    {% elif preview.kind == "iframe" and preview.iframe_relpath %}
+    <div class="figure-wrap">
+      <iframe src="{{ preview.iframe_relpath }}" loading="lazy" referrerpolicy="no-referrer"></iframe>
+    </div>
+    {% elif preview.kind == "text" and preview.text %}
+    <pre class="text-preview">{{ preview.text.text }}</pre>
+      {% if preview.text.truncated %}
+    <div class="trunc-note"><strong>{{ preview.text.shown_bytes }} of {{ preview.text.total_bytes }} bytes shown</strong> · {{ preview.text.total_bytes - preview.text.shown_bytes }} bytes truncated</div>
+      {% endif %}
+    {% elif preview.kind == "stats" and preview.stats %}
+    <table class="data">
+      <thead><tr><th>statistic</th><th>value</th></tr></thead>
+      <tbody>
+        {% for stat in preview.stats %}
+        <tr><td>{{ stat.key }}</td><td>{{ stat.value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+      {% if preview.message %}
+    <div class="trunc-note">{{ preview.message }}</div>
+      {% endif %}
+    {% elif preview.kind == "missing" %}
+    <div class="trunc-note"><strong>artifact missing</strong> · {{ preview.message or "content unavailable" }}</div>
+    {% else %}
+    <div class="trunc-note">{{ preview.message or "Preview unavailable for this asset kind." }}</div>
+    {% endif %}
+  </div>
+</div>
+  {% endfor %}
+{% else %}
+<p class="empty">No assets produced by this run.</p>
+{% endif %}
