@@ -140,15 +140,6 @@ on top of the asset catalog.
 
 ## Tier 3 — Housekeeping
 
-### Keyword-only `*` in skills init template
-
-**Goal:** Clarify or remove the bare `*` separator in function signatures in the
-skills init template.
-
-Many functions in the skills init template use `*` as a parameter. This forces
-all following parameters to be keyword-only. Review whether this is intentional
-and justified, and document the rationale or remove it where it adds no value.
-
 ### Strip phase-numbered references from the codebase
 
 **Goal:** Remove references to internal phase numbers (e.g. "Phase 7",

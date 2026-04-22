@@ -232,7 +232,7 @@ from ginkgo import remote_file, task
 from ginkgo.core.types import file
 
 @task(remote=True, remote_input_access="fuse", streaming_compatible=True)
-def count_reads(*, bam: file) -> int:
+def count_reads(bam: file) -> int:
     import pysam
     with pysam.AlignmentFile(str(bam), "rb") as f:
         return sum(1 for _ in f.fetch("chr1", 1_000_000, 1_001_000))

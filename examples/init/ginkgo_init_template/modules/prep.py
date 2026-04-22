@@ -9,7 +9,7 @@ from ginkgo import AssetRef, asset, file, shell, task
 
 
 @task()
-def write_seed_card(*, item: str, output_path: str) -> file:
+def write_seed_card(item: str, output_path: str) -> file:
     """Write a tiny text artifact for one item.
 
     Parameters
@@ -39,7 +39,7 @@ def write_seed_card(*, item: str, output_path: str) -> file:
 
 @task(kind="shell")
 def normalize_seed_card(
-    *, seed_card: file | AssetRef, output_path: str, check_path: str
+    seed_card: file | AssetRef, output_path: str, check_path: str
 ) -> list[file]:
     """Normalize one seed artifact and produce a validation checksum.
 

@@ -49,7 +49,6 @@ def write_channel_metrics(enriched_orders: pd.DataFrame) -> file:
 
 @task("notebook")
 def render_channel_performance_notebook(
-    *,
     channel_metrics: file,
     report_title: str,
 ) -> file:

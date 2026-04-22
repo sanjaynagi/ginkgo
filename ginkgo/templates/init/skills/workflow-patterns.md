@@ -1,4 +1,4 @@
-# Workflow patterns
+W# Workflow patterns
 
 Use normal Python tasks for orchestration and Python logic:
 
@@ -6,7 +6,7 @@ Use normal Python tasks for orchestration and Python logic:
 from ginkgo import file, task
 
 @task()
-def summarize(*, input_path: file, output_path: str) -> file:
+def summarize(input_path: file, output_path: str) -> file:
     ...
 ```
 
@@ -16,7 +16,7 @@ Use shell tasks when the real unit of work is a command with declared outputs:
 from ginkgo import shell, task
 
 @task(kind="shell")
-def normalize(*, input_path: str, output_path: str):
+def normalize(input_path: str, output_path: str):
     return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}", output=output_path)
 ```
 
@@ -27,7 +27,7 @@ from pathlib import Path
 from ginkgo import script, task
 
 @task("script", env="analysis_tools")
-def build_report(*, output_path: str):
+def build_report(output_path: str):
     return script(path="scripts/build_report.py", outputs=output_path)
 ```
 
@@ -57,12 +57,12 @@ from ginkgo import file, folder, task
 
 # CORRECT — cache invalidates when file content changes
 @task()
-def analyse(*, manifest: file, output_dir: folder) -> file:
+def analyse(manifest: file, output_dir: folder) -> file:
     ...
 
 # WRONG — cache key depends only on the path string, not the file contents
 @task()
-def analyse(*, manifest: str, output_dir: str) -> str:
+def analyse(manifest: str, output_dir: str) -> str:
     ...
 ```
 

@@ -12,7 +12,7 @@ _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 
 
 @task("notebook")
-def render_overview_notebook(*, summary_path: file, run_label: str) -> file:
+def render_overview_notebook(summary_path: file, run_label: str) -> file:
     """Render an HTML overview notebook for the starter run.
 
     Parameters
@@ -32,7 +32,6 @@ def render_overview_notebook(*, summary_path: file, run_label: str) -> file:
 
 @task()
 def write_delivery_manifest(
-    *,
     summary_path: file,
     notebook_html: file,
     package_reports: list[file],

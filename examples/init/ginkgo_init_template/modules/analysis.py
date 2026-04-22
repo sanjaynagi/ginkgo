@@ -14,7 +14,6 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 @task("script", env="analysis_tools")
 def build_brief(
-    *,
     item: str,
     normalized_card: file,
     output_path: str,
@@ -39,7 +38,7 @@ def build_brief(
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def package_brief(*, brief: file | AssetRef, output_path: str) -> file:
+def package_brief(brief: file | AssetRef, output_path: str) -> file:
     """Package one Markdown brief in a Docker-backed shell task.
 
     Parameters
@@ -69,7 +68,6 @@ def package_brief(*, brief: file | AssetRef, output_path: str) -> file:
 
 @task()
 def write_summary(
-    *,
     items: list[str],
     seed_paths: list[str],
     normalized_cards: list[file],

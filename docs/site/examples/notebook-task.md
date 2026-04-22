@@ -13,7 +13,6 @@ Relevant sources:
 ```python
 @notebook(path="../notebooks/channel_performance.ipynb")
 def render_channel_performance_notebook(
-    *,
     channel_metrics: file,
     report_title: str,
 ) -> file:
