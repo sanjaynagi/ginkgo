@@ -13,14 +13,6 @@ Each phase is independently testable and follows the same structure:
 
 ---
 
-
-
-
-ASSET KIND PARAMETER
-
-
-
-
 ## Tier 1 — Runtime Maturity
 
 These phases polish and extend existing subsystems without introducing new
@@ -126,27 +118,3 @@ on top of the asset catalog.
   artifacts intact.
 - The UI renders staleness and lifecycle state backed by the same catalog data
   as the CLI and programmatic API.
-
----
-
-<!-- Phase 8 (Workflow Composition, opaque mode) is complete. See
-     docs/architecture/execution-model.md §Sub-workflow Composition for
-     the shipped design. Inline expansion was explicitly out of scope. -->
-
-<!-- Phase 9 (Remote Input Streaming / FUSE) is complete. See
-     docs/architecture/remote-input-access.md for the shipped design. -->
-
----
-
-## Tier 3 — Housekeeping
-
-### Strip phase-numbered references from the codebase
-
-**Goal:** Remove references to internal phase numbers (e.g. "Phase 7",
-"Phase 9") from code, comments, and docs that ship with the project.
-
-Phase numbers track development order and are not meaningful to external
-readers. Replace such references with descriptive names for the feature or
-subsystem (e.g. "sub-workflow composition", "remote input streaming"), or
-delete them where they add no value. Audit `ginkgo/`, `docs/architecture/`, and
-inline comments.

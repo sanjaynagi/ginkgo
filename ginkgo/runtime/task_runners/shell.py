@@ -20,7 +20,6 @@ from types import FrameType
 from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
-from ginkgo.core.wrappers import WrappedResult
 from ginkgo.runtime.backend import TaskBackend
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
@@ -90,40 +89,45 @@ def remove_declared_output(path: Path) -> None:
         shutil.rmtree(path)
 
 
-# Sub-kind values that identify a path-backed wrapper (payload is a path,
-# not an in-memory object). Factory functions in ``ginkgo.core.wrappers``
-# set these values based on the declared file extension.
+# Sub-kind values that identify a path-backed non-file asset (payload is
+# a path, not an in-memory object). The kind's ``detect`` sets these
+# sub-kinds based on the declared file extension.
 _PATH_SUB_KINDS: dict[str, frozenset[str]] = {
+    "file": frozenset(),  # file always has a path payload; handled below.
     "table": frozenset({"csv", "tsv"}),
     "fig": frozenset({"png", "svg", "html"}),
 }
 
 
-def _wrapped_result_path(wrapper: WrappedResult) -> Path:
-    """Return the declared output path from a path-backed wrapped result.
+def _asset_result_path(result: AssetResult) -> Path:
+    """Return the declared output path from an :class:`AssetResult`.
 
-    Wrapped results produced by ``fig("p.png")`` / ``table("d.csv")`` /
-    ``text(Path("doc.md"))`` carry the declared path directly in their
-    ``payload`` field. In-memory payloads (matplotlib figures, pandas
-    DataFrames, etc.) are not valid declared task outputs and raise a
-    clear error here rather than at a downstream serialisation boundary.
+    File assets carry their path directly. Non-file kinds only qualify
+    as declared outputs when they wrap a path: ``fig("p.png")``,
+    ``table("d.csv")``, ``text(Path("doc.md"))``. In-memory payloads
+    (matplotlib figures, pandas DataFrames, etc.) are not valid declared
+    task outputs and raise a clear error here rather than at a
+    downstream serialisation boundary.
     """
-    path_sub_kinds = _PATH_SUB_KINDS.get(wrapper.kind)
-    payload = wrapper.payload
+    payload = result.payload
 
-    if path_sub_kinds is not None and wrapper.sub_kind in path_sub_kinds:
+    if result.kind == "file":
+        return Path(str(payload))
+
+    path_sub_kinds = _PATH_SUB_KINDS.get(result.kind)
+    if path_sub_kinds is not None and result.sub_kind in path_sub_kinds:
         return Path(str(payload))
 
     # ``text(Path("doc.md"))`` stores a Path payload directly.
-    if wrapper.kind == "text" and isinstance(payload, Path):
+    if result.kind == "text" and isinstance(payload, Path):
         return payload
 
     raise TypeError(
-        f"{wrapper.kind}(...) output must wrap a declared file path; got "
+        f"{result.kind}(...) output must wrap a declared file path; got "
         f"in-memory payload of type "
         f"{type(payload).__module__}.{type(payload).__name__}. "
         "Path-based wrappers accept a str or Path argument (e.g. "
-        f'{wrapper.kind}("results/foo.png")).'
+        f'{result.kind}("results/foo.png")).'
     )
 
 
@@ -132,17 +136,13 @@ def iter_output_values(
 ) -> list[Path]:
     """Return concrete filesystem paths from declared output values."""
     if isinstance(output, AssetResult):
-        return [output.path]
-    if isinstance(output, WrappedResult):
-        return [_wrapped_result_path(output)]
+        return [_asset_result_path(output)]
     if isinstance(output, str):
         return [Path(output)]
     paths: list[Path] = []
     for item in output:
         if isinstance(item, AssetResult):
-            paths.append(item.path)
-        elif isinstance(item, WrappedResult):
-            paths.append(_wrapped_result_path(item))
+            paths.append(_asset_result_path(item))
         else:
             paths.append(Path(item))
     return paths

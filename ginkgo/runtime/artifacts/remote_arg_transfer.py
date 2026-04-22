@@ -348,7 +348,7 @@ def _stage_encoded_value(*, value: Any, remote_store: RemoteArtifactStore) -> An
     if kind == "asset_result":
         return {
             **value,
-            "value": _stage_encoded_value(value=value["value"], remote_store=remote_store),
+            "payload": _stage_encoded_value(value=value["payload"], remote_store=remote_store),
         }
     return value
 
@@ -442,8 +442,8 @@ def _hydrate_encoded_value(
     if kind == "asset_result":
         return {
             **value,
-            "value": _hydrate_encoded_value(
-                value=value["value"], remote_store=remote_store, scratch_dir=scratch_dir
+            "payload": _hydrate_encoded_value(
+                value=value["payload"], remote_store=remote_store, scratch_dir=scratch_dir
             ),
         }
     return value

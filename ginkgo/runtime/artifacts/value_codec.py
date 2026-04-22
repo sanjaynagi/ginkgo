@@ -13,7 +13,6 @@ import pandas as pd
 
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.core.wrappers import WrappedResult
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -65,17 +64,34 @@ def encode_value(
         return {"__ginkgo_type__": "asset_ref", "value": value.to_dict()}
 
     if isinstance(value, AssetResult):
+        if value.kind == "file":
+            payload_encoded: Any = encode_value(
+                value.payload,
+                base_dir=base_dir,
+                artifact_store=artifact_store,
+                inline_limit=inline_limit,
+            )
+        else:
+            # Non-file asset payloads (DataFrames, arrays, figures, text
+            # bodies, trained models) need byte-exact round-trip so the
+            # driver-side registrar sees the producer's original Python
+            # object. The generic parquet encoder in ``_encode_bytes``
+            # silently turns a ``RangeIndex`` into a plain ``Index``,
+            # which would perturb downstream cache-key hashing and break
+            # cache reuse. Pickling the payload wholesale keeps type and
+            # metadata identity intact.
+            payload_encoded = {
+                "__ginkgo_type__": "pickled_payload",
+                "data": base64.b64encode(pickle.dumps(value.payload, protocol=5)).decode("ascii"),
+            }
         return {
             "__ginkgo_type__": "asset_result",
             "name": value.name,
             "kind": value.kind,
+            "sub_kind": value.sub_kind,
             "metadata": dict(value.metadata),
-            "value": encode_value(
-                value.value,
-                base_dir=base_dir,
-                artifact_store=artifact_store,
-                inline_limit=inline_limit,
-            ),
+            "kind_fields": dict(value.kind_fields),
+            "payload": payload_encoded,
         }
 
     if isinstance(value, list):
@@ -175,15 +191,25 @@ def decode_value(
     if kind == "asset_ref":
         return AssetRef.from_dict(payload["value"])
     if kind == "asset_result":
-        return AssetResult(
-            value=decode_value(
-                payload["value"],
+        raw_payload = payload["payload"]
+        if (
+            isinstance(raw_payload, dict)
+            and raw_payload.get("__ginkgo_type__") == "pickled_payload"
+        ):
+            decoded_payload = pickle.loads(base64.b64decode(raw_payload["data"]))
+        else:
+            decoded_payload = decode_value(
+                raw_payload,
                 base_dir=base_dir,
                 artifact_store=artifact_store,
-            ),
+            )
+        return AssetResult(
+            payload=decoded_payload,
             name=payload.get("name"),
             kind=str(payload.get("kind", "file")),
+            sub_kind=payload.get("sub_kind"),
             metadata=dict(payload.get("metadata", {})),
+            kind_fields=dict(payload.get("kind_fields", {})),
         )
     if kind == "tmp_dir":
         return tmp_dir(payload["value"])
@@ -309,7 +335,7 @@ def ensure_serializable(value: Any, *, label: str) -> None:
     """Validate that a value can be encoded by the Ginkgo codec registry."""
     if value is None or isinstance(
         value,
-        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult, WrappedResult),
+        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult),
     ):
         return
 

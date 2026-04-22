@@ -1,4 +1,4 @@
-"""Unit and integration tests for the special asset wrappers."""
+"""Unit and integration tests for the semantic asset kinds."""
 
 from __future__ import annotations
 
@@ -12,19 +12,12 @@ import pytest
 
 import ginkgo
 from ginkgo import array, fig, model, table, task, text
-from ginkgo.core.asset import AssetRef
-from ginkgo.core.wrappers import (
-    ArrayResult,
-    FigureResult,
-    ModelResult,
-    TableResult,
-    TextResult,
+from ginkgo.core.asset import AssetRef, AssetResult
+from ginkgo.runtime.artifacts.asset_serialization import (
+    AssetSerializationError,
+    serialize_asset,
 )
 from ginkgo.runtime.artifacts.asset_store import AssetStore
-from ginkgo.runtime.artifacts.wrapper_serialization import (
-    WrapperSerializationError,
-    serialize_wrapper,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -43,9 +36,18 @@ class TestFactories:
 
     def test_table_pandas_detection(self) -> None:
         wrapper = table(pd.DataFrame({"a": [1, 2]}))
-        assert isinstance(wrapper, TableResult)
+        assert isinstance(wrapper, AssetResult)
+        assert wrapper.kind == "table"
         assert wrapper.sub_kind == "pandas"
         assert wrapper.name is None
+
+    def test_asset_table_equivalent_to_table_factory(self) -> None:
+        frame = pd.DataFrame({"a": [1, 2]})
+        via_asset = ginkgo.asset(frame, kind="table", name="features")
+        via_shorthand = table(frame, name="features")
+        assert via_asset.kind == via_shorthand.kind == "table"
+        assert via_asset.sub_kind == via_shorthand.sub_kind == "pandas"
+        assert via_asset.name == via_shorthand.name == "features"
 
     def test_table_csv_path_detection(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "data.csv"
@@ -60,41 +62,44 @@ class TestFactories:
 
     def test_array_numpy_detection(self) -> None:
         wrapper = array(np.zeros((2, 3)), name="emb")
-        assert isinstance(wrapper, ArrayResult)
+        assert isinstance(wrapper, AssetResult)
+        assert wrapper.kind == "array"
         assert wrapper.sub_kind == "numpy"
 
     def test_fig_path_detection(self, tmp_path: Path) -> None:
         png_path = tmp_path / "plot.png"
         png_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         wrapper = fig(png_path)
-        assert isinstance(wrapper, FigureResult)
+        assert isinstance(wrapper, AssetResult)
+        assert wrapper.kind == "fig"
         assert wrapper.sub_kind == "png"
 
     def test_text_dict_becomes_json(self) -> None:
         wrapper = text({"a": 1})
-        assert isinstance(wrapper, TextResult)
+        assert isinstance(wrapper, AssetResult)
+        assert wrapper.kind == "text"
         assert wrapper.sub_kind == "json"
-        assert wrapper.text_format == "json"
+        assert wrapper.kind_fields["format"] == "json"
         assert '"a"' in wrapper.payload
 
     def test_text_string_is_inline_plain(self) -> None:
         wrapper = text("hello world")
-        assert wrapper.text_format == "plain"
+        assert wrapper.kind_fields["format"] == "plain"
         # Crucially: a plain string that happens to resemble a path must
         # never be probed against the filesystem at construction time.
         wrapper_path_like = text("this/path/should-not-be-resolved")
-        assert wrapper_path_like.text_format == "plain"
+        assert wrapper_path_like.kind_fields["format"] == "plain"
         assert wrapper_path_like.payload == "this/path/should-not-be-resolved"
 
     def test_text_path_suffix_infers_format(self, tmp_path: Path) -> None:
         md_path = tmp_path / "notes.md"
         md_path.write_text("# header", encoding="utf-8")
         wrapper = text(md_path)
-        assert wrapper.text_format == "markdown"
+        assert wrapper.kind_fields["format"] == "markdown"
 
     def test_text_explicit_format_override(self) -> None:
         wrapper = text("raw", format="markdown")
-        assert wrapper.text_format == "markdown"
+        assert wrapper.kind_fields["format"] == "markdown"
 
     def test_text_dict_rejects_non_json_format(self) -> None:
         with pytest.raises(ValueError):
@@ -104,9 +109,11 @@ class TestFactories:
         sklearn = pytest.importorskip("sklearn.linear_model")
         clf = sklearn.LogisticRegression()
         wrapper = model(clf, name="classifier", metrics={"auc": 0.91})
-        assert isinstance(wrapper, ModelResult)
+        assert isinstance(wrapper, AssetResult)
+        assert wrapper.kind == "model"
         assert wrapper.sub_kind == "sklearn"
-        assert wrapper.metrics == {"auc": 0.91}
+        assert wrapper.kind_fields["metrics"] == {"auc": 0.91}
+        assert wrapper.kind_fields["framework"] == "sklearn"
         assert wrapper.name == "classifier"
 
     def test_model_framework_override(self) -> None:
@@ -134,7 +141,7 @@ class TestFactories:
 class TestSerializers:
     def test_serialize_pandas_table(self) -> None:
         frame = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
-        result = serialize_wrapper(wrapper=table(frame, name="t"), wrapper_index=0)
+        result = serialize_asset(result=table(frame, name="t"), index=0)
         assert result.extension == "parquet"
         assert result.metadata["sub_kind"] == "pandas"
         assert result.metadata["row_count"] == 3
@@ -150,7 +157,7 @@ class TestSerializers:
         csv_path = tmp_path / "data.csv"
         csv_path.write_text("x,y\n1,2\n3,4\n", encoding="utf-8")
 
-        result = serialize_wrapper(wrapper=table(csv_path), wrapper_index=0)
+        result = serialize_asset(result=table(csv_path), index=0)
         restored = pd.read_parquet(io.BytesIO(result.data))
         assert list(restored.columns) == ["x", "y"]
         assert len(restored) == 2
@@ -159,7 +166,7 @@ class TestSerializers:
         pl = pytest.importorskip("polars")
         lazy = pl.LazyFrame({"a": [1, 2, 3]}).filter(pl.col("a") > 1)
 
-        result = serialize_wrapper(wrapper=table(lazy), wrapper_index=0)
+        result = serialize_asset(result=table(lazy), index=0)
         assert result.metadata["sub_kind"] == "polars"
         restored = pd.read_parquet(io.BytesIO(result.data))
         assert list(restored["a"]) == [2, 3]
@@ -167,14 +174,14 @@ class TestSerializers:
     def test_serialize_pyarrow_table(self) -> None:
         pa = pytest.importorskip("pyarrow")
         tbl = pa.table({"a": [1, 2, 3]})
-        result = serialize_wrapper(wrapper=table(tbl), wrapper_index=0)
+        result = serialize_asset(result=table(tbl), index=0)
         assert result.metadata["sub_kind"] == "pyarrow"
         assert result.metadata["row_count"] == 3
 
     def test_serialize_numpy_array(self) -> None:
         # numpy path: either zarr store or npy fallback depending on env.
         arr = np.arange(12).reshape(3, 4).astype("float32")
-        result = serialize_wrapper(wrapper=array(arr), wrapper_index=0)
+        result = serialize_asset(result=array(arr), index=0)
         assert result.metadata["shape"] == [3, 4]
         assert result.metadata["dtype"] == "float32"
         assert result.metadata["byte_size"] == len(result.data)
@@ -185,7 +192,7 @@ class TestSerializers:
         da = pytest.importorskip("dask.array")
         arr = da.ones((4, 4), chunks=(2, 2))
 
-        result = serialize_wrapper(wrapper=array(arr), wrapper_index=0)
+        result = serialize_asset(result=array(arr), index=0)
         assert result.metadata["sub_kind"] == "dask"
         assert result.metadata["shape"] == [4, 4]
 
@@ -195,7 +202,7 @@ class TestSerializers:
         ax = figure.add_subplot()
         ax.plot([0, 1], [0, 1])
 
-        result = serialize_wrapper(wrapper=fig(figure), wrapper_index=0)
+        result = serialize_asset(result=fig(figure), index=0)
         assert result.extension == "png"
         assert result.metadata["source_format"] == "png"
         assert result.metadata["dimensions"] is not None
@@ -205,13 +212,13 @@ class TestSerializers:
         go = pytest.importorskip("plotly.graph_objects")
         figure = go.Figure(data=[go.Scatter(x=[1, 2], y=[1, 2])])
 
-        result = serialize_wrapper(wrapper=fig(figure), wrapper_index=0)
+        result = serialize_asset(result=fig(figure), index=0)
         assert result.extension == "html"
         assert result.data.startswith(b"<")
 
     def test_serialize_text_string(self) -> None:
         wrapper = text("hello\nworld")
-        result = serialize_wrapper(wrapper=wrapper, wrapper_index=0)
+        result = serialize_asset(result=wrapper, index=0)
         assert result.extension == "txt"
         assert result.metadata["format"] == "plain"
         assert result.metadata["line_count"] == 2
@@ -219,7 +226,7 @@ class TestSerializers:
 
     def test_serialize_text_dict_as_json(self) -> None:
         wrapper = text({"a": 1, "b": [1, 2]})
-        result = serialize_wrapper(wrapper=wrapper, wrapper_index=0)
+        result = serialize_asset(result=wrapper, index=0)
         assert result.extension == "json"
         assert result.metadata["format"] == "json"
         # Body must be valid JSON.
@@ -234,7 +241,7 @@ class TestSerializers:
         clf.fit(np.array([[0.0], [1.0], [2.0], [3.0]]), np.array([0, 0, 1, 1]))
 
         wrapper = model(clf, name="clf", metrics={"score": 0.875})
-        result = serialize_wrapper(wrapper=wrapper, wrapper_index=0)
+        result = serialize_asset(result=wrapper, index=0)
         assert result.extension == "joblib"
         assert result.metadata["framework"] == "sklearn"
         assert result.metadata["sub_kind"] == "sklearn"
@@ -252,17 +259,17 @@ class TestSerializers:
             def savefig(self, *args: Any, **kwargs: Any) -> None:
                 raise RuntimeError("boom")
 
-        # Build a fig wrapper manually so sub-kind detection does not run.
-        wrapper = FigureResult(
+        # Build a fig asset manually so sub-kind detection does not run.
+        bad = AssetResult(
             payload=Exploding(),
-            name="bad",
+            kind="fig",
             sub_kind="matplotlib",
-            metadata={},
+            name="bad",
         )
-        with pytest.raises(WrapperSerializationError) as excinfo:
-            serialize_wrapper(wrapper=wrapper, wrapper_index=2)
+        with pytest.raises(AssetSerializationError) as excinfo:
+            serialize_asset(result=bad, index=2)
         assert "name='bad'" in str(excinfo.value)
-        assert excinfo.value.wrapper_kind == "fig"
+        assert excinfo.value.kind == "fig"
 
 
 # ---------------------------------------------------------------------------
@@ -746,10 +753,10 @@ def shell_write_table_task(*, output_path: str) -> object:
 def shell_wrapper_bad_payload_task(*, output_path: str) -> object:
     from ginkgo import shell
 
-    # Construct a FigureResult with an in-memory payload, bypassing the
-    # factory's sub-kind detection. Simulates a workflow author mistakenly
-    # putting a non-path wrapper into shell/notebook outputs.
-    bad_wrapper = FigureResult(payload=object(), name=None, sub_kind="matplotlib")
+    # Construct a fig AssetResult with an in-memory payload, bypassing
+    # the factory's sub-kind detection. Simulates a workflow author
+    # mistakenly putting a non-path wrapper into shell/notebook outputs.
+    bad_wrapper = AssetResult(payload=object(), kind="fig", sub_kind="matplotlib")
     return shell(
         cmd=f"touch {output_path}",
         output=bad_wrapper,

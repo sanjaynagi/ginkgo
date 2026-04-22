@@ -11,11 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.core.asset import AssetResult
-from ginkgo.core.wrappers import WrappedResult
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
-_NotebookOutputItem = str | AssetResult | WrappedResult
+_NotebookOutputItem = str | AssetResult
 _NotebookOutputs = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
@@ -27,7 +26,7 @@ class NotebookExpr:
     ----------
     path : Path
         Resolved source notebook path (.ipynb or .py for marimo).
-    outputs : str | AssetResult | WrappedResult | list[those] | None
+    outputs : str | AssetResult | list[those] | None
         Declared output paths. When provided, all paths are validated for
         existence after execution. When omitted, the managed HTML artifact
         path is returned as the task result.
@@ -59,7 +58,7 @@ def notebook(
     ----------
     path : str | Path
         Source notebook file (.ipynb for Jupyter/Papermill or .py for marimo).
-    outputs : str | AssetResult | WrappedResult | list[those] | None
+    outputs : str | AssetResult | list[those] | None
         Declared output paths validated for existence after execution. When
         omitted, the managed rendered HTML artifact path is returned instead.
     log : str | None
