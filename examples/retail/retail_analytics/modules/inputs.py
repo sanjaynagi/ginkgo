@@ -5,7 +5,6 @@ from __future__ import annotations
 import pandas as pd
 
 from ginkgo import file, table, task
-from ginkgo.core.asset import AssetResult
 
 
 @task()
@@ -89,7 +88,7 @@ def enrich_orders(
     orders: pd.DataFrame,
     customers: pd.DataFrame,
     products: pd.DataFrame,
-) -> AssetResult:
+) -> pd.DataFrame:
     """Join dimensions onto cleaned orders and compute margin.
 
     Parameters
@@ -103,10 +102,10 @@ def enrich_orders(
 
     Returns
     -------
-    AssetResult
-        Wrapped enriched order table registered as
-        ``enrich_orders.enriched_orders`` in the asset catalog;
-        downstream tasks receive the rehydrated DataFrame transparently.
+    pandas.DataFrame
+        Enriched order table. Wrapping with ``table(..., name=...)``
+        registers it as an asset so the UI and `ginkgo asset show` render
+        rich previews; downstream tasks still receive the plain DataFrame.
     """
     enriched = (
         orders.merge(customers, on="customer_id", how="left")
