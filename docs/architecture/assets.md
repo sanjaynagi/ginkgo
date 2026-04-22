@@ -122,7 +122,7 @@ arguments (`format=` for `text`, `framework=` / `metrics=` for
 Path-backed payloads also work as asset shorthand in declared outputs
 of `shell` / `notebook` / `script` tasks. `fig("results/fig_pca.png",
 name="pca")` and `table("data/frame.csv", name="frame")` may appear in
-the `outputs=` list alongside plain strings; the runner validates that
+the `output=` list alongside plain strings; the runner validates that
 the declared path exists after execution and the registrar stores the
 bytes under the kind's namespace so the report and `ginkgo inspect run`
 render rich previews. In-memory payloads (e.g. `fig(matplotlib_figure)`)

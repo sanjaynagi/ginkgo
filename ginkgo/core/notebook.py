@@ -15,7 +15,7 @@ from ginkgo.core.asset import AssetResult
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
 _NotebookOutputItem = str | AssetResult
-_NotebookOutputs = _NotebookOutputItem | list[_NotebookOutputItem] | None
+_NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
 @dataclass(frozen=True)
@@ -26,10 +26,10 @@ class NotebookExpr:
     ----------
     path : Path
         Resolved source notebook path (.ipynb or .py for marimo).
-    outputs : str | AssetResult | list[those] | None
-        Declared output paths. When provided, all paths are validated for
-        existence after execution. When omitted, the managed HTML artifact
-        path is returned as the task result.
+    output : str | AssetResult | list[those] | None
+        Declared output path or paths. When provided, every path is
+        validated for existence after execution. When omitted, the
+        managed HTML artifact path is returned as the task result.
     log : str | None
         Optional path to capture stdout/stderr.
     source_hash : str
@@ -37,7 +37,7 @@ class NotebookExpr:
     """
 
     path: Path
-    outputs: _NotebookOutputs
+    output: _NotebookOutput
     log: str | None
     source_hash: str
 
@@ -45,7 +45,7 @@ class NotebookExpr:
 def notebook(
     path: str | Path,
     *,
-    outputs: _NotebookOutputs = None,
+    output: _NotebookOutput = None,
     log: str | None = None,
 ) -> NotebookExpr:
     """Create a notebook execution expression.
@@ -58,9 +58,10 @@ def notebook(
     ----------
     path : str | Path
         Source notebook file (.ipynb for Jupyter/Papermill or .py for marimo).
-    outputs : str | AssetResult | list[those] | None
-        Declared output paths validated for existence after execution. When
-        omitted, the managed rendered HTML artifact path is returned instead.
+    output : str | AssetResult | list[those] | None
+        Declared output path or paths, validated for existence after
+        execution. When omitted, the managed rendered HTML artifact path
+        is returned instead.
     log : str | None
         Optional path to capture stdout/stderr during execution.
 
@@ -84,7 +85,7 @@ def notebook(
 
     return NotebookExpr(
         path=resolved,
-        outputs=outputs,
+        output=output,
         log=log,
         source_hash=hash_file(resolved),
     )

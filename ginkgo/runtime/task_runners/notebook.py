@@ -238,8 +238,8 @@ class NotebookRunner:
 
         artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
         self._prepare_notebook_artifacts(artifacts=artifacts)
-        if notebook_expr.outputs is not None:
-            for output_path in iter_output_values(notebook_expr.outputs):
+        if notebook_expr.output is not None:
+            for output_path in iter_output_values(notebook_expr.output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
         kernel_spec = (
@@ -337,22 +337,22 @@ class NotebookRunner:
             )
 
         # Validate and return declared outputs, or fall back to HTML artifact.
-        if notebook_expr.outputs is None:
+        if notebook_expr.output is None:
             return self.validator.coerce_return_value(
                 task_def=node.task_def, value=str(artifacts.html_path)
             )
-        return self._validate_and_return_outputs(
+        return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            outputs=notebook_expr.outputs,
+            output=notebook_expr.output,
         )
 
     def run_script(self, *, node: Any, script_expr: ScriptExpr) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         user_log_path = Path(script_expr.log) if script_expr.log is not None else None
-        if script_expr.outputs is not None:
-            for output_path in iter_output_values(script_expr.outputs):
+        if script_expr.output is not None:
+            for output_path in iter_output_values(script_expr.output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -385,12 +385,12 @@ class NotebookRunner:
                 log=script_expr.log,
             )
 
-        if script_expr.outputs is None:
+        if script_expr.output is None:
             return None
-        return self._validate_and_return_outputs(
+        return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            outputs=script_expr.outputs,
+            output=script_expr.output,
         )
 
     # Cache replay -----------------------------------------------------------
@@ -415,22 +415,22 @@ class NotebookRunner:
 
     # Private helpers --------------------------------------------------------
 
-    def _validate_and_return_outputs(
+    def _validate_and_return_output(
         self,
         *,
         task_name: str,
         task_def: TaskDef,
-        outputs: Any,
+        output: Any,
     ) -> Any:
         """Validate declared output paths exist and return coerced value."""
-        output_paths = iter_output_values(outputs)
+        output_paths = iter_output_values(output)
         missing = [str(path) for path in output_paths if not path.exists()]
         if missing:
             label = missing[0] if len(missing) == 1 else missing
             raise FileNotFoundError(
                 f"Task {task_name} completed but did not create declared output {label!r}"
             )
-        return self.validator.coerce_return_value(task_def=task_def, value=outputs)
+        return self.validator.coerce_return_value(task_def=task_def, value=output)
 
     def _notebook_artifacts(self, *, node: Any, notebook_kind: str) -> NotebookArtifacts:
         """Return deterministic artifact paths for one notebook task."""
