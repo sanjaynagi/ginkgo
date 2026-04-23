@@ -60,7 +60,7 @@ Task body pattern:
 def analyze_data(input_file: file) -> file:
     return notebook(
         path="notebooks/analysis.ipynb",
-        outputs="output.html"
+        output="output.html"
     )
 ```
 
@@ -74,7 +74,7 @@ Implemented notebook behavior includes:
 - stable run-scoped notebook artifacts under `.ginkgo/runs/<run_id>/notebooks/`
 - HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
 - notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
-- explicit `outputs=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `outputs` is omitted)
+- explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
 
 For Papermill-backed notebooks, Ginkgo prefers the runtime-selected task
 environment over embedded notebook kernelspec metadata. When a notebook task
@@ -98,7 +98,7 @@ Task body pattern:
 def process_data(input_file: file, threshold: float) -> file:
     return script(
         path="scripts/analyze.py",
-        outputs="results.csv"
+        output="results.csv"
     )
 ```
 
@@ -107,7 +107,7 @@ Implemented script behavior includes:
 - automatic interpreter detection: `.py` → `python`, `.R` or `.r` → `rscript`
 - optional explicit interpreter override via `interpreter=` parameter
 - resolved task inputs forwarded as CLI arguments (`--arg-name value`)
-- explicit `outputs=` parameter for declaring and validating post-execution outputs (optional)
+- explicit `output=` parameter for declaring and validating post-execution outputs (optional)
 - source file hashing folded into cache identity so script edits invalidate cache
 
 Script tasks, like notebook tasks, run on the driver-side execution path and

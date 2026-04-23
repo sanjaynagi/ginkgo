@@ -280,8 +280,6 @@ class ReportData:
 # ------------------------------------------------------------------------
 
 
-_WRAPPER_NAMESPACES: frozenset[str] = frozenset({"table", "array", "fig", "text", "model"})
-
 _KIND_TONE: dict[str, str] = {
     "table": "table",
     "array": "array",

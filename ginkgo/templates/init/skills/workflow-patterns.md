@@ -28,7 +28,7 @@ from ginkgo import script, task
 
 @task("script", env="analysis_tools")
 def build_report(output_path: str):
-    return script(path="scripts/build_report.py", outputs=output_path)
+    return script(path="scripts/build_report.py", output=output_path)
 ```
 
 Use notebook tasks when the notebook is part of the workflow output:

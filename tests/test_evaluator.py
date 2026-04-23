@@ -50,7 +50,7 @@ def notebook_ipynb_task(*, notebook_path: str, value: int) -> Path:
 @task("notebook")
 def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: str) -> Path:
     """Run an ipynb notebook that declares an output file."""
-    return notebook(notebook_path, outputs=output_path)
+    return notebook(notebook_path, output=output_path)
 
 
 @task("notebook")
@@ -68,7 +68,7 @@ def notebook_ipynb_env_task(*, notebook_path: str, value: int) -> Path:
 @task("script")
 def python_script_task(*, script_path: str, output_path: str) -> Path:
     """Run a Python script by path, writing to output_path."""
-    return script(script_path, outputs=output_path)
+    return script(script_path, output=output_path)
 
 
 @task()

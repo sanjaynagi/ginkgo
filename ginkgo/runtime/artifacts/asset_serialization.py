@@ -1,11 +1,13 @@
-"""Serialisation backends for special asset wrappers.
+"""Serialisation backends for semantic asset kinds.
 
-Each wrapper kind (``table``, ``array``, ``fig``, ``text``) has one
-``serialize_*`` function returning a :class:`SerializedWrapper` with the raw
-bytes, file extension, and kind-specific metadata. Optional backends
-(polars, pyarrow, duckdb, xarray, zarr, dask, matplotlib, plotly, bokeh)
-are imported lazily so tasks without the relevant dependency simply cannot
-produce that sub-kind.
+Each kind's ``serialize_*`` returns a :class:`SerializedAsset` with the
+raw bytes, file extension, and kind-specific metadata. Optional backends
+(polars, pyarrow, duckdb, xarray, zarr, dask, matplotlib, plotly, bokeh,
+joblib, torch, keras) are imported lazily so tasks without the relevant
+dependency simply cannot produce that sub-kind.
+
+The asset registrar drives dispatch through :data:`ASSET_KINDS` rather
+than calling these functions directly.
 """
 
 from __future__ import annotations
@@ -16,27 +18,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ginkgo.core.wrappers import (
-    ArrayResult,
-    FigureResult,
-    ModelResult,
-    TableResult,
-    TextResult,
-    WrappedResult,
-)
+from ginkgo.core.asset import AssetResult
 
 
-class WrapperSerializationError(RuntimeError):
-    """Raised when a wrapped payload cannot be serialised.
+class AssetSerializationError(RuntimeError):
+    """Raised when an :class:`AssetResult` payload cannot be serialised.
 
     Parameters
     ----------
-    wrapper_kind : str
-        The wrapper kind (``table`` / ``array`` / ``fig`` / ``text``).
-    wrapper_index : int
-        Per-kind positional index of the offending wrapper.
-    wrapper_name : str | None
-        Explicit name, if the wrapper had one.
+    kind : str
+        The asset kind (``table`` / ``array`` / ``fig`` / ``text`` /
+        ``model``).
+    index : int
+        Per-kind positional index of the offending result.
+    name : str | None
+        Explicit name, if the result had one.
     message : str
         Underlying error message.
     """
@@ -44,21 +40,21 @@ class WrapperSerializationError(RuntimeError):
     def __init__(
         self,
         *,
-        wrapper_kind: str,
-        wrapper_index: int,
-        wrapper_name: str | None,
+        kind: str,
+        index: int,
+        name: str | None,
         message: str,
     ) -> None:
-        identifier = f"name={wrapper_name!r}" if wrapper_name else f"index={wrapper_index}"
-        super().__init__(f"failed to serialise {wrapper_kind} wrapper ({identifier}): {message}")
-        self.wrapper_kind = wrapper_kind
-        self.wrapper_index = wrapper_index
-        self.wrapper_name = wrapper_name
+        identifier = f"name={name!r}" if name else f"index={index}"
+        super().__init__(f"failed to serialise {kind} asset ({identifier}): {message}")
+        self.kind = kind
+        self.index = index
+        self.name = name
 
 
 @dataclass(kw_only=True)
-class SerializedWrapper:
-    """Output of one wrapper serialisation pass.
+class SerializedAsset:
+    """Output of one asset serialisation pass.
 
     Parameters
     ----------
@@ -75,56 +71,48 @@ class SerializedWrapper:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Dispatcher
-# ---------------------------------------------------------------------------
-
-
-def serialize_wrapper(
+def serialize_asset(
     *,
-    wrapper: WrappedResult,
-    wrapper_index: int,
-) -> SerializedWrapper:
-    """Serialise one wrapper payload.
+    result: AssetResult,
+    index: int,
+) -> SerializedAsset:
+    """Serialise one :class:`AssetResult` via the kind registry.
 
     Parameters
     ----------
-    wrapper : WrappedResult
-        The sentinel returned by a task body.
-    wrapper_index : int
-        Per-kind positional index of the wrapper (used in error messages).
+    result : AssetResult
+        Sentinel returned by a task body (non-``file`` kind).
+    index : int
+        Per-kind positional index of the result (used in error
+        messages).
 
     Returns
     -------
-    SerializedWrapper
+    SerializedAsset
     """
+    # Late import breaks the cycle asset_kinds -> asset_serialization.
+    from ginkgo.runtime.artifacts.asset_kinds import get_kind_spec
+
+    spec = get_kind_spec(result.kind)
+    if spec.serializer is None:
+        raise AssetSerializationError(
+            kind=result.kind,
+            index=index,
+            name=result.name,
+            message=f"kind {result.kind!r} has no registered serializer",
+        )
+
     try:
-        if isinstance(wrapper, TableResult):
-            return _serialize_table(wrapper)
-        if isinstance(wrapper, ArrayResult):
-            return _serialize_array(wrapper)
-        if isinstance(wrapper, FigureResult):
-            return _serialize_fig(wrapper)
-        if isinstance(wrapper, TextResult):
-            return _serialize_text(wrapper)
-        if isinstance(wrapper, ModelResult):
-            return _serialize_model(wrapper)
-    except WrapperSerializationError:
+        return spec.serializer(result)
+    except AssetSerializationError:
         raise
     except Exception as exc:
-        raise WrapperSerializationError(
-            wrapper_kind=wrapper.kind,
-            wrapper_index=wrapper_index,
-            wrapper_name=wrapper.name,
+        raise AssetSerializationError(
+            kind=result.kind,
+            index=index,
+            name=result.name,
             message=f"{type(exc).__name__}: {exc}",
         ) from exc
-
-    raise WrapperSerializationError(
-        wrapper_kind=getattr(wrapper, "kind", "unknown"),
-        wrapper_index=wrapper_index,
-        wrapper_name=getattr(wrapper, "name", None),
-        message=f"unknown wrapper type {type(wrapper).__name__}",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +120,9 @@ def serialize_wrapper(
 # ---------------------------------------------------------------------------
 
 
-def _serialize_table(wrapper: TableResult) -> SerializedWrapper:
-    """Materialise a table wrapper to Parquet bytes."""
-    frame = _materialise_table_to_pandas(wrapper)
+def serialize_table(result: AssetResult) -> SerializedAsset:
+    """Materialise a table asset to Parquet bytes."""
+    frame = _materialise_table_to_pandas(result)
 
     buffer = io.BytesIO()
     frame.to_parquet(buffer, index=False)
@@ -145,31 +133,30 @@ def _serialize_table(wrapper: TableResult) -> SerializedWrapper:
         for col, dtype in zip(frame.columns, frame.dtypes, strict=True)
     ]
     metadata: dict[str, Any] = {
-        "sub_kind": wrapper.sub_kind,
+        "sub_kind": result.sub_kind,
         "schema": schema,
         "row_count": int(len(frame.index)),
         "byte_size": len(parquet_bytes),
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(
+    metadata.update(result.metadata)
+    return SerializedAsset(
         data=parquet_bytes,
         extension="parquet",
         metadata=metadata,
     )
 
 
-def _materialise_table_to_pandas(wrapper: TableResult) -> Any:
+def _materialise_table_to_pandas(result: AssetResult) -> Any:
     """Convert any supported table payload to a pandas DataFrame."""
     import pandas as pd
 
-    payload = wrapper.payload
-    sub_kind = wrapper.sub_kind
+    payload = result.payload
+    sub_kind = result.sub_kind
 
     if sub_kind == "pandas":
         return payload
 
     if sub_kind == "polars":
-        # Handle both eager and lazy polars frames without forcing user collect.
         if hasattr(payload, "collect"):
             payload = payload.collect()
         return payload.to_pandas()
@@ -194,14 +181,14 @@ def _materialise_table_to_pandas(wrapper: TableResult) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _serialize_array(wrapper: ArrayResult) -> SerializedWrapper:
-    """Materialise an array wrapper into a zarr zip store or ``.npy`` blob.
+def serialize_array(result: AssetResult) -> SerializedAsset:
+    """Materialise an array asset into a zarr zip store or ``.npy`` blob.
 
-    When the ``zarr`` package is installed the array is written to a zipped
-    zarr store (preserving chunking for dask/xarray/zarr payloads). When
-    ``zarr`` is unavailable, numpy arrays fall back to ``.npy`` and
-    non-numpy backends raise a structured error asking the user to install
-    ``zarr``.
+    When the ``zarr`` package is installed the array is written to a
+    zipped zarr store (preserving chunking for dask/xarray/zarr
+    payloads). When ``zarr`` is unavailable, numpy arrays fall back to
+    ``.npy`` and non-numpy backends raise a structured error asking the
+    user to install ``zarr``.
     """
     try:
         import zarr  # type: ignore[import-not-found]
@@ -211,12 +198,12 @@ def _serialize_array(wrapper: ArrayResult) -> SerializedWrapper:
         zarr = None  # type: ignore[assignment]
         zarr_available = False
 
-    sub_kind = wrapper.sub_kind
+    sub_kind = result.sub_kind
     if not zarr_available and sub_kind != "numpy":
-        raise WrapperSerializationError(
-            wrapper_kind="array",
-            wrapper_index=-1,
-            wrapper_name=wrapper.name,
+        raise AssetSerializationError(
+            kind="array",
+            index=-1,
+            name=result.name,
             message=(
                 f"array({sub_kind}) requires the 'zarr' package. "
                 "Install with 'pip install zarr' or 'pixi add zarr'."
@@ -224,18 +211,17 @@ def _serialize_array(wrapper: ArrayResult) -> SerializedWrapper:
         )
 
     if not zarr_available:
-        return _serialize_numpy_to_npy(wrapper)
+        return _serialize_numpy_to_npy(result)
 
-    return _serialize_array_to_zarr(wrapper=wrapper, zarr_module=zarr)
+    return _serialize_array_to_zarr(result=result, zarr_module=zarr)
 
 
-def _serialize_numpy_to_npy(wrapper: ArrayResult) -> SerializedWrapper:
+def _serialize_numpy_to_npy(result: AssetResult) -> SerializedAsset:
     """Fallback path: write a numpy array as a ``.npy`` blob."""
     import numpy as np
 
-    payload = wrapper.payload
+    payload = result.payload
     if not isinstance(payload, np.ndarray):
-        # Detection should have caught this earlier; guard defensively.
         raise TypeError(f"numpy fallback cannot handle payload of type {type(payload).__name__}")
 
     buffer = io.BytesIO()
@@ -243,44 +229,44 @@ def _serialize_numpy_to_npy(wrapper: ArrayResult) -> SerializedWrapper:
     data = buffer.getvalue()
 
     metadata: dict[str, Any] = {
-        "sub_kind": wrapper.sub_kind,
+        "sub_kind": result.sub_kind,
         "shape": list(payload.shape),
         "dtype": str(payload.dtype),
         "chunks": None,
         "coordinates": None,
         "byte_size": len(data),
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(data=data, extension="npy", metadata=metadata)
+    metadata.update(result.metadata)
+    return SerializedAsset(data=data, extension="npy", metadata=metadata)
 
 
-def _serialize_array_to_zarr(*, wrapper: ArrayResult, zarr_module: Any) -> SerializedWrapper:
+def _serialize_array_to_zarr(*, result: AssetResult, zarr_module: Any) -> SerializedAsset:
     """Write any supported array payload to a zipped zarr store."""
-    shape, dtype_str, chunks, coordinates = _array_properties(wrapper)
+    shape, dtype_str, chunks, coordinates = _array_properties(result)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         zip_path = Path(tmpdir) / "array.zarr.zip"
         store = zarr_module.storage.ZipStore(str(zip_path), mode="w")
         try:
-            _write_payload_to_zarr_store(wrapper=wrapper, store=store, zarr_module=zarr_module)
+            _write_payload_to_zarr_store(result=result, store=store, zarr_module=zarr_module)
         finally:
             store.close()
         data = zip_path.read_bytes()
 
     metadata: dict[str, Any] = {
-        "sub_kind": wrapper.sub_kind,
+        "sub_kind": result.sub_kind,
         "shape": shape,
         "dtype": dtype_str,
         "chunks": chunks,
         "coordinates": coordinates,
         "byte_size": len(data),
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(data=data, extension="zarr.zip", metadata=metadata)
+    metadata.update(result.metadata)
+    return SerializedAsset(data=data, extension="zarr.zip", metadata=metadata)
 
 
 def _array_properties(
-    wrapper: ArrayResult,
+    result: AssetResult,
 ) -> tuple[list[int], str, list[int] | None, dict[str, list[str]] | None]:
     """Return ``(shape, dtype, chunks, coordinates)`` for an array payload.
 
@@ -288,15 +274,14 @@ def _array_properties(
     """
     import numpy as np
 
-    payload = wrapper.payload
-    sub_kind = wrapper.sub_kind
+    payload = result.payload
+    sub_kind = result.sub_kind
 
     if sub_kind == "numpy":
         return list(payload.shape), str(payload.dtype), None, None
 
     if sub_kind == "dask":
         chunks_meta = getattr(payload, "chunks", None)
-        # dask chunks is a tuple of tuples per axis; summarise as first-axis chunks.
         chunks_summary: list[int] | None = None
         if chunks_meta:
             chunks_summary = [int(c[0]) for c in chunks_meta]
@@ -332,22 +317,20 @@ def _array_properties(
     raise ValueError(f"unknown array sub_kind {sub_kind!r}")
 
 
-def _write_payload_to_zarr_store(*, wrapper: ArrayResult, store: Any, zarr_module: Any) -> None:
-    """Materialise a wrapped array payload into the given zarr store."""
+def _write_payload_to_zarr_store(*, result: AssetResult, store: Any, zarr_module: Any) -> None:
+    """Materialise an array payload into the given zarr store."""
     import numpy as np
 
-    payload = wrapper.payload
-    sub_kind = wrapper.sub_kind
+    payload = result.payload
+    sub_kind = result.sub_kind
 
     if sub_kind == "zarr":
-        # Passthrough: copy the existing store contents to preserve chunking.
         zarr_module.copy_store(payload.store, store) if hasattr(
             zarr_module, "copy_store"
         ) else _copy_zarr_via_array(source=payload, store=store, zarr_module=zarr_module)
         return
 
     if sub_kind == "dask":
-        # dask can write straight to zarr, triggering compute at this point.
         payload.to_zarr(store, component="array", overwrite=True)
         return
 
@@ -385,10 +368,10 @@ def _copy_zarr_via_array(*, source: Any, store: Any, zarr_module: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _serialize_fig(wrapper: FigureResult) -> SerializedWrapper:
-    """Serialise a figure wrapper to its native format."""
-    sub_kind = wrapper.sub_kind
-    payload = wrapper.payload
+def serialize_fig(result: AssetResult) -> SerializedAsset:
+    """Serialise a figure asset to its native format."""
+    sub_kind = result.sub_kind
+    payload = result.payload
 
     if sub_kind in {"png", "svg", "html"}:
         source_path = Path(str(payload))
@@ -427,8 +410,8 @@ def _serialize_fig(wrapper: FigureResult) -> SerializedWrapper:
         "byte_size": len(data),
         "dimensions": dimensions,
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(data=data, extension=extension, metadata=metadata)
+    metadata.update(result.metadata)
+    return SerializedAsset(data=data, extension=extension, metadata=metadata)
 
 
 def _png_dimensions(data: bytes) -> tuple[int | None, int | None]:
@@ -448,20 +431,20 @@ def _png_dimensions(data: bytes) -> tuple[int | None, int | None]:
 _TEXT_EXTENSION_BY_FORMAT = {"plain": "txt", "markdown": "md", "json": "json"}
 
 
-def _serialize_text(wrapper: TextResult) -> SerializedWrapper:
-    """Serialise a text wrapper as raw UTF-8 bytes."""
-    payload = wrapper.payload
+def serialize_text(result: AssetResult) -> SerializedAsset:
+    """Serialise a text asset as raw UTF-8 bytes."""
+    payload = result.payload
+    text_format = str(result.kind_fields.get("format", "plain"))
 
     if isinstance(payload, Path):
         body = payload.read_text(encoding="utf-8")
     else:
-        # The factory normalised dicts into JSON strings; str flows through
+        # Factory normalised dicts into JSON strings; str flows through
         # directly without re-probing the filesystem.
         body = str(payload)
 
     data = body.encode("utf-8")
 
-    # Count lines: every "\n" plus one final non-empty, non-terminated line.
     if not body:
         line_count = 0
     elif body.endswith("\n"):
@@ -470,15 +453,15 @@ def _serialize_text(wrapper: TextResult) -> SerializedWrapper:
         line_count = body.count("\n") + 1
 
     metadata: dict[str, Any] = {
-        "sub_kind": wrapper.sub_kind,
-        "format": wrapper.text_format,
+        "sub_kind": result.sub_kind,
+        "format": text_format,
         "byte_size": len(data),
         "line_count": line_count,
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(
+    metadata.update(result.metadata)
+    return SerializedAsset(
         data=data,
-        extension=_TEXT_EXTENSION_BY_FORMAT[wrapper.text_format],
+        extension=_TEXT_EXTENSION_BY_FORMAT[text_format],
         metadata=metadata,
     )
 
@@ -497,7 +480,7 @@ _MODEL_EXTENSION_BY_SUB_KIND = {
 }
 
 
-def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
+def serialize_model(result: AssetResult) -> SerializedAsset:
     """Serialise a trained-model payload as a full-object blob.
 
     Joblib covers the sklearn family (sklearn itself plus the sklearn
@@ -506,8 +489,9 @@ def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
     to be re-defined in the same import path; Keras writes the native
     ``.keras`` archive via a temporary file.
     """
-    sub_kind = wrapper.sub_kind
-    payload = wrapper.payload
+    sub_kind = result.sub_kind
+    payload = result.payload
+    metrics = dict(result.kind_fields.get("metrics", {}))
 
     if sub_kind in {"sklearn", "xgboost", "lightgbm"}:
         try:
@@ -542,20 +526,24 @@ def _serialize_model(wrapper: ModelResult) -> SerializedWrapper:
     metadata: dict[str, Any] = {
         "sub_kind": sub_kind,
         "framework": sub_kind,
-        "metrics": dict(wrapper.metrics),
+        "metrics": metrics,
         "byte_size": len(data),
     }
-    metadata.update(wrapper.metadata)
-    return SerializedWrapper(
+    metadata.update(result.metadata)
+    return SerializedAsset(
         data=data,
         extension=_MODEL_EXTENSION_BY_SUB_KIND[sub_kind],
         metadata=metadata,
     )
 
 
-# Re-exported for tests and loader registry callers.
 __all__ = [
-    "SerializedWrapper",
-    "WrapperSerializationError",
-    "serialize_wrapper",
+    "AssetSerializationError",
+    "SerializedAsset",
+    "serialize_asset",
+    "serialize_array",
+    "serialize_fig",
+    "serialize_model",
+    "serialize_table",
+    "serialize_text",
 ]

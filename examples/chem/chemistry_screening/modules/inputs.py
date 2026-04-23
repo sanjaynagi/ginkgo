@@ -8,7 +8,6 @@ from pathlib import Path
 import pandas as pd
 
 from ginkgo import file, table, task
-from ginkgo.core.wrappers import TableResult
 
 
 @task()
@@ -35,7 +34,7 @@ def annotate_compounds(
     solubility_floor_uM: float,
     permeability_floor: float,
     max_clearance: float,
-) -> TableResult:
+) -> pd.DataFrame:
     """Compute screening annotations used by downstream portfolio reviews.
 
     Parameters
@@ -53,10 +52,10 @@ def annotate_compounds(
 
     Returns
     -------
-    TableResult
-        Wrapped annotated table registered as
-        ``annotate_compounds.annotated_compounds`` in the asset catalog;
-        downstream tasks receive the rehydrated DataFrame transparently.
+    pandas.DataFrame
+        Annotated compound table. Wrapping with ``table(..., name=...)``
+        registers it as an asset so the UI and `ginkgo asset show` render
+        rich previews; downstream tasks still receive the plain DataFrame.
     """
     annotated = compounds.copy()
 

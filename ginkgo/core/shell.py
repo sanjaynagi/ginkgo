@@ -11,9 +11,8 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from ginkgo.core.asset import AssetResult
-from ginkgo.core.wrappers import WrappedResult
 
-ShellOutputItem: TypeAlias = str | AssetResult | WrappedResult
+ShellOutputItem: TypeAlias = str | AssetResult
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 

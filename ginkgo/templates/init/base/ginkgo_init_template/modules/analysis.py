@@ -34,7 +34,7 @@ def build_brief(
     file
         Markdown brief written by the script.
     """
-    return script(_SCRIPTS_DIR / "build_brief.py", outputs=output_path)
+    return script(_SCRIPTS_DIR / "build_brief.py", output=output_path)
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")

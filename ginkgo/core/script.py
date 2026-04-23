@@ -12,10 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.core.asset import AssetResult
-from ginkgo.core.wrappers import WrappedResult
 
-_ScriptOutputItem = str | AssetResult | WrappedResult
-_ScriptOutputs = _ScriptOutputItem | list[_ScriptOutputItem] | None
+_ScriptOutputItem = str | AssetResult
+_ScriptOutput = _ScriptOutputItem | list[_ScriptOutputItem] | None
 
 # Maps file extension (lower-case) to interpreter command.
 _EXTENSION_TO_INTERPRETER: dict[str, str] = {
@@ -32,9 +31,9 @@ class ScriptExpr:
     ----------
     path : Path
         Resolved source script path.
-    outputs : str | AssetResult | WrappedResult | list[those] | None
-        Declared output paths. When provided, all paths are validated for
-        existence after execution.
+    output : str | AssetResult | list[those] | None
+        Declared output path or paths. When provided, every path is
+        validated for existence after execution.
     log : str | None
         Optional path to capture stdout/stderr.
     interpreter : str
@@ -44,7 +43,7 @@ class ScriptExpr:
     """
 
     path: Path
-    outputs: _ScriptOutputs
+    output: _ScriptOutput
     log: str | None
     interpreter: str
     source_hash: str
@@ -53,7 +52,7 @@ class ScriptExpr:
 def script(
     path: str | Path,
     *,
-    outputs: _ScriptOutputs = None,
+    output: _ScriptOutput = None,
     log: str | None = None,
     interpreter: str | None = None,
 ) -> ScriptExpr:
@@ -68,8 +67,9 @@ def script(
     path : str | Path
         Source script file. Relative paths resolve from the current working
         directory at the time of the call.
-    outputs : str | AssetResult | WrappedResult | list[those] | None
-        Declared output paths validated for existence after execution.
+    output : str | AssetResult | list[those] | None
+        Declared output path or paths, validated for existence after
+        execution.
     log : str | None
         Optional path to capture stdout/stderr during execution.
     interpreter : str | None
@@ -107,7 +107,7 @@ def script(
 
     return ScriptExpr(
         path=resolved,
-        outputs=outputs,
+        output=output,
         log=log,
         interpreter=interpreter,
         source_hash=hash_file(resolved),

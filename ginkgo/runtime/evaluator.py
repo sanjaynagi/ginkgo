@@ -42,7 +42,8 @@ from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_in
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.artifacts.output_index import output_summary
-from ginkgo.runtime.artifacts.wrapper_loaders import load_from_ref as load_wrapped_ref
+from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
+from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
@@ -1084,7 +1085,7 @@ class _ConcurrentEvaluator:
         payloads that users rarely consume as live Python objects.
         """
         if isinstance(value, AssetRef):
-            if value.kind in {"table", "array", "text", "model"}:
+            if value.kind in REHYDRATABLE_KINDS:
                 cached = self._live_payloads.get(artifact_id=value.artifact_id)
                 if cached is not None:
                     return cached

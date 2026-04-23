@@ -13,7 +13,6 @@ from pathlib import Path
 import ginkgo
 import pandas as pd
 from ginkgo import AssetRef, asset, file, flow, shell, table, task
-from ginkgo.core.wrappers import TableResult
 
 
 cfg = ginkgo.config("ginkgo.toml")
@@ -95,7 +94,7 @@ def build_summary(
     sample_ids: list[str],
     stats_tables: list[file | AssetRef],
     count_tables: list[file | AssetRef],
-) -> TableResult:
+) -> pd.DataFrame:
     """Merge per-sample QC tables and read counts into a single summary table.
 
     Parameters
@@ -109,9 +108,10 @@ def build_summary(
 
     Returns
     -------
-    TableResult
-        Wrapped tabular asset registered as ``build_summary.qc_summary`` in
-        the catalog, stored as Parquet with schema and row-count metadata.
+    pandas.DataFrame
+        QC summary table. Wrapping with ``table(..., name=...)`` registers
+        it as an asset so the UI and `ginkgo asset show` render rich
+        previews; downstream tasks still receive the plain DataFrame.
     """
     # Merge QC stats.
     frames: list[pd.DataFrame] = []
