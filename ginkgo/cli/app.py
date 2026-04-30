@@ -21,7 +21,6 @@ from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
-from ginkgo.cli.commands.ui import command_ui
 from ginkgo.cli.common import RunMode, console
 
 
@@ -55,8 +54,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_notebooks(args)
         if args.command == "secrets":
             return command_secrets(args)
-        if args.command == "ui":
-            return command_ui(args)
         if args.command == "report":
             return command_report(args)
     except BaseException as exc:
@@ -168,13 +165,6 @@ def _build_parser() -> argparse.ArgumentParser:
     models_parser.add_argument("run_id", nargs="?")
 
     subparsers.add_parser("notebooks")
-
-    ui_parser = subparsers.add_parser("ui")
-    ui_parser.add_argument("run_id", nargs="?")
-    ui_parser.add_argument("--host", default="127.0.0.1")
-    ui_parser.add_argument("--port", type=int, default=7777)
-    ui_parser.add_argument("--open", dest="open", action="store_true", default=True)
-    ui_parser.add_argument("--no-open", dest="open", action="store_false")
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("run_id", nargs="?")

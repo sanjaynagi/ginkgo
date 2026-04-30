@@ -91,7 +91,6 @@ class TestNotificationConfig:
         config = parse_notification_config(
             config={
                 "notifications": {
-                    "ui_base_url": "http://127.0.0.1:8000",
                     "slack": {
                         "enabled": True,
                         "webhook": {"env": "GINKGO_SLACK_WEBHOOK"},
@@ -103,7 +102,6 @@ class TestNotificationConfig:
             }
         )
 
-        assert config.ui_base_url == "http://127.0.0.1:8000"
         assert config.slack.enabled is True
         assert config.slack.webhook is not None
         assert config.slack.webhook.backend == "env"
@@ -124,9 +122,6 @@ class TestSlackNotifications:
             monkeypatch.setenv("GINKGO_SLACK_WEBHOOK", server.url)
             Path("ginkgo.toml").write_text(
                 """
-[notifications]
-ui_base_url = "http://127.0.0.1:8000"
-
 [notifications.slack]
 enabled = true
 webhook = { env = "GINKGO_SLACK_WEBHOOK" }
@@ -158,7 +153,6 @@ def main():
             assert len(requests) == 2
             assert "Ginkgo Run Started" in _payload_text(requests[0])
             assert "workflow.py" in _payload_text(requests[0])
-            assert "/api/runs/" in _payload_text(requests[0])
             assert "Ginkgo Run Succeeded" in _payload_text(requests[1])
             assert "succeeded=1" in _payload_text(requests[1])
 

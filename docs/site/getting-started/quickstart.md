@@ -63,15 +63,6 @@ Ginkgo should reuse cached results where the cache key still matches. The cache
 identity includes task source, resolved inputs, and execution-environment
 identity where relevant.
 
-## 6. Open The Local UI
-
-```bash
-ginkgo ui
-```
-
-The UI lets you browse runs, inspect task logs, review the task graph, and see
-cache-related metadata without parsing the run directory manually.
-
 ```{raw} html
 <div class="section-note">
   If you are new to Ginkgo, read <a href="../../guide/concepts/">Core Concepts</a>
