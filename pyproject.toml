@@ -96,7 +96,7 @@ benchmark = ".pixi/envs/default/bin/python -m benchmarks.run"
 lint = "ruff check ginkgo/ tests/ benchmarks/"
 format = "ruff format ginkgo/ tests/ benchmarks/"
 format-check = "ruff format --check ginkgo/ tests/ benchmarks/"
-typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check ginkgo/config.py ginkgo/ui ginkgo/cli/app.py ginkgo/cli/commands/ui.py"
+typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check ginkgo/config.py ginkgo/cli/app.py"
 precommit = "pre-commit run --all-files"
 docs-build = "sphinx-build -b dirhtml docs/site docs/_build/dirhtml"
 docs-clean = "rm -rf docs/_build"
@@ -112,4 +112,4 @@ src = ["ginkgo"]
 line-length = 99
 
 [tool.uncoded]
-source-roots = ["ginkgo", "tests"]
+source-roots = ["ginkgo"]

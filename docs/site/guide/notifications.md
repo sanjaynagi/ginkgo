@@ -23,9 +23,6 @@ sent when a task fails after using all configured retries.
 Add notification settings to `ginkgo.toml`:
 
 ```toml
-[notifications]
-ui_base_url = "http://127.0.0.1:8000"
-
 [notifications.slack]
 enabled = true
 webhook = { env = "GINKGO_SLACK_WEBHOOK" }
@@ -44,7 +41,6 @@ ginkgo run workflow.py
 Notes:
 
 - `webhook` must be provided through the secrets layer as a secret reference.
-- If `ui_base_url` is set, notifications include a link to the run.
 - `log_tail_lines` controls how many lines of task log tail are included in
   failure notifications.
 - `max_failed_tasks` controls how many failed tasks are summarized in one

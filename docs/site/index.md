@@ -3,13 +3,12 @@
   <h1>Ginkgo</h1>
   <p>
     Ginkgo is a Python workflow orchestrator with a deferred-expression DSL,
-    content-addressed caching, reproducible task environments, and a local UI
-    for inspecting runs.
+    content-addressed caching, and reproducible task environments.
   </p>
   <div class="hero-actions">
     <a href="getting-started/quickstart/">Quickstart</a>
     <a href="examples/bioinfo-workflow/">Bioinformatics example</a>
-    <a href="guide/cli-and-ui/">CLI and UI</a>
+    <a href="guide/cli/">CLI</a>
   </div>
 </section>
 ```
@@ -30,7 +29,7 @@
   </article>
   <article class="quick-card">
     <h3>Agent-friendly</h3>
-    <p>Inspect runs, logs, artifacts, and workflow structure clearly through the CLI, run records, and local UI.</p>
+    <p>Inspect runs, logs, artifacts, and workflow structure clearly through the CLI and run records.</p>
   </article>
 </section>
 ```
@@ -47,7 +46,6 @@ It works especially well when you need all of the following at once:
 - mixed local Python and shell-based execution
 - repeatable environments for selected tasks
 - output reuse across reruns
-- a local UI for browsing runs, logs, artifacts, and cache state
 
 ### A Minimal Workflow
 
@@ -94,7 +92,7 @@ ginkgo run workflow.py
       <li><a href="guide/environments/">Environments</a></li>
       <li><a href="guide/notebooks/">Notebook tasks</a></li>
       <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
-      <li><a href="guide/cli-and-ui/">CLI and UI</a></li>
+      <li><a href="guide/cli/">CLI</a></li>
       <li><a href="guide/notifications/">Notifications</a></li>
       <li><a href="guide/remote-execution/">Remote execution</a></li>
     </ul>
@@ -130,7 +128,7 @@ guide/tasks-and-flows
 guide/environments
 guide/notebooks
 guide/caching-and-provenance
-guide/cli-and-ui
+guide/cli
 guide/notifications
 guide/remote-execution
 examples/bioinfo-workflow

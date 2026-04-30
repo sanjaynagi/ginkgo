@@ -61,7 +61,6 @@ def build_run_started_payload(
     workflow_label: str,
     run_id: str,
     ts: str,
-    ui_url: str | None,
 ) -> dict[str, Any]:
     """Build a Slack payload for run start notifications."""
     summary_lines = [
@@ -69,8 +68,6 @@ def build_run_started_payload(
         f"*Run*: `{run_id}`",
         f"*Started*: `{ts}`",
     ]
-    if ui_url is not None:
-        summary_lines.append(f"*UI*: <{ui_url}|Open run>")
 
     return _build_payload(
         fallback=f"Ginkgo run started: {workflow_label} ({run_id})",
@@ -85,7 +82,6 @@ def build_run_succeeded_payload(
     run_id: str,
     ts: str,
     task_counts: dict[str, int],
-    ui_url: str | None,
 ) -> dict[str, Any]:
     """Build a Slack payload for successful run completion."""
     summary_lines = [
@@ -94,8 +90,6 @@ def build_run_succeeded_payload(
         f"*Completed*: `{ts}`",
         f"*Task counts*: {_format_task_counts(task_counts)}",
     ]
-    if ui_url is not None:
-        summary_lines.append(f"*UI*: <{ui_url}|Open run>")
 
     return _build_payload(
         fallback=f"Ginkgo run succeeded: {workflow_label} ({run_id})",
@@ -110,7 +104,6 @@ def build_run_failed_payload(
     run_id: str,
     ts: str,
     failed_tasks: list[SlackTaskFailure],
-    ui_url: str | None,
     error: str | None,
 ) -> dict[str, Any]:
     """Build a Slack payload for failed run completion."""
@@ -121,8 +114,6 @@ def build_run_failed_payload(
     ]
     if error:
         summary_lines.append(f"*Error*: `{_truncate(error, limit=180)}`")
-    if ui_url is not None:
-        summary_lines.append(f"*UI*: <{ui_url}|Open run>")
 
     return _build_payload(
         fallback=f"Ginkgo run failed: {workflow_label} ({run_id})",
@@ -138,7 +129,6 @@ def build_retry_exhausted_payload(
     run_id: str,
     ts: str,
     failed_task: SlackTaskFailure,
-    ui_url: str | None,
 ) -> dict[str, Any]:
     """Build a Slack payload for retry exhaustion notifications."""
     summary_lines = [
@@ -152,8 +142,6 @@ def build_retry_exhausted_payload(
         summary_lines.append(f"*Attempts*: `{attempt_line}`")
     if failed_task.exit_code is not None:
         summary_lines.append(f"*Exit code*: `{failed_task.exit_code}`")
-    if ui_url is not None:
-        summary_lines.append(f"*UI*: <{ui_url}|Open run>")
 
     return _build_payload(
         fallback=f"Ginkgo task exhausted retries: {failed_task.task_name} ({run_id})",

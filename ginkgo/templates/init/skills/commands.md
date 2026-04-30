@@ -11,8 +11,6 @@ Start here:
   Executes the default workflow from `{{ workflow_relpath }}`.
 - `ginkgo inspect workflow`
   Shows the static workflow graph without running anything.
-- `ginkgo ui`
-  Browse runs, tasks, and artifacts when you need a run id or visual context.
 - `ginkgo doctor`
   Validates workflow loading, configuration, and environment setup.
 

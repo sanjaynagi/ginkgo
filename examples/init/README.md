@@ -17,7 +17,7 @@ you can inspect from the CLI or UI.
 - `.map()` provides fan-out across many independent task invocations.
 - Python tasks are useful for orchestration, data transformation, and analytics.
 - Shell tasks let you call CLI tools with explicit declared outputs.
-- Notebook tasks let you execute notebooks as part of the workflow and render them to html, which are then displayed in the UI.
+- Notebook tasks let you execute notebooks as part of the workflow and render them to html.
 - Script tasks let you execute standalone scripts with task-managed inputs and outputs.
 - `expand(...)` helps build deterministic output paths from small parameter grids.
 
@@ -90,7 +90,4 @@ ginkgo cache ls
 
 # Explain why tasks in a run reused cache or reran.
 ginkgo cache explain --run <run_id>
-
-# Open the local UI for browsing runs, tasks, and logs.
-ginkgo ui
 ```

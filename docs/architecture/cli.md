@@ -8,7 +8,6 @@ The current CLI supports:
 - `ginkgo doctor`
 - `ginkgo inspect`
 - `ginkgo secrets`
-- `ginkgo ui`
 - `ginkgo init`
 - `ginkgo asset ls`
 - `ginkgo asset versions`

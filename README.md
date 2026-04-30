@@ -12,7 +12,7 @@ Ginkgo is a scientific workflow orchestrator built for the 21st century.
 - isolated environments — pixi or containers, per task
 - agent-friendly — built from the ground up for workflows to be built and operated by AI agents
 - cloud-native I/O — stream inputs directly from S3, GCS, or Azure and stage outputs back, without local copies
-- deep observability — provenance, CLI tooling, and a local UI
+- deep observability — provenance and CLI tooling
 
 ## Documentation
 
@@ -31,8 +31,7 @@ docs/_build/dirhtml/index.html
 ```
 
 The docs site covers installation, quickstart, core concepts, environments,
-notebook tasks, caching, CLI usage, the local UI, and a canonical example
-workflow.
+notebook tasks, caching, CLI usage, and a canonical example workflow.
 
 ## Installation
 
@@ -167,7 +166,6 @@ ginkgo run
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo env ls`
-- `ginkgo ui`
 
 ## Repository Layout
 
@@ -176,15 +174,13 @@ ginkgo/
 ├── core/
 ├── runtime/
 ├── envs/
-├── cli/
-└── ui/
+└── cli/
 ```
 
 - `core/` contains the user-facing DSL
 - `runtime/` contains evaluation, scheduling, caching, provenance, and value transport
 - `envs/` contains execution backends
 - `cli/` contains the `ginkgo` command-line interface
-- `ui/` contains the local run browser
 
 ---
 

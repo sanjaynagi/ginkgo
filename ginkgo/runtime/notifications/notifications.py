@@ -7,7 +7,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 from ginkgo.core.secret import SecretRef
 from ginkgo.runtime.events import GinkgoEvent, RunCompleted, RunStarted, TaskFailed
@@ -44,7 +43,6 @@ class SlackNotificationConfig:
 class NotificationConfig:
     """Top-level notification settings."""
 
-    ui_base_url: str | None = None
     slack: SlackNotificationConfig = field(default_factory=SlackNotificationConfig)
 
 
@@ -93,7 +91,6 @@ class NotificationService:
             workflow_label=self._workflow_label,
             run_id=event.run_id,
             ts=event.ts,
-            ui_url=self._run_ui_url,
         )
         self._submit(payload=payload)
 
@@ -110,7 +107,6 @@ class NotificationService:
             run_id=event.run_id,
             ts=event.ts,
             failed_task=task_failure,
-            ui_url=self._run_ui_url,
         )
         self._submit(payload=payload)
 
@@ -123,7 +119,6 @@ class NotificationService:
                 run_id=event.run_id,
                 ts=event.ts,
                 task_counts=event.task_counts,
-                ui_url=self._run_ui_url,
             )
             self._submit(payload=payload)
             return
@@ -136,7 +131,6 @@ class NotificationService:
             run_id=event.run_id,
             ts=event.ts,
             failed_tasks=self._failed_tasks(),
-            ui_url=self._run_ui_url,
             error=event.error,
         )
         self._submit(payload=payload)
@@ -202,13 +196,6 @@ class NotificationService:
         except ValueError:
             return str(self.workflow_path)
 
-    @property
-    def _run_ui_url(self) -> str | None:
-        if self.config.ui_base_url is None:
-            return None
-        base = self.config.ui_base_url.rstrip("/") + "/"
-        return urljoin(base, f"api/runs/{self.run_dir.name}")
-
 
 def build_notification_service(
     *,
@@ -253,14 +240,9 @@ def parse_notification_config(*, config: Mapping[str, Any] | None) -> Notificati
     if not isinstance(notifications, Mapping):
         return NotificationConfig()
 
-    raw_ui_base_url = notifications.get("ui_base_url")
-    ui_base_url = str(raw_ui_base_url).strip() if isinstance(raw_ui_base_url, str) else None
-    if ui_base_url == "":
-        ui_base_url = None
-
     raw_slack = notifications.get("slack", {})
     if not isinstance(raw_slack, Mapping):
-        return NotificationConfig(ui_base_url=ui_base_url)
+        return NotificationConfig()
 
     enabled = bool(raw_slack.get("enabled", False))
     raw_events = raw_slack.get("events")
@@ -273,7 +255,6 @@ def parse_notification_config(*, config: Mapping[str, Any] | None) -> Notificati
     )
 
     return NotificationConfig(
-        ui_base_url=ui_base_url,
         slack=SlackNotificationConfig(
             enabled=enabled,
             webhook=_parse_secret_ref(raw_slack.get("webhook")),

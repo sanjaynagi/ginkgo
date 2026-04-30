@@ -1,7 +1,7 @@
-# CLI And UI
+# CLI
 
-The `ginkgo` CLI is the main operator surface. The local UI complements it by
-making run inspection easier after execution.
+The `ginkgo` CLI is the main operator surface for authoring, validating,
+running, and inspecting workflows.
 
 ## Core CLI Commands
 
@@ -13,7 +13,6 @@ The top-level CLI currently includes:
 - `ginkgo doctor`
 - `ginkgo cache`
 - `ginkgo env`
-- `ginkgo ui`
 - `ginkgo init`
 - `ginkgo secrets`
 
@@ -42,30 +41,6 @@ ginkgo debug <run_id>
 `ginkgo debug` is particularly useful once you already have a run directory and
 want to inspect recorded information after the fact.
 
-## The Local UI
-
-Launch the browser UI with:
-
-```bash
-ginkgo ui
-```
-
-The current UI supports local browsing of:
-
-- runs
-- tasks
-- task graphs
-- logs
-- cache entries
-- notebook artifacts
-- resource summaries
-
-You can also pass a specific run id:
-
-```bash
-ginkgo ui <run_id>
-```
-
 ## A Good Working Pattern
 
 For local development, a practical loop looks like this:
@@ -73,6 +48,3 @@ For local development, a practical loop looks like this:
 1. author and adjust tasks in code
 2. run with `ginkgo run`
 3. inspect failures or cache behavior with `ginkgo debug`
-4. open `ginkgo ui` when you want a richer post-run view
-
-This keeps the CLI as the control surface and the UI as the inspection surface.

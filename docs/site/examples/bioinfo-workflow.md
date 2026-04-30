@@ -77,4 +77,3 @@ Then inspect:
 - `results/summary.csv`
 - `.ginkgo/runs/`
 - `logs/`
-- the local UI with `ginkgo ui`
