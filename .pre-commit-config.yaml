@@ -27,3 +27,8 @@ repos:
         entry: pixi run typecheck
         language: system
         pass_filenames: false
+      - id: uncoded-sync
+        name: uncoded sync
+        entry: pixi run uncoded sync
+        language: system
+        pass_filenames: false

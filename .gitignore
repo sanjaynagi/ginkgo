@@ -20,6 +20,9 @@ AGENTS.md
 CLAUDE.md
 .claude/
 
+# uncoded symbol index (regenerated locally via `uncoded sync`)
+.uncoded/
+
 # Local planning / design / worklog docs
 plan.md
 *plan.local.md
