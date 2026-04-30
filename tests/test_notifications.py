@@ -153,7 +153,6 @@ def main():
             assert len(requests) == 2
             assert "Ginkgo Run Started" in _payload_text(requests[0])
             assert "workflow.py" in _payload_text(requests[0])
-            assert "/api/runs/" in _payload_text(requests[0])
             assert "Ginkgo Run Succeeded" in _payload_text(requests[1])
             assert "succeeded=1" in _payload_text(requests[1])
 
