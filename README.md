@@ -46,6 +46,14 @@ pixi run test
 pixi run typecheck
 ```
 
+After `pixi install`, build the [uncoded](https://github.com/alimanfoo/uncoded)
+symbol index used by AI coding tools (regenerated automatically by the
+pre-commit hook, but useful to seed up front):
+
+```bash
+pixi run uncoded sync
+```
+
 If your workflows use Pixi-backed task environments, `pixi` must also be
 available on `PATH` when you run them.
 
