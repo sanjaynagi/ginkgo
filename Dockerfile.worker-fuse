@@ -67,7 +67,7 @@ RUN set -eux; \
 WORKDIR /app
 
 COPY pyproject.toml .
-COPY ginkgo/ ginkgo/
+COPY src/ginkgo/ src/ginkgo/
 RUN pip install --no-cache-dir ".[cloud]"
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]

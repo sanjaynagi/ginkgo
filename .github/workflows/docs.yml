@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - "docs/site/**"
-      - "ginkgo/**"
+      - "src/ginkgo/**"
       - "pyproject.toml"
 
 permissions:

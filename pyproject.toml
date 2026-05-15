@@ -41,13 +41,13 @@ build-backend = "hatchling.build"
 requires = ["hatchling"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["ginkgo"]
+packages = ["src/ginkgo"]
 
 [tool.hatch.build]
 include = [
-    "ginkgo/templates/**",
-    "ginkgo/reporting/templates/**",
-    "ginkgo/reporting/static/**",
+    "src/ginkgo/templates/**",
+    "src/ginkgo/reporting/templates/**",
+    "src/ginkgo/reporting/static/**",
 ]
 
 [tool.pixi.workspace]
@@ -93,10 +93,10 @@ default = { features = ["dev"], solve-group = "default" }
 [tool.pixi.tasks]
 test = "pytest tests/ -v"
 benchmark = ".pixi/envs/default/bin/python -m benchmarks.run"
-lint = "ruff check ginkgo/ tests/ benchmarks/"
-format = "ruff format ginkgo/ tests/ benchmarks/"
-format-check = "ruff format --check ginkgo/ tests/ benchmarks/"
-typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check ginkgo/config.py ginkgo/cli/app.py"
+lint = "ruff check src/ginkgo/ tests/ benchmarks/"
+format = "ruff format src/ginkgo/ tests/ benchmarks/"
+format-check = "ruff format --check src/ginkgo/ tests/ benchmarks/"
+typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check src/ginkgo/config.py src/ginkgo/cli/app.py"
 precommit = "pre-commit run --all-files"
 docs-build = "sphinx-build -b dirhtml docs/site docs/_build/dirhtml"
 docs-clean = "rm -rf docs/_build"
@@ -108,8 +108,8 @@ markers = [
 ]
 
 [tool.ruff]
-src = ["ginkgo"]
+src = ["src"]
 line-length = 99
 
 [tool.uncoded]
-source-roots = ["ginkgo"]
+source-roots = ["src/ginkgo"]

@@ -19,7 +19,7 @@ WORKDIR /app
 
 # Install ginkgo with cloud dependencies (kubernetes, gcsfs, google-auth).
 COPY pyproject.toml .
-COPY ginkgo/ ginkgo/
+COPY src/ginkgo/ src/ginkgo/
 RUN pip install --no-cache-dir ".[cloud]"
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
