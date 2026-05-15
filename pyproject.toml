@@ -103,6 +103,7 @@ docs-clean = "rm -rf docs/_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "integration: tests that spawn subprocesses or use real network I/O (deselect with -m 'not integration')",
 ]
