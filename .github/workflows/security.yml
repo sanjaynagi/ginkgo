@@ -39,7 +39,19 @@ jobs:
 
       - name: Check for new secrets
         run: |
-          detect-secrets scan \
-            --exclude-files 'pixi\.lock|uv\.lock|.*\.ipynb' \
-            --baseline .secrets.baseline
-          git diff .secrets.baseline | grep -v '"generated_at"' | grep -q '^[+-][^+-]' && exit 1 || exit 0
+          # detect-secrets-hook compares findings against the baseline by
+          # hashed secret rather than file position, so line-number drift in
+          # already-baselined findings does not cause a failure. Exit codes:
+          #   0 = no findings
+          #   1 = new secret detected (fail)
+          #   3 = known findings shifted line numbers (benign; baseline can be
+          #       regenerated locally at the developer's convenience)
+          set +e
+          detect-secrets-hook \
+            --baseline .secrets.baseline \
+            --exclude-files '\.secrets\.baseline|pixi\.lock|uv\.lock|.*\.ipynb' \
+            $(git ls-files | grep -vE '\.secrets\.baseline|pixi\.lock|uv\.lock|.*\.ipynb')
+          status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+            exit "$status"
+          fi
