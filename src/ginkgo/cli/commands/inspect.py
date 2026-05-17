@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.cli.common import resolve_run_dir
-from ginkgo.cli.renderers.common import _task_base_name
+from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.config import _config_session
+from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.caching.provenance import load_manifest
 
@@ -35,12 +35,12 @@ def command_inspect(args) -> int:
 
 def inspect_workflow(*, workflow_path: Path, config_paths: list[Path]) -> dict[str, Any]:
     """Return a static workflow graph snapshot."""
-    with _config_session(override_paths=config_paths):
+    with config_session(override_paths=config_paths):
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
 
-    evaluator = _ConcurrentEvaluator()
+    evaluator = ConcurrentEvaluator()
     evaluator.validate(expr)
 
     nodes = []
@@ -48,7 +48,7 @@ def inspect_workflow(*, workflow_path: Path, config_paths: list[Path]) -> dict[s
         nodes.append(
             {
                 "task_id": f"task_{node.node_id:04d}",
-                "task_name": _task_base_name(node.task_def.name),
+                "task_name": task_base_name(node.task_def.name),
                 "kind": node.task_def.kind,
                 "env": node.task_def.env,
                 "execution_mode": node.task_def.execution_mode,
@@ -87,7 +87,7 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
                 )
             row: dict[str, Any] = {
                 "task_id": task_id,
-                "task_name": _task_base_name(str(task.get("task", "unknown"))),
+                "task_name": task_base_name(str(task.get("task", "unknown"))),
                 "status": task.get("status"),
                 "attempt": task.get("attempt"),
                 "attempts": task.get("attempts"),

@@ -87,7 +87,7 @@ def load_runtime_config(
 
 
 @contextmanager
-def _config_session(
+def config_session(
     *,
     override_paths: Sequence[str | Path] | None = None,
 ) -> Iterator[_ConfigSession]:

@@ -61,15 +61,15 @@ def _task_duration_plain(row: _TaskRow, *, now: float) -> str:
     if row.started_at is None:
         return "--"
     finished_at = row.finished_at if row.finished_at is not None else now
-    return _format_duration(max(0.0, finished_at - row.started_at))
+    return format_duration(max(0.0, finished_at - row.started_at))
 
 
-def _environment_label(env: str | None) -> str:
+def environment_label(env: str | None) -> str:
     """Return the task environment label for the CLI table."""
     return "local" if env is None else f"pixi:{env}"
 
 
-def _task_base_name(task_name: str) -> str:
+def task_base_name(task_name: str) -> str:
     """Return the task name without its module prefix."""
     return task_name.rsplit(".", 1)[-1]
 
@@ -101,7 +101,7 @@ def _truncate_task_label(label: str, *, max_width: int) -> str:
     return f"{base[:head_width]}...{base[-tail_width:]}{suffix}"
 
 
-def _format_duration(seconds: float) -> str:
+def format_duration(seconds: float) -> str:
     """Return a compact human-readable duration string."""
     if seconds < 1:
         return f"{seconds:.2f}s"

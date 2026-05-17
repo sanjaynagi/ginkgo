@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 
 from ginkgo.cli.common import console, resolve_run_dir
-from ginkgo.cli.renderers.common import _task_base_name
+from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.renderers.debug import render_debug_failure_panel, render_debug_header
-from ginkgo.cli.renderers.models import _FailureDetails
+from ginkgo.cli.renderers.models import FailureDetails
 from ginkgo.runtime.caching.provenance import combined_log_tail, load_manifest
 
 
@@ -48,9 +48,9 @@ def _debug_failure_details(
     *,
     run_dir: Path,
     failed_tasks: list[dict[str, object]],
-) -> list[_FailureDetails]:
+) -> list[FailureDetails]:
     """Return failure details for the rich ``ginkgo debug`` report."""
-    details: list[_FailureDetails] = []
+    details: list[FailureDetails] = []
     for task in sorted(failed_tasks, key=lambda item: int(item.get("node_id", -1))):
         log_tail = combined_log_tail(
             run_dir=run_dir,
@@ -68,8 +68,8 @@ def _debug_failure_details(
             else None
         )
         details.append(
-            _FailureDetails(
-                task_label=_task_base_name(task_name),
+            FailureDetails(
+                task_label=task_base_name(task_name),
                 exit_code=task.get("exit_code"),
                 log_path=stderr_path,
                 log_tail=log_tail,
@@ -93,7 +93,7 @@ def _debug_failure_payload(
         payload.append(
             {
                 "task_id": task.get("task_id"),
-                "task_name": _task_base_name(str(task.get("task", "unknown"))),
+                "task_name": task_base_name(str(task.get("task", "unknown"))),
                 "exit_code": task.get("exit_code"),
                 "error": task.get("error"),
                 "failure": task.get("failure"),

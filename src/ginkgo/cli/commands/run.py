@@ -14,24 +14,24 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
-from ginkgo.cli.renderers.common import _environment_label, _format_duration
+from ginkgo.cli.renderers.common import environment_label, format_duration
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.renderers.models import (
-    _AssetSummary,
-    _FailureDetails,
-    _NotebookSummary,
-    _ResourceRenderState,
-    _RunSummary,
+    CliAssetSummary,
+    FailureDetails,
+    CliNotebookSummary,
+    ResourceRenderState,
+    CliRunSummary,
 )
 from ginkgo.cli.renderers.rich import RichEventRenderer
-from ginkgo.cli.renderers.run import _CliRunRenderer
+from ginkgo.cli.renderers.run import CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.config import _config_session, load_runtime_config
+from ginkgo.config import config_session, load_runtime_config
 from ginkgo.core.flow import discover_flow
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeBackend, LocalBackend
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.caching.provenance import (
@@ -102,7 +102,7 @@ def run_workflow(
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
 
     load_started = time.perf_counter()
-    with _config_session(override_paths=config_paths) as session:
+    with config_session(override_paths=config_paths) as session:
         with profiler.timed("workflow_module_import"):
             module = load_module_from_path(workflow_path)
         with profiler.timed("flow_construction"):
@@ -138,7 +138,7 @@ def run_workflow(
         remote_executor = _build_batch_executor(runtime_config=runtime_config)
         code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
 
-    evaluator = _ConcurrentEvaluator(
+    evaluator = ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
         memory=memory,
@@ -156,7 +156,7 @@ def run_workflow(
     edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
     env_count = len({node.task_def.env for node in evaluator._nodes.values() if node.task_def.env})
     planned_tasks = [
-        (node.node_id, node.task_def.name, _environment_label(node.task_def.env))
+        (node.node_id, node.task_def.name, environment_label(node.task_def.env))
         for node in sorted(evaluator._nodes.values(), key=lambda item: item.node_id)
     ]
 
@@ -187,7 +187,7 @@ def run_workflow(
 
     if output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[cyan]📦[/] Loading workflow...  [green]done[/] ({_format_duration(load_elapsed)})"
+            f"[cyan]📦[/] Loading workflow...  [green]done[/] ({format_duration(load_elapsed)})"
         )
         rich_console.print(
             f"[green]🌱[/] Building expression tree...  [bold]{task_count}[/] tasks"
@@ -244,9 +244,9 @@ def run_workflow(
                     )
                 )
             else:
-                renderer = _CliRunRenderer(
+                renderer = CliRunRenderer(
                     console=rich_console,
-                    summary=_RunSummary(
+                    summary=CliRunSummary(
                         run_id=run_id,
                         mode=output_mode,
                         run_dir=recorder.run_dir,
@@ -254,10 +254,10 @@ def run_workflow(
                         memory=memory,
                         executor=executor,
                     ),
-                    resources=_ResourceRenderState(provider=resource_monitor.current_summary),
+                    resources=ResourceRenderState(provider=resource_monitor.current_summary),
                 )
                 bus.subscribe(RichEventRenderer(renderer=renderer))
-            evaluator = _ConcurrentEvaluator(
+            evaluator = ConcurrentEvaluator(
                 jobs=jobs,
                 cores=cores,
                 memory=memory,
@@ -367,11 +367,11 @@ def _load_failure_details(
     *,
     run_dir: Path,
     run_summary: RunSummary,
-    renderer: _CliRunRenderer,
+    renderer: CliRunRenderer,
     verbose: bool,
-) -> list[_FailureDetails]:
+) -> list[FailureDetails]:
     """Load failed-task diagnostics from a finished run."""
-    details: list[_FailureDetails] = []
+    details: list[FailureDetails] = []
     tail_lines = 20 if verbose else 10
     for task in run_summary.failed_tasks:
         node_id = task.node_id if task.node_id is not None else -1
@@ -388,7 +388,7 @@ def _load_failure_details(
             else None
         )
         details.append(
-            _FailureDetails(
+            FailureDetails(
                 task_label=renderer.label_for_node(node_id) or task.name,
                 exit_code=task.exit_code,
                 log_path=stderr_path,
@@ -432,14 +432,14 @@ def _print_profile_table(
 def _render_notebooks(
     *,
     run_summary: RunSummary,
-    renderer: _CliRunRenderer,
-) -> list[_NotebookSummary]:
+    renderer: CliRunRenderer,
+) -> list[CliNotebookSummary]:
     """Build CLI-renderer notebook rows from a run summary.
 
     Resolves rendered HTML paths against the run directory and substitutes
     runtime task labels when the renderer has them.
     """
-    rows: list[_NotebookSummary] = []
+    rows: list[CliNotebookSummary] = []
     for notebook in run_summary.notebooks:
         if notebook.rendered_html is None:
             continue
@@ -452,13 +452,13 @@ def _render_notebooks(
         task_label = (
             renderer.label_for_node(node_id) if isinstance(node_id, int) else None
         ) or notebook.base_name
-        rows.append(_NotebookSummary(task_label=task_label, html_path=html_path))
+        rows.append(CliNotebookSummary(task_label=task_label, html_path=html_path))
     return rows
 
 
-def _render_assets(*, run_summary: RunSummary) -> list[_AssetSummary]:
+def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
-    return [_AssetSummary(name=asset.name) for asset in run_summary.assets]
+    return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
 
 
 def _load_code_bundle_config(*, runtime_config: dict[str, Any]) -> dict[str, Any] | None:

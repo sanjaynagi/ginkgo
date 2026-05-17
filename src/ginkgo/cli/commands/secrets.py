@@ -8,9 +8,9 @@ import sys
 
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.config import _config_session
+from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import build_secret_resolver, collect_secret_refs
 
@@ -22,13 +22,13 @@ def command_secrets(args) -> int:
         workflow=args.workflow,
     ).path
 
-    with _config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
+    with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
         config = session.merged_loaded_values()
 
-    evaluator = _ConcurrentEvaluator()
+    evaluator = ConcurrentEvaluator()
     evaluator.validate(expr)
 
     refs = sorted(

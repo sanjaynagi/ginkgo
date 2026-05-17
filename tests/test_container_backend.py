@@ -268,7 +268,7 @@ class TestContainerKindRestriction:
             evaluate(python_in_container(x=1))
 
     def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path):
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         from ginkgo import shell, task
 
@@ -283,7 +283,7 @@ class TestContainerKindRestriction:
         # TypeError.  The backend.validate_envs call will fail because Docker
         # isn't available, but that's a different error.
         backend = ContainerBackend(project_root=tmp_path)
-        evaluator = _ConcurrentEvaluator(backend=backend)
+        evaluator = ConcurrentEvaluator(backend=backend)
         evaluator._root_template = shell_in_container(output_path=output)
         evaluator._root_dependency_ids = evaluator._register_value(evaluator._root_template)
 

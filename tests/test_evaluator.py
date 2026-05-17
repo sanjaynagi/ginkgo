@@ -28,7 +28,7 @@ from ginkgo import (
 )
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
-from ginkgo.runtime.evaluator import CycleError, _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
@@ -474,7 +474,7 @@ class TestEvaluate:
                 )
             raise AssertionError(command)
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
         manifest = load_manifest(recorder.run_dir)
@@ -491,7 +491,7 @@ class TestEvaluate:
         assert manifest["tasks"]["task_0000"]["managed_kernel_name"].startswith("ginkgo-")
 
         # Re-evaluating with the same notebook hits cache.
-        cached = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        cached = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(
             cached._shell_runner,
             "_run_subprocess",
@@ -552,7 +552,7 @@ class TestEvaluate:
                 return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
             raise AssertionError(command)
 
-        first_evaluator = _ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
+        first_evaluator = ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
         monkeypatch.setattr(first_evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         first_result = first_evaluator.evaluate(expr)
         first_manifest = load_manifest(first_recorder.run_dir)
@@ -571,7 +571,7 @@ class TestEvaluate:
             jobs=1,
             cores=1,
         )
-        cached_evaluator = _ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
+        cached_evaluator = ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
         monkeypatch.setattr(
             cached_evaluator._shell_runner,
             "_run_subprocess",
@@ -651,7 +651,7 @@ class TestEvaluate:
                 return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
             raise AssertionError(command)
 
-        evaluator = _ConcurrentEvaluator(
+        evaluator = ConcurrentEvaluator(
             provenance=recorder,
             jobs=1,
             cores=1,
@@ -715,7 +715,7 @@ class TestEvaluate:
                 return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
             raise AssertionError(command)
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
@@ -733,7 +733,7 @@ class TestEvaluate:
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
         expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
-        evaluator = _ConcurrentEvaluator(jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
 
         def fake_run_subprocess(
             *,
@@ -831,7 +831,7 @@ class TestEvaluate:
                 return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
             raise AssertionError(command)
 
-        evaluator = _ConcurrentEvaluator(
+        evaluator = ConcurrentEvaluator(
             provenance=recorder,
             jobs=2,
             cores=2,
@@ -874,7 +874,7 @@ class TestEvaluate:
                 )
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
@@ -905,7 +905,7 @@ class TestEvaluate:
             output_path.write_text("done\n", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
-        evaluator = _ConcurrentEvaluator(jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
@@ -947,7 +947,7 @@ class TestEvaluate:
                     (p / "task_0000.html").write_text("<html/>", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
-        ev1 = _ConcurrentEvaluator(jobs=1, cores=1)
+        ev1 = ConcurrentEvaluator(jobs=1, cores=1)
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(ev1._shell_runner, "_run_subprocess", fake_subprocess_ok)
         try:
@@ -1038,7 +1038,7 @@ class TestEvaluate:
         second = passthrough_task(value=first)
         first.args["value"] = second
 
-        evaluator = _ConcurrentEvaluator()
+        evaluator = ConcurrentEvaluator()
         with pytest.raises(
             CycleError,
             match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
@@ -1383,7 +1383,7 @@ class TestInterruptHandling:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        evaluator = _ConcurrentEvaluator()
+        evaluator = ConcurrentEvaluator()
         future_one = Future()
         future_two = Future()
         tracked_one = _FakeTrackedProcess(pid=101)
@@ -1428,7 +1428,7 @@ class TestInterruptHandling:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        evaluator = _ConcurrentEvaluator()
+        evaluator = ConcurrentEvaluator()
         popen_calls: list[tuple[object, dict[str, object]]] = []
 
         class FakePopen:
@@ -1457,7 +1457,7 @@ class TestInterruptHandling:
 
 class TestPixiWorkerPayload:
     def test_build_worker_payload_does_not_contain_import_roots(self, tmp_path: Path) -> None:
-        evaluator = _ConcurrentEvaluator()
+        evaluator = ConcurrentEvaluator()
         expr = add_one_task(x=1)
         node_id = evaluator._register_expr(expr)
         node = evaluator._nodes[node_id]
@@ -1500,7 +1500,7 @@ class TestSecrets:
             secret_value=secret("API_TOKEN"),
             output_path="result.txt",
         )
-        evaluator = _ConcurrentEvaluator(
+        evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
             provenance=recorder,
@@ -1532,7 +1532,7 @@ class TestSecrets:
             config={},
             environ={"API_TOKEN": "rotated-token"},
         )
-        second_evaluator = _ConcurrentEvaluator(
+        second_evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
             provenance=second_recorder,
@@ -1564,7 +1564,7 @@ class TestSecrets:
             memory=None,
             params={},
         )
-        evaluator = _ConcurrentEvaluator(
+        evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
             provenance=recorder,
@@ -1607,7 +1607,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
 
         result = evaluator.evaluate(
             transform_asset_task(
@@ -1656,7 +1656,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        first_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        first_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
         assert first_evaluator.evaluate(expr) == "hello"
 
         second_recorder = RunProvenanceRecorder(
@@ -1668,7 +1668,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        second_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        second_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
         assert second_evaluator.evaluate(expr) == "hello"
 
         manifest = load_manifest(second_recorder.run_dir)
@@ -1705,7 +1705,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        first_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        first_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
         first_result = first_evaluator.evaluate(
             shell_asset_with_payload_task(output_path="shell.txt", payload="first")
         )
@@ -1723,7 +1723,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        second_evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        second_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
         second_result = second_evaluator.evaluate(
             shell_asset_with_payload_task(output_path="shell.txt", payload="second")
         )
@@ -1750,7 +1750,7 @@ class TestAssets:
             memory=None,
             params={},
         )
-        evaluator = _ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
 
         result = evaluator.evaluate(
             nested_asset_inputs_task(

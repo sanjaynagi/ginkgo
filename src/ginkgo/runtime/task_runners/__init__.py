@@ -1,7 +1,7 @@
 """Task runners that execute the various task kinds.
 
 This package collects the per-kind execution helpers used by
-``_ConcurrentEvaluator``. Splitting them out of ``runtime/evaluator.py``
+``ConcurrentEvaluator``. Splitting them out of ``runtime/evaluator.py``
 keeps each runner small enough to reason about and unit-test in isolation.
 """
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ginkgo.cli.renderers.run import _CliRunRenderer
+from ginkgo.cli.renderers.run import CliRunRenderer
 from ginkgo.runtime.events import (
     GinkgoEvent,
     TaskCacheHit,
@@ -21,7 +21,7 @@ from ginkgo.runtime.events import (
 class RichEventRenderer:
     """Translate runtime events into the existing Rich run renderer stream."""
 
-    def __init__(self, *, renderer: _CliRunRenderer) -> None:
+    def __init__(self, *, renderer: CliRunRenderer) -> None:
         self._renderer = renderer
 
     def __call__(self, event: GinkgoEvent) -> None:
