@@ -19,6 +19,7 @@ benchmarks/results/
 AGENTS.md
 CLAUDE.md
 .claude/
+.agents/
 
 # uncoded symbol index (regenerated locally via `uncoded sync`)
 .uncoded/

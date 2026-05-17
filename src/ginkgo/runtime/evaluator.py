@@ -18,8 +18,6 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import Manager, get_context
 from pathlib import Path
-from queue import Empty
-from threading import Event, Thread
 from typing import Any
 
 from ginkgo.core.asset import AssetRef, AssetVersion
@@ -57,7 +55,6 @@ from ginkgo.runtime.events import (
     TaskCacheMiss,
     TaskCompleted,
     TaskFailed,
-    TaskLog,
     TaskNotice,
     TaskReady,
     TaskRetrying,
@@ -65,6 +62,7 @@ from ginkgo.runtime.events import (
     TaskStaging,
     TaskStarted,
 )
+from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
 from ginkgo.runtime.profiling import ProfileRecorder
@@ -239,14 +237,7 @@ class ConcurrentEvaluator:
     )
     _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
     _staging_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
-    _log_event_queue: Any = field(default=None, init=False, repr=False)
-    _log_drain_stop: Event | None = field(default=None, init=False, repr=False)
-    _log_drain_thread: Thread | None = field(default=None, init=False, repr=False)
-    _task_log_sequences: dict[tuple[int, str], int] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
+    _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
     code_bundle_config: dict[str, Any] | None = None
     _remote_watcher_executor: ThreadPoolExecutor | None = field(
@@ -301,10 +292,14 @@ class ConcurrentEvaluator:
             backend=self.backend,
             secret_resolver=self.secret_resolver,
         )
+        self._log_drain = LogDrain(
+            event_bus=self.event_bus,
+            run_id_provider=lambda: self._run_id,
+        )
         self._shell_runner = ShellRunner(
             backend=self.backend,
             validator=self._validator,
-            log_emitter_factory=self._task_log_emitter,
+            log_emitter_factory=self._log_drain.make_emitter,
         )
         self._notebook_runner = NotebookRunner(
             backend=self.backend,
@@ -363,7 +358,7 @@ class ConcurrentEvaluator:
             self._python_executor = python_executor
             self._shell_executor = shell_executor
             self._staging_executor = staging_executor
-            self._start_log_drain(queue=log_manager.Queue())
+            self._log_drain.start(queue=log_manager.Queue())
             try:
                 while True:
                     if signals.exception is not None and self._failure is None:
@@ -413,7 +408,7 @@ class ConcurrentEvaluator:
 
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             finally:
-                self._stop_log_drain()
+                self._log_drain.stop()
                 self._python_executor = None
                 self._shell_executor = None
                 self._materialization_log.save()
@@ -1221,69 +1216,6 @@ class ConcurrentEvaluator:
                 if process.is_alive():
                     process.kill()
 
-    def _start_log_drain(self, *, queue: Any) -> None:
-        """Start draining worker log chunks from the multiprocessing queue."""
-        self._log_event_queue = queue
-        self._log_drain_stop = Event()
-        self._log_drain_thread = Thread(
-            target=self._drain_log_events,
-            name="ginkgo-log-drain",
-            daemon=True,
-        )
-        self._log_drain_thread.start()
-
-    def _stop_log_drain(self) -> None:
-        """Stop the worker log drain thread."""
-        if self._log_drain_stop is not None:
-            self._log_drain_stop.set()
-        if self._log_drain_thread is not None:
-            self._log_drain_thread.join(timeout=1.0)
-        self._log_event_queue = None
-        self._log_drain_stop = None
-        self._log_drain_thread = None
-
-    def _drain_log_events(self) -> None:
-        """Convert queued worker log chunks into runtime events."""
-        if self._log_event_queue is None or self._log_drain_stop is None:
-            return
-
-        while True:
-            try:
-                payload = self._log_event_queue.get(timeout=0.1)
-            except Empty:
-                if self._log_drain_stop.is_set():
-                    return
-                continue
-            except Exception:
-                return
-
-            chunk = payload.get("chunk")
-            stream = payload.get("stream")
-            task_id = payload.get("task_id")
-            if (
-                not isinstance(chunk, str)
-                or not isinstance(stream, str)
-                or not isinstance(task_id, str)
-                or not chunk
-            ):
-                continue
-            node_id = int(task_id.split("_")[-1])
-            sequence_key = (node_id, stream)
-            sequence = self._task_log_sequences.get(sequence_key, 0) + 1
-            self._task_log_sequences[sequence_key] = sequence
-            self._emit_event(
-                TaskLog(
-                    run_id=str(payload.get("run_id") or self._run_id),
-                    task_id=task_id,
-                    task_name=str(payload.get("task_name") or ""),
-                    attempt=int(payload.get("attempt") or 0),
-                    display_label=payload.get("display_label"),
-                    stream=stream,
-                    chunk=chunk,
-                    sequence=sequence,
-                )
-            )
-
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
         return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
@@ -1736,7 +1668,7 @@ class ConcurrentEvaluator:
             "task_name": node.task_def.name,
             "attempt": node.attempt,
             "display_label": node.display_label,
-            "log_event_queue": self._log_event_queue,
+            "log_event_queue": self._log_drain.queue,
             "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
@@ -2119,30 +2051,6 @@ class ConcurrentEvaluator:
             with self.profiler.timed("event_emit"):
                 self.event_bus.emit(event)
 
-    def _task_log_emitter(self, *, node: _TaskNode, stream: str) -> Any:
-        """Return a task-log callback bound to one task node and stream."""
-
-        def emit(chunk: str) -> None:
-            if not chunk:
-                return
-            sequence_key = (node.node_id, stream)
-            sequence = self._task_log_sequences.get(sequence_key, 0) + 1
-            self._task_log_sequences[sequence_key] = sequence
-            self._emit_event(
-                TaskLog(
-                    run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
-                    task_name=node.task_def.name,
-                    attempt=node.attempt,
-                    display_label=node.display_label,
-                    stream=stream,
-                    chunk=chunk,
-                    sequence=sequence,
-                )
-            )
-
-        return emit
-
     def _run_driver_task(self, *, node: _TaskNode) -> Any:
         """Run a driver-task wrapper on the scheduler process.
 
@@ -2157,7 +2065,7 @@ class ConcurrentEvaluator:
             stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
             stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
             secret_values=node.secret_values,
-            log_emitter=lambda *, stream, chunk: self._task_log_emitter(
+            log_emitter=lambda *, stream, chunk: self._log_drain.make_emitter(
                 node=node,
                 stream=stream,
             )(chunk),
