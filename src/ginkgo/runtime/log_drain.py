@@ -36,9 +36,7 @@ class LogDrain:
     _queue: Any = field(default=None, init=False, repr=False)
     _stop: Event | None = field(default=None, init=False, repr=False)
     _thread: Thread | None = field(default=None, init=False, repr=False)
-    _sequences: dict[tuple[int, str], int] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _sequences: dict[tuple[int, str], int] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def queue(self) -> Any:
