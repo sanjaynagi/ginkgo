@@ -24,9 +24,9 @@ class TestLoadModuleFromPath:
 
         importlib.reload(ginkgo)
 
-        from ginkgo.config import _config_session
+        from ginkgo.config import config_session
 
-        assert _config_session is not None
+        assert config_session is not None
         assert callable(ginkgo.config)
         assert not isinstance(ginkgo.config, ModuleType)
 

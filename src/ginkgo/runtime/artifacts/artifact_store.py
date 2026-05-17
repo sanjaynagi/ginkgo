@@ -631,7 +631,7 @@ def _remove_dest(dest_path: Path) -> None:
         dest_path.unlink()
 
 
-def _make_writable_recursive(path: Path) -> None:
+def make_writable_recursive(path: Path) -> None:
     """Restore write permissions on a read-only directory tree before deletion."""
     for child in path.rglob("*"):
         if child.is_dir():

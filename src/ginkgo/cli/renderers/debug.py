@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ginkgo.cli.renderers.models import _FailureDetails
+from ginkgo.cli.renderers.models import FailureDetails
 
 
 def render_debug_header(*, run_dir: Path, manifest: dict[str, object], failures: int) -> Panel:
@@ -33,7 +33,7 @@ def render_debug_header(*, run_dir: Path, manifest: dict[str, object], failures:
     )
 
 
-def render_debug_failure_panel(details: _FailureDetails) -> Panel:
+def render_debug_failure_panel(details: FailureDetails) -> Panel:
     """Render a failed task report for ``ginkgo debug``."""
     summary = Table.grid(padding=(0, 1))
     summary.add_column(style="bold #7f1d1d", no_wrap=True)

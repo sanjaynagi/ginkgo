@@ -9,7 +9,7 @@ import sys
 
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.config import _config_session
+from ginkgo.config import config_session
 from ginkgo.remote.access.doctor import collect_access_diagnostics
 from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
@@ -21,7 +21,7 @@ def command_doctor(args) -> int:
         project_root=Path.cwd(),
         workflow=args.workflow,
     ).path
-    with _config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
+    with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
         config = session.merged_loaded_values()
     diagnostics = collect_workflow_diagnostics(
         workflow_path=workflow_path,

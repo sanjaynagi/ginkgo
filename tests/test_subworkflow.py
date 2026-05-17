@@ -17,7 +17,7 @@ from ginkgo.runtime.caching.provenance import (
     load_manifest,
     make_run_id,
 )
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.task_runners.subworkflow import (
     DEPTH_ENV,
     PARENT_RUN_ENV,
@@ -100,7 +100,7 @@ class TestRecursionGuard:
             cores=1,
         )
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         runner = evaluator._subworkflow_runner
 
         class _FakeNode:
@@ -158,7 +158,7 @@ class TestEvaluatorDispatch:
                 stderr="",
             )
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(call_child_task(workflow_path=str(child_path), region="emea"))
@@ -203,7 +203,7 @@ class TestEvaluatorDispatch:
                 stderr="something broke\n",
             )
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         with pytest.raises(SubWorkflowError) as exc_info:
@@ -222,7 +222,7 @@ class TestEvaluatorDispatch:
         child_path.write_text("", encoding="utf-8")
 
         recorder = self._make_recorder(tmp_path)
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
 
         with pytest.raises(TypeError, match="subworkflow"):
             evaluator.evaluate(call_child_wrong_return(workflow_path=str(child_path)))
@@ -245,7 +245,7 @@ class TestEvaluatorDispatch:
                 stderr="",
             )
 
-        evaluator = _ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
         with pytest.raises(RuntimeError, match="GINKGO_CHILD_RUN_ID"):

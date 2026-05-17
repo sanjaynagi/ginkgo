@@ -16,8 +16,8 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.common import CACHE_ROOT, console
-from ginkgo.cli.renderers.common import _task_base_name
-from ginkgo.runtime.artifacts.artifact_store import _make_writable_recursive
+from ginkgo.cli.renderers.common import task_base_name
+from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 
 
 def command_cache(args) -> int:
@@ -176,7 +176,7 @@ def _cache_entry_row(entry: Path) -> CacheEntryRow:
     return CacheEntryRow(
         path=entry,
         cache_key=entry.name,
-        task=_task_base_name(function),
+        task=task_base_name(function),
         size=_format_size(size_bytes),
         size_bytes=size_bytes,
         age=_format_age(created_at),
@@ -349,7 +349,7 @@ def _safe_rmtree(path: Path) -> None:
     try:
         shutil.rmtree(path)
     except PermissionError:
-        _make_writable_recursive(path)
+        make_writable_recursive(path)
         shutil.rmtree(path)
 
 
@@ -481,6 +481,6 @@ def _entries_for_function(
         if exclude == entry.name:
             continue
         meta = _read_cache_meta(cache_root=cache_root, cache_key=entry.name)
-        if _task_base_name(str(meta.get("function", "unknown"))) == _task_base_name(function):
+        if task_base_name(str(meta.get("function", "unknown"))) == task_base_name(function):
             entries.append(meta)
     return entries

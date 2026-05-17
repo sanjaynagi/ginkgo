@@ -236,12 +236,12 @@ class TestCachePruneReadOnly:
 
         # Prune everything by removing all entries directly.
         import shutil
-        from ginkgo.runtime.artifacts.artifact_store import _make_writable_recursive
+        from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 
         for entry in cache_root.iterdir():
             if entry.is_dir():
                 try:
                     shutil.rmtree(entry)
                 except PermissionError:
-                    _make_writable_recursive(entry)
+                    make_writable_recursive(entry)
                     shutil.rmtree(entry)

@@ -17,7 +17,7 @@ from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.cli import (
     _core_unit_label,
-    _environment_label,
+    environment_label,
     _time_of_day_spinner,
     _truncate_task_label,
 )
@@ -1077,8 +1077,8 @@ class TestCliLabelTruncation:
 
 class TestCliEnvironmentLabels:
     def test_environment_label_formats_local_and_pixi_tasks(self) -> None:
-        assert _environment_label(None) == "local"
-        assert _environment_label("bioinfo_tools") == "pixi:bioinfo_tools"
+        assert environment_label(None) == "local"
+        assert environment_label("bioinfo_tools") == "pixi:bioinfo_tools"
 
 
 class TestCliCoreLabels:

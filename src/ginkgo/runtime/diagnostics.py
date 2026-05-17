@@ -6,9 +6,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ginkgo.config import _config_session
+from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
-from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
 
@@ -36,11 +36,11 @@ def collect_workflow_diagnostics(
 ) -> list[WorkflowDiagnostic]:
     """Collect structured workflow diagnostics."""
     try:
-        with _config_session(override_paths=config_paths):
+        with config_session(override_paths=config_paths):
             module = load_module_from_path(workflow_path)
             flow = discover_flow(module)
             expr = flow()
-        evaluator = _ConcurrentEvaluator(secret_resolver=secret_resolver)
+        evaluator = ConcurrentEvaluator(secret_resolver=secret_resolver)
         evaluator.validate(expr)
         return []
     except BaseException as exc:

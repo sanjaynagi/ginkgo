@@ -2,7 +2,7 @@
 
 This module isolates the rules that decide whether a task definition,
 its resolved inputs, and its return value are well-formed. The logic was
-previously inlined in ``_ConcurrentEvaluator`` — extracting it lets the
+previously inlined in ``ConcurrentEvaluator`` — extracting it lets the
 scheduler stay focused on graph and lifecycle management while keeping
 validation independently testable.
 """

@@ -223,16 +223,16 @@ class TestWarmRunIntegration:
 
     def test_warm_run_completes_cached_dag_before_dispatch(self, tmp_path: Path) -> None:
         """A fully cached DAG should not enter task execution on the warm run."""
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         output = tmp_path / "output.txt"
 
         expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = _ConcurrentEvaluator()
+        evaluator1 = ConcurrentEvaluator()
         assert evaluator1.evaluate(expr1) == 7
 
         expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = _ConcurrentEvaluator()
+        evaluator2 = ConcurrentEvaluator()
         evaluator2._start_task_execution = MagicMock(  # type: ignore[method-assign]
             side_effect=AssertionError("warm cached DAG should not dispatch task execution")
         )
@@ -242,16 +242,16 @@ class TestWarmRunIntegration:
 
     def test_warm_run_skips_environment_preparation(self, tmp_path: Path) -> None:
         """A warm cache hit should not prepare task environments."""
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         output = tmp_path / "output.txt"
 
         expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = _ConcurrentEvaluator()
+        evaluator1 = ConcurrentEvaluator()
         assert evaluator1.evaluate(expr1) == 7
 
         expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = _ConcurrentEvaluator()
+        evaluator2 = ConcurrentEvaluator()
         evaluator2._prepare_task_environment = MagicMock(  # type: ignore[method-assign]
             side_effect=AssertionError("warm cached task should not prepare environments")
         )
@@ -282,20 +282,20 @@ class TestTrustWorkspace:
 
     def test_trust_workspace_warm_run(self, tmp_path: Path) -> None:
         """A --trust-workspace warm run should hit cache via stat index."""
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         output = tmp_path / "output.txt"
 
         # Cold run (builds stat index).
         expr1 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator1 = _ConcurrentEvaluator()
+        evaluator1 = ConcurrentEvaluator()
         result1 = evaluator1.evaluate(expr1)
         assert result1 == 7
 
         # Warm run with trust_workspace.
         collector = EventCollector()
         expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = _ConcurrentEvaluator(trust_workspace=True, event_bus=collector.bus)
+        evaluator2 = ConcurrentEvaluator(trust_workspace=True, event_bus=collector.bus)
         result2 = evaluator2.evaluate(expr2)
         assert result2 == 7
 
@@ -303,7 +303,7 @@ class TestTrustWorkspace:
 
     def test_versioned_remote_input_warm_run_skips_staging(self, tmp_path: Path) -> None:
         """Pinned remote inputs can hit cache without staging on the warm run."""
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         class _FakeStagingCache:
             def __init__(self, *, root: Path, fail: bool = False) -> None:
@@ -323,11 +323,11 @@ class TestTrustWorkspace:
 
         ref = remote_file("s3://bucket/cacheable.txt", version_id="v1")
 
-        evaluator1 = _ConcurrentEvaluator()
+        evaluator1 = ConcurrentEvaluator()
         evaluator1._stager._staging_cache = _FakeStagingCache(root=tmp_path / "stage-cold")
         assert evaluator1.evaluate(read_versioned_remote_file(path=ref)) == "cacheable"
 
-        evaluator2 = _ConcurrentEvaluator()
+        evaluator2 = ConcurrentEvaluator()
         evaluator2._stager._staging_cache = _FakeStagingCache(
             root=tmp_path / "stage-warm", fail=True
         )

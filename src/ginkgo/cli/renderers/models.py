@@ -11,7 +11,7 @@ from ginkgo.cli.common import RunMode
 
 
 @dataclass(kw_only=True)
-class _RunSummary:
+class CliRunSummary:
     """Static metadata used across the CLI renderers."""
 
     run_id: str
@@ -36,7 +36,7 @@ class _TaskRow:
 
 
 @dataclass(kw_only=True)
-class _FailureDetails:
+class FailureDetails:
     """Renderable diagnostics for a failed task."""
 
     task_label: str
@@ -94,14 +94,14 @@ class _TaskGroup:
 
 
 @dataclass(frozen=True)
-class _ResourceRenderState:
+class ResourceRenderState:
     """Live resource summary provider for CLI rendering."""
 
     provider: Callable[[], dict[str, object]]
 
 
 @dataclass(frozen=True, kw_only=True)
-class _NotebookSummary:
+class CliNotebookSummary:
     """Rendered notebook artifact produced in a run."""
 
     task_label: str
@@ -109,7 +109,7 @@ class _NotebookSummary:
 
 
 @dataclass(frozen=True, kw_only=True)
-class _AssetSummary:
+class CliAssetSummary:
     """Asset materialised in a run."""
 
     name: str

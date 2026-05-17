@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ginkgo.cli.renderers.common import (
     _core_unit_label,
-    _environment_label,
+    environment_label,
     _time_of_day_spinner,
     _truncate_task_label,
 )
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "main",
     "_core_unit_label",
-    "_environment_label",
+    "environment_label",
     "_time_of_day_spinner",
     "_truncate_task_label",
 ]

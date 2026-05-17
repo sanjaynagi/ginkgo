@@ -154,7 +154,7 @@ def evaluate(
     Any
         The concrete result of evaluating the input.
     """
-    return _ConcurrentEvaluator(
+    return ConcurrentEvaluator(
         jobs=jobs,
         cores=cores,
         memory=memory,
@@ -206,7 +206,7 @@ class _TaskNode:
 
 
 @dataclass(kw_only=True)
-class _ConcurrentEvaluator:
+class ConcurrentEvaluator:
     """Concurrent evaluator with dependency tracking and cache integration."""
 
     jobs: int | None = None

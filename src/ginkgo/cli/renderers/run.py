@@ -22,10 +22,10 @@ from ginkgo.cli.renderers.common import (
     _format_bytes,
     _format_cpu_percent,
     _core_unit_label,
-    _format_duration,
+    format_duration,
     _status_label,
     _status_text,
-    _task_base_name,
+    task_base_name,
     _task_duration_plain,
     _task_duration_text,
     _task_label_width,
@@ -33,11 +33,11 @@ from ginkgo.cli.renderers.common import (
     _truncate_task_label,
 )
 from ginkgo.cli.renderers.models import (
-    _AssetSummary,
-    _FailureDetails,
-    _NotebookSummary,
-    _ResourceRenderState,
-    _RunSummary,
+    CliAssetSummary,
+    FailureDetails,
+    CliNotebookSummary,
+    ResourceRenderState,
+    CliRunSummary,
     _TaskGroup,
     _TaskRow,
 )
@@ -46,15 +46,15 @@ _GROUP_THRESHOLD = 6
 """Minimum invocation count to collapse same-task rows into a group."""
 
 
-class _CliRunRenderer:
+class CliRunRenderer:
     """Render human-friendly task lifecycle output from evaluator JSON events."""
 
     def __init__(
         self,
         *,
         console: Console,
-        summary: _RunSummary,
-        resources: _ResourceRenderState | None = None,
+        summary: CliRunSummary,
+        resources: ResourceRenderState | None = None,
     ) -> None:
         self._console = console
         self._summary = summary
@@ -108,9 +108,9 @@ class _CliRunRenderer:
         elapsed: float,
         success: bool,
         resources: dict[str, object] | None = None,
-        failure_details: list[_FailureDetails] | None = None,
-        notebooks: list[_NotebookSummary] | None = None,
-        assets: list[_AssetSummary] | None = None,
+        failure_details: list[FailureDetails] | None = None,
+        notebooks: list[CliNotebookSummary] | None = None,
+        assets: list[CliAssetSummary] | None = None,
         remote_summary: str | None = None,
     ) -> None:
         """Print the final run summary."""
@@ -131,13 +131,13 @@ class _CliRunRenderer:
         executed = counts["succeeded"] + counts["failed"]
         if success:
             self._console.print(
-                f"\n[bold cyan]⏱[/] Completed in [bold]{_format_duration(elapsed)}[/] - "
+                f"\n[bold cyan]⏱[/] Completed in [bold]{format_duration(elapsed)}[/] - "
                 f"{executed} tasks executed, {cached} cached"
             )
         else:
             failed = counts["failed"]
             self._console.print(
-                f"\n[bold red]✖[/] Failed in [bold]{_format_duration(elapsed)}[/] - "
+                f"\n[bold red]✖[/] Failed in [bold]{format_duration(elapsed)}[/] - "
                 f"{executed} tasks executed, {cached} cached, {failed} failed"
             )
         resource_summary = resources or self._resource_summary()
@@ -313,7 +313,7 @@ class _CliRunRenderer:
                         bar_text.append_text(chunk)
                 bar_text.append(f" {terminal}/{total}", style="bold #134e4a")
                 elapsed = item.elapsed(now=now)
-                time_str = _format_duration(elapsed) if elapsed is not None else "--"
+                time_str = format_duration(elapsed) if elapsed is not None else "--"
                 table.add_row(
                     Text(
                         _truncate_task_label(item.label, max_width=max_label),
@@ -372,7 +372,7 @@ class _CliRunRenderer:
             f"Procs {_format_count(current.get('process_count'))}"
         )
 
-    def _render_notebooks(self, notebooks: list[_NotebookSummary]) -> Text:
+    def _render_notebooks(self, notebooks: list[CliNotebookSummary]) -> Text:
         """Render the list of notebooks materialised in this run."""
         text = Text()
         text.append(f"\n📓 Notebooks materialised ({len(notebooks)})\n", style="bold")
@@ -383,7 +383,7 @@ class _CliRunRenderer:
             text.append("\n")
         return text
 
-    def _render_assets(self, assets: list[_AssetSummary]) -> Text:
+    def _render_assets(self, assets: list[CliAssetSummary]) -> Text:
         """Render the list of assets materialised in this run."""
         text = Text()
         text.append(f"\n📦 Assets materialised ({len(assets)})\n", style="bold")
@@ -391,7 +391,7 @@ class _CliRunRenderer:
             text.append(f"  {asset.name}\n", style="bold #134e4a")
         return text
 
-    def _render_failure_details(self, details: list[_FailureDetails]):
+    def _render_failure_details(self, details: list[FailureDetails]):
         parts: list[object] = []
         category_summary = self._render_failure_category_summary(details)
         if category_summary is not None:
@@ -399,7 +399,7 @@ class _CliRunRenderer:
         parts.extend(self._render_failure_panel(item) for item in details)
         return Group(*parts)
 
-    def _render_failure_category_summary(self, details: list[_FailureDetails]) -> Text | None:
+    def _render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
         """Return a one-line summary grouping failures by category, if any."""
         categorised = [item for item in details if item.failure_kind]
         if not categorised:
@@ -412,7 +412,7 @@ class _CliRunRenderer:
         summary.append("\n")
         return summary
 
-    def _render_failure_panel(self, details: _FailureDetails) -> Panel:
+    def _render_failure_panel(self, details: FailureDetails) -> Panel:
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
         summary.add_column()
@@ -489,7 +489,7 @@ class _CliRunRenderer:
                     if self._rows[nid].task_name == name
                 }
                 env_label = env_labels.pop() if len(env_labels) == 1 else "mixed"
-                base = _task_base_name(name)
+                base = task_base_name(name)
                 group = _TaskGroup(
                     task_name=name,
                     label=f"{base} (×{name_counts[name]})",
@@ -531,7 +531,7 @@ class _CliRunRenderer:
                 status_widths.append(self._status_column_width() + len(f" {terminal}/{total}") + 1)
                 env_widths.append(len(item.env_label))
                 elapsed = item.elapsed(now=now)
-                time_widths.append(len(_format_duration(elapsed)) if elapsed is not None else 2)
+                time_widths.append(len(format_duration(elapsed)) if elapsed is not None else 2)
             else:
                 task_widths.append(len(_truncate_task_label(item.label, max_width=max_label)))
                 status_widths.append(len(_status_label(item.status)))

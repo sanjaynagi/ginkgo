@@ -283,7 +283,7 @@ class TestPixiShellTask:
     @pixi_required
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
         from ginkgo.runtime.backend import LocalBackend
         from ginkgo.runtime.events import EventBus, TaskCacheHit
 
@@ -301,7 +301,7 @@ class TestPixiShellTask:
             lambda event: cache_events.append(event) if isinstance(event, TaskCacheHit) else None
         )
 
-        evaluator = _ConcurrentEvaluator(
+        evaluator = ConcurrentEvaluator(
             backend=LocalBackend(pixi_registry=registry),
             event_bus=bus,
         )

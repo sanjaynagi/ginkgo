@@ -163,9 +163,9 @@ class TestFallbackNotice:
     """Evaluator should emit a TaskNotice when access stats report a fallback."""
 
     def test_notice_emitted_when_fallback_reason_present(self) -> None:
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
-        evaluator = _ConcurrentEvaluator.__new__(_ConcurrentEvaluator)
+        evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
         evaluator.event_bus = MagicMock()
         evaluator.profiler = MagicMock()
         evaluator.profiler.timed.return_value.__enter__ = lambda self: None
@@ -194,9 +194,9 @@ class TestFallbackNotice:
         assert "/dev/fuse" in event.message
 
     def test_no_notice_when_fallback_reason_absent(self) -> None:
-        from ginkgo.runtime.evaluator import _ConcurrentEvaluator
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
-        evaluator = _ConcurrentEvaluator.__new__(_ConcurrentEvaluator)
+        evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
         evaluator.event_bus = MagicMock()
         evaluator.profiler = MagicMock()
         evaluator.profiler.timed.return_value.__enter__ = lambda self: None
