@@ -29,6 +29,7 @@ from ginkgo import (
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalBackend
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
+from ginkgo.runtime.executors import Executors
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
@@ -1401,8 +1402,10 @@ class TestInterruptHandling:
             tracked_one.pid: tracked_one,  # type: ignore[assignment]
             tracked_two.pid: tracked_two,  # type: ignore[assignment]
         }
-        evaluator._shell_executor = shell_executor
-        evaluator._python_executor = python_executor
+        executors = Executors(jobs=evaluator.jobs, staging_jobs=evaluator._staging_jobs)
+        executors._shell = shell_executor  # type: ignore[assignment]
+        executors._python = python_executor
+        evaluator._executors = executors
 
         monkeypatch.setattr(
             evaluator._shell_runner,
@@ -1410,7 +1413,7 @@ class TestInterruptHandling:
             lambda *, process: terminated.append(process.pid),
         )
         monkeypatch.setattr(
-            evaluator,
+            executors,
             "_terminate_process_pool_workers",
             lambda *, executor: pool_shutdowns.append(executor),
         )

@@ -16,7 +16,7 @@ from concurrent.futures import (
     wait,
 )
 from dataclasses import dataclass, field
-from multiprocessing import Manager, get_context
+from multiprocessing import Manager
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,7 @@ from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareStarted,
@@ -230,19 +231,10 @@ class ConcurrentEvaluator:
     _root_template: Any = field(default=None, init=False, repr=False)
     _root_dependency_ids: set[int] = field(default_factory=set, init=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, repr=False)
-    _python_executor: ProcessPoolExecutor | ThreadPoolExecutor | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
-    _shell_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
-    _staging_executor: ThreadPoolExecutor | None = field(default=None, init=False, repr=False)
+    _executors: Executors | None = field(default=None, init=False, repr=False)
     _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
     code_bundle_config: dict[str, Any] | None = None
-    _remote_watcher_executor: ThreadPoolExecutor | None = field(
-        default=None, init=False, repr=False
-    )
     _remote_handles: dict[int, RemoteJobHandle] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -340,24 +332,12 @@ class ConcurrentEvaluator:
         self._validator.validate_declared_secrets(nodes=self._nodes.values())
 
         with ExitStack() as stack:
-            try:
-                python_executor = stack.enter_context(
-                    ProcessPoolExecutor(
-                        max_workers=self.jobs,
-                        mp_context=get_context("spawn"),
-                    )
-                )
-            except PermissionError:
-                python_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
-            shell_executor = stack.enter_context(ThreadPoolExecutor(max_workers=self.jobs))
-            staging_executor = stack.enter_context(
-                ThreadPoolExecutor(max_workers=self._staging_jobs)
+            executors = stack.enter_context(
+                Executors(jobs=self.jobs, staging_jobs=self._staging_jobs)
             )
             log_manager = stack.enter_context(Manager())
             signals = stack.enter_context(SignalMonitor())
-            self._python_executor = python_executor
-            self._shell_executor = shell_executor
-            self._staging_executor = staging_executor
+            self._executors = executors
             self._log_drain.start(queue=log_manager.Queue())
             try:
                 while True:
@@ -372,8 +352,8 @@ class ConcurrentEvaluator:
                             self._finalize_dynamic_nodes()
                         with self.profiler.timed("scheduler_dispatch"):
                             self._dispatch_ready_nodes(
-                                python_executor=python_executor,
-                                shell_executor=shell_executor,
+                                python_executor=executors.python,
+                                shell_executor=executors.shell,
                             )
 
                         if self._is_root_resolved() and not self._running_futures:
@@ -409,8 +389,7 @@ class ConcurrentEvaluator:
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             finally:
                 self._log_drain.stop()
-                self._python_executor = None
-                self._shell_executor = None
+                self._executors = None
                 self._materialization_log.save()
                 self._cache_store.save_stat_index()
                 self._save_staging_cache()
@@ -710,8 +689,8 @@ class ConcurrentEvaluator:
                         access_method=access_method,
                     )
                 )
-                assert self._staging_executor is not None
-                future = self._staging_executor.submit(self._stager.stage_task_inputs, node=node)
+                assert self._executors is not None
+                future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
                 self._running_futures[future] = (node_id, "staging")
                 continue
 
@@ -806,12 +785,11 @@ class ConcurrentEvaluator:
 
         node.resolved_args = completed_value
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
-        assert self._python_executor is not None
-        assert self._shell_executor is not None
+        assert self._executors is not None
         self._start_task_execution(
             node=node,
-            python_executor=self._python_executor,
-            shell_executor=self._shell_executor,
+            python_executor=self._executors.python,
+            shell_executor=self._executors.shell,
         )
 
     def _handle_completed_driver_phase(self, *, node: _TaskNode, completed_value: Any) -> None:
@@ -1151,10 +1129,8 @@ class ConcurrentEvaluator:
         self._cancel_pending_futures()
         self._cancel_remote_handles()
         self._shell_runner.terminate_all()
-        self._shutdown_staging_executor()
-        self._shutdown_shell_executor()
-        self._shutdown_python_executor()
-        self._shutdown_remote_watcher_executor()
+        if self._executors is not None:
+            self._executors.shutdown_all()
 
     def _cancel_remote_handles(self) -> None:
         """Cancel all in-flight remote job handles."""
@@ -1162,59 +1138,6 @@ class ConcurrentEvaluator:
             with suppress(Exception):
                 handle.cancel()
         self._remote_handles.clear()
-
-    def _shutdown_remote_watcher_executor(self) -> None:
-        """Shut down the remote watcher executor."""
-        if self._remote_watcher_executor is None:
-            return
-        with suppress(Exception):
-            self._remote_watcher_executor.shutdown(wait=False, cancel_futures=True)
-
-    def _shutdown_staging_executor(self) -> None:
-        """Shut down the staging executor without waiting for new tasks."""
-        if self._staging_executor is None:
-            return
-        with suppress(Exception):
-            self._staging_executor.shutdown(wait=False, cancel_futures=True)
-
-    def _shutdown_shell_executor(self) -> None:
-        """Shut down the shell executor without waiting for new tasks."""
-        if self._shell_executor is None:
-            return
-        with suppress(Exception):
-            self._shell_executor.shutdown(wait=False, cancel_futures=True)
-
-    def _shutdown_python_executor(self) -> None:
-        """Shut down the Python executor and terminate worker processes."""
-        if self._python_executor is None:
-            return
-
-        executor = self._python_executor
-        with suppress(Exception):
-            executor.shutdown(wait=False, cancel_futures=True)
-
-        if isinstance(executor, ProcessPoolExecutor):
-            self._terminate_process_pool_workers(executor=executor)
-
-    def _terminate_process_pool_workers(self, *, executor: ProcessPoolExecutor) -> None:
-        """Terminate active process-pool workers using the executor's process table."""
-        processes = getattr(executor, "_processes", None)
-        if not isinstance(processes, dict):
-            return
-
-        for process in list(processes.values()):
-            with suppress(Exception):
-                if process.is_alive():
-                    process.terminate()
-
-        for process in list(processes.values()):
-            with suppress(Exception):
-                process.join(timeout=0.2)
-
-        for process in list(processes.values()):
-            with suppress(Exception):
-                if process.is_alive():
-                    process.kill()
 
     def _running_cores(self) -> int:
         """Return the core footprint of currently running tasks."""
@@ -1368,12 +1291,9 @@ class ConcurrentEvaluator:
             handle = self.remote_executor.submit(attempt=payload)
             self._remote_stats.record_submit()
             self._remote_handles[node.node_id] = handle
-            if self._remote_watcher_executor is None:
-                self._remote_watcher_executor = ThreadPoolExecutor(
-                    max_workers=self.jobs or 8,
-                    thread_name_prefix="ginkgo-remote-watcher",
-                )
-            future = self._remote_watcher_executor.submit(self._poll_remote_job, handle, node=node)
+            assert self._executors is not None
+            watcher = self._executors.get_or_create_remote_watcher()
+            future = watcher.submit(self._poll_remote_job, handle, node=node)
             self._running_futures[future] = (node.node_id, "remote")
             return
 
@@ -2124,12 +2044,12 @@ class ConcurrentEvaluator:
             return
 
         # Driver task: shell / notebook / script — dispatch to the appropriate runner.
-        assert self._shell_executor is not None
+        assert self._executors is not None
 
         if isinstance(completed_value, ShellExpr):
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._shell_executor.submit(
+            future = self._executors.shell.submit(
                 self._shell_runner.run_shell,
                 node=node,
                 shell_expr=completed_value,
@@ -2140,7 +2060,7 @@ class ConcurrentEvaluator:
         if isinstance(completed_value, NotebookExpr):
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._shell_executor.submit(
+            future = self._executors.shell.submit(
                 self._notebook_runner.run_notebook,
                 node=node,
                 notebook_expr=completed_value,
@@ -2151,7 +2071,7 @@ class ConcurrentEvaluator:
         if isinstance(completed_value, ScriptExpr):
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._shell_executor.submit(
+            future = self._executors.shell.submit(
                 self._notebook_runner.run_script,
                 node=node,
                 script_expr=completed_value,
@@ -2162,7 +2082,7 @@ class ConcurrentEvaluator:
         if isinstance(completed_value, SubWorkflowExpr):
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._shell_executor.submit(
+            future = self._executors.shell.submit(
                 self._subworkflow_runner.run_subworkflow,
                 node=node,
                 subworkflow_expr=completed_value,
