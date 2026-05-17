@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ginkgo.cli.common import resolve_run_dir
 from ginkgo.cli.renderers.common import _task_base_name
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
-from ginkgo.core.flow import FlowDef
+from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.caching.provenance import load_manifest
@@ -38,7 +37,7 @@ def inspect_workflow(*, workflow_path: Path, config_paths: list[Path]) -> dict[s
     """Return a static workflow graph snapshot."""
     with _config_session(override_paths=config_paths):
         module = load_module_from_path(workflow_path)
-        flow = _discover_flow(module)
+        flow = discover_flow(module)
         expr = flow()
 
     evaluator = _ConcurrentEvaluator()
@@ -134,10 +133,3 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
         "tasks": task_rows,
         "dynamic_expansions": dynamic_expansions,
     }
-
-
-def _discover_flow(module: ModuleType) -> FlowDef:
-    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
-    if len(flows) != 1:
-        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
-    return next(iter(flows.values()))

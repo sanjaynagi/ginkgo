@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ginkgo.config import _config_session
-from ginkgo.core.flow import FlowDef
+from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
@@ -39,7 +38,7 @@ def collect_workflow_diagnostics(
     try:
         with _config_session(override_paths=config_paths):
             module = load_module_from_path(workflow_path)
-            flow = _discover_flow(module)
+            flow = discover_flow(module)
             expr = flow()
         evaluator = _ConcurrentEvaluator(secret_resolver=secret_resolver)
         evaluator.validate(expr)
@@ -79,10 +78,3 @@ def _diagnostic_from_exception(
         location=str(workflow_path),
         suggestion=suggestion,
     )
-
-
-def _discover_flow(module: ModuleType) -> FlowDef:
-    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
-    if len(flows) != 1:
-        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
-    return next(iter(flows.values()))

@@ -8,6 +8,7 @@ it executes its body to build the expression tree, then returns the resulting
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, Callable
 
 
@@ -64,3 +65,16 @@ def flow(fn: Callable[..., Any]) -> FlowDef:
     FlowDef
     """
     return FlowDef(fn=fn)
+
+
+def discover_flow(module: ModuleType) -> FlowDef:
+    """Return the unique ``@flow``-decorated function defined in *module*.
+
+    Raises ``RuntimeError`` when *module* contains zero or more than one
+    ``FlowDef``; identification is by Python object identity, so a single
+    ``FlowDef`` re-exported under multiple names still counts as one.
+    """
+    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
+    if len(flows) != 1:
+        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
+    return next(iter(flows.values()))

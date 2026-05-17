@@ -11,7 +11,6 @@ import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
@@ -28,7 +27,7 @@ from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import _CliRunRenderer
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session, load_runtime_config
-from ginkgo.core.flow import FlowDef
+from ginkgo.core.flow import discover_flow
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeBackend, LocalBackend
@@ -37,14 +36,14 @@ from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.caching.provenance import (
     RunProvenanceRecorder,
+    combined_log_tail,
     make_run_id,
-    tail_text,
 )
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
-from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.runtime.run_summary import RunSummary
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -107,7 +106,7 @@ def run_workflow(
         with profiler.timed("workflow_module_import"):
             module = load_module_from_path(workflow_path)
         with profiler.timed("flow_construction"):
-            flow = _discover_flow(module)
+            flow = discover_flow(module)
             expr = flow()
         params = session.merged_loaded_values()
     with profiler.timed("runtime_config_load"):
@@ -376,7 +375,12 @@ def _load_failure_details(
     tail_lines = 20 if verbose else 10
     for task in run_summary.failed_tasks:
         node_id = task.node_id if task.node_id is not None else -1
-        log_tail = _combined_log_tail(run_dir=run_dir, task=task, lines=tail_lines)
+        log_tail = combined_log_tail(
+            run_dir=run_dir,
+            stdout_log=task.stdout_log,
+            stderr_log=task.stderr_log,
+            lines=tail_lines,
+        )
         stderr_path = run_dir / task.stderr_log if isinstance(task.stderr_log, str) else None
         failure_kind = (
             task.failure.get("kind")
@@ -395,16 +399,6 @@ def _load_failure_details(
             )
         )
     return details
-
-
-def _combined_log_tail(*, run_dir: Path, task: TaskSummary, lines: int) -> list[str]:
-    """Combine stdout and stderr tails for failure display."""
-    combined: list[str] = []
-    if isinstance(task.stdout_log, str):
-        combined.extend(tail_text(run_dir / task.stdout_log, lines=lines))
-    if isinstance(task.stderr_log, str):
-        combined.extend(tail_text(run_dir / task.stderr_log, lines=lines))
-    return combined[-lines:]
 
 
 def _print_profile_table(
@@ -433,13 +427,6 @@ def _print_profile_table(
         )
     console.print("")
     console.print(table)
-
-
-def _discover_flow(module: ModuleType) -> FlowDef:
-    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
-    if len(flows) != 1:
-        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
-    return next(iter(flows.values()))
 
 
 def _render_notebooks(
