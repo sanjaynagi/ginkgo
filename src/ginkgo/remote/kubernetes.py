@@ -6,87 +6,26 @@ Kubernetes cluster.  One Job per attempt; Ginkgo handles retries.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ginkgo.remote._executor_common import (
+    _encode_payload,
+    _generate_job_name,
+    _parse_worker_output as _parse_worker_output_common,
+    _payload_requires_fuse,
+)
 from ginkgo.runtime.remote_executor import (
     RemoteJobResult,
     RemoteJobState,
 )
 
 
-def _encode_payload(attempt: dict[str, Any]) -> str:
-    """Encode a worker payload as a base64 JSON string."""
-    payload_json = json.dumps(attempt, default=str)
-    return base64.b64encode(payload_json.encode()).decode()
-
-
-def _generate_job_name(attempt: dict[str, Any]) -> str:
-    """Generate a unique Kubernetes Job name from the attempt payload.
-
-    Appends a short hash suffix derived from the payload content to avoid
-    collisions when the same (run_id, task_id, attempt) is resubmitted.
-    """
-    run_id = attempt.get("run_id", "unknown")
-    task_id = attempt.get("task_id", "unknown")
-    attempt_num = attempt.get("attempt", 0)
-    # Short content-hash suffix for uniqueness across resubmissions.
-    digest = hashlib.sha256(json.dumps(attempt, sort_keys=True, default=str).encode())
-    suffix = digest.hexdigest()[:6]
-    # K8s names must be <= 63 chars, lowercase alphanumeric + hyphens.
-    name = f"ginkgo-{run_id}-{task_id}-{attempt_num}-{suffix}"
-    name = name.lower().replace("_", "-")
-    if len(name) > 63:
-        name = name[:63]
-    return name.rstrip("-")
-
-
-def _payload_requires_fuse(attempt: dict[str, Any]) -> bool:
-    """Return True when the payload contains any fuse-marked inputs."""
-    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
-
-    fuse_tags = {FUSE_FILE_TYPE, FUSE_FOLDER_TYPE}
-
-    def walk(value: Any) -> bool:
-        if isinstance(value, dict):
-            if value.get("__ginkgo_type__") in fuse_tags:
-                return True
-            return any(walk(item) for item in value.values())
-        if isinstance(value, (list, tuple)):
-            return any(walk(item) for item in value)
-        return False
-
-    return walk(attempt.get("args"))
-
-
 def _parse_worker_output(logs: str) -> dict[str, Any]:
-    """Parse the worker result from pod log output.
-
-    The remote worker prints a single JSON line to stdout as its last
-    output.  We search backwards from the end to find it.
-    """
-    for line in reversed(logs.splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            continue
-    return {
-        "ok": False,
-        "error": {
-            "type": "RuntimeError",
-            "module": "builtins",
-            "message": "No worker output found in pod logs",
-            "args": ["No worker output found in pod logs"],
-        },
-    }
+    """Parse the worker result from pod log output."""
+    return _parse_worker_output_common(logs, source_label="pod logs")
 
 
 class _RefreshingApi:
