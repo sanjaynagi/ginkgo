@@ -9,6 +9,7 @@ import sys
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import _config_session
+from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import _ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import build_secret_resolver, collect_secret_refs
@@ -23,7 +24,7 @@ def command_secrets(args) -> int:
 
     with _config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
         module = load_module_from_path(workflow_path)
-        flow = _discover_flow(module)
+        flow = discover_flow(module)
         expr = flow()
         config = session.merged_loaded_values()
 
@@ -64,12 +65,3 @@ def command_secrets(args) -> int:
     for ref in refs:
         rich_console.print(f"[green]✓[/] {ref.backend}:{ref.name}")
     return 0
-
-
-def _discover_flow(module):
-    from ginkgo.core.flow import FlowDef
-
-    flows = {id(value): value for value in vars(module).values() if isinstance(value, FlowDef)}
-    if len(flows) != 1:
-        raise RuntimeError(f"Expected exactly one @flow in {module.__file__}, found {len(flows)}")
-    return next(iter(flows.values()))

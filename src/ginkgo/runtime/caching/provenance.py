@@ -590,6 +590,29 @@ def tail_text(path: Path, *, lines: int = 50) -> list[str]:
     return content[-lines:]
 
 
+def combined_log_tail(
+    *,
+    run_dir: Path,
+    stdout_log: object,
+    stderr_log: object,
+    lines: int,
+) -> list[str]:
+    """Combine stdout and stderr tails for failure display.
+
+    Each log argument is the relative path stored on a task record; it
+    may be a string path, ``None``, or any other value depending on the
+    caller's task representation. Non-string values are ignored, so
+    callers can pass either mapping ``.get(...)`` results or dataclass
+    attributes without an extra ``isinstance`` check.
+    """
+    combined: list[str] = []
+    if isinstance(stdout_log, str):
+        combined.extend(tail_text(run_dir / stdout_log, lines=lines))
+    if isinstance(stderr_log, str):
+        combined.extend(tail_text(run_dir / stderr_log, lines=lines))
+    return combined[-lines:]
+
+
 def _task_key(node_id: int) -> str:
     return f"task_{node_id:04d}"
 

@@ -10,7 +10,7 @@ from ginkgo.cli.common import console, resolve_run_dir
 from ginkgo.cli.renderers.common import _task_base_name
 from ginkgo.cli.renderers.debug import render_debug_failure_panel, render_debug_header
 from ginkgo.cli.renderers.models import _FailureDetails
-from ginkgo.runtime.caching.provenance import load_manifest, tail_text
+from ginkgo.runtime.caching.provenance import combined_log_tail, load_manifest
 
 
 def command_debug(args) -> int:
@@ -44,18 +44,6 @@ def command_debug(args) -> int:
     return 0
 
 
-def _combined_log_tail(run_dir: Path, task: dict[str, object], *, lines: int) -> list[str]:
-    """Combine stdout and stderr tails for failure display."""
-    combined: list[str] = []
-    stdout_rel = task.get("stdout_log")
-    stderr_rel = task.get("stderr_log")
-    if isinstance(stdout_rel, str):
-        combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
-    if isinstance(stderr_rel, str):
-        combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
-    return combined[-lines:]
-
-
 def _debug_failure_details(
     *,
     run_dir: Path,
@@ -64,7 +52,12 @@ def _debug_failure_details(
     """Return failure details for the rich ``ginkgo debug`` report."""
     details: list[_FailureDetails] = []
     for task in sorted(failed_tasks, key=lambda item: int(item.get("node_id", -1))):
-        log_tail = _combined_log_tail(run_dir, task, lines=50)
+        log_tail = combined_log_tail(
+            run_dir=run_dir,
+            stdout_log=task.get("stdout_log"),
+            stderr_log=task.get("stderr_log"),
+            lines=50,
+        )
         stderr_rel = task.get("stderr_log")
         stderr_path = run_dir / stderr_rel if isinstance(stderr_rel, str) else None
         task_name = str(task.get("task", "unknown"))
@@ -106,7 +99,12 @@ def _debug_failure_payload(
                 "failure": task.get("failure"),
                 "inputs": task.get("inputs") if isinstance(task.get("inputs"), dict) else None,
                 "stderr_log": stderr_rel,
-                "log_tail": _combined_log_tail(run_dir, task, lines=50),
+                "log_tail": combined_log_tail(
+                    run_dir=run_dir,
+                    stdout_log=task.get("stdout_log"),
+                    stderr_log=task.get("stderr_log"),
+                    lines=50,
+                ),
             }
         )
     return payload

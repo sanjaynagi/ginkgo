@@ -18,7 +18,7 @@ from ginkgo.runtime.notifications.slack import (
     build_run_succeeded_payload,
     post_slack_message,
 )
-from ginkgo.runtime.caching.provenance import load_manifest, tail_text
+from ginkgo.runtime.caching.provenance import combined_log_tail, load_manifest
 from ginkgo.runtime.environment.secrets import SecretResolutionError, SecretResolver
 
 
@@ -304,20 +304,15 @@ def _task_failure_from_manifest(
         exit_code=_int_or_none(task.get("exit_code")),
         attempt=_int_or_none(task.get("attempt")),
         max_attempts=_int_or_none(task.get("max_attempts")),
-        log_tail=tuple(_combined_log_tail(run_dir=run_dir, task=task, lines=log_tail_lines)),
+        log_tail=tuple(
+            combined_log_tail(
+                run_dir=run_dir,
+                stdout_log=task.get("stdout_log"),
+                stderr_log=task.get("stderr_log"),
+                lines=log_tail_lines,
+            )
+        ),
     )
-
-
-def _combined_log_tail(*, run_dir: Path, task: Mapping[str, Any], lines: int) -> list[str]:
-    stdout_rel = task.get("stdout_log")
-    stderr_rel = task.get("stderr_log")
-
-    combined: list[str] = []
-    if isinstance(stdout_rel, str):
-        combined.extend(tail_text(run_dir / stdout_rel, lines=lines))
-    if isinstance(stderr_rel, str):
-        combined.extend(tail_text(run_dir / stderr_rel, lines=lines))
-    return combined[-lines:]
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
