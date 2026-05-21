@@ -353,19 +353,11 @@ def _safe_rmtree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _gc_orphan_artifacts(cache_root: Path) -> None:
-    """Remove artifacts not referenced by any remaining cache entry.
-
-    Scans all ``meta.json`` files under *cache_root* to collect referenced
-    artifact IDs, then deletes any artifacts in the sibling ``artifacts/``
-    directory that are not referenced.
-    """
-    artifacts_root = cache_root.parent / "artifacts"
-    if not artifacts_root.exists():
-        return
-
-    # Collect all referenced artifact IDs from surviving cache entries.
+def _cache_artifact_ids(cache_root: Path) -> set[str]:
+    """Return artifact IDs referenced by surviving cache entries."""
     referenced: set[str] = set()
+    if not cache_root.exists():
+        return referenced
     for entry_dir in cache_root.iterdir():
         if not entry_dir.is_dir():
             continue
@@ -378,6 +370,51 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
             continue
         for artifact_id in meta.get("artifact_ids", {}).values():
             referenced.add(artifact_id)
+    return referenced
+
+
+def _asset_artifact_ids(assets_root: Path) -> set[str]:
+    """Return artifact IDs referenced by every catalogued asset version.
+
+    The asset catalog and the cache share a single content-addressed
+    artifact store. Asset versions are intended to outlive the ephemeral
+    cache, so their artifacts must be kept alive even when no cache entry
+    still references them. Each version is persisted at
+    ``<assets_root>/<namespace>/<name>/versions/v-<id>/meta.yaml``.
+    """
+    referenced: set[str] = set()
+    if not assets_root.exists():
+        return referenced
+    for meta_path in assets_root.glob("*/*/versions/v-*/meta.yaml"):
+        try:
+            meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+        except (yaml.YAMLError, OSError):
+            continue
+        artifact_id = meta.get("artifact_id")
+        if isinstance(artifact_id, str) and artifact_id:
+            referenced.add(artifact_id)
+    return referenced
+
+
+def _gc_orphan_artifacts(cache_root: Path) -> None:
+    """Remove artifacts not referenced by any cache entry or catalogued asset.
+
+    Collects referenced artifact IDs from every surviving cache entry's
+    ``meta.json`` *and* from every asset version in the sibling ``assets/``
+    catalog, then deletes any artifact in the sibling ``artifacts/``
+    directory that neither references.
+
+    The cache and the asset catalog share one artifact store. Scanning only
+    the cache would treat asset-only artifacts as orphans and delete data
+    the asset catalog still points to, so the asset catalog must be scanned
+    here as well.
+    """
+    artifacts_root = cache_root.parent / "artifacts"
+    if not artifacts_root.exists():
+        return
+
+    referenced = _cache_artifact_ids(cache_root)
+    referenced |= _asset_artifact_ids(cache_root.parent / "assets")
 
     # Remove orphaned artifacts via the store's delete method.
     from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
