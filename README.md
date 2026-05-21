@@ -35,6 +35,18 @@ notebook tasks, caching, CLI usage, and a canonical example workflow.
 
 ## Installation
 
+### Quick install (curl)
+
+Install the `ginkgo` CLI in one line. Requires [uv](https://docs.astral.sh/uv/getting-started/installation/)
+to be installed:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
+```
+
+This installs `ginkgo` from `main` into an isolated environment via `uv tool
+install`. Re-run the same command to upgrade.
+
 ### Pixi
 
 For local development:
