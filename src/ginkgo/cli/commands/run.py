@@ -15,6 +15,7 @@ from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label, format_duration
+from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.renderers.models import (
     CliAssetSummary,
@@ -39,6 +40,7 @@ from ginkgo.runtime.caching.provenance import (
     combined_log_tail,
     make_run_id,
 )
+from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
 from ginkgo.runtime.notifications.notifications import build_notification_service
@@ -78,6 +80,7 @@ def run_workflow(
     trust_workspace: bool = False,
     profile: bool = False,
     executor: str = "local",
+    plan_preview: bool = True,
 ) -> int:
     profiler = ProfileRecorder(enabled=profile)
     cli_startup_started = time.perf_counter()
@@ -177,6 +180,16 @@ def run_workflow(
                 RunCompleted(
                     run_id=run_id, status="success", task_counts={"validated": task_count}
                 )
+            )
+        elif plan_preview:
+            plan = build_dry_run_plan(
+                evaluator=evaluator,
+                workflow_label=workflow_path.name,
+            )
+            render_dry_run_plan(
+                plan=plan,
+                console=rich_console,
+                verbose=output_mode == "verbose",
             )
         else:
             rich_console.print(

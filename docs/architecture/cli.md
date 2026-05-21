@@ -20,10 +20,22 @@ The current CLI supports:
 - `ginkgo env ls`
 - `ginkgo env clear`
 
-Implemented CLI features include dry-run validation, merged config overrides,
-human-readable run summaries, structured inspection and diagnostics, secret
-discovery and validation, cache inspection and eviction, failed-task
-debugging, and asset catalog inspection for local workspaces.
+Implemented CLI features include the dry-run execution-plan preview, merged
+config overrides, human-readable run summaries, structured inspection and
+diagnostics, secret discovery and validation, cache inspection and eviction,
+failed-task debugging, and asset catalog inspection for local workspaces.
+
+`ginkgo run --dry-run` validates the workflow and prints a static execution
+plan instead of running it: tasks grouped into dependency waves, each
+annotated `[cached]`, `[will run]`, or `[unknown]`, with static `.map()`
+fan-out fully expanded and a peak-resource summary. Cache status is resolved
+by a leaf-anchored cascade — a task is checkable only while every upstream
+dependency is a confirmed cache hit — so a fully warm rerun previews as all
+`[cached]`. The plan builder (`runtime/dry_run.py`) is read-only: no task
+runs, no environment is prepared, and no cached output is materialised. Large
+fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
+keeps its terse per-workflow validation line rather than printing a full plan
+for each discovered workflow.
 
 `ginkgo cache prune` accepts `--older-than <duration>`, `--max-size <size>`,
 and `--max-entries <N>`. At least one of the three is required; multiple

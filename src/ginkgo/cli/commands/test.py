@@ -36,6 +36,9 @@ def command_test(args) -> int:
             cores=None,
             memory=None,
             dry_run=args.dry_run,
+            # `ginkgo test` validates many workflows; keep the per-workflow
+            # output terse rather than printing a full plan for each.
+            plan_preview=False,
         )
         if exit_code != 0:
             status = exit_code
