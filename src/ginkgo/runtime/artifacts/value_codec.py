@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import pickle
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,8 @@ from ginkgo.core.types import file, folder, tmp_dir
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
+
+logger = logging.getLogger(__name__)
 
 INLINE_BYTES_LIMIT = 256 * 1024
 
@@ -454,10 +457,21 @@ def _decode_bytes(*, codec_name: str, data: bytes) -> Any:
 
 
 def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
+    """Encode a DataFrame to Parquet bytes, or return None if it cannot.
+
+    Returning ``None`` makes the caller fall back to pickle, which is not
+    portable across pandas/Python versions. The Parquet failure is logged
+    rather than swallowed silently so the format downgrade is diagnosable.
+    """
     buffer = io.BytesIO()
     try:
         value.to_parquet(buffer, index=True)
     except Exception:
+        logger.warning(
+            "DataFrame could not be encoded as Parquet; falling back to "
+            "pickle (not portable across pandas/Python versions).",
+            exc_info=True,
+        )
         return None
     return buffer.getvalue()
 
