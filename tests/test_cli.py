@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 import re
 import subprocess
+import tomllib
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -63,6 +64,14 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
     if alias is not None:
         asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
     return version.version_id
+
+
+def test_version_flag_reports_pyproject_version() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = pyproject["project"]["version"]
+    result = _run_cli("--version", cwd=REPO_ROOT)
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"ginkgo {expected}"
 
 
 class TestCliRunAndCache:
