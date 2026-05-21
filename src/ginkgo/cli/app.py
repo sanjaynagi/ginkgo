@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import sys
 from typing import Sequence
 
@@ -65,8 +66,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
+def _ginkgo_version() -> str:
+    """Return the installed ginkgo package version, or ``"unknown"`` if unavailable."""
+    try:
+        return importlib.metadata.version("ginkgo")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+        return "unknown"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ginkgo")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_ginkgo_version()}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run")
