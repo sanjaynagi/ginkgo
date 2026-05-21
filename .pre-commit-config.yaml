@@ -27,8 +27,10 @@ repos:
         entry: pixi run typecheck
         language: system
         pass_filenames: false
+      # uncoded runs via `uvx --from uncoded==1.0.1` (call-site pin)
+      # because it is no longer a pixi dependency.
       - id: uncoded-sync
         name: uncoded sync
-        entry: pixi run uncoded sync
+        entry: uvx --from uncoded==1.0.1 uncoded sync
         language: system
         pass_filenames: false
