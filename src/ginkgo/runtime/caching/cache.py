@@ -157,6 +157,25 @@ class CacheStore:
             artifact_store=self._artifact_store,
         )
 
+    def has_entry(self, *, cache_key: str) -> bool:
+        """Return whether a cache entry exists for the given key.
+
+        Read-only existence check: it does not decode or materialise the
+        cached value. Used by the ``--dry-run`` plan preview to predict
+        cache hits without running tasks.
+
+        Parameters
+        ----------
+        cache_key : str
+            The cache key to probe.
+
+        Returns
+        -------
+        bool
+            ``True`` if a stored output exists for the key.
+        """
+        return (self._entry_dir(cache_key) / "output.json").is_file()
+
     def save(
         self,
         *,

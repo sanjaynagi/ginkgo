@@ -660,7 +660,7 @@ def main():
 
 
 class TestCliDryRun:
-    def test_run_dry_run_validates_without_execution(self) -> None:
+    def test_run_dry_run_previews_plan_without_executing(self) -> None:
         Path("workflow.py").write_text(
             """
 from pathlib import Path
@@ -682,10 +682,82 @@ def main():
         result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert "🌿 ginkgo run workflow.py --dry-run" in result.stdout
-        assert "✓ workflow.py (dry-run) - 1 tasks validated" in result.stdout
+        assert "Dry run" in result.stdout
+        assert "1 task" in result.stdout
+        assert "Wave 1" in result.stdout
+        assert "write_marker()" in result.stdout
+        assert "[will run]" in result.stdout
+        assert "no tasks executed" in result.stdout
         assert not Path("should-not-exist.txt").exists()
         runs_root = Path(".ginkgo") / "runs"
         assert not runs_root.exists() or list(runs_root.iterdir()) == []
+
+    def test_run_dry_run_groups_waves_and_expands_fanout(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def prepare() -> str:
+    return "ready"
+
+@task()
+def analyse(base: str, sample: str) -> str:
+    return f"{base}:{sample}"
+
+@flow
+def main():
+    base = prepare()
+    return analyse(base=base).map(sample=["alpha", "beta", "gamma"])
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Dry run" in result.stdout
+        assert "4 tasks" in result.stdout
+        assert "Wave 1" in result.stdout
+        assert "Wave 2" in result.stdout
+        assert "prepare()" in result.stdout
+        for sample in ("alpha", "beta", "gamma"):
+            assert f"analyse[{sample}]" in result.stdout
+        # The leaf task's cache state is determinable; fan-out branches
+        # downstream of a will-run task are not.
+        assert "[will run]" in result.stdout
+        assert "[unknown]" in result.stdout
+        assert "no tasks executed" in result.stdout
+
+    def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def upstream() -> int:
+    return 21
+
+@task()
+def downstream(value: int) -> int:
+    return value * 2
+
+@flow
+def main():
+    return downstream(value=upstream())
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert first.returncode == 0, first.stderr
+
+        preview = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
+        assert preview.returncode == 0, preview.stderr
+        assert "all cached" in preview.stdout
+        assert preview.stdout.count("[cached]") == 2
+        assert "[will run]" not in preview.stdout
 
     def test_run_dry_run_fails_for_invalid_workflow(self) -> None:
         Path("invalid_workflow.py").write_text(
