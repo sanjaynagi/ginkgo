@@ -2,34 +2,14 @@
 
 ### Overview
 
-A workflow engine earns its keep by doing what plain scripts do badly: running
-independent steps in parallel, skipping work that has already been done,
-re-running only what changed when data or code moves, and keeping a record of
-how every result was produced. Ginkgo brings those benefits to ordinary Python
-without asking you to rewrite your code around them.
-
-Most workflow tools make you express a pipeline as an explicit dataflow, which
-means giving up the control flow, recursion, and ordinary function calls that
-Python already gives you. Ginkgo takes a different route: you write normal
-Python functions, mark them with `@task()`, and compose them in a `@flow`.
-Calling a task does not run it &mdash; it returns a deferred expression. The
-flow assembles those expressions into a graph, and a scheduler evaluates it,
-handling parallelism, caching, and provenance for you.
-
-Ginkgo's main features:
-
-- **Deferred expressions.** Task calls build a graph instead of running
-  immediately, so the whole workflow can be validated before anything executes.
-- **Dynamic DAGs.** A task can inspect its resolved inputs and return new
-  expressions, so the graph expands as intermediate results come in.
-- **Content-addressed caching.** Results are reused across runs, keyed on task
-  source, inputs, and environment; a failed run resumes where it stopped.
-- **Reproducible environments.** Shell, script, and notebook tasks can run in
-  declared Pixi or container environments.
-- **Provenance.** Every run records task status, timing, logs, and artifacts
-  for debugging and auditing.
-- **Remote execution.** Selected tasks can run on Kubernetes or GCP Batch while
-  the rest of the workflow stays local.
+Ginkgo is a Python-native way to write scientific workflows. You write each
+step as a normal Python function, and Ginkgo runs them as a graph, handling
+parallelism, caching, and a record of what ran. Calling a task doesn't run it
+&mdash; it returns a deferred expression, so Ginkgo can build and check the
+whole graph before anything executes. Because that graph is built from ordinary
+Python, it can change shape while it runs: a task can look at its inputs and
+add new steps, which is how Ginkgo handles dynamic DAGs. You get all of this
+without rewriting your code into a separate workflow language.
 
 New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
 straight to the [Quickstart](getting-started/quickstart/).
