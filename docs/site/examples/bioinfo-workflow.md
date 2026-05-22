@@ -1,8 +1,8 @@
 # Canonical Example: Bioinformatics Workflow
 
-The bioinformatics example is the canonical walkthrough for the docs site
-because it demonstrates the main runtime boundaries in a compact, realistic
-workflow.
+This example is a small but realistic workflow. It shows the main runtime
+boundaries — Pixi environments, containers, fan-out, and local aggregation —
+in one place.
 
 Source files:
 
@@ -72,8 +72,6 @@ def main():
         count_tables=read_counts,
     )
 ```
-
-Each task owns one clear responsibility and one execution boundary.
 
 ## Running The Example
 

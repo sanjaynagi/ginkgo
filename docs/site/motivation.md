@@ -1,6 +1,6 @@
 # Why Ginkgo
 
-Ginkgo grew from two convictions about scientific computing.
+Ginkgo was built around two ideas about scientific computing.
 
 ## Scientific Workflows Belong In Python
 
@@ -15,10 +15,9 @@ Real analyses rarely know their full shape up front: the number of samples,
 which branches to take, the follow-up work — all depend on intermediate
 results.
 
-Ginkgo treats dynamic DAG expansion as a first-class feature, not a workaround.
-A task can inspect its resolved inputs and return new expressions, and the
-runtime folds them into the running graph, so the workflow grows as its data is
-revealed.
+Ginkgo handles dynamic DAG expansion directly. A task can inspect its resolved
+inputs and return new expressions, and the runtime folds them into the running
+graph, so the workflow grows as the data comes in.
 
 ## See Also
 

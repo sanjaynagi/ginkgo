@@ -15,31 +15,12 @@
 </section>
 ```
 
-```{raw} html
-<section class="quick-grid">
-  <article class="quick-card">
-    <h3>Dynamic</h3>
-    <p>Build workflows that can expand at runtime when task results determine what should happen next.</p>
-  </article>
-  <article class="quick-card">
-    <h3>Pythonic</h3>
-    <p>Author workflows in ordinary Python with <code>@flow</code>, <code>@task()</code>, and explicit typed task boundaries.</p>
-  </article>
-  <article class="quick-card">
-    <h3>Reproducible</h3>
-    <p>Reuse prior work through content-addressed caching and run shell steps in declared environments.</p>
-  </article>
-  <article class="quick-card">
-    <h3>Agent-friendly</h3>
-    <p>Inspect runs, logs, artifacts, and workflow structure through the CLI and run records.</p>
-  </article>
-</section>
-```
-
 ### Overview
 
-You write task functions, compose them inside a flow, and hand the resulting
-graph to a runtime that schedules, caches, and records every step.
+Ginkgo is a workflow orchestrator for Python. You write each step of a
+pipeline as a normal Python function and compose those functions inside a
+flow. Ginkgo turns the flow into a dependency graph, then schedules, caches,
+and records every step.
 
 Calling a task does not run it &mdash; it returns a deferred expression. The
 flow assembles those expressions into a graph, and the runtime decides what to
@@ -116,13 +97,11 @@ ginkgo run workflow.py
     <h3>Reference</h3>
     <ul>
       <li><a href="reference/api/">API reference</a></li>
-      <li><a href="explanation/architecture/">Architecture overview</a></li>
     </ul>
   </article>
 </section>
 <div class="section-note">
-  The docs site is organized for end users first. Use the quickstart and the
-  bioinformatics example as the main path through the material.
+  The quickstart and the bioinformatics example are the best place to start.
 </div>
 ```
 
@@ -144,5 +123,4 @@ guide/notifications
 guide/remote-execution
 examples/bioinfo-workflow
 reference/api
-explanation/architecture
 ```

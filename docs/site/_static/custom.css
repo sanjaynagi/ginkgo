@@ -504,8 +504,7 @@ table.docutils td {
 }
 
 
-/* ─── Homepage: feature & contents cards ──────────────────────────────────── */
-.quick-grid,
+/* ─── Homepage: contents cards ────────────────────────────────────────────── */
 .contents-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
@@ -513,7 +512,6 @@ table.docutils td {
   margin: 1.5rem 0 2.4rem;
 }
 
-.quick-card,
 .contents-block {
   padding: 1.3rem 1.35rem;
   background: var(--gk-paper-raised);
@@ -521,40 +519,6 @@ table.docutils td {
   border-radius: 16px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease,
               transform 0.15s ease;
-}
-
-.quick-card:hover {
-  border-color: var(--gk-green-300);
-  box-shadow: 0 14px 30px -20px rgba(31, 48, 16, 0.45);
-  transform: translateY(-2px);
-}
-
-/* Green accent chip above each feature card */
-.quick-card::before {
-  content: "";
-  display: block;
-  width: 26px;
-  height: 3px;
-  margin-bottom: 0.85rem;
-  border-radius: 2px;
-  background: var(--gk-green-600);
-}
-
-.quick-card h3 {
-  margin: 0 0 0.4rem !important;
-  font-family: var(--gk-font-body);
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--gk-ink-950);
-}
-
-.quick-card p {
-  margin: 0;
-  font-size: 0.94rem;
-  line-height: 1.58;
-  color: var(--gk-ink-500);
 }
 
 .contents-block h3 {
@@ -707,13 +671,4 @@ dl.py dd {
   .hero {
     animation: gk-rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   }
-
-  .quick-grid .quick-card {
-    animation: gk-rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-  }
-
-  .quick-grid .quick-card:nth-child(1) { animation-delay: 0.06s; }
-  .quick-grid .quick-card:nth-child(2) { animation-delay: 0.12s; }
-  .quick-grid .quick-card:nth-child(3) { animation-delay: 0.18s; }
-  .quick-grid .quick-card:nth-child(4) { animation-delay: 0.24s; }
 }
