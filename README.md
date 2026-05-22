@@ -1,6 +1,6 @@
 # Ginkgo
 
-<p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a></p>
+<p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a> <a href="https://sanjaynagi.github.io/ginkgo/"><img src="https://img.shields.io/badge/docs-sanjaynagi.github.io%2Fginkgo-4d7c0f.svg" alt="Documentation"></a></p>
 
 Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
@@ -16,22 +16,19 @@ Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
 ## Documentation
 
-The full documentation site now lives under `docs/site/`.
+📖 **[sanjaynagi.github.io/ginkgo](https://sanjaynagi.github.io/ginkgo/)** — the
+full documentation site.
 
-Build it locally with:
+It covers installation, quickstart, core concepts, environments, notebook tasks,
+caching, CLI usage, and a canonical example workflow.
+
+To build the docs locally instead:
 
 ```bash
 pixi run docs-build
 ```
 
-Then open:
-
-```text
-docs/_build/dirhtml/index.html
-```
-
-The docs site covers installation, quickstart, core concepts, environments,
-notebook tasks, caching, CLI usage, and a canonical example workflow.
+Then open `docs/_build/dirhtml/index.html`.
 
 ## Installation
 

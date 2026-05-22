@@ -5,7 +5,9 @@
 ```
 
 This reference is intentionally small in the first docs phase. It covers the
-main authoring surface that end users reach for directly.
+main authoring surface that end users reach for directly. For task-by-task
+explanation and worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md)
+and [Core Concepts](../guide/concepts.md).
 
 ## Top-Level Package
 

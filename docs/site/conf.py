@@ -25,6 +25,10 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
+# The landing page intentionally leads with a raw-HTML hero (its own <h1>),
+# so MyST's "headings start at H1" check does not apply to it.
+suppress_warnings = ["myst.header"]
+
 source_suffix = {
     ".md": "markdown",
     ".rst": "restructuredtext",
