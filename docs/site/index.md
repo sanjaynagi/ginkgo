@@ -1,40 +1,59 @@
-```{raw} html
-<section class="hero">
-  <span class="hero-eyebrow">Python workflow orchestrator</span>
-  <h1>Ginkgo</h1>
-  <p>
-    Write workflows as ordinary Python. Ginkgo defers each task into a graph it
-    can schedule, cache, and reproduce &mdash; so reruns reuse prior work
-    instead of repeating it.
-  </p>
-  <div class="hero-actions">
-    <a href="getting-started/quickstart/">Quickstart</a>
-    <a href="examples/bioinfo-workflow/">Bioinformatics example</a>
-    <a href="guide/cli/">CLI</a>
-  </div>
-</section>
-```
+# Ginkgo
 
 ### Overview
 
-Ginkgo is a workflow orchestrator for Python. You write each step of a
-pipeline as a normal Python function and compose those functions inside a
-flow. Ginkgo turns the flow into a dependency graph, then schedules, caches,
-and records every step.
+A workflow engine earns its keep by doing what plain scripts do badly: running
+independent steps in parallel, skipping work that has already been done,
+re-running only what changed when data or code moves, and keeping a record of
+how every result was produced. Ginkgo brings those benefits to ordinary Python
+without asking you to rewrite your code around them.
 
+Most workflow tools make you express a pipeline as an explicit dataflow, which
+means giving up the control flow, recursion, and ordinary function calls that
+Python already gives you. Ginkgo takes a different route: you write normal
+Python functions, mark them with `@task()`, and compose them in a `@flow`.
 Calling a task does not run it &mdash; it returns a deferred expression. The
-flow assembles those expressions into a graph, and the runtime decides what to
-execute, what to reuse from cache, and what to record.
+flow assembles those expressions into a graph, and a scheduler evaluates it,
+handling parallelism, caching, and provenance for you.
 
-Ginkgo fits workflows that need:
+Ginkgo's main features:
 
-- a Python-native authoring model
-- mixed local Python and shell-based execution
-- repeatable environments for selected tasks
-- output reuse across reruns
+- **Deferred expressions.** Task calls build a graph instead of running
+  immediately, so the whole workflow can be validated before anything executes.
+- **Dynamic DAGs.** A task can inspect its resolved inputs and return new
+  expressions, so the graph expands as intermediate results come in.
+- **Content-addressed caching.** Results are reused across runs, keyed on task
+  source, inputs, and environment; a failed run resumes where it stopped.
+- **Reproducible environments.** Shell, script, and notebook tasks can run in
+  declared Pixi or container environments.
+- **Provenance.** Every run records task status, timing, logs, and artifacts
+  for debugging and auditing.
+- **Remote execution.** Selected tasks can run on Kubernetes or GCP Batch while
+  the rest of the workflow stays local.
 
 New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
 straight to the [Quickstart](getting-started/quickstart/).
+
+```{raw} html
+<section class="quick-grid">
+  <article class="quick-card">
+    <h3>Dynamic</h3>
+    <p>Build workflows that can expand at runtime when task results determine what should happen next.</p>
+  </article>
+  <article class="quick-card">
+    <h3>Pythonic</h3>
+    <p>Author workflows in ordinary Python with <code>@flow</code>, <code>@task()</code>, and explicit typed task boundaries.</p>
+  </article>
+  <article class="quick-card">
+    <h3>Reproducible</h3>
+    <p>Reuse prior work through content-addressed caching and run shell steps in declared environments.</p>
+  </article>
+  <article class="quick-card">
+    <h3>Agent-friendly</h3>
+    <p>Inspect runs, logs, artifacts, and workflow structure through the CLI and run records.</p>
+  </article>
+</section>
+```
 
 ### A Minimal Workflow
 
