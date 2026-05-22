@@ -1,7 +1,7 @@
 # Caching And Provenance
 
-Caching and provenance are central to how Ginkgo stays practical across repeated
-workflow runs.
+Ginkgo caches task results so repeated runs reuse prior work, and records
+provenance so you can inspect what happened in any run.
 
 ## Cache Identity
 
@@ -24,8 +24,8 @@ For file and folder outputs, Ginkgo stores content-addressed artifacts under
 `.ginkgo/artifacts/` and uses those as the durable backing store for cached path
 outputs.
 
-That separation matters because a task's declared output path is not the source
-of truth. The artifact store is.
+A task's declared output path is not the source of truth — the artifact store
+is.
 
 ## What Lives In A Run Directory
 
@@ -52,8 +52,8 @@ ginkgo cache clear <cache-key>
 ginkgo cache prune --older-than 30d --dry-run
 ```
 
-These commands are useful when you want to understand reuse behavior without
-manually navigating hidden directories.
+These commands report reuse behavior without navigating the hidden cache
+directory by hand.
 
 ## Bounding Cache Size
 
@@ -96,9 +96,3 @@ run, which would serve from cache, and which resources they declare. Dry-run
 is the fastest way to confirm that a workflow is correctly wired, that every
 declared environment exists, and that planned caching aligns with intent
 before committing to a real run.
-
-## Why This Matters In Practice
-
-Caching is only useful if users can trust it. Provenance is only useful if users
-can inspect what happened after the fact. Ginkgo keeps both features explicit so
-that reruns remain understandable rather than magical.

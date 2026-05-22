@@ -1,9 +1,20 @@
 # Installation
 
-Ginkgo targets Python 3.11+ and is easiest to develop and run locally with
-Pixi.
+Ginkgo targets Python 3.11+. Use the curl installer to get just the `ginkgo`
+CLI, or Pixi for a full local development setup.
 
-## Recommended: Pixi
+## Quick Install (curl)
+
+Install the `ginkgo` CLI in one line. This requires [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
+```
+
+This installs `ginkgo` from `main` into an isolated environment via
+`uv tool install`. Re-run the same command to upgrade.
+
+## Recommended For Development: Pixi
 
 This repository already includes a Pixi workspace. Install the environment and
 use Pixi to run tests, the CLI, and the docs build.

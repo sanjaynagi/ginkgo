@@ -47,6 +47,10 @@ inspect its inputs and return new expressions conditionally.
 This is the mechanism behind Ginkgo's dynamic DAG expansion. It lets workflows
 branch based on real data without moving orchestration logic into the flow body.
 
+The deferral is deliberate: keeping the flow body free of real computation is
+what lets Ginkgo build the whole graph up front, validate it, and reason about
+caching before any task runs.
+
 ## `.map()` Expresses Fan-Out
 
 Use partial application plus `.map()` when one task should run independently for
@@ -96,3 +100,10 @@ Today, Ginkgo's orchestration logic stays in the local Python process. It can
 dispatch shell work into Pixi environments or containers, but graph
 construction, scheduling, caching decisions, and provenance recording remain
 local and explicit.
+
+## See Also
+
+- [Tasks and Flows](tasks-and-flows.md) &mdash; the full authoring model for
+  Python tasks, shell tasks, and fan-out.
+- [Architecture Overview](../explanation/architecture.md) &mdash; how these
+  concepts map onto the runtime.

@@ -1,7 +1,9 @@
 # Tasks And Flows
 
 This guide covers the core authoring model: how to define tasks, structure a
-flow, and decide what belongs in each layer.
+flow, and decide what belongs in each layer. If you have not read
+[Core Concepts](concepts.md) yet, start there &mdash; it explains why task calls
+return deferred expressions rather than running immediately.
 
 ## Keep Flows Thin
 
@@ -26,6 +28,61 @@ The flow should primarily:
 - return the final expression or expressions
 
 Heavy transformation logic belongs in task bodies, not in the flow.
+
+## Task Kinds
+
+Ginkgo has five task kinds. They share the same `@task` decorator, typed inputs
+and outputs, caching, and resource declarations — they differ only in what the
+task body does:
+
+| Kind | Decorator | Body returns | Executes |
+|---|---|---|---|
+| Python | `@task()` | a Python value | in the scheduler's own Python process |
+| Shell | `@task("shell")` | `shell(cmd=..., output=...)` | a shell command, optionally inside a declared environment |
+| Script | `@task("script")` | `script(path, output=...)` | a `.py` or `.R` script file, with inputs passed as `--flags` |
+| Notebook | `@task("notebook")` | `notebook(path, output=...)` | a Jupyter or marimo notebook, rendered to HTML |
+| Subworkflow | `@task("subworkflow")` | `subworkflow(path, params=...)` | a nested workflow, as a self-contained `ginkgo run` |
+
+The kind can be passed positionally (`@task("shell")`) or by keyword
+(`@task(kind="shell")`). Shell, script, and notebook tasks can each declare an
+`env`; Python tasks always run in the scheduler's own process.
+
+Side by side, the five bodies look like this:
+
+```python
+from ginkgo import (
+    SubWorkflowResult,
+    file,
+    notebook,
+    script,
+    shell,
+    subworkflow,
+    task,
+)
+
+
+@task()                                     # python
+def summarize(rows: list[str]) -> file:
+    ...                                     # plain Python, returns a value
+
+@task("shell", env="bioinfo_tools")         # shell
+def filter_fastq(fastq: file) -> file:
+    return shell(cmd="seqkit seq ...", output="results/filtered.fastq")
+
+@task("script", env="analysis_tools")       # script
+def build_brief(normalized_card: file, output_path: str) -> file:
+    return script("scripts/build_brief.py", output=output_path)
+
+@task("notebook", env="analysis_tools")     # notebook
+def render_overview(summary_path: file) -> file:
+    return notebook("notebooks/overview.ipynb")
+
+@task("subworkflow")                        # subworkflow
+def run_child(dataset: file) -> SubWorkflowResult:
+    return subworkflow("child/workflow.py")
+```
+
+The sections below cover each kind in turn.
 
 ## Python Tasks
 
@@ -75,10 +132,91 @@ The wrapper function runs locally on the scheduler. It builds the concrete shell
 payload from resolved values, and only that payload is executed in the foreign
 environment.
 
-## Partial Application And Fan-Out
+## Script Tasks
 
-You do not need to supply every required argument immediately. If you provide a
-subset, Ginkgo returns a `PartialCall` that can be mapped later.
+Use `@task("script")` to run a standalone script file — Python (`.py`) or R
+(`.r`/`.R`). The body returns a `script(...)` expression. Resolved task inputs
+are forwarded to the script as `--param-name value` command-line arguments.
+
+```python
+from pathlib import Path
+
+from ginkgo import file, script, task
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+
+
+@task("script", env="analysis_tools")
+def build_brief(item: str, normalized_card: file, output_path: str) -> file:
+    return script(_SCRIPTS_DIR / "build_brief.py", output=output_path)
+```
+
+The interpreter is inferred from the file extension (`.py` → `python`,
+`.r`/`.R` → `rscript`); pass `interpreter=...` to override it. A script task
+lets you reuse an existing analysis script without rewriting it as a Python
+task.
+
+## Notebook Tasks
+
+Use `@task("notebook")` to run a Jupyter or marimo notebook as a workflow step.
+The body returns a `notebook(...)` expression, and the rendered HTML becomes a
+tracked run artifact.
+
+```python
+from ginkgo import file, notebook, task
+
+
+@task("notebook")
+def render_overview(summary_path: file, run_label: str) -> file:
+    """Render an HTML overview notebook for the run."""
+    return notebook("notebooks/overview.ipynb")
+```
+
+The decorated function defines the typed parameter schema; its resolved inputs
+are passed into the notebook as parameters. The notebook file is source material
+for both execution and cache identity — when the notebook changes, the task's
+cache key changes.
+
+`notebook()` takes two optional arguments beyond the path:
+
+- `output` — a declared output path, or list of paths, validated after the
+  notebook runs. When omitted, the task result is the managed rendered-HTML
+  artifact.
+- `log` — a path to capture stdout/stderr during execution.
+
+Notebook tasks support `.ipynb` execution through Papermill as well as marimo
+notebooks. The HTML export is recorded in provenance and appears in the
+[run report](assets.md). A notebook task can declare an `env` so the notebook
+runs against that environment's kernel.
+
+## Subworkflow Tasks
+
+Use `@task("subworkflow")` to run another workflow as a single task. The body
+returns a `subworkflow(...)` expression; the child workflow runs as a
+self-contained `ginkgo run` subprocess, and its `run_id` and manifest path come
+back to the parent as a `SubWorkflowResult`.
+
+```python
+from ginkgo import SubWorkflowResult, file, subworkflow, task
+
+
+@task("subworkflow")
+def run_child(dataset: file) -> SubWorkflowResult:
+    return subworkflow("child/workflow.py", params={"dataset": str(dataset)})
+```
+
+`subworkflow()` accepts `params` (parameter overrides forwarded to the child as
+a config file) and `config` (additional `--config` paths). Subworkflows let you
+compose large pipelines from independently runnable units.
+
+## Fan-Out With `.map()`
+
+A plain task call runs the task once. To run a task across many inputs, split
+its arguments into two groups: the ones that stay **fixed** for every call, and
+the ones that **vary** from call to call.
+
+Pass the fixed arguments to the task call itself, then `.map()` over the varying
+arguments:
 
 ```python
 filtered = filter_fastq(min_length=8).map(
@@ -87,10 +225,24 @@ filtered = filter_fastq(min_length=8).map(
 )
 ```
 
-This pattern keeps one fixed parameter set while varying the per-sample inputs.
+In this example:
 
-Use `.product_map()` when the varying arguments should form a parameter grid
-rather than being zipped by position.
+- `min_length=8` is **fixed** — every fanned-out call receives the same value.
+- `sample_id` and `fastq` are the **varying** arguments. Each is a list, and
+  `.map()` runs `filter_fastq` once per list position, taking one `sample_id`
+  and one `fastq` from the same index each time.
+
+The varying lists are **zipped by position**, so they must all be the same
+length. `.map()` returns an `ExprList` — one task expression per row.
+
+Supplying only some of a task's arguments is what makes this work: the call
+returns a `PartialCall` instead of running, and `.map()` then fills in the rest,
+one set of values per fanned-out call.
+
+### `.product_map()` — Every Combination
+
+Use `.product_map()` when the varying arguments should form a **grid** — every
+combination — rather than being zipped by position:
 
 ```python
 models = train().product_map(
@@ -99,9 +251,13 @@ models = train().product_map(
 )
 ```
 
-You can also chain fan-out calls. Chaining always returns a flat `ExprList`,
-with existing branches treated as the outer loop and newly introduced rows as
-the inner loop.
+This runs `train` four times: each `sample_id` paired with each `lr`.
+
+### Chaining Fan-Out
+
+You can chain fan-out calls. Chaining always returns a flat `ExprList`, with
+existing branches treated as the outer loop and newly introduced rows as the
+inner loop.
 
 ## Returning Expressions From Tasks
 
@@ -113,67 +269,17 @@ Tasks can return:
 - an `ExprList`
 - nested containers containing expressions
 
-That gives you controlled dynamic graph expansion while keeping the authoring
-model small.
+That gives you controlled dynamic graph expansion.
 
-## Declaring Resource Requirements
+## See Also
 
-Every `@task` can declare the resources it needs. The scheduler respects
-these declarations against the `--jobs`, `--cores`, and `--memory` budgets.
-
-```python
-@task(threads=4, memory="8Gi")
-def align_reads(sample_id: str, reads: file) -> file:
-    ...
-
-@task(kind="shell", gpu=1, remote=True, memory="16Gi")
-def train_model(dataset: folder) -> file:
-    ...
-```
-
-- `threads=N` declares the CPU footprint. Tasks that read `threads` as a
-  function parameter receive it automatically; shell tasks also see
-  `GINKGO_THREADS` in their subprocess environment. Set
-  `export_thread_env=True` to additionally export `OMP_NUM_THREADS` and
-  related BLAS/OpenMP variables.
-- `memory="8Gi"` declares the memory footprint. Format is Kubernetes-style
-  (`512Mi`, `4Gi`, `16Gi`). Remote executors map this to pod resource
-  requests.
-- `gpu=N` and `remote=True` dispatch the task to the configured remote
-  executor. Tasks with `gpu > 0` are implicitly remote.
-
-## Priority And Retry Policies
-
-Two optional decorator parameters control scheduling and resilience:
-
-```python
-# Highest-priority tasks run first when multiple are ready at once.
-@task(priority=10)
-def critical_path_step(...): ...
-
-# Retry up to 3 times, only on IOError, with exponential backoff.
-@task(retries=3, retry_on=IOError, retry_backoff=1.0)
-def network_fetch(...): ...
-
-# Retry only specific exit codes on shell tasks.
-@task(kind="shell", retries=2, retry_on_exit_codes=(137,))  # OOM kills
-def memory_intensive_step(...): ...
-```
-
-`priority` is a strict tiebreaker: it never lets a higher-priority task
-block a larger set of lower-priority tasks from running. Retries with a
-non-zero `retry_backoff` pause the task in a `waiting_retry` state for the
-computed delay (capped at `retry_backoff_max`) before the scheduler picks
-it up again.
-
-## When To Split A Task
-
-Split tasks when you need:
-
-- a reusable cache boundary
-- a separate execution environment
-- clearer provenance
-- cleaner failure isolation
-
-Keep logic together when splitting it would only add indirection without adding
-clarity or a real runtime boundary.
+- [Resources and Scheduling](resources.md) &mdash; declaring CPU, memory, GPU,
+  priority, and retries.
+- [Environments](environments.md) &mdash; how shell, script, and notebook tasks
+  resolve Pixi and container environments.
+- [Caching and Provenance](caching-and-provenance.md) &mdash; how task
+  boundaries become cache boundaries.
+- [Assets and Reports](assets.md) &mdash; return typed, versioned outputs
+  instead of plain files.
+- [Bioinformatics Workflow](../examples/bioinfo-workflow.md) &mdash; these
+  patterns in a complete, runnable example.
