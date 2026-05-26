@@ -82,7 +82,7 @@ def run_child(dataset: file) -> SubWorkflowResult:
     return subworkflow("child/workflow.py")
 ```
 
-The sections below cover each kind in turn.
+The sections below cover each kind.
 
 ## Python Tasks
 
@@ -269,7 +269,7 @@ Tasks can return:
 - an `ExprList`
 - nested containers containing expressions
 
-That gives you controlled dynamic graph expansion.
+Returning expressions is how a workflow's graph expands at runtime.
 
 ## See Also
 

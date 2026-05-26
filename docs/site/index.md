@@ -1,19 +1,18 @@
-```{raw} html
-<section class="hero">
-  <span class="hero-eyebrow">Python workflow orchestrator</span>
-  <h1>Ginkgo</h1>
-  <p>
-    Write workflows as ordinary Python. Ginkgo defers each task into a graph it
-    can schedule, cache, and reproduce &mdash; so reruns reuse prior work
-    instead of repeating it.
-  </p>
-  <div class="hero-actions">
-    <a href="getting-started/quickstart/">Quickstart</a>
-    <a href="examples/bioinfo-workflow/">Bioinformatics example</a>
-    <a href="guide/cli/">CLI</a>
-  </div>
-</section>
-```
+# Ginkgo
+
+### Overview
+
+Ginkgo is a Python-native way to write scientific workflows. You write each
+step as a normal Python function, and Ginkgo runs them as a graph, handling
+parallelism, caching, and a record of what ran. Calling a task doesn't run it
+&mdash; it returns a deferred expression, so Ginkgo can build and check the
+whole graph before anything executes. Because that graph is built from ordinary
+Python, it can change shape while it runs: a task can look at its inputs and
+add new steps, which is how Ginkgo handles dynamic DAGs. You get all of this
+without rewriting your code into a separate workflow language.
+
+New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
+straight to the [Quickstart](getting-started/quickstart/).
 
 ```{raw} html
 <section class="quick-grid">
@@ -35,25 +34,6 @@
   </article>
 </section>
 ```
-
-### Overview
-
-You write task functions, compose them inside a flow, and hand the resulting
-graph to a runtime that schedules, caches, and records every step.
-
-Calling a task does not run it &mdash; it returns a deferred expression. The
-flow assembles those expressions into a graph, and the runtime decides what to
-execute, what to reuse from cache, and what to record.
-
-Ginkgo fits workflows that need:
-
-- a Python-native authoring model
-- mixed local Python and shell-based execution
-- repeatable environments for selected tasks
-- output reuse across reruns
-
-New to Ginkgo? Read [Why Ginkgo](motivation/) for the motivation, or jump
-straight to the [Quickstart](getting-started/quickstart/).
 
 ### A Minimal Workflow
 
@@ -116,13 +96,11 @@ ginkgo run workflow.py
     <h3>Reference</h3>
     <ul>
       <li><a href="reference/api/">API reference</a></li>
-      <li><a href="explanation/architecture/">Architecture overview</a></li>
     </ul>
   </article>
 </section>
 <div class="section-note">
-  The docs site is organized for end users first. Use the quickstart and the
-  bioinformatics example as the main path through the material.
+  The quickstart and the bioinformatics example are the best place to start.
 </div>
 ```
 
@@ -144,5 +122,4 @@ guide/notifications
 guide/remote-execution
 examples/bioinfo-workflow
 reference/api
-explanation/architecture
 ```

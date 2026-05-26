@@ -4,10 +4,10 @@
 <div class="reference-page">
 ```
 
-This reference is intentionally small in the first docs phase. It covers the
-main authoring surface that end users reach for directly. For task-by-task
-explanation and worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md)
-and [Core Concepts](../guide/concepts.md).
+This reference covers the main authoring surface — the functions and classes
+you use directly when writing workflows. For task-by-task explanation and
+worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md) and
+[Core Concepts](../guide/concepts.md).
 
 ## Top-Level Package
 
