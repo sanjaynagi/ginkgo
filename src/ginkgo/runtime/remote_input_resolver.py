@@ -234,9 +234,13 @@ class RemoteStager:
         task_policy = TaskAccessPolicy.from_task_def(task_def)
         access_config = self._get_access_config()
 
-        # Fuse streaming is only meaningful on the remote dispatch path.
-        # For local tasks (no remote executor will run them), force
-        # `stage` so downstream code receives a normal local path.
+        # Fuse mounting is currently only wired for the remote dispatch
+        # path: the worker hydrates fuse markers via `MountedAccess`, but
+        # the local process-pool path has no equivalent mount lifecycle.
+        # For local tasks, force `stage` so downstream code receives a
+        # normal local path. (Local FUSE on a host with a healthy driver
+        # would also be useful for sparse reads of large objects; see the
+        # follow-up tracked on PR #41.)
         dispatches_remote = bool(
             getattr(task_def, "remote", False) or getattr(task_def, "gpu", 0) > 0
         )
