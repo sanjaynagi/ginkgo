@@ -57,14 +57,16 @@ bytes, so an asset key gives you a stable handle with full version history.
 ```bash
 ginkgo asset ls                 # all asset keys
 ginkgo asset versions <key>     # version history for one key
-ginkgo asset inspect <ref>      # metadata for one asset version
-ginkgo asset show <ref>         # render the asset payload
+ginkgo asset show <ref>         # kind-specific metadata stats (schema, shape, dimensions, etc.)
+ginkgo asset inspect <ref>      # raw AssetVersion record (artifact_id, content_hash, run_id, path)
 ginkgo models [run_id]          # model assets with their recorded metrics
 ```
 
 ## HTML Reports
 
-`ginkgo report` renders a finished run as a self-contained HTML report:
+`ginkgo report` renders a **completed** run (status `succeeded` or `failed`) as
+a self-contained HTML report. Running or pending runs are rejected with an
+error.
 
 ```bash
 ginkgo report                   # the most recent run
@@ -78,13 +80,17 @@ metrics), and links to rendered notebooks. By default it is written to
 
 Useful flags:
 
-- `--single-file` — emit one HTML file with CSS, fonts, and figures inlined as
-  data URIs; easy to share or attach.
+- `--single-file` — emit one HTML file with CSS, fonts, figures, and log files
+  inlined as data URIs; easy to share or attach. Notebook iframes are not
+  inlined and remain as relative references.
 - `--out <dir>` — write the report bundle somewhere other than the default.
 - `--open` / `--no-open` — open (or do not open) the report in a browser when
   the build finishes.
-- `--embed-full-assets` — copy full artifact bytes into the bundle alongside the
-  rendered previews.
+- `--embed-full-assets` — copy artifact bytes into the bundle alongside the
+  rendered previews. Only applies to assets stored as single files; directory-
+  backed artifacts (e.g. zarr stores) are excluded.
+- `--max-log-lines N` — control how many log lines are shown per failed task
+  (default 80).
 
 To list just the rendered notebook artifacts produced by runs, use
 `ginkgo notebooks`.

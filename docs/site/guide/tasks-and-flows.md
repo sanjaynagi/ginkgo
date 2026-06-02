@@ -37,7 +37,7 @@ task body does:
 
 | Kind | Decorator | Body returns | Executes |
 |---|---|---|---|
-| Python | `@task()` | a Python value | in the scheduler's own Python process |
+| Python | `@task()` | a Python value | in a spawned subprocess worker (`ProcessPoolExecutor`) |
 | Shell | `@task("shell")` | `shell(cmd=..., output=...)` | a shell command, optionally inside a declared environment |
 | Script | `@task("script")` | `script(path, output=...)` | a `.py` or `.R` script file, with inputs passed as `--flags` |
 | Notebook | `@task("notebook")` | `notebook(path, output=...)` | a Jupyter or marimo notebook, rendered to HTML |
@@ -45,7 +45,8 @@ task body does:
 
 The kind can be passed positionally (`@task("shell")`) or by keyword
 (`@task(kind="shell")`). Shell, script, and notebook tasks can each declare an
-`env`; Python tasks always run in the scheduler's own process.
+`env`; Python tasks cannot declare an `env` and always run in a spawned worker
+process.
 
 Side by side, the five bodies look like this:
 
@@ -86,8 +87,9 @@ The sections below cover each kind.
 
 ## Python Tasks
 
-Use `@task()` for Python code that should execute in the scheduler's own Python
-environment.
+Use `@task()` for pure Python computation. The task body runs in a spawned
+subprocess worker (`ProcessPoolExecutor`, spawn context). A `ThreadPoolExecutor`
+fallback is used in environments that disallow process spawning.
 
 ```python
 from pathlib import Path
@@ -130,7 +132,8 @@ def fastq_stats(sample_id: str, fastq: file) -> file:
 
 The wrapper function runs locally on the scheduler. It builds the concrete shell
 payload from resolved values, and only that payload is executed in the foreign
-environment.
+environment. Shell, script, and notebook tasks can all declare an `env`; Python
+tasks cannot.
 
 ## Script Tasks
 

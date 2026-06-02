@@ -55,21 +55,19 @@ ginkgo/
 │   ├── publisher.py         # remote output publishing
 │   ├── resolve.py           # backend factory
 │   ├── staging.py           # remote input staging
-│   └── worker.py            # remote worker entry point
+│   ├── worker.py            # remote worker entry point
+│   └── access/              # FUSE / staged remote input access
+│       ├── doctor.py        # access-layer diagnostics
+│       ├── mounted.py       # FUSE-mount coordination
+│       ├── protocol.py      # wire encoding for fuse refs
+│       ├── resolver.py      # RemoteInputResolver
+│       ├── staged.py        # staged (download) access path
+│       ├── worker_hydration.py  # worker-side input hydration
+│       └── drivers/         # per-provider FUSE drivers (s3, gcsfuse, rclone)
 ├── envs/
 │   ├── container.py      # ContainerBackend (Docker/Podman)
 │   └── pixi.py
-├── cli/
-│   ├── app.py
-│   └── commands/
-└── ui/
-    ├── server/
-    │   ├── __init__.py      # re-exports create_ui_server
-    │   ├── app.py           # HTTP/WebSocket handler and route wiring
-    │   ├── live.py          # live-state capture and diffing
-    │   ├── payloads.py      # run/task/workspace/cache payload builders
-    │   ├── utils.py         # shared formatting helpers
-    │   ├── websocket.py     # WebSocket framing
-    │   └── workspaces.py    # WorkspaceRecord, WorkspaceRegistry, discovery
-    └── static/
+└── cli/
+    ├── app.py
+    └── commands/
 ```

@@ -151,11 +151,11 @@ Shell tasks may declare `env="name"` to run against a Pixi environment under
 responsible for env discovery, validation, lock hashing for cache invalidation,
 environment preparation before dispatch, and shell execution through Pixi.
 
-**ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for **shell tasks only**. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
+**ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for shell, notebook, and script tasks. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
 **CompositeBackend** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalBackend`.
 
-Foreign execution environments do not support Python tasks. Ginkgo treats `env=...` as a shell-task boundary only, which keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
+Foreign execution environments do not support Python tasks. `env=...` is valid on shell, notebook, and script tasks only. This keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 
 Image digests (not mutable tags) are used for cache key identity, ensuring cache invalidation when image contents change.
 
