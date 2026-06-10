@@ -10,9 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ginkgo.core.directive import ExecutionDirective
+
 
 @dataclass(frozen=True)
-class SubWorkflowExpr:
+class SubWorkflowExpr(ExecutionDirective):
     """Sentinel representing a nested Ginkgo workflow invocation.
 
     Parameters

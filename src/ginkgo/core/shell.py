@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.directive import ExecutionDirective
 
 ShellOutputItem: TypeAlias = str | AssetResult
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 
 @dataclass(frozen=True)
-class ShellExpr:
+class ShellExpr(ExecutionDirective):
     """Sentinel representing a shell command to execute.
 
     Parameters

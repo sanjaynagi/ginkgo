@@ -1,5 +1,6 @@
 """Declarative workflow model exposed to Ginkgo users."""
 
+from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.flow import FlowDef, flow
 from ginkgo.core.notebook import NotebookExpr, notebook
@@ -10,6 +11,7 @@ from ginkgo.core.task import PartialCall, TaskDef, task
 from ginkgo.core.types import file, folder, tmp_dir
 
 __all__ = [
+    "ExecutionDirective",
     "Expr",
     "ExprList",
     "FlowDef",

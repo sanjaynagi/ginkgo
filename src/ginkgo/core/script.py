@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.directive import ExecutionDirective
 
 _ScriptOutputItem = str | AssetResult
 _ScriptOutput = _ScriptOutputItem | list[_ScriptOutputItem] | None
@@ -24,7 +25,7 @@ _EXTENSION_TO_INTERPRETER: dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class ScriptExpr:
+class ScriptExpr(ExecutionDirective):
     """Sentinel representing a script execution request.
 
     Parameters

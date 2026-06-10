@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.directive import ExecutionDirective
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
@@ -19,7 +20,7 @@ _NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
 @dataclass(frozen=True)
-class NotebookExpr:
+class NotebookExpr(ExecutionDirective):
     """Sentinel representing a notebook execution request.
 
     Parameters

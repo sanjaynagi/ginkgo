@@ -13,6 +13,7 @@ _EXPORTS = {
     "AssetRef": ("ginkgo.core.asset", "AssetRef"),
     "AssetResult": ("ginkgo.core.asset", "AssetResult"),
     "AssetVersion": ("ginkgo.core.asset", "AssetVersion"),
+    "ExecutionDirective": ("ginkgo.core.directive", "ExecutionDirective"),
     "Expr": ("ginkgo.core.expr", "Expr"),
     "ExprList": ("ginkgo.core.expr", "ExprList"),
     "FlowDef": ("ginkgo.core.flow", "FlowDef"),
