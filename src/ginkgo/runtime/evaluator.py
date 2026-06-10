@@ -96,6 +96,22 @@ from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expre
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 
+# Maps each ExecutionDirective subclass to the (runner_attr, method_name) pair used
+# to dispatch it. Checked at import time — a new subclass with no entry raises ImportError.
+_DIRECTIVE_RUNNER: dict[type[ExecutionDirective], tuple[str, str]] = {
+    ShellDirective: ("_shell_runner", "run_shell"),
+    NotebookDirective: ("_notebook_runner", "run_notebook"),
+    ScriptDirective: ("_notebook_runner", "run_script"),
+    SubWorkflowDirective: ("_subworkflow_runner", "run_subworkflow"),
+}
+_unregistered = set(ExecutionDirective.__subclasses__()) - set(_DIRECTIVE_RUNNER)
+if _unregistered:
+    raise ImportError(
+        "ExecutionDirective subclasses with no runner entry: "
+        + ", ".join(sorted(t.__name__ for t in _unregistered))
+    )
+del _unregistered
+
 
 class CycleError(RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
@@ -2043,50 +2059,15 @@ class ConcurrentEvaluator:
             self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
             return
 
-        # Driver task: shell / notebook / script — dispatch to the appropriate runner.
+        # Driver task: dispatch to the appropriate runner via the type-keyed table.
         assert self._executors is not None
-
-        if isinstance(completed_value, ShellDirective):
+        runner_entry = _DIRECTIVE_RUNNER.get(type(completed_value))
+        if runner_entry is not None:
+            runner_attr, method_name = runner_entry
+            runner_fn = getattr(getattr(self, runner_attr), method_name)
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._executors.shell.submit(
-                self._shell_runner.run_shell,
-                node=node,
-                shell_expr=completed_value,
-            )
-            self._running_futures[future] = (node.node_id, "shell")
-            return
-
-        if isinstance(completed_value, NotebookDirective):
-            self._cleanup_transport(node)
-            node.state = "running_shell"
-            future = self._executors.shell.submit(
-                self._notebook_runner.run_notebook,
-                node=node,
-                notebook_expr=completed_value,
-            )
-            self._running_futures[future] = (node.node_id, "shell")
-            return
-
-        if isinstance(completed_value, ScriptDirective):
-            self._cleanup_transport(node)
-            node.state = "running_shell"
-            future = self._executors.shell.submit(
-                self._notebook_runner.run_script,
-                node=node,
-                script_expr=completed_value,
-            )
-            self._running_futures[future] = (node.node_id, "shell")
-            return
-
-        if isinstance(completed_value, SubWorkflowDirective):
-            self._cleanup_transport(node)
-            node.state = "running_shell"
-            future = self._executors.shell.submit(
-                self._subworkflow_runner.run_subworkflow,
-                node=node,
-                subworkflow_expr=completed_value,
-            )
+            future = self._executors.shell.submit(runner_fn, node=node, directive=completed_value)
             self._running_futures[future] = (node.node_id, "shell")
             return
 

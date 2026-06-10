@@ -223,7 +223,7 @@ class NotebookRunner:
 
     # Public driver entry points ---------------------------------------------
 
-    def run_notebook(self, *, node: Any, notebook_expr: NotebookDirective) -> Any:
+    def run_notebook(self, *, node: Any, directive: NotebookDirective) -> Any:
         """Execute a notebook task from a ``NotebookDirective``.
 
         Determines the notebook backend from the file extension, runs
@@ -231,15 +231,15 @@ class NotebookRunner:
         returns the appropriate result value.
         """
         assert node.execution_args is not None
-        notebook_path = notebook_expr.path
+        notebook_path = directive.path
         notebook_kind = "ipynb" if notebook_path.suffix.lower() == ".ipynb" else "marimo"
-        user_log_path = Path(notebook_expr.log) if notebook_expr.log is not None else None
+        user_log_path = Path(directive.log) if directive.log is not None else None
         description = fn_description(node.task_def.fn)
 
         artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
         self._prepare_notebook_artifacts(artifacts=artifacts)
-        if notebook_expr.output is not None:
-            for output_path in iter_output_values(notebook_expr.output):
+        if directive.output is not None:
+            for output_path in iter_output_values(directive.output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
         kernel_spec = (
@@ -337,34 +337,34 @@ class NotebookRunner:
             )
 
         # Validate and return declared outputs, or fall back to HTML artifact.
-        if notebook_expr.output is None:
+        if directive.output is None:
             return self.validator.coerce_return_value(
                 task_def=node.task_def, value=str(artifacts.html_path)
             )
         return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            output=notebook_expr.output,
+            output=directive.output,
         )
 
-    def run_script(self, *, node: Any, script_expr: ScriptDirective) -> Any:
+    def run_script(self, *, node: Any, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
-        user_log_path = Path(script_expr.log) if script_expr.log is not None else None
-        if script_expr.output is not None:
-            for output_path in iter_output_values(script_expr.output):
+        user_log_path = Path(directive.log) if directive.log is not None else None
+        if directive.output is not None:
+            for output_path in iter_output_values(directive.output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Resolve the interpreter: use sys.executable for Python to stay in the same env.
         interpreter_cmd = (
             shlex.quote(sys.executable)
-            if script_expr.interpreter == "python"
-            else shlex.quote(script_expr.interpreter)
+            if directive.interpreter == "python"
+            else shlex.quote(directive.interpreter)
         )
 
         # Build command: interpreter script_path --arg-name value ...
-        cmd_parts = [interpreter_cmd, shlex.quote(str(script_expr.path))]
+        cmd_parts = [interpreter_cmd, shlex.quote(str(directive.path))]
         for name, value in node.execution_args.items():
             option = f"--{name.replace('_', '-')}"
             cmd_parts.extend(
@@ -382,15 +382,15 @@ class NotebookRunner:
                 cmd=redact_text(text=cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
-                log=script_expr.log,
+                log=directive.log,
             )
 
-        if script_expr.output is None:
+        if directive.output is None:
             return None
         return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            output=script_expr.output,
+            output=directive.output,
         )
 
     # Cache replay -----------------------------------------------------------

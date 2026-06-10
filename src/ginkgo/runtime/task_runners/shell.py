@@ -486,33 +486,33 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
-    def run_shell(self, *, node: Any, shell_expr: Any) -> Any:
+    def run_shell(self, *, node: Any, directive: Any) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
-        user_log_path = Path(shell_expr.log) if shell_expr.log is not None else None
+        user_log_path = Path(directive.log) if directive.log is not None else None
 
-        for output_path in iter_output_values(shell_expr.output):
+        for output_path in iter_output_values(directive.output):
             remove_declared_output(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
         completed = self.run_logged_command(
             node=node,
-            cmd=shell_expr.cmd,
+            cmd=directive.cmd,
             user_log_path=user_log_path,
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
             raise ShellTaskError(
                 task_name=task_def.name,
-                cmd=redact_text(text=shell_expr.cmd, secret_values=node.secret_values),
+                cmd=redact_text(text=directive.cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
-                log=shell_expr.log,
+                log=directive.log,
             )
 
         missing_outputs = [
             str(output_path)
-            for output_path in iter_output_values(shell_expr.output)
+            for output_path in iter_output_values(directive.output)
             if not output_path.exists()
         ]
         if missing_outputs:
@@ -521,4 +521,4 @@ class ShellRunner:
                 f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
             )
 
-        return self.validator.coerce_return_value(task_def=task_def, value=shell_expr.output)
+        return self.validator.coerce_return_value(task_def=task_def, value=directive.output)

@@ -107,7 +107,7 @@ class SubworkflowRunner:
         self,
         *,
         node: Any,
-        subworkflow_expr: SubWorkflowDirective,
+        directive: SubWorkflowDirective,
     ) -> SubWorkflowResult:
         """Dispatch a child ``ginkgo run`` subprocess for one sub-workflow."""
         parent_depth = _parent_depth()
@@ -118,24 +118,24 @@ class SubworkflowRunner:
                 "Check for recursive or mutually-recursive workflow calls."
             )
 
-        workflow_path = Path(subworkflow_expr.path)
+        workflow_path = Path(directive.path)
         if not workflow_path.is_absolute():
             workflow_path = Path.cwd() / workflow_path
         if not workflow_path.exists():
-            raise FileNotFoundError(f"Sub-workflow path does not exist: {subworkflow_expr.path!r}")
+            raise FileNotFoundError(f"Sub-workflow path does not exist: {directive.path!r}")
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="ginkgo-subworkflow-"))
         tmp_params_path: Path | None = None
         try:
             config_paths: list[str] = []
-            if subworkflow_expr.params:
+            if directive.params:
                 tmp_params_path = tmp_dir / "params.yaml"
                 tmp_params_path.write_text(
-                    yaml.safe_dump(subworkflow_expr.params, sort_keys=True),
+                    yaml.safe_dump(directive.params, sort_keys=True),
                     encoding="utf-8",
                 )
                 config_paths.append(str(tmp_params_path))
-            config_paths.extend(subworkflow_expr.config)
+            config_paths.extend(directive.config)
 
             parts = [
                 shlex.quote(self.python_executable),
