@@ -8,7 +8,7 @@ command to the configured shell runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TypeAlias, final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
@@ -17,6 +17,7 @@ ShellOutputItem: TypeAlias = str | AssetResult
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 
+@final
 @dataclass(frozen=True)
 class ShellDirective(ExecutionDirective):
     """Execution directive representing a shell command to execute.

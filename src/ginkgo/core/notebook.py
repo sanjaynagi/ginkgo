@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
@@ -19,6 +20,7 @@ _NotebookOutputItem = str | AssetResult
 _NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
+@final
 @dataclass(frozen=True)
 class NotebookDirective(ExecutionDirective):
     """Execution directive representing a notebook execution request.

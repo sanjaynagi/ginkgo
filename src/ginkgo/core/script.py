@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
@@ -24,6 +25,7 @@ _EXTENSION_TO_INTERPRETER: dict[str, str] = {
 }
 
 
+@final
 @dataclass(frozen=True)
 class ScriptDirective(ExecutionDirective):
     """Execution directive representing a script execution request.

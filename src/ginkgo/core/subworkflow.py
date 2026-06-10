@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import final
 
 from ginkgo.core.directive import ExecutionDirective
 
 
+@final
 @dataclass(frozen=True)
 class SubWorkflowDirective(ExecutionDirective):
     """Execution directive representing a nested Ginkgo workflow invocation.
