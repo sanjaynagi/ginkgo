@@ -20,6 +20,7 @@ from types import FrameType
 from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.shell import ShellDirective
 from ginkgo.runtime.backend import TaskBackend
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
@@ -486,7 +487,7 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
-    def run_shell(self, *, node: Any, directive: Any) -> Any:
+    def run_shell(self, *, node: Any, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
         user_log_path = Path(directive.log) if directive.log is not None else None

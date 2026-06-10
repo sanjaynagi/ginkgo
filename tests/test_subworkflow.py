@@ -112,7 +112,7 @@ class TestRecursionGuard:
         with pytest.raises(SubWorkflowRecursionError):
             runner.run_subworkflow(
                 node=_FakeNode(),
-                subworkflow_expr=subworkflow(str(child)),
+                directive=subworkflow(str(child)),
             )
 
 
