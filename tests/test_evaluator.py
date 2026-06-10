@@ -989,19 +989,19 @@ class TestEvaluate:
             resolved_args={"notebook_path": str(nb_path), "value": 1},
         )
         # Recompute v1's key inline to compare — both keys are the same task_def
-        # so the difference comes from the source hash stored in the sentinel.
+        # so the difference comes from the source hash stored in the directive.
         from ginkgo.core.notebook import notebook as make_notebook
 
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
-        sentinel_v1 = make_notebook(str(nb_path))
+        directive_v1 = make_notebook(str(nb_path))
         nb_path.write_text(
             '{"cells": [{"source": "changed"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
             encoding="utf-8",
         )
-        sentinel_v2 = make_notebook(str(nb_path))
-        assert sentinel_v1.source_hash != sentinel_v2.source_hash
+        directive_v2 = make_notebook(str(nb_path))
+        assert directive_v1.source_hash != directive_v2.source_hash
 
     def test_local_task_fails_immediately_at_runtime(self):
         @task()
