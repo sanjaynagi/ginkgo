@@ -15,6 +15,9 @@ import pytest
 
 from ginkgo import (
     AssetRef,
+    NotebookDirective,
+    ScriptDirective,
+    SubWorkflowDirective,
     asset,
     evaluate,
     file,
@@ -217,8 +220,29 @@ def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
 
 
 @task()
-def python_returns_shell_task(output_path: str) -> file:
+def python_returns_shell_directive_task(output_path: str) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
+
+
+@task()
+def python_returns_notebook_directive_task() -> None:
+    from pathlib import Path
+
+    return NotebookDirective(path=Path("/fake.ipynb"), output=None, log=None, source_hash="test")
+
+
+@task()
+def python_returns_script_directive_task() -> None:
+    from pathlib import Path
+
+    return ScriptDirective(
+        path=Path("/fake.py"), output=None, log=None, interpreter="python", source_hash="test"
+    )
+
+
+@task()
+def python_returns_subworkflow_directive_task() -> None:
+    return SubWorkflowDirective(path="fake/workflow.py")
 
 
 @task(kind="shell")
@@ -971,19 +995,19 @@ class TestEvaluate:
             resolved_args={"notebook_path": str(nb_path), "value": 1},
         )
         # Recompute v1's key inline to compare — both keys are the same task_def
-        # so the difference comes from the source hash stored in the sentinel.
+        # so the difference comes from the source hash stored in the directive.
         from ginkgo.core.notebook import notebook as make_notebook
 
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
-        sentinel_v1 = make_notebook(str(nb_path))
+        directive_v1 = make_notebook(str(nb_path))
         nb_path.write_text(
             '{"cells": [{"source": "changed"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
             encoding="utf-8",
         )
-        sentinel_v2 = make_notebook(str(nb_path))
-        assert sentinel_v1.source_hash != sentinel_v2.source_hash
+        directive_v2 = make_notebook(str(nb_path))
+        assert directive_v1.source_hash != directive_v2.source_hash
 
     def test_local_task_fails_immediately_at_runtime(self):
         @task()
@@ -993,11 +1017,23 @@ class TestEvaluate:
         with pytest.raises(TypeError, match="top-level function"):
             evaluate(local_task(x=1))
 
-    def test_python_tasks_must_not_return_shell_payloads(self, tmp_path: Path) -> None:
+    def test_python_tasks_must_not_return_shell_directives(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"
 
-        with pytest.raises(TypeError, match="Use @task\\(kind='shell'\\)|appropriate task kind"):
-            evaluate(python_returns_shell_task(output_path=str(output)))
+        with pytest.raises(TypeError, match="ShellDirective.*appropriate task kind"):
+            evaluate(python_returns_shell_directive_task(output_path=str(output)))
+
+    def test_python_tasks_must_not_return_notebook_directives(self) -> None:
+        with pytest.raises(TypeError, match="NotebookDirective.*appropriate task kind"):
+            evaluate(python_returns_notebook_directive_task())
+
+    def test_python_tasks_must_not_return_script_directives(self) -> None:
+        with pytest.raises(TypeError, match="ScriptDirective.*appropriate task kind"):
+            evaluate(python_returns_script_directive_task())
+
+    def test_python_tasks_must_not_return_subworkflow_directives(self) -> None:
+        with pytest.raises(TypeError, match="SubWorkflowDirective.*appropriate task kind"):
+            evaluate(python_returns_subworkflow_directive_task())
 
     def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:
         with pytest.raises(TypeError, match="must return shell\\(\\.\\.\\.\\) or dynamic"):

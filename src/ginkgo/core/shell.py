@@ -1,24 +1,26 @@
 """Shell task execution primitive.
 
 ``shell()`` is called from inside a ``@task(kind="shell")`` body and returns
-a ``ShellExpr`` sentinel. The evaluator detects this and dispatches the
+a ``ShellDirective``. The evaluator detects this and dispatches the
 command to the configured shell runner.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TypeAlias, final
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.directive import ExecutionDirective
 
 ShellOutputItem: TypeAlias = str | AssetResult
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 
+@final
 @dataclass(frozen=True)
-class ShellExpr:
-    """Sentinel representing a shell command to execute.
+class ShellDirective(ExecutionDirective):
+    """Execution directive representing a shell command to execute.
 
     Parameters
     ----------
@@ -36,7 +38,7 @@ class ShellExpr:
     log: str | None = None
 
 
-def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr:
+def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellDirective:
     """Create a shell command expression.
 
     Called from inside a ``@task(kind="shell")`` body with fully resolved
@@ -54,9 +56,9 @@ def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr
 
     Returns
     -------
-    ShellExpr
+    ShellDirective
     """
     if isinstance(output, list | tuple) and not output:
         raise ValueError("shell output must contain at least one declared path")
 
-    return ShellExpr(cmd=cmd, output=output, log=log)
+    return ShellDirective(cmd=cmd, output=output, log=log)

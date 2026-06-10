@@ -1,7 +1,7 @@
 """Notebook task execution primitive.
 
 ``notebook()`` is called from inside a ``@task("notebook")`` body and returns
-a ``NotebookExpr`` sentinel. The evaluator detects this and dispatches the
+a ``NotebookDirective``. The evaluator detects this and dispatches the
 execution to the configured notebook runner.
 """
 
@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import final
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.directive import ExecutionDirective
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
@@ -18,9 +20,10 @@ _NotebookOutputItem = str | AssetResult
 _NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
+@final
 @dataclass(frozen=True)
-class NotebookExpr:
-    """Sentinel representing a notebook execution request.
+class NotebookDirective(ExecutionDirective):
+    """Execution directive representing a notebook execution request.
 
     Parameters
     ----------
@@ -47,7 +50,7 @@ def notebook(
     *,
     output: _NotebookOutput = None,
     log: str | None = None,
-) -> NotebookExpr:
+) -> NotebookDirective:
     """Create a notebook execution expression.
 
     Called from inside a ``@task("notebook")`` body with fully resolved
@@ -67,7 +70,7 @@ def notebook(
 
     Returns
     -------
-    NotebookExpr
+    NotebookDirective
     """
     from ginkgo.runtime.caching.hashing import hash_file
 
@@ -83,7 +86,7 @@ def notebook(
             f"got {str(resolved)!r}. Supported extensions: {supported}"
         )
 
-    return NotebookExpr(
+    return NotebookDirective(
         path=resolved,
         output=output,
         log=log,
