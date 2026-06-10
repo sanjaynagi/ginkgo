@@ -17,6 +17,7 @@ from ginkgo import (
     AssetRef,
     NotebookDirective,
     ScriptDirective,
+    SubWorkflowDirective,
     asset,
     evaluate,
     file,
@@ -237,6 +238,11 @@ def python_returns_script_directive_task() -> None:
     return ScriptDirective(
         path=Path("/fake.py"), output=None, log=None, interpreter="python", source_hash="test"
     )
+
+
+@task()
+def python_returns_subworkflow_directive_task() -> None:
+    return SubWorkflowDirective(path="fake/workflow.py")
 
 
 @task(kind="shell")
@@ -1014,7 +1020,7 @@ class TestEvaluate:
     def test_python_tasks_must_not_return_shell_payloads(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"
 
-        with pytest.raises(TypeError, match="Use @task\\(kind='shell'\\)|appropriate task kind"):
+        with pytest.raises(TypeError, match="ShellDirective.*appropriate task kind"):
             evaluate(python_returns_shell_task(output_path=str(output)))
 
     def test_python_tasks_must_not_return_notebook_directives(self) -> None:
@@ -1024,6 +1030,10 @@ class TestEvaluate:
     def test_python_tasks_must_not_return_script_directives(self) -> None:
         with pytest.raises(TypeError, match="ScriptDirective.*appropriate task kind"):
             evaluate(python_returns_script_directive_task())
+
+    def test_python_tasks_must_not_return_subworkflow_directives(self) -> None:
+        with pytest.raises(TypeError, match="SubWorkflowDirective.*appropriate task kind"):
+            evaluate(python_returns_subworkflow_directive_task())
 
     def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:
         with pytest.raises(TypeError, match="must return shell\\(\\.\\.\\.\\) or dynamic"):
