@@ -1,6 +1,6 @@
 """Notebook and script task execution.
 
-The ``NotebookRunner`` runs both ``NotebookExpr`` and ``ScriptExpr`` driver
+The ``NotebookRunner`` runs both ``NotebookDirective`` and ``ScriptDirective`` driver
 tasks. It owns the per-run notebook artifact layout, the managed-kernel
 preparation flow, the command builders, and the manifest extras that surface
 notebook outputs in the run summary.
@@ -20,8 +20,8 @@ from typing import Any, Callable
 
 import yaml
 
-from ginkgo.core.notebook import NotebookExpr
-from ginkgo.core.script import ScriptExpr
+from ginkgo.core.notebook import NotebookDirective
+from ginkgo.core.script import ScriptDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import TaskBackend
@@ -223,8 +223,8 @@ class NotebookRunner:
 
     # Public driver entry points ---------------------------------------------
 
-    def run_notebook(self, *, node: Any, notebook_expr: NotebookExpr) -> Any:
-        """Execute a notebook task from a ``NotebookExpr`` sentinel.
+    def run_notebook(self, *, node: Any, notebook_expr: NotebookDirective) -> Any:
+        """Execute a notebook task from a ``NotebookDirective``.
 
         Determines the notebook backend from the file extension, runs
         execution, renders HTML, validates any declared outputs, and
@@ -347,7 +347,7 @@ class NotebookRunner:
             output=notebook_expr.output,
         )
 
-    def run_script(self, *, node: Any, script_expr: ScriptExpr) -> Any:
+    def run_script(self, *, node: Any, script_expr: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         user_log_path = Path(script_expr.log) if script_expr.log is not None else None

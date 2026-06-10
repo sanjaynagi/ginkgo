@@ -1,7 +1,7 @@
 """Shell task execution primitive.
 
 ``shell()`` is called from inside a ``@task(kind="shell")`` body and returns
-a ``ShellExpr`` sentinel. The evaluator detects this and dispatches the
+a ``ShellDirective``. The evaluator detects this and dispatches the
 command to the configured shell runner.
 """
 
@@ -18,8 +18,8 @@ ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOu
 
 
 @dataclass(frozen=True)
-class ShellExpr(ExecutionDirective):
-    """Sentinel representing a shell command to execute.
+class ShellDirective(ExecutionDirective):
+    """Execution directive representing a shell command to execute.
 
     Parameters
     ----------
@@ -37,7 +37,7 @@ class ShellExpr(ExecutionDirective):
     log: str | None = None
 
 
-def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr:
+def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellDirective:
     """Create a shell command expression.
 
     Called from inside a ``@task(kind="shell")`` body with fully resolved
@@ -55,9 +55,9 @@ def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellExpr
 
     Returns
     -------
-    ShellExpr
+    ShellDirective
     """
     if isinstance(output, list | tuple) and not output:
         raise ValueError("shell output must contain at least one declared path")
 
-    return ShellExpr(cmd=cmd, output=output, log=log)
+    return ShellDirective(cmd=cmd, output=output, log=log)

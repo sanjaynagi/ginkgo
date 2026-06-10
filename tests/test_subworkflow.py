@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from ginkgo import SubWorkflowExpr, SubWorkflowResult, subworkflow, task
+from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
 from ginkgo.runtime.caching.provenance import (
     RunProvenanceRecorder,
     load_manifest,
@@ -42,13 +42,13 @@ def call_child_no_params_task(*, workflow_path: str) -> SubWorkflowResult:
 
 @task(kind="subworkflow")
 def call_child_wrong_return(*, workflow_path: str) -> SubWorkflowResult:
-    return {"not": "a SubWorkflowExpr"}  # type: ignore[return-value]
+    return {"not": "a SubWorkflowDirective"}  # type: ignore[return-value]
 
 
 class TestSubWorkflowConstructor:
     def test_basic_expr(self) -> None:
         expr = subworkflow("workflows/child.py", params={"x": 1})
-        assert isinstance(expr, SubWorkflowExpr)
+        assert isinstance(expr, SubWorkflowDirective)
         assert expr.path == "workflows/child.py"
         assert expr.params == {"x": 1}
         assert expr.config == ()

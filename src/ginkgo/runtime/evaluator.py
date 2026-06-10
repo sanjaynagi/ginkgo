@@ -22,10 +22,10 @@ from typing import Any
 
 from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
-from ginkgo.core.notebook import NotebookExpr
-from ginkgo.core.script import ScriptExpr
-from ginkgo.core.shell import ShellExpr
-from ginkgo.core.subworkflow import SubWorkflowExpr
+from ginkgo.core.notebook import NotebookDirective
+from ginkgo.core.script import ScriptDirective
+from ginkgo.core.shell import ShellDirective
+from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
@@ -1610,7 +1610,7 @@ class ConcurrentEvaluator:
             return payload["result"]
 
         if encoding == "pixi_direct_pickled":
-            # Pixi subprocess path: dynamic result (ShellExpr / Expr / ExprList)
+            # Pixi subprocess path: dynamic result (ShellDirective / Expr / ExprList)
             # was pickle+base64 encoded to cross the JSON bridge.
             import base64
             import pickle
@@ -1994,7 +1994,12 @@ class ConcurrentEvaluator:
 
     def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Advance a task after its driver wrapper has finished."""
-        _driver_sentinels = (ShellExpr, NotebookExpr, ScriptExpr, SubWorkflowExpr)
+        _driver_sentinels = (
+            ShellDirective,
+            NotebookDirective,
+            ScriptDirective,
+            SubWorkflowDirective,
+        )
         if self._failure is not None and (
             isinstance(completed_value, _driver_sentinels)
             or contains_dynamic_expression(completed_value)
@@ -2046,7 +2051,7 @@ class ConcurrentEvaluator:
         # Driver task: shell / notebook / script — dispatch to the appropriate runner.
         assert self._executors is not None
 
-        if isinstance(completed_value, ShellExpr):
+        if isinstance(completed_value, ShellDirective):
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._executors.shell.submit(
@@ -2057,7 +2062,7 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "shell")
             return
 
-        if isinstance(completed_value, NotebookExpr):
+        if isinstance(completed_value, NotebookDirective):
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._executors.shell.submit(
@@ -2068,7 +2073,7 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "shell")
             return
 
-        if isinstance(completed_value, ScriptExpr):
+        if isinstance(completed_value, ScriptDirective):
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._executors.shell.submit(
@@ -2079,7 +2084,7 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "shell")
             return
 
-        if isinstance(completed_value, SubWorkflowExpr):
+        if isinstance(completed_value, SubWorkflowDirective):
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._executors.shell.submit(

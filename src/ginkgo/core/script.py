@@ -1,7 +1,7 @@
 """Script task execution primitive.
 
 ``script()`` is called from inside a ``@task("script")`` body and returns a
-``ScriptExpr`` sentinel. The evaluator detects this and dispatches execution
+``ScriptDirective``. The evaluator detects this and dispatches execution
 to the appropriate interpreter, forwarding resolved task inputs as CLI
 arguments.
 """
@@ -25,8 +25,8 @@ _EXTENSION_TO_INTERPRETER: dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class ScriptExpr(ExecutionDirective):
-    """Sentinel representing a script execution request.
+class ScriptDirective(ExecutionDirective):
+    """Execution directive representing a script execution request.
 
     Parameters
     ----------
@@ -56,7 +56,7 @@ def script(
     output: _ScriptOutput = None,
     log: str | None = None,
     interpreter: str | None = None,
-) -> ScriptExpr:
+) -> ScriptDirective:
     """Create a script execution expression.
 
     Called from inside a ``@task("script")`` body with fully resolved
@@ -80,7 +80,7 @@ def script(
 
     Returns
     -------
-    ScriptExpr
+    ScriptDirective
 
     Raises
     ------
@@ -106,7 +106,7 @@ def script(
                 f"Supported extensions: {supported}. Pass interpreter= explicitly."
             )
 
-    return ScriptExpr(
+    return ScriptDirective(
         path=resolved,
         output=output,
         log=log,

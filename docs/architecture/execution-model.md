@@ -22,7 +22,7 @@ Ginkgo also exposes small workflow-authoring helpers:
 Tasks receive resolved concrete argument values at execution time. A task can inspect those values and return:
 
 - a concrete result
-- a `ShellExpr`
+- a `ShellDirective`
 - another `Expr`
 - an `ExprList`
 - a nested container containing `Expr` / `ExprList`

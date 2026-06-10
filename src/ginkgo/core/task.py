@@ -202,7 +202,7 @@ class TaskDef:
         """Digest used for cache invalidation.
 
         For notebook and script tasks, the source file hash is incorporated
-        at execution time via the ``NotebookExpr``/``ScriptExpr`` sentinel.
+        at execution time via the ``NotebookDirective``/``ScriptDirective``.
         """
         return self._source_hash
 

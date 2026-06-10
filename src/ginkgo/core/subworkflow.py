@@ -1,7 +1,7 @@
 """Sub-workflow invocation primitive.
 
 ``subworkflow()`` is called from inside a ``@task(kind="subworkflow")`` body
-and returns a ``SubWorkflowExpr`` sentinel. The evaluator detects this and
+and returns a ``SubWorkflowDirective``. The evaluator detects this and
 dispatches the nested workflow via a ``ginkgo run`` subprocess.
 """
 
@@ -14,8 +14,8 @@ from ginkgo.core.directive import ExecutionDirective
 
 
 @dataclass(frozen=True)
-class SubWorkflowExpr(ExecutionDirective):
-    """Sentinel representing a nested Ginkgo workflow invocation.
+class SubWorkflowDirective(ExecutionDirective):
+    """Execution directive representing a nested Ginkgo workflow invocation.
 
     Parameters
     ----------
@@ -60,7 +60,7 @@ def subworkflow(
     *,
     params: dict | None = None,
     config: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
-) -> SubWorkflowExpr:
+) -> SubWorkflowDirective:
     """Create a sub-workflow invocation expression.
 
     Called from inside a ``@task(kind="subworkflow")`` body with fully
@@ -80,7 +80,7 @@ def subworkflow(
 
     Returns
     -------
-    SubWorkflowExpr
+    SubWorkflowDirective
     """
     if not path:
         raise ValueError("subworkflow path must not be empty")
@@ -93,7 +93,7 @@ def subworkflow(
     else:
         config_tuple = tuple(str(item) for item in config)
 
-    return SubWorkflowExpr(
+    return SubWorkflowDirective(
         path=str(path),
         params=dict(params) if params is not None else {},
         config=config_tuple,

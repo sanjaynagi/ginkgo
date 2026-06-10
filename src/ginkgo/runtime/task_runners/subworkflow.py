@@ -1,6 +1,6 @@
 """Sub-workflow task execution.
 
-The ``SubworkflowRunner`` dispatches a ``SubWorkflowExpr`` by invoking
+The ``SubworkflowRunner`` dispatches a ``SubWorkflowDirective`` by invoking
 ``ginkgo run`` as a subprocess. It reuses :class:`ShellRunner` for the
 subprocess lifecycle, log plumbing, and termination-on-interrupt
 guarantees.
@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 import yaml
 
-from ginkgo.core.subworkflow import SubWorkflowExpr, SubWorkflowResult
+from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult
 from ginkgo.runtime.task_runners.shell import ShellRunner
 
 
@@ -79,7 +79,7 @@ def _extract_child_run_id(text: str) -> str | None:
 
 @dataclass(kw_only=True)
 class SubworkflowRunner:
-    """Run ``SubWorkflowExpr`` descriptors via ``ginkgo run`` subprocesses.
+    """Run ``SubWorkflowDirective`` descriptors via ``ginkgo run`` subprocesses.
 
     Parameters
     ----------
@@ -107,7 +107,7 @@ class SubworkflowRunner:
         self,
         *,
         node: Any,
-        subworkflow_expr: SubWorkflowExpr,
+        subworkflow_expr: SubWorkflowDirective,
     ) -> SubWorkflowResult:
         """Dispatch a child ``ginkgo run`` subprocess for one sub-workflow."""
         parent_depth = _parent_depth()
