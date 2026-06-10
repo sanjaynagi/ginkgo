@@ -95,10 +95,10 @@ lifecycle.
 
 ## The Runtime Is Local-First
 
-Today, Ginkgo's orchestration logic stays in the local Python process. It can
-dispatch shell work into Pixi environments or containers, but graph
-construction, scheduling, caching decisions, and provenance recording remain
-local and explicit.
+Today, Ginkgo's orchestration logic stays in the local Python process. Graph
+construction, scheduling, caching decisions, and provenance recording all happen
+locally. Python task bodies run in a spawned subprocess worker pool; shell,
+script, and notebook tasks run via Pixi environments or containers.
 
 ## See Also
 

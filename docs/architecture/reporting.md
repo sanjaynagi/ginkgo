@@ -116,10 +116,12 @@ collapses to one HTML document.
 Nothing is silently clipped. Every cap surfaces as either a
 `trunc-note` banner or a `message` field on the preview.
 
-`--embed-full-assets` copies the raw artifact bytes for table / text
-assets into `artifacts/<artifact_id>...` in addition to the rendered
-preview. Previews themselves still obey the row/byte caps — this flag is
-about archival completeness, not in-document rendering.
+`--embed-full-assets` copies the raw artifact bytes for any asset whose
+artifact is stored as a single file (`path.is_file()`) into
+`artifacts/<artifact_id>...` in addition to the rendered preview.
+Directory-backed artifacts (e.g. zarr stores) are excluded. Previews
+themselves still obey the row/byte caps — this flag is about archival
+completeness, not in-document rendering.
 
 ## Aesthetic
 

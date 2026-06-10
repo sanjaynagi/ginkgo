@@ -90,9 +90,29 @@ ginkgo debug <run_id>
 ```
 
 `ginkgo doctor` catches environment and configuration problems before a run.
+Pass `--json` for structured output suitable for programmatic use:
+
+```bash
+ginkgo doctor workflow.py --json
+```
+
 `ginkgo debug` is most useful after the fact: once a run directory exists, it
 surfaces recorded task status, logs, and cache behavior without manually
 navigating `.ginkgo/runs/`.
+
+`ginkgo cache` has several subcommands beyond listing:
+
+```bash
+ginkgo cache ls                          # list cached task results
+ginkgo cache explain --run <run_id>      # explain cache decisions for a run
+ginkgo cache prune --older-than 7d       # remove entries older than a duration
+ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
+ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
+ginkgo cache clear <cache_key>           # remove a specific cache entry
+```
+
+`cache prune` requires at least one of `--older-than`, `--max-size`, or
+`--max-entries`. Add `--dry-run` to preview what would be removed.
 
 ## A Typical Loop
 

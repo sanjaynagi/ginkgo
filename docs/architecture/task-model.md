@@ -9,9 +9,11 @@
 - `threads=...`, `memory=...`, `gpu=...` for resource declarations
 - `remote=True` for explicit remote dispatch
 
-Python tasks always execute in the scheduler's own Python environment. If a
-task needs a different Pixi or container environment, it must be declared with
-`kind="shell"` and invoke the desired script or command explicitly.
+Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,
+spawn context). A `ThreadPoolExecutor` fallback is used when the OS disallows
+process spawning (e.g. certain container environments). Python tasks cannot
+declare an `env`; to run code in a specific environment, use `kind="shell"`,
+`kind="script"`, or `kind="notebook"` instead.
 
 Task parameters use regular positional-or-keyword signatures — do not add a
 `*,` separator to force keyword-only. The runtime always binds task arguments
@@ -35,7 +37,7 @@ For Pixi-backed shell tasks, the foreign environment does not import the task's
 defining `workflow.py` module. The scheduler evaluates the wrapper locally and
 dispatches only the shell payload through Pixi.
 
-Shell tasks can also run inside Docker or Podman containers by declaring a container env:
+Shell, notebook, and script tasks can all run inside Docker or Podman containers by declaring a container env:
 
 ```python
 @task(kind="shell", env="docker://biocontainers/samtools:1.17")
