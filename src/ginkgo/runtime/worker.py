@@ -71,11 +71,10 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_dynamic_result(value: Any) -> bool:
+    from ginkgo.core.directive import ExecutionDirective
     from ginkgo.core.expr import Expr, ExprList
-    from ginkgo.core.shell import ShellDirective
-    from ginkgo.core.subworkflow import SubWorkflowDirective
 
-    return isinstance(value, (Expr, ExprList, ShellDirective, SubWorkflowDirective))
+    return isinstance(value, (Expr, ExprList, ExecutionDirective))
 
 
 def _load_task_binding(*, payload: dict[str, Any]) -> Any:

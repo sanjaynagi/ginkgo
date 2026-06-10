@@ -15,10 +15,9 @@ from typing import Any, Iterable, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
+from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
-from ginkgo.core.shell import ShellDirective
-from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import TaskBackend
@@ -200,7 +199,7 @@ class TaskValidator:
 
     def validate_process_safe_value(self, *, value: Any, label: str) -> None:
         """Reject values that are not supported across process and cache boundaries."""
-        if isinstance(value, (Expr, ExprList, ShellDirective, SubWorkflowDirective, SecretRef)):
+        if isinstance(value, (Expr, ExprList, ExecutionDirective, SecretRef)):
             return
         if collect_secret_refs(value):
             return

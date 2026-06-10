@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.asset import AssetRef, AssetVersion
+from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
@@ -1610,7 +1611,7 @@ class ConcurrentEvaluator:
             return payload["result"]
 
         if encoding == "pixi_direct_pickled":
-            # Pixi subprocess path: dynamic result (ShellDirective / Expr / ExprList)
+            # Pixi subprocess path: dynamic result (ExecutionDirective / Expr / ExprList)
             # was pickle+base64 encoded to cross the JSON bridge.
             import base64
             import pickle
@@ -1994,14 +1995,8 @@ class ConcurrentEvaluator:
 
     def _handle_task_body_result(self, *, node: _TaskNode, completed_value: Any) -> None:
         """Advance a task after its driver wrapper has finished."""
-        _driver_sentinels = (
-            ShellDirective,
-            NotebookDirective,
-            ScriptDirective,
-            SubWorkflowDirective,
-        )
         if self._failure is not None and (
-            isinstance(completed_value, _driver_sentinels)
+            isinstance(completed_value, ExecutionDirective)
             or contains_dynamic_expression(completed_value)
         ):
             self._cleanup_transport(node)
@@ -2012,7 +2007,7 @@ class ConcurrentEvaluator:
             return
 
         if node.task_def.kind == "python":
-            if isinstance(completed_value, _driver_sentinels):
+            if isinstance(completed_value, ExecutionDirective):
                 sentinel_name = type(completed_value).__name__
                 self._cleanup_transport(node)
                 raise TypeError(

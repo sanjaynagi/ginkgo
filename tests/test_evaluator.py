@@ -15,6 +15,8 @@ import pytest
 
 from ginkgo import (
     AssetRef,
+    NotebookDirective,
+    ScriptDirective,
     asset,
     evaluate,
     file,
@@ -219,6 +221,22 @@ def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
 @task()
 def python_returns_shell_task(output_path: str) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
+
+
+@task()
+def python_returns_notebook_directive_task() -> None:
+    from pathlib import Path
+
+    return NotebookDirective(path=Path("/fake.ipynb"), output=None, log=None, source_hash="test")
+
+
+@task()
+def python_returns_script_directive_task() -> None:
+    from pathlib import Path
+
+    return ScriptDirective(
+        path=Path("/fake.py"), output=None, log=None, interpreter="python", source_hash="test"
+    )
 
 
 @task(kind="shell")
@@ -998,6 +1016,14 @@ class TestEvaluate:
 
         with pytest.raises(TypeError, match="Use @task\\(kind='shell'\\)|appropriate task kind"):
             evaluate(python_returns_shell_task(output_path=str(output)))
+
+    def test_python_tasks_must_not_return_notebook_directives(self) -> None:
+        with pytest.raises(TypeError, match="NotebookDirective.*appropriate task kind"):
+            evaluate(python_returns_notebook_directive_task())
+
+    def test_python_tasks_must_not_return_script_directives(self) -> None:
+        with pytest.raises(TypeError, match="ScriptDirective.*appropriate task kind"):
+            evaluate(python_returns_script_directive_task())
 
     def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:
         with pytest.raises(TypeError, match="must return shell\\(\\.\\.\\.\\) or dynamic"):
