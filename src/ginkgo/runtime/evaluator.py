@@ -193,7 +193,7 @@ class _TaskNode:
     attempt: int = 0
     retry_ready_at: float | None = None
     secret_values: tuple[str, ...] = ()
-    driver_sentinel: Any = None
+    driver_directive: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
     notebook_extras: dict[str, Any] | None = None
@@ -556,9 +556,9 @@ class ConcurrentEvaluator:
         # source hash of the underlying file and fold it into the cache key.
         extra_source_hash: str | None = None
         if node.task_def.kind in {"notebook", "script"}:
-            sentinel = node.task_def.fn(**resolved_args)
-            node.driver_sentinel = sentinel
-            extra_source_hash = sentinel.source_hash
+            directive = node.task_def.fn(**resolved_args)
+            node.driver_directive = directive
+            extra_source_hash = directive.source_hash
 
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash
@@ -1977,11 +1977,11 @@ class ConcurrentEvaluator:
 
         For notebook and script tasks the body was already evaluated eagerly
         in ``_prepare_node`` to extract the source hash for the cache key.
-        The stored sentinel is returned directly to avoid re-running the body.
+        The stored directive is returned directly to avoid re-running the body.
         """
         assert node.execution_args is not None
-        if node.driver_sentinel is not None:
-            return node.driver_sentinel
+        if node.driver_directive is not None:
+            return node.driver_directive
         with _task_log_context(
             stdout_path=str(node.stdout_path) if node.stdout_path is not None else None,
             stderr_path=str(node.stderr_path) if node.stderr_path is not None else None,
@@ -2008,10 +2008,10 @@ class ConcurrentEvaluator:
 
         if node.task_def.kind == "python":
             if isinstance(completed_value, ExecutionDirective):
-                sentinel_name = type(completed_value).__name__
+                directive_name = type(completed_value).__name__
                 self._cleanup_transport(node)
                 raise TypeError(
-                    f"{node.task_def.name} returned {sentinel_name}, but the task is declared "
+                    f"{node.task_def.name} returned {directive_name}, but the task is declared "
                     "with kind='python'. Use @task(kind='shell'), @task('notebook'), "
                     "@task('script'), or @task('subworkflow') for the appropriate task kind."
                 )
@@ -2118,7 +2118,7 @@ class ConcurrentEvaluator:
         }
         raise TypeError(
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
-            f"{_expected.get(kind, 'the appropriate sentinel')} or dynamic task expressions."
+            f"{_expected.get(kind, 'an execution directive')} or dynamic task expressions."
         )
 
 
