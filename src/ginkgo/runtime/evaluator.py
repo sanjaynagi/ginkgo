@@ -97,10 +97,12 @@ from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 
 # Maps each ExecutionDirective subclass to the (runner_attr, method_name) pair used
-# to dispatch it. Checked at import time — a new subclass with no entry raises ImportError.
+# to dispatch it. The completeness check below catches any imported subclass that
+# has no entry; it does not catch a subclass whose module is never imported.
 _DIRECTIVE_RUNNER: dict[type[ExecutionDirective], tuple[str, str]] = {
     ShellDirective: ("_shell_runner", "run_shell"),
     NotebookDirective: ("_notebook_runner", "run_notebook"),
+    # NotebookRunner owns both notebook and script execution.
     ScriptDirective: ("_notebook_runner", "run_script"),
     SubWorkflowDirective: ("_subworkflow_runner", "run_subworkflow"),
 }

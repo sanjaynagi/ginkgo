@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Iterable, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
-from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
