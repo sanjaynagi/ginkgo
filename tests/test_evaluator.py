@@ -220,7 +220,7 @@ def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
 
 
 @task()
-def python_returns_shell_task(output_path: str) -> file:
+def python_returns_shell_directive_task(output_path: str) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
 
 
@@ -1017,11 +1017,11 @@ class TestEvaluate:
         with pytest.raises(TypeError, match="top-level function"):
             evaluate(local_task(x=1))
 
-    def test_python_tasks_must_not_return_shell_payloads(self, tmp_path: Path) -> None:
+    def test_python_tasks_must_not_return_shell_directives(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"
 
         with pytest.raises(TypeError, match="ShellDirective.*appropriate task kind"):
-            evaluate(python_returns_shell_task(output_path=str(output)))
+            evaluate(python_returns_shell_directive_task(output_path=str(output)))
 
     def test_python_tasks_must_not_return_notebook_directives(self) -> None:
         with pytest.raises(TypeError, match="NotebookDirective.*appropriate task kind"):
