@@ -147,7 +147,9 @@ The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend
 
 **LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution.
 Shell tasks may declare `env="name"` to run against a Pixi environment under
-`envs/<name>/pixi.toml`, or against an explicit manifest path. This path is
+`envs/<name>/`, where the manifest is either a `pixi.toml` or a `pyproject.toml`
+carrying a `[tool.pixi]` section (Pixi accepts both natively), or against an
+explicit manifest path. This path is
 responsible for env discovery, validation, lock hashing for cache invalidation,
 environment preparation before dispatch, and shell execution through Pixi.
 
