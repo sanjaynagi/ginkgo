@@ -7,31 +7,7 @@ from unittest.mock import MagicMock
 from ginkgo.core.remote import remote_file, remote_folder
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache, StagingEntry
-
-
-def _make_mock_backend(*, content: bytes = b"hello world", etag: str = "etag1"):
-    """Create a mock backend that writes fixed content on download."""
-    backend = MagicMock()
-
-    def _download(*, bucket, key, dest_path):
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(content)
-        return RemoteObjectMeta(
-            uri=f"s3://{bucket}/{key}",
-            size=len(content),
-            etag=etag,
-        )
-
-    def _head(*, bucket, key):
-        return RemoteObjectMeta(
-            uri=f"s3://{bucket}/{key}",
-            size=len(content),
-            etag=etag,
-        )
-
-    backend.download.side_effect = _download
-    backend.head.side_effect = _head
-    return backend
+from tests.conftest import make_download_backend as _make_mock_backend
 
 
 class TestStageFile:

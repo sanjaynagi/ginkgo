@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from ginkgo.runtime.events import (
     TaskCompleted,
@@ -215,27 +219,58 @@ class TestInspectRunRemoteFields:
 
 
 class TestWorkerCodeBundle:
-    """Tests for worker code bundle installation."""
+    """Tests for worker payload preparation in worker.main."""
 
-    def test_worker_pops_code_bundle_from_payload(self) -> None:
-        """Verify that the worker removes code_bundle from the payload."""
-        # This is a unit-level check that the pop happens correctly.
+    def test_main_strips_remote_only_keys_and_installs_bundle(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """worker.main installs the code bundle and strips remote-only keys."""
+        import ginkgo.runtime.worker as runtime_worker
+        from ginkgo.remote import worker
+
+        code_bundle = {
+            "scheme": "gs",
+            "bucket": "test-bucket",
+            "key": "artifacts/code-bundles/abc.tar.gz",
+            "digest": "abc",
+        }
         payload = {
             "args": {},
             "module": "test",
             "binding_name": "fn",
             "resources": {"threads": 1, "memory_gb": 0},
-            "code_bundle": {
-                "scheme": "gs",
-                "bucket": "test-bucket",
-                "key": "artifacts/code-bundles/abc.tar.gz",
-                "digest": "abc",
-            },
+            "code_bundle": code_bundle,
         }
-        payload.pop("resources", None)
-        code_bundle = payload.pop("code_bundle", None)
+        monkeypatch.setenv(
+            "GINKGO_WORKER_PAYLOAD",
+            base64.b64encode(json.dumps(payload).encode()).decode(),
+        )
 
-        assert code_bundle is not None
-        assert code_bundle["scheme"] == "gs"
-        assert "code_bundle" not in payload
-        assert "resources" not in payload
+        # Stub the side effects of bundle installation so no download happens.
+        installed: list[dict] = []
+        monkeypatch.setattr(
+            worker, "_install_code_bundle", lambda cb: installed.append(cb) or tmp_path
+        )
+        monkeypatch.setattr(worker, "_rewrite_module_file", lambda *a, **k: None)
+
+        # Capture the payload that the worker actually hands to run_task.
+        captured: dict[str, Any] = {}
+
+        def fake_run_task(received: dict[str, Any]) -> dict[str, Any]:
+            captured["payload"] = received
+            return {"ok": True, "result_encoding": "inline", "result": None}
+
+        monkeypatch.setattr(runtime_worker, "run_task", fake_run_task)
+
+        with pytest.raises(SystemExit) as exc_info:
+            worker.main()
+        assert exc_info.value.code == 0
+
+        # The real code bundle reached _install_code_bundle, and run_task saw a
+        # payload with every remote-only key removed.
+        assert installed == [code_bundle]
+        run_payload = captured["payload"]
+        assert "code_bundle" not in run_payload
+        assert "resources" not in run_payload
+        assert "remote_artifact_store" not in run_payload
+        assert run_payload["module"] == "test"

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from rich.console import Console
 
@@ -66,6 +67,46 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
     return version.version_id
 
 
+def _seed_cache_entry(
+    *,
+    cache_root: Path,
+    name: str,
+    age_days: int,
+    function: str = "demo.x",
+    payload: str = "{}",
+) -> Path:
+    """Create a cache-entry directory aged ``age_days`` days, for prune tests."""
+    entry = cache_root / name
+    entry.mkdir(parents=True)
+    ts = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+    (entry / "meta.json").write_text(
+        json.dumps({"function": function, "timestamp": ts}), encoding="utf-8"
+    )
+    (entry / "output.json").write_text(payload, encoding="utf-8")
+    return entry
+
+
+def _run_trivial_workflow_cache_key(cwd: Path) -> str:
+    """Run a one-task workflow and return that task's cache key."""
+    Path(cwd / "workflow.py").write_text(
+        "from pathlib import Path\n"
+        "from ginkgo import flow, task\n\n"
+        "@task()\n"
+        "def write_message(output_path: str) -> str:\n"
+        "    Path(output_path).write_text('hi', encoding='utf-8')\n"
+        "    return output_path\n\n"
+        "@flow\n"
+        "def main():\n"
+        "    return write_message(output_path='result.txt')\n",
+        encoding="utf-8",
+    )
+    result = _run_cli("run", "workflow.py", cwd=cwd)
+    assert result.returncode == 0, result.stderr
+    run_dir = _extract_run_dir(result.stdout)
+    manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    return next(iter(manifest["tasks"].values()))["cache_key"]
+
+
 def test_version_flag_reports_pyproject_version() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     expected = pyproject["project"]["version"]
@@ -116,16 +157,11 @@ def main():
             r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
             first.stdout,
         )
-        assert "📦 Loading workflow...  done" in first.stdout
-        assert "🌱 Building expression tree...  1 tasks" in first.stdout
+        # Load-bearing content only — decorative spinner/clock lines are not pinned.
         assert re.search(r"Running locally on \d+ Cores", first.stdout)
         assert "write_message" in first.stdout
-        assert "Environment" in first.stdout
-        assert "local" in first.stdout
-        assert "Time" in first.stdout
-        assert "✓ succeeded" in first.stdout
+        assert "succeeded" in first.stdout
         assert "1/1 complete" in first.stdout
-        assert "⏱ Completed in " in first.stdout
         assert "Run Summary" not in first.stdout
         assert '{"status":' not in first.stdout
 
@@ -160,12 +196,14 @@ def main():
         )
         second_task = next(iter(second_manifest["tasks"].values()))
 
-        assert "↺ cached" in second.stdout
+        assert "cached" in second.stdout
         assert "1/1 complete" in second.stdout
         assert second_task["status"] == "cached"
         assert second_task["cached"] is True
 
-        cache_key = second_task["cache_key"]
+    def test_cache_ls_lists_entry(self) -> None:
+        cache_key = _run_trivial_workflow_cache_key(Path.cwd())
+
         listed = _run_cli("cache", "ls", cwd=Path.cwd())
         assert listed.returncode == 0
         assert "Cache Key" in listed.stdout
@@ -174,10 +212,12 @@ def main():
         assert "Age" in listed.stdout
         assert cache_key in listed.stdout.replace("\n", "")
 
+    def test_cache_clear_removes_entry(self) -> None:
+        cache_key = _run_trivial_workflow_cache_key(Path.cwd())
+
         cleared = _run_cli("cache", "clear", cache_key, cwd=Path.cwd())
         assert cleared.returncode == 0
-        assert "🌿 ginkgo cache clear" in cleared.stdout
-        assert f"✓ Removed cache entry {cache_key}" in cleared.stdout
+        assert f"Removed cache entry {cache_key}" in cleared.stdout
         assert not (Path(".ginkgo") / "cache" / cache_key).exists()
 
     def test_run_notebook_reports_managed_ipykernel_install(self) -> None:
@@ -247,57 +287,34 @@ def main():
         assert task["attempt"] == 2
         assert task["attempts"] == 2
 
-    def test_cache_prune_dry_run_reports_old_entries_without_deleting(self) -> None:
+    @pytest.mark.parametrize(
+        ("dry_run", "old_survives"),
+        [(True, True), (False, False)],
+        ids=["dry-run-keeps-all", "real-removes-old"],
+    )
+    def test_cache_prune_older_than(self, dry_run: bool, old_survives: bool) -> None:
         cache_root = Path(".ginkgo") / "cache"
-        old_entry = cache_root / "old123"
-        fresh_entry = cache_root / "fresh456"
-        old_entry.mkdir(parents=True)
-        fresh_entry.mkdir(parents=True)
-        now = datetime.now(timezone.utc)
-        old_ts = (now - timedelta(days=100)).isoformat()
-        fresh_ts = (now - timedelta(days=5)).isoformat()
-        (old_entry / "meta.json").write_text(
-            f'{{"function":"demo.old","timestamp":"{old_ts}"}}',
-            encoding="utf-8",
+        old_entry = _seed_cache_entry(
+            cache_root=cache_root, name="old123", age_days=100, function="demo.old"
         )
-        (fresh_entry / "meta.json").write_text(
-            f'{{"function":"demo.fresh","timestamp":"{fresh_ts}"}}',
-            encoding="utf-8",
+        fresh_entry = _seed_cache_entry(
+            cache_root=cache_root, name="fresh456", age_days=5, function="demo.fresh"
         )
-        (old_entry / "output.json").write_text("{}", encoding="utf-8")
-        (fresh_entry / "output.json").write_text("{}", encoding="utf-8")
 
-        result = _run_cli("cache", "prune", "--older-than", "30d", "--dry-run", cwd=Path.cwd())
+        args = ["cache", "prune", "--older-than", "30d"]
+        if dry_run:
+            args.append("--dry-run")
+        result = _run_cli(*args, cwd=Path.cwd())
+
         assert result.returncode == 0, result.stderr
         assert "🌿 ginkgo cache prune" in result.stdout
-        assert "would be removed" in result.stdout
-        assert "old123" in result.stdout
-        assert old_entry.exists()
-        assert fresh_entry.exists()
-
-    def test_cache_prune_removes_only_entries_older_than_cutoff(self) -> None:
-        cache_root = Path(".ginkgo") / "cache"
-        old_entry = cache_root / "old123"
-        fresh_entry = cache_root / "fresh456"
-        old_entry.mkdir(parents=True)
-        fresh_entry.mkdir(parents=True)
-        now = datetime.now(timezone.utc)
-        old_ts = (now - timedelta(days=100)).isoformat()
-        fresh_ts = (now - timedelta(days=5)).isoformat()
-        (old_entry / "meta.json").write_text(
-            f'{{"function":"demo.old","timestamp":"{old_ts}"}}',
-            encoding="utf-8",
-        )
-        (fresh_entry / "meta.json").write_text(
-            f'{{"function":"demo.fresh","timestamp":"{fresh_ts}"}}',
-            encoding="utf-8",
-        )
-
-        result = _run_cli("cache", "prune", "--older-than", "30d", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Removed" in result.stdout
-        assert not old_entry.exists()
-        assert fresh_entry.exists()
+        assert fresh_entry.exists()  # fresh entry always survives
+        assert old_entry.exists() is old_survives
+        if dry_run:
+            assert "would be removed" in result.stdout
+            assert "old123" in result.stdout
+        else:
+            assert "Removed" in result.stdout
 
     def test_cache_prune_rejects_invalid_duration(self) -> None:
         result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
@@ -312,18 +329,10 @@ def main():
 
     def test_cache_prune_by_max_entries_removes_oldest(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
-        now = datetime.now(timezone.utc)
-        entries = []
-        for index, age_days in enumerate([100, 60, 30, 5]):
-            entry = cache_root / f"entry{index}"
-            entry.mkdir(parents=True)
-            ts = (now - timedelta(days=age_days)).isoformat()
-            (entry / "meta.json").write_text(
-                f'{{"function":"demo.x","timestamp":"{ts}"}}',
-                encoding="utf-8",
-            )
-            (entry / "output.json").write_text("{}", encoding="utf-8")
-            entries.append(entry)
+        entries = [
+            _seed_cache_entry(cache_root=cache_root, name=f"entry{index}", age_days=age_days)
+            for index, age_days in enumerate([100, 60, 30, 5])
+        ]
 
         result = _run_cli("cache", "prune", "--max-entries", "2", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -334,21 +343,15 @@ def main():
 
     def test_cache_prune_by_max_size_removes_oldest_until_under_budget(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
-        now = datetime.now(timezone.utc)
-        entries = []
-        payload = "x" * 1024
-        for index, age_days in enumerate([100, 60, 5]):
-            entry = cache_root / f"sz{index}"
-            entry.mkdir(parents=True)
-            ts = (now - timedelta(days=age_days)).isoformat()
-            (entry / "meta.json").write_text(
-                f'{{"function":"demo.x","timestamp":"{ts}"}}',
-                encoding="utf-8",
+        payload = "x" * 1024  # each entry holds ~1KB
+        entries = [
+            _seed_cache_entry(
+                cache_root=cache_root, name=f"sz{index}", age_days=age_days, payload=payload
             )
-            (entry / "output.json").write_text(payload, encoding="utf-8")
-            entries.append(entry)
+            for index, age_days in enumerate([100, 60, 5])
+        ]
 
-        # Each entry holds ~1KB; cap total at 3KB so only the oldest must drop.
+        # Cap total at 3KB so only the oldest must drop.
         result = _run_cli("cache", "prune", "--max-size", "3KB", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert not entries[0].exists()

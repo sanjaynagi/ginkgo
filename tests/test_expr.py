@@ -1,5 +1,7 @@
 """Unit tests for Expr, ExprList, and related expression tree primitives."""
 
+import dataclasses
+
 import pytest
 
 from ginkgo import Expr, ExprList, task
@@ -25,11 +27,8 @@ class TestExpr:
 
     def test_expr_is_frozen(self):
         expr = dummy(x=10)
-        try:
+        with pytest.raises(dataclasses.FrozenInstanceError):
             expr.args = {}  # type: ignore[misc]
-            assert False, "Should have raised"
-        except AttributeError:
-            pass
 
     def test_expr_repr_with_concrete_args(self):
         expr = dummy(x=42)

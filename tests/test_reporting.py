@@ -29,9 +29,8 @@ def _make_run(
     tmp_path: Path,
     run_id: str,
     fail: bool,
-    with_asset: bool = True,
 ) -> Path:
-    """Build a minimal terminal run directory with optional failure and asset."""
+    """Build a minimal terminal run directory with a registered asset."""
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo workflow\n@flow\ndef main():\n    pass\n", encoding="utf-8")
     recorder = RunProvenanceRecorder(
@@ -103,8 +102,7 @@ def _make_run(
     )
     recorder.finalize(status="failed" if fail else "succeeded", error="boom" if fail else None)
 
-    if with_asset:
-        _register_asset(tmp_path=tmp_path, run_id=run_id, run_dir=recorder.run_dir)
+    _register_asset(tmp_path=tmp_path, run_id=run_id, run_dir=recorder.run_dir)
 
     return recorder.run_dir
 
@@ -322,31 +320,26 @@ class TestExport:
         for needle in ("https://fonts.googleapis.com", "https://fonts.gstatic.com"):
             assert needle not in html
 
-    def test_deterministic_reexport(self, tmp_path: Path) -> None:
+    def test_deterministic_reexport(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+
+        # Freeze the only non-deterministic input — the generated-at timestamp
+        # that build_report_data stamps via ``datetime.now`` — so two runs of
+        # the real export_report pipeline must produce byte-identical HTML.
+        import ginkgo.reporting.model as model_module
+
         frozen_ts = datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
 
-        # Build two ReportData instances with the same generated_at and render
-        # them directly so we bypass the one non-deterministic moment.
-        from ginkgo.reporting.model import build_report_data
-        from ginkgo.reporting.render import _jinja_env  # type: ignore
+        class _FixedDatetime:
+            @classmethod
+            def now(cls, tz=None):  # noqa: ANN001, ANN206
+                return frozen_ts
 
-        report_a = build_report_data(run_dir=run_dir, generated_at=frozen_ts)
-        report_b = build_report_data(run_dir=run_dir, generated_at=frozen_ts)
+        monkeypatch.setattr(model_module, "datetime", _FixedDatetime)
 
-        env = _jinja_env()
-        template = env.get_template("index.html.j2")
-        kwargs = {
-            "css_href": "assets/report.css",
-            "islands_src": "assets/islands.js",
-            "inline_css": None,
-            "inline_islands": None,
-            "image_inliner": None,
-            "log_inliner": None,
-        }
-        html_a = template.render(report=report_a, **kwargs)
-        html_b = template.render(report=report_b, **kwargs)
-        assert html_a == html_b
+        first = export_report(run_dir=run_dir, out_dir=tmp_path / "a")
+        second = export_report(run_dir=run_dir, out_dir=tmp_path / "b")
+        assert first.index_path.read_bytes() == second.index_path.read_bytes()
 
     def test_refuses_to_overwrite_without_flag(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

@@ -3,22 +3,18 @@
 from pathlib import Path
 
 from ginkgo import evaluate, flow, task
-
-
-def _append_line(path: str, line: str) -> None:
-    with Path(path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+from tests._vw_support import append_line
 
 
 @task()
 def process_high(value: int, log_path: str) -> str:
-    _append_line(log_path, f"process_high:{value}")
+    append_line(log_path, f"process_high:{value}")
     return f"high:{value}"
 
 
 @task()
 def filter_or_process(item: str, log_path: str) -> str | None:
-    _append_line(log_path, f"filter:{item}")
+    append_line(log_path, f"filter:{item}")
     if item.startswith("skip_"):
         return None
     return process_high(value=len(item), log_path=log_path)

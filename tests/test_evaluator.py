@@ -38,11 +38,67 @@ from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
 from ginkgo.runtime.environment.secrets import build_secret_resolver
+from tests._vw_support import append_line
 
 
-def _append_line(path: str, line: str) -> None:
-    with Path(path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+def _notebook_subprocess_stub(
+    *,
+    tmp_path: Path,
+    run_dir: Path,
+    calls: list[str] | None = None,
+    declared_output: Path | None = None,
+):
+    """Build a fake ``_run_subprocess`` for a single-task ipynb notebook run.
+
+    Handles the four commands a notebook task issues — the ipykernel probe,
+    kernel install, papermill execution, and nbconvert render — materialising
+    the expected ``task_0000`` outputs under ``run_dir / 'notebooks'``.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        Test temp dir; the managed Jupyter kernel is installed beneath it.
+    run_dir : Path
+        Provenance run directory; ``task_0000.ipynb`` / ``.html`` land here.
+    calls : list[str] | None
+        When given, every issued command line is appended to it.
+    declared_output : Path | None
+        When given, the papermill branch also writes this declared output file.
+    """
+
+    def fake_run_subprocess(
+        *,
+        argv: str | list[str],
+        use_shell: bool,
+        on_stdout: Any = None,
+        on_stderr: Any = None,
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        command = " ".join(argv) if isinstance(argv, list) else str(argv)
+        if calls is not None:
+            calls.append(command)
+        if "import ipykernel" in command:
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        if "ipykernel install" in command:
+            kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
+            kernel_name = command.split("--name", 1)[1].strip().split()[0]
+            kernel_dir = kernel_root / kernel_name
+            kernel_dir.mkdir(parents=True, exist_ok=True)
+            (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        if "papermill" in command:
+            (run_dir / "notebooks" / "task_0000.ipynb").write_text("executed", encoding="utf-8")
+            if declared_output is not None:
+                declared_output.write_text("declared output", encoding="utf-8")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        if "nbconvert" in command:
+            (run_dir / "notebooks" / "task_0000.html").write_text(
+                "<html>report</html>", encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        raise AssertionError(command)
+
+    return fake_run_subprocess
 
 
 @task("notebook")
@@ -82,7 +138,7 @@ def add_one_task(x: int) -> int:
 
 @task()
 def logged_work_task(x: int, log_path: str) -> int:
-    _append_line(log_path, f"work:{x}")
+    append_line(log_path, f"work:{x}")
     return x + 1
 
 
@@ -93,7 +149,7 @@ def sum_keyword_pair_task(*, left: int, right: int) -> int:
 
 @task(retries=2)
 def flaky_retry_task(marker_path: str, log_path: str) -> str:
-    _append_line(log_path, "attempt")
+    append_line(log_path, "attempt")
     marker = Path(marker_path)
     failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
     if failures < 1:
@@ -104,19 +160,19 @@ def flaky_retry_task(marker_path: str, log_path: str) -> str:
 
 @task(retries=2)
 def always_fail_retry_task(log_path: str) -> str:
-    _append_line(log_path, "attempt")
+    append_line(log_path, "attempt")
     raise RuntimeError("still broken")
 
 
 @task()
 def always_fail_once_task(log_path: str) -> str:
-    _append_line(log_path, "attempt")
+    append_line(log_path, "attempt")
     raise RuntimeError("no retry configured")
 
 
 @task(retries=2, retry_on=IOError)
 def retry_only_ioerror_task(log_path: str, kind: str) -> str:
-    _append_line(log_path, "attempt")
+    append_line(log_path, "attempt")
     if kind == "ioerror":
         raise IOError("transient io")
     raise ValueError("unexpected value")
@@ -126,7 +182,7 @@ def retry_only_ioerror_task(log_path: str, kind: str) -> str:
 def flaky_with_backoff_task(marker_path: str, log_path: str) -> str:
     import time as _time
 
-    _append_line(log_path, f"attempt:{_time.monotonic():.6f}")
+    append_line(log_path, f"attempt:{_time.monotonic():.6f}")
     marker = Path(marker_path)
     failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
     if failures < 2:
@@ -297,7 +353,7 @@ def sum_array_task(values: object) -> int:
 
 @task()
 def dataframe_task(log_path: str, start: int) -> object:
-    _append_line(log_path, f"df:{start}")
+    append_line(log_path, f"df:{start}")
     return pd.DataFrame({"sample": [start, start + 1], "value": [start * 2, start * 2 + 1]})
 
 
@@ -463,41 +519,9 @@ class TestEvaluate:
         )
 
         calls: list[str] = []
-
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            calls.append(command)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "ipykernel install" in command:
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(
-                    args=argv, returncode=0, stdout="install ok\n", stderr=""
-                )
-            if "papermill" in command:
-                output_path = recorder.run_dir / "notebooks" / "task_0000.ipynb"
-                output_path.write_text("executed", encoding="utf-8")
-                return subprocess.CompletedProcess(
-                    args=argv, returncode=0, stdout="papermill ok\n", stderr=""
-                )
-            if "nbconvert" in command:
-                html_path = recorder.run_dir / "notebooks" / "task_0000.html"
-                html_path.write_text("<html>report</html>", encoding="utf-8")
-                return subprocess.CompletedProcess(
-                    args=argv, returncode=0, stdout="render ok\n", stderr=""
-                )
-            raise AssertionError(command)
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path, run_dir=recorder.run_dir, calls=calls
+        )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
@@ -547,35 +571,9 @@ class TestEvaluate:
             cores=1,
         )
 
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "ipykernel install" in command:
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "papermill" in command:
-                executed = first_recorder.run_dir / "notebooks" / "task_0000.ipynb"
-                executed.write_text("executed", encoding="utf-8")
-                # Honour the declared output by creating it during execution.
-                output_path.write_text("declared output", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "nbconvert" in command:
-                html = first_recorder.run_dir / "notebooks" / "task_0000.html"
-                html.write_text("<html>report</html>", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            raise AssertionError(command)
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path, run_dir=first_recorder.run_dir, declared_output=output_path
+        )
 
         first_evaluator = ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
         monkeypatch.setattr(first_evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
@@ -646,35 +644,9 @@ class TestEvaluate:
         )
 
         calls: list[str] = []
-
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            calls.append(command)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "ipykernel install" in command:
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "papermill" in command:
-                output_path = recorder.run_dir / "notebooks" / "task_0000.ipynb"
-                output_path.write_text("executed", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "nbconvert" in command:
-                html_path = recorder.run_dir / "notebooks" / "task_0000.html"
-                html_path.write_text("<html>report</html>", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            raise AssertionError(command)
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path, run_dir=recorder.run_dir, calls=calls
+        )
 
         evaluator = ConcurrentEvaluator(
             provenance=recorder,
@@ -712,33 +684,9 @@ class TestEvaluate:
         bus = EventBus()
         bus.subscribe(events.append)
 
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "ipykernel install" in command:
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "papermill" in command:
-                output_path = recorder.run_dir / "notebooks" / "task_0000.ipynb"
-                output_path.write_text("executed", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "nbconvert" in command:
-                html_path = recorder.run_dir / "notebooks" / "task_0000.html"
-                html_path.write_text("<html>report</html>", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            raise AssertionError(command)
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path, run_dir=recorder.run_dir
+        )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
@@ -937,77 +885,39 @@ class TestEvaluate:
         assert Path(result).is_file()
 
     def test_notebook_cache_invalidates_when_source_changes(self, tmp_path: Path) -> None:
+        from ginkgo.core.notebook import notebook as make_notebook
+        from ginkgo.runtime.caching.cache import CacheStore
+
         nb_path = tmp_path / "nb.ipynb"
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
-        expr_v1 = notebook_ipynb_task(notebook_path=str(nb_path), value=1)
-
-        def fake_subprocess_ok(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
-            if "ipykernel install" in command:
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
-            if "papermill" in command:
-                (tmp_path / "task_0000.ipynb").write_text("x", encoding="utf-8")
-                # Write to the actual notebook artifacts dir.
-                for p in [tmp_path / ".ginkgo" / "notebooks"]:
-                    p.mkdir(parents=True, exist_ok=True)
-                    (p / "task_0000.ipynb").write_text("x", encoding="utf-8")
-            if "nbconvert" in command:
-                for p in [tmp_path / ".ginkgo" / "notebooks"]:
-                    (p / "task_0000.html").write_text("<html/>", encoding="utf-8")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
-
-        ev1 = ConcurrentEvaluator(jobs=1, cores=1)
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(ev1._shell_runner, "_run_subprocess", fake_subprocess_ok)
-        try:
-            ev1.evaluate(expr_v1)
-        finally:
-            monkeypatch.undo()
-
-        # Modify notebook source — cache key must differ.
-        nb_path.write_text(
-            '{"cells": [{"source": "changed"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
-            encoding="utf-8",
-        )
-        # The cache keys should differ because the notebook source changed.
-        from ginkgo.runtime.caching.cache import CacheStore
-        from pathlib import Path as _Path
-
-        cache = CacheStore(root=_Path(".ginkgo") / "cache")
-        key_v1, _ = cache.build_cache_key(
-            task_def=expr_v1.task_def,
-            resolved_args={"notebook_path": str(nb_path), "value": 1},
-        )
-        # Recompute v1's key inline to compare — both keys are the same task_def
-        # so the difference comes from the source hash stored in the directive.
-        from ginkgo.core.notebook import notebook as make_notebook
-
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
         directive_v1 = make_notebook(str(nb_path))
+
         nb_path.write_text(
             '{"cells": [{"source": "changed"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
             encoding="utf-8",
         )
         directive_v2 = make_notebook(str(nb_path))
+
+        # Editing the notebook changes its source hash, which the evaluator
+        # folds into the task's cache key via ``extra_source_hash`` — so the
+        # two source hashes, and the resulting cache keys, must differ.
         assert directive_v1.source_hash != directive_v2.source_hash
+
+        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache")
+        resolved_args = {"notebook_path": str(nb_path), "value": 1}
+        key_v1, _ = cache.build_cache_key(
+            task_def=notebook_ipynb_task,
+            resolved_args=resolved_args,
+            extra_source_hash=directive_v1.source_hash,
+        )
+        key_v2, _ = cache.build_cache_key(
+            task_def=notebook_ipynb_task,
+            resolved_args=resolved_args,
+            extra_source_hash=directive_v2.source_hash,
+        )
+        assert key_v1 != key_v2
 
     def test_local_task_fails_immediately_at_runtime(self):
         @task()

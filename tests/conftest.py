@@ -3,9 +3,11 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.events import (
     EventBus,
     GinkgoEvent,
@@ -15,6 +17,35 @@ from ginkgo.runtime.events import (
     TaskStaging,
     TaskStarted,
 )
+
+
+def make_download_backend(*, content: bytes = b"hello world", etag: str = "etag1") -> MagicMock:
+    """Return a mock ``RemoteStorageBackend`` whose download writes fixed bytes.
+
+    ``download`` writes ``content`` to the requested ``dest_path`` and ``head``
+    reports the matching size/etag — enough to drive the staging cache and the
+    evaluator's remote-input path without touching a real object store.
+
+    Parameters
+    ----------
+    content : bytes
+        Bytes written by ``download`` and reported as the object size.
+    etag : str
+        ETag returned by both ``download`` and ``head``.
+    """
+    backend = MagicMock()
+
+    def _download(*, bucket: str, key: str, dest_path: Path) -> RemoteObjectMeta:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(content)
+        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=len(content), etag=etag)
+
+    def _head(*, bucket: str, key: str) -> RemoteObjectMeta:
+        return RemoteObjectMeta(uri=f"s3://{bucket}/{key}", size=len(content), etag=etag)
+
+    backend.download.side_effect = _download
+    backend.head.side_effect = _head
+    return backend
 
 
 @pytest.fixture(autouse=True)

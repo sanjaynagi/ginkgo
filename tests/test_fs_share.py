@@ -121,6 +121,7 @@ class TestArtifactStoreIntegration:
         assert record_default.digest_hex == record_readonly.digest_hex
         assert record_default.size == record_readonly.size
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX semantics")
     def test_store_with_readonly_hint_shares_inode_on_posix(self, tmp_path: Path) -> None:
         """When reflink is refused, ``src_is_readonly=True`` should hardlink."""
         src = tmp_path / "src.bin"
@@ -132,8 +133,7 @@ class TestArtifactStoreIntegration:
 
         blob_path = tmp_path / "artifacts" / "blobs" / record.digest_hex
         # Same inode only if hardlink was used.
-        if sys.platform != "win32":
-            assert blob_path.stat().st_ino == src.stat().st_ino
+        assert blob_path.stat().st_ino == src.stat().st_ino
 
     def test_store_without_hint_never_shares_inode(self, tmp_path: Path) -> None:
         src = tmp_path / "src.bin"

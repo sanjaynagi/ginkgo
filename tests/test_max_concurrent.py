@@ -71,7 +71,7 @@ def _record_interval(item: str) -> dict[str, float]:
     started = time.perf_counter()
     time.sleep(0.1)
     ended = time.perf_counter()
-    return {"item": float(hash(item) % 1000), "start": started, "end": ended}
+    return {"start": started, "end": ended}
 
 
 @flow

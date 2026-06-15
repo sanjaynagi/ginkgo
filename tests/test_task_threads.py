@@ -82,9 +82,10 @@ class TestShellSubprocessEnv:
         assert env["OPENBLAS_NUM_THREADS"] == "6"
         assert env["NUMEXPR_NUM_THREADS"] == "6"
 
-    def test_inherits_existing_environment(self) -> None:
+    def test_inherits_existing_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GINKGO_TEST_SENTINEL", "sentinel-value")
         env = build_shell_subprocess_env(task_def=_shell_step_inherit)
-        assert "PATH" in env or "HOME" in env
+        assert env["GINKGO_TEST_SENTINEL"] == "sentinel-value"
 
 
 class TestShellTaskPropagatesThreads:

@@ -1,7 +1,5 @@
 """Unit tests for @task decorator, TaskDef, and PartialCall."""
 
-from pathlib import Path
-
 import pytest
 
 from ginkgo import Expr, ExprList, PartialCall, TaskDef, task, tmp_dir
@@ -47,29 +45,14 @@ class TestTaskDecorator:
             def my_fn(x: int) -> int:
                 return x
 
-    def test_task_positional_kind_shell(self):
-        @task("shell")
-        def run_cmd(x: int) -> int:
+    @pytest.mark.parametrize("kind", ["shell", "notebook", "script"])
+    def test_task_positional_kind(self, kind: str) -> None:
+        @task(kind)
+        def run(x: int) -> int:
             return x
 
-        assert isinstance(run_cmd, TaskDef)
-        assert run_cmd.kind == "shell"
-
-    def test_task_positional_kind_notebook(self):
-        @task("notebook")
-        def render(sample_id: str) -> Path:
-            return Path(sample_id)
-
-        assert isinstance(render, TaskDef)
-        assert render.kind == "notebook"
-
-    def test_task_positional_kind_script(self):
-        @task("script")
-        def run_script(data: str) -> Path:
-            return Path(data)
-
-        assert isinstance(run_script, TaskDef)
-        assert run_script.kind == "script"
+        assert isinstance(run, TaskDef)
+        assert run.kind == kind
 
     def test_task_positional_kind_and_keyword_differ_raises(self):
         with pytest.raises(ValueError, match="kind specified twice"):
@@ -85,15 +68,9 @@ class TestTaskDecorator:
 
         assert consistent.kind == "shell"
 
-    def test_notebook_kind_execution_mode_is_driver(self):
-        @task("notebook")
-        def render(x: str) -> str:
-            return x
-
-        assert render.execution_mode == "driver"
-
-    def test_script_kind_execution_mode_is_driver(self):
-        @task("script")
+    @pytest.mark.parametrize("kind", ["notebook", "script"])
+    def test_driver_kind_execution_mode_is_driver(self, kind: str) -> None:
+        @task(kind)
         def run(x: str) -> str:
             return x
 
@@ -134,6 +111,7 @@ class TestTaskDefCall:
         # Only x is required; providing just x should be a full call
         result = process(x=5)
         assert isinstance(result, Expr)
+        assert result.args["x"] == 5
 
     def test_full_call_overrides_defaults(self):
         @task()
