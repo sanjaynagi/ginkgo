@@ -1,7 +1,9 @@
 """Pixi environment registry and subprocess helpers.
 
 Environments are resolved from ``envs/<env_name>/`` under the project root, or
-from an explicit path to a ``pixi.toml``. Explicit conda environment specs
+from an explicit path to a ``pixi.toml``. A named environment directory may
+instead carry a ``pyproject.toml`` with a ``[tool.pixi]`` section, which Pixi
+accepts as a manifest natively. Explicit conda environment specs
 (``environment.yml`` / ``environment.yaml``) are imported into a generated
 neighboring Pixi workspace under ``.ginkgo-pixi/`` and then executed through
 the normal Pixi path.
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import shutil
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,6 +58,57 @@ class PixiEnvPrepareError(RuntimeError):
         super().__init__(f"Failed to prepare Pixi env {str(manifest)!r}: {details}")
 
 
+def _is_pixi_pyproject(path: Path) -> bool:
+    """Return whether *path* is a ``pyproject.toml`` carrying ``[tool.pixi]``.
+
+    Parameters
+    ----------
+    path : Path
+        Candidate manifest path.
+
+    Returns
+    -------
+    bool
+        True only when *path* is a readable ``pyproject.toml`` whose parsed
+        contents contain a ``[tool.pixi]`` table. Unreadable or malformed TOML
+        is treated as a non-match rather than an error.
+    """
+    if path.name != "pyproject.toml" or not path.is_file():
+        return False
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    tool = data.get("tool")
+    return isinstance(tool, dict) and "pixi" in tool
+
+
+def _env_manifest(env_dir: Path) -> Path | None:
+    """Return the Pixi manifest within *env_dir*, or None if absent.
+
+    Prefers ``pixi.toml``; falls back to a ``pyproject.toml`` that carries a
+    ``[tool.pixi]`` section.
+
+    Parameters
+    ----------
+    env_dir : Path
+        Directory of a named environment (``envs/<name>/``).
+
+    Returns
+    -------
+    Path | None
+        Path to the manifest file, or ``None`` when neither manifest exists.
+    """
+    pixi_toml = env_dir / "pixi.toml"
+    if pixi_toml.is_file():
+        return pixi_toml
+    pyproject = env_dir / "pyproject.toml"
+    if _is_pixi_pyproject(pyproject):
+        return pyproject
+    return None
+
+
 def _list_envs(envs_dir: Path) -> list[str]:
     """Return sorted names of discoverable environments under envs_dir."""
     if not envs_dir.is_dir():
@@ -62,7 +116,7 @@ def _list_envs(envs_dir: Path) -> list[str]:
     return sorted(
         child.name
         for child in envs_dir.iterdir()
-        if child.is_dir() and (child / "pixi.toml").is_file()
+        if child.is_dir() and _env_manifest(child) is not None
     )
 
 
@@ -130,13 +184,14 @@ class PixiRegistry:
         Parameters
         ----------
         env : str
-            Environment name (resolved from ``envs/<name>/``) or an explicit
-            path to a ``pixi.toml``.
+            Environment name (resolved from ``envs/<name>/``, where the
+            manifest may be ``pixi.toml`` or a ``pyproject.toml`` with a
+            ``[tool.pixi]`` section) or an explicit path to a manifest file.
 
         Returns
         -------
         Path
-            Absolute path to the ``pixi.toml``.
+            Absolute path to the resolved manifest.
 
         Raises
         ------
@@ -152,8 +207,8 @@ class PixiRegistry:
             return manifest.resolve()
 
         for envs_dir in self._envs_dirs:
-            manifest = envs_dir / env / "pixi.toml"
-            if manifest.is_file():
+            manifest = _env_manifest(envs_dir / env)
+            if manifest is not None:
                 return manifest.resolve()
 
         searched = self._envs_dirs[0] if self._envs_dirs else None

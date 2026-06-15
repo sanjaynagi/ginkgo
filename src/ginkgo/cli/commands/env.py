@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.common import console
-from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.envs.pixi import PixiRegistry, _env_manifest
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,10 @@ def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
         if not envs_dir.is_dir():
             continue
         for child in sorted(envs_dir.iterdir(), key=lambda path: path.name):
-            manifest = child / "pixi.toml"
-            if not child.is_dir() or not manifest.is_file():
+            if not child.is_dir():
+                continue
+            manifest = _env_manifest(child)
+            if manifest is None:
                 continue
             resolved_manifest = manifest.resolve()
             if resolved_manifest in seen_manifests:

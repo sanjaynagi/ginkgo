@@ -27,6 +27,9 @@ from ginkgo.envs.pixi import (
     PixiEnvNotFoundError,
     PixiEnvPrepareError,
     PixiRegistry,
+    _env_manifest,
+    _is_pixi_pyproject,
+    _list_envs,
 )
 
 
@@ -249,6 +252,109 @@ class TestPixiRegistry:
         registry = PixiRegistry(project_root=_TESTS_DIR)
         with pytest.raises(TypeError, match="Foreign environments only support driver tasks"):
             _evaluate(my_flow(), registry=registry)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — pyproject.toml as a Pixi manifest (no subprocess)
+# ---------------------------------------------------------------------------
+
+
+_PYPROJECT_WITH_PIXI = (
+    "[project]\n"
+    "name = 'demo'\n"
+    "version = '0.1.0'\n"
+    "\n"
+    "[tool.pixi.workspace]\n"
+    "channels = []\n"
+    "platforms = []\n"
+)
+
+_PYPROJECT_WITHOUT_PIXI = "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+
+
+def _write_env(envs_root: Path, name: str, *, filename: str, content: str) -> Path:
+    """Create ``envs_root/<name>/<filename>`` with *content* and return its path."""
+    manifest = envs_root / name / filename
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(content, encoding="utf-8")
+    return manifest
+
+
+class TestPixiPyprojectManifest:
+    def test_is_pixi_pyproject_detects_tool_pixi_section(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "pyproject.toml"
+        manifest.write_text(_PYPROJECT_WITH_PIXI, encoding="utf-8")
+        assert _is_pixi_pyproject(manifest) is True
+
+    def test_is_pixi_pyproject_rejects_pyproject_without_tool_pixi(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "pyproject.toml"
+        manifest.write_text(_PYPROJECT_WITHOUT_PIXI, encoding="utf-8")
+        assert _is_pixi_pyproject(manifest) is False
+
+    def test_is_pixi_pyproject_rejects_non_pyproject_filename(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "pixi.toml"
+        manifest.write_text("[tool.pixi.workspace]\n", encoding="utf-8")
+        assert _is_pixi_pyproject(manifest) is False
+
+    def test_is_pixi_pyproject_rejects_malformed_toml(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "pyproject.toml"
+        manifest.write_text("[tool.pixi\nbroken = ", encoding="utf-8")
+        assert _is_pixi_pyproject(manifest) is False
+
+    def test_resolve_named_env_with_pyproject_manifest(self, tmp_path: Path) -> None:
+        manifest = _write_env(
+            tmp_path / "envs", "ml_env", filename="pyproject.toml", content=_PYPROJECT_WITH_PIXI
+        )
+        registry = PixiRegistry(project_root=tmp_path)
+        assert registry.resolve(env="ml_env") == manifest.resolve()
+
+    def test_resolve_prefers_pixi_toml_over_pyproject(self, tmp_path: Path) -> None:
+        pixi_toml = _write_env(
+            tmp_path / "envs",
+            "both",
+            filename="pixi.toml",
+            content="[workspace]\nname = 'both'\nchannels = []\nplatforms = []\n",
+        )
+        _write_env(
+            tmp_path / "envs", "both", filename="pyproject.toml", content=_PYPROJECT_WITH_PIXI
+        )
+        registry = PixiRegistry(project_root=tmp_path)
+        assert registry.resolve(env="both") == pixi_toml.resolve()
+
+    def test_resolve_named_env_ignores_pyproject_without_tool_pixi(self, tmp_path: Path) -> None:
+        _write_env(
+            tmp_path / "envs", "plain", filename="pyproject.toml", content=_PYPROJECT_WITHOUT_PIXI
+        )
+        registry = PixiRegistry(project_root=tmp_path)
+        with pytest.raises(PixiEnvNotFoundError, match="plain"):
+            registry.resolve(env="plain")
+
+    def test_lock_hash_reads_lockfile_beside_pyproject(self, tmp_path: Path) -> None:
+        _write_env(
+            tmp_path / "envs", "ml_env", filename="pyproject.toml", content=_PYPROJECT_WITH_PIXI
+        )
+        (tmp_path / "envs" / "ml_env" / "pixi.lock").write_text("locked\n", encoding="utf-8")
+        registry = PixiRegistry(project_root=tmp_path)
+        digest = registry.lock_hash(env="ml_env")
+        assert isinstance(digest, str)
+        assert len(digest) == 64  # BLAKE3 hex digest
+
+    def test_list_envs_discovers_pyproject_and_pixi_toml(self, tmp_path: Path) -> None:
+        envs_root = tmp_path / "envs"
+        _write_env(
+            envs_root,
+            "alpha",
+            filename="pixi.toml",
+            content="[workspace]\nname = 'alpha'\nchannels = []\nplatforms = []\n",
+        )
+        _write_env(envs_root, "beta", filename="pyproject.toml", content=_PYPROJECT_WITH_PIXI)
+        _write_env(envs_root, "gamma", filename="pyproject.toml", content=_PYPROJECT_WITHOUT_PIXI)
+        assert _list_envs(envs_root) == ["alpha", "beta"]
+
+    def test_env_manifest_returns_none_for_empty_directory(self, tmp_path: Path) -> None:
+        env_dir = tmp_path / "envs" / "empty"
+        env_dir.mkdir(parents=True)
+        assert _env_manifest(env_dir) is None
 
 
 # ---------------------------------------------------------------------------
