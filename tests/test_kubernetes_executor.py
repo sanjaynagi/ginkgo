@@ -84,6 +84,11 @@ class TestKubernetesExecutor:
     def test_submit_creates_job(self) -> None:
         import base64
 
+        # submit() builds a real V1Job; the kubernetes client lives in the
+        # optional ``cloud`` extra (installed in CI). Guard so the test still
+        # degrades gracefully in a minimal install without that extra.
+        pytest.importorskip("kubernetes")
+
         executor = self._make_executor()
         attempt = self._make_attempt()
 
