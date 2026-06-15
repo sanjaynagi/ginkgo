@@ -41,29 +41,34 @@ def _make_package(tmp_path: Path) -> Path:
 class TestShouldExclude:
     """Tests for the _should_exclude filter."""
 
-    def test_excludes_pycache(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/__pycache__/foo.pyc")
-        assert _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
+    @pytest.mark.parametrize(
+        ("name", "excluded"),
+        [
+            ("my_workflow/__pycache__/foo.pyc", True),
+            ("my_workflow/tasks.pyc", True),
+            ("my_workflow/.git/config", True),
+            ("my_workflow/foo.egg-info/PKG-INFO", True),
+            ("my_workflow/tasks.py", False),
+            ("my_workflow/sub/helpers.py", False),
+        ],
+    )
+    def test_default_excludes(self, name: str, excluded: bool) -> None:
+        info = tarfile.TarInfo(name=name)
+        assert _should_exclude(info, excludes=_DEFAULT_EXCLUDES) is excluded
 
-    def test_excludes_pyc_extension(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/tasks.pyc")
-        assert _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
+    def test_gitignore_spec_excludes_matched_files(self) -> None:
+        class _Spec:
+            def __init__(self, ignored: set[str]) -> None:
+                self._ignored = ignored
 
-    def test_excludes_git(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/.git/config")
-        assert _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
+            def match_file(self, path: str) -> bool:
+                return path in self._ignored
 
-    def test_includes_normal_py(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/tasks.py")
-        assert not _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
-
-    def test_includes_subpackage(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/sub/helpers.py")
-        assert not _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
-
-    def test_excludes_egg_info(self) -> None:
-        info = tarfile.TarInfo(name="my_workflow/foo.egg-info/PKG-INFO")
-        assert _should_exclude(info, excludes=_DEFAULT_EXCLUDES)
+        spec = _Spec({"my_workflow/secret.txt"})
+        ignored = tarfile.TarInfo(name="my_workflow/secret.txt")
+        kept = tarfile.TarInfo(name="my_workflow/tasks.py")
+        assert _should_exclude(ignored, excludes=_DEFAULT_EXCLUDES, gitignore_spec=spec)
+        assert not _should_exclude(kept, excludes=_DEFAULT_EXCLUDES, gitignore_spec=spec)
 
 
 class TestCreateCodeBundle:
@@ -106,15 +111,6 @@ class TestCreateCodeBundle:
             assert pycache_entries == []
         finally:
             tarball_path.unlink()
-
-    def test_deterministic_digest(self, tmp_path: Path) -> None:
-        pkg = _make_package(tmp_path)
-        _, digest1 = create_code_bundle(package_path=pkg)
-        _, digest2 = create_code_bundle(package_path=pkg)
-
-        # Digests may differ due to mtime in tar — but both should be valid.
-        assert len(digest1) == 64
-        assert len(digest2) == 64
 
     def test_missing_package_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match="Package directory not found"):

@@ -20,17 +20,24 @@ def _asset_ref(*, key: AssetKey, version_id: str) -> AssetRef:
     )
 
 
+def _make_version(*, name: str, suffix: str, run_id: str, producer: str):
+    key = AssetKey(namespace="file", name=name)
+    version = make_asset_version(
+        key=key,
+        kind="file",
+        artifact_id=f"artifact-{suffix}",
+        content_hash=f"hash-{suffix}",
+        run_id=run_id,
+        producer_task=producer,
+    )
+    return key, version
+
+
 class TestAssetStore:
-    def test_register_alias_and_lineage(self, tmp_path: Path) -> None:
+    def test_register_and_resolve_alias(self, tmp_path: Path) -> None:
         store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        key = AssetKey(namespace="file", name="prepared_data")
-        version = make_asset_version(
-            key=key,
-            kind="file",
-            artifact_id="artifact-1",
-            content_hash="hash-1",
-            run_id="run-1",
-            producer_task="tests.writer",
+        key, version = _make_version(
+            name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
 
         store.register_version(version=version)
@@ -44,21 +51,22 @@ class TestAssetStore:
         assert latest.version_id == version.version_id
         assert store.list_asset_keys() == [key]
 
-        child_key = AssetKey(namespace="file", name="transformed_data")
-        child_version = make_asset_version(
-            key=child_key,
-            kind="file",
-            artifact_id="artifact-2",
-            content_hash="hash-2",
-            run_id="run-2",
-            producer_task="tests.transformer",
+    def test_record_lineage(self, tmp_path: Path) -> None:
+        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+        parent_key, parent_version = _make_version(
+            name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
+        child_key, child_version = _make_version(
+            name="transformed_data", suffix="2", run_id="run-2", producer="tests.transformer"
+        )
+        store.register_version(version=parent_version)
         store.register_version(version=child_version)
-        child_ref = _asset_ref(key=child_key, version_id=child_version.version_id)
-        parent_ref = _asset_ref(key=key, version_id=version.version_id)
 
-        store.record_lineage(child=child_ref, parents=[parent_ref])
+        store.record_lineage(
+            child=_asset_ref(key=child_key, version_id=child_version.version_id),
+            parents=[_asset_ref(key=parent_key, version_id=parent_version.version_id)],
+        )
 
         lineage = store.lineage_for(key=child_key, version_id=child_version.version_id)
         assert lineage is not None
-        assert [parent.version_id for parent in lineage.parents] == [version.version_id]
+        assert [parent.version_id for parent in lineage.parents] == [parent_version.version_id]

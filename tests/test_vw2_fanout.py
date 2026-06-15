@@ -1,41 +1,9 @@
 """VW-2 — Fan-out / Fan-in: concurrent evaluation tests."""
 
-import json
 import time
-from pathlib import Path
 
 from ginkgo import evaluate, flow, task
-
-
-def _write_interval(events_dir: str, name: str, started_at: float, ended_at: float) -> None:
-    Path(events_dir).mkdir(parents=True, exist_ok=True)
-    Path(events_dir, f"{name}.json").write_text(
-        json.dumps({"end": ended_at, "start": started_at}),
-        encoding="utf-8",
-    )
-
-
-def _read_intervals(events_dir: str, prefix: str) -> dict[str, tuple[float, float]]:
-    intervals: dict[str, tuple[float, float]] = {}
-    for path in Path(events_dir).glob(f"{prefix}-*.json"):
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        intervals[path.stem] = (payload["start"], payload["end"])
-    return intervals
-
-
-def _peak_overlap(intervals: list[tuple[float, float]]) -> int:
-    points: list[tuple[float, int]] = []
-    for start, end in intervals:
-        points.append((start, 1))
-        points.append((end, -1))
-    points.sort(key=lambda item: (item[0], item[1]))
-
-    active = 0
-    peak = 0
-    for _, delta in points:
-        active += delta
-        peak = max(peak, active)
-    return peak
+from tests._vw_support import load_intervals, peak_concurrency, write_interval
 
 
 @task()
@@ -43,7 +11,7 @@ def process(item: str, multiplier: int, events_dir: str) -> str:
     started_at = time.time()
     time.sleep(0.3)
     ended_at = time.time()
-    _write_interval(events_dir, f"process-{item}", started_at, ended_at)
+    write_interval(events_dir, f"process-{item}", started_at=started_at, ended_at=ended_at)
     return item * multiplier
 
 
@@ -52,7 +20,7 @@ def merge(results: list[str], events_dir: str) -> str:
     started_at = time.time()
     output = ",".join(sorted(results))
     ended_at = time.time()
-    _write_interval(events_dir, "merge-run", started_at, ended_at)
+    write_interval(events_dir, "merge-run", started_at=started_at, ended_at=ended_at)
     return output
 
 
@@ -71,11 +39,13 @@ class TestVW2ConcurrentEvaluation:
             fan_pipeline(items=items, multiplier=2, events_dir=events_dir), jobs=10, cores=10
         )
 
-        intervals = list(_read_intervals(events_dir, "process").values())
-        process_makespan = max(end for _, end in intervals) - min(start for start, _ in intervals)
+        intervals = load_intervals(events_dir, prefix="process")
+        process_makespan = max(iv["end"] for iv in intervals) - min(
+            iv["start"] for iv in intervals
+        )
         assert result == ",".join(sorted(item * 2 for item in items))
         assert len(intervals) == 10
-        assert _peak_overlap(intervals) >= 5
+        assert peak_concurrency(intervals) >= 5
         assert process_makespan < 1.5
 
     def test_merge_receives_resolved_results(self):
@@ -90,7 +60,7 @@ class TestVW2ConcurrentEvaluation:
         events_dir = "events"
         evaluate(fan_pipeline(items=items, multiplier=2, events_dir=events_dir), jobs=3, cores=3)
 
-        process_intervals = _read_intervals(events_dir, "process")
-        merge_interval = _read_intervals(events_dir, "merge")["merge-run"]
-        latest_process_end = max(end for _, end in process_intervals.values())
-        assert merge_interval[0] >= latest_process_end
+        process_intervals = load_intervals(events_dir, prefix="process")
+        merge_interval = load_intervals(events_dir, prefix="merge")[0]
+        latest_process_end = max(iv["end"] for iv in process_intervals)
+        assert merge_interval["start"] >= latest_process_end

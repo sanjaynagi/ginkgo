@@ -6,23 +6,19 @@ import time
 import pytest
 
 from ginkgo import evaluate, flow, task
-
-
-def _append_line(path: str, line: str) -> None:
-    with Path(path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+from tests._vw_support import append_line
 
 
 @task()
 def may_fail_transient(item: str, log_path: str) -> str:
-    _append_line(log_path, f"start:{item}")
+    append_line(log_path, f"start:{item}")
     marker = Path(f".transient-{item}")
     if item == "item_3" and not marker.exists():
         marker.write_text("failed once", encoding="utf-8")
         raise RuntimeError(f"transient failure on {item}")
 
     result = f"ok:{item}"
-    _append_line(log_path, result)
+    append_line(log_path, result)
     return result
 
 
@@ -33,14 +29,14 @@ def failure_pipeline_transient(items: list[str], log_path: str):
 
 @task()
 def may_fail(item: str, log_path: str) -> str:
-    _append_line(log_path, f"start:{item}")
+    append_line(log_path, f"start:{item}")
 
     if item == "item_0":
         time.sleep(0.05)
         raise RuntimeError("deliberate failure on item_0")
 
     time.sleep(0.15)
-    _append_line(log_path, f"finish:{item}")
+    append_line(log_path, f"finish:{item}")
     return f"ok:{item}"
 
 

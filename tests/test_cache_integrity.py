@@ -1,11 +1,13 @@
 """Integration tests for cache integrity and working-tree materialization."""
 
+import stat
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from ginkgo import evaluate, file, folder, shell, task
+from ginkgo.cli.commands.cache import _safe_rmtree
 from ginkgo.core.task import TaskDef
 from tests.conftest import EventCollector
 
@@ -226,22 +228,24 @@ class TestWritableFolderOutputs:
 
 
 class TestCachePruneReadOnly:
-    def test_prune_handles_read_only_artifacts(self, tmp_path):
-        """Pruning cache entries with read-only artifacts should not raise."""
+    def test_prune_handles_read_only_artifacts(self, tmp_path: Path) -> None:
+        """The prune helper must remove a read-only entry tree without raising."""
         output = tmp_path / "prunable.txt"
         evaluate(write_file_task(output_path=str(output)))
 
         cache_root = Path(".ginkgo") / "cache"
-        assert cache_root.exists()
+        entries = [entry for entry in cache_root.iterdir() if entry.is_dir()]
+        assert entries, "expected at least one cache entry to prune"
 
-        # Prune everything by removing all entries directly.
-        import shutil
-        from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+        # Strip the write bit from every directory and file so a naive
+        # shutil.rmtree would fail with PermissionError; the production helper
+        # must restore permissions and complete the removal.
+        for entry in entries:
+            for child in entry.rglob("*"):
+                child.chmod(stat.S_IRUSR | stat.S_IXUSR if child.is_dir() else stat.S_IRUSR)
+            entry.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
-        for entry in cache_root.iterdir():
-            if entry.is_dir():
-                try:
-                    shutil.rmtree(entry)
-                except PermissionError:
-                    make_writable_recursive(entry)
-                    shutil.rmtree(entry)
+        for entry in entries:
+            _safe_rmtree(entry)
+
+        assert not any(child.is_dir() for child in cache_root.iterdir())

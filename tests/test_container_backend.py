@@ -267,10 +267,8 @@ class TestContainerKindRestriction:
         with pytest.raises(TypeError, match="only support driver tasks"):
             evaluate(python_in_container(x=1))
 
-    def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path):
+    def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path) -> None:
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        from ginkgo import shell, task
 
         @task(kind="shell", env="docker://myimg:latest")
         def shell_in_container(output_path: str) -> str:
@@ -278,22 +276,15 @@ class TestContainerKindRestriction:
 
         output = str(tmp_path / "out.txt")
 
-        # Validation should pass — the container env is valid for shell tasks.
-        # We only need to check that _validate_declared_envs doesn't raise
-        # TypeError.  The backend.validate_envs call will fail because Docker
-        # isn't available, but that's a different error.
         backend = ContainerBackend(project_root=tmp_path)
         evaluator = ConcurrentEvaluator(backend=backend)
         evaluator._root_template = shell_in_container(output_path=output)
         evaluator._root_dependency_ids = evaluator._register_value(evaluator._root_template)
 
-        # This should not raise TypeError (container kind restriction).
-        # It may raise ContainerRuntimeNotFoundError from validate_envs
-        # if docker is not installed — that's expected and fine.
-        try:
+        # A shell task with a container env is valid: it must pass the kind
+        # restriction (no TypeError) and env validation once a runtime is found.
+        with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
             evaluator._validator.validate_declared_envs(nodes=evaluator._nodes.values())
-        except ContainerRuntimeNotFoundError:
-            pass  # Expected when docker is not on PATH.
 
 
 # ------------------------------------------------------------------
@@ -469,28 +460,27 @@ class TestContainerShellE2E:
         assert task_entry["backend"] == "container"
         assert task_entry["container_image_digest"] == "sha256:deadbeef1234"
 
-    def test_container_cache_uses_image_digest(self, tmp_path: Path):
-        """Cache key incorporates the container image digest."""
+    def test_container_cache_uses_image_digest(self, tmp_path: Path) -> None:
+        """The cache key changes when the container image digest changes."""
         from ginkgo.runtime.caching.cache import CacheStore
 
-        container_backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="never",
+        @task(kind="shell", env="docker://myimg:latest")
+        def shell_task(output_path: str) -> str:
+            return shell(cmd=f"echo ok > {output_path}", output=output_path)
+
+        store = CacheStore(
+            backend=CompositeBackend(
+                local=LocalBackend(pixi_registry=PixiRegistry(project_root=tmp_path)),
+                container=ContainerBackend(project_root=tmp_path, pull_policy="never"),
+            )
         )
+        resolved_args = {"output_path": str(tmp_path / "out.txt")}
 
-        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="sha256:abc123\n", stderr=""
-            )
+        def key_for(digest: str) -> str:
+            with patch.object(ContainerBackend, "env_identity", return_value=digest):
+                key, _ = store.build_cache_key(task_def=shell_task, resolved_args=resolved_args)
+            return key
 
-            store = CacheStore(
-                backend=CompositeBackend(
-                    local=LocalBackend(
-                        pixi_registry=PixiRegistry(project_root=tmp_path),
-                    ),
-                    container=container_backend,
-                )
-            )
-
-            digest = store.backend.env_identity(env="docker://myimg:latest")
-            assert digest == "sha256:abc123"
+        # A changed image digest must invalidate the key; an unchanged one must not.
+        assert key_for("sha256:abc123") != key_for("sha256:def456")
+        assert key_for("sha256:abc123") == key_for("sha256:abc123")

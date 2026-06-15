@@ -2,76 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import pytest
 
 from ginkgo import evaluate, flow, task
-
-
-def _write_interval(
-    events_dir: str,
-    name: str,
-    *,
-    started_at: float,
-    ended_at: float,
-    threads: int,
-    memory_gb: int,
-    high_memory: bool,
-) -> None:
-    Path(events_dir).mkdir(parents=True, exist_ok=True)
-    Path(events_dir, f"{name}.json").write_text(
-        json.dumps(
-            {
-                "end": ended_at,
-                "high_memory": high_memory,
-                "memory_gb": memory_gb,
-                "start": started_at,
-                "threads": threads,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def _load_intervals(events_dir: str) -> list[dict[str, object]]:
-    return [
-        json.loads(path.read_text(encoding="utf-8")) for path in Path(events_dir).glob("*.json")
-    ]
-
-
-def _compute_peaks(intervals: list[dict[str, object]]) -> tuple[int, int, int, int]:
-    points: list[tuple[float, int, int, int, int]] = []
-    for interval in intervals:
-        threads = int(interval["threads"])
-        memory_gb = int(interval["memory_gb"])
-        high_memory = 1 if interval["high_memory"] else 0
-        points.append((float(interval["start"]), 1, threads, memory_gb, high_memory))
-        points.append((float(interval["end"]), -1, -threads, -memory_gb, -high_memory))
-
-    points.sort(key=lambda item: (item[0], item[1]))
-
-    active_tasks = 0
-    active_cores = 0
-    active_memory = 0
-    active_high_memory = 0
-    peak_tasks = 0
-    peak_cores = 0
-    peak_memory = 0
-    peak_high_memory = 0
-    for _, task_delta, core_delta, memory_delta, high_memory_delta in points:
-        active_tasks += task_delta
-        active_cores += core_delta
-        active_memory += memory_delta
-        active_high_memory += high_memory_delta
-        peak_tasks = max(peak_tasks, active_tasks)
-        peak_cores = max(peak_cores, active_cores)
-        peak_memory = max(peak_memory, active_memory)
-        peak_high_memory = max(peak_high_memory, active_high_memory)
-
-    return peak_tasks, peak_cores, peak_memory, peak_high_memory
+from tests._vw_support import compute_peaks, load_intervals, write_interval
 
 
 @task(threads=2)
@@ -79,7 +16,7 @@ def high_mem(item: str, events_dir: str, threads: int = 2, memory_gb: int = 16) 
     started_at = time.time()
     time.sleep(0.15)
     ended_at = time.time()
-    _write_interval(
+    write_interval(
         events_dir,
         f"high-{item}",
         started_at=started_at,
@@ -96,7 +33,7 @@ def low_mem(item: str, events_dir: str, threads: int = 1, memory_gb: int = 4) ->
     started_at = time.time()
     time.sleep(0.15)
     ended_at = time.time()
-    _write_interval(
+    write_interval(
         events_dir,
         f"low-{item}",
         started_at=started_at,
@@ -133,15 +70,16 @@ class TestVW8MemoryContention:
             memory=32,
         )
 
-        peak_tasks, peak_cores, peak_memory, peak_high_memory = _compute_peaks(
-            _load_intervals(events_dir)
+        peaks = compute_peaks(
+            load_intervals(events_dir),
+            dimensions=("threads", "memory_gb", "high_memory"),
         )
         assert high_results == [f"high:{item}" for item in items[:3]]
         assert low_results == [f"low:{item}" for item in items[3:]]
-        assert peak_high_memory <= 2
-        assert peak_tasks <= 6
-        assert peak_cores <= 8
-        assert peak_memory <= 32
+        assert peaks["high_memory"] <= 2
+        assert peaks["tasks"] <= 6
+        assert peaks["threads"] <= 8
+        assert peaks["memory_gb"] <= 32
 
     def test_task_larger_than_budget_fails_before_dispatch(self) -> None:
         marker_path = "too-large.marker"

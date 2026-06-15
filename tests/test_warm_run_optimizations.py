@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
@@ -208,18 +208,34 @@ class TestWarmRunIntegration:
         # On warm run, both tasks should be cached.
         from ginkgo.runtime.events import TaskCacheHit
 
+        # The DAG has exactly two tasks; both must be cache hits (no more).
         cache_hits = [e for e in collector.events if isinstance(e, TaskCacheHit)]
-        assert len(cache_hits) >= 2
+        assert len(cache_hits) == 2
 
     def test_file_hash_memoization_reduces_reads(self, tmp_path: Path) -> None:
-        """When a file is consumed by multiple tasks, it should be hashed once."""
-        output = tmp_path / "shared.txt"
+        """A file consumed by multiple tasks is hashed from disk only once."""
+        import ginkgo.runtime.caching.hash_memo as hash_memo_module
 
+        output = tmp_path / "shared.txt"
         shared = make_shared(output_path=str(output))
-        result = evaluate((reader_a(input_file=shared), reader_b(input_file=shared)))
+
+        # Spy on the raw disk-hashing primitive that HashMemo invokes only on a
+        # cache miss. Two readers share one input, so memoization must collapse
+        # the work to a single read of that path.
+        real_hash_file = hash_memo_module.hash_file
+        hashed_paths: list[str] = []
+
+        def recording_hash_file(path: Path) -> str:
+            hashed_paths.append(str(Path(path).resolve()))
+            return real_hash_file(path)
+
+        with patch.object(hash_memo_module, "hash_file", side_effect=recording_hash_file):
+            result = evaluate((reader_a(input_file=shared), reader_b(input_file=shared)))
 
         assert result[0] == 11  # len("shared data")
         assert result[1] == 22
+        shared_reads = sum(1 for p in hashed_paths if p.endswith("shared.txt"))
+        assert shared_reads == 1
 
     def test_warm_run_completes_cached_dag_before_dispatch(self, tmp_path: Path) -> None:
         """A fully cached DAG should not enter task execution on the warm run."""

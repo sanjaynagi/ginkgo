@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ginkgo import file, secret, task
@@ -20,18 +21,19 @@ def fake_output_task(output_path: str) -> file:
 
 class TestRunProvenanceRecorder:
     def test_make_run_id_remains_unique_under_fixed_clock(
-        self, monkeypatch, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # Freeze the clock so both ids share a timestamp. Uniqueness must then
+        # come from the real random discriminator, not from the clock — so
+        # token_hex is deliberately left unpatched.
         real_datetime = provenance_module.datetime
 
         class _FixedDatetime:
             @classmethod
-            def now(cls, tz=None):
+            def now(cls, tz=None):  # noqa: ANN001, ANN206
                 return real_datetime(2026, 4, 1, 12, 0, 0, 123456, tzinfo=tz)
 
-        tokens = iter(["aaaaaaaa", "bbbbbbbb"])
         monkeypatch.setattr(provenance_module, "datetime", _FixedDatetime)
-        monkeypatch.setattr(provenance_module.secrets, "token_hex", lambda _: next(tokens))
 
         workflow_path = tmp_path / "workflow.py"
         first = make_run_id(workflow_path=workflow_path)

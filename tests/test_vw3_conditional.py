@@ -4,34 +4,30 @@ from collections import Counter
 from pathlib import Path
 
 from ginkgo import evaluate, flow, task
-
-
-def _append_line(path: str, line: str) -> None:
-    with Path(path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+from tests._vw_support import append_line
 
 
 @task()
 def categorise(value: int, log_path: str) -> str:
-    _append_line(log_path, "categorise")
+    append_line(log_path, "categorise")
     return "high" if value > 50 else "low"
 
 
 @task()
 def process_high(value: int, log_path: str) -> str:
-    _append_line(log_path, "process_high")
+    append_line(log_path, "process_high")
     return f"high:{value}"
 
 
 @task()
 def process_low(value: int, log_path: str) -> str:
-    _append_line(log_path, "process_low")
+    append_line(log_path, "process_low")
     return f"low:{value}"
 
 
 @task()
 def route(value: int, category: str, log_path: str):
-    _append_line(log_path, f"route:{category}")
+    append_line(log_path, f"route:{category}")
     if category == "high":
         return process_high(value=value, log_path=log_path)
     return process_low(value=value, log_path=log_path)
@@ -39,7 +35,7 @@ def route(value: int, category: str, log_path: str):
 
 @task()
 def unrelated(seed: int, log_path: str) -> str:
-    _append_line(log_path, "unrelated")
+    append_line(log_path, "unrelated")
     return f"unrelated:{seed}"
 
 

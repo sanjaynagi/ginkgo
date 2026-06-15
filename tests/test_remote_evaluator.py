@@ -10,7 +10,7 @@ from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache
-from tests.conftest import EventCollector
+from tests.conftest import EventCollector, make_download_backend
 
 
 @task()
@@ -32,28 +32,9 @@ def count_file_bytes(*, path: file) -> int:
 
 
 def _make_mock_staging_cache(tmp_path: Path, content: bytes = b"staged content"):
-    """Create a real staging cache with a mocked backend."""
+    """Create a real staging cache paired with a mocked download backend."""
     cache = StagingCache(root=tmp_path / "staging")
-    backend = MagicMock()
-
-    def _download(*, bucket, key, dest_path):
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(content)
-        return RemoteObjectMeta(
-            uri=f"s3://{bucket}/{key}",
-            size=len(content),
-            etag="test-etag",
-        )
-
-    def _head(*, bucket, key):
-        return RemoteObjectMeta(
-            uri=f"s3://{bucket}/{key}",
-            size=len(content),
-            etag="test-etag",
-        )
-
-    backend.download.side_effect = _download
-    backend.head.side_effect = _head
+    backend = make_download_backend(content=content, etag="test-etag")
     return cache, backend
 
 

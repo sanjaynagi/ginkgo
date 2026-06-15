@@ -38,7 +38,7 @@ _TESTS_DIR = Path(__file__).parent
 _TEST_ENV_NAME = "test_env"
 
 
-def _make_registry(tmp_path: Path) -> PixiRegistry:
+def _make_registry() -> PixiRegistry:
     """Return a PixiRegistry pointing at the real test envs directory."""
     return PixiRegistry(project_root=_TESTS_DIR)
 
@@ -275,7 +275,7 @@ class TestPixiShellTask:
     @pixi_required
     def test_shell_task_runs_in_pixi_env(self, tmp_path: Path) -> None:
         output = str(tmp_path / "sentinel.txt")
-        registry = _make_registry(tmp_path)
+        registry = _make_registry()
         result = _evaluate(shell_touch(output_path=output), registry=registry)
         assert result == output
         assert Path(output).read_text().strip() == "pixi_ran"
@@ -288,7 +288,7 @@ class TestPixiShellTask:
         from ginkgo.runtime.events import EventBus, TaskCacheHit
 
         output = str(tmp_path / "sentinel.txt")
-        registry = _make_registry(tmp_path)
+        registry = _make_registry()
 
         # Run 1 — shell command executes, result cached.
         _evaluate(shell_touch(output_path=output), registry=registry)
@@ -331,7 +331,7 @@ def shell_only(output_path: str) -> str:
 
         module = load_module_from_path(workflow_path)
         output = tmp_path / "shell-only.txt"
-        registry = _make_registry(tmp_path)
+        registry = _make_registry()
 
         result = _evaluate(module.shell_only(output_path=str(output)), registry=registry)
 
@@ -356,7 +356,7 @@ def needs_foreign_env(x: int) -> int:
         )
 
         module = load_module_from_path(workflow_path)
-        registry = _make_registry(tmp_path)
+        registry = _make_registry()
 
         with pytest.raises(TypeError, match="Foreign environments only support driver tasks"):
             _evaluate(module.needs_foreign_env(x=1), registry=registry)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ginkgo.remote.kubernetes import (
     KubernetesExecutor,
     KubernetesJobHandle,
@@ -79,28 +81,45 @@ class TestKubernetesExecutor:
         base.update(overrides)
         return base
 
-    @patch("ginkgo.remote.kubernetes.k8s_client", create=True)
-    def test_submit_creates_job(self, mock_k8s_client: MagicMock) -> None:
+    def test_submit_creates_job(self) -> None:
+        import base64
+
         executor = self._make_executor()
         attempt = self._make_attempt()
 
-        # Mock the kubernetes.client module imports inside submit().
-        with patch.dict(
-            "sys.modules", {"kubernetes": MagicMock(), "kubernetes.client": MagicMock()}
-        ):
-            from unittest.mock import MagicMock as MM
+        # Only the API round-trip is mocked; submit() builds a real V1Job from
+        # the installed kubernetes client, so we can assert on its actual spec.
+        created_job = MagicMock()
+        created_job.metadata.name = _generate_job_name(attempt)
+        executor._batch_api.create_namespaced_job.return_value = created_job
 
-            # Mock the create response.
-            created_job = MM()
-            created_job.metadata.name = "ginkgo-test-run-task-001-1"
-            executor._batch_api.create_namespaced_job.return_value = created_job
+        handle = executor.submit(attempt=attempt)
+        assert handle.job_name == created_job.metadata.name
 
-            handle = executor.submit(attempt=attempt)
+        call = executor._batch_api.create_namespaced_job.call_args
+        assert call.kwargs["namespace"] == "ginkgo"
 
-            assert executor._batch_api.create_namespaced_job.called
-            call_kwargs = executor._batch_api.create_namespaced_job.call_args
-            assert call_kwargs.kwargs["namespace"] == "ginkgo"
-            assert handle.job_name == "ginkgo-test-run-task-001-1"
+        job = call.kwargs["body"]
+        assert job.metadata.namespace == "ginkgo"
+        assert job.metadata.labels["ginkgo/task-id"] == "task_001"
+        assert job.metadata.labels["ginkgo/run-id"] == "test-run"
+        assert job.spec.ttl_seconds_after_finished == 600
+
+        pod_spec = job.spec.template.spec
+        assert pod_spec.restart_policy == "Never"
+        assert pod_spec.service_account_name == "ginkgo-worker"
+
+        container = pod_spec.containers[0]
+        assert container.image == "my-image:latest"
+        assert container.resources.requests["cpu"] == "2"
+        assert container.resources.limits["cpu"] == "2"
+        assert container.resources.requests["memory"] == "4Gi"
+        assert container.resources.limits["memory"] == "4Gi"
+
+        payload_env = next(e for e in container.env if e.name == "GINKGO_WORKER_PAYLOAD")
+        decoded = json.loads(base64.b64decode(payload_env.value))
+        assert decoded["task_id"] == "task_001"
+        assert decoded["resources"]["threads"] == 2
 
     def test_satisfies_remote_executor_protocol(self) -> None:
         executor = self._make_executor()
@@ -240,23 +259,7 @@ class TestRefreshingApi:
         factory = MagicMock()
         api = _RefreshingApi(inner=inner, factory=factory)
 
-        try:
+        with pytest.raises(Exception, match="api error") as exc_info:
             api.read_namespaced_job(name="x")
-        except Exception as exc:
-            assert getattr(exc, "status", None) == 500
-        else:
-            raise AssertionError("expected exception")
+        assert getattr(exc_info.value, "status", None) == 500
         factory.assert_not_called()
-
-
-class TestRemoteExecutorProtocol:
-    """Verify protocol conformance."""
-
-    def test_kubernetes_executor_is_remote_executor(self) -> None:
-        executor = KubernetesExecutor(
-            namespace="default",
-            image="test:latest",
-        )
-        executor._batch_api = MagicMock()
-        executor._core_api = MagicMock()
-        assert isinstance(executor, RemoteExecutor)

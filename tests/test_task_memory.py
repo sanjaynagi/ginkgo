@@ -8,55 +8,37 @@ from ginkgo.core.task import _parse_memory, task
 class TestParseMemory:
     """Unit tests for the _parse_memory helper."""
 
-    def test_none_returns_zero(self) -> None:
-        assert _parse_memory(None) == 0
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            (None, 0),
+            ("4Gi", 4),
+            ("2.5Gi", 3),  # binary Gi, rounds up
+            ("512Mi", 1),  # rounds up to one
+            ("4096Mi", 4),
+            ("128Mi", 1),  # small, rounds to one
+            ("1Ti", 1024),
+            ("8G", 8),  # decimal G
+            ("1000M", 1),  # decimal M
+            ("1048576Ki", 1),  # 1048576 Ki == 1 Gi
+            ("  4Gi  ", 4),  # surrounding whitespace stripped
+        ],
+    )
+    def test_parse_memory_valid(self, spec: str | None, expected: int) -> None:
+        assert _parse_memory(spec) == expected
 
-    def test_gi_integer(self) -> None:
-        assert _parse_memory("4Gi") == 4
-
-    def test_gi_float(self) -> None:
-        assert _parse_memory("2.5Gi") == 3
-
-    def test_mi_rounds_up(self) -> None:
-        assert _parse_memory("512Mi") == 1
-
-    def test_mi_large(self) -> None:
-        assert _parse_memory("4096Mi") == 4
-
-    def test_mi_small_rounds_to_one(self) -> None:
-        assert _parse_memory("128Mi") == 1
-
-    def test_ti(self) -> None:
-        assert _parse_memory("1Ti") == 1024
-
-    def test_g_decimal(self) -> None:
-        assert _parse_memory("8G") == 8
-
-    def test_m_decimal(self) -> None:
-        assert _parse_memory("1000M") == 1
-
-    def test_ki(self) -> None:
-        # 1048576 Ki = 1 Gi
-        assert _parse_memory("1048576Ki") == 1
-
-    def test_whitespace_stripped(self) -> None:
-        assert _parse_memory("  4Gi  ") == 4
-
-    def test_invalid_unit_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "4Tb",  # invalid unit
+            "4096",  # bare number, no unit
+            "",  # empty
+            "-4Gi",  # negative
+        ],
+    )
+    def test_parse_memory_invalid_raises(self, spec: str) -> None:
         with pytest.raises(ValueError, match="Invalid memory specification"):
-            _parse_memory("4Tb")
-
-    def test_bare_number_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid memory specification"):
-            _parse_memory("4096")
-
-    def test_empty_string_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid memory specification"):
-            _parse_memory("")
-
-    def test_negative_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid memory specification"):
-            _parse_memory("-4Gi")
+            _parse_memory(spec)
 
 
 class TestTaskDefMemory:
@@ -77,13 +59,6 @@ class TestTaskDefMemory:
 
         assert my_task.memory == "4Gi"
         assert my_task.memory_gb == 4
-
-    def test_memory_512mi(self) -> None:
-        @task(memory="512Mi")
-        def my_task(x: int) -> int:
-            return x
-
-        assert my_task.memory_gb == 1
 
     def test_memory_with_threads(self) -> None:
         @task(threads=4, memory="8Gi")
