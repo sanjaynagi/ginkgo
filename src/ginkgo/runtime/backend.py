@@ -1,9 +1,9 @@
-"""Task execution backend protocol and implementations.
+"""Execution environment protocol and implementations.
 
-The backend protocol decouples the evaluator from a specific execution
-environment.  ``LocalBackend`` wraps an existing ``PixiRegistry``,
-``ContainerBackend`` wraps Docker/Podman, and ``CompositeBackend`` routes
-calls to the correct underlying backend based on the ``env`` string.
+The ``ExecutionEnvironment`` protocol decouples the evaluator from a specific
+execution environment.  ``LocalEnvironment`` wraps an existing ``PixiRegistry``,
+``ContainerBackend`` wraps Docker/Podman, and ``CompositeEnvironment`` routes
+calls to the correct underlying environment based on the ``env`` string.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from ginkgo.envs.pixi import PixiRegistry
 
 
 @runtime_checkable
-class TaskBackend(Protocol):
+class ExecutionEnvironment(Protocol):
     """Contract for environment-backed task execution.
 
     The evaluator consults a backend whenever a task declares ``env=...``.
@@ -69,7 +69,7 @@ class TaskBackend(Protocol):
 
 
 @dataclass(kw_only=True)
-class LocalBackend:
+class LocalEnvironment:
     """Local execution backend backed by Pixi environments.
 
     Parameters
@@ -105,7 +105,7 @@ class LocalBackend:
 
 
 @dataclass(kw_only=True)
-class CompositeBackend:
+class CompositeEnvironment:
     """Routes calls to the correct backend based on the ``env`` string.
 
     Container URIs (``docker://...``, ``oci://...``) are dispatched to the
@@ -113,17 +113,17 @@ class CompositeBackend:
 
     Parameters
     ----------
-    local : LocalBackend
+    local : LocalEnvironment
         Backend for Pixi and bare-host tasks.
     container : ContainerBackend | None
         Backend for container-isolated tasks.  When ``None``, container
         env URIs will raise at validation time.
     """
 
-    local: LocalBackend
+    local: LocalEnvironment
     container: ContainerBackend | None = None
 
-    def _route(self, *, env: str) -> TaskBackend:
+    def _route(self, *, env: str) -> ExecutionEnvironment:
         """Return the backend responsible for *env*."""
         if is_container_env(env):
             if self.container is None:

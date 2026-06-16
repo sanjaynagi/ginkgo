@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ginkgo.remote.backend import RemoteStorageBackend
+from ginkgo.remote.backend import ObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ def create_code_bundle(
 
 def publish_code_bundle(
     *,
-    backend: RemoteStorageBackend,
+    backend: ObjectStore,
     bucket: str,
     prefix: str,
     bundle_path: Path,
@@ -190,7 +190,7 @@ def publish_code_bundle(
 
     Parameters
     ----------
-    backend : RemoteStorageBackend
+    backend : ObjectStore
         Storage backend for uploads.
     bucket : str
         Target bucket name.
@@ -223,7 +223,7 @@ def publish_code_bundle(
 
 def download_and_extract(
     *,
-    backend: RemoteStorageBackend,
+    backend: ObjectStore,
     bucket: str,
     key: str,
     dest_dir: Path,
@@ -232,7 +232,7 @@ def download_and_extract(
 
     Parameters
     ----------
-    backend : RemoteStorageBackend
+    backend : ObjectStore
         Storage backend for downloads.
     bucket : str
         Source bucket name.

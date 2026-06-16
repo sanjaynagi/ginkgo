@@ -92,7 +92,7 @@ used for both remote input staging and code bundle publishing.
 ```text
 ginkgo/
 ├── remote/
-│   ├── backend.py           # RemoteStorageBackend protocol
+│   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # tarball creation, publish, download+extract
 │   ├── fsspec_backends.py   # S3, OCI, GCS fsspec backends
 │   ├── gcp_batch.py         # GCPBatchExecutor + GCPBatchJobHandle

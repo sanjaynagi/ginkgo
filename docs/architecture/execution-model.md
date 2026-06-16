@@ -141,11 +141,11 @@ argument preprocessing.
 - The staging root remains worker-local by contract, which keeps the local
   runtime aligned with a future Kubernetes or pod-local execution model.
 
-## Execution Backends
+## Execution Environments
 
-The evaluator dispatches work through a `TaskBackend` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
+The evaluator dispatches work through an `ExecutionEnvironment` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
 
-**LocalBackend** wraps `PixiRegistry` for existing Pixi-based execution.
+**LocalEnvironment** wraps `PixiRegistry` for existing Pixi-based execution.
 Shell tasks may declare `env="name"` to run against a Pixi environment under
 `envs/<name>/`, where the manifest is either a `pixi.toml` or a `pyproject.toml`
 carrying a `[tool.pixi]` section (Pixi accepts both natively), or against an
@@ -155,7 +155,7 @@ environment preparation before dispatch, and shell execution through Pixi.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for shell, notebook, and script tasks. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
-**CompositeBackend** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalBackend`.
+**CompositeEnvironment** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalEnvironment`.
 
 Foreign execution environments do not support Python tasks. `env=...` is valid on shell, notebook, and script tasks only. This keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 

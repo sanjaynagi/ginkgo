@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.config import load_runtime_config
-from ginkgo.remote.backend import RemoteStorageBackend
+from ginkgo.remote.backend import ObjectStore
 from ginkgo.remote.fsspec_backends import (
     GCSFileSystemBackend,
     OCIFileSystemBackend,
@@ -19,7 +19,7 @@ def resolve_backend(
     scheme: str,
     *,
     region: str | None = None,
-) -> RemoteStorageBackend:
+) -> ObjectStore:
     """Return a storage backend for the given URI scheme.
 
     Parameters
@@ -32,7 +32,7 @@ def resolve_backend(
 
     Returns
     -------
-    RemoteStorageBackend
+    ObjectStore
 
     Raises
     ------

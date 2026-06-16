@@ -1,4 +1,4 @@
-"""Remote storage backend protocol and metadata types."""
+"""Object store protocol and metadata types for remote storage."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class RemoteObjectMeta:
 
 
 @runtime_checkable
-class RemoteStorageBackend(Protocol):
+class ObjectStore(Protocol):
     """Protocol for remote object storage operations."""
 
     def head(self, *, bucket: str, key: str) -> RemoteObjectMeta:

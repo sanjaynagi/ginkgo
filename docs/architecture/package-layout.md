@@ -16,7 +16,7 @@ ginkgo/
 │   ├── task.py
 │   └── types.py
 ├── runtime/
-│   ├── backend.py        # TaskBackend protocol, LocalBackend, CompositeBackend
+│   ├── backend.py        # ExecutionEnvironment protocol, LocalEnvironment, CompositeEnvironment
 │   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
 │   ├── module_loader.py
 │   ├── notebook_kernels.py
@@ -47,7 +47,7 @@ ginkgo/
 │       ├── secrets.py         # SecretResolver and redaction
 │       └── resources.py
 ├── remote/
-│   ├── backend.py           # RemoteStorageBackend protocol
+│   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # code packaging for remote workers
 │   ├── fsspec_backends.py   # S3, OCI, GCS backends
 │   ├── gcp_batch.py         # GCP Batch executor
