@@ -283,7 +283,7 @@ class ShellRunner:
     Parameters
     ----------
     backend : ExecutionEnvironment | None
-        Execution backend used when a task declares a non-default env.
+        Execution environment used when a task declares a non-default env.
     validator : TaskValidator
         Used to coerce return values for shell tasks.
     log_emitter_factory : Callable

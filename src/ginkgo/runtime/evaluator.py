@@ -162,7 +162,7 @@ def evaluate(
     memory : int | None
         Maximum total declared memory budget across running tasks in GiB.
     backend : ExecutionEnvironment | None
-        Execution backend for environment-isolated tasks.
+        Execution environment for environment-isolated tasks.
     event_bus : EventBus | None
         Optional event bus to receive lifecycle events. Useful for tests
         and ad-hoc programmatic callers that want to observe task progress.

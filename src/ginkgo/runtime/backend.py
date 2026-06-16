@@ -20,9 +20,9 @@ from ginkgo.envs.pixi import PixiRegistry
 class ExecutionEnvironment(Protocol):
     """Contract for environment-backed task execution.
 
-    The evaluator consults a backend whenever a task declares ``env=...``.
-    Implementations handle environment validation, materialisation, subprocess
-    argument construction, and identity hashing for cache keys.
+    The evaluator consults an execution environment whenever a task declares
+    ``env=...``.  Implementations handle environment validation, materialisation,
+    subprocess argument construction, and identity hashing for cache keys.
     """
 
     def validate_envs(self, *, env_names: set[str]) -> None:
@@ -37,7 +37,7 @@ class ExecutionEnvironment(Protocol):
         """Return a stable identity string for cache keying.
 
         For Pixi environments this is the lock-file digest.  For container
-        backends it would be the image digest.
+        environments it would be the image digest.
 
         Returns
         -------
@@ -62,15 +62,15 @@ class ExecutionEnvironment(Protocol):
         Returns
         -------
         Path | None
-            Absolute path to the lock file, or ``None`` when the backend does
-            not produce a meaningful lock artifact.
+            Absolute path to the lock file, or ``None`` when the environment
+            does not produce a meaningful lock artifact.
         """
         ...
 
 
 @dataclass(kw_only=True)
 class LocalEnvironment:
-    """Local execution backend backed by Pixi environments.
+    """Local execution environment backed by Pixi.
 
     Parameters
     ----------
@@ -106,17 +106,17 @@ class LocalEnvironment:
 
 @dataclass(kw_only=True)
 class CompositeEnvironment:
-    """Routes calls to the correct backend based on the ``env`` string.
+    """Routes calls to the correct environment based on the ``env`` string.
 
     Container URIs (``docker://...``, ``oci://...``) are dispatched to the
-    container backend.  All other env values go to the local backend.
+    container environment.  All other env values go to the local environment.
 
     Parameters
     ----------
     local : LocalEnvironment
-        Backend for Pixi and bare-host tasks.
+        Environment for Pixi and bare-host tasks.
     container : ContainerBackend | None
-        Backend for container-isolated tasks.  When ``None``, container
+        Environment for container-isolated tasks.  When ``None``, container
         env URIs will raise at validation time.
     """
 
@@ -124,7 +124,7 @@ class CompositeEnvironment:
     container: ContainerBackend | None = None
 
     def _route(self, *, env: str) -> ExecutionEnvironment:
-        """Return the backend responsible for *env*."""
+        """Return the environment responsible for *env*."""
         if is_container_env(env):
             if self.container is None:
                 raise RuntimeError(
@@ -134,7 +134,7 @@ class CompositeEnvironment:
         return self.local
 
     def validate_envs(self, *, env_names: set[str]) -> None:
-        """Partition env names by type and validate with each backend."""
+        """Partition env names by type and validate with each environment."""
         local_envs = {e for e in env_names if not is_container_env(e)}
         container_envs = {e for e in env_names if is_container_env(e)}
 
@@ -149,17 +149,17 @@ class CompositeEnvironment:
             self.container.validate_envs(env_names=container_envs)
 
     def prepare(self, *, env: str) -> None:
-        """Delegate to the correct backend."""
+        """Delegate to the correct environment."""
         self._route(env=env).prepare(env=env)
 
     def env_identity(self, *, env: str) -> str | None:
-        """Delegate to the correct backend."""
+        """Delegate to the correct environment."""
         return self._route(env=env).env_identity(env=env)
 
     def exec_argv(self, *, env: str, cmd: str) -> list[str]:
-        """Delegate to the correct backend."""
+        """Delegate to the correct environment."""
         return self._route(env=env).exec_argv(env=env, cmd=cmd)
 
     def env_lock_path(self, *, env: str) -> Path | None:
-        """Delegate to the correct backend."""
+        """Delegate to the correct environment."""
         return self._route(env=env).env_lock_path(env=env)

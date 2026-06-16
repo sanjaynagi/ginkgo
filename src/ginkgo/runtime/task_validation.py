@@ -68,7 +68,7 @@ class TaskValidator:
     Parameters
     ----------
     backend : ExecutionEnvironment | None
-        Execution backend used to validate declared task environments.
+        Execution environment used to validate declared task environments.
     secret_resolver : SecretResolver | None
         Resolver used to verify declared secret references resolve.
     """

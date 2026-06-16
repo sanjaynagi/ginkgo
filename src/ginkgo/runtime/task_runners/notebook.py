@@ -194,7 +194,7 @@ class NotebookRunner:
     Parameters
     ----------
     backend : ExecutionEnvironment | None
-        Execution backend for environment-isolated notebook helpers.
+        Execution environment for environment-isolated notebook helpers.
     shell_runner : ShellRunner
         Provides ``run_logged_command`` and the underlying subprocess
         primitives.

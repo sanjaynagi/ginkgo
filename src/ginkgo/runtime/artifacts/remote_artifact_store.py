@@ -1,6 +1,6 @@
 """Remote-backed artifact store with local CAS and remote fallback.
 
-Wraps a ``LocalArtifactStore`` with a ``ObjectStore`` so that
+Wraps a ``LocalArtifactStore`` with an ``ObjectStore`` so that
 artifacts produced locally are published to a remote object store and
 artifacts produced by other machines (e.g. Kubernetes workers) can be
 transparently downloaded on read.
