@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ginkgo.core.asset import AssetKey, AssetRef
+from ginkgo.core.asset import AssetKey, AssetRef, table
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value, hash_value_bytes
 
 
@@ -28,6 +28,16 @@ class TestHashValueBytes:
         assert codec_name == "ginkgo.asset_ref"
         assert digest
         assert decoded == value
+
+    def test_asset_result_roundtrip_preserves_group(self, tmp_path) -> None:
+        value = table(pd.DataFrame({"a": [1]}), name="features", group="QC metrics")
+
+        encoded = encode_value(value, base_dir=tmp_path)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert decoded.kind == "table"
+        assert decoded.name == "features"
+        assert decoded.group == "QC metrics"
 
     def test_numpy_hash_is_stable_for_equal_values_with_different_layouts(self) -> None:
         base = np.arange(12, dtype=np.int64).reshape(3, 4)

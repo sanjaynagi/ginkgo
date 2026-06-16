@@ -38,6 +38,9 @@ from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.caching.cache import CacheStore
 
 
+ASSET_GROUP_METADATA_KEY = "ginkgo_group"
+
+
 def asset_key_for_result(*, name: str, kind: str) -> AssetKey:
     """Build one asset key for a supported asset result.
 
@@ -246,7 +249,7 @@ class AssetRegistrar:
         # 1. Resolve the local asset name using the kind's strategy.
         if spec.default_name_strategy == "task_name":
             asset_name = result.name or task_fn_name
-            version_metadata = dict(result.metadata)
+            version_metadata = _metadata_with_group(metadata=result.metadata, result=result)
             # File assets carry no serializer; the registrar copies bytes
             # directly from the declared source path.
             record = self._store_file_content(node=node, result=result)
@@ -258,7 +261,7 @@ class AssetRegistrar:
                 data=serialized.data,
                 extension=serialized.extension,
             )
-            version_metadata = dict(serialized.metadata)
+            version_metadata = _metadata_with_group(metadata=serialized.metadata, result=result)
 
         # 2. Build and register the immutable version record.
         version = make_asset_version(
@@ -326,6 +329,14 @@ def _current_index_for(
     if result.name is not None:
         return -1
     return max(0, state.kind_counters.get(result.kind, 1) - 1)
+
+
+def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
+    """Return version metadata including any report grouping label."""
+    version_metadata = dict(metadata)
+    if result.group is not None:
+        version_metadata[ASSET_GROUP_METADATA_KEY] = result.group
+    return version_metadata
 
 
 # Re-export for callers that used to import from asset_registration.

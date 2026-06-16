@@ -80,6 +80,13 @@ for asset resolution. The UI server continues to build its own payloads
 from the same `RunSummary`; the two presentation layers diverge cleanly
 without duplicating parsing logic.
 
+Asset cards are grouped into `AssetSection` objects before rendering. The
+section title comes from the asset version metadata key `ginkgo_group`,
+which is populated by `asset(..., group=...)` and the shorthand factories.
+Assets without a non-empty group are rendered under "Ungrouped assets".
+Grouping is presentation-only and does not affect `AssetKey.namespace`,
+asset names, cache keys, or artifact identity.
+
 ## Bundle layout
 
 ```
@@ -203,7 +210,8 @@ ordering hooks worth knowing about:
 
 - Tasks are ordered by `node_id` ascending (already true for
   `RunSummary.tasks`).
-- Asset cards are sorted by `(namespace, name)`.
+- Asset sections are ordered by first referenced asset version in the run
+  manifest; cards inside each section are sorted by `(namespace, name)`.
 - Graph columns are keyed by longest-path level, with nodes inside each
   column ordered by `node_id`.
 
