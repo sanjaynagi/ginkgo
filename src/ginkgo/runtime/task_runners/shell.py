@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.shell import ShellDirective
-from ginkgo.runtime.backend import TaskBackend
+from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
 from ginkgo.runtime.artifacts.value_codec import CodecError
@@ -282,8 +282,8 @@ class ShellRunner:
 
     Parameters
     ----------
-    backend : TaskBackend | None
-        Execution backend used when a task declares a non-default env.
+    backend : ExecutionEnvironment | None
+        Execution environment used when a task declares a non-default env.
     validator : TaskValidator
         Used to coerce return values for shell tasks.
     log_emitter_factory : Callable
@@ -291,7 +291,7 @@ class ShellRunner:
         ``Callable[[str], None]`` that consumes one log chunk.
     """
 
-    backend: TaskBackend | None
+    backend: ExecutionEnvironment | None
     validator: TaskValidator
     log_emitter_factory: LogEmitterFactory
     _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)

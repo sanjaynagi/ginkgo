@@ -20,7 +20,7 @@ from ginkgo.runtime.events import (
 
 
 def make_download_backend(*, content: bytes = b"hello world", etag: str = "etag1") -> MagicMock:
-    """Return a mock ``RemoteStorageBackend`` whose download writes fixed bytes.
+    """Return a mock ``ObjectStore`` whose download writes fixed bytes.
 
     ``download`` writes ``content`` to the requested ``dest_path`` and ``head``
     reports the matching size/etag — enough to drive the staging cache and the

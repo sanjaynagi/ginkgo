@@ -124,7 +124,7 @@ class ContainerBackend:
     _digest_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
 
     # ------------------------------------------------------------------
-    # TaskBackend protocol
+    # ExecutionEnvironment protocol
     # ------------------------------------------------------------------
 
     def validate_envs(self, *, env_names: set[str]) -> None:

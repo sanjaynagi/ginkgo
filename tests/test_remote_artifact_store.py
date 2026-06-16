@@ -20,7 +20,7 @@ def local_store(tmp_path: Path) -> LocalArtifactStore:
 
 @pytest.fixture
 def mock_backend() -> MagicMock:
-    """Create a mock RemoteStorageBackend.
+    """Create a mock ObjectStore.
 
     ``head`` defaults to raising ``FileNotFoundError`` so that upload
     paths exercised by tests actually call ``backend.upload``. Tests

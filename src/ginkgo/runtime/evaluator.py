@@ -30,7 +30,7 @@ from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
-from ginkgo.runtime.backend import TaskBackend
+from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.remote_executor import (
     RemoteDispatchStats,
     RemoteExecutor,
@@ -144,7 +144,7 @@ def evaluate(
     jobs: int | None = None,
     cores: int | None = None,
     memory: int | None = None,
-    backend: TaskBackend | None = None,
+    backend: ExecutionEnvironment | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
     event_bus: EventBus | None = None,
@@ -161,8 +161,8 @@ def evaluate(
         Maximum total thread budget across running tasks.
     memory : int | None
         Maximum total declared memory budget across running tasks in GiB.
-    backend : TaskBackend | None
-        Execution backend for environment-isolated tasks.
+    backend : ExecutionEnvironment | None
+        Execution environment for environment-isolated tasks.
     event_bus : EventBus | None
         Optional event bus to receive lifecycle events. Useful for tests
         and ad-hoc programmatic callers that want to observe task progress.
@@ -230,7 +230,7 @@ class ConcurrentEvaluator:
     jobs: int | None = None
     cores: int | None = None
     memory: int | None = None
-    backend: TaskBackend | None = None
+    backend: ExecutionEnvironment | None = None
     remote_executor: RemoteExecutor | None = None
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None

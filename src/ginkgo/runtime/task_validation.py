@@ -20,7 +20,7 @@ from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.runtime.backend import TaskBackend
+from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 
@@ -67,13 +67,13 @@ class TaskValidator:
 
     Parameters
     ----------
-    backend : TaskBackend | None
-        Execution backend used to validate declared task environments.
+    backend : ExecutionEnvironment | None
+        Execution environment used to validate declared task environments.
     secret_resolver : SecretResolver | None
         Resolver used to verify declared secret references resolve.
     """
 
-    backend: TaskBackend | None = None
+    backend: ExecutionEnvironment | None = None
     secret_resolver: SecretResolver | None = None
 
     # Static graph validation -------------------------------------------------

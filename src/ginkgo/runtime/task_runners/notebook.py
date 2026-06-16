@@ -24,7 +24,7 @@ from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.runtime.backend import TaskBackend
+from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.notebook_kernels import (
     ExecutionCommand,
@@ -157,7 +157,7 @@ class NotebookArtifacts:
 class _NotebookCommandBuilder(NotebookCommandBuilder):
     """Build Python subprocess invocations for notebook helper commands."""
 
-    backend: TaskBackend | None
+    backend: ExecutionEnvironment | None
 
     def command_for_python(self, *, env: str | None, args: list[str]) -> ExecutionCommand:
         """Return a subprocess invocation for one Python command."""
@@ -193,8 +193,8 @@ class NotebookRunner:
 
     Parameters
     ----------
-    backend : TaskBackend | None
-        Execution backend for environment-isolated notebook helpers.
+    backend : ExecutionEnvironment | None
+        Execution environment for environment-isolated notebook helpers.
     shell_runner : ShellRunner
         Provides ``run_logged_command`` and the underlying subprocess
         primitives.
@@ -212,7 +212,7 @@ class NotebookRunner:
         Lazily resolves the on-disk runtime root for shared notebook files.
     """
 
-    backend: TaskBackend | None
+    backend: ExecutionEnvironment | None
     shell_runner: ShellRunner
     validator: TaskValidator
     cache_store: CacheStore

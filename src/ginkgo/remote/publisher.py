@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ginkgo.remote.backend import RemoteStorageBackend
+from ginkgo.remote.backend import ObjectStore
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord, deserialize_tree_manifest
 
 
@@ -19,7 +19,7 @@ class RemotePublisher:
 
     Parameters
     ----------
-    backend : RemoteStorageBackend
+    backend : ObjectStore
         The remote storage backend to use for uploads.
     bucket : str
         Destination bucket name.
@@ -33,7 +33,7 @@ class RemotePublisher:
         Local refs directory to update with remote URIs.
     """
 
-    backend: RemoteStorageBackend
+    backend: ObjectStore
     bucket: str
     prefix: str
     scheme: str

@@ -30,7 +30,7 @@ from ginkgo import (
     tmp_dir,
 )
 from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import LocalBackend
+from ginkgo.runtime.backend import LocalEnvironment
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
 from ginkgo.runtime.executors import Executors
 from tests.conftest import EventCollector
@@ -652,7 +652,7 @@ class TestEvaluate:
             provenance=recorder,
             jobs=1,
             cores=1,
-            backend=LocalBackend(pixi_registry=registry),
+            backend=LocalEnvironment(pixi_registry=registry),
         )
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
@@ -808,7 +808,7 @@ class TestEvaluate:
             provenance=recorder,
             jobs=2,
             cores=2,
-            backend=LocalBackend(pixi_registry=registry),
+            backend=LocalEnvironment(pixi_registry=registry),
         )
         monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
 
@@ -1295,7 +1295,7 @@ class TestShellTask:
         outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
         result = evaluate(
             [pixi_shell_output_task(output_path=str(path)) for path in outputs],
-            backend=LocalBackend(pixi_registry=registry),
+            backend=LocalEnvironment(pixi_registry=registry),
         )
 
         assert result == [file(str(path)) for path in outputs]

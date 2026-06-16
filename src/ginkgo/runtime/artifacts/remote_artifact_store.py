@@ -1,6 +1,6 @@
 """Remote-backed artifact store with local CAS and remote fallback.
 
-Wraps a ``LocalArtifactStore`` with a ``RemoteStorageBackend`` so that
+Wraps a ``LocalArtifactStore`` with an ``ObjectStore`` so that
 artifacts produced locally are published to a remote object store and
 artifacts produced by other machines (e.g. Kubernetes workers) can be
 transparently downloaded on read.
@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from ginkgo.remote.backend import RemoteStorageBackend
+from ginkgo.remote.backend import ObjectStore
 from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
     deserialize_tree_manifest,
@@ -35,7 +35,7 @@ class RemoteArtifactStore:
     ----------
     local : LocalArtifactStore
         Local CAS store for immediate reads and writes.
-    backend : RemoteStorageBackend
+    backend : ObjectStore
         Remote storage backend for uploads and downloads.
     bucket : str
         Remote bucket name.
@@ -46,7 +46,7 @@ class RemoteArtifactStore:
     """
 
     local: LocalArtifactStore
-    backend: RemoteStorageBackend
+    backend: ObjectStore
     bucket: str
     prefix: str
     scheme: str

@@ -41,10 +41,10 @@ class CacheStore:
     root : Path | None
         Cache root directory. Defaults to ``.ginkgo/cache`` under the current
         working directory.
-    backend : TaskBackend | None
-        Execution backend used to resolve per-environment identity hashes.
+    backend : ExecutionEnvironment | None
+        Execution environment used to resolve per-environment identity hashes.
         When ``None``, falls back to looking for a single ``pixi.lock`` in the
-        current working directory (legacy fallback used when no backend is
+        current working directory (legacy fallback used when no environment is
         supplied, e.g. in tests).
     artifact_store : LocalArtifactStore | None
         Shared artifact store for content-addressed binary and file/folder
@@ -55,7 +55,7 @@ class CacheStore:
     """
 
     root: Path | None = None
-    backend: Any | None = None  # TaskBackend; typed as Any to avoid circular import
+    backend: Any | None = None  # ExecutionEnvironment; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None

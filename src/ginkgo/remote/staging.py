@@ -22,7 +22,7 @@ import shutil
 
 from ginkgo.config import load_runtime_config
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
-from ginkgo.remote.backend import RemoteObjectMeta, RemoteStorageBackend
+from ginkgo.remote.backend import RemoteObjectMeta, ObjectStore
 from ginkgo.remote.resolve import resolve_backend
 from ginkgo.runtime.caching.hashing import hash_file, hash_str
 
@@ -89,7 +89,7 @@ class StagingCache:
         self,
         *,
         ref: RemoteFileRef,
-        backend: RemoteStorageBackend | None = None,
+        backend: ObjectStore | None = None,
     ) -> Path:
         """Stage a remote file and return the local path.
 
@@ -100,7 +100,7 @@ class StagingCache:
         ----------
         ref : RemoteFileRef
             Remote file reference.
-        backend : RemoteStorageBackend | None
+        backend : ObjectStore | None
             Storage backend to use.  Resolved from the ref's scheme if
             ``None``.
 
@@ -134,7 +134,7 @@ class StagingCache:
         self,
         *,
         ref: RemoteFolderRef,
-        backend: RemoteStorageBackend | None = None,
+        backend: ObjectStore | None = None,
     ) -> Path:
         """Stage a remote folder (prefix) and return the local directory path.
 
@@ -145,7 +145,7 @@ class StagingCache:
         ----------
         ref : RemoteFolderRef
             Remote folder reference.
-        backend : RemoteStorageBackend | None
+        backend : ObjectStore | None
             Storage backend to use.
 
         Returns
@@ -227,7 +227,7 @@ class StagingCache:
         *,
         existing: StagingEntry,
         ref: RemoteRef,
-        backend: RemoteStorageBackend,
+        backend: ObjectStore,
     ) -> bool:
         """Check whether a cached entry needs re-downloading."""
         # Pinned version — always fresh.
@@ -250,7 +250,7 @@ class StagingCache:
         self,
         *,
         ref: RemoteFileRef,
-        backend: RemoteStorageBackend,
+        backend: ObjectStore,
         uri_key: str,
         metadata_path: Path,
     ) -> Path:

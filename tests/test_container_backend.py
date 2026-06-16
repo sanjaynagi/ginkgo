@@ -19,7 +19,7 @@ from ginkgo.envs.container import (
     parse_container_uri,
 )
 from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import CompositeBackend, LocalBackend
+from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 
 
 # ------------------------------------------------------------------
@@ -247,7 +247,7 @@ class TestContainerBackendEnvLockPath:
 
 
 # ------------------------------------------------------------------
-# CompositeBackend
+# CompositeEnvironment
 # ------------------------------------------------------------------
 
 
@@ -288,15 +288,15 @@ class TestContainerKindRestriction:
 
 
 # ------------------------------------------------------------------
-# CompositeBackend
+# CompositeEnvironment
 # ------------------------------------------------------------------
 
 
-class TestCompositeBackend:
-    def _make_composite(self, tmp_path: Path) -> CompositeBackend:
+class TestCompositeEnvironment:
+    def _make_composite(self, tmp_path: Path) -> CompositeEnvironment:
         registry = PixiRegistry(project_root=tmp_path)
-        return CompositeBackend(
-            local=LocalBackend(pixi_registry=registry),
+        return CompositeEnvironment(
+            local=LocalEnvironment(pixi_registry=registry),
             container=ContainerBackend(project_root=tmp_path),
         )
 
@@ -326,8 +326,8 @@ class TestCompositeBackend:
 
     def test_no_container_backend_raises_on_container_env(self, tmp_path: Path):
         registry = PixiRegistry(project_root=tmp_path)
-        composite = CompositeBackend(
-            local=LocalBackend(pixi_registry=registry),
+        composite = CompositeEnvironment(
+            local=LocalEnvironment(pixi_registry=registry),
             container=None,
         )
         with pytest.raises(RuntimeError, match="requires a container backend"):
@@ -358,7 +358,7 @@ def _container_shell_task(output_path: str) -> str:
 
 
 class TestContainerShellE2E:
-    """Verify the full evaluator → CompositeBackend → subprocess path."""
+    """Verify the full evaluator → CompositeEnvironment → subprocess path."""
 
     def test_shell_task_executes_through_container_backend(self, tmp_path: Path):
         """A shell task with a container env runs via ``docker run``."""
@@ -381,8 +381,8 @@ class TestContainerShellE2E:
         ):
             result = evaluate(
                 _container_shell_task(output_path=str(output_file)),
-                backend=CompositeBackend(
-                    local=LocalBackend(
+                backend=CompositeEnvironment(
+                    local=LocalEnvironment(
                         pixi_registry=PixiRegistry(project_root=tmp_path),
                     ),
                     container=ContainerBackend(
@@ -444,8 +444,8 @@ class TestContainerShellE2E:
 
             evaluate(
                 _container_shell_task(output_path=str(output_file)),
-                backend=CompositeBackend(
-                    local=LocalBackend(
+                backend=CompositeEnvironment(
+                    local=LocalEnvironment(
                         pixi_registry=PixiRegistry(project_root=tmp_path),
                     ),
                     container=container_backend,
@@ -469,8 +469,8 @@ class TestContainerShellE2E:
             return shell(cmd=f"echo ok > {output_path}", output=output_path)
 
         store = CacheStore(
-            backend=CompositeBackend(
-                local=LocalBackend(pixi_registry=PixiRegistry(project_root=tmp_path)),
+            backend=CompositeEnvironment(
+                local=LocalEnvironment(pixi_registry=PixiRegistry(project_root=tmp_path)),
                 container=ContainerBackend(project_root=tmp_path, pull_policy="never"),
             )
         )
