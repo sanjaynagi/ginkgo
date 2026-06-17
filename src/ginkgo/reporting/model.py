@@ -17,7 +17,10 @@ from typing import Any
 from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.artifacts.asset_registration import ASSET_GROUP_METADATA_KEY
+from ginkgo.runtime.artifacts.asset_registration import (
+    ASSET_CAPTION_METADATA_KEY,
+    ASSET_GROUP_METADATA_KEY,
+)
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
@@ -187,6 +190,7 @@ class AssetCard:
 
     asset_key: str
     name: str
+    caption: str | None
     namespace: str
     kind_label: str
     kind_tone: str
@@ -807,6 +811,7 @@ def _build_asset_card(
     return AssetCard(
         asset_key=str(version.key),
         name=version.key.name,
+        caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,
         kind_label=namespace,
         kind_tone=kind_tone,
@@ -1046,6 +1051,14 @@ def _asset_group_title(*, metadata: Mapping[str, Any]) -> str:
     if isinstance(group, str) and group.strip():
         return group.strip()
     return _DEFAULT_ASSET_SECTION_TITLE
+
+
+def _asset_caption(*, metadata: Mapping[str, Any]) -> str | None:
+    """Return the report caption for one asset version."""
+    caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+    return None
 
 
 def _parse_asset_key(text: str) -> AssetKey:

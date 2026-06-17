@@ -163,6 +163,10 @@ class AssetResult:
     group : str | None
         Optional report grouping label. This affects presentation only and
         does not participate in asset identity.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output. This affects presentation only and does not
+        participate in asset identity.
     metadata : dict[str, Any]
         Optional user-supplied metadata stored on the asset version.
     kind_fields : dict[str, Any]
@@ -178,6 +182,7 @@ class AssetResult:
     sub_kind: str | None = None
     name: str | None = None
     group: str | None = None
+    caption: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     kind_fields: dict[str, Any] = field(default_factory=dict)
 
@@ -294,6 +299,7 @@ def asset(
     kind: AssetKind = "file",
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     metadata: dict[str, Any] | None = None,
     **kind_fields: Any,
 ) -> AssetResult:
@@ -319,6 +325,10 @@ def asset(
     group : str | None
         Optional report grouping label. Grouping is persisted with the asset
         version but does not affect the stable asset key.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output. Captions are persisted with the asset version but
+        do not affect the stable asset key.
     metadata : dict[str, Any] | None
         Optional user-supplied metadata persisted on the asset version.
     **kind_fields : Any
@@ -347,6 +357,7 @@ def asset(
         sub_kind=sub_kind,
         name=name,
         group=group.strip() if isinstance(group, str) and group.strip() else None,
+        caption=caption.strip() if isinstance(caption, str) and caption.strip() else None,
         metadata=dict(metadata or {}),
         kind_fields=extra_kind_fields,
     )
@@ -357,6 +368,7 @@ def table(
     *,
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AssetResult:
     """Wrap a tabular value as an asset return.
@@ -371,6 +383,9 @@ def table(
         Optional explicit local asset name.
     group : str | None
         Optional report grouping label.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
 
@@ -378,7 +393,7 @@ def table(
     -------
     AssetResult
     """
-    return asset(payload, kind="table", name=name, group=group, metadata=metadata)
+    return asset(payload, kind="table", name=name, group=group, caption=caption, metadata=metadata)
 
 
 def array(
@@ -386,6 +401,7 @@ def array(
     *,
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AssetResult:
     """Wrap an n-dimensional array value as an asset return.
@@ -399,6 +415,9 @@ def array(
         Optional explicit local asset name.
     group : str | None
         Optional report grouping label.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
 
@@ -406,7 +425,7 @@ def array(
     -------
     AssetResult
     """
-    return asset(payload, kind="array", name=name, group=group, metadata=metadata)
+    return asset(payload, kind="array", name=name, group=group, caption=caption, metadata=metadata)
 
 
 def fig(
@@ -414,6 +433,7 @@ def fig(
     *,
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AssetResult:
     """Wrap a figure or plot value as an asset return.
@@ -427,6 +447,9 @@ def fig(
         Optional explicit local asset name.
     group : str | None
         Optional report grouping label.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
 
@@ -434,7 +457,7 @@ def fig(
     -------
     AssetResult
     """
-    return asset(payload, kind="fig", name=name, group=group, metadata=metadata)
+    return asset(payload, kind="fig", name=name, group=group, caption=caption, metadata=metadata)
 
 
 def text(
@@ -442,6 +465,7 @@ def text(
     *,
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     format: Literal["plain", "markdown", "json"] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AssetResult:
@@ -456,6 +480,9 @@ def text(
         Optional explicit local asset name.
     group : str | None
         Optional report grouping label.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output.
     format : {"plain", "markdown", "json"} | None
         Document format. Auto-detected from the payload when omitted.
     metadata : dict[str, Any] | None
@@ -465,7 +492,15 @@ def text(
     -------
     AssetResult
     """
-    return asset(payload, kind="text", name=name, group=group, metadata=metadata, format=format)
+    return asset(
+        payload,
+        kind="text",
+        name=name,
+        group=group,
+        caption=caption,
+        metadata=metadata,
+        format=format,
+    )
 
 
 def model(
@@ -473,6 +508,7 @@ def model(
     *,
     name: str | None = None,
     group: str | None = None,
+    caption: str | None = None,
     framework: str | None = None,
     metrics: dict[str, float] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -489,6 +525,9 @@ def model(
         Optional explicit local asset name.
     group : str | None
         Optional report grouping label.
+    caption : str | None
+        Optional human-readable annotation shown in reports and asset
+        inspection output.
     framework : str | None
         Optional explicit framework override, bypassing module-based
         detection. Must be one of ``"sklearn"``, ``"xgboost"``,
@@ -509,6 +548,7 @@ def model(
         kind="model",
         name=name,
         group=group,
+        caption=caption,
         metadata=metadata,
         framework=framework,
         metrics=metrics,

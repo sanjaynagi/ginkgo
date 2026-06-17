@@ -30,7 +30,12 @@ class TestHashValueBytes:
         assert decoded == value
 
     def test_asset_result_roundtrip_preserves_group(self, tmp_path) -> None:
-        value = table(pd.DataFrame({"a": [1]}), name="features", group="QC metrics")
+        value = table(
+            pd.DataFrame({"a": [1]}),
+            name="features",
+            group="QC metrics",
+            caption="Variant counts after QC filtering",
+        )
 
         encoded = encode_value(value, base_dir=tmp_path)
         decoded = decode_value(encoded, base_dir=tmp_path)
@@ -38,6 +43,7 @@ class TestHashValueBytes:
         assert decoded.kind == "table"
         assert decoded.name == "features"
         assert decoded.group == "QC metrics"
+        assert decoded.caption == "Variant counts after QC filtering"
 
     def test_numpy_hash_is_stable_for_equal_values_with_different_layouts(self) -> None:
         base = np.arange(12, dtype=np.int64).reshape(3, 4)

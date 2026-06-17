@@ -23,9 +23,10 @@ The current asset model supports:
 
 - a single `AssetResult` sentinel with a `kind` discriminator (one of
   `file`, `table`, `array`, `fig`, `text`, `model`)
-- `asset(payload, kind=..., name=..., group=..., metadata=...,
-  **kind_fields)` as the canonical constructor, with `table`, `array`,
-  `fig`, `text`, and `model` as kind-preset shorthand factories
+- `asset(payload, kind=..., name=..., group=..., caption=...,
+  metadata=..., **kind_fields)` as the canonical constructor, with
+  `table`, `array`, `fig`, `text`, and `model` as kind-preset shorthand
+  factories
 - immutable `AssetVersion` records keyed by logical `AssetKey`
 - resolved `AssetRef` values passed to downstream tasks
 - alias pointers and version history in `.ginkgo/assets/`
@@ -68,17 +69,19 @@ downstream behaviour.
   `asset(path, ...)`.
 - **`table`** — pandas, polars (eager or lazy), pyarrow Table/Dataset,
   DuckDB relation, or CSV/TSV path. Stored as Parquet. Shorthand:
-  `table(payload, name=..., group=..., metadata=...)`.
+  `table(payload, name=..., group=..., caption=..., metadata=...)`.
 - **`array`** — numpy, xarray, zarr, or dask. Stored as a zipped zarr
   store when the `zarr` package is installed, or as a `.npy` blob
   otherwise for numpy-only inputs. Non-numpy backends require `zarr`.
-  Shorthand: `array(payload, name=..., group=..., metadata=...)`.
+  Shorthand: `array(payload, name=..., group=..., caption=...,
+  metadata=...)`.
 - **`fig`** — matplotlib (PNG), plotly (HTML), bokeh (HTML), or a path
   to an existing PNG/SVG/HTML file. Shorthand:
-  `fig(payload, name=..., group=..., metadata=...)`.
+  `fig(payload, name=..., group=..., caption=..., metadata=...)`.
 - **`text`** — string, dict (stored as JSON), or a `Path` to a text
   document. Format is `{plain, markdown, json}`. Shorthand:
-  `text(payload, name=..., group=..., format=..., metadata=...)`.
+  `text(payload, name=..., group=..., caption=..., format=...,
+  metadata=...)`.
 - **`model`** — trained ML models. Supports scikit-learn estimators,
   xgboost/lightgbm sklearn wrappers (via `joblib`), PyTorch
   `nn.Module` (via `torch.save`), and Keras/TensorFlow (via the native
@@ -87,8 +90,8 @@ downstream behaviour.
   render training metrics without walking free-form metadata. All ML
   backends are user-managed dependencies, lazy-imported at
   serialisation/load time. Shorthand:
-  `model(payload, name=..., group=..., framework=..., metrics=...,
-  metadata=...)`.
+  `model(payload, name=..., group=..., caption=..., framework=...,
+  metrics=..., metadata=...)`.
 
 `file` is not a peer of the semantic kinds — it is the fallback kind
 for typed-unknown bytes. The semantic kinds can all be file-backed at
@@ -117,6 +120,10 @@ arguments (`format=` for `text`, `framework=` / `metrics=` for
 - `group` — optional report section label. It is persisted on the version
   metadata as `ginkgo_group`, affects presentation only, and is not part
   of `AssetKey`.
+- `caption` — optional human-readable annotation shown in reports and
+  asset inspection output. It is persisted on the version metadata as
+  `ginkgo_caption`, affects presentation only, and is not part of
+  `AssetKey`.
 - `metadata` — free-form user metadata persisted on the version.
 - `kind_fields` — a `dict[str, Any]` bag carrying kind-specific
   construction-time fields (`format` for `text`, `framework` and

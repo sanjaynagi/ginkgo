@@ -115,6 +115,7 @@ def _register_asset(
     name: str = "demo/output",
     text: str = "alpha\nbeta\ngamma\n",
     group: str | None = None,
+    caption: str | None = None,
     append: bool = False,
 ) -> None:
     """Register a file asset and patch the manifest to reference it."""
@@ -126,6 +127,8 @@ def _register_asset(
     metadata = {"stage": "demo"}
     if group is not None:
         metadata["ginkgo_group"] = group
+    if caption is not None:
+        metadata["ginkgo_caption"] = caption
     version = make_asset_version(
         key=AssetKey(namespace="file", name=name),
         kind="file",
@@ -264,6 +267,7 @@ class TestReportData:
             name="demo/qc-a",
             text="qc a\n",
             group="QC metrics",
+            caption="Variant counts after QC filtering",
             append=True,
         )
         _register_asset(
@@ -286,6 +290,8 @@ class TestReportData:
             "file:demo/qc-a",
             "file:demo/qc-b",
         ]
+        assert report.assets[1].cards[0].caption == "Variant counts after QC filtering"
+        assert report.assets[1].cards[1].caption is None
         asset_card = next(card for card in report.summary_cards if card.label == "Assets")
         assert asset_card.value == "3"
 
@@ -343,6 +349,7 @@ class TestExport:
             name="demo/qc",
             text="qc\n",
             group="QC metrics",
+            caption="Variant counts after QC filtering",
             append=True,
         )
         result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
@@ -350,6 +357,7 @@ class TestExport:
         html = result.index_path.read_text(encoding="utf-8")
         assert "<h3>Ungrouped assets</h3>" in html
         assert "<h3>QC metrics</h3>" in html
+        assert "Variant counts after QC filtering" in html
 
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

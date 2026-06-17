@@ -756,6 +756,14 @@ pre.log {
   color: var(--ink);
 }
 
+.asset-head .caption {
+  max-width: 680px;
+  margin: 6px 0 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .asset-head .meta {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;

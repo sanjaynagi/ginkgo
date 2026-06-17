@@ -9,6 +9,9 @@
     <div>
       <span class="kind-badge kind-{{ card.kind_tone }}">{{ card.kind_label }}</span>
       <span class="name">{{ card.name }}</span>
+      {% if card.caption %}
+      <div class="caption">{{ card.caption }}</div>
+      {% endif %}
     </div>
     <div class="meta">{{ card.meta_line }}</div>
   </div>

@@ -91,6 +91,7 @@ def encode_value(
             "__ginkgo_type__": "asset_result",
             "name": value.name,
             "group": value.group,
+            "caption": value.caption,
             "kind": value.kind,
             "sub_kind": value.sub_kind,
             "metadata": dict(value.metadata),
@@ -211,6 +212,7 @@ def decode_value(
             payload=decoded_payload,
             name=payload.get("name"),
             group=payload.get("group"),
+            caption=payload.get("caption"),
             kind=cast(AssetKind, payload.get("kind", "file")),
             sub_kind=payload.get("sub_kind"),
             metadata=dict(payload.get("metadata", {})),
@@ -271,6 +273,7 @@ def summarise_value(value: Any) -> Any:
             "kind": value.kind,
             "name": value.name,
             "group": value.group,
+            "caption": value.caption,
         }
     if isinstance(value, list):
         return {

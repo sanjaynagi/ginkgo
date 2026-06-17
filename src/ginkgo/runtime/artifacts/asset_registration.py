@@ -39,6 +39,7 @@ from ginkgo.runtime.caching.cache import CacheStore
 
 
 ASSET_GROUP_METADATA_KEY = "ginkgo_group"
+ASSET_CAPTION_METADATA_KEY = "ginkgo_caption"
 
 
 def asset_key_for_result(*, name: str, kind: str) -> AssetKey:
@@ -332,16 +333,20 @@ def _current_index_for(
 
 
 def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
-    """Return version metadata including any report grouping label."""
+    """Return version metadata including report presentation labels."""
     version_metadata = dict(metadata)
     if result.group is not None:
         version_metadata[ASSET_GROUP_METADATA_KEY] = result.group
+    if result.caption is not None:
+        version_metadata[ASSET_CAPTION_METADATA_KEY] = result.caption
     return version_metadata
 
 
 # Re-export for callers that used to import from asset_registration.
 __all__ = [
     "AssetRegistrar",
+    "ASSET_CAPTION_METADATA_KEY",
+    "ASSET_GROUP_METADATA_KEY",
     "AssetSerializationError",
     "asset_index_for",
     "asset_key_for_result",

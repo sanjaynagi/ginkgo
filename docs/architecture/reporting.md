@@ -87,6 +87,13 @@ Assets without a non-empty group are rendered under "Ungrouped assets".
 Grouping is presentation-only and does not affect `AssetKey.namespace`,
 asset names, cache keys, or artifact identity.
 
+Asset captions are read from the asset version metadata key
+`ginkgo_caption`, populated by `asset(..., caption=...)` and the shorthand
+factories. Captions become `AssetCard.caption` and render beneath the asset
+name in the card header; they are also surfaced by `ginkgo asset show`.
+Like groups, captions are presentation-only and do not affect identity or
+cache behaviour.
+
 ## Bundle layout
 
 ```

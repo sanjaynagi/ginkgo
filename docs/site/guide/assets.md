@@ -36,8 +36,8 @@ The typed helpers each map to an asset **kind**:
 | `model(payload)` | `model` | a trained model object |
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
-`group` label for report sections, and a `metadata` dict. `model()` also takes
-`framework` and `metrics`:
+`group` label for report sections, a `caption` shown beneath the asset name,
+and a `metadata` dict. `model()` also takes `framework` and `metrics`:
 
 ```python
 from ginkgo import model, task
@@ -50,12 +50,15 @@ def train_classifier(features: file) -> file:
         clf,
         name="models/classifier",
         group="Model outputs",
+        caption="Classifier trained on the filtered feature matrix.",
         metrics={"auc": 0.93},
     )
 ```
 
 Assets with the same `group` are rendered together under a named heading in
-HTML reports. Assets without a group appear under "Ungrouped assets".
+HTML reports. Assets without a group appear under "Ungrouped assets". Captions
+are rendered as short subtitles on each asset card and are also shown by
+`ginkgo asset show`.
 
 Assets are content-addressed and stored under `.ginkgo/assets/`. Re-running a
 task that produces the same content adds a new *version* pointing at the same
