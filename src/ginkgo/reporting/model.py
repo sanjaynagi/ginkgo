@@ -15,9 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.asset import AssetKey, AssetVersion
-from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_registration import (
+    ASSET_CAPTION_METADATA_KEY,
+    ASSET_GROUP_METADATA_KEY,
+)
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 from .sizing import (
@@ -186,6 +190,7 @@ class AssetCard:
 
     asset_key: str
     name: str
+    caption: str | None
     namespace: str
     kind_label: str
     kind_tone: str
@@ -193,6 +198,14 @@ class AssetCard:
     meta_line: str
     version_id: str
     preview: AssetPreview
+
+
+@dataclass(frozen=True, kw_only=True)
+class AssetSection:
+    """Named report section containing related asset cards."""
+
+    title: str
+    cards: tuple[AssetCard, ...]
 
 
 # ----- Notebook ----------------------------------------------------------
@@ -263,7 +276,7 @@ class ReportData:
     graph: Graph
     tasks: tuple[TaskRow, ...]
     failures: tuple[FailureCard, ...]
-    assets: tuple[AssetCard, ...]
+    assets: tuple[AssetSection, ...]
     notebooks: tuple[NotebookCard, ...]
     environment: tuple[KVEntry, ...]
 
@@ -523,6 +536,7 @@ _GRAPH_NODE_W = 150
 _GRAPH_NODE_H = 40
 _GRAPH_MARGIN_X = 24
 _GRAPH_MARGIN_Y = 24
+_DEFAULT_ASSET_SECTION_TITLE = "Ungrouped assets"
 
 
 def _build_graph(*, summary: RunSummary, failures: tuple[FailureCard, ...]) -> Graph:
@@ -717,7 +731,7 @@ def _build_assets(
     artifact_store: LocalArtifactStore | None,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
-) -> tuple[AssetCard, ...]:
+) -> tuple[AssetSection, ...]:
     """Build asset cards for every asset referenced by this run.
 
     A task reference cites ``(asset_key, version_id)``. Cached tasks replay
@@ -730,7 +744,7 @@ def _build_assets(
 
     store = AssetStore(root=assets_root)
     seen_version_ids: set[str] = set()
-    cards: list[AssetCard] = []
+    cards_by_section: dict[str, list[AssetCard]] = {}
 
     references: list[tuple[str, str]] = []
     for task in summary.tasks:
@@ -755,10 +769,14 @@ def _build_assets(
             artifact_copies=artifact_copies,
         )
         if card is not None:
-            cards.append(card)
+            section_title = _asset_group_title(metadata=version.metadata)
+            cards_by_section.setdefault(section_title, []).append(card)
 
-    cards.sort(key=lambda card: (card.namespace, card.name))
-    return tuple(cards)
+    sections: list[AssetSection] = []
+    for title, cards in cards_by_section.items():
+        cards.sort(key=lambda card: (card.namespace, card.name))
+        sections.append(AssetSection(title=title, cards=tuple(cards)))
+    return tuple(sections)
 
 
 def _build_asset_card(
@@ -793,6 +811,7 @@ def _build_asset_card(
     return AssetCard(
         asset_key=str(version.key),
         name=version.key.name,
+        caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,
         kind_label=namespace,
         kind_tone=kind_tone,
@@ -1026,6 +1045,22 @@ def _model_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
     return tuple(stats)
 
 
+def _asset_group_title(*, metadata: Mapping[str, Any]) -> str:
+    """Return the report section title for one asset version."""
+    group = metadata.get(ASSET_GROUP_METADATA_KEY)
+    if isinstance(group, str) and group.strip():
+        return group.strip()
+    return _DEFAULT_ASSET_SECTION_TITLE
+
+
+def _asset_caption(*, metadata: Mapping[str, Any]) -> str | None:
+    """Return the report caption for one asset version."""
+    caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+    return None
+
+
 def _parse_asset_key(text: str) -> AssetKey:
     """Parse ``namespace:name`` into an :class:`AssetKey`."""
     namespace, sep, name = text.partition(":")
@@ -1101,7 +1136,7 @@ def _build_notebooks(
 
 
 def _build_summary_cards(
-    *, summary: RunSummary, assets: tuple[AssetCard, ...]
+    *, summary: RunSummary, assets: tuple[AssetSection, ...]
 ) -> tuple[StatCard, ...]:
     """Headline stats shown above the fold."""
     total_tasks = summary.task_count
@@ -1118,8 +1153,11 @@ def _build_summary_cards(
     tasks_sub = " · ".join(tasks_sub_parts) or "no tasks"
 
     asset_namespaces: dict[str, int] = defaultdict(int)
-    for card in assets:
-        asset_namespaces[card.namespace] += 1
+    asset_count = 0
+    for section in assets:
+        for card in section.cards:
+            asset_count += 1
+            asset_namespaces[card.namespace] += 1
     assets_sub = (
         " · ".join(
             f"{count} {name}"
@@ -1151,7 +1189,7 @@ def _build_summary_cards(
         ),
         StatCard(
             label="Assets",
-            value=format_int(len(assets)),
+            value=format_int(asset_count),
             sub=assets_sub,
             tone="neutral",
         ),

@@ -43,11 +43,36 @@ class TestFactories:
 
     def test_asset_table_equivalent_to_table_factory(self) -> None:
         frame = pd.DataFrame({"a": [1, 2]})
-        via_asset = ginkgo.asset(frame, kind="table", name="features")
-        via_shorthand = table(frame, name="features")
+        via_asset = ginkgo.asset(
+            frame,
+            kind="table",
+            name="features",
+            group="QC metrics",
+            caption="Variant counts after QC filtering",
+        )
+        via_shorthand = table(
+            frame,
+            name="features",
+            group="QC metrics",
+            caption="Variant counts after QC filtering",
+        )
         assert via_asset.kind == via_shorthand.kind == "table"
         assert via_asset.sub_kind == via_shorthand.sub_kind == "pandas"
         assert via_asset.name == via_shorthand.name == "features"
+        assert via_asset.group == via_shorthand.group == "QC metrics"
+        assert via_asset.caption == via_shorthand.caption == "Variant counts after QC filtering"
+
+    def test_presentation_labels_are_normalized(self) -> None:
+        grouped = table(
+            pd.DataFrame({"a": [1]}),
+            group="  QC metrics  ",
+            caption="  Variant counts after QC filtering  ",
+        )
+        ungrouped = table(pd.DataFrame({"a": [1]}), group="  ", caption="  ")
+        assert grouped.group == "QC metrics"
+        assert grouped.caption == "Variant counts after QC filtering"
+        assert ungrouped.group is None
+        assert ungrouped.caption is None
 
     def test_table_csv_path_detection(self, tmp_path: Path) -> None:
         csv_path = tmp_path / "data.csv"
@@ -286,6 +311,16 @@ def make_table_task() -> object:
 
 
 @task()
+def make_grouped_table_task() -> object:
+    return table(
+        pd.DataFrame({"a": [1]}),
+        name="features",
+        group="QC metrics",
+        caption="Variant counts after QC filtering",
+    )
+
+
+@task()
 def make_positional_tables_task() -> object:
     return [
         table(pd.DataFrame({"x": [1]})),
@@ -340,6 +375,17 @@ class TestEvaluatorIntegration:
         assert result.key.namespace == "table"
         assert result.key.name == "make_table_task.features"
         assert result.metadata["row_count"] == 2
+
+    def test_grouped_asset_persists_group_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(make_grouped_table_task())
+        assert isinstance(result, AssetRef)
+        assert result.key.namespace == "table"
+        assert result.key.name == "make_grouped_table_task.features"
+        assert result.metadata["ginkgo_group"] == "QC metrics"
+        assert result.metadata["ginkgo_caption"] == "Variant counts after QC filtering"
 
     def test_positional_tables_index_per_kind(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -461,6 +507,27 @@ class TestAssetShow:
         assert "make_table_task.features" in output
         assert "Row count" in output
         assert "Column" in output  # schema table header
+
+    def test_show_renders_caption(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(make_grouped_table_task())
+
+        from ginkgo.cli.app import main
+
+        rc = main(
+            [
+                "asset",
+                "show",
+                "table:make_grouped_table_task.features",
+            ]
+        )
+
+        assert rc == 0
+        output = capsys.readouterr().out
+        assert "Caption:" in output
+        assert "Variant counts after QC filtering" in output
 
 
 # ---------------------------------------------------------------------------

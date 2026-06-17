@@ -717,6 +717,19 @@ pre.log {
 
 /* ========== Asset cards ========== */
 
+.asset-section {
+  margin: 22px 0 30px;
+}
+
+.asset-section h3 {
+  margin: 0 0 12px;
+  font-family: 'Fraunces', serif;
+  font-variation-settings: "opsz" 18, "WONK" 1;
+  font-size: 22px;
+  font-weight: 550;
+  color: var(--ink);
+}
+
 .asset {
   background: var(--paper-raised);
   border: 1px solid var(--rule);
@@ -741,6 +754,14 @@ pre.log {
   font-size: 18px;
   font-weight: 500;
   color: var(--ink);
+}
+
+.asset-head .caption {
+  max-width: 680px;
+  margin: 6px 0 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .asset-head .meta {

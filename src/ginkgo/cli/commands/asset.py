@@ -9,6 +9,7 @@ from rich import box
 from rich.table import Table
 
 from ginkgo.cli.common import ASSETS_ROOT, console
+from ginkgo.runtime.artifacts.asset_registration import ASSET_CAPTION_METADATA_KEY
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
@@ -178,6 +179,9 @@ def render_asset_show(*, console, version) -> int:
     console.print(f"Kind: {version.kind}")
     console.print(f"Sub-kind: {metadata.get('sub_kind', '-')}")
     console.print(f"Artifact ID: {version.artifact_id}")
+    caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
+    if isinstance(caption, str) and caption.strip():
+        console.print(f"Caption: {caption.strip()}")
 
     if namespace == "table":
         _render_table_metadata(console=console, metadata=metadata)

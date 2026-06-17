@@ -1,11 +1,17 @@
 <h2 id="assets"><span class="num">06</span>Assets</h2>
 {% if report.assets %}
-  {% for card in report.assets %}
+  {% for section in report.assets %}
+<section class="asset-section">
+  <h3>{{ section.title }}</h3>
+    {% for card in section.cards %}
 <div class="asset">
   <div class="asset-head">
     <div>
       <span class="kind-badge kind-{{ card.kind_tone }}">{{ card.kind_label }}</span>
       <span class="name">{{ card.name }}</span>
+      {% if card.caption %}
+      <div class="caption">{{ card.caption }}</div>
+      {% endif %}
     </div>
     <div class="meta">{{ card.meta_line }}</div>
   </div>
@@ -66,6 +72,8 @@
     {% endif %}
   </div>
 </div>
+    {% endfor %}
+</section>
   {% endfor %}
 {% else %}
 <p class="empty">No assets produced by this run.</p>

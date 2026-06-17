@@ -107,38 +107,53 @@ def _make_run(
     return recorder.run_dir
 
 
-def _register_asset(*, tmp_path: Path, run_id: str, run_dir: Path) -> None:
+def _register_asset(
+    *,
+    tmp_path: Path,
+    run_id: str,
+    run_dir: Path,
+    name: str = "demo/output",
+    text: str = "alpha\nbeta\ngamma\n",
+    group: str | None = None,
+    caption: str | None = None,
+    append: bool = False,
+) -> None:
     """Register a file asset and patch the manifest to reference it."""
     asset_store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
     artifact_store = LocalArtifactStore(root=tmp_path / ".ginkgo" / "artifacts")
-    source = tmp_path / "a.txt"
-    source.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    source = tmp_path / f"{name.replace('/', '_')}.txt"
+    source.write_text(text, encoding="utf-8")
     record = artifact_store.store(src_path=source)
+    metadata = {"stage": "demo"}
+    if group is not None:
+        metadata["ginkgo_group"] = group
+    if caption is not None:
+        metadata["ginkgo_caption"] = caption
     version = make_asset_version(
-        key=AssetKey(namespace="file", name="demo/output"),
+        key=AssetKey(namespace="file", name=name),
         kind="file",
         artifact_id=record.artifact_id,
         content_hash=record.digest_hex,
         run_id=run_id,
         producer_task="demo.first",
-        metadata={"stage": "demo"},
+        metadata=metadata,
     )
     asset_store.register_version(version=version)
 
     manifest_path = run_dir / "manifest.yaml"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     task_0 = manifest["tasks"]["task_0000"]
-    task_0["assets"] = [
-        {
-            "asset_key": str(version.key),
-            "version_id": version.version_id,
-            "artifact_id": version.artifact_id,
-            "name": version.key.name,
-            "namespace": version.key.namespace,
-            "kind": "file",
-            "metadata": dict(version.metadata),
-        }
-    ]
+    rendered = {
+        "asset_key": str(version.key),
+        "version_id": version.version_id,
+        "artifact_id": version.artifact_id,
+        "name": version.key.name,
+        "namespace": version.key.namespace,
+        "kind": "file",
+        "metadata": dict(version.metadata),
+    }
+    existing = task_0.get("assets", []) if append else []
+    task_0["assets"] = [*existing, rendered]
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
 
@@ -237,10 +252,48 @@ class TestReportData:
         assert labels == ["Tasks", "Failures", "Assets", "Cache hits"]
         # Asset card surfaced.
         assert len(report.assets) == 1
-        assert report.assets[0].asset_key == "file:demo/output"
+        assert report.assets[0].title == "Ungrouped assets"
+        assert report.assets[0].cards[0].asset_key == "file:demo/output"
         # Masthead KV includes the status pill row.
         status_entries = [kv for kv in report.masthead_kv if kv.key == "status"]
         assert len(status_entries) == 1
+
+    def test_grouped_assets_render_in_named_sections(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-assets",
+            run_dir=run_dir,
+            name="demo/qc-a",
+            text="qc a\n",
+            group="QC metrics",
+            caption="Variant counts after QC filtering",
+            append=True,
+        )
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-assets",
+            run_dir=run_dir,
+            name="demo/qc-b",
+            text="qc b\n",
+            group="QC metrics",
+            append=True,
+        )
+
+        report = build_report_data(run_dir=run_dir)
+
+        assert [section.title for section in report.assets] == [
+            "Ungrouped assets",
+            "QC metrics",
+        ]
+        assert [card.asset_key for card in report.assets[1].cards] == [
+            "file:demo/qc-a",
+            "file:demo/qc-b",
+        ]
+        assert report.assets[1].cards[0].caption == "Variant counts after QC filtering"
+        assert report.assets[1].cards[1].caption is None
+        asset_card = next(card for card in report.summary_cards if card.label == "Assets")
+        assert asset_card.value == "3"
 
     def test_failed_run_produces_failure_card(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
@@ -285,6 +338,26 @@ class TestExport:
         assert "01</span>Summary" in html
         assert "first" in html
         assert "second" in html
+        assert "<h3>Ungrouped assets</h3>" in html
+
+    def test_bundle_mode_renders_grouped_asset_sections(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-assets",
+            run_dir=run_dir,
+            name="demo/qc",
+            text="qc\n",
+            group="QC metrics",
+            caption="Variant counts after QC filtering",
+            append=True,
+        )
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+
+        html = result.index_path.read_text(encoding="utf-8")
+        assert "<h3>Ungrouped assets</h3>" in html
+        assert "<h3>QC metrics</h3>" in html
+        assert "Variant counts after QC filtering" in html
 
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

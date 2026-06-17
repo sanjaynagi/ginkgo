@@ -7,12 +7,12 @@ import io
 import logging
 import pickle
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
 
-from ginkgo.core.asset import AssetRef, AssetResult
+from ginkgo.core.asset import AssetKind, AssetRef, AssetResult
 from ginkgo.core.types import file, folder, tmp_dir
 
 if TYPE_CHECKING:
@@ -90,6 +90,8 @@ def encode_value(
         return {
             "__ginkgo_type__": "asset_result",
             "name": value.name,
+            "group": value.group,
+            "caption": value.caption,
             "kind": value.kind,
             "sub_kind": value.sub_kind,
             "metadata": dict(value.metadata),
@@ -209,7 +211,9 @@ def decode_value(
         return AssetResult(
             payload=decoded_payload,
             name=payload.get("name"),
-            kind=str(payload.get("kind", "file")),
+            group=payload.get("group"),
+            caption=payload.get("caption"),
+            kind=cast(AssetKind, payload.get("kind", "file")),
             sub_kind=payload.get("sub_kind"),
             metadata=dict(payload.get("metadata", {})),
             kind_fields=dict(payload.get("kind_fields", {})),
@@ -268,6 +272,8 @@ def summarise_value(value: Any) -> Any:
             "type": "asset_result",
             "kind": value.kind,
             "name": value.name,
+            "group": value.group,
+            "caption": value.caption,
         }
     if isinstance(value, list):
         return {
