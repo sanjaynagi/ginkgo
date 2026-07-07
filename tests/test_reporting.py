@@ -9,13 +9,9 @@ import pytest
 import yaml
 
 from ginkgo.core.asset import AssetKey, make_asset_version
+from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.reporting import SizingPolicy, build_report_data, export_report
-from ginkgo.reporting.sizing import (
-    build_log_tail,
-    build_table_preview,
-    format_bytes,
-    format_duration,
-)
+from ginkgo.reporting.sizing import build_log_tail, build_table_preview
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder

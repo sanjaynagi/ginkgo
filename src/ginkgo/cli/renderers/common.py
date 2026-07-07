@@ -10,6 +10,7 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.text import Text
 
 from ginkgo.cli.renderers.models import _TaskRow
+from ginkgo.formatting import format_duration
 
 
 def _status_style(status: str) -> str:
@@ -101,15 +102,6 @@ def _truncate_task_label(label: str, *, max_width: int) -> str:
     return f"{base[:head_width]}...{base[-tail_width:]}{suffix}"
 
 
-def format_duration(seconds: float) -> str:
-    """Return a compact human-readable duration string."""
-    if seconds < 1:
-        return f"{seconds:.2f}s"
-    if seconds < 10:
-        return f"{seconds:.1f}s"
-    return f"{seconds:.0f}s"
-
-
 def _time_of_day_spinner(now: datetime | None = None) -> str:
     """Return a day/night spinner name based on the local hour."""
     current = now if now is not None else datetime.now().astimezone()
@@ -187,22 +179,3 @@ class _MultiStateBar:
             text.append(_BAR_FILL_CHAR * w, style=_status_style(status))
 
         yield text
-
-
-def _format_bytes(value: int | float | None) -> str:
-    """Return a compact binary size string."""
-    if value is None:
-        return "--"
-
-    size = float(value)
-    units = ("B", "KiB", "MiB", "GiB", "TiB")
-    unit_index = 0
-    while size >= 1024 and unit_index < len(units) - 1:
-        size /= 1024
-        unit_index += 1
-
-    if unit_index == 0:
-        return f"{int(size)} {units[unit_index]}"
-    if size >= 10:
-        return f"{size:.0f} {units[unit_index]}"
-    return f"{size:.1f} {units[unit_index]}"

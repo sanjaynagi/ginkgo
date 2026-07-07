@@ -19,10 +19,8 @@ from rich.text import Text
 
 from ginkgo.cli.renderers.common import (
     _MultiStateBar,
-    _format_bytes,
     _format_cpu_percent,
     _core_unit_label,
-    format_duration,
     _status_label,
     _status_text,
     task_base_name,
@@ -32,6 +30,7 @@ from ginkgo.cli.renderers.common import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
+from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.cli.renderers.models import (
     CliAssetSummary,
     FailureDetails,
@@ -368,7 +367,7 @@ class CliRunRenderer:
 
         return (
             f"CPU {_format_cpu_percent(_as_float(current.get('cpu_percent')))}   "
-            f"RSS {_format_bytes(_as_int(current.get('rss_bytes')))}   "
+            f"RSS {format_bytes(_as_int(current.get('rss_bytes')))}   "
             f"Procs {_format_count(current.get('process_count'))}"
         )
 
@@ -583,8 +582,8 @@ class CliRunRenderer:
 
         avg_cpu = _format_cpu_percent(_as_float(average.get("cpu_percent")))
         peak_cpu = _format_cpu_percent(_as_float(peak.get("cpu_percent")))
-        avg_rss = _format_bytes(_as_int(average.get("rss_bytes")))
-        peak_rss = _format_bytes(_as_int(peak.get("rss_bytes")))
+        avg_rss = format_bytes(_as_int(average.get("rss_bytes")))
+        peak_rss = format_bytes(_as_int(peak.get("rss_bytes")))
         return Text(
             f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss}",
             style="dim",

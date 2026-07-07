@@ -57,6 +57,37 @@ class AssetKey:
         """
         return cls(namespace=str(data["namespace"]), name=str(data["name"]))
 
+    @classmethod
+    def parse(cls, text: str, *, strict: bool = False) -> AssetKey:
+        """Parse a ``namespace:name`` (or bare ``name``) string.
+
+        Parameters
+        ----------
+        text : str
+            Key text. ``namespace:name`` yields an explicit key; a bare
+            ``name`` (no separator) defaults to the ``file`` namespace.
+        strict : bool
+            When True, malformed input (empty text, or a ``:`` with an empty
+            namespace or name) raises :class:`ValueError`. When False, such
+            input falls back to ``file:<text>``.
+
+        Returns
+        -------
+        AssetKey
+        """
+        namespace, separator, name = text.partition(":")
+        if separator:
+            if namespace and name:
+                return cls(namespace=namespace, name=name)
+            if strict:
+                raise ValueError(f"Invalid asset key: {text!r}")
+            return cls(namespace="file", name=text)
+        if namespace:
+            return cls(namespace="file", name=namespace)
+        if strict:
+            raise ValueError(f"Invalid asset key: {text!r}")
+        return cls(namespace="file", name=text)
+
     def __str__(self) -> str:
         """Render the canonical ``namespace:name`` string."""
         return f"{self.namespace}:{self.name}"

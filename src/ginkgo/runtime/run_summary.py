@@ -95,6 +95,47 @@ class TaskSummary:
         """Return True when the task reached a terminal status."""
         return self.status in _TERMINAL_STATUSES
 
+    @property
+    def failure_kind(self) -> str | None:
+        """Return the diagnosed failure category, when the task recorded one."""
+        if isinstance(self.failure, dict):
+            kind = self.failure.get("kind")
+            if isinstance(kind, str):
+                return kind
+        return None
+
+    @property
+    def kind_label(self) -> str:
+        """Return a display label for the task kind (``"task"`` fallback)."""
+        raw = self.raw.get("kind")
+        if isinstance(raw, str) and raw:
+            return raw
+        if self.task_type == "notebook":
+            return "notebook"
+        return "task"
+
+    @property
+    def cache_label(self) -> str:
+        """Return ``"hit"``, ``"miss"``, or ``"—"`` for the cache outcome."""
+        if self.cached or self.status == "cached":
+            return "hit"
+        if self.status in {"succeeded", "failed"}:
+            return "miss"
+        return "—"
+
+    @property
+    def attempts_label(self) -> str:
+        """Return ``"N"`` or ``"N / M"`` for attempts / max_attempts."""
+        attempts = self.raw.get("attempts")
+        max_attempts = self.raw.get("max_attempts")
+        if self.status == "cached":
+            return "—"
+        if isinstance(attempts, int) and isinstance(max_attempts, int) and max_attempts > 1:
+            return f"{attempts + 1} / {max_attempts}"
+        if isinstance(attempts, int):
+            return f"{attempts + 1}"
+        return "1"
+
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
         """Resolve ``rendered_html`` against the run directory.
 
