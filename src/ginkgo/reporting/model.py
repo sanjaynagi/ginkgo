@@ -22,6 +22,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_GROUP_METADATA_KEY,
 )
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 from .sizing import (
@@ -32,10 +33,6 @@ from .sizing import (
     build_log_tail,
     build_table_preview,
     build_text_preview,
-    format_bytes,
-    format_duration,
-    format_int,
-    format_timestamp,
 )
 
 
@@ -380,6 +377,7 @@ def build_report_data(
     assets_root = assets_root if assets_root is not None else workspace_root / "assets"
     artifacts_root = artifacts_root if artifacts_root is not None else workspace_root / "artifacts"
     workspace_label = workspace_label or workspace_root.parent.name
+    ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
     artifact_store = LocalArtifactStore(root=artifacts_root) if artifacts_root.exists() else None
 
@@ -425,11 +423,9 @@ def build_report_data(
         workspace_label=workspace_label,
         status_label=status_label,
         status_tone=status_tone,
-        ginkgo_version=_resolve_ginkgo_version(ginkgo_version),
+        ginkgo_version=ginkgo_version,
     )
-    environment = _build_environment_kv(
-        summary=summary, ginkgo_version=_resolve_ginkgo_version(ginkgo_version)
-    )
+    environment = _build_environment_kv(summary=summary, ginkgo_version=ginkgo_version)
 
     return ReportData(
         run_id=summary.run_id,
@@ -456,7 +452,7 @@ def build_report_data(
         assets=assets,
         notebooks=notebooks,
         environment=environment,
-        ginkgo_version=_resolve_ginkgo_version(ginkgo_version),
+        ginkgo_version=ginkgo_version,
         generated_at_label=format_timestamp(generated_at or datetime.now(UTC)),
         artifact_copies=tuple(artifact_copies),
     )
@@ -469,62 +465,22 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
     """Build ordered task rows for the task ledger."""
     rows: list[TaskRow] = []
     for task in summary.tasks:
-        failed = task.status == "failed"
-        status_label = _STATUS_LABEL.get(task.status, task.status)
-        status_tone = _STATUS_TONE.get(task.status, "warn")
-        kind_label = _task_kind_label(task)
-        cache_label = _cache_label(task)
-        duration_label = format_duration(task.duration_s)
-        attempts_label = _attempts_label(task)
-
         rows.append(
             TaskRow(
                 task_key=task.task_key,
                 node_id=task.node_id,
                 name=task.name,
                 base_name=task.base_name,
-                kind_label=kind_label,
-                status_label=status_label,
-                status_tone=status_tone,
-                cache_label=cache_label,
-                duration_label=duration_label,
-                attempts_label=attempts_label,
-                failed=failed,
+                kind_label=task.kind_label,
+                status_label=_STATUS_LABEL.get(task.status, task.status),
+                status_tone=_STATUS_TONE.get(task.status, "warn"),
+                cache_label=task.cache_label,
+                duration_label=format_duration(task.duration_s),
+                attempts_label=task.attempts_label,
+                failed=task.status == "failed",
             )
         )
     return tuple(rows)
-
-
-def _task_kind_label(task: TaskSummary) -> str:
-    """Return a display label for the task kind."""
-    raw = task.raw.get("kind")
-    if isinstance(raw, str) and raw:
-        return raw
-    if task.task_type == "notebook":
-        return "notebook"
-    return "task"
-
-
-def _cache_label(task: TaskSummary) -> str:
-    """Return ``"hit"``, ``"miss"``, or ``"—"``."""
-    if task.cached or task.status == "cached":
-        return "hit"
-    if task.status in {"succeeded", "failed"}:
-        return "miss"
-    return "—"
-
-
-def _attempts_label(task: TaskSummary) -> str:
-    """Return ``"N"`` or ``"N / M"`` for attempts / max_attempts."""
-    attempts = task.raw.get("attempts")
-    max_attempts = task.raw.get("max_attempts")
-    if task.status == "cached":
-        return "—"
-    if isinstance(attempts, int) and isinstance(max_attempts, int) and max_attempts > 1:
-        return f"{attempts + 1} / {max_attempts}"
-    if isinstance(attempts, int):
-        return f"{attempts + 1}"
-    return "1"
 
 
 # ----- Graph --------------------------------------------------------------
@@ -681,11 +637,7 @@ def _build_failures(
     """Build one :class:`FailureCard` per failed task."""
     cards: list[FailureCard] = []
     for task in summary.failed_tasks:
-        category = None
-        if isinstance(task.failure, dict):
-            kind = task.failure.get("kind")
-            if isinstance(kind, str):
-                category = kind
+        category = task.failure_kind
 
         log_path = _first_log_path(task=task, run_dir=run_dir)
         log_tail = build_log_tail(path=log_path, policy=policy)
@@ -702,7 +654,7 @@ def _build_failures(
                 base_name=task.base_name,
                 category=category,
                 exit_code=task.exit_code,
-                attempts_label=_attempts_label(task),
+                attempts_label=task.attempts_label,
                 message=task.error,
                 log_tail=log_tail,
                 log_relpath=log_relpath,
@@ -759,7 +711,7 @@ def _build_assets(
             continue
         seen_version_ids.add(version_id)
         try:
-            version = store.get_version(key=_parse_asset_key(key_text), version_id=version_id)
+            version = store.get_version(key=AssetKey.parse(key_text), version_id=version_id)
         except FileNotFoundError:
             continue
         card = _build_asset_card(
@@ -886,6 +838,23 @@ def _build_preview(
     )
 
 
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+
+
+def _image_preview(
+    *,
+    path: Path,
+    extension: str,
+    artifact_id: str,
+    artifact_copies: list[ArtifactCopy],
+    alt: str,
+) -> AssetPreview:
+    """Copy an image artifact into ``figures/`` and return an image preview."""
+    dest = f"figures/{artifact_id}{extension}"
+    artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
+    return AssetPreview(kind="image", image_relpath=dest, image_alt=alt)
+
+
 def _fig_preview(
     *,
     path: Path,
@@ -894,10 +863,14 @@ def _fig_preview(
     artifact_copies: list[ArtifactCopy],
 ) -> AssetPreview:
     """Build a figure preview (image or embedded HTML)."""
-    if extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
-        dest = f"figures/{artifact_id}{extension}"
-        artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
-        return AssetPreview(kind="image", image_relpath=dest, image_alt="figure")
+    if extension in _IMAGE_EXTENSIONS:
+        return _image_preview(
+            path=path,
+            extension=extension,
+            artifact_id=artifact_id,
+            artifact_copies=artifact_copies,
+            alt="figure",
+        )
     if extension == ".html":
         dest = f"figures/{artifact_id}.html"
         artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
@@ -914,10 +887,14 @@ def _file_preview(
     policy: SizingPolicy,
 ) -> AssetPreview:
     """Preview a generic file asset by extension."""
-    if extension in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
-        dest = f"figures/{artifact_id}{extension}"
-        artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
-        return AssetPreview(kind="image", image_relpath=dest, image_alt="image")
+    if extension in _IMAGE_EXTENSIONS:
+        return _image_preview(
+            path=path,
+            extension=extension,
+            artifact_id=artifact_id,
+            artifact_copies=artifact_copies,
+            alt="image",
+        )
     if extension in {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".ndjson"}:
         preview = build_table_preview(path=path, extension=extension, policy=policy)
         if preview is not None:
@@ -1008,35 +985,33 @@ def _column_count(metadata: Mapping[str, Any]) -> int | None:
     return None
 
 
-def _array_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
-    """Return a small stats grid for an array asset."""
+def _metadata_stats(*, metadata: Mapping[str, Any], keys: tuple[str, ...]) -> list[AssetStat]:
+    """Return stat rows for the given metadata keys, in order.
+
+    Missing or ``None`` values are skipped; ``byte_size`` is rendered via
+    :func:`format_bytes`, everything else via ``str``.
+    """
     stats: list[AssetStat] = []
-    for key in ("sub_kind", "shape", "dtype", "chunks", "coordinates", "byte_size"):
-        if key not in metadata:
-            continue
-        value = metadata[key]
+    for key in keys:
+        value = metadata.get(key)
         if value is None:
             continue
         if key == "byte_size" and isinstance(value, int):
             stats.append(AssetStat(key=key, value=format_bytes(value)))
         else:
             stats.append(AssetStat(key=key, value=str(value)))
-    return tuple(stats)
+    return stats
+
+
+def _array_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
+    """Return a small stats grid for an array asset."""
+    keys = ("sub_kind", "shape", "dtype", "chunks", "coordinates", "byte_size")
+    return tuple(_metadata_stats(metadata=metadata, keys=keys))
 
 
 def _model_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
-    """Return a small stats grid for a model asset."""
-    stats: list[AssetStat] = []
-    for key in ("sub_kind", "framework", "byte_size"):
-        if key not in metadata:
-            continue
-        value = metadata[key]
-        if value is None:
-            continue
-        if key == "byte_size" and isinstance(value, int):
-            stats.append(AssetStat(key=key, value=format_bytes(value)))
-        else:
-            stats.append(AssetStat(key=key, value=str(value)))
+    """Return a small stats grid for a model asset, including any metrics."""
+    stats = _metadata_stats(metadata=metadata, keys=("sub_kind", "framework", "byte_size"))
     metrics = metadata.get("metrics")
     if isinstance(metrics, dict):
         for name, value in metrics.items():
@@ -1059,14 +1034,6 @@ def _asset_caption(*, metadata: Mapping[str, Any]) -> str | None:
     if isinstance(caption, str) and caption.strip():
         return caption.strip()
     return None
-
-
-def _parse_asset_key(text: str) -> AssetKey:
-    """Parse ``namespace:name`` into an :class:`AssetKey`."""
-    namespace, sep, name = text.partition(":")
-    if sep and namespace and name:
-        return AssetKey(namespace=namespace, name=name)
-    return AssetKey(namespace="file", name=text)
 
 
 def _artifact_record(
@@ -1166,12 +1133,9 @@ def _build_summary_cards(
         or "—"
     )
 
-    failure_categories: list[str] = []
-    for task in summary.failed_tasks:
-        if isinstance(task.failure, dict):
-            kind = task.failure.get("kind")
-            if isinstance(kind, str):
-                failure_categories.append(kind)
+    failure_categories = [
+        task.failure_kind for task in summary.failed_tasks if task.failure_kind is not None
+    ]
     failure_sub = failure_categories[0] if failure_categories else "—"
 
     return (
@@ -1179,7 +1143,7 @@ def _build_summary_cards(
             label="Tasks",
             value=format_int(total_tasks),
             sub=tasks_sub,
-            tone="ok" if failed == 0 else "ok",
+            tone="ok",
         ),
         StatCard(
             label="Failures",

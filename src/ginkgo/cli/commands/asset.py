@@ -134,16 +134,10 @@ def list_asset_rows(*, store: AssetStore) -> list[AssetListRow]:
 def parse_asset_key(value: str) -> AssetKey:
     """Parse a CLI asset key.
 
-    Accepts ``namespace:name`` or ``name``. Bare names default to ``file``.
+    Accepts ``namespace:name`` or ``name``. Bare names default to ``file``;
+    malformed input raises :class:`ValueError`.
     """
-    namespace, separator, name = value.partition(":")
-    if separator:
-        if not namespace or not name:
-            raise ValueError(f"Invalid asset key: {value!r}")
-        return AssetKey(namespace=namespace, name=name)
-    if not namespace:
-        raise ValueError(f"Invalid asset key: {value!r}")
-    return AssetKey(namespace="file", name=namespace)
+    return AssetKey.parse(value, strict=True)
 
 
 def parse_asset_selector(value: str) -> AssetSelector:

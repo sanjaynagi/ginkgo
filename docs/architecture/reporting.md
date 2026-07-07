@@ -38,7 +38,7 @@ out of scope.
 ginkgo/reporting/
 ├── __init__.py          # build_report_data, export_report, SizingPolicy
 ├── model.py             # ReportData dataclass + builder
-├── sizing.py            # per-kind caps, formatters, preview builders
+├── sizing.py            # per-kind caps and preview builders
 ├── render.py            # Jinja env, bundle writer, single-file writer
 ├── templates/
 │   ├── index.html.j2    # master document shell
@@ -79,6 +79,17 @@ UI server and CLI renderers) plus `AssetStore` and `LocalArtifactStore`
 for asset resolution. The UI server continues to build its own payloads
 from the same `RunSummary`; the two presentation layers diverge cleanly
 without duplicating parsing logic.
+
+`RunSummary` is the single source of truth for post-run derivation. The
+semantic transforms every read-only presenter needs — `failure_kind`,
+`kind_label`, `cache_label`, `attempts_label` — live as read-only
+properties on `TaskSummary` rather than being re-derived per consumer.
+Value-to-string formatting (`format_duration`, `format_bytes`,
+`format_timestamp`, `format_int`) is shared from `ginkgo/formatting.py`, so
+the CLI run-finish output and this report format identical values
+identically. Presentation *vocabulary* stays with each presenter: the CLI
+uses Rich styles and icons, the report uses tone tokens (`ok` / `fail` /
+`warn` / …); these legitimately differ and are not merged.
 
 Asset cards are grouped into `AssetSection` objects before rendering. The
 section title comes from the asset version metadata key `ginkgo_group`,

@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
-from ginkgo.cli.renderers.common import environment_label, format_duration
+from ginkgo.cli.renderers.common import environment_label
+from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.renderers.models import (
