@@ -10,13 +10,18 @@ level, Ginkgo hashes:
 
 - task identity
 - task version
-- task source
+- task source and its statically imported local Python modules
 - notebook source for notebook tasks
 - resolved input values
 - environment identity for foreign execution
 
 For path-like inputs, the runtime hashes the contents rather than trusting the
 path string alone.
+
+Local-import tracking is conservative: changing a reachable helper module
+invalidates tasks that import it, even when the changed symbol is not called.
+Dynamic imports and other runtime dependencies cannot be tracked this way; set
+or increment `version=` on the task when those dependencies change.
 
 ## Artifact Storage
 

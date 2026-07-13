@@ -96,6 +96,66 @@ class TestSourceHashCacheInvalidation:
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)
 
+    def test_modified_imported_helper_causes_cache_miss(self, tmp_path):
+        """Changing a transitive local helper invalidates an unchanged task."""
+        module_dir = tmp_path / "pkg"
+        module_dir.mkdir()
+        (module_dir / "__init__.py").write_text("")
+        (module_dir / "tasks.py").write_text(
+            textwrap.dedent("""\
+                from ginkgo import task
+                from . import helpers
+
+                @task()
+                def compute(x: int) -> int:
+                    return helpers.compute(x)
+            """),
+            encoding="utf-8",
+        )
+        (module_dir / "helpers.py").write_text(
+            textwrap.dedent("""\
+                from .transform import adjust
+
+                def compute(x: int) -> int:
+                    return adjust(x)
+            """),
+            encoding="utf-8",
+        )
+        transform_path = module_dir / "transform.py"
+        transform_path.write_text(
+            "def adjust(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
+        )
+
+        import importlib
+        import sys
+
+        sys.path.insert(0, str(tmp_path))
+        try:
+            tasks = importlib.import_module("pkg.tasks")
+            assert evaluate(tasks.compute(x=5)) == 6
+
+            cached = EventCollector()
+            assert evaluate(tasks.compute(x=5), event_bus=cached.bus) == 6
+            assert cached.cached()
+
+            transform_path.write_text(
+                "def adjust(x: int) -> int:\n    return x + 10\n", encoding="utf-8"
+            )
+            importlib.reload(sys.modules["pkg.transform"])
+            importlib.reload(sys.modules["pkg.helpers"])
+            tasks = importlib.reload(tasks)
+
+            collector = EventCollector()
+            assert evaluate(tasks.compute(x=5), event_bus=collector.bus) == 15
+            assert collector.started()
+            assert not collector.cached()
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("pkg.transform", None)
+            sys.modules.pop("pkg.helpers", None)
+            sys.modules.pop("pkg.tasks", None)
+            sys.modules.pop("pkg", None)
+
 
 # ---------------------------------------------------------------------------
 # File output symlinks
