@@ -109,7 +109,8 @@ Key points:
 
 - task functions must live at module scope
 - inputs and outputs should be explicit and typed
-- top-level source changes participate in cache invalidation
+- top-level source and statically imported local-helper changes participate in
+  cache invalidation
 - return ordinary Python values or supported Ginkgo marker types
 
 ## Shell Tasks

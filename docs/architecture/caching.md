@@ -21,11 +21,16 @@ Implemented cache hashing includes:
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
-The runtime hashes the top-level task function source during task registration
-and stores that `source_hash` in both the cache key payload and `meta.json`, so
-task-body changes invalidate prior cache entries without requiring a manual
-`version=` bump. If source extraction fails for a task definition, registration
-fails explicitly instead of silently weakening cache correctness.
+The runtime hashes the top-level task function source and the statically
+imported closure of already-loaded local Python modules during task
+registration. The resulting `source_hash` is stored in both the cache key
+payload and `meta.json`, so task-body and local-helper changes invalidate prior
+cache entries without requiring a manual `version=` bump. This is deliberately
+conservative: an edit anywhere in a reachable local module invalidates tasks
+that import it. Dynamic imports and external runtime dependencies are outside
+this static boundary; use `version=` to invalidate cache entries for them. If
+source extraction fails for a task definition, registration fails explicitly
+instead of silently weakening cache correctness.
 
 File and folder outputs flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
