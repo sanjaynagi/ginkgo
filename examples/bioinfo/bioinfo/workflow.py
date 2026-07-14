@@ -19,6 +19,11 @@ cfg = ginkgo.config("ginkgo.toml")
 samples = pd.read_csv(cfg["paths"]["samples_csv"])
 
 
+def _summary_has_records(payload: object) -> bool:
+    """Return whether a QC summary contains at least one sample record."""
+    return isinstance(payload, pd.DataFrame) and not payload.empty
+
+
 @task(env="bioinfo_tools", kind="shell")
 def filter_fastq(sample_id: str, fastq_1: file, fastq_2: file, min_length: int) -> list[file]:
     """Filter paired-end reads shorter than ``min_length`` with seqkit."""
@@ -142,7 +147,7 @@ def build_summary(
     output.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output, index=False)
 
-    return table(summary, name="qc_summary")
+    return table(summary, name="qc_summary", checks=[_summary_has_records])
 
 
 @flow

@@ -202,10 +202,16 @@ class TestExamples:
         assert notebook_html.is_file()
         assert (example_dir / "results" / "summary.json").is_file()
         assert (example_dir / "results" / "delivery_manifest.md").is_file()
-        assert any(
-            task.get("assets")
+        seed_card_assets = [
+            asset
             for task in first_manifest["tasks"].values()
             if str(task["task"]).endswith(".write_seed_card")
+            for asset in task.get("assets", [])
+        ]
+        assert seed_card_assets
+        assert all(
+            asset["metadata"]["_checks"] == [{"name": "_seed_card_has_content", "passed": True}]
+            for asset in seed_card_assets
         )
 
         with _mock_docker(), _mock_notebook_tools():
