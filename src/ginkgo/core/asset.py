@@ -9,6 +9,7 @@ the shorthand factories :func:`table`, :func:`array`, :func:`fig`,
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -200,6 +201,10 @@ class AssetResult:
         participate in asset identity.
     metadata : dict[str, Any]
         Optional user-supplied metadata stored on the asset version.
+    checks : tuple[Callable[[Any], bool], ...]
+        Ordered asset checks run during registration. Each check receives the
+        wrapped payload and must return ``True`` or ``False``. Checks must be
+        importable module-level functions when the task runs in a worker.
     kind_fields : dict[str, Any]
         Internal bag carrying kind-specific construction-time fields
         (e.g. ``"format"`` for ``text`` / ``"framework"`` and
@@ -215,6 +220,7 @@ class AssetResult:
     group: str | None = None
     caption: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    checks: tuple[Callable[[Any], bool], ...] = ()
     kind_fields: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -332,6 +338,7 @@ def asset(
     group: str | None = None,
     caption: str | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
     **kind_fields: Any,
 ) -> AssetResult:
     """Wrap a task output for registration as an asset.
@@ -362,6 +369,9 @@ def asset(
         do not affect the stable asset key.
     metadata : dict[str, Any] | None
         Optional user-supplied metadata persisted on the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional ordered checks run against the payload during asset
+        registration. Every check must return ``True`` or ``False``.
     **kind_fields : Any
         Kind-specific construction-time fields. For ``text`` this
         accepts ``format``; for ``model`` this accepts ``framework`` and
@@ -390,6 +400,7 @@ def asset(
         group=group.strip() if isinstance(group, str) and group.strip() else None,
         caption=caption.strip() if isinstance(caption, str) and caption.strip() else None,
         metadata=dict(metadata or {}),
+        checks=tuple(checks) if checks is not None else (),
         kind_fields=extra_kind_fields,
     )
 
@@ -401,6 +412,7 @@ def table(
     group: str | None = None,
     caption: str | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
 ) -> AssetResult:
     """Wrap a tabular value as an asset return.
 
@@ -419,12 +431,22 @@ def table(
         inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional checks run against the payload during asset registration.
 
     Returns
     -------
     AssetResult
     """
-    return asset(payload, kind="table", name=name, group=group, caption=caption, metadata=metadata)
+    return asset(
+        payload,
+        kind="table",
+        name=name,
+        group=group,
+        caption=caption,
+        metadata=metadata,
+        checks=checks,
+    )
 
 
 def array(
@@ -434,6 +456,7 @@ def array(
     group: str | None = None,
     caption: str | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
 ) -> AssetResult:
     """Wrap an n-dimensional array value as an asset return.
 
@@ -451,12 +474,22 @@ def array(
         inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional checks run against the payload during asset registration.
 
     Returns
     -------
     AssetResult
     """
-    return asset(payload, kind="array", name=name, group=group, caption=caption, metadata=metadata)
+    return asset(
+        payload,
+        kind="array",
+        name=name,
+        group=group,
+        caption=caption,
+        metadata=metadata,
+        checks=checks,
+    )
 
 
 def fig(
@@ -466,6 +499,7 @@ def fig(
     group: str | None = None,
     caption: str | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
 ) -> AssetResult:
     """Wrap a figure or plot value as an asset return.
 
@@ -483,12 +517,22 @@ def fig(
         inspection output.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional checks run against the payload during asset registration.
 
     Returns
     -------
     AssetResult
     """
-    return asset(payload, kind="fig", name=name, group=group, caption=caption, metadata=metadata)
+    return asset(
+        payload,
+        kind="fig",
+        name=name,
+        group=group,
+        caption=caption,
+        metadata=metadata,
+        checks=checks,
+    )
 
 
 def text(
@@ -499,6 +543,7 @@ def text(
     caption: str | None = None,
     format: Literal["plain", "markdown", "json"] | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
 ) -> AssetResult:
     """Wrap a text or structured document value as an asset return.
 
@@ -518,6 +563,8 @@ def text(
         Document format. Auto-detected from the payload when omitted.
     metadata : dict[str, Any] | None
         Optional user-defined metadata stored with the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional checks run against the payload during asset registration.
 
     Returns
     -------
@@ -530,6 +577,7 @@ def text(
         group=group,
         caption=caption,
         metadata=metadata,
+        checks=checks,
         format=format,
     )
 
@@ -543,6 +591,7 @@ def model(
     framework: str | None = None,
     metrics: dict[str, float] | None = None,
     metadata: dict[str, Any] | None = None,
+    checks: Iterable[Callable[[Any], bool]] | None = None,
 ) -> AssetResult:
     """Wrap a trained model as an asset return.
 
@@ -569,6 +618,8 @@ def model(
         UI rendering.
     metadata : dict[str, Any] | None
         Optional free-form metadata stored on the asset version.
+    checks : Iterable[Callable[[Any], bool]] | None
+        Optional checks run against the payload during asset registration.
 
     Returns
     -------
@@ -581,6 +632,7 @@ def model(
         group=group,
         caption=caption,
         metadata=metadata,
+        checks=checks,
         framework=framework,
         metrics=metrics,
     )

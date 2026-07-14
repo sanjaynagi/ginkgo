@@ -37,7 +37,35 @@ The typed helpers each map to an asset **kind**:
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
-and a `metadata` dict. `model()` also takes `framework` and `metrics`:
+and a `metadata` dict. Each also accepts `checks`: small data-quality
+assertions that run before Ginkgo registers the asset version. `model()` also
+takes `framework` and `metrics`.
+
+```python
+import pandas as pd
+
+from ginkgo import table, task
+
+
+def has_rows(frame: pd.DataFrame) -> bool:
+    return not frame.empty
+
+
+@task()
+def prepare_observations() -> object:
+    frame = load_observations()
+    return table(frame, name="observations", checks=[has_rows])
+```
+
+A check receives the wrapped payload and must return `True` or `False`.
+`False`, a raised exception, or any other return value fails the producing
+task and prevents the asset version from being registered. Define checks as
+top-level functions in an importable workflow module: lambdas, nested
+functions, and closures cannot be transported to worker or remote execution.
+Passing outcomes are stored with the asset version and displayed on HTML report
+cards. Checks are not rerun for cached assets.
+
+`model()` also takes `framework` and `metrics`:
 
 ```python
 from ginkgo import model, task

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import io
 import logging
 import pickle
@@ -95,6 +96,7 @@ def encode_value(
             "kind": value.kind,
             "sub_kind": value.sub_kind,
             "metadata": dict(value.metadata),
+            "checks": _encode_asset_checks(checks=value.checks),
             "kind_fields": dict(value.kind_fields),
             "payload": payload_encoded,
         }
@@ -216,6 +218,7 @@ def decode_value(
             kind=cast(AssetKind, payload.get("kind", "file")),
             sub_kind=payload.get("sub_kind"),
             metadata=dict(payload.get("metadata", {})),
+            checks=_decode_asset_checks(payload=payload.get("checks")),
             kind_fields=dict(payload.get("kind_fields", {})),
         )
     if kind == "tmp_dir":
@@ -246,6 +249,42 @@ def decode_value(
             payload=payload, base_dir=base_dir, artifact_store=artifact_store
         )
     return payload
+
+
+def _encode_asset_checks(*, checks: tuple[Any, ...]) -> str:
+    """Encode asset checks for process and remote-result transport."""
+    try:
+        data = pickle.dumps(checks, protocol=5)
+    except Exception as exc:
+        raise CodecError(
+            "Asset checks must be importable module-level functions when a task runs "
+            "in a worker or remote executor."
+        ) from exc
+    return base64.b64encode(data).decode("ascii")
+
+
+def _decode_asset_checks(*, payload: Any) -> tuple[Any, ...]:
+    """Decode asset checks from process and remote-result transport."""
+    if payload is None:
+        return ()
+    if not isinstance(payload, str):
+        raise CodecError("Encoded asset checks must be a base64 string.")
+
+    try:
+        checks = pickle.loads(base64.b64decode(payload))
+    except (
+        binascii.Error,
+        EOFError,
+        ImportError,
+        ValueError,
+        pickle.UnpicklingError,
+        TypeError,
+    ) as exc:
+        raise CodecError("Could not decode asset checks from a worker result.") from exc
+
+    if not isinstance(checks, tuple):
+        raise CodecError("Decoded asset checks must be a tuple.")
+    return checks
 
 
 def summarise_value(value: Any) -> Any:

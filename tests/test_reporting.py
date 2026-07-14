@@ -112,6 +112,7 @@ def _register_asset(
     text: str = "alpha\nbeta\ngamma\n",
     group: str | None = None,
     caption: str | None = None,
+    checks: list[dict[str, bool | str]] | None = None,
     append: bool = False,
 ) -> None:
     """Register a file asset and patch the manifest to reference it."""
@@ -125,6 +126,8 @@ def _register_asset(
         metadata["ginkgo_group"] = group
     if caption is not None:
         metadata["ginkgo_caption"] = caption
+    if checks is not None:
+        metadata["_checks"] = checks
     version = make_asset_version(
         key=AssetKey(namespace="file", name=name),
         kind="file",
@@ -254,6 +257,28 @@ class TestReportData:
         status_entries = [kv for kv in report.masthead_kv if kv.key == "status"]
         assert len(status_entries) == 1
 
+    def test_asset_checks_are_exposed_on_cards(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-checks",
+            run_dir=run_dir,
+            name="demo/checked",
+            checks=[{"name": "has_rows", "passed": True}],
+            append=True,
+        )
+
+        report = build_report_data(run_dir=run_dir)
+        checked_card = next(
+            card
+            for section in report.assets
+            for card in section.cards
+            if card.name == "demo/checked"
+        )
+
+        assert checked_card.checks[0].name == "has_rows"
+        assert checked_card.checks[0].passed is True
+
     def test_grouped_assets_render_in_named_sections(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
         _register_asset(
@@ -318,6 +343,23 @@ class TestReportData:
 
 
 class TestExport:
+    def test_bundle_mode_renders_asset_check_badges(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-checks",
+            run_dir=run_dir,
+            name="demo/checked",
+            checks=[{"name": "has_rows", "passed": True}],
+            append=True,
+        )
+
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert "has_rows" in html
+        assert "check-pass" in html
+
     def test_bundle_mode_writes_index_and_assets(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         out_dir = tmp_path / "out"

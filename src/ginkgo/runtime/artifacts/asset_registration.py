@@ -40,6 +40,11 @@ from ginkgo.runtime.caching.cache import CacheStore
 
 ASSET_GROUP_METADATA_KEY = "ginkgo_group"
 ASSET_CAPTION_METADATA_KEY = "ginkgo_caption"
+ASSET_CHECKS_METADATA_KEY = "_checks"
+
+
+class AssetCheckError(RuntimeError):
+    """Raised when an asset check cannot verify a wrapped payload."""
 
 
 def asset_key_for_result(*, name: str, kind: str) -> AssetKey:
@@ -264,7 +269,12 @@ class AssetRegistrar:
             )
             version_metadata = _metadata_with_group(metadata=serialized.metadata, result=result)
 
-        # 2. Build and register the immutable version record.
+        # 2. Verify the stored payload before publishing a catalog version.
+        check_outcomes = _check_outcomes(result=result)
+        if check_outcomes:
+            version_metadata[ASSET_CHECKS_METADATA_KEY] = check_outcomes
+
+        # 3. Build and register the immutable version record.
         version = make_asset_version(
             key=asset_key_for_result(name=asset_name, kind=result.kind),
             kind=result.kind,
@@ -284,7 +294,7 @@ class AssetRegistrar:
         if parent_refs:
             self.asset_store.record_lineage(child=asset_ref, parents=parent_refs)
 
-        # 3. Cache live payloads for in-process downstream consumers.
+        # 4. Cache live payloads for in-process downstream consumers.
         # File assets don't benefit (consumers get a path either way); fig
         # payloads are binary blobs that are rarely consumed as live Python
         # objects — skipping them aligns the registry with the evaluator's
@@ -335,6 +345,7 @@ def _current_index_for(
 def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
     """Return version metadata including report presentation labels."""
     version_metadata = dict(metadata)
+    version_metadata.pop(ASSET_CHECKS_METADATA_KEY, None)
     if result.group is not None:
         version_metadata[ASSET_GROUP_METADATA_KEY] = result.group
     if result.caption is not None:
@@ -342,11 +353,41 @@ def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> di
     return version_metadata
 
 
+def _check_outcomes(*, result: AssetResult) -> list[dict[str, bool | str]]:
+    """Run asset checks and return their serialisable passing outcomes."""
+    outcomes: list[dict[str, bool | str]] = []
+    for check in result.checks:
+        check_name = getattr(check, "__name__", type(check).__name__)
+        if not callable(check):
+            raise AssetCheckError(
+                f"Asset check {check_name!r} for {result.kind!r} asset is not callable."
+            )
+
+        try:
+            passed = check(result.payload)
+        except Exception as exc:
+            raise AssetCheckError(
+                f"Asset check {check_name!r} raised an exception for {result.kind!r} asset."
+            ) from exc
+
+        if not isinstance(passed, bool):
+            raise AssetCheckError(
+                f"Asset check {check_name!r} for {result.kind!r} asset must return bool, "
+                f"got {type(passed).__name__}."
+            )
+        if not passed:
+            raise AssetCheckError(f"Asset check {check_name!r} failed for {result.kind!r} asset.")
+        outcomes.append({"name": check_name, "passed": passed})
+    return outcomes
+
+
 # Re-export for callers that used to import from asset_registration.
 __all__ = [
     "AssetRegistrar",
     "ASSET_CAPTION_METADATA_KEY",
+    "ASSET_CHECKS_METADATA_KEY",
     "ASSET_GROUP_METADATA_KEY",
+    "AssetCheckError",
     "AssetSerializationError",
     "asset_index_for",
     "asset_key_for_result",
