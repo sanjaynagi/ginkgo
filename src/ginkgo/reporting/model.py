@@ -57,11 +57,11 @@ class StatCard:
     label : str
         Small-caps label above the value.
     value : str
-        Primary value shown in the Fraunces stat numeral.
+        Primary value shown as the stat numeral.
     sub : str
         Secondary line under the value.
     tone : {"ok", "fail", "cool", "neutral"}
-        Accent stripe tone; maps to a CSS class.
+        Accent tone; maps to a CSS class.
     """
 
     label: str
