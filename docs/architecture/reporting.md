@@ -56,7 +56,7 @@ ginkgo/reporting/
 └── static/
     ├── report.css       # tokens + component styles
     ├── islands.js       # scrollspy + sortable task table
-    └── fonts/           # Fraunces, Commissioner, JetBrains Mono (woff2)
+    └── fonts/           # Commissioner, JetBrains Mono (woff2)
 ```
 
 ## Data flow
@@ -157,40 +157,46 @@ completeness, not in-document rendering.
 
 ## Aesthetic
 
-Committed visual direction, mirrored by `docs/mocks/phase10/04-hybrid.html`.
+Committed visual direction (issue #48): a plain, sleek document — warm
+off-white neutrals, all-sans headings and data text, hairline borders,
+and a single dusk-blue accent. No background washes, ornaments, or boxed
+section chips.
 
 **Typography** — all bundled locally; no CDN references at view time:
 
-- Fraunces (display; italic + wonky variable axes) — H1/H2, stat numbers,
-  asset names, failure headings, notebook icon.
-- Commissioner (humanist sans) — body text, table cells, navigation.
-- JetBrains Mono — run ids, artifact ids, timestamps, durations, paths,
-  code blocks, pill labels, KV keys.
+- Commissioner (humanist sans) — headings, body text, table cells,
+  key/value panels, chips, badges, navigation.
+- JetBrains Mono — genuinely code-like content only: the sidebar run id,
+  params and code blocks, log tails, text previews, task-graph labels,
+  and the footer line.
 
 **Palette** — defined as CSS custom properties on `:root`; templates
 reference only tokens.
 
 | Token            | Hex        | Use                                              |
 | ---------------- | ---------- | ------------------------------------------------ |
-| `--paper`        | `#F5EFE4`  | background                                       |
-| `--paper-raised` | `#EFE6D3`  | cards, sidebar, code blocks                      |
-| `--paper-deep`   | `#E8DCC2`  | table headers, emphasis fills                    |
-| `--ink`          | `#2B2621`  | primary text                                     |
-| `--ochre`        | `#B8792A`  | primary accent — section chips, params key, warn |
-| `--teal`         | `#2F7A7A`  | secondary accent — terminal node, array kind     |
-| `--rose`         | `#A8454E`  | failure accent                                   |
-| `--moss`         | `#5A6E3C`  | success accent                                   |
+| `--paper`        | `#FDFCF8`  | background                                       |
+| `--panel`        | `#FFFFFE`  | cards, tables, code blocks                       |
+| `--panel-deep`   | `#F0EDE4`  | inline code, log fills, hover fills              |
+| `--sidebar-bg`   | `#F7F5EF`  | sidebar background                               |
+| `--ink`          | `#26231D`  | primary text                                     |
+| `--accent`       | `#45658A`  | dusk-blue accent — links, run tag, section nums  |
+| `--ok`           | `#5C7A4C`  | success status                                   |
+| `--fail`         | `#B04E48`  | failure status                                   |
+| `--warn`         | `#A1722E`  | warning status, table kind badge                 |
+| `--cool`         | `#45658A`  | terminal node, array/model kind badges           |
 
 Status tokens map to `ok` / `fail` / `warn` / `cool` / `neutral` and are
 used consistently across stat cards, pills, graph node strokes, and the
-sidebar status line.
+sidebar status line. Colour is reserved for status and the accent; all
+structure is drawn with hairline `--line*` borders on neutral panels.
 
 ## Layout
 
-- Fixed 272 px left sidebar (cream-raised, sticky): brand, run_id,
+- Fixed 248 px left sidebar (warm-tinted, sticky): brand, run_id,
   status, three TOC groups (Execution / Results / Appendix), optional
   workspace link.
-- Main column (max 1080 px): breadcrumb → H1 + run tag → chip strip →
+- Main column (max 1040 px): breadcrumb → H1 + run tag → chip strip →
   full KV grid → numbered sections.
 - Mobile (< 960 px) collapses to a single column.
 
