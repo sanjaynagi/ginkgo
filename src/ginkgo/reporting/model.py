@@ -19,6 +19,7 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
+    ASSET_CHECKS_METADATA_KEY,
     ASSET_GROUP_METADATA_KEY,
 )
 from ginkgo.runtime.artifacts.asset_store import AssetStore
@@ -182,6 +183,22 @@ class AssetPreview:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CheckOutcome:
+    """One persisted result from an asset check.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable check function name.
+    passed : bool
+        Whether the check passed.
+    """
+
+    name: str
+    passed: bool
+
+
+@dataclass(frozen=True, kw_only=True)
 class AssetCard:
     """One asset version produced by the run."""
 
@@ -194,6 +211,7 @@ class AssetCard:
     artifact_id: str
     meta_line: str
     version_id: str
+    checks: tuple[CheckOutcome, ...]
     preview: AssetPreview
 
 
@@ -770,6 +788,7 @@ def _build_asset_card(
         artifact_id=version.artifact_id,
         meta_line=meta_line,
         version_id=version.version_id,
+        checks=_asset_checks(metadata=version.metadata),
         preview=preview,
     )
 
@@ -1034,6 +1053,23 @@ def _asset_caption(*, metadata: Mapping[str, Any]) -> str | None:
     if isinstance(caption, str) and caption.strip():
         return caption.strip()
     return None
+
+
+def _asset_checks(*, metadata: Mapping[str, Any]) -> tuple[CheckOutcome, ...]:
+    """Extract well-formed asset check outcomes from version metadata."""
+    raw_checks = metadata.get(ASSET_CHECKS_METADATA_KEY)
+    if not isinstance(raw_checks, (list, tuple)):
+        return ()
+
+    outcomes: list[CheckOutcome] = []
+    for raw_outcome in raw_checks:
+        if not isinstance(raw_outcome, Mapping):
+            continue
+        name = raw_outcome.get("name")
+        passed = raw_outcome.get("passed")
+        if isinstance(name, str) and name and isinstance(passed, bool):
+            outcomes.append(CheckOutcome(name=name, passed=passed))
+    return tuple(outcomes)
 
 
 def _artifact_record(

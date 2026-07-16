@@ -24,7 +24,7 @@ The current asset model supports:
 - a single `AssetResult` sentinel with a `kind` discriminator (one of
   `file`, `table`, `array`, `fig`, `text`, `model`)
 - `asset(payload, kind=..., name=..., group=..., caption=...,
-  metadata=..., **kind_fields)` as the canonical constructor, with
+  metadata=..., checks=..., **kind_fields)` as the canonical constructor, with
   `table`, `array`, `fig`, `text`, and `model` as kind-preset shorthand
   factories
 - immutable `AssetVersion` records keyed by logical `AssetKey`
@@ -125,6 +125,14 @@ arguments (`format=` for `text`, `framework=` / `metrics=` for
   `ginkgo_caption`, affects presentation only, and is not part of
   `AssetKey`.
 - `metadata` — free-form user metadata persisted on the version.
+- `checks` — an ordered tuple of importable `(payload) -> bool` callables.
+  The registrar runs these checks after serialization and before registering
+  the asset version. Every check must return `True`; `False`, an exception, or
+  a non-boolean result fails the producing task and leaves no catalog version.
+  Passing results are stored under the reserved `_checks` metadata key as
+  ordered `{name, passed}` mappings. Checks are transported through worker and
+  remote result encoding, so lambdas, nested functions, and closures are not
+  supported.
 - `kind_fields` — a `dict[str, Any]` bag carrying kind-specific
   construction-time fields (`format` for `text`, `framework` and
   `metrics` for `model`). The keys are scoped to the kind's
@@ -196,12 +204,16 @@ every nested `AssetResult`, and replaces it with a resolved `AssetRef`:
    - For semantic kinds it invokes the registered serializer, stores
      the bytes via `ArtifactStore.store_bytes`, and extracts the
      per-kind metadata returned by the serializer.
-3. An immutable `AssetVersion` is registered under the kind-scoped
+3. The registrar runs every attached check against the original payload. If a
+   check fails, no `AssetVersion`, lineage record, or live payload is created;
+   the content-addressed bytes written during serialization are eligible for
+   ordinary orphan-artifact cleanup.
+4. An immutable `AssetVersion` is registered under the kind-scoped
    namespace (`file` / `table` / `array` / `fig` / `text` / `model`),
    and the sentinel is replaced with an `AssetRef` pointing at the
    stored artifact.
-4. Upstream lineage is recorded for any consumed `AssetRef` inputs.
-5. For kinds flagged as `rehydrate_on_receive` (all except `file` and
+5. Upstream lineage is recorded for any consumed `AssetRef` inputs.
+6. For kinds flagged as `rehydrate_on_receive` (all except `file` and
    `fig`), the producer's live Python object is stashed in the
    per-evaluator `LivePayloadRegistry` keyed by `artifact_id`, so a
    downstream task in the same process can consume it without a disk
@@ -230,6 +242,12 @@ metadata:
 `ginkgo asset show <key>` renders this metadata through the CLI without
 re-reading the stored bytes. The UI asset payload surfaces the same
 fields under a `kind_metadata` key for future frontend consumers.
+
+Successful asset checks are stored as `_checks` metadata and rendered by the
+HTML report. The strict registration model intentionally does not preserve a
+failed check on an asset card: a failed check rejects the asset version and is
+reported as the producing task failure. Cached assets are reused without
+rerunning checks.
 
 ## Rehydration on receive
 

@@ -8,6 +8,11 @@ from pathlib import Path
 from ginkgo import AssetRef, asset, file, shell, task
 
 
+def _seed_card_has_content(payload: object) -> bool:
+    """Return whether a seed-card file exists and has content."""
+    return isinstance(payload, Path) and payload.is_file() and payload.stat().st_size > 0
+
+
 @task()
 def write_seed_card(item: str, output_path: str) -> file:
     """Write a tiny text artifact for one item.
@@ -34,6 +39,7 @@ def write_seed_card(item: str, output_path: str) -> file:
         output,
         name=f"starter/seed_cards/{item}",
         metadata={"item": item, "stage": "seed"},
+        checks=[_seed_card_has_content],
     )
 
 

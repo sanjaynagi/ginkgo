@@ -789,6 +789,18 @@ pre.log {
 .kind-badge.kind-model { color: var(--teal-deep);  background: var(--teal-soft);  border: 1px solid var(--teal); }
 .kind-badge.kind-file  { color: var(--ink-muted);  background: var(--paper-deep); border: 1px solid var(--rule); }
 
+.check-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.check-badge.check-pass { color: var(--moss); background: var(--moss-soft); border: 1px solid var(--moss); }
+.check-badge.check-fail { color: var(--rose-deep); background: var(--rose-soft); border: 1px solid var(--rose); }
+
 /* Data table in asset previews */
 
 .table-scroll {

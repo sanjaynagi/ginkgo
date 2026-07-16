@@ -18,6 +18,35 @@ from ginkgo.runtime.artifacts.asset_serialization import (
     serialize_asset,
 )
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.asset_registration import AssetCheckError
+from ginkgo.runtime.artifacts.remote_arg_transfer import (
+    hydrate_result_from_remote,
+    stage_result_for_remote,
+)
+from ginkgo.runtime.artifacts.value_codec import CodecError, decode_value, encode_value
+
+
+def has_rows(payload: Any) -> bool:
+    """Return whether a tabular payload has at least one row."""
+    return len(payload) > 0
+
+
+def always_fails(payload: Any) -> bool:
+    """Return a deterministic failed asset check outcome."""
+    del payload
+    return False
+
+
+def returns_non_boolean(payload: Any) -> str:
+    """Return an invalid asset check outcome for testing."""
+    del payload
+    return "yes"
+
+
+def raises_from_check(payload: Any) -> bool:
+    """Raise a deterministic exception from an asset check."""
+    del payload
+    raise ValueError("check exploded")
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +90,15 @@ class TestFactories:
         assert via_asset.name == via_shorthand.name == "features"
         assert via_asset.group == via_shorthand.group == "QC metrics"
         assert via_asset.caption == via_shorthand.caption == "Variant counts after QC filtering"
+
+    def test_checks_are_preserved_by_asset_factories(self) -> None:
+        frame = pd.DataFrame({"a": [1]})
+        via_asset = ginkgo.asset(frame, kind="table", checks=[has_rows])
+        via_shorthand = table(frame, checks=[has_rows])
+
+        assert via_asset.checks == (has_rows,)
+        assert via_shorthand.checks == (has_rows,)
+        assert table(frame).checks == ()
 
     def test_presentation_labels_are_normalized(self) -> None:
         grouped = table(
@@ -356,6 +394,26 @@ def make_exploding_table_task() -> object:
 
 
 @task()
+def make_checked_table_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name="checked", checks=[has_rows])
+
+
+@task()
+def make_failed_check_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name="rejected", checks=[always_fails])
+
+
+@task()
+def make_invalid_check_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name="invalid", checks=[returns_non_boolean])
+
+
+@task()
+def make_raising_check_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name="raising", checks=[raises_from_check])
+
+
+@task()
 def consumer_task(upstream: object) -> int:
     # Wrapped ``AssetRef`` inputs are rehydrated to the live payload at
     # arg-binding time, so downstream tasks observe the canonical
@@ -443,6 +501,40 @@ class TestEvaluatorIntegration:
         keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
         assert not any(key.namespace == "table" and key.name == "dup" for key in keys)
 
+    def test_passing_check_is_persisted_with_asset_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = ginkgo.evaluate(make_checked_table_task())
+
+        assert isinstance(result, AssetRef)
+        assert result.metadata["_checks"] == [{"name": "has_rows", "passed": True}]
+
+    @pytest.mark.parametrize(
+        ("expression", "message"),
+        [
+            (make_failed_check_task(), "Asset check 'always_fails' failed"),
+            (make_invalid_check_task(), "must return bool, got str"),
+            (make_raising_check_task(), "Asset check 'raises_from_check' raised an exception"),
+        ],
+    )
+    def test_rejected_checks_do_not_register_versions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        expression: object,
+        message: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(AssetCheckError, match=message):
+            ginkgo.evaluate(expression)
+
+        asset_dir = tmp_path / ".ginkgo" / "assets"
+        keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
+        assert not keys
+
     def test_cache_hit_reuses_artifact_id(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -465,6 +557,46 @@ class TestEvaluatorIntegration:
         assert ginkgo.evaluate(expr) == 1
         # Second call must also succeed, keyed on artifact id rather than payload.
         assert ginkgo.evaluate(expr) == 1
+
+
+class TestAssetCheckTransport:
+    def test_asset_checks_round_trip_through_value_codec(self, tmp_path: Path) -> None:
+        encoded = encode_value(
+            table(pd.DataFrame({"a": [1]}), checks=[has_rows]),
+            base_dir=tmp_path,
+        )
+
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert isinstance(decoded, AssetResult)
+        assert decoded.checks == (has_rows,)
+
+    def test_unserializable_asset_check_raises_clear_error(self, tmp_path: Path) -> None:
+        def nested_check(payload: Any) -> bool:
+            return payload is not None
+
+        with pytest.raises(CodecError, match="importable module-level functions"):
+            encode_value(
+                table(pd.DataFrame({"a": [1]}), checks=[nested_check]),
+                base_dir=tmp_path,
+            )
+
+    def test_asset_checks_survive_remote_result_transport(self, tmp_path: Path) -> None:
+        encoded = encode_value(
+            table(pd.DataFrame({"a": [1]}), checks=[has_rows]),
+            base_dir=tmp_path,
+        )
+        staged = stage_result_for_remote(result=encoded, remote_store=object())
+        hydrated = hydrate_result_from_remote(
+            result=staged,
+            remote_store=object(),
+            scratch_dir=tmp_path / "hydrated",
+        )
+
+        decoded = decode_value(hydrated, base_dir=tmp_path)
+
+        assert isinstance(decoded, AssetResult)
+        assert decoded.checks == (has_rows,)
 
 
 # ---------------------------------------------------------------------------

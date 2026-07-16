@@ -9,6 +9,9 @@
     <div>
       <span class="kind-badge kind-{{ card.kind_tone }}">{{ card.kind_label }}</span>
       <span class="name">{{ card.name }}</span>
+      {% for check in card.checks %}
+      <span class="check-badge check-{{ "pass" if check.passed else "fail" }}">{{ "✓" if check.passed else "✗" }} {{ check.name }}</span>
+      {% endfor %}
       {% if card.caption %}
       <div class="caption">{{ card.caption }}</div>
       {% endif %}
