@@ -33,6 +33,12 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
     }
 
+    # Mount any fuse-marked inputs against a task-local mount root so
+    # concurrent workers never collide on a shared bucket mount point. The
+    # access instance is held before hydration so the finally below always
+    # tears mounts down, even if hydration itself fails partway.
+    mounted_access = _local_fuse_access(args=decoded_args, base_dir=base_dir)
+
     stdout_path = payload.get("stdout_path")
     stderr_path = payload.get("stderr_path")
     secret_values = tuple(payload.get("secret_values", ()))
@@ -51,6 +57,12 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             secret_values=secret_values,
             log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
         ):
+            if mounted_access is not None:
+                from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+
+                decoded_args, _ = hydrate_fuse_refs(
+                    args=decoded_args, mounted_access=mounted_access
+                )
             task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
             result = fn(**decoded_args)
@@ -62,12 +74,51 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
         return error_response(exc)
+    finally:
+        if mounted_access is not None:
+            mounted_access.close()
 
     if payload.get("dynamic_result", True) and _is_dynamic_result(result):
-        return {"ok": True, "result": result, "result_encoding": "direct"}
+        response = {"ok": True, "result": result, "result_encoding": "direct"}
+    else:
+        encoded_result = encode_value(result, base_dir=base_dir)
+        response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
 
-    encoded_result = encode_value(result, base_dir=base_dir)
-    return {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
+    if mounted_access is not None:
+        response["remote_input_access"] = mounted_access.stats().to_dict()
+    return response
+
+
+def _local_fuse_access(*, args: dict[str, Any], base_dir: Path) -> Any:
+    """Build a task-local :class:`MountedAccess` when args carry fuse markers.
+
+    Mount points live under ``base_dir`` (the task's transport dir) so
+    parallel process-pool workers do not share a bucket mount point.
+    Returns ``None`` when no fuse markers are present so non-streaming
+    tasks pay no import or setup cost.
+    """
+    if not _args_have_fuse_markers(args):
+        return None
+
+    from ginkgo.remote.access.mounted import MountedAccess
+
+    return MountedAccess(
+        mount_root=base_dir / "fuse",
+        cache_root=base_dir / "fuse-cache",
+    )
+
+
+def _args_have_fuse_markers(value: Any) -> bool:
+    """Return whether ``value`` contains any fuse marker dict."""
+    from ginkgo.remote.access.protocol import is_fuse_ref
+
+    if is_fuse_ref(value):
+        return True
+    if isinstance(value, dict):
+        return any(_args_have_fuse_markers(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_args_have_fuse_markers(item) for item in value)
+    return False
 
 
 def _is_dynamic_result(value: Any) -> bool:
