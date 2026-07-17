@@ -18,7 +18,7 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.core.directive import ExecutionDirective
@@ -183,6 +183,30 @@ def evaluate(
     ).evaluate(expr)
 
 
+# Closed set of task-node lifecycle states. Phase -> field-availability
+# invariants (enforced by asserts at the read sites):
+#
+# - resolved_args is non-None from "ready" onward (set by _prepare_node,
+#   refreshed on dispatch and after staging); it is None in "pending" and
+#   is cleared by _schedule_retry ("waiting_retry" / retried "pending").
+# - execution_args is non-None in "running" and "running_shell" (set when
+#   entering "running"); cleared on completion and on retry.
+# - transport_path is non-None only in "running" when the task executes via
+#   the process pool or a remote executor (never for driver tasks); cleared
+#   by _cleanup_transport on completion, failure, and retry.
+_NodeState = Literal[
+    "pending",
+    "ready",
+    "staging",
+    "running",
+    "running_shell",
+    "waiting_dynamic",
+    "waiting_retry",
+    "completed",
+    "failed",
+]
+
+
 @dataclass(kw_only=True)
 class _TaskNode:
     """Internal task node tracked by the concurrent scheduler."""
@@ -190,7 +214,7 @@ class _TaskNode:
     node_id: int
     expr: Expr
     dependency_ids: set[int]
-    state: str = "pending"
+    state: _NodeState = "pending"
     resolved_args: dict[str, Any] | None = None
     execution_args: dict[str, Any] | None = None
     cache_key: str | None = None
