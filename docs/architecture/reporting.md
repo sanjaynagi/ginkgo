@@ -105,7 +105,7 @@ name in the card header; they are also surfaced by `ginkgo asset show`.
 Like groups, captions are presentation-only and do not affect identity or
 cache behaviour.
 
-Asset check outcomes are read from the reserved `_checks` version-metadata
+Asset check outcomes are read from the reserved `ginkgo_checks` version-metadata
 field into typed `CheckOutcome` values on `AssetCard`. Each asset card renders
 these outcomes as pass/fail badges beside its kind and name. Current strict
 asset checks register only all-passing versions, but the report model accepts

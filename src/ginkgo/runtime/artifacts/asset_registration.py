@@ -40,7 +40,7 @@ from ginkgo.runtime.caching.cache import CacheStore
 
 ASSET_GROUP_METADATA_KEY = "ginkgo_group"
 ASSET_CAPTION_METADATA_KEY = "ginkgo_caption"
-ASSET_CHECKS_METADATA_KEY = "_checks"
+ASSET_CHECKS_METADATA_KEY = "ginkgo_checks"
 
 
 class AssetCheckError(RuntimeError):
@@ -345,7 +345,6 @@ def _current_index_for(
 def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
     """Return version metadata including report presentation labels."""
     version_metadata = dict(metadata)
-    version_metadata.pop(ASSET_CHECKS_METADATA_KEY, None)
     if result.group is not None:
         version_metadata[ASSET_GROUP_METADATA_KEY] = result.group
     if result.caption is not None:

@@ -9,7 +9,10 @@ from rich import box
 from rich.table import Table
 
 from ginkgo.cli.common import ASSETS_ROOT, console
-from ginkgo.runtime.artifacts.asset_registration import ASSET_CAPTION_METADATA_KEY
+from ginkgo.runtime.artifacts.asset_registration import (
+    ASSET_CAPTION_METADATA_KEY,
+    ASSET_CHECKS_METADATA_KEY,
+)
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
@@ -176,6 +179,9 @@ def render_asset_show(*, console, version) -> int:
     caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
     if isinstance(caption, str) and caption.strip():
         console.print(f"Caption: {caption.strip()}")
+    for name, passed in _check_outcomes_from_metadata(metadata=metadata):
+        outcome = "[green]passed[/]" if passed else "[red]failed[/]"
+        console.print(f"Check: {name} {outcome}")
 
     if namespace == "table":
         _render_table_metadata(console=console, metadata=metadata)
@@ -191,6 +197,23 @@ def render_asset_show(*, console, version) -> int:
         console.print(Panel.fit(repr(metadata), title="metadata"))
 
     return 0
+
+
+def _check_outcomes_from_metadata(*, metadata: dict) -> list[tuple[str, bool]]:
+    """Extract well-formed check outcomes from version metadata."""
+    raw_checks = metadata.get(ASSET_CHECKS_METADATA_KEY)
+    if not isinstance(raw_checks, (list, tuple)):
+        return []
+
+    outcomes: list[tuple[str, bool]] = []
+    for raw_outcome in raw_checks:
+        if not isinstance(raw_outcome, dict):
+            continue
+        name = raw_outcome.get("name")
+        passed = raw_outcome.get("passed")
+        if isinstance(name, str) and name and isinstance(passed, bool):
+            outcomes.append((name, passed))
+    return outcomes
 
 
 def _render_table_metadata(*, console, metadata: dict) -> None:
