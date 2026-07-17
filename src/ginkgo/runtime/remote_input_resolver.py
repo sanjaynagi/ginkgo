@@ -24,6 +24,7 @@ from typing import Any, get_args, get_origin
 from ginkgo.config import load_runtime_config
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
 from ginkgo.core.types import file, folder
+from ginkgo.remote.access.doctor import local_streaming_available
 from ginkgo.remote.access.protocol import encode_fuse_ref
 from ginkgo.remote.access.resolver import (
     AccessConfig,
@@ -31,6 +32,11 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
+
+# Task kinds whose bodies run on the scheduler thread / in a driver
+# subprocess rather than through ``run_task`` in the process pool. These
+# have no local mount lifecycle, so they always stage remote inputs.
+_DRIVER_KINDS = frozenset({"notebook", "script", "shell"})
 
 
 def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
@@ -234,22 +240,27 @@ class RemoteStager:
         task_policy = TaskAccessPolicy.from_task_def(task_def)
         access_config = self._get_access_config()
 
-        # Fuse mounting is currently only wired for the remote dispatch
-        # path: the worker hydrates fuse markers via `MountedAccess`, but
-        # the local process-pool path has no equivalent mount lifecycle.
-        # For local tasks, force `stage` so downstream code receives a
-        # normal local path. (Local FUSE on a host with a healthy driver
-        # would also be useful for sparse reads of large objects; see the
-        # follow-up tracked on PR #41.)
+        # Fuse mounting is wired for the remote dispatch path (the worker
+        # mounts markers via `MountedAccess`) and for local process-pool
+        # tasks (hydrated in `run_task` against a task-local mount root).
+        # Driver-kind tasks run on the scheduler thread with no mount
+        # lifecycle, so they always stage. Local worker tasks stream only
+        # when the host has a healthy driver + `/dev/fuse`; that per-scheme
+        # check is deferred to `resolve_access` via `require_local_driver`.
         dispatches_remote = bool(
             getattr(task_def, "remote", False) or getattr(task_def, "gpu", 0) > 0
         )
+        is_driver_kind = getattr(task_def, "kind", None) in _DRIVER_KINDS
+        require_local_driver = False
         if not dispatches_remote:
-            task_policy = TaskAccessPolicy(
-                remote_input_access="stage",
-                streaming_compatible=False,
-                fuse_prefetch=task_policy.fuse_prefetch,
-            )
+            if is_driver_kind:
+                task_policy = TaskAccessPolicy(
+                    remote_input_access="stage",
+                    streaming_compatible=False,
+                    fuse_prefetch=task_policy.fuse_prefetch,
+                )
+            else:
+                require_local_driver = True
 
         staged: dict[str, Any] = {}
         for name, value in resolved_args.items():
@@ -264,6 +275,7 @@ class RemoteStager:
                 value=value,
                 task_policy=task_policy,
                 access_config=access_config,
+                require_local_driver=require_local_driver,
             )
         return staged
 
@@ -274,18 +286,33 @@ class RemoteStager:
         value: Any,
         task_policy: TaskAccessPolicy | None = None,
         access_config: AccessConfig | None = None,
+        require_local_driver: bool = False,
     ) -> Any:
-        """Stage a single value, recursing into typed containers."""
+        """Stage a single value, recursing into typed containers.
+
+        When ``require_local_driver`` is ``True`` (local worker tasks),
+        fuse selection is gated per scheme on the local host having a
+        healthy driver + ``/dev/fuse``; otherwise fuse degrades to
+        ``stage``. Remote dispatch leaves this ``False`` and assumes the
+        pod carries the drivers.
+        """
         task_policy = task_policy or TaskAccessPolicy()
         access_config = access_config or self._get_access_config()
 
-        # Explicit remote refs.
-        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
-            policy = resolve_access(
-                ref=value,
+        def _policy_for(ref: RemoteRef) -> str:
+            driver_available = (
+                local_streaming_available(scheme=ref.scheme) if require_local_driver else True
+            )
+            return resolve_access(
+                ref=ref,
                 task_policy=task_policy,
                 config=access_config,
+                driver_available=driver_available,
             )
+
+        # Explicit remote refs.
+        if isinstance(value, (RemoteFileRef, RemoteFolderRef)):
+            policy = _policy_for(value)
             if policy.startswith("fuse"):
                 return encode_fuse_ref(ref=value, policy=policy)
             if isinstance(value, RemoteFileRef):
@@ -298,7 +325,7 @@ class RemoteStager:
                 from ginkgo.core.remote import remote_file
 
                 ref = remote_file(value)
-                policy = resolve_access(ref=ref, task_policy=task_policy, config=access_config)
+                policy = _policy_for(ref)
                 if policy.startswith("fuse"):
                     return encode_fuse_ref(ref=ref, policy=policy)
                 return file(str(self._stage_remote_ref(ref=ref)))
@@ -306,7 +333,7 @@ class RemoteStager:
                 from ginkgo.core.remote import remote_folder
 
                 ref = remote_folder(value)
-                policy = resolve_access(ref=ref, task_policy=task_policy, config=access_config)
+                policy = _policy_for(ref)
                 if policy.startswith("fuse"):
                     return encode_fuse_ref(ref=ref, policy=policy)
                 return folder(str(self._stage_remote_ref(ref=ref)))
@@ -322,6 +349,7 @@ class RemoteStager:
                     value=item,
                     task_policy=task_policy,
                     access_config=access_config,
+                    require_local_driver=require_local_driver,
                 )
                 for item in value
             ]
