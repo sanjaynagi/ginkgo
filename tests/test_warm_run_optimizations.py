@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.caching.hashing import hash_file
+from ginkgo.core.hashing import hash_file
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
 from tests.conftest import EventCollector
 

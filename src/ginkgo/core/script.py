@@ -14,6 +14,7 @@ from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.hashing import hash_file
 
 _ScriptOutputItem = str | AssetResult
 _ScriptOutput = _ScriptOutputItem | list[_ScriptOutputItem] | None
@@ -92,8 +93,6 @@ def script(
         If the interpreter cannot be inferred from the extension and no
         explicit ``interpreter`` is given.
     """
-    from ginkgo.runtime.caching.hashing import hash_file
-
     resolved = Path(path).resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"Script source not found: {str(resolved)!r}")

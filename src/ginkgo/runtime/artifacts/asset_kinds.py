@@ -8,9 +8,12 @@ task completion; the rehydration path and the ``ginkgo asset show`` /
 ``ginkgo models`` CLI use ``loader`` to read registered bytes back into
 live Python values.
 
-Adding a new asset kind is a pure-registry change: register one entry in
+Adding a new asset kind means extending the canonical ``AssetKind`` Literal
+in :mod:`ginkgo.core.asset` and registering one entry in
 :data:`ASSET_KINDS` (plus an optional one-line shorthand factory in
-:mod:`ginkgo.core.asset`) and every dispatch site picks it up.
+:mod:`ginkgo.core.asset`); every dispatch site picks it up.  The registry
+keys are validated against the canonical kind list at import time, so
+adding a kind to one home without the other fails immediately.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ginkgo.core.asset import ASSET_KIND_NAMES
 from ginkgo.runtime.artifacts import asset_serialization as _ser
 from ginkgo.runtime.artifacts import asset_loaders as _load
 
@@ -332,6 +336,14 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         default_name_strategy="kind_index",
     ),
 }
+
+# The registry must stay in lockstep with the canonical kind list in
+# ginkgo.core.asset; adding a kind to one without the other fails at import.
+if frozenset(ASSET_KINDS) != frozenset(ASSET_KIND_NAMES):
+    raise RuntimeError(
+        f"ASSET_KINDS registry keys {sorted(ASSET_KINDS)} do not match the "
+        f"canonical asset kinds {sorted(ASSET_KIND_NAMES)} defined in ginkgo.core.asset"
+    )
 
 
 def get_kind_spec(kind: str) -> AssetKindSpec:

@@ -13,15 +13,20 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
+from ginkgo.core.hashing import hash_str
 from ginkgo.core.types import file
-from ginkgo.runtime.caching.hashing import hash_str
 
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
 
-_VALID_KINDS: frozenset[str] = frozenset({"file", "table", "array", "fig", "text", "model"})
+# Canonical asset-kind names, derived from the Literal so there is exactly one
+# definition.  The runtime registry (ginkgo.runtime.artifacts.asset_kinds)
+# validates its keys against this tuple at import time.
+ASSET_KIND_NAMES: tuple[str, ...] = get_args(AssetKind)
+
+_VALID_KINDS: frozenset[str] = frozenset(ASSET_KIND_NAMES)
 
 
 @dataclass(frozen=True, kw_only=True)

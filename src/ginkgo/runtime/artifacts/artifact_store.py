@@ -29,7 +29,7 @@ from ginkgo.runtime.artifacts.artifact_model import (
 )
 from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.caching.hashing import hash_bytes, hash_file
+from ginkgo.core.hashing import hash_bytes, hash_file
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
 
 

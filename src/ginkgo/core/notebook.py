@@ -13,6 +13,7 @@ from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.hashing import hash_file
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
@@ -72,8 +73,6 @@ def notebook(
     -------
     NotebookDirective
     """
-    from ginkgo.runtime.caching.hashing import hash_file
-
     resolved = Path(path).resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"Notebook source not found: {str(resolved)!r}")
