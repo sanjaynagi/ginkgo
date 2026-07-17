@@ -314,6 +314,36 @@ class LocalArtifactStore:
         """
         return (self._refs_dir / f"{artifact_id}.json").exists()
 
+    def load_record(self, *, artifact_id: str) -> ArtifactRecord | None:
+        """Return the stored metadata record for one artifact.
+
+        Parameters
+        ----------
+        artifact_id : str
+            The artifact ID to look up.
+
+        Returns
+        -------
+        ArtifactRecord | None
+            The record, or ``None`` when the artifact is not in the store.
+        """
+        ref_path = self._refs_dir / f"{artifact_id}.json"
+        if not ref_path.is_file():
+            return None
+        return ArtifactRecord.from_path(ref_path)
+
+    def list_artifact_ids(self) -> list[str]:
+        """Return the IDs of every artifact currently in the store.
+
+        Returns
+        -------
+        list[str]
+            Sorted artifact IDs.
+        """
+        return sorted(
+            ref_path.stem for ref_path in self._refs_dir.iterdir() if ref_path.suffix == ".json"
+        )
+
     def delete(self, *, artifact_id: str) -> None:
         """Remove an artifact from the store.
 
@@ -593,10 +623,10 @@ class LocalArtifactStore:
 
     def _load_record(self, *, artifact_id: str) -> ArtifactRecord:
         """Load one artifact record or raise if it does not exist."""
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if not ref_path.exists():
+        record = self.load_record(artifact_id=artifact_id)
+        if record is None:
             raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
-        return ArtifactRecord.from_path(ref_path)
+        return record
 
     def _load_tree_ref(self, *, record: ArtifactRecord) -> TreeRef:
         """Load the tree manifest for one directory artifact."""

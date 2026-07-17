@@ -757,7 +757,7 @@ def _build_asset_card(
     artifact_copies: list[ArtifactCopy],
 ) -> AssetCard | None:
     """Build one :class:`AssetCard` for a stored asset version."""
-    record = _artifact_record(artifact_store=artifact_store, artifact_id=version.artifact_id)
+    record = artifact_store.load_record(artifact_id=version.artifact_id)
     path = _artifact_path(artifact_store=artifact_store, artifact_id=version.artifact_id)
 
     namespace = version.key.namespace
@@ -1070,16 +1070,6 @@ def _asset_checks(*, metadata: Mapping[str, Any]) -> tuple[CheckOutcome, ...]:
         if isinstance(name, str) and name and isinstance(passed, bool):
             outcomes.append(CheckOutcome(name=name, passed=passed))
     return tuple(outcomes)
-
-
-def _artifact_record(
-    *, artifact_store: LocalArtifactStore, artifact_id: str
-) -> ArtifactRecord | None:
-    """Return stored artifact metadata when it exists."""
-    ref_path = artifact_store._refs_dir / f"{artifact_id}.json"
-    if not ref_path.is_file():
-        return None
-    return ArtifactRecord.from_path(ref_path)
 
 
 def _artifact_path(*, artifact_store: LocalArtifactStore, artifact_id: str) -> Path | None:

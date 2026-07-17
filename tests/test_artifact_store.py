@@ -354,3 +354,23 @@ class TestStorageLayout:
         assert (root / "blobs").is_dir()
         assert (root / "trees").is_dir()
         assert (root / "refs").is_dir()
+
+
+class TestRecordAccess:
+    def test_load_record_returns_stored_metadata(self, store):
+        record = store.store_bytes(data=b"payload", extension="txt")
+
+        loaded = store.load_record(artifact_id=record.artifact_id)
+        assert loaded is not None
+        assert loaded.artifact_id == record.artifact_id
+        assert loaded.digest_hex == record.digest_hex
+
+    def test_load_record_missing_returns_none(self, store):
+        assert store.load_record(artifact_id="missing") is None
+
+    def test_list_artifact_ids(self, store):
+        assert store.list_artifact_ids() == []
+
+        first = store.store_bytes(data=b"one", extension="txt")
+        second = store.store_bytes(data=b"two", extension="txt")
+        assert store.list_artifact_ids() == sorted([first.artifact_id, second.artifact_id])

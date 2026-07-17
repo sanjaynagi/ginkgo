@@ -50,10 +50,7 @@ def command_asset(args) -> int:
             rich_console.print(f"[dim]No versions found for {key}.[/]")
             return 0
 
-        index = store._load_index(key)
-        aliases = {
-            str(version_id): alias for alias, version_id in dict(index.get("aliases", {})).items()
-        }
+        aliases = {version_id: alias for alias, version_id in store.list_aliases(key=key).items()}
         rich_console.print(f"Asset Key: [bold]{key}[/]")
         for version in versions:
             rich_console.print(

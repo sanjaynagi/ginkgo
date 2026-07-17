@@ -107,6 +107,51 @@ class AssetStore:
         versions = [str(item) for item in index.get("versions", [])]
         return [self.get_version(key=key, version_id=version_id) for version_id in versions]
 
+    def list_aliases(self, *, key: AssetKey) -> dict[str, str]:
+        """Return the alias mapping for one asset key.
+
+        Parameters
+        ----------
+        key : AssetKey
+            Asset identity.
+
+        Returns
+        -------
+        dict[str, str]
+            Mapping of alias label to the version id it points at. Empty
+            when the asset has no aliases or is unknown.
+        """
+        index = self._load_index(key)
+        return {
+            str(alias): str(version_id)
+            for alias, version_id in dict(index.get("aliases", {})).items()
+        }
+
+    def referenced_artifact_ids(self) -> set[str]:
+        """Return artifact IDs referenced by every catalogued asset version.
+
+        The asset catalog and the cache share a single content-addressed
+        artifact store. Asset versions are intended to outlive the ephemeral
+        cache, so garbage collectors must treat these IDs as live even when
+        no cache entry still references them. The scan is tolerant: malformed
+        or unreadable version metadata is skipped.
+
+        Returns
+        -------
+        set[str]
+            Artifact IDs referenced by all persisted asset versions.
+        """
+        referenced: set[str] = set()
+        for meta_path in self._root.glob("*/*/versions/v-*/meta.yaml"):
+            try:
+                meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+            except (yaml.YAMLError, OSError):
+                continue
+            artifact_id = meta.get("artifact_id")
+            if isinstance(artifact_id, str) and artifact_id:
+                referenced.add(artifact_id)
+        return referenced
+
     def list_asset_keys(self) -> list[AssetKey]:
         """Return all asset keys currently present in the catalog."""
         keys: list[AssetKey] = []

@@ -267,7 +267,7 @@ class CacheStore:
             a restore fails.
         """
         return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
-        artifact_ids = self._load_artifact_ids(cache_key=cache_key)
+        artifact_ids = self.load_artifact_ids(cache_key=cache_key)
         if artifact_ids is None:
             return False
         return self._validate_output_value(
@@ -359,8 +359,20 @@ class CacheStore:
         extra = meta.get("extra")
         return extra if isinstance(extra, dict) else None
 
-    def _load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
-        """Load output artifact mappings for one cache entry."""
+    def load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
+        """Return output-path to artifact-ID mappings for one cache entry.
+
+        Parameters
+        ----------
+        cache_key : str
+            The content-addressed cache key.
+
+        Returns
+        -------
+        dict[str, str] | None
+            Mapping of output path to artifact ID, or ``None`` when the
+            entry is missing or recorded no artifact mappings.
+        """
         meta = self._load_meta(cache_key=cache_key)
         if meta is None:
             return None
@@ -372,6 +384,26 @@ class CacheStore:
             for path, artifact_id in artifact_ids.items()
             if isinstance(path, str) and isinstance(artifact_id, str)
         }
+
+    def referenced_artifact_ids(self) -> set[str]:
+        """Return artifact IDs referenced by any surviving cache entry.
+
+        Entries with missing or unreadable metadata contribute nothing;
+        garbage collectors treat every returned ID as live.
+
+        Returns
+        -------
+        set[str]
+            Artifact IDs referenced by all cache entries under the root.
+        """
+        referenced: set[str] = set()
+        for entry_dir in self._root.iterdir():
+            if not entry_dir.is_dir():
+                continue
+            artifact_ids = self.load_artifact_ids(cache_key=entry_dir.name)
+            if artifact_ids:
+                referenced.update(artifact_ids.values())
+        return referenced
 
     def _load_meta(self, *, cache_key: str) -> dict[str, Any] | None:
         """Load the parsed meta.json for one cache entry."""
