@@ -31,6 +31,7 @@ from ginkgo.cli.renderers.common import (
     _truncate_task_label,
 )
 from ginkgo.formatting import format_bytes, format_duration
+from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
     CliAssetSummary,
     FailureDetails,
@@ -194,7 +195,7 @@ class CliRunRenderer:
         if status in {"staging", "submitted", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
-        elif status in {"cached", "succeeded", "failed"}:
+        elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
         # Only refresh on state transitions that the user needs to see
@@ -560,7 +561,7 @@ class CliRunRenderer:
 
     def _terminal_count(self) -> int:
         counts = self._status_counts()
-        return counts["cached"] + counts["succeeded"] + counts["failed"]
+        return sum(counts[status] for status in TERMINAL_STATUSES)
 
     def _elapsed_clock(self) -> float:
         if self._final_elapsed is not None and self._run_started_at is not None:
