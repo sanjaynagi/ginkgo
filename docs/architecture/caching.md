@@ -29,8 +29,9 @@ cache entries without requiring a manual `version=` bump. This is deliberately
 conservative: an edit anywhere in a reachable local module invalidates tasks
 that import it. Dynamic imports and external runtime dependencies are outside
 this static boundary; use `version=` to invalidate cache entries for them. If
-source extraction fails for a task definition, registration fails explicitly
-instead of silently weakening cache correctness.
+source extraction fails for a task definition, or a module in the local import
+closure cannot be read or parsed, registration fails explicitly instead of
+silently weakening cache correctness.
 
 File and folder outputs flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in

@@ -790,7 +790,8 @@ def _compute_source_hash(fn: Callable[..., Any]) -> str:
     Raises
     ------
     ValueError
-        If the source cannot be extracted (lambdas, dynamic functions).
+        If the source cannot be extracted (lambdas, dynamic functions), or
+        if a module in the local import closure cannot be read or parsed.
     """
     from ginkgo.runtime.caching.hashing import hash_file, hash_str
 
@@ -858,12 +859,24 @@ def _module_source_root(*, module: ModuleType, source_path: Path) -> Path:
 
 
 def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleType]:
-    """Return already-loaded modules named by static imports in ``module``."""
+    """Return already-loaded modules named by static imports in ``module``.
+
+    Raises
+    ------
+    ValueError
+        If the module source cannot be read or parsed. Swallowing the error
+        would silently truncate the import closure and stop deeper helper
+        changes from invalidating the cache.
+    """
     try:
         with tokenize.open(source_path) as source_file:
             tree = ast.parse(source_file.read(), filename=str(source_path))
-    except (OSError, SyntaxError, UnicodeDecodeError):
-        return []
+    except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"Cannot parse imports of module '{module.__name__}' ({source_path}) "
+            "while hashing the task's local import closure. Fix the module source "
+            "so cache invalidation can track the full import closure."
+        ) from exc
 
     names: set[str] = set()
     for node in ast.walk(tree):
