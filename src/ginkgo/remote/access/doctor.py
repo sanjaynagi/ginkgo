@@ -17,6 +17,37 @@ from typing import Any
 from ginkgo.remote.access.resolver import AccessConfig, load_access_config
 
 
+def local_streaming_available(*, scheme: str) -> bool:
+    """Return whether the local host can FUSE-mount objects for ``scheme``.
+
+    Streaming on the local host requires both the kernel FUSE device
+    (``/dev/fuse``) and a healthy driver binary for the URI scheme on
+    ``PATH``. Used to gate local (non-dispatched) tasks into the fuse
+    path; when it returns ``False`` the resolver degrades to ``stage``.
+
+    Parameters
+    ----------
+    scheme : str
+        Remote URI scheme (``"s3"`` / ``"gs"`` / ``"oci"``).
+
+    Returns
+    -------
+    bool
+        ``True`` when ``/dev/fuse`` exists and the scheme's driver passes
+        its health check; ``False`` otherwise (including on macOS, where
+        ``/dev/fuse`` is absent).
+    """
+    if not Path("/dev/fuse").exists():
+        return False
+    from ginkgo.remote.access.drivers.base import resolve_driver
+
+    try:
+        resolve_driver(scheme=scheme).health_check()
+    except Exception:  # noqa: BLE001 - any driver failure means unavailable
+        return False
+    return True
+
+
 @dataclass(frozen=True, kw_only=True)
 class AccessDiagnostic:
     """One diagnostic entry produced by the streaming probes."""

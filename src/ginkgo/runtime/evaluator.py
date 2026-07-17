@@ -793,6 +793,7 @@ class ConcurrentEvaluator:
         remote_job_id: str | None = None,
     ) -> None:
         """Handle the result returned from a Python worker."""
+        self._fold_remote_input_access(node=node, payload=completed_value)
         completed_value = self._decode_worker_result(node=node, payload=completed_value)
         node.remote_job_id = remote_job_id
         self._handle_task_body_result(node=node, completed_value=completed_value)
@@ -1388,8 +1389,15 @@ class ConcurrentEvaluator:
                 scratch_dir=scratch_dir,
             )
 
-        # Fold remote input-access stats (FUSE mount cost, cache hits, fallbacks)
-        # into provenance when the worker reported them.
+        return payload
+
+    def _fold_remote_input_access(self, *, node: _TaskNode, payload: Any) -> None:
+        """Fold worker-reported input-access stats into provenance.
+
+        Records FUSE mount cost, cache hits, and fallbacks for both remote
+        and local (process-pool) workers, and surfaces a notice when a
+        mount fell back to staging.
+        """
         if (
             isinstance(payload, dict)
             and isinstance(payload.get("remote_input_access"), dict)
@@ -1401,8 +1409,6 @@ class ConcurrentEvaluator:
                 remote_input_access=access_stats,
             )
             self._warn_on_access_fallback(node=node, access_stats=access_stats)
-
-        return payload
 
     def _warn_on_access_fallback(
         self,

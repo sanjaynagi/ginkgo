@@ -17,6 +17,7 @@ heuristic.
 
 from __future__ import annotations
 
+from ginkgo.remote.access.doctor import local_streaming_available
 from ginkgo.remote.access.mounted import MountedAccess
 from ginkgo.remote.access.protocol import (
     FUSE_FILE_TYPE,
@@ -50,5 +51,6 @@ __all__ = [
     "encode_fuse_ref",
     "is_fuse_ref",
     "load_access_config",
+    "local_streaming_available",
     "resolve_access",
 ]
