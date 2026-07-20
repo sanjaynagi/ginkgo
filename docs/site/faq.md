@@ -1,13 +1,12 @@
 # FAQ
 
-Answers to common questions about how Ginkgo works, grounded in what the
-current implementation actually does. If you are new, start with
+Answers to common questions about how Ginkgo works. If you are new, start with
 [Why Ginkgo](motivation/) and the [Quickstart](getting-started/quickstart/);
 this page is a reference to dip into by topic.
 
 ## Getting Started
 
-### What problem does Ginkgo solve, and when should I reach for it over a plain script or notebook?
+### What problem does Ginkgo solve?
 
 Ginkgo lets you write a scientific workflow as ordinary Python functions
 decorated with `@flow` and `@task()`, then runs them as a dependency graph with
@@ -15,39 +14,26 @@ parallelism, content-addressed caching, and a recorded provenance trail.
 Calling a task does not run it — it returns a deferred expression, so Ginkgo can
 build and validate the whole graph before anything executes, and a task can
 inspect its resolved inputs and add new steps at runtime (dynamic DAG
-expansion). Reach for it over a plain script when you want cached re-runs,
-per-task environments, and an inspectable record of what ran; a one-off notebook
-is fine until you need reproducibility, incremental re-execution, or to fan out
-work across cores.
-
-### How does Ginkgo compare to Snakemake, Nextflow, Airflow, and Dagster?
-
-Snakemake and Nextflow are file/rule-oriented tools with their own DSLs
-(Snakemake's Python-flavoured rules with wildcards; Nextflow's Groovy channels);
-Ginkgo instead keeps the workflow in plain Python functions with typed task
-boundaries, so there is no separate DSL layer. Airflow and Dagster are also
-Python, but they are long-running services, and running a shell command, a
-script, or a notebook there means reaching for an external operator or a
-container image. Ginkgo runs those natively: a task can be a shell command, a
-Python or R script, or a Jupyter/marimo notebook, and each task can declare its
-own foreign environment — a Pixi or Conda environment, or a container image —
-right on the decorator. That mix of first-class shell/script/notebook execution
-and per-task environments is Ginkgo's centre of gravity, alongside the
-Python-native deferred-expression model, runtime DAG expansion, and
-content-addressed caching keyed on task source plus resolved inputs plus
-environment identity.
+expansion).
 
 Ginkgo fills a gap for data scientists and bioinformaticians who want to code
-their workflows in plain Python — mixing shell, script, and notebook steps, each
+their workflows in plain Python — mixing Python, shell, script, and notebook steps, each
 in its own environment, with caching and provenance — without adopting a
-separate workflow language or standing up an orchestration server. Pick the
-others when you need their maturity, cluster executors, a scheduling service, or
-their wider ecosystem.
+separate workflow language. Ginkgo was built with the specific aim of maintaining a simple, aesthetic
+Pythonic syntax.
+
+### How does Ginkgo compare to Snakemake, Nextflow, Prefect, and Dagster?
+
+Snakemake can not handle dynamic DAGs natively. Nextflow is written in Groovy and requires using
+the abstraction of channels to pass data between steps. We take the view that a scientific workflow
+orchestrator should be plain Python, handle dynamic DAGs natively and should not require the abstraction of channels. Prefect and Dagster are also Python, but they are not well suited to running shell commands, scripts,
+and notebooks in foreign environments (e.g an isolated pixi, conda environment or container image).
+Ginkgo runs those natively each task can declare its own foreign environment right on the @task() decorator.
+
 
 ### What does the canonical project layout look like, and how does autodiscovery find my flows?
 
-The canonical layout is a project root with the config files, one or more
-workflow packages, and a tests directory:
+A Ginkgo workflow may be structured however the user desires. The canonical layout, however, is a project root with the config files, one or more workflow packages, and a tests directory:
 
 ```text
 my-project/
@@ -56,7 +42,7 @@ my-project/
 ├── my_project/
 │   ├── __init__.py
 │   ├── workflow.py        # flow definitions and wiring — keep this thin
-│   ├── modules/           # reusable tasks
+│   ├── modules/           # contain tasks
 │   └── envs/              # per-task environment manifests
 └── tests/workflows/       # workflow validation checks
 ```
@@ -140,6 +126,12 @@ another task call. When the evaluator registers the graph, any `Expr` (or
 `ExprList`, or list/dict/tuple containing them) found in a task's arguments
 becomes a dependency edge, and the upstream result is substituted in before the
 downstream task runs.
+
+The dependency comes from the `Expr` you pass, not from the value it will carry.
+A task whose only job is a side effect can return `None`: pass its `Expr` and the
+downstream task both waits for it and receives that `None`. A plain value that is
+not an `Expr` (a literal `None`, say) creates no dependency, because nothing links
+it back to a producing task.
 
 ```python
 @flow
