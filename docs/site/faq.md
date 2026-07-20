@@ -26,57 +26,47 @@ Snakemake and Nextflow are file/rule-oriented tools with their own DSLs
 (Snakemake's Python-flavoured rules with wildcards; Nextflow's Groovy channels);
 Ginkgo instead keeps the workflow in plain Python functions with typed task
 boundaries, so there is no separate DSL layer. Airflow and Dagster are also
-Python, but they are long-running services centred on scheduling/operators
-(Airflow) or software-defined assets (Dagster); Ginkgo is lighter — a CLI you
-invoke per run, with no daemon, web server, or built-in cron/trigger scheduling.
-What Ginkgo emphasises today is the Python-native deferred-expression model,
-runtime DAG expansion, content-addressed caching keyed on task source plus
-resolved inputs plus environment identity, and per-task Pixi or container
-environments. Pick Ginkgo when your analysis is Python, its shape depends on
-intermediate results, and you want reproducible caching without adopting a
-separate workflow language or standing up an orchestration server; pick the
-others if you need their maturity, cluster executors, scheduling service, or
-ecosystem.
+Python, but they are long-running services, and running a shell command, a
+script, or a notebook there means reaching for an external operator or a
+container image. Ginkgo runs those natively: a task can be a shell command, a
+Python or R script, or a Jupyter/marimo notebook, and each task can declare its
+own foreign environment — a Pixi or Conda environment, or a container image —
+right on the decorator. That mix of first-class shell/script/notebook execution
+and per-task environments is Ginkgo's centre of gravity, alongside the
+Python-native deferred-expression model, runtime DAG expansion, and
+content-addressed caching keyed on task source plus resolved inputs plus
+environment identity.
 
-### How do I install Ginkgo and initialise a new project?
-
-Ginkgo targets Python 3.11+. Install just the CLI with the curl installer
-(requires `uv`), or use Pixi for development:
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh | sh
-```
-
-```bash
-pixi install
-```
-
-Scaffold a project with `ginkgo init`, which writes a starter package,
-`pixi.toml`, `ginkgo.toml`, a `tests/workflows/` smoke test, and (by default)
-Claude agent skill files:
-
-```bash
-ginkgo init my-project
-```
-
-`ginkgo init` takes an optional target directory (defaults to `.`), plus
-`--no-skills`, `--skills-only`, and `--force` (it refuses to overwrite existing
-scaffold files without `--force`). It prints the next steps as `cd my-project`
-and `ginkgo test --dry-run`.
+Ginkgo fills a gap for data scientists and bioinformaticians who want to code
+their workflows in plain Python — mixing shell, script, and notebook steps, each
+in its own environment, with caching and provenance — without adopting a
+separate workflow language or standing up an orchestration server. Pick the
+others when you need their maturity, cluster executors, a scheduling service, or
+their wider ecosystem.
 
 ### What does the canonical project layout look like, and how does autodiscovery find my flows?
 
-The canonical layout is a project root containing `pixi.toml`, `ginkgo.toml`, a
-project package (`<package>/__init__.py`, `<package>/workflow.py`,
-`<package>/modules/`, `<package>/envs/`), and `tests/workflows/`; `results/` and
-`.ginkgo/` are created at runtime. When you run `ginkgo run` with no explicit
-path, autodiscovery scans the direct child directories of the project root and
-collects any that are Python packages (have `__init__.py`), are not hidden or
-ignored, and contain a `workflow.py`. Exactly one candidate is used
-automatically; several candidates raise an error asking you to pass an explicit
-path; if none are found it falls back to a legacy root-level `./workflow.py`. So
-`workflow.py` should stay thin (flow definitions and wiring) with reusable tasks
-under `modules/`.
+The canonical layout is a project root with the config files, one or more
+workflow packages, and a tests directory:
+
+```text
+my-project/
+├── pixi.toml
+├── ginkgo.toml
+├── my_project/
+│   ├── __init__.py
+│   ├── workflow.py        # flow definitions and wiring — keep this thin
+│   ├── modules/           # reusable tasks
+│   └── envs/              # per-task environment manifests
+└── tests/workflows/       # workflow validation checks
+```
+
+`results/` and `.ginkgo/` are created at runtime. When you run `ginkgo run` with
+no explicit path, autodiscovery scans the project root's child directories and
+picks the Python package (one with `__init__.py`) that contains a `workflow.py`.
+Exactly one candidate is used automatically; several candidates raise an error
+asking you to pass an explicit path; if none are found it falls back to a legacy
+root-level `./workflow.py`.
 
 ### What's the smallest possible workflow?
 
@@ -196,13 +186,11 @@ into a list of strings.
 The graph the flow returns is the *static* DAG, registered up front by walking
 the expression tree. Dynamic expansion happens when a **task body, at runtime,
 returns new deferred expressions** instead of a plain value. When a Python task
-completes, the evaluator inspects its return value; if it is or contains an
-`Expr`, `ExprList`, or `OutputIndex`, the evaluator registers those returned
-expressions as new graph nodes, moves the parent node into the `waiting_dynamic`
-state, records the new nodes as dynamic dependencies, and emits a
-`GraphExpanded` event. The new nodes are scheduled like any others; once they
-finish, the parent node is completed by materialising the returned template into
-concrete values. So a task looks at its inputs, decides what further steps are
+completes, Ginkgo inspects its return value; if it is or contains an `Expr`,
+`ExprList`, or `OutputIndex`, Ginkgo registers those returned expressions as new
+graph nodes and makes the parent task wait on them. The new nodes are scheduled
+like any others; once they finish, the parent task completes using their
+results. So a task looks at its inputs, decides what further steps are
 needed, and returns task calls describing them, and Ginkgo grafts them into the
 running graph.
 
@@ -281,11 +269,10 @@ Pixi is Ginkgo's default mechanism for reproducible task environments. Each
 named environment lives in a directory (typically `envs/<name>/`) containing a
 `pixi.toml` (or a `pyproject.toml` with a `[tool.pixi]` section), and a task
 references it by name with `env=`. Before running, Ginkgo materialises the
-environment with `pixi install`, and each shell payload is executed via
-`pixi run --manifest-path <manifest> -- bash -c <cmd>`, so the command runs
-inside the locked environment. Ginkgo also folds the environment's identity into
-the cache key by hashing the neighbouring `pixi.lock`, so a change to the locked
-dependencies invalidates cached results.
+environment with `pixi install` and runs each command inside it, so the task
+sees the locked set of dependencies. Ginkgo also folds the environment's
+identity into the cache key by hashing the neighbouring `pixi.lock`, so a change
+to the locked dependencies invalidates cached results.
 
 ```python
 @task(kind="shell", env="bioinfo_tools")
@@ -310,16 +297,13 @@ installed on `PATH`.
 ### How does container-backed execution work for shell tasks, and when should I use it?
 
 Set `env` to a container URI — `docker://<image>` or `oci://<image>` — and
-Ginkgo routes the task to the container backend instead of Pixi. It pulls the
-image according to a pull policy (`if-not-present` by default), then executes the
-command with
-`<runtime> run --rm -v <project>:<project> -w <project> <image> bash -c <cmd>`,
-bind-mounting the project root at its host path so baked-in paths resolve. The
-runtime defaults to `docker`. Use containers when a tool is only distributed as
-an image, when you need OS-level isolation beyond what a Pixi/Conda spec
-captures, or to pin an exact published image. Container execution targets shell
-(and script/notebook) tasks — Python task bodies still run in the scheduler's
-own Python process, not in the container.
+Ginkgo routes the task to the container backend instead of Pixi. It runs the
+task inside that image, with Docker by default, and bind-mounts the project root
+at its host path so baked-in paths resolve. Use containers when a tool is only
+distributed as an image, when you need OS-level isolation beyond what a
+Pixi/Conda spec captures, or to pin an exact published image. Container execution
+targets shell (and script/notebook) tasks — Python task bodies still run in the
+scheduler's own Python process, not in the container.
 
 ### Can different tasks in one workflow run in different environments?
 
@@ -346,8 +330,8 @@ def count_reads(...): ...
 
 Ordering is driven by the dependency graph (a task becomes "ready" only once its
 dependencies complete) plus a resource-packing solve, not a simple sorted queue.
-On each dispatch cycle Ginkgo hands the ready tasks to an OR-Tools CP-SAT model
-that maximises a single lexicographic objective: (1) dispatch as many tasks as
+On each dispatch cycle Ginkgo packs the ready tasks into the run's budget,
+choosing them by a single ordered objective: (1) dispatch as many tasks as
 possible, then (2) fill the core budget, then (3) prefer higher-priority tasks,
 then (4) break remaining ties in declaration order. So `priority` (default `0`,
 higher wins) is a strict tiebreaker among simultaneously-ready tasks — it
@@ -360,13 +344,12 @@ ones.
 Control is static and declarative: each `@task` declares `threads=N` (CPU
 footprint) and `memory="…"` in Kubernetes notation (`512Mi`, `4Gi`, `8G`, `Ti`,
 `Ki`; rounded up to whole GiB). The scheduler enforces these against the run
-budget as hard constraints in the CP-SAT solve — `sum(threads) <= cores` and,
-when a memory budget is set, `sum(memory_gb) <= memory` — subtracting the
-footprint of already-running tasks each cycle, so it never oversubscribes the
-declared budget. Separately, a resource monitor *observes* actual usage: it
-samples the process tree via `ps` roughly once a second (summing CPU and RSS
-across descendant processes) and surfaces live/peak CPU and memory in the CLI and
-run record. This monitor is observational only — it reports usage but does not
+budget as hard constraints — `sum(threads) <= cores` and, when a memory budget
+is set, `sum(memory_gb) <= memory` — subtracting the footprint of
+already-running tasks each cycle, so it never oversubscribes the declared budget.
+Separately, a resource monitor *observes* actual usage: it samples the task
+process tree roughly once a second and surfaces live/peak CPU and memory in the
+CLI and run record. This monitor is observational only — it reports usage but does not
 throttle or kill tasks; enforcement comes entirely from the declared-footprint
 budgets. Note that memory-aware scheduling is off unless you pass `--memory`;
 without it, only the core/job budgets constrain packing.
@@ -569,8 +552,7 @@ downstream task loads a version through the `AssetRef` it receives. Separately,
 ### What's in the exported HTML report, and how is it structured/bundled?
 
 `ginkgo report` renders a completed run (status `succeeded` or `failed`) into a
-self-contained HTML report built with Jinja templates; running or pending runs
-are rejected.
+self-contained HTML report; running or pending runs are rejected.
 
 ```bash
 ginkgo report                   # the most recent run
@@ -581,23 +563,12 @@ The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
 with log tails, asset previews (tables, figures, arrays, text, model metrics)
 with any check outcomes, and links to rendered notebooks. By default it is
-written as a directory bundle at `.ginkgo/reports/<run-id>/` — `index.html` plus
-an `assets/` folder holding `report.css`, `islands.js`, fonts, and copied
-artifacts. Useful flags: `--single-file` (inline CSS, fonts, figures, and logs as
-data URIs into one file), `--out <dir>`, `--embed-full-assets` (copy single-file
-artifact bytes into the bundle; directory-backed artifacts such as zarr are
-excluded), `--max-log-lines N` (default 80), and `--open`/`--no-open`.
-
-### How do I view a run in a browser?
-
-Export a static HTML report with `ginkgo report` (add `--open` to open it in your
-browser). It bundles the run summary, the layered task graph, per-task status and
-logs, and asset previews into a self-contained page under
-`.ginkgo/reports/<run-id>/` that you can open directly or share — there is
-nothing to serve or keep running. Interactivity is limited to what the bundled
-`islands.js` provides on that static page: the task graph is a rendered SVG and
-notebooks appear as links to their rendered HTML. To list rendered notebook
-artifacts across runs from the terminal, use `ginkgo notebooks`.
+written as a directory bundle at `.ginkgo/reports/<run-id>/` that you can open or
+share. Useful flags: `--single-file` (inline CSS, fonts, figures, and logs into
+one file), `--out <dir>`, `--embed-full-assets` (copy single-file artifact bytes
+into the bundle; directory-backed artifacts such as zarr are excluded),
+`--max-log-lines N` (default 80), and `--open`/`--no-open`. To list rendered
+notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
 
 ## Failures And Retries
 
@@ -640,16 +611,6 @@ matching failures. The delay before attempt *n* is
 immediately with no backoff. On each retry the node's scratch dirs are removed
 and its resolved args, cache key, and secrets are cleared so the attempt reruns
 from scratch.
-
-### How does end-of-run failure classification group diagnostics?
-
-Each task failure is classified into a `kind` such as `env_mismatch`,
-`import_error`, `serialization_error`, `shell_command_error`, `invalid_path`,
-`missing_input`, `output_validation_error`, `user_code_error`, `cache_error`,
-`cycle_detected`, or `scheduler_error`. The CLI summarises these across the run
-as a one-line `Failures by category: kind×count` breakdown, and the HTML report
-builds one failure card per failed task carrying that category, the exit code,
-the attempt count, the error message, and a log tail.
 
 ### How do I debug a failed task — where are the logs, and what do the commands show?
 
@@ -798,7 +759,7 @@ Three: `s3`, `gs`, and `oci`. Each maps to an fsspec-backed object store. For
 FUSE streaming the drivers are: `gs` → gcsfuse, `s3` → mountpoint-s3, `oci` →
 rclone. Any other scheme raises an "unsupported remote scheme" error.
 
-## Provenance And Reproducibility
+## Provenance
 
 ### What does Ginkgo record for each run, and where does it live?
 
@@ -815,30 +776,6 @@ plus a discriminator). Inside it:
 - `params.yaml` — the workflow parameters.
 - `envs/` — copies of the environment lock files used by the run.
 - `logs/` — per-task stdout/stderr.
-
-### How do I reproduce or audit a past run?
-
-Read a run back with `ginkgo inspect run [RUN_ID]` (normalized JSON) or
-`ginkgo debug` (failures), and render the full HTML report with `ginkgo report`.
-Because outputs are content-addressed in the cache (`.ginkgo/cache/`), re-running
-the same workflow reuses cached results for any task whose cache key is
-unchanged, so an audit can distinguish what was recomputed from what was
-replayed. The manifest's per-task `cache_key` and `cached` fields let you confirm
-exactly which tasks ran versus hit the cache.
-
-### How deterministic is a Ginkgo workflow?
-
-Ginkgo's guarantee is about *cache identity*, not sandboxed execution. A task's
-cache key is derived from its declared inputs (each hashed), its source hash, its
-environment hash, its declared env name, and its `version` — so given identical
-inputs and unchanged code/env, Ginkgo will reuse the same cached output rather
-than recompute. It does **not** sandbox or seed your task code, so
-non-determinism leaks in wherever the task itself is non-deterministic:
-wall-clock time, unseeded randomness, network/external state, or reading files
-not declared as inputs. Note also that the scheduler's authoritative live state
-is in-memory and only exported incrementally to `manifest.yaml`/`events.jsonl`,
-so a hard crash can leave those files reflecting the last flushed state rather
-than the final one.
 
 ## Configuration And Secrets
 
@@ -908,41 +845,3 @@ calling task as a `SubWorkflowResult` (with `run_id`, `status`, and
 `manifest_path`). In the parent's manifest, the calling task records `sub_run_id`
 (the child's run id) on success, and on failure the child's run id is still
 recorded via the raised error, so you can trace into the child run either way.
-
-## Operating Ginkgo In Practice
-
-### How do I integrate Ginkgo with CI?
-
-`ginkgo run` returns exit code 0 on success and a non-zero code on failure, so a
-plain `ginkgo run` gates a pipeline. Use `--dry-run` to build and validate the
-whole graph without executing it, and `--agent` to emit structured JSONL run/task
-events to stdout instead of the Rich UI (add `--verbose`, i.e.
-`--agent --verbose`, to include task-log lines); every run also writes an
-`events.jsonl` and `manifest.yaml` into its run directory regardless of output
-mode. Commands like `ginkgo debug`, `ginkgo doctor`, and `ginkgo inspect` accept
-`--json` for machine-readable output. For validation-only CI, `ginkgo test` runs
-the workflow validation files under `tests/workflows/`.
-
-### What are the current known constraints and limitations?
-
-Worker-executed Python tasks must be importable by module path (they cannot be
-defined inline in a way that isn't importable). The scheduler's authoritative
-live-execution state is in-memory for the duration of a single run, exported
-incrementally to `manifest.yaml` and `events.jsonl` — there is no persistent
-scheduler service, so Ginkgo is a per-invocation runner rather than a
-long-running orchestration server with scheduling or triggers. Sub-workflow
-nesting is bounded by the call-depth limit (default 8). Remote execution exists
-via `--executor k8s` and `--executor batch` (default `local`); treat the more
-advanced remote and streaming capabilities as evolving.
-
-### How does the benchmark harness detect performance regressions?
-
-Run `pixi run benchmark` (which runs `python -m benchmarks.run`) over the
-runnable workflows under `examples/`; it prints a summary table and writes
-structured JSON under `benchmarks/results/`. Each benchmark record is compared
-against a checked-in baseline in `benchmarks/baselines/`, where each entry pins a
-`baseline_seconds` and a `max_regression_pct`. A record passes if its observed
-wall time is at or below `baseline_seconds * (1 + max_regression_pct/100)`; in
-strict mode, any failing comparison fails the lane, and a dedicated CI workflow
-runs this benchmark lane separately from correctness and quality checks. This is
-developer-facing tooling, not part of the end-user run path.
