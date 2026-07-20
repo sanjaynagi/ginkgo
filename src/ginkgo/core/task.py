@@ -23,6 +23,7 @@ import math
 import re
 
 from ginkgo.core.expr import Expr, ExprList
+from ginkgo.core.hashing import hash_file, hash_str
 from ginkgo.core.types import tmp_dir
 
 _TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
@@ -793,8 +794,6 @@ def _compute_source_hash(fn: Callable[..., Any]) -> str:
         If the source cannot be extracted (lambdas, dynamic functions), or
         if a module in the local import closure cannot be read or parsed.
     """
-    from ginkgo.runtime.caching.hashing import hash_file, hash_str
-
     try:
         source = inspect.getsource(fn)
     except OSError as exc:

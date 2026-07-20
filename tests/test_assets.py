@@ -50,6 +50,22 @@ def raises_from_check(payload: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Canonical kind list
+# ---------------------------------------------------------------------------
+
+
+def test_asset_kind_registry_matches_canonical_kinds() -> None:
+    from typing import get_args
+
+    from ginkgo.core.asset import ASSET_KIND_NAMES, _VALID_KINDS, AssetKind
+    from ginkgo.runtime.artifacts.asset_kinds import ASSET_KINDS
+
+    assert ASSET_KIND_NAMES == get_args(AssetKind)
+    assert _VALID_KINDS == frozenset(ASSET_KIND_NAMES)
+    assert frozenset(ASSET_KINDS) == frozenset(ASSET_KIND_NAMES)
+
+
+# ---------------------------------------------------------------------------
 # Factory-level tests
 # ---------------------------------------------------------------------------
 

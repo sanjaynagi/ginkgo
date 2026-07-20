@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.caching.hashing import hash_directory
+from ginkgo.core.hashing import hash_directory
 
 
 @pytest.fixture()

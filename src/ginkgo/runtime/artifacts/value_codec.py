@@ -359,7 +359,7 @@ def summarise_value(value: Any) -> Any:
 def hash_value_bytes(value: Any) -> tuple[str, str]:
     """Return the codec name and BLAKE3 digest for a Python value."""
     if isinstance(value, AssetRef):
-        from ginkgo.runtime.caching.hashing import hash_str
+        from ginkgo.core.hashing import hash_str
 
         return "ginkgo.asset_ref", hash_str(value.version_id)
     if isinstance(value, np.ndarray) and value.dtype.hasobject is False:
@@ -372,7 +372,7 @@ def hash_value_bytes(value: Any) -> tuple[str, str]:
             # cannot hash directly (for example some exotic object payloads).
             pass
 
-    from ginkgo.runtime.caching.hashing import hash_bytes
+    from ginkgo.core.hashing import hash_bytes
 
     codec_name, data, _extension = _encode_bytes(value)
     digest = hash_bytes(data)
@@ -435,7 +435,7 @@ def _encode_binary_payload(
         }
 
     # Ephemeral transport fallback: write to base_dir/artifacts/.
-    from ginkgo.runtime.caching.hashing import hash_bytes
+    from ginkgo.core.hashing import hash_bytes
 
     artifacts_dir = base_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -523,7 +523,7 @@ def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
 
 def _hash_numpy_array(value: Any) -> str:
     """Return a stable BLAKE3 digest for a non-object NumPy array."""
-    from ginkgo.runtime.caching.hashing import new_hasher
+    from ginkgo.core.hashing import new_hasher
 
     normalized = np.ascontiguousarray(value)
     hasher = new_hasher()
@@ -543,7 +543,7 @@ def _hash_numpy_array(value: Any) -> str:
 
 def _hash_pandas_dataframe(value: pd.DataFrame) -> str:
     """Return a stable BLAKE3 digest for a pandas DataFrame."""
-    from ginkgo.runtime.caching.hashing import new_hasher
+    from ginkgo.core.hashing import new_hasher
 
     hasher = new_hasher()
 

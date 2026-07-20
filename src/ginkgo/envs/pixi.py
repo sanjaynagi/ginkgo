@@ -18,6 +18,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ginkgo.core.hashing import hash_file
+
 
 class PixiEnvNotFoundError(RuntimeError):
     """Raised when a declared environment cannot be located.
@@ -296,7 +298,7 @@ class PixiRegistry:
 
         manifest = self.resolve(env=env)
         lock_path = manifest.parent / "pixi.lock"
-        digest = _hash_file(lock_path) if lock_path.is_file() else None
+        digest = hash_file(lock_path) if lock_path.is_file() else None
         self._lock_cache[env] = digest
         return digest
 
@@ -413,13 +415,6 @@ class PixiRegistry:
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
-
-
-def _hash_file(path: Path) -> str:
-    """Return the BLAKE3 hex digest of a file's contents."""
-    from ginkgo.runtime.caching.hashing import hash_file
-
-    return hash_file(path)
 
 
 def _require_pixi() -> None:

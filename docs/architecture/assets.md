@@ -185,9 +185,12 @@ ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
   and `"kind_index"` for every other kind (per-kind counter producing
   `<task>.<kind>[<index>]`).
 
-Adding a new asset kind is a pure-registry change: register one entry
-in `ASSET_KINDS` with the four callables and an optional shorthand
-factory in `core/asset.py`. No changes are needed in the constructor,
+Adding a new asset kind means extending the canonical `AssetKind`
+Literal in `core/asset.py` and registering one entry in `ASSET_KINDS`
+with the four callables (plus an optional shorthand factory in
+`core/asset.py`). The registry keys are validated against the canonical
+kind list at import time, so adding a kind to one home without the
+other fails immediately. No changes are needed in the constructor,
 registrar, value codec, or task runners.
 
 ## Registration

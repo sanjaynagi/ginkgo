@@ -10,6 +10,7 @@ ginkgo/
 ├── core/
 │   ├── expr.py
 │   ├── flow.py
+│   ├── hashing.py        # BLAKE3 content-hash helpers (dependency-free)
 │   ├── notebook.py
 │   ├── script.py
 │   ├── shell.py
@@ -33,7 +34,6 @@ ginkgo/
 │   │   ├── cache.py           # CacheStore (content-addressed)
 │   │   ├── provenance.py      # RunProvenanceRecorder
 │   │   ├── hash_memo.py
-│   │   ├── hashing.py
 │   │   └── materialization_log.py
 │   ├── artifacts/
 │   │   ├── artifact_store.py  # content-addressed artifact storage
