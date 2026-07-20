@@ -43,6 +43,43 @@ class TestSourceHash:
         with pytest.raises(ValueError, match="Cannot extract source"):
             TaskDef(fn=ns["dynamic_fn"])
 
+    def test_unparseable_helper_in_import_closure_raises_at_registration(self, tmp_path):
+        """A helper that fails to parse must fail loudly, not truncate the closure."""
+        module_dir = tmp_path / "pkg"
+        module_dir.mkdir()
+        (module_dir / "__init__.py").write_text("")
+        (module_dir / "tasks.py").write_text(
+            textwrap.dedent("""\
+                from . import helpers
+
+                def compute(x: int) -> int:
+                    return helpers.compute(x)
+            """),
+            encoding="utf-8",
+        )
+        helpers_path = module_dir / "helpers.py"
+        helpers_path.write_text(
+            "def compute(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
+        )
+
+        import importlib
+        import sys
+
+        sys.path.insert(0, str(tmp_path))
+        try:
+            tasks = importlib.import_module("pkg.tasks")
+
+            # Break the already-imported helper on disk, as during a mid-edit.
+            helpers_path.write_text("def compute(x: int) ->\n", encoding="utf-8")
+
+            with pytest.raises(ValueError, match="Cannot parse imports of module 'pkg.helpers'"):
+                TaskDef(fn=tasks.compute)
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("pkg.helpers", None)
+            sys.modules.pop("pkg.tasks", None)
+            sys.modules.pop("pkg", None)
+
 
 class TestSourceHashCacheInvalidation:
     """Verify that modifying a task function body causes a cache miss."""
