@@ -1,6 +1,6 @@
 """Shared run-summary model loaded from a completed run directory.
 
-Both the CLI renderer and the UI server need to read a finished run's
+Both the CLI renderers and the HTML report need to read a finished run's
 manifest, count tasks by status, compute durations, and surface notebook
 and asset listings. Before this module they each implemented those
 calculations independently and had to be updated in lock-step. ``RunSummary``

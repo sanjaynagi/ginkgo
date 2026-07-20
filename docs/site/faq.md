@@ -588,16 +588,16 @@ data URIs into one file), `--out <dir>`, `--embed-full-assets` (copy single-file
 artifact bytes into the bundle; directory-backed artifacts such as zarr are
 excluded), `--max-log-lines N` (default 80), and `--open`/`--no-open`.
 
-### Is there a web UI?
+### How do I view a run in a browser?
 
-Not a server-based one. Ginkgo has no local web-UI daemon — the CLI exposes no
-`ui` or `serve` command, and nothing in it starts an HTTP server. The browsable
-web output is the static HTML report described above, which you open directly in
-a browser (for example via `ginkgo report --open`). Interactivity is limited to
-what the bundled `islands.js` provides on that static page; the task graph is a
-rendered SVG, notebooks appear as links/iframes to their rendered HTML, and each
-report covers a single run. To list rendered notebook artifacts across runs from
-the terminal, use `ginkgo notebooks`.
+Export a static HTML report with `ginkgo report` (add `--open` to open it in your
+browser). It bundles the run summary, the layered task graph, per-task status and
+logs, and asset previews into a self-contained page under
+`.ginkgo/reports/<run-id>/` that you can open directly or share — there is
+nothing to serve or keep running. Interactivity is limited to what the bundled
+`islands.js` provides on that static page: the task graph is a rendered SVG and
+notebooks appear as links to their rendered HTML. To list rendered notebook
+artifacts across runs from the terminal, use `ginkgo notebooks`.
 
 ## Failures And Retries
 

@@ -1,6 +1,6 @@
 # Ginkgo Architecture
 
-Ginkgo is a Python-based workflow orchestrator for scientific and data workflows. The current implementation is local-first and centered on a lazy expression-tree DSL, content-addressed caching, reproducible task environments via Pixi, and run provenance that is inspectable from both the CLI and a local web UI.
+Ginkgo is a Python-based workflow orchestrator for scientific and data workflows. The current implementation is local-first and centered on a lazy expression-tree DSL, content-addressed caching, reproducible task environments via Pixi, and run provenance that is inspectable from the CLI.
 
 This directory is the internal architecture reference. It is split into topic files so agents and humans can read only the sections relevant to a given task rather than the full document. For end-user-facing documentation see `docs/site/`.
 
@@ -30,8 +30,6 @@ The repository currently implements:
 - Remote-input access policy with staged download or FUSE streaming
   (gcsfuse / mountpoint-s3 / rclone), per-ref / per-task / pattern / config
   resolution, cache-stable mode switching, and graceful fallback
-- A local-first web UI for runs, cache inspection, graphs, notebook artifacts,
-  embedded notebook viewing, and multi-workspace browsing
 - A canonical package-oriented project layout with workflow autodiscovery and
   scaffolded project initialization
 - An example-driven benchmark harness with generated benchmark inputs, checked-
@@ -59,7 +57,6 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Configuration and Secrets](config-secrets.md) — secret references, resolvers, and redaction.
 - [Provenance and Run State](provenance.md) — on-disk run layout and manifest contents.
 - [CLI](cli.md) — available commands and capabilities.
-- [Web UI](web-ui.md) — local UI server, multi-workspace, live updates.
 - [Remote Execution](remote-execution.md) — `RemoteExecutor` protocol, Kubernetes and GCP Batch executors, remote worker, code sync, GCS backend, infrastructure scripts.
 - [Remote Input Access](remote-input-access.md) — staged vs FUSE-mounted access strategies, per-input policy resolution, mount lifecycle, pod security, fallback semantics.
 - [Agent Operability](agent-operability.md) — runtime event protocol, agent-mode output, structured inspection/diagnostics, Slack notifications.
