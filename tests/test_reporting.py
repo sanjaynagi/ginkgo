@@ -127,7 +127,7 @@ def _register_asset(
     if caption is not None:
         metadata["ginkgo_caption"] = caption
     if checks is not None:
-        metadata["_checks"] = checks
+        metadata["ginkgo_checks"] = checks
     version = make_asset_version(
         key=AssetKey(namespace="file", name=name),
         kind="file",

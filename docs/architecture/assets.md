@@ -129,7 +129,7 @@ arguments (`format=` for `text`, `framework=` / `metrics=` for
   The registrar runs these checks after serialization and before registering
   the asset version. Every check must return `True`; `False`, an exception, or
   a non-boolean result fails the producing task and leaves no catalog version.
-  Passing results are stored under the reserved `_checks` metadata key as
+  Passing results are stored under the reserved `ginkgo_checks` metadata key as
   ordered `{name, passed}` mappings. Checks are transported through worker and
   remote result encoding, so lambdas, nested functions, and closures are not
   supported.
@@ -243,8 +243,9 @@ metadata:
 re-reading the stored bytes. The UI asset payload surfaces the same
 fields under a `kind_metadata` key for future frontend consumers.
 
-Successful asset checks are stored as `_checks` metadata and rendered by the
-HTML report. The strict registration model intentionally does not preserve a
+Successful asset checks are stored as `ginkgo_checks` metadata and rendered by
+the HTML report and by `ginkgo asset show`, which prints one pass/fail line per
+check outcome. The strict registration model intentionally does not preserve a
 failed check on an asset card: a failed check rejects the asset version and is
 reported as the producing task failure. Cached assets are reused without
 rerunning checks.

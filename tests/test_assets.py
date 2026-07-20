@@ -509,7 +509,7 @@ class TestEvaluatorIntegration:
         result = ginkgo.evaluate(make_checked_table_task())
 
         assert isinstance(result, AssetRef)
-        assert result.metadata["_checks"] == [{"name": "has_rows", "passed": True}]
+        assert result.metadata["ginkgo_checks"] == [{"name": "has_rows", "passed": True}]
 
     @pytest.mark.parametrize(
         ("expression", "message"),
@@ -660,6 +660,26 @@ class TestAssetShow:
         output = capsys.readouterr().out
         assert "Caption:" in output
         assert "Variant counts after QC filtering" in output
+
+    def test_show_renders_checks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(make_checked_table_task())
+
+        from ginkgo.cli.app import main
+
+        rc = main(
+            [
+                "asset",
+                "show",
+                "table:make_checked_table_task.checked",
+            ]
+        )
+
+        assert rc == 0
+        output = capsys.readouterr().out
+        assert "Check: has_rows passed" in output
 
 
 # ---------------------------------------------------------------------------

@@ -210,7 +210,8 @@ class TestExamples:
         ]
         assert seed_card_assets
         assert all(
-            asset["metadata"]["_checks"] == [{"name": "_seed_card_has_content", "passed": True}]
+            asset["metadata"]["ginkgo_checks"]
+            == [{"name": "_seed_card_has_content", "passed": True}]
             for asset in seed_card_assets
         )
 
