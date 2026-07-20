@@ -20,7 +20,10 @@ import yaml
 
 from ginkgo.runtime.caching.provenance import load_manifest
 
-_TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed"})
+# Statuses that mark a task as finished; shared by every consumer that
+# needs to decide terminality (see TaskSummary.is_terminal and the CLI
+# renderers).
+TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed"})
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -93,7 +96,7 @@ class TaskSummary:
 
     def is_terminal(self) -> bool:
         """Return True when the task reached a terminal status."""
-        return self.status in _TERMINAL_STATUSES
+        return self.status in TERMINAL_STATUSES
 
     @property
     def failure_kind(self) -> str | None:

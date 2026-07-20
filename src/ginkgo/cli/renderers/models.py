@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from ginkgo.cli.common import RunMode
+from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 
 
 @dataclass(kw_only=True)
@@ -75,11 +76,11 @@ class _TaskGroup:
 
     def is_terminal(self) -> bool:
         """Return True if every invocation has reached a terminal state."""
-        return all(row.status in {"cached", "succeeded", "failed"} for row in self.rows)
+        return all(row.status in TERMINAL_STATUSES for row in self.rows)
 
     def terminal_count(self) -> int:
         """Return the number of invocations in a terminal state."""
-        return sum(1 for row in self.rows if row.status in {"cached", "succeeded", "failed"})
+        return sum(1 for row in self.rows if row.status in TERMINAL_STATUSES)
 
     def elapsed(self, *, now: float) -> float | None:
         """Return wall-clock seconds from earliest start to latest finish or *now*."""
