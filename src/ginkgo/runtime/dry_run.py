@@ -9,13 +9,14 @@ environment prepared, and no cached output materialised into the workspace.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from ginkgo.runtime.caching.cache import MISSING
 
 if TYPE_CHECKING:
-    from ginkgo.runtime.evaluator import ConcurrentEvaluator, _TaskNode
+    from ginkgo.runtime.evaluator import ConcurrentEvaluator, TaskNode
 
 CacheStatus = Literal["cached", "will_run", "unknown"]
 
@@ -156,7 +157,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     DryRunPlan
         The structured plan, grouped into dependency waves.
     """
-    nodes = evaluator._nodes
+    nodes = evaluator.task_nodes
     waves_by_node = _assign_waves(nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
     cache_status = _resolve_cache_status(evaluator=evaluator, topo_order=topo_order)
@@ -200,7 +201,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     )
 
 
-def _assign_waves(nodes: dict[int, _TaskNode]) -> dict[int, int]:
+def _assign_waves(nodes: Mapping[int, TaskNode]) -> dict[int, int]:
     """Assign each node a 0-based wave (longest dependency path to a root)."""
     indegree = {node_id: len(node.dependency_ids) for node_id, node in nodes.items()}
     dependents: dict[int, list[int]] = {node_id: [] for node_id in nodes}
@@ -229,7 +230,7 @@ def _resolve_cache_status(
     every dependency is a confirmed cache hit; once the chain breaks, the node
     and everything below it is ``unknown``.
     """
-    nodes = evaluator._nodes
+    nodes = evaluator.task_nodes
     status: dict[int, CacheStatus] = {}
     for node_id in topo_order:
         status[node_id] = _probe_node(evaluator=evaluator, node=nodes[node_id], status=status)
@@ -237,7 +238,7 @@ def _resolve_cache_status(
 
 
 def _probe_node(
-    *, evaluator: ConcurrentEvaluator, node: _TaskNode, status: dict[int, CacheStatus]
+    *, evaluator: ConcurrentEvaluator, node: TaskNode, status: dict[int, CacheStatus]
 ) -> CacheStatus:
     """Return the cache status of one node, given resolved upstream statuses."""
     # Downstream of anything not known-cached: the cache key cannot be
@@ -250,15 +251,9 @@ def _probe_node(
     if node.task_def.kind in _DRIVER_KINDS:
         return "unknown"
 
-    cache_store = evaluator._cache_store
+    cache_store = evaluator.cache_store
     try:
-        resolved_args = evaluator._resolve_task_args(
-            expr=node.expr,
-            task_def=node.task_def,
-            node=node,
-            include_tmp_dirs=False,
-            stage_remote_refs=False,
-        )
+        resolved_args = evaluator.resolve_probe_args(node=node)
         cache_key, _ = cache_store.build_cache_key(
             task_def=node.task_def,
             resolved_args=resolved_args,
@@ -283,7 +278,7 @@ def _probe_node(
     return "cached"
 
 
-def _task_label(node: _TaskNode) -> str:
+def _task_label(node: TaskNode) -> str:
     """Return a display label, including resolved fan-out parameters."""
     base_name = node.task_def.name.rsplit(".", 1)[-1]
     parts = node.expr.display_label_parts
