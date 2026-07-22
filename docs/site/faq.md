@@ -26,7 +26,8 @@ Pythonic syntax.
 
 Snakemake can not handle dynamic DAGs natively. Nextflow is written in Groovy and requires using
 the abstraction of channels to pass data between steps. We take the view that a scientific workflow
-orchestrator should be plain Python, handle dynamic DAGs natively and should not require the abstraction of channels. Prefect and Dagster are also Python, but they are not well suited to running shell commands, scripts,
+orchestrator should be plain Python, handle dynamic DAGs natively and should not require the abstraction of channels.
+Prefect and Dagster are also Python, but they require DIY effort to run shell commands, scripts,
 and notebooks in foreign environments (e.g an isolated pixi, conda environment or container image).
 Ginkgo runs those natively each task can declare its own foreign environment right on the @task() decorator.
 
