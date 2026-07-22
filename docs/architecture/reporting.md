@@ -74,10 +74,10 @@ directly — everything they render lives as a typed field on the report.
 This constraint is what keeps the document provenance-bound: if a field
 isn't present on `ReportData`, it can't show up on the page.
 
-`ReportData` consumes `RunSummary` (the existing shared data model for the
-UI server and CLI renderers) plus `AssetStore` and `LocalArtifactStore`
-for asset resolution. The UI server continues to build its own payloads
-from the same `RunSummary`; the two presentation layers diverge cleanly
+`ReportData` consumes `RunSummary` (the shared post-run data model used by
+the CLI renderers) plus `AssetStore` and `LocalArtifactStore` for asset
+resolution. The report and the CLI renderers build their own payloads from
+the same `RunSummary`, so the two presentation layers diverge cleanly
 without duplicating parsing logic.
 
 `RunSummary` is the single source of truth for post-run derivation. The

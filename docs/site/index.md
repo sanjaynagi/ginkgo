@@ -84,6 +84,7 @@ ginkgo run workflow.py
       <li><a href="guide/coding-agents/">Working with coding agents</a></li>
       <li><a href="guide/notifications/">Notifications</a></li>
       <li><a href="guide/remote-execution/">Remote execution</a></li>
+      <li><a href="faq/">FAQ</a></li>
     </ul>
   </article>
   <article class="contents-block">
@@ -120,6 +121,7 @@ guide/cli
 guide/coding-agents
 guide/notifications
 guide/remote-execution
+faq
 examples/bioinfo-workflow
 reference/api
 ```
