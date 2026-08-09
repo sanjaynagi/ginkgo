@@ -111,6 +111,7 @@ def _render_bundle(*, report: ReportData, out_dir: Path) -> Path:
         report=report,
         css_href="assets/report.css",
         islands_src="assets/islands.js",
+        logo_src="assets/images/ginkgo-leaf.png",
         inline_css=None,
         inline_islands=None,
         image_inliner=None,
@@ -122,7 +123,7 @@ def _render_bundle(*, report: ReportData, out_dir: Path) -> Path:
 
 
 def _copy_static(*, out_dir: Path) -> None:
-    """Copy CSS, fonts, and islands JS into the bundle."""
+    """Copy CSS, fonts, images, and islands JS into the bundle."""
     dest = out_dir / "assets"
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -141,6 +142,14 @@ def _copy_static(*, out_dir: Path) -> None:
         for font_file in fonts_src.iterdir():
             if font_file.is_file():
                 shutil.copyfile(font_file, fonts_dest / font_file.name)
+
+    images_src = _STATIC_DIR / "images"
+    if images_src.is_dir():
+        images_dest = dest / "images"
+        images_dest.mkdir(parents=True, exist_ok=True)
+        for image_file in images_src.iterdir():
+            if image_file.is_file():
+                shutil.copyfile(image_file, images_dest / image_file.name)
 
 
 def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
@@ -180,12 +189,16 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
         mime = "text/plain"
         return _data_uri(source, mime=mime)
 
+    logo_path = _STATIC_DIR / "images" / "ginkgo-leaf.png"
+    logo_src = _data_uri(logo_path) if logo_path.is_file() else None
+
     env = _jinja_env()
     template = env.get_template("index.html.j2")
     html = template.render(
         report=report,
         css_href=None,
         islands_src=None,
+        logo_src=logo_src,
         inline_css=css_text,
         inline_islands=islands_text,
         image_inliner=image_inliner,

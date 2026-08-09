@@ -1,5 +1,8 @@
 <nav class="sidebar">
-  <div class="brand">ginkgo<span class="slash">/</span></div>
+  <div class="brand">
+    {% if logo_src %}<img class="brand-logo" src="{{ logo_src }}" alt="Ginkgo">{% endif %}
+    ginkgo<span class="slash">/</span>
+  </div>
   <div class="scope">Run report</div>
 
   <div class="run-id">

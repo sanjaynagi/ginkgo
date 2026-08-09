@@ -55,9 +55,9 @@ html_context = {
     "default_mode": "light",
 }
 html_theme_options = {
-    "sidebar_hide_name": False,
+    "sidebar_hide_name": True,
     "top_of_page_buttons": [],
 }
 
-html_logo = None
-html_favicon = None
+html_logo = "_static/ginkgo-logo.png"
+html_favicon = "_static/favicon.png"

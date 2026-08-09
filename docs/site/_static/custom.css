@@ -1,8 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    Ginkgo documentation theme — "Botanical Modern"
 
-   Light, crisp, contemporary. One confident deep-green accent. A nod to the
-   ginkgo leaf without the rustic autumn palette.
+   Light, crisp, contemporary. One confident teal accent, drawn straight from
+   the ginkgo-leaf logo mark.
 
    Display  Fraunces        — characterful old-style serif (optical sizing)
    Body     Hanken Grotesk  — clean modern sans
@@ -31,16 +31,16 @@
   --gk-line:        #e6e6dd;
   --gk-line-strong: #d7d7ca;
 
-  /* Green — the single accent */
-  --gk-green-950: #131d09;
-  --gk-green-900: #1f3010;
-  --gk-green-800: #2c4715;
-  --gk-green-700: #3c6210;
-  --gk-green-600: #4d7c0f;
-  --gk-green-500: #639a1c;
-  --gk-green-300: #a9cb7c;
-  --gk-green-100: #e2edca;
-  --gk-green-50:  #f2f7e8;
+  /* Teal — the single accent, drawn from the ginkgo-leaf logo mark */
+  --gk-green-950: #062120;
+  --gk-green-900: #093534;
+  --gk-green-800: #0b4b49;
+  --gk-green-700: #006e70;
+  --gk-green-600: #04898c;
+  --gk-green-500: #14a3a6;
+  --gk-green-300: #7ed3d3;
+  --gk-green-100: #cdeeee;
+  --gk-green-50:  #eefaf9;
 
   /* Font stacks */
   --gk-font-body:    "Hanken Grotesk", -apple-system, "Segoe UI", system-ui, sans-serif;
@@ -84,7 +84,7 @@ body:not([data-theme="dark"]) {
   --color-brand-visited: var(--gk-green-800);
   --color-link:                  var(--gk-green-700);
   --color-link--hover:           var(--gk-green-600);
-  --color-link-underline:        rgba(60, 98, 16, 0.28);
+  --color-link-underline:        rgba(0, 110, 112, 0.28);
   --color-link-underline--hover: var(--gk-green-600);
 
   /* Code */
@@ -300,7 +300,7 @@ h1, h2,
 .content a.reference {
   color: var(--gk-green-700);
   text-decoration: underline;
-  text-decoration-color: rgba(60, 98, 16, 0.3);
+  text-decoration-color: rgba(0, 110, 112, 0.3);
   text-decoration-thickness: 1px;
   text-underline-offset: 0.18em;
   transition: color 0.12s ease, text-decoration-color 0.12s ease;
@@ -420,7 +420,7 @@ table.docutils td {
 
 .quick-card:hover {
   border-color: var(--gk-green-300);
-  box-shadow: 0 14px 30px -20px rgba(31, 48, 16, 0.45);
+  box-shadow: 0 14px 30px -20px rgba(9, 53, 52, 0.45);
   transform: translateY(-2px);
 }
 
@@ -568,7 +568,7 @@ dl.py dd {
 
 .prev-next-area a:hover {
   border-color: var(--gk-green-300);
-  box-shadow: 0 10px 24px -18px rgba(31, 48, 16, 0.4);
+  box-shadow: 0 10px 24px -18px rgba(9, 53, 52, 0.4);
 }
 
 .prev-next-area .title {
