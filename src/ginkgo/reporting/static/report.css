@@ -124,6 +124,9 @@ nav.sidebar {
 }
 
 nav .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--font-sans);
   font-weight: 640;
   font-size: 21px;
@@ -131,6 +134,11 @@ nav .brand {
   color: var(--ink);
   margin-bottom: 3px;
   letter-spacing: -0.01em;
+}
+
+nav .brand .brand-logo {
+  height: 26px;
+  width: auto;
 }
 
 nav .brand .slash {

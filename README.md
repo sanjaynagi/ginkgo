@@ -1,6 +1,6 @@
-# Ginkgo
+<p align="center"><img src="docs/ginkgo-logo.png" alt="Ginkgo" width="360"></p>
 
-<p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a> <a href="https://sanjaynagi.github.io/ginkgo/"><img src="https://img.shields.io/badge/docs-sanjaynagi.github.io%2Fginkgo-4d7c0f.svg" alt="Documentation"></a></p>
+<p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/tests.yml/badge.svg?branch=main&event=push" alt="Tests"></a> <a href="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml"><img src="https://github.com/sanjaynagi/ginkgo/actions/workflows/quality.yml/badge.svg?branch=main&event=push" alt="Quality"></a> <a href="https://sanjaynagi.github.io/ginkgo/"><img src="https://img.shields.io/badge/docs-sanjaynagi.github.io%2Fginkgo-0e7c7e.svg" alt="Documentation"></a></p>
 
 Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
