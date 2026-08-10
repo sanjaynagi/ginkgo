@@ -845,6 +845,43 @@ def main():
         assert "🌿 ginkgo run exec_flow.py" in result.stdout
         assert "✓ Completed 1 test workflow" in result.stdout
 
+    def test_test_resolves_envs_from_canonical_package_not_workflow_parent(self) -> None:
+        """Regression test for issue #119.
+
+        On a canonical ``ginkgo init`` layout, Pixi environments live under
+        ``<pkg>/envs/``, a sibling of ``<pkg>/workflow.py`` -- not of
+        ``tests/workflows/*.py``. ``ginkgo test`` must still resolve them.
+        """
+        package_dir = Path("w1")
+        (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("")
+        (package_dir / "workflow.py").write_text("")
+        (package_dir / "envs" / "analysis_tools" / "pixi.toml").write_text(
+            "[workspace]\nname = 'analysis_tools'\nchannels = []\nplatforms = []\n"
+        )
+
+        tests_workflows_dir = Path("tests") / "workflows"
+        tests_workflows_dir.mkdir(parents=True)
+        (tests_workflows_dir / "smoke.py").write_text(
+            """
+from ginkgo import flow, shell, task
+
+@task(env="analysis_tools", kind="shell")
+def touch() -> str:
+    return shell(cmd="true", output="marker.txt")
+
+@flow
+def main():
+    return touch()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Pixi environment 'analysis_tools' not found" not in result.stderr
+
 
 class TestCliInit:
     def test_init_creates_project_scaffold(self) -> None:
