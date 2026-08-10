@@ -29,7 +29,7 @@ class EnvEntryRow:
 def command_env(args) -> int:
     """Handle ``ginkgo env`` subcommands."""
     rich_console = console(sys.stdout)
-    registry = build_project_registry(project_root=Path.cwd())
+    registry = _build_project_registry(project_root=Path.cwd())
 
     if args.env_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo env[/] [bold]ls[/]\n")
@@ -92,7 +92,7 @@ def command_env(args) -> int:
     return 0
 
 
-def build_project_registry(*, project_root: Path) -> PixiRegistry:
+def _build_project_registry(*, project_root: Path) -> PixiRegistry:
     """Build a Pixi registry with the same discovery roots ``ginkgo run`` uses.
 
     Parameters
