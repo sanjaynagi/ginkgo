@@ -20,13 +20,17 @@ jobs:
           cache: true
           locked: true
 
+      # Task counters are gated on every event. Wall-clock timing is too noisy on
+      # shared runners to block pull requests, so --strict is added only elsewhere.
       - name: Run benchmark suite
+        env:
+          STRICT_TIMING: ${{ github.event_name != 'pull_request' && '--strict' || '' }}
         run: >
           pixi run benchmark --
           --jobs 2
           --cores 2
           --baseline benchmarks/baselines/github-actions-linux.json
-          --strict
+          $STRICT_TIMING
 
       - name: Upload benchmark results
         if: always()
