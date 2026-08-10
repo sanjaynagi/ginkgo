@@ -1435,6 +1435,50 @@ def main():
             "source_hash_changed",
         }
 
+    def test_cache_explain_accepts_positional_or_run_flag(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+        run_dir = _extract_run_dir(run.stdout)
+
+        positional = _run_cli("cache", "explain", run_dir.name, cwd=Path.cwd())
+        assert positional.returncode == 0, positional.stderr
+        assert json.loads(positional.stdout)["run_id"] == run_dir.name
+
+        flag = _run_cli("cache", "explain", "--run", run_dir.name, cwd=Path.cwd())
+        assert flag.returncode == 0, flag.stderr
+        assert json.loads(flag.stdout) == json.loads(positional.stdout)
+
+    def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
+        result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "conflicting run ids" in result.stdout
+
+    def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
+        """Both forms naming the same run is not a usage error, only a missing run."""
+        result = _run_cli("cache", "explain", "run-a", "--run", "run-a", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Run not found: run-a" in result.stderr
+
+    def test_cache_explain_requires_a_run_id(self) -> None:
+        result = _run_cli("cache", "explain", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "provide a run id" in result.stdout
+
 
 class TestCliRunProfile:
     def test_run_profile_emits_table_and_persists_snapshot(self) -> None:

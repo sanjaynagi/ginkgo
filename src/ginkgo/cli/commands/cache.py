@@ -109,9 +109,23 @@ def command_cache(args) -> int:
         from ginkgo.cli.commands.inspect import inspect_run
         from ginkgo.cli.common import resolve_run_dir
 
+        if args.run_id is not None and args.run_flag is not None and args.run_id != args.run_flag:
+            rich_console.print(
+                "[red]Error:[/] conflicting run ids "
+                f"({args.run_id!r} and --run {args.run_flag!r}). Pass the run id once."
+            )
+            return 2
+
+        run_id = args.run_id or args.run_flag
+        if run_id is None:
+            rich_console.print(
+                "[red]Error:[/] provide a run id, e.g. ginkgo cache explain RUN_ID."
+            )
+            return 2
+
         payload = explain_run_cache(
             cache_root=CACHE_ROOT,
-            run_snapshot=inspect_run(run_dir=resolve_run_dir(args.run_id)),
+            run_snapshot=inspect_run(run_dir=resolve_run_dir(run_id)),
         )
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
