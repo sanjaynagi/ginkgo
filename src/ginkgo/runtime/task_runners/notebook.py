@@ -356,9 +356,16 @@ class NotebookRunner:
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Resolve the interpreter: use sys.executable for Python to stay in the same env.
+        # Resolve the interpreter. With no declared env, use sys.executable
+        # directly to stay in the scheduler's own environment. With a
+        # declared env, run_logged_command wraps the whole command through
+        # the backend's Pixi/container shell, so "python" must resolve via
+        # that shell's PATH rather than being pinned to the scheduler's
+        # interpreter — otherwise env= is silently ignored for Python scripts.
         interpreter_cmd = (
-            shlex.quote(sys.executable)
+            "python"
+            if directive.interpreter == "python" and node.task_def.env is not None
+            else shlex.quote(sys.executable)
             if directive.interpreter == "python"
             else shlex.quote(directive.interpreter)
         )
