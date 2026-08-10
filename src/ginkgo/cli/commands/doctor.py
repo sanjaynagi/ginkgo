@@ -26,18 +26,22 @@ def command_doctor(args) -> int:
     ).path
     with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
         config = session.merged_loaded_values()
+
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check. Validation only resolves manifests and probes PATH;
-    # nothing is built or installed.
-    backend = CompositeEnvironment(
-        local=LocalEnvironment(
-            pixi_registry=PixiRegistry(
-                project_root=Path.cwd(),
-                workflow_root=workflow_path.parent,
-            )
-        ),
-        container=ContainerBackend(project_root=Path.cwd()),
-    )
+    # nothing is built or installed. Built inside collect_workflow_diagnostics's
+    # try/except so construction failures surface as a diagnostic, not a crash.
+    def build_backend() -> CompositeEnvironment:
+        return CompositeEnvironment(
+            local=LocalEnvironment(
+                pixi_registry=PixiRegistry(
+                    project_root=Path.cwd(),
+                    workflow_root=workflow_path.parent,
+                )
+            ),
+            container=ContainerBackend(project_root=Path.cwd()),
+        )
+
     diagnostics = collect_workflow_diagnostics(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
@@ -46,7 +50,7 @@ def command_doctor(args) -> int:
             config=config,
             environ=os.environ,
         ),
-        backend=backend,
+        backend_factory=build_backend,
     )
 
     # Additional FUSE-streaming probes. These produce their own diagnostic

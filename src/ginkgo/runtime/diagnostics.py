@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,7 @@ def collect_workflow_diagnostics(
     workflow_path: Path,
     config_paths: list[Path],
     secret_resolver: SecretResolver | None,
-    backend: ExecutionEnvironment | None = None,
+    backend_factory: Callable[[], ExecutionEnvironment] | None = None,
 ) -> list[WorkflowDiagnostic]:
     """Collect structured workflow diagnostics.
 
@@ -47,9 +48,12 @@ def collect_workflow_diagnostics(
         Config override paths to activate while the workflow is constructed.
     secret_resolver : SecretResolver | None
         Resolver used to check that referenced secrets are available.
-    backend : ExecutionEnvironment | None, optional
-        Execution environment used to validate declared task ``env`` values.
-        When ``None``, env resolution is not checked.
+    backend_factory : Callable[[], ExecutionEnvironment] | None, optional
+        Builds the execution environment used to validate declared task
+        ``env`` values. Called inside the diagnostic try/except so that a
+        construction failure (bad project layout, unreadable envs/) is
+        reported as a diagnostic rather than raised. When ``None``, env
+        resolution is not checked.
 
     Returns
     -------
@@ -61,6 +65,7 @@ def collect_workflow_diagnostics(
             module = load_module_from_path(workflow_path)
             flow = discover_flow(module)
             expr = flow()
+        backend = backend_factory() if backend_factory is not None else None
         evaluator = ConcurrentEvaluator(secret_resolver=secret_resolver, backend=backend)
         evaluator.validate(expr)
         return []
