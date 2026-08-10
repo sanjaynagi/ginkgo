@@ -48,3 +48,20 @@ def test_redacting_writer_close_is_idempotent(tmp_path: Path) -> None:
 
     writer.close()
     writer.close()
+
+
+def test_redacting_writer_write_racing_concurrent_close_is_a_noop(tmp_path: Path) -> None:
+    """A write must not raise even if the handle closes between the
+    writer's own _closed check and the underlying handle.write() call.
+
+    This simulates the race directly: the handle is closed out from under
+    an in-flight write, bypassing the writer's _closed fast path, which is
+    exactly what a concurrent close() from another thread could do.
+    """
+    handle = (tmp_path / "out.log").open("a", encoding="utf-8")
+    writer = _RedactingWriter(handle=handle, secret_values=())
+
+    handle.close()
+
+    assert writer.write("late write\n") == 0
+    writer.flush()

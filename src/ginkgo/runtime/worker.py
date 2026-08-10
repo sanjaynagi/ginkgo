@@ -187,12 +187,18 @@ class _RedactingWriter(io.TextIOBase):
         # thread, a logging handler pinned to sys.stderr - may still hold
         # this writer after its task context has exited and the handle
         # closed. Once closed, writes are a safe no-op rather than a
-        # ValueError surfacing as raw interpreter-shutdown noise.
+        # ValueError surfacing as raw interpreter-shutdown noise. The
+        # _closed check is a fast path only: close() can run concurrently
+        # between the check and the handle.write() call below, so the
+        # actual write is also guarded against a closed handle.
         if self._closed:
             return 0
 
         redacted = redact_text(text=text, secret_values=self._secret_values)
-        written = self._handle.write(redacted)
+        try:
+            written = self._handle.write(redacted)
+        except ValueError:
+            return 0
         if self._log_emitter is not None and self._stream_name is not None and redacted:
             self._log_emitter(stream=self._stream_name, chunk=redacted)
         return written
@@ -204,7 +210,8 @@ class _RedactingWriter(io.TextIOBase):
             self._handle.flush()
         except ValueError:
             # CPython may flush redirected streams during finalization after
-            # the underlying file handle has already been closed.
+            # the underlying file handle has already been closed, or close()
+            # may run concurrently between the _closed check and this call.
             return
 
     def close(self) -> None:
