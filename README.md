@@ -17,19 +17,10 @@ Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
 ## Documentation
 
-📖 **[sanjaynagi.github.io/ginkgo](https://sanjaynagi.github.io/ginkgo/)** — the
-full documentation site.
+📖 **[sanjaynagi.github.io/ginkgo](https://sanjaynagi.github.io/ginkgo/)**
 
 It covers installation, quickstart, core concepts, environments, notebook tasks,
 caching, CLI usage, and a canonical example workflow.
-
-To build the docs locally instead:
-
-```bash
-pixi run docs-build
-```
-
-Then open `docs/_build/dirhtml/index.html`.
 
 ## Installation
 
