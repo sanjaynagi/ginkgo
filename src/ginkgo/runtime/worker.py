@@ -126,43 +126,40 @@ def _task_log_context(
         return
 
     managers: list[contextlib.AbstractContextManager] = []
-    handles = []
+    writers: list[_RedactingWriter] = []
 
     if stdout_path is not None:
         path = Path(stdout_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        stdout_handle = path.open("a", encoding="utf-8")
-        handles.append(stdout_handle)
-        managers.append(
-            contextlib.redirect_stdout(
-                _RedactingWriter(
-                    handle=stdout_handle,
-                    secret_values=secret_values,
-                    stream_name="stdout",
-                    log_emitter=log_emitter,
-                )
-            )
+        stdout_writer = _RedactingWriter(
+            handle=path.open("a", encoding="utf-8"),
+            secret_values=secret_values,
+            stream_name="stdout",
+            log_emitter=log_emitter,
         )
+        writers.append(stdout_writer)
+        managers.append(contextlib.redirect_stdout(stdout_writer))
 
     if stderr_path is not None:
         path = Path(stderr_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        stderr_handle = path.open("a", encoding="utf-8")
-        handles.append(stderr_handle)
-        managers.append(
-            contextlib.redirect_stderr(
-                _RedactingWriter(
-                    handle=stderr_handle,
-                    secret_values=secret_values,
-                    stream_name="stderr",
-                    log_emitter=log_emitter,
-                )
-            )
+        stderr_writer = _RedactingWriter(
+            handle=path.open("a", encoding="utf-8"),
+            secret_values=secret_values,
+            stream_name="stderr",
+            log_emitter=log_emitter,
         )
+        writers.append(stderr_writer)
+        managers.append(contextlib.redirect_stderr(stderr_writer))
 
+    # Close the writers themselves (not just the raw handles) on exit, so a
+    # reference that escaped the task body - an atexit hook, a daemon
+    # thread, or a logging handler pinned to sys.stderr - sees a writer
+    # marked closed and becomes a safe no-op rather than raising against a
+    # closed file handle during interpreter shutdown.
     with contextlib.ExitStack() as stack:
-        for handle in handles:
-            stack.callback(handle.close)
+        for writer in writers:
+            stack.callback(writer.close)
         for manager in managers:
             stack.enter_context(manager)
         yield
@@ -183,8 +180,17 @@ class _RedactingWriter(io.TextIOBase):
         self._secret_values = secret_values
         self._stream_name = stream_name
         self._log_emitter = log_emitter
+        self._closed = False
 
     def write(self, text: str) -> int:
+        # Anything that escapes the task body - an atexit hook, a daemon
+        # thread, a logging handler pinned to sys.stderr - may still hold
+        # this writer after its task context has exited and the handle
+        # closed. Once closed, writes are a safe no-op rather than a
+        # ValueError surfacing as raw interpreter-shutdown noise.
+        if self._closed:
+            return 0
+
         redacted = redact_text(text=text, secret_values=self._secret_values)
         written = self._handle.write(redacted)
         if self._log_emitter is not None and self._stream_name is not None and redacted:
@@ -192,9 +198,22 @@ class _RedactingWriter(io.TextIOBase):
         return written
 
     def flush(self) -> None:
+        if self._closed:
+            return
         try:
             self._handle.flush()
         except ValueError:
             # CPython may flush redirected streams during finalization after
             # the underlying file handle has already been closed.
             return
+
+    def close(self) -> None:
+        """Mark the writer closed and close the underlying handle.
+
+        Marking closed first ensures any concurrent or later write sees a
+        closed writer and no-ops, instead of racing the handle close.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._handle.close()
