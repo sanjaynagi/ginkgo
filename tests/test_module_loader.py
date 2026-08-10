@@ -67,3 +67,61 @@ class TestLoadModuleFromPath:
             sys.path[:] = original_sys_path
 
         assert module.MESSAGE == "ok"
+
+    def test_import_roots_for_path_include_project_root_for_unpackaged_test_workflow(
+        self, tmp_path: Path
+    ) -> None:
+        # Mirrors a fresh `ginkgo init` scaffold: a package with __init__.py
+        # and workflow.py, a ginkgo.toml at the project root, and a test
+        # workflow under tests/workflows/ (no __init__.py there) that
+        # imports from the project's own package.
+        project_root = tmp_path / "w1"
+        package_dir = project_root / "w1"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "workflow.py").write_text(
+            "def main() -> str:\n    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (project_root / "ginkgo.toml").write_text("", encoding="utf-8")
+
+        test_workflows_dir = project_root / "tests" / "workflows"
+        test_workflows_dir.mkdir(parents=True)
+        smoke_path = test_workflows_dir / "smoke.py"
+        smoke_path.write_text(
+            "from w1.workflow import main\n\nRESULT = main()\n",
+            encoding="utf-8",
+        )
+
+        roots = import_roots_for_path(smoke_path)
+
+        assert str(project_root.resolve()) in roots
+
+    def test_load_module_supports_test_workflow_importing_project_package(
+        self, tmp_path: Path
+    ) -> None:
+        project_root = tmp_path / "w1"
+        package_dir = project_root / "w1"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "workflow.py").write_text(
+            "def main() -> str:\n    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (project_root / "ginkgo.toml").write_text("", encoding="utf-8")
+
+        test_workflows_dir = project_root / "tests" / "workflows"
+        test_workflows_dir.mkdir(parents=True)
+        smoke_path = test_workflows_dir / "smoke.py"
+        smoke_path.write_text(
+            "from w1.workflow import main\n\nRESULT = main()\n",
+            encoding="utf-8",
+        )
+
+        original_sys_path = list(sys.path)
+        try:
+            module = load_module_from_path(smoke_path)
+        finally:
+            sys.path[:] = original_sys_path
+
+        assert module.RESULT == "ok"
