@@ -267,8 +267,14 @@ class TaskValidator:
             return
 
         if annotation is file:
-            if isinstance(value, AssetRef) and value.kind == "file":
-                return
+            if isinstance(value, AssetRef):
+                if value.kind == "file":
+                    return
+                raise TypeError(
+                    f"{label} declares `-> file` but returned a {value.kind!r} asset — "
+                    f"annotate the task `-> object` (or the payload type), or return "
+                    f"`asset(path)` for a file asset"
+                )
             if is_remote_path_value(value):
                 return
             self._validate_file_path(path=value, label=label)

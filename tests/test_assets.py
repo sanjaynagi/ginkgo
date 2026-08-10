@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import array, fig, model, table, task, text
+from ginkgo import array, fig, file, model, table, task, text
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
@@ -430,6 +430,11 @@ def make_raising_check_task() -> object:
 
 
 @task()
+def make_table_with_file_annotation_task() -> file:
+    return table(pd.DataFrame({"a": [1]}), name="demo/tbl")
+
+
+@task()
 def consumer_task(upstream: object) -> int:
     # Wrapped ``AssetRef`` inputs are rehydrated to the live payload at
     # arg-binding time, so downstream tasks observe the canonical
@@ -501,6 +506,17 @@ class TestEvaluatorIntegration:
         assert array_ref.metadata["dtype"] == "int64"
         assert text_ref.metadata["format"] == "json"
         assert text_ref.metadata["line_count"] >= 1
+
+    def test_table_return_with_file_annotation_raises_kind_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A well-formed ``table()`` payload returned from a ``-> file`` task
+        must fail with an error naming the annotation/kind mismatch, not a
+        path-syntax complaint about the ``AssetRef`` repr."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError, match="declares `-> file` but returned a 'table' asset"):
+            ginkgo.evaluate(make_table_with_file_annotation_task())
 
     def test_duplicate_names_raise_before_registration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

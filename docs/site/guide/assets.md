@@ -26,14 +26,19 @@ def write_seed_card(item: str, output_path: str) -> file:
 
 The typed helpers each map to an asset **kind**:
 
-| Helper | Kind | Payload |
-|---|---|---|
-| `asset(payload, kind=...)` | any | explicit kind |
-| `table(payload)` | `table` | a dataframe or tabular file |
-| `array(payload)` | `array` | a NumPy / array payload |
-| `fig(payload)` | `fig` | a matplotlib figure or image |
-| `text(payload)` | `text` | plain, markdown, or JSON text |
-| `model(payload)` | `model` | a trained model object |
+| Helper | Kind | Payload | Required return annotation |
+|---|---|---|---|
+| `asset(payload, kind=...)` | any | explicit kind | `-> file` only if `kind="file"`; otherwise `-> object` |
+| `table(payload)` | `table` | a dataframe or tabular file | `-> object` |
+| `array(payload)` | `array` | a NumPy / array payload | `-> object` |
+| `fig(payload)` | `fig` | a matplotlib figure or image | `-> object` |
+| `text(payload)` | `text` | plain, markdown, or JSON text | `-> object` |
+| `model(payload)` | `model` | a trained model object | `-> object` |
+
+A task annotated `-> file` must return either a plain file path or
+`asset(path, kind="file")` — never a `table()`/`array()`/`fig()`/`text()`/
+`model()` result, since those asset kinds are not file paths. Annotate the
+task `-> object` when returning any of them.
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
