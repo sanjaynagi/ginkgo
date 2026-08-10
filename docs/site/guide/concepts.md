@@ -91,7 +91,9 @@ Ginkgo uses a few special path-oriented annotations to define runtime behavior:
 - `tmp_dir`
 
 These types influence validation, hashing, artifact handling, and scratch-space
-lifecycle.
+lifecycle. A path passed between tasks as plain `str` is cache-keyed on the path
+string rather than the file's contents, which can serve stale results silently
+— see [Cache Correctness](caching-and-provenance.md#cache-correctness).
 
 ## The Runtime Is Local-First
 
