@@ -53,7 +53,7 @@ def command_debug(args) -> int:
     # resolved for a dynamically expanded node), so surface the recorded error too.
     if run_failed:
         rich_console.print(_run_error_panel(run_error))
-    return 0 if failed_tasks else 1
+    return 0
 
 
 def _run_error_panel(run_error: object) -> Panel:

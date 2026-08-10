@@ -57,7 +57,9 @@ def test_run_level_failure_without_failed_tasks_reports_error(
         },
     )
 
-    assert _debug() == 1
+    # Exit code reports whether debug could produce a report, not whether the
+    # inspected run failed, matching `inspect run`.
+    assert _debug() == 0
     stdout = capsys.readouterr().out
     assert "Debug Report" in stdout
     assert "Run Failure" in stdout
@@ -115,7 +117,7 @@ def test_manifest_without_status_or_error_is_treated_as_clean(
     assert f"✓ No failed tasks found in {RUN_ID}" in capsys.readouterr().out
 
 
-def test_failed_status_without_recorded_error_still_exits_nonzero(
+def test_failed_status_without_recorded_error_says_so(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _write_manifest(
@@ -123,7 +125,7 @@ def test_failed_status_without_recorded_error_still_exits_nonzero(
         manifest={"run_id": RUN_ID, "status": "failed", "tasks": {}},
     )
 
-    assert _debug() == 1
+    assert _debug() == 0
     assert "No error recorded in the manifest." in capsys.readouterr().out
 
 
