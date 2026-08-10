@@ -10,6 +10,7 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.text import Text
 
 from ginkgo.cli.renderers.models import _TaskRow
+from ginkgo.envs.container import is_container_env
 from ginkgo.formatting import format_duration
 
 
@@ -66,8 +67,15 @@ def _task_duration_plain(row: _TaskRow, *, now: float) -> str:
 
 
 def environment_label(env: str | None) -> str:
-    """Return the task environment label for the CLI table."""
-    return "local" if env is None else f"pixi:{env}"
+    """Return the task environment label for the CLI table.
+
+    Container envs keep their URI verbatim so the execution backend stays
+    visible; Pixi envs are prefixed to distinguish them from the ``local``
+    default.
+    """
+    if env is None:
+        return "local"
+    return env if is_container_env(env) else f"pixi:{env}"
 
 
 def task_base_name(task_name: str) -> str:
