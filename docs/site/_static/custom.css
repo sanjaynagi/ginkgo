@@ -4,12 +4,12 @@
    Light, crisp, contemporary. One confident teal accent, drawn straight from
    the ginkgo-leaf logo mark.
 
-   Display  Fraunces        — characterful old-style serif (optical sizing)
-   Body     Hanken Grotesk  — clean modern sans
-   Mono     IBM Plex Mono   — engineered monospace
+   Display  Space Grotesk — technical grotesk with a quirky lowercase "g"
+   Body     Hanken Grotesk — clean modern sans
+   Mono     IBM Plex Mono — engineered monospace
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&family=Hanken+Grotesk:ital,wght@0,300..700;1,400..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500..700&family=Hanken+Grotesk:ital,wght@0,300..700;1,400..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 
 /* ─── Design tokens ───────────────────────────────────────────────────────── */
@@ -44,7 +44,7 @@
 
   /* Font stacks */
   --gk-font-body:    "Hanken Grotesk", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --gk-font-display: "Fraunces", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --gk-font-display: "Space Grotesk", -apple-system, "Segoe UI", system-ui, sans-serif;
   --gk-font-mono:    "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
 
   /* Furo also reads these names directly */
@@ -166,7 +166,6 @@ body {
   font-family: var(--gk-font-display);
   font-size: 1.4rem;
   font-weight: 600;
-  font-style: italic;
   letter-spacing: -0.01em;
   color: var(--gk-ink-950) !important;
 }
@@ -239,7 +238,7 @@ h1, h2,
   font-size: clamp(2.3rem, 4.6vw, 3.4rem);
   font-weight: 600;
   line-height: 1.08;
-  letter-spacing: -0.022em;
+  letter-spacing: -0.015em;
   color: var(--gk-ink-950);
   margin-bottom: 0.6rem;
 }
@@ -248,7 +247,7 @@ h1, h2,
   font-family: var(--gk-font-display);
   font-size: clamp(1.5rem, 3vw, 2rem);
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
   color: var(--gk-ink-950);
   margin-top: 2.8rem;
   padding-top: 1.4rem;
