@@ -372,6 +372,20 @@ class TestPartialCallMap:
         assert result[0].display_label_parts == ("chr1",)
         assert result[1].display_label_parts == ("chr2",)
 
+    def test_map_short_decimal_scalar_is_not_treated_as_path_like(self):
+        @task()
+        def train(version: str, path: str) -> str:
+            return version
+
+        result = train().map(
+            version=["v2.1", "v3.0"],
+            path=["results/raw/chr1.csv", "results/raw/chr2.csv"],
+        )
+        # A short decimal-looking scalar (e.g. a version string) must not be
+        # rejected as path-like just because it contains a ".<digits>" suffix.
+        assert result[0].display_label_parts == ("v2.1",)
+        assert result[1].display_label_parts == ("v3.0",)
+
     def test_map_all_expression_values_inherits_upstream_label(self):
         @task()
         def build_brief(item: str) -> str:

@@ -548,7 +548,7 @@ def _fan_out_function_name(*, mode: _FanOutMode) -> str:
 
 
 _MAX_ZIP_LABEL_LENGTH = 24
-_PATH_LIKE_PATTERN = re.compile(r"[/\\]|\.[A-Za-z0-9]{1,5}$")
+_PATH_LIKE_PATTERN = re.compile(r"[/\\]|\.[A-Za-z][A-Za-z0-9]{0,4}$")
 
 
 def _label_parts_for_row(
