@@ -35,6 +35,9 @@ EXAMPLE_NAMES = ("init", "bioinfo", "chem", "retail", "news", "supplychain", "ml
 PARTIAL_CACHE_EXAMPLES = {"init", "news"}
 MOSTLY_CACHE_EXAMPLES = {"bioinfo"}
 
+# Deterministic orchestrator counters gated exactly against the baseline.
+GATED_COUNTER_NAMES = ("task_count", "executed_task_count", "cached_task_count")
+
 
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkRecord:
@@ -104,9 +107,10 @@ def run_example_benchmarks(
     results_root : Path
         Root directory for benchmark result output.
     baseline_path : Path | None
-        Optional baseline JSON used for slowdown comparison.
+        Optional baseline JSON used for comparison.
     strict : bool
-        When ``True``, fail on slowdown threshold violations.
+        When ``True``, fail on timing threshold violations. Task-counter
+        mismatches always fail regardless of this flag.
 
     Returns
     -------
@@ -144,7 +148,7 @@ def run_example_benchmarks(
         comparisons=result_payload["comparisons"],
         stream=sys.stdout,
     )
-    _raise_for_strict_regressions(comparisons=result_payload["comparisons"], strict=strict)
+    _raise_for_benchmark_failures(comparisons=result_payload["comparisons"], strict=strict)
     return results_path
 
 
@@ -155,16 +159,24 @@ def compare_against_baseline(
 ) -> list[dict[str, object]]:
     """Compare benchmark records against a checked-in baseline.
 
+    Two independent checks are produced per record. ``status`` holds the timing
+    comparison against ``baseline_seconds``, which is noisy on shared runners and
+    therefore only enforced under strict mode. ``counter_status`` holds an exact
+    comparison of the orchestrator task counters against the entry's optional
+    ``expected_counters``; it is deterministic and always enforced. An entry
+    without ``expected_counters`` is reported as ``not_gated``.
+
     Parameters
     ----------
     records : list[BenchmarkRecord]
         Newly observed benchmark records.
     baseline_path : Path
         Baseline JSON file.
+
     Returns
     -------
     list[dict[str, object]]
-        Comparison records with pass/fail state.
+        Comparison records carrying timing and counter pass/fail state.
     """
     baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
     baseline_entries = {
@@ -186,6 +198,8 @@ def compare_against_baseline(
                 "absolute_delta_seconds": None,
                 "percentage_delta": None,
                 "status": "missing_baseline",
+                "counter_status": "not_gated",
+                "counter_failures": [],
             }
             comparisons.append(comparison)
             continue
@@ -198,10 +212,13 @@ def compare_against_baseline(
             (absolute_delta_seconds / baseline_seconds) * 100.0 if baseline_seconds > 0 else None
         )
         passed = record.wall_time_seconds <= allowed_seconds
+        counter_failures = _compare_counters(record=record, entry=entry)
         comparison = {
             "example": record.example,
             "mode": record.mode,
             "status": "passed" if passed else "failed",
+            "counter_status": _counter_status(entry=entry, failures=counter_failures),
+            "counter_failures": counter_failures,
             "observed_seconds": record.wall_time_seconds,
             "baseline_seconds": baseline_seconds,
             "absolute_delta_seconds": absolute_delta_seconds,
@@ -211,6 +228,34 @@ def compare_against_baseline(
         }
         comparisons.append(comparison)
     return comparisons
+
+
+def _compare_counters(
+    *,
+    record: BenchmarkRecord,
+    entry: dict[str, object],
+) -> list[dict[str, object]]:
+    """Return one entry per gated counter whose observed value differs from the baseline."""
+
+    expected_counters = entry.get("expected_counters") or {}
+    failures: list[dict[str, object]] = []
+    for name in GATED_COUNTER_NAMES:
+        if name not in expected_counters:
+            continue
+        expected = int(dict(expected_counters)[name])  # type: ignore[arg-type]
+        observed = int(getattr(record, name))
+        if observed != expected:
+            failures.append({"counter": name, "expected": expected, "observed": observed})
+    return failures
+
+
+def _counter_status(*, entry: dict[str, object], failures: list[dict[str, object]]) -> str:
+    """Return the counter gate status for one baseline entry."""
+
+    expected_counters = entry.get("expected_counters") or {}
+    if not any(name in expected_counters for name in GATED_COUNTER_NAMES):
+        return "not_gated"
+    return "failed" if failures else "passed"
 
 
 def _print_benchmark_summary(
@@ -288,24 +333,51 @@ def _render_observed_table(*, records: list[BenchmarkRecord]) -> Table:
     return table
 
 
-def _raise_for_strict_regressions(*, comparisons: object, strict: bool) -> None:
-    """Raise after summary printing when strict regression checks fail."""
+def _raise_for_benchmark_failures(*, comparisons: object, strict: bool) -> None:
+    """Raise after summary printing when the benchmark comparison found failures.
 
-    if not strict or not isinstance(comparisons, list):
+    Counter mismatches are deterministic and always raise. Timing regressions are
+    noisy on shared runners and raise only when ``strict`` is set.
+
+    Parameters
+    ----------
+    comparisons : object
+        Comparison records from :func:`compare_against_baseline`.
+    strict : bool
+        When ``True``, timing regressions also raise.
+    """
+
+    if not isinstance(comparisons, list):
         return
 
-    failures = []
+    counter_failures: list[str] = []
+    timing_failures: list[str] = []
     for item in comparisons:
-        if not isinstance(item, dict) or item.get("status") != "failed":
+        if not isinstance(item, dict):
             continue
-        example = str(item.get("example", "unknown"))
-        mode = str(item.get("mode", "unknown"))
-        observed = _format_seconds(item.get("observed_seconds"))
-        allowed = _format_seconds(item.get("allowed_seconds"))
-        failures.append(f"{example}:{mode} observed {observed} above allowed {allowed}")
+        label = f"{item.get('example', 'unknown')}:{item.get('mode', 'unknown')}"
 
-    if failures:
-        raise RuntimeError("Benchmark regressions detected:\n" + "\n".join(failures))
+        for failure in item.get("counter_failures") or []:
+            counter_failures.append(
+                f"{label} {failure['counter']} expected {failure['expected']} "
+                f"but observed {failure['observed']}"
+            )
+
+        if item.get("status") == "failed":
+            observed = _format_seconds(item.get("observed_seconds"))
+            allowed = _format_seconds(item.get("allowed_seconds"))
+            timing_failures.append(f"{label} observed {observed} above allowed {allowed}")
+
+    messages: list[str] = []
+    if counter_failures:
+        messages.append(
+            "Benchmark task-counter mismatches detected:\n" + "\n".join(counter_failures)
+        )
+    if strict and timing_failures:
+        messages.append("Benchmark timing regressions detected:\n" + "\n".join(timing_failures))
+
+    if messages:
+        raise RuntimeError("\n\n".join(messages))
 
 
 def _format_seconds(value: object) -> str:
