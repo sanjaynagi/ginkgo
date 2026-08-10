@@ -1,15 +1,16 @@
-"""Notebook and script task execution.
+"""Notebook task execution.
 
-The ``NotebookRunner`` runs both ``NotebookDirective`` and ``ScriptDirective`` driver
-tasks. It owns the per-run notebook artifact layout, the managed-kernel
-preparation flow, the command builders, and the manifest extras that surface
-notebook outputs in the run summary.
+The ``NotebookRunner`` runs ``NotebookDirective`` driver tasks. It owns the
+per-run notebook artifact layout, the managed-kernel preparation flow, the
+command builders, and the manifest extras that surface notebook outputs in
+the run summary. Shared driver-task machinery (subprocess execution, output
+validation) lives in ``DriverTaskRunner``; the sibling ``ScriptRunner`` in
+``task_runners/script.py`` shares that base without depending on this module.
 """
 
 from __future__ import annotations
 
 import inspect
-import json
 import shlex
 import subprocess
 import sys
@@ -21,9 +22,8 @@ from typing import Any, Callable
 import yaml
 
 from ginkgo.core.notebook import NotebookDirective
-from ginkgo.core.script import ScriptDirective
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.types import tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.notebook_kernels import (
@@ -32,14 +32,13 @@ from ginkgo.runtime.notebook_kernels import (
     NotebookKernelManager,
     build_jupyter_env_prefix,
 )
-from ginkgo.runtime.environment.secrets import redact_text
+from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
-    ShellRunner,
-    ShellTaskError,
     iter_output_values,
     remove_declared_output,
+    serialize_cli_argument_value,
+    stringify_cli_argument,
 )
-from ginkgo.runtime.task_validation import TaskValidator
 
 
 # ----- Exceptions -----------------------------------------------------------
@@ -67,32 +66,6 @@ class NotebookTaskError(RuntimeError):
 
 
 # ----- Helpers --------------------------------------------------------------
-
-
-def serialize_notebook_value(value: Any) -> Any:
-    """Convert runtime values into YAML/CLI-safe notebook parameters."""
-    if isinstance(value, Path | file | folder | tmp_dir):
-        return str(value)
-    if value is None or isinstance(value, bool | int | float | str):
-        return value
-    if isinstance(value, list):
-        return [serialize_notebook_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [serialize_notebook_value(item) for item in value]
-    if isinstance(value, dict):
-        return {
-            str(serialize_notebook_value(key)): serialize_notebook_value(item)
-            for key, item in value.items()
-        }
-    return value
-
-
-def stringify_notebook_argument(value: Any) -> str:
-    """Render one notebook argument for a CLI invocation."""
-    serialized = serialize_notebook_value(value)
-    if isinstance(serialized, str):
-        return serialized
-    return json.dumps(serialized, sort_keys=True)
 
 
 def relativize_to_run_dir(*, run_dir: Path, path: Path) -> str:
@@ -188,18 +161,13 @@ class _NotebookCommandBuilder(NotebookCommandBuilder):
 
 
 @dataclass(kw_only=True)
-class NotebookRunner:
-    """Execute notebook and script driver tasks.
+class NotebookRunner(DriverTaskRunner):
+    """Execute notebook driver tasks.
 
     Parameters
     ----------
     backend : ExecutionEnvironment | None
         Execution environment for environment-isolated notebook helpers.
-    shell_runner : ShellRunner
-        Provides ``run_logged_command`` and the underlying subprocess
-        primitives.
-    validator : TaskValidator
-        Used to coerce return values for notebook and script outputs.
     cache_store : CacheStore
         Cache backing store; consulted to replay notebook manifest extras
         on a cache hit.
@@ -213,8 +181,6 @@ class NotebookRunner:
     """
 
     backend: ExecutionEnvironment | None
-    shell_runner: ShellRunner
-    validator: TaskValidator
     cache_store: CacheStore
     provenance: Any | None
     notice_emitter: Callable[[Any, str], None]
@@ -347,59 +313,6 @@ class NotebookRunner:
             output=directive.output,
         )
 
-    def run_script(self, *, node: Any, directive: ScriptDirective) -> Any:
-        """Execute a script task, forwarding task inputs as CLI arguments."""
-        assert node.execution_args is not None
-        user_log_path = Path(directive.log) if directive.log is not None else None
-        if directive.output is not None:
-            for output_path in iter_output_values(directive.output):
-                remove_declared_output(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Resolve the interpreter. With no declared env, use sys.executable
-        # directly to stay in the scheduler's own environment. With a
-        # declared env, run_logged_command wraps the whole command through
-        # the backend's Pixi/container shell, so "python" must resolve via
-        # that shell's PATH rather than being pinned to the scheduler's
-        # interpreter — otherwise env= is silently ignored for Python scripts.
-        interpreter_cmd = (
-            "python"
-            if directive.interpreter == "python" and node.task_def.env is not None
-            else shlex.quote(sys.executable)
-            if directive.interpreter == "python"
-            else shlex.quote(directive.interpreter)
-        )
-
-        # Build command: interpreter script_path --arg-name value ...
-        cmd_parts = [interpreter_cmd, shlex.quote(str(directive.path))]
-        for name, value in node.execution_args.items():
-            option = f"--{name.replace('_', '-')}"
-            cmd_parts.extend(
-                [shlex.quote(option), shlex.quote(stringify_notebook_argument(value))]
-            )
-        cmd = " ".join(cmd_parts)
-
-        completed = self.shell_runner.run_logged_command(
-            node=node, cmd=cmd, user_log_path=user_log_path
-        )
-        combined_output = (completed.stdout or "") + (completed.stderr or "")
-        if completed.returncode != 0:
-            raise ShellTaskError(
-                task_name=node.task_def.name,
-                cmd=redact_text(text=cmd, secret_values=node.secret_values),
-                exit_code=completed.returncode,
-                output=combined_output,
-                log=directive.log,
-            )
-
-        if directive.output is None:
-            return None
-        return self._validate_and_return_output(
-            task_name=node.task_def.name,
-            task_def=node.task_def,
-            output=directive.output,
-        )
-
     # Cache replay -----------------------------------------------------------
 
     def replay_cached_extras(self, *, node: Any, cache_key: str) -> None:
@@ -421,23 +334,6 @@ class NotebookRunner:
         self.provenance.update_task_extra(node_id=node.node_id, **notebook_extras)
 
     # Private helpers --------------------------------------------------------
-
-    def _validate_and_return_output(
-        self,
-        *,
-        task_name: str,
-        task_def: TaskDef,
-        output: Any,
-    ) -> Any:
-        """Validate declared output paths exist and return coerced value."""
-        output_paths = iter_output_values(output)
-        missing = [str(path) for path in output_paths if not path.exists()]
-        if missing:
-            label = missing[0] if len(missing) == 1 else missing
-            raise FileNotFoundError(
-                f"Task {task_name} completed but did not create declared output {label!r}"
-            )
-        return self.validator.coerce_return_value(task_def=task_def, value=output)
 
     def _notebook_artifacts(self, *, node: Any, notebook_kind: str) -> NotebookArtifacts:
         """Return deterministic artifact paths for one notebook task."""
@@ -515,7 +411,7 @@ class NotebookRunner:
             raise RuntimeError("ipynb notebooks require an executed output path")
         params_path.write_text(
             yaml.safe_dump(
-                serialize_notebook_value(resolved_args),
+                serialize_cli_argument_value(resolved_args),
                 sort_keys=True,
             ),
             encoding="utf-8",
@@ -545,7 +441,7 @@ class NotebookRunner:
         args: list[str] = [shlex.quote(sys.executable), shlex.quote(str(notebook_path))]
         for name, value in resolved_args.items():
             option = f"--{name.replace('_', '-')}"
-            args.extend([shlex.quote(option), shlex.quote(stringify_notebook_argument(value))])
+            args.extend([shlex.quote(option), shlex.quote(stringify_cli_argument(value))])
         return " ".join(args)
 
     def _build_notebook_render_command(

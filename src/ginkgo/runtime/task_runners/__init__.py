@@ -9,6 +9,7 @@ from ginkgo.runtime.task_runners.notebook import (
     NotebookRunner,
     NotebookTaskError,
 )
+from ginkgo.runtime.task_runners.script import ScriptRunner
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     ShellTaskError,
@@ -25,6 +26,7 @@ from ginkgo.runtime.task_runners.subworkflow import (
 __all__ = [
     "NotebookRunner",
     "NotebookTaskError",
+    "ScriptRunner",
     "ShellRunner",
     "ShellTaskError",
     "SignalMonitor",
