@@ -1363,7 +1363,7 @@ def main():
         assert inspect.returncode == 0, inspect.stderr
         inspect_payload = json.loads(inspect.stdout)
         assert inspect_payload["status"] == "failed"
-        assert inspect_payload["tasks"][0]["failure"]["kind"] == "scheduler_error"
+        assert inspect_payload["tasks"][0]["failure"]["kind"] == "user_code_error"
 
     def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
         Path("workflow.py").write_text(
