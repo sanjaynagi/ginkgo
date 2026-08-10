@@ -1386,7 +1386,8 @@ def main():
         result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
         assert result.returncode == 1
         payload = json.loads(result.stdout)
-        assert payload[0]["code"] == "MISSING_SECRET"
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
 
     def test_cache_explain_reports_rerun_reason(self) -> None:
         Path("workflow.py").write_text(

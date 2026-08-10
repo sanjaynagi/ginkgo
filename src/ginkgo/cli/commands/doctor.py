@@ -10,7 +10,10 @@ import sys
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
+from ginkgo.envs.container import ContainerBackend
+from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import collect_access_diagnostics
+from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 
@@ -23,6 +26,18 @@ def command_doctor(args) -> int:
     ).path
     with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
         config = session.merged_loaded_values()
+    # Same environment pair that ``run`` builds, so doctor reaches the
+    # declared-env check. Validation only resolves manifests and probes PATH;
+    # nothing is built or installed.
+    backend = CompositeEnvironment(
+        local=LocalEnvironment(
+            pixi_registry=PixiRegistry(
+                project_root=Path.cwd(),
+                workflow_root=workflow_path.parent,
+            )
+        ),
+        container=ContainerBackend(project_root=Path.cwd()),
+    )
     diagnostics = collect_workflow_diagnostics(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
@@ -31,6 +46,7 @@ def command_doctor(args) -> int:
             config=config,
             environ=os.environ,
         ),
+        backend=backend,
     )
 
     # Additional FUSE-streaming probes. These produce their own diagnostic
@@ -53,9 +69,15 @@ def command_doctor(args) -> int:
             }
             for item in access_diagnostics
         )
-        print(json.dumps(combined, indent=2, sort_keys=True))
         has_errors = any(item.severity == "error" for item in access_diagnostics) or bool(
             diagnostics
+        )
+        print(
+            json.dumps(
+                {"ok": not has_errors, "diagnostics": combined},
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0 if not has_errors else 1
 
