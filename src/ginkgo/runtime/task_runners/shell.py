@@ -215,16 +215,16 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
         kind = "invalid_path"
     elif isinstance(exc, FileNotFoundError):
         kind = "missing_input" if "did not create" not in message else "output_validation_error"
-    elif isinstance(exc, (TypeError, ValueError)):
-        kind = "user_code_error"
     else:
+        # Anything unrecognised was raised inside a task body, so it is user code
+        # unless the class name identifies it as a framework failure.
         exc_name = exc.__class__.__name__.lower()
         if "env" in exc_name or "container" in exc_name:
             kind = "env_mismatch"
         elif "cache" in exc_name:
             kind = "cache_error"
         else:
-            kind = "scheduler_error"
+            kind = "user_code_error"
 
     return {
         "kind": kind,
