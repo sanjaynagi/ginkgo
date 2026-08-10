@@ -14,18 +14,13 @@ from typing import Any
 from ginkgo.remote._executor_common import (
     _encode_payload,
     _generate_job_name,
-    _parse_worker_output as _parse_worker_output_common,
+    _parse_worker_output,
     _payload_requires_fuse,
 )
 from ginkgo.runtime.remote_executor import (
     RemoteJobResult,
     RemoteJobState,
 )
-
-
-def _parse_worker_output(logs: str) -> dict[str, Any]:
-    """Parse the worker result from pod log output."""
-    return _parse_worker_output_common(logs, source_label="pod logs")
 
 
 class _RefreshingApi:
@@ -426,7 +421,7 @@ class KubernetesJobHandle:
                 },
             }
         else:
-            payload = _parse_worker_output(logs)
+            payload = _parse_worker_output(logs, source_label="pod logs")
 
         exit_code = None
         if current == RemoteJobState.FAILED:

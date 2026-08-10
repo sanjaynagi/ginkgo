@@ -41,8 +41,8 @@ Ginkgo exposes machine-readable post-hoc inspection and diagnostics:
 - `ginkgo debug --json` returns failed-task diagnostics, including failure
   summaries and log tails.
 - `ginkgo doctor --json` returns structured validation diagnostics.
-- `ginkgo cache explain --run <run_id>` provides best-effort rerun reasons from
-  cache metadata.
+- `ginkgo cache explain <run_id>` provides best-effort rerun reasons from
+  cache metadata. `--run <run_id>` remains accepted as an alias.
 
 To support these surfaces, task provenance records structured failure
 summaries and a compact typed output index alongside the existing manifest

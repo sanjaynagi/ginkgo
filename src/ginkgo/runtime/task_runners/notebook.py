@@ -68,6 +68,42 @@ class NotebookTaskError(RuntimeError):
 # ----- Helpers --------------------------------------------------------------
 
 
+NOTEBOOK_ARTIFACT_KEYS = ("rendered_html", "executed_notebook")
+
+
+def resolve_cached_artifact_pointers(*, extras: dict[str, Any]) -> dict[str, Any]:
+    """Return notebook manifest extras with usable absolute artifact pointers.
+
+    Parameters
+    ----------
+    extras
+        Notebook manifest extras loaded from a cache entry.
+
+    Returns
+    -------
+    dict
+        A copy of ``extras`` in which each artifact pointer is an absolute path
+        to an existing file. Cwd-relative pointers (written before pointers were
+        resolved on save) are rebased against the current working directory, and
+        pointers whose file no longer exists are dropped rather than replayed as
+        a dead link.
+    """
+    resolved = dict(extras)
+    for key in NOTEBOOK_ARTIFACT_KEYS:
+        value = resolved.get(key)
+        if not isinstance(value, str):
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+        if candidate.is_file():
+            resolved[key] = str(candidate)
+        else:
+            del resolved[key]
+    return resolved
+
+
 def relativize_to_run_dir(*, run_dir: Path, path: Path) -> str:
     """Return a run-relative path when possible."""
     try:
@@ -331,7 +367,10 @@ class NotebookRunner(DriverTaskRunner):
         notebook_extras = cached_extra.get("notebook_extras")
         if not isinstance(notebook_extras, dict):
             return
-        self.provenance.update_task_extra(node_id=node.node_id, **notebook_extras)
+        self.provenance.update_task_extra(
+            node_id=node.node_id,
+            **resolve_cached_artifact_pointers(extras=notebook_extras),
+        )
 
     # Private helpers --------------------------------------------------------
 
@@ -528,11 +567,13 @@ class NotebookRunner(DriverTaskRunner):
         # Stash an absolute-path version of the extras on the node so that
         # _complete_node can persist them in the cache entry. Replaying these
         # on a future cache hit lets us populate the new run's manifest with
-        # the rendered HTML pointer even when the task body is skipped.
+        # the rendered HTML pointer even when the task body is skipped. The
+        # paths must be resolved: the run directory is cwd-relative, and
+        # consumers join a replayed pointer onto the *new* run directory.
         cache_extras = dict(extra)
-        cache_extras["rendered_html"] = str(rendered_html)
+        cache_extras["rendered_html"] = str(rendered_html.resolve())
         if executed_path is not None:
-            cache_extras["executed_notebook"] = str(executed_path)
+            cache_extras["executed_notebook"] = str(executed_path.resolve())
         node.notebook_extras = cache_extras
 
     def _render_notebook_failure_page(
