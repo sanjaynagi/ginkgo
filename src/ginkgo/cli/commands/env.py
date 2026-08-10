@@ -108,7 +108,10 @@ def _build_project_registry(*, project_root: Path) -> PixiRegistry:
     """
     try:
         workflow_root = resolve_workflow_path(project_root=project_root, workflow=None).path.parent
-    except (FileNotFoundError, RuntimeError):
+    except (OSError, RuntimeError):
+        # Discovery is best-effort here: env ls/clear don't need a workflow,
+        # so any failure to locate one (missing file, unreadable directory,
+        # ambiguous candidates) just falls back to project_root alone.
         workflow_root = None
     return PixiRegistry(project_root=project_root, workflow_root=workflow_root)
 
