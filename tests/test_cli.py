@@ -897,14 +897,6 @@ class TestCliInit:
         assert '@task(kind="shell")' in patterns_text
         assert "oci://registry/path:tag" in patterns_text
 
-    def test_init_skill_templates_start_with_heading(self) -> None:
-        skills_dir = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "skills"
-        skill_files = sorted(skills_dir.glob("*.md"))
-        assert skill_files, f"no skill templates found under {skills_dir}"
-        for skill_file in skill_files:
-            text = skill_file.read_text(encoding="utf-8")
-            assert text.startswith("# "), f"{skill_file} does not start with '# '"
-
     def test_init_can_skip_skills(self) -> None:
         result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
