@@ -1,4 +1,4 @@
-W# Workflow patterns
+# Workflow patterns
 
 Use normal Python tasks for orchestration and Python logic:
 
