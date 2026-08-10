@@ -18,6 +18,15 @@ def module_name_for_path(path: str | Path) -> str:
     return f"ginkgo_user_{stem}_{digest}"
 
 
+def _find_project_root(start_dir: Path) -> Path | None:
+    """Walk upward from ``start_dir`` to find the nearest ``ginkgo.toml`` directory."""
+    for candidate in (start_dir, *start_dir.parents):
+        for config_name in ("ginkgo.toml", "ginkgo.yaml", "ginkgo.yml"):
+            if (candidate / config_name).is_file():
+                return candidate
+    return None
+
+
 def import_roots_for_path(path: str | Path) -> list[str]:
     """Return import roots needed to load a source file and its package."""
     source_dir = Path(path).resolve().parent
@@ -31,6 +40,17 @@ def import_roots_for_path(path: str | Path) -> list[str]:
 
     if package_root_parent is not None:
         candidate = str(package_root_parent)
+        if candidate not in roots:
+            roots.append(candidate)
+
+    # A workflow file need not live inside the package it imports from (e.g.
+    # a test workflow under tests/workflows/ importing the project's own
+    # package). Include the enclosing project root, identified by the
+    # nearest ginkgo.toml/yaml/yml, so such imports resolve regardless of
+    # where the file sits relative to that package.
+    project_root = _find_project_root(source_dir)
+    if project_root is not None:
+        candidate = str(project_root)
         if candidate not in roots:
             roots.append(candidate)
 
