@@ -6,6 +6,10 @@ import sys
 import json
 from pathlib import Path
 
+from rich import box
+from rich.panel import Panel
+from rich.text import Text
+
 from ginkgo.cli.common import console, resolve_run_dir
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.renderers.debug import render_debug_failure_panel, render_debug_header
@@ -21,16 +25,19 @@ def command_debug(args) -> int:
     failed_tasks = [
         task for task in manifest.get("tasks", {}).values() if task.get("status") == "failed"
     ]
+    run_error = manifest.get("error")
+    run_failed = manifest.get("status") == "failed"
     if args.json:
         payload = {
             "run_id": manifest.get("run_id", run_dir.name),
             "workflow": manifest.get("workflow"),
             "status": manifest.get("status"),
+            "error": str(run_error) if run_error is not None else None,
             "failures": _debug_failure_payload(run_dir=run_dir, failed_tasks=failed_tasks),
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if not failed_tasks:
+    if not failed_tasks and not run_failed:
         rich_console.print(f"[bold green]🌿 ginkgo debug[/] [bold]{run_dir.name}[/]\n")
         rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{run_dir.name}[/]")
         return 0
@@ -41,7 +48,24 @@ def command_debug(args) -> int:
     details = _debug_failure_details(run_dir=run_dir, failed_tasks=failed_tasks)
     for item in details:
         rich_console.print(render_debug_failure_panel(item))
-    return 0
+
+    # A run can fail without any task failing (for example an env that cannot be
+    # resolved for a dynamically expanded node), so surface the recorded error too.
+    if run_failed:
+        rich_console.print(_run_error_panel(run_error))
+    return 0 if failed_tasks else 1
+
+
+def _run_error_panel(run_error: object) -> Panel:
+    """Render the run-level failure recorded in the manifest."""
+    message = str(run_error) if run_error is not None else "No error recorded in the manifest."
+    return Panel(
+        Text(message, style="#7f1d1d"),
+        title="[bold red]Run Failure[/]",
+        border_style="red",
+        box=box.SQUARE,
+        expand=False,
+    )
 
 
 def _debug_failure_details(
