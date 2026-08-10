@@ -101,27 +101,3 @@ def discover_test_workflows(*, project_root: Path) -> list[Path]:
         return sorted(path.resolve() for path in legacy_dir.glob("*.py"))
 
     return []
-
-
-def list_workflow_paths(*, project_root: Path) -> list[Path]:
-    """Return workflow files that should be offered by local tooling."""
-    discovered: dict[Path, None] = {}
-
-    for path in canonical_workflow_candidates(project_root=project_root):
-        discovered[path] = None
-
-    legacy_workflow = project_root / "workflow.py"
-    if legacy_workflow.is_file():
-        discovered[legacy_workflow.resolve()] = None
-
-    for path in sorted(project_root.rglob("*.py")):
-        if any(part in _IGNORED_DIR_NAMES for part in path.parts):
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if "@flow" in content:
-            discovered[path.resolve()] = None
-
-    return sorted(discovered)
