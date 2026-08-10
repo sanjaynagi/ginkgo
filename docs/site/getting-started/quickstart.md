@@ -39,12 +39,6 @@ the expression tree, checks environments and secrets, computes cache keys for
 every task, and reports which tasks would run, which would serve from cache,
 and which resources they declare.
 
-The first real run can take a while — it blocks on environment resolution
-with no progress indication. A dry run is the fastest way to confirm
-everything is correctly wired before committing to that wait. See
-[Dry-Run Mode](../../guide/caching-and-provenance.md#dry-run-mode) for
-details.
-
 ## 4. Run The Workflow
 
 ```bash
