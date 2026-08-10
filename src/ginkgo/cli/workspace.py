@@ -90,6 +90,33 @@ def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
     return candidates
 
 
+def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
+    """Resolve the directory Pixi environment discovery should anchor on.
+
+    Environments always live under ``<project_root>/<pkg>/envs``, where
+    ``<pkg>`` is the project's canonical package directory (or, for legacy
+    projects, ``project_root`` itself). This is independent of which
+    workflow file is actually being executed, so a test workflow under
+    ``tests/workflows/`` resolves the same envs root as the real
+    ``<pkg>/workflow.py``.
+
+    Parameters
+    ----------
+    project_root : Path
+        Root of the project being run.
+
+    Returns
+    -------
+    Path | None
+        The canonical workflow's parent directory, or ``None`` when no
+        workflow (canonical or legacy) can be discovered.
+    """
+    try:
+        return discover_default_workflow(project_root=project_root).parent
+    except (FileNotFoundError, RuntimeError):
+        return None
+
+
 def discover_test_workflows(*, project_root: Path) -> list[Path]:
     """Return canonical or legacy workflow validation files."""
     canonical_dir = project_root / "tests" / "workflows"
