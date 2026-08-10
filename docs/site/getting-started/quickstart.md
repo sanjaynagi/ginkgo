@@ -26,7 +26,26 @@ At a high level it:
 3. counts reads in a container-backed shell task
 4. merges those outputs in a local Python task
 
-## 3. Run The Workflow
+## 3. Preview With A Dry Run
+
+Before running for real, confirm the workflow is wired correctly:
+
+```bash
+ginkgo run --dry-run
+```
+
+This validates the workflow without executing any task body. Ginkgo resolves
+the expression tree, checks environments and secrets, computes cache keys for
+every task, and reports which tasks would run, which would serve from cache,
+and which resources they declare.
+
+The first real run can take a while — it blocks on environment resolution
+with no progress indication. A dry run is the fastest way to confirm
+everything is correctly wired before committing to that wait. See
+[Dry-Run Mode](../../guide/caching-and-provenance.md#dry-run-mode) for
+details.
+
+## 4. Run The Workflow
 
 ```bash
 ginkgo run
@@ -41,7 +60,7 @@ If you prefer to be explicit:
 ginkgo run bioinfo/workflow.py
 ```
 
-## 4. Inspect Outputs
+## 5. Inspect Outputs
 
 After a successful run, look at:
 
@@ -51,7 +70,7 @@ After a successful run, look at:
 - `results/summary.csv` for the merged report
 - `.ginkgo/runs/<run_id>/` for run provenance and logs
 
-## 5. Re-Run To See Cache Reuse
+## 6. Re-Run To See Cache Reuse
 
 Run the workflow again without changing inputs:
 
