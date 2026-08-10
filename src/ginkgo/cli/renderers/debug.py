@@ -64,3 +64,15 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
         box=box.SQUARE,
         expand=False,
     )
+
+
+def render_run_failure_panel(run_error: object) -> Panel:
+    """Render the run-level failure recorded in the manifest."""
+    message = str(run_error) if run_error is not None else "No error recorded in the manifest."
+    return Panel(
+        Text(message, style="#7f1d1d"),
+        title="[bold red]Run Failure[/]",
+        border_style="red",
+        box=box.SQUARE,
+        expand=False,
+    )
