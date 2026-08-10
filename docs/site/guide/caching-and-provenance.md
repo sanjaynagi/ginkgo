@@ -72,27 +72,6 @@ should be content-tracked and stored as an artifact.
 `Path` and `pathlib.Path` annotations are **not** content-hashed either. Use
 `file` and `folder`.
 
-### Keep Inputs Deterministic
-
-An input that changes on every run defeats caching entirely — the key never
-repeats, so every task re-executes. Avoid computing task inputs (or values
-derived into them, such as RNG seeds) from:
-
-- `hash()` on a `str`, `bytes` or other salted type — Python randomises string
-  hashing per process unless `PYTHONHASHSEED` is fixed, so `hash(chrom)` yields
-  a different seed on every run
-- `uuid4()` and other random identifiers
-- `datetime.now()`, timestamps, and run counters
-- `random` without an explicit seed
-
-Use a stable function of the input instead, such as an index into the fan-out
-list or a fixed seed passed as an argument.
-
-If tasks re-run when you expected a cache hit, `ginkgo cache explain <run-id>`
-reports a reason per task. `input_changed` means the resolved input hashes
-differ from the most recent prior entry for that task, which is the signature of
-a non-deterministic input.
-
 ## Artifact Storage
 
 For file and folder outputs, Ginkgo stores content-addressed artifacts under
