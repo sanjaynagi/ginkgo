@@ -329,6 +329,53 @@ class TestReportData:
         assert card.log_tail is not None
         assert card.log_tail.total_lines > 0
 
+    def test_notebook_render_failure_card_is_flagged(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("# demo\n", encoding="utf-8")
+        recorder = RunProvenanceRecorder(
+            run_id="run-notebook-failed",
+            workflow_path=workflow_path,
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+            params={},
+        )
+        recorder.ensure_task(node_id=0, task_name="demo.report", env="local")
+        recorder.update_task_inputs(
+            node_id=0,
+            task_name="demo.report",
+            env="local",
+            resolved_args={},
+            input_hashes={},
+            cache_key="cache-nb",
+            dependency_ids=[],
+            dynamic_dependency_ids=[],
+        )
+        html_path = recorder.run_dir / "notebooks" / "report.html"
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<html>HTML export failed</html>", encoding="utf-8")
+        recorder.update_task_extra(
+            node_id=0,
+            task_type="notebook",
+            notebook_kind="marimo",
+            notebook_path=str(tmp_path / "report.py"),
+            notebook_description=None,
+            render_status="failed",
+            render_error="render blew up",
+            rendered_html="notebooks/report.html",
+        )
+        recorder.mark_succeeded(
+            node_id=0, task_name="demo.report", env="local", value=str(html_path)
+        )
+        recorder.finalize(status="succeeded")
+
+        report = build_report_data(run_dir=recorder.run_dir)
+
+        assert len(report.notebooks) == 1
+        card = report.notebooks[0]
+        assert card.status_tone == "warn"
+        assert "HTML export failed" in card.sub_line
+
     def test_graph_layout_places_all_tasks(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-graph", fail=False)
         report = build_report_data(run_dir=run_dir)

@@ -375,11 +375,17 @@ class CliRunRenderer:
     def _render_notebooks(self, notebooks: list[CliNotebookSummary]) -> Text:
         """Render the list of notebooks materialised in this run."""
         text = Text()
-        text.append(f"\n📓 Notebooks materialised ({len(notebooks)})\n", style="bold")
+        failed_count = sum(1 for nb in notebooks if nb.render_failed)
+        text.append(f"\n📓 Notebooks materialised ({len(notebooks)})", style="bold")
+        if failed_count:
+            text.append(f"  ⚠ {failed_count} HTML export failed", style="bold yellow")
+        text.append("\n")
         for nb in notebooks:
             url = nb.html_path.as_uri()
             text.append(f"  {nb.task_label}  ", style="bold #134e4a")
             text.append(str(nb.html_path), style=f"link {url} #0f766e")
+            if nb.render_failed:
+                text.append("  ⚠ HTML export failed", style="bold yellow")
             text.append("\n")
         return text
 
