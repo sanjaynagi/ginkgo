@@ -12,7 +12,8 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.common import console
-from ginkgo.envs.pixi import PixiRegistry, _env_manifest
+from ginkgo.cli.workspace import resolve_workflow_path
+from ginkgo.envs.pixi import PixiEnvNotFoundError, PixiRegistry, _env_manifest, _list_envs
 
 
 @dataclass(frozen=True)
@@ -28,13 +29,15 @@ class EnvEntryRow:
 def command_env(args) -> int:
     """Handle ``ginkgo env`` subcommands."""
     rich_console = console(sys.stdout)
-    registry = PixiRegistry(project_root=Path.cwd())
+    registry = _build_project_registry(project_root=Path.cwd())
 
     if args.env_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo env[/] [bold]ls[/]\n")
         entries = list_project_envs(registry=registry)
         if not entries:
-            rich_console.print("[dim]No Pixi environments found under envs/.[/]")
+            rich_console.print(
+                f"[dim]No Pixi environments found. Searched: {_searched_roots(registry=registry)}[/]"
+            )
             return 0
 
         table = Table(
@@ -89,6 +92,37 @@ def command_env(args) -> int:
     return 0
 
 
+def _build_project_registry(*, project_root: Path) -> PixiRegistry:
+    """Build a Pixi registry with the same discovery roots ``ginkgo run`` uses.
+
+    Parameters
+    ----------
+    project_root : Path
+        Directory the command was invoked from.
+
+    Returns
+    -------
+    PixiRegistry
+        Registry anchored on the resolved workflow's directory when a workflow
+        can be discovered, and on ``project_root`` alone otherwise.
+    """
+    try:
+        workflow_root = resolve_workflow_path(project_root=project_root, workflow=None).path.parent
+    except (OSError, RuntimeError):
+        # Discovery is best-effort here: env ls/clear don't need a workflow,
+        # so any failure to locate one (missing file, unreadable directory,
+        # ambiguous candidates) just falls back to project_root alone.
+        workflow_root = None
+    return PixiRegistry(project_root=project_root, workflow_root=workflow_root)
+
+
+def _searched_roots(*, registry: PixiRegistry) -> str:
+    """Describe the discovery roots searched, with the environments each holds."""
+    return ", ".join(
+        f"{envs_dir} (envs: {_list_envs(envs_dir)})" for envs_dir in registry.env_directories
+    )
+
+
 def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
     """Return discoverable project-local Pixi environments."""
     entries: list[EnvEntryRow] = []
@@ -130,7 +164,14 @@ def _clear_targets(
         return list_project_envs(registry=registry)
 
     assert env is not None
-    manifest = registry.resolve(env=env)
+    try:
+        manifest = registry.resolve(env=env)
+    except PixiEnvNotFoundError:
+        # PixiEnvNotFoundError names only the first discovery root; report all of
+        # them so "wrong directory" is distinguishable from "env does not exist".
+        raise ValueError(
+            f"Pixi environment {env!r} not found. Searched: {_searched_roots(registry=registry)}"
+        ) from None
     install_dir = manifest.parent / ".pixi"
     return [
         EnvEntryRow(

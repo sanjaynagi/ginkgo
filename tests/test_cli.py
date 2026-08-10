@@ -479,7 +479,7 @@ class TestCliEnv:
         result = _run_cli("env", "ls", cwd=Path.cwd())
         assert result.returncode == 0
         assert "🌿 ginkgo env ls" in result.stdout
-        assert "No Pixi environments found under envs/." in result.stdout
+        assert "No Pixi environments found. Searched:" in result.stdout
 
     def test_env_ls_and_clear_manage_project_local_pixi_installs(self) -> None:
         analysis_dir = Path("envs") / "analysis_tools"
