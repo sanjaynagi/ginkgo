@@ -1,4 +1,4 @@
-W# Workflow patterns
+# Workflow patterns
 
 Use normal Python tasks for orchestration and Python logic:
 
@@ -13,10 +13,10 @@ def summarize(input_path: file, output_path: str) -> file:
 Use shell tasks when the real unit of work is a command with declared outputs:
 
 ```python
-from ginkgo import shell, task
+from ginkgo import file, shell, task
 
 @task(kind="shell")
-def normalize(input_path: str, output_path: str):
+def normalize(input_path: file, output_path: str):
     return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}", output=output_path)
 ```
 

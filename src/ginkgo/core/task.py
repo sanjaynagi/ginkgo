@@ -547,6 +547,10 @@ def _fan_out_function_name(*, mode: _FanOutMode) -> str:
     return "product_map"
 
 
+_MAX_ZIP_LABEL_LENGTH = 24
+_PATH_LIKE_PATTERN = re.compile(r"[/\\]|\.[A-Za-z][A-Za-z0-9]{0,4}$")
+
+
 def _label_parts_for_row(
     *,
     task_def: TaskDef,
@@ -559,11 +563,7 @@ def _label_parts_for_row(
         return ()
 
     if mode == "zip":
-        first_key = varying_keys[0]
-        rendered = _render_label_value(row.get(first_key))
-        if rendered is None:
-            return ()
-        return (rendered,)
+        return _zip_label_parts_for_row(row=row, varying_keys=varying_keys)
 
     parts: list[str] = []
     valid_params = set(task_def.all_params.keys())
@@ -575,6 +575,44 @@ def _label_parts_for_row(
             continue
         parts.append(f"{key}={rendered}")
     return tuple(parts)
+
+
+def _zip_label_parts_for_row(
+    *,
+    row: dict[str, Any],
+    varying_keys: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Pick the most distinguishing label for one zip fan-out row.
+
+    Prefers the first varying value that renders as a short, non-path
+    scalar. When every varying value is an ``Expr``/``ExprList`` (the
+    normal shape for a chained downstream task), inherit the label of
+    the upstream branch that produced it, since the zip position ties
+    each row back to exactly one producing branch. Falls back to the
+    first key's rendered value, matching the previous behaviour.
+    """
+    for key in varying_keys:
+        rendered = _render_label_value(row.get(key))
+        if rendered is not None and _is_short_scalar_label(rendered):
+            return (rendered,)
+
+    for key in varying_keys:
+        value = row.get(key)
+        if isinstance(value, Expr) and value.display_label_parts:
+            return value.display_label_parts
+
+    first_key = varying_keys[0]
+    rendered = _render_label_value(row.get(first_key))
+    if rendered is None:
+        return ()
+    return (rendered,)
+
+
+def _is_short_scalar_label(rendered: str) -> bool:
+    """Return whether a rendered value reads as a short, non-path scalar."""
+    if len(rendered) > _MAX_ZIP_LABEL_LENGTH:
+        return False
+    return not _PATH_LIKE_PATTERN.search(rendered)
 
 
 def _render_label_value(value: Any) -> str | None:

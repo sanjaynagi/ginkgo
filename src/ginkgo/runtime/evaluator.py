@@ -86,6 +86,7 @@ from ginkgo.runtime.task_runners.notebook import (
     first_label_param_name,
     render_label_value,
 )
+from ginkgo.runtime.task_runners.script import ScriptRunner
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     SignalMonitor,
@@ -103,8 +104,7 @@ from ginkgo.runtime.worker import _task_log_context, run_task
 _DIRECTIVE_RUNNER: dict[type[ExecutionDirective], tuple[str, str]] = {
     ShellDirective: ("_shell_runner", "run_shell"),
     NotebookDirective: ("_notebook_runner", "run_notebook"),
-    # NotebookRunner owns both notebook and script execution.
-    ScriptDirective: ("_notebook_runner", "run_script"),
+    ScriptDirective: ("_script_runner", "run_script"),
     SubWorkflowDirective: ("_subworkflow_runner", "run_subworkflow"),
 }
 _unregistered = set(ExecutionDirective.__subclasses__()) - set(_DIRECTIVE_RUNNER)
@@ -350,6 +350,10 @@ class ConcurrentEvaluator:
             provenance=self.provenance,
             notice_emitter=self._emit_notebook_notice,
             runtime_root_factory=self._notebook_runtime_root,
+        )
+        self._script_runner = ScriptRunner(
+            shell_runner=self._shell_runner,
+            validator=self._validator,
         )
         self._subworkflow_runner = SubworkflowRunner(
             shell_runner=self._shell_runner,

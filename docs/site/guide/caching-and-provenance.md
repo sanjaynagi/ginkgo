@@ -15,13 +15,62 @@ level, Ginkgo hashes:
 - resolved input values
 - environment identity for foreign execution
 
-For path-like inputs, the runtime hashes the contents rather than trusting the
-path string alone.
+Inputs annotated `file` or `folder` are hashed by content; everything else is
+hashed from its `repr`. See [Cache Correctness](#cache-correctness) for why that
+distinction decides whether the cache stays correct.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.
 Dynamic imports and other runtime dependencies cannot be tracked this way; set
 or increment `version=` on the task when those dependencies change.
+
+The conservative closure has a practical consequence for fan-out. If tasks read
+their parameters from a shared module-level structure, every consumer's cache
+identity is coupled to every other consumer's parameters — editing one model's
+entry in a shared `MODEL_HYPERPARAMS` dict invalidates every task that imports
+the module, so the whole fan-out re-runs rather than the affected branch. Pass
+such parameters as task arguments instead; arguments are hashed per call, so
+only the branches whose values changed are invalidated.
+
+(cache-correctness)=
+## Cache Correctness
+
+### Annotate Path Boundaries `file` Or `folder`, Not `str`
+
+A path that flows between tasks must be annotated `file` (or `folder`) at both
+ends — the producer's return and the consumer's parameter. Content hashing is
+dispatched on that annotation.
+
+**A `str`-annotated path boundary makes the cache key path-identity only.** The
+key incorporates the path string, not the file's contents, so if an upstream
+task rewrites the file at the same path the downstream task still matches its
+old key: it reports `↺ cached` and serves a stale result as current. Nothing
+warns, because from the cache's point of view nothing changed.
+
+```python
+from ginkgo import file, task
+
+# WRONG — coords is keyed on the path string, so a rewritten file still hits
+@task()
+def analyze(coords: str, output_path: str) -> str: ...
+
+# CORRECT — coords is keyed on the file's contents
+@task()
+def analyze(coords: file, output_path: str) -> file: ...
+```
+
+The producer's annotation matters as much as the consumer's: a task declared
+`-> str` returns a plain `str` at runtime, which is hashed by `repr` even if the
+consumer asks for `file`. Note that `file` and `folder` are `str` subclasses, so
+a `str` annotation is indistinguishable from the correct one at the type level
+while behaving oppositely at the cache level — no type checker will catch this.
+
+Output paths stay `str`. The file does not exist when the key is computed, so
+there is nothing to hash; annotate the return `file` when the produced path
+should be content-tracked and stored as an artifact.
+
+`Path` and `pathlib.Path` annotations are **not** content-hashed either. Use
+`file` and `folder`.
 
 ## Artifact Storage
 

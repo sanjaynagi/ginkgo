@@ -21,6 +21,12 @@ class NotebookArtifactPair:
     started_at: str
     html_path: Path
     notebook_path: Path
+    render_status: str | None
+
+    @property
+    def render_failed(self) -> bool:
+        """Return True when the HTML export step failed for this notebook."""
+        return self.render_status == "failed"
 
 
 def command_notebooks(args) -> int:
@@ -39,9 +45,10 @@ def command_notebooks(args) -> int:
         if index > 0:
             rich_console.print()
 
-        rich_console.print(
-            f"[bold]{entry.task_name}[/]  [dim]run={entry.run_id} task={entry.task_key}[/]"
-        )
+        label = f"[bold]{entry.task_name}[/]  [dim]run={entry.run_id} task={entry.task_key}[/]"
+        if entry.render_failed:
+            label += "  [bold yellow]⚠ HTML export failed[/]"
+        rich_console.print(label)
         rich_console.print(f"HTML: {entry.html_path}")
         rich_console.print(f"Notebook: {entry.notebook_path}")
     return 0
@@ -72,6 +79,7 @@ def list_notebook_artifact_pairs(*, runs_root: Path) -> list[NotebookArtifactPai
 
             notebook_path = (run_dir / executed_notebook).resolve()
             html_path = (run_dir / rendered_html).resolve()
+            render_status = task.get("render_status")
             entries.append(
                 NotebookArtifactPair(
                     run_id=run_dir.name,
@@ -81,6 +89,7 @@ def list_notebook_artifact_pairs(*, runs_root: Path) -> list[NotebookArtifactPai
                     started_at=started_at,
                     html_path=html_path,
                     notebook_path=notebook_path,
+                    render_status=render_status if isinstance(render_status, str) else None,
                 )
             )
 

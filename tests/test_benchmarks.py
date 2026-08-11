@@ -12,6 +12,7 @@ from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
 from benchmarks.harness import (
     BenchmarkRecord,
     _print_benchmark_summary,
+    _raise_for_benchmark_failures,
     compare_against_baseline,
 )
 from benchmarks.sources import BenchmarkSourceManifest
@@ -202,3 +203,121 @@ def test_print_benchmark_summary_renders_observed_only_table() -> None:
     assert "observed s" in output
     assert "retail" in output
     assert "cached" in output
+
+
+def _write_baseline(*, path: Path, entry: dict[str, object]) -> Path:
+    """Write a single-entry baseline file for counter-gate tests."""
+    path.write_text(json.dumps({"benchmarks": [entry]}), encoding="utf-8")
+    return path
+
+
+def _chem_cold_record(*, wall_time_seconds: float, executed_task_count: int) -> BenchmarkRecord:
+    """Build one chem/cold record with the given timing and executed-task count."""
+    return BenchmarkRecord(
+        example="chem",
+        case="default",
+        mode="cold",
+        wall_time_seconds=wall_time_seconds,
+        status="succeeded",
+        task_count=11,
+        executed_task_count=executed_task_count,
+        cached_task_count=0,
+        run_id="run-1",
+        timestamp_utc="2026-03-31T12:00:00+00:00",
+        platform="linux",
+        python_version="3.11.0",
+    )
+
+
+def test_counter_mismatch_fails_without_strict(tmp_path: Path) -> None:
+    baseline_path = _write_baseline(
+        path=tmp_path / "baseline.json",
+        entry={
+            "example": "chem",
+            "mode": "cold",
+            "baseline_seconds": 10.0,
+            "max_regression_pct": 20.0,
+            "expected_counters": {
+                "task_count": 11,
+                "executed_task_count": 11,
+                "cached_task_count": 0,
+            },
+        },
+    )
+    records = [_chem_cold_record(wall_time_seconds=1.0, executed_task_count=9)]
+
+    comparisons = compare_against_baseline(records=records, baseline_path=baseline_path)
+
+    assert comparisons[0]["status"] == "passed"
+    assert comparisons[0]["counter_status"] == "failed"
+    assert comparisons[0]["counter_failures"] == [
+        {"counter": "executed_task_count", "expected": 11, "observed": 9}
+    ]
+
+    with pytest.raises(RuntimeError, match="executed_task_count expected 11 but observed 9"):
+        _raise_for_benchmark_failures(comparisons=comparisons, strict=False)
+
+
+def test_matching_counters_pass(tmp_path: Path) -> None:
+    baseline_path = _write_baseline(
+        path=tmp_path / "baseline.json",
+        entry={
+            "example": "chem",
+            "mode": "cold",
+            "baseline_seconds": 10.0,
+            "max_regression_pct": 20.0,
+            "expected_counters": {
+                "task_count": 11,
+                "executed_task_count": 11,
+                "cached_task_count": 0,
+            },
+        },
+    )
+    records = [_chem_cold_record(wall_time_seconds=1.0, executed_task_count=11)]
+
+    comparisons = compare_against_baseline(records=records, baseline_path=baseline_path)
+
+    assert comparisons[0]["counter_status"] == "passed"
+    assert comparisons[0]["counter_failures"] == []
+    _raise_for_benchmark_failures(comparisons=comparisons, strict=True)
+
+
+def test_timing_regression_only_fails_under_strict(tmp_path: Path) -> None:
+    baseline_path = _write_baseline(
+        path=tmp_path / "baseline.json",
+        entry={
+            "example": "chem",
+            "mode": "cold",
+            "baseline_seconds": 10.0,
+            "max_regression_pct": 20.0,
+            "expected_counters": {"task_count": 11, "executed_task_count": 11},
+        },
+    )
+    records = [_chem_cold_record(wall_time_seconds=15.0, executed_task_count=11)]
+
+    comparisons = compare_against_baseline(records=records, baseline_path=baseline_path)
+    assert comparisons[0]["status"] == "failed"
+    assert comparisons[0]["counter_status"] == "passed"
+
+    _raise_for_benchmark_failures(comparisons=comparisons, strict=False)
+    with pytest.raises(RuntimeError, match="timing regressions"):
+        _raise_for_benchmark_failures(comparisons=comparisons, strict=True)
+
+
+def test_entry_without_expected_counters_is_not_gated(tmp_path: Path) -> None:
+    baseline_path = _write_baseline(
+        path=tmp_path / "baseline.json",
+        entry={
+            "example": "chem",
+            "mode": "cold",
+            "baseline_seconds": 10.0,
+            "max_regression_pct": 20.0,
+        },
+    )
+    records = [_chem_cold_record(wall_time_seconds=1.0, executed_task_count=3)]
+
+    comparisons = compare_against_baseline(records=records, baseline_path=baseline_path)
+
+    assert comparisons[0]["counter_status"] == "not_gated"
+    assert comparisons[0]["counter_failures"] == []
+    _raise_for_benchmark_failures(comparisons=comparisons, strict=True)

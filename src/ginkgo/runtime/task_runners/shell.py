@@ -8,6 +8,7 @@ notebook runner reuse the logged-command machinery.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -21,6 +22,7 @@ from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.shell import ShellDirective
+from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
@@ -132,6 +134,36 @@ def _asset_result_path(result: AssetResult) -> Path:
     )
 
 
+def serialize_cli_argument_value(value: Any) -> Any:
+    """Convert one resolved task argument into a YAML/JSON-safe value.
+
+    Shared by every driver task kind that forwards resolved arguments to an
+    external process (script, notebook parameter files).
+    """
+    if isinstance(value, Path | file | folder | tmp_dir):
+        return str(value)
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, list):
+        return [serialize_cli_argument_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [serialize_cli_argument_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(serialize_cli_argument_value(key)): serialize_cli_argument_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def stringify_cli_argument(value: Any) -> str:
+    """Render one resolved task argument for a CLI invocation."""
+    serialized = serialize_cli_argument_value(value)
+    if isinstance(serialized, str):
+        return serialized
+    return json.dumps(serialized, sort_keys=True)
+
+
 def iter_output_values(
     output: Any,
 ) -> list[Path]:
@@ -215,16 +247,16 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
         kind = "invalid_path"
     elif isinstance(exc, FileNotFoundError):
         kind = "missing_input" if "did not create" not in message else "output_validation_error"
-    elif isinstance(exc, (TypeError, ValueError)):
-        kind = "user_code_error"
     else:
+        # Anything unrecognised was raised inside a task body, so it is user code
+        # unless the class name identifies it as a framework failure.
         exc_name = exc.__class__.__name__.lower()
         if "env" in exc_name or "container" in exc_name:
             kind = "env_mismatch"
         elif "cache" in exc_name:
             kind = "cache_error"
         else:
-            kind = "scheduler_error"
+            kind = "user_code_error"
 
     return {
         "kind": kind,

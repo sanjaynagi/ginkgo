@@ -27,7 +27,7 @@ from ginkgo.cli.renderers.models import (
 )
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import CliRunRenderer
-from ginkgo.cli.workspace import resolve_workflow_path
+from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import config_session, load_runtime_config
 from ginkgo.core.flow import discover_flow
 from ginkgo.envs.container import ContainerBackend
@@ -121,7 +121,7 @@ def run_workflow(
 
     registry = PixiRegistry(
         project_root=Path.cwd(),
-        workflow_root=workflow_path.parent,
+        workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
     )
     secret_resolver = build_secret_resolver(
         project_root=Path.cwd(),
@@ -466,7 +466,14 @@ def _render_notebooks(
         task_label = (
             renderer.label_for_node(node_id) if isinstance(node_id, int) else None
         ) or notebook.base_name
-        rows.append(CliNotebookSummary(task_label=task_label, html_path=html_path))
+        rows.append(
+            CliNotebookSummary(
+                task_label=task_label,
+                html_path=html_path,
+                render_status=notebook.render_status,
+                render_error=notebook.render_error,
+            )
+        )
     return rows
 
 

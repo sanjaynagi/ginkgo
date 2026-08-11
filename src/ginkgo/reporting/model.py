@@ -1107,11 +1107,15 @@ def _build_notebooks(
         sub_parts.append(format_bytes(size_bytes))
         if task.notebook_description:
             sub_parts.append(task.notebook_description)
+        if task.render_status == "failed":
+            sub_parts.append("HTML export failed")
 
         title = task.notebook_path or task.base_name
         if isinstance(title, str):
             title = Path(title).name
-        status_tone = _STATUS_TONE.get(task.status, "warn")
+        status_tone = (
+            "warn" if task.render_status == "failed" else _STATUS_TONE.get(task.status, "warn")
+        )
 
         cards.append(
             NotebookCard(

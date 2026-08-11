@@ -107,6 +107,13 @@ class CliNotebookSummary:
 
     task_label: str
     html_path: Path
+    render_status: str | None = None
+    render_error: str | None = None
+
+    @property
+    def render_failed(self) -> bool:
+        """Return True when the HTML export step failed for this notebook."""
+        return self.render_status == "failed"
 
 
 @dataclass(frozen=True, kw_only=True)

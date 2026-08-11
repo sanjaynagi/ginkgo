@@ -479,7 +479,7 @@ class TestCliEnv:
         result = _run_cli("env", "ls", cwd=Path.cwd())
         assert result.returncode == 0
         assert "🌿 ginkgo env ls" in result.stdout
-        assert "No Pixi environments found under envs/." in result.stdout
+        assert "No Pixi environments found. Searched:" in result.stdout
 
     def test_env_ls_and_clear_manage_project_local_pixi_installs(self) -> None:
         analysis_dir = Path("envs") / "analysis_tools"
@@ -844,6 +844,43 @@ def main():
         assert "🌿 ginkgo test" in result.stdout
         assert "🌿 ginkgo run exec_flow.py" in result.stdout
         assert "✓ Completed 1 test workflow" in result.stdout
+
+    def test_test_resolves_envs_from_canonical_package_not_workflow_parent(self) -> None:
+        """Regression test for issue #119.
+
+        On a canonical ``ginkgo init`` layout, Pixi environments live under
+        ``<pkg>/envs/``, a sibling of ``<pkg>/workflow.py`` -- not of
+        ``tests/workflows/*.py``. ``ginkgo test`` must still resolve them.
+        """
+        package_dir = Path("w1")
+        (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("")
+        (package_dir / "workflow.py").write_text("")
+        (package_dir / "envs" / "analysis_tools" / "pixi.toml").write_text(
+            "[workspace]\nname = 'analysis_tools'\nchannels = []\nplatforms = []\n"
+        )
+
+        tests_workflows_dir = Path("tests") / "workflows"
+        tests_workflows_dir.mkdir(parents=True)
+        (tests_workflows_dir / "smoke.py").write_text(
+            """
+from ginkgo import flow, shell, task
+
+@task(env="analysis_tools", kind="shell")
+def touch() -> str:
+    return shell(cmd="true", output="marker.txt")
+
+@flow
+def main():
+    return touch()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 
 
 class TestCliInit:
@@ -1363,7 +1400,7 @@ def main():
         assert inspect.returncode == 0, inspect.stderr
         inspect_payload = json.loads(inspect.stdout)
         assert inspect_payload["status"] == "failed"
-        assert inspect_payload["tasks"][0]["failure"]["kind"] == "scheduler_error"
+        assert inspect_payload["tasks"][0]["failure"]["kind"] == "user_code_error"
 
     def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
         Path("workflow.py").write_text(
@@ -1386,7 +1423,8 @@ def main():
         result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
         assert result.returncode == 1
         payload = json.loads(result.stdout)
-        assert payload[0]["code"] == "MISSING_SECRET"
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
 
     def test_cache_explain_reports_rerun_reason(self) -> None:
         Path("workflow.py").write_text(
@@ -1434,6 +1472,50 @@ def main():
             "cache_key_changed",
             "source_hash_changed",
         }
+
+    def test_cache_explain_accepts_positional_or_run_flag(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+        run_dir = _extract_run_dir(run.stdout)
+
+        positional = _run_cli("cache", "explain", run_dir.name, cwd=Path.cwd())
+        assert positional.returncode == 0, positional.stderr
+        assert json.loads(positional.stdout)["run_id"] == run_dir.name
+
+        flag = _run_cli("cache", "explain", "--run", run_dir.name, cwd=Path.cwd())
+        assert flag.returncode == 0, flag.stderr
+        assert json.loads(flag.stdout) == json.loads(positional.stdout)
+
+    def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
+        result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "conflicting run ids" in result.stdout
+
+    def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
+        """Both forms naming the same run is not a usage error, only a missing run."""
+        result = _run_cli("cache", "explain", "run-a", "--run", "run-a", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Run not found: run-a" in result.stderr
+
+    def test_cache_explain_requires_a_run_id(self) -> None:
+        result = _run_cli("cache", "explain", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "provide a run id" in result.stdout
 
 
 class TestCliRunProfile:

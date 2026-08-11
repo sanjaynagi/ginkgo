@@ -115,7 +115,14 @@ def _build_parser() -> argparse.ArgumentParser:
     clear_parser = cache_subparsers.add_parser("clear")
     clear_parser.add_argument("cache_key")
     explain_parser = cache_subparsers.add_parser("explain")
-    explain_parser.add_argument("--run", required=True, dest="run_id")
+    explain_parser.add_argument("run_id", nargs="?")
+    explain_parser.add_argument(
+        "--run",
+        dest="run_flag",
+        metavar="RUN_ID",
+        default=None,
+        help="Deprecated alias for the positional run id.",
+    )
     prune_parser = cache_subparsers.add_parser("prune")
     prune_parser.add_argument("--older-than", default=None)
     prune_parser.add_argument(

@@ -83,6 +83,7 @@ class TaskSummary:
     notebook_description: str | None
     notebook_path: str | None
     render_status: str | None
+    render_error: str | None
     task_type: str
     dependency_ids: tuple[int, ...]
     dynamic_dependency_ids: tuple[int, ...]
@@ -156,6 +157,7 @@ class NotebookSummary:
     description: str | None
     status: str
     render_status: str | None
+    render_error: str | None
     notebook_kind: str | None
     notebook_path: str | None
     rendered_html: str | None
@@ -367,6 +369,9 @@ def _build_task_summary(*, task_key: str, task: dict[str, Any]) -> TaskSummary:
         render_status=task.get("render_status")
         if isinstance(task.get("render_status"), str)
         else None,
+        render_error=task.get("render_error")
+        if isinstance(task.get("render_error"), str)
+        else None,
         task_type=str(task.get("task_type", "task")),
         dependency_ids=dependency_ids,
         dynamic_dependency_ids=dynamic_dependency_ids,
@@ -403,6 +408,7 @@ def _load_notebooks(*, tasks: tuple[TaskSummary, ...]) -> tuple[NotebookSummary,
                 description=task.notebook_description,
                 status=task.status,
                 render_status=task.render_status,
+                render_error=task.render_error,
                 notebook_kind=task.notebook_kind,
                 notebook_path=task.notebook_path,
                 rendered_html=task.rendered_html,

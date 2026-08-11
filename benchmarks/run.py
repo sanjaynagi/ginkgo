@@ -45,7 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Fail if any benchmark exceeds its configured slowdown threshold.",
+        help=(
+            "Enforce wall-clock timing: fail if any benchmark exceeds its configured "
+            "slowdown threshold. Task-counter mismatches against the baseline always "
+            "fail, with or without this flag."
+        ),
     )
     parser.add_argument(
         "--examples",
