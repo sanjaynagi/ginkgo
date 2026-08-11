@@ -131,6 +131,12 @@ def python_script_task(*, script_path: str, output_path: str) -> Path:
     return script(script_path, output=output_path)
 
 
+@task("script", env="test_env")
+def python_script_env_task(*, script_path: str, output_path: str) -> Path:
+    """Run a Python script inside a declared task environment."""
+    return script(script_path, output=output_path)
+
+
 @task()
 def add_one_task(x: int) -> int:
     return x + 1
@@ -883,6 +889,56 @@ class TestEvaluate:
         result = evaluator.evaluate(expr)
 
         assert Path(result).is_file()
+
+    def test_script_task_with_env_uses_env_python_not_scheduler_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A declared env= must control which Python runs the script.
+
+        Regression test for the scheduler's own sys.executable being
+        hardcoded into the command, which silently ignored env= for
+        Python scripts (issue #120).
+        """
+        script_path = tmp_path / "fit.py"
+        script_path.write_text("# placeholder script\n", encoding="utf-8")
+        output_path = tmp_path / "out.txt"
+        expr = python_script_env_task(script_path=str(script_path), output_path=str(output_path))
+
+        env_dir = tmp_path / "envs" / "test_env"
+        env_dir.mkdir(parents=True)
+        (env_dir / "pixi.toml").write_text(
+            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
+            encoding="utf-8",
+        )
+        registry = PixiRegistry(project_root=tmp_path)
+        monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
+        monkeypatch.setattr(registry, "lock_hash", lambda *, env: "lock-hash-123")
+        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
+
+        calls: list[str] = []
+
+        def fake_run_subprocess(
+            *,
+            argv: str | list[str],
+            use_shell: bool,
+            on_stdout: Any = None,
+            on_stderr: Any = None,
+            **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(str(argv))
+            output_path.write_text("done\n", encoding="utf-8")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
+
+        evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, backend=LocalEnvironment(pixi_registry=registry)
+        )
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        result = evaluator.evaluate(expr)
+
+        assert Path(result).is_file()
+        assert len(calls) == 1
+        assert sys.executable not in calls[0]
+        assert "python" in calls[0]
 
     def test_notebook_cache_invalidates_when_source_changes(self, tmp_path: Path) -> None:
         from ginkgo.core.notebook import notebook as make_notebook
