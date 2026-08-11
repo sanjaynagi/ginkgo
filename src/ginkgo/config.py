@@ -162,10 +162,8 @@ def config(path: str | Path) -> dict[str, Any]:
     if session is not None and session.override_paths:
         # Overrides layer over the file the workflow asked for, so supplying one
         # value with --config does not require restating every other value. The
-        # base file stays optional: overrides alone may define the whole config.
-        mappings: list[dict[str, Any]] = []
-        if Path(path).is_file():
-            mappings.append(_load_config_mapping(path))
+        # base file is still required: --config supplies values, not the file.
+        mappings: list[dict[str, Any]] = [_load_config_mapping(path)]
         mappings.extend(_load_config_mapping(item) for item in session.override_paths)
         data = _merge_top_level_dicts(mappings)
     else:

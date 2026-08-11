@@ -57,6 +57,17 @@ def test_negative_number_value():
         assert ginkgo.param("offset", type=int, default=0) == -3
 
 
+def test_negative_float_value():
+    with config_session(cli_extras=["--offset", "-1.5e3"]):
+        assert ginkgo.param("offset", type=float, default=0.0) == -1500.0
+
+
+def test_single_dash_flag_is_not_taken_as_a_value():
+    with config_session(cli_extras=["--label", "-x"]):
+        with pytest.raises(ParamError, match="--label expects a value"):
+            ginkgo.param("label", default="")
+
+
 def test_type_conversion_applied():
     with config_session(cli_extras=["--ratio", "0.25", "--out", "results/x.txt"]):
         assert ginkgo.param("ratio", type=float, default=1.0) == 0.25

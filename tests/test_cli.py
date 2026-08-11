@@ -1706,6 +1706,19 @@ class TestCliWorkflowParams:
         assert "unrecognized arguments: --nope 1" in combined
         assert "--n-reps" in combined and "--label" in combined
 
+    def test_negative_parameter_value_is_not_read_as_a_flag(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--n-reps", "-2", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "base:-2"
+
+    def test_abbreviated_ginkgo_flag_is_rejected(self) -> None:
+        """Abbreviations are unsupported, and must not be read as parameters."""
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--job", "1", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "--job" in result.stdout + result.stderr
+
     def test_type_error_names_the_parameter(self) -> None:
         Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
         result = _run_cli("run", "workflow.py", "--n-reps", "many", cwd=Path.cwd())
@@ -1844,6 +1857,34 @@ def main():
         result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "from-base/from-override"
+
+    def test_config_override_does_not_excuse_a_missing_base_file(self) -> None:
+        """--config supplies values, not the file the workflow asked for."""
+        Path("override.toml").write_text('replaced = "from-override"\n', encoding="utf-8")
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+cfg = ginkgo.config("typo.toml")
+
+@task()
+def write_it(replaced: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(replaced, encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_it(replaced=cfg["replaced"], output_path="result.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "typo.toml" in result.stdout + result.stderr
 
     def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
         """A parameter value must not be captured by the optional workflow positional."""

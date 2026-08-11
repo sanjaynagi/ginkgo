@@ -197,8 +197,8 @@ def find_global_param_reads(
     declaration_globals : dict[str, dict[str, Any]]
         Parameter name to the ``globals()`` mapping of its declaring module.
     tasks : Iterable[tuple[str, Any]]
-        ``(task_name, function)`` pairs to inspect. Repeated functions are
-        inspected once.
+        ``(task_name, function)`` pairs to inspect. A repeated pair is reported
+        once, and each distinct function body is disassembled once.
 
     Returns
     -------
@@ -209,19 +209,27 @@ def find_global_param_reads(
         return []
 
     findings: list[GlobalParamRead] = []
-    seen: set[tuple[int, str]] = set()
+    seen: set[tuple[Any, str]] = set()
+    global_names: dict[Any, list[str]] = {}
     for task_name, function in tasks:
         code = getattr(function, "__code__", None)
         function_globals = getattr(function, "__globals__", None)
         if code is None or function_globals is None:
             continue
 
-        key = (id(code), task_name)
+        key = (code, task_name)
         if key in seen:
             continue
         seen.add(key)
 
-        for name in sorted(_loaded_global_names(function)):
+        # Keyed by the code object itself: the loaded names depend only on the
+        # body, and the key holds it alive so ids cannot be recycled.
+        names = global_names.get(code)
+        if names is None:
+            names = sorted(_loaded_global_names(function))
+            global_names[code] = names
+
+        for name in names:
             declared_in = declaration_globals.get(name)
             if declared_in is not None and declared_in is function_globals:
                 findings.append(GlobalParamRead(task_name=task_name, param_name=name))
@@ -366,6 +374,32 @@ def resolve_param(
     return ParamResolution(value=default, source="default")
 
 
+def looks_like_flag(token: str) -> bool:
+    """Whether *token* is an option flag rather than a value.
+
+    A negative number is a value, not a flag — the rule argparse applies when no
+    declared option looks numeric — so ``--offset -5`` passes ``-5`` to
+    ``--offset`` instead of reading it as another flag.
+
+    Parameters
+    ----------
+    token : str
+        A single command-line token.
+
+    Returns
+    -------
+    bool
+        ``True`` if the token should be read as a flag.
+    """
+    if not token.startswith("-") or token == "-":
+        return False
+    try:
+        float(token)
+    except ValueError:
+        return True
+    return False
+
+
 def extract_flag_values(
     extras: Sequence[str],
     decl: ParamDecl,
@@ -411,7 +445,7 @@ def extract_flag_values(
 
         consumed.add(index)
         following = extras[index + 1] if index + 1 < len(extras) else None
-        takes_following = following is not None and not following.startswith("--")
+        takes_following = following is not None and not looks_like_flag(following)
 
         if is_bool:
             # A bare boolean flag means true; an explicit literal may follow.

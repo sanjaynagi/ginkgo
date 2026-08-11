@@ -23,6 +23,7 @@ from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.common import RunMode, console
+from ginkgo.params import looks_like_flag
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -94,18 +95,14 @@ def _ginkgo_version() -> str:
         return "unknown"
 
 
-def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:
-    """Collect every flag the parser tree recognises, including subcommands.
-
-    A token starting with ``-`` that is absent from this set belongs to a
-    workflow parameter rather than to ginkgo itself.
-    """
-    found: set[str] = set()
+def _parser_tree(parser: argparse.ArgumentParser) -> list[argparse.ArgumentParser]:
+    """Return *parser* together with every subcommand parser beneath it."""
+    found: list[argparse.ArgumentParser] = []
     pending = [parser]
     while pending:
         current = pending.pop()
+        found.append(current)
         for action in current._actions:
-            found.update(action.option_strings)
             choices = getattr(action, "choices", None) or {}
             if isinstance(choices, dict):
                 pending.extend(
@@ -113,6 +110,22 @@ def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:
                     for value in choices.values()
                     if isinstance(value, argparse.ArgumentParser)
                 )
+    return found
+
+
+def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """Collect every flag the parser tree recognises, including subcommands.
+
+    A token starting with ``-`` that is absent from this set belongs to a
+    workflow parameter rather than to ginkgo itself. The set is exact only
+    because abbreviation is disabled in :func:`_build_parser`: an abbreviated
+    flag argparse would accept is absent here, so it would be misread as a
+    parameter.
+    """
+    found: set[str] = set()
+    for current in _parser_tree(parser):
+        for action in current._actions:
+            found.update(action.option_strings)
     return frozenset(found)
 
 
@@ -125,8 +138,9 @@ def _partition_param_extras(
 
     An unrecognised ``--flag`` takes the following token as its value unless that
     token is itself a flag — the same rule argparse applies to its own optionals,
-    so a parameter behaves like every other flag. A boolean parameter given
-    immediately before a positional therefore needs the ``--flag=value`` form.
+    so a parameter behaves like every other flag. A negative number is a value
+    rather than a flag, so ``--offset -5`` holds together. A boolean parameter
+    given immediately before a positional needs the ``--flag=value`` form.
 
     Parameters
     ----------
@@ -148,8 +162,7 @@ def _partition_param_extras(
         token = argv[index]
         name = token.split("=", 1)[0]
 
-        is_flag = token.startswith("-") and token != "-"
-        if not is_flag or name in known_options:
+        if not looks_like_flag(token) or name in known_options:
             known_argv.append(token)
             index += 1
             continue
@@ -158,7 +171,7 @@ def _partition_param_extras(
         index += 1
         if "=" in token:
             continue
-        if index < len(argv) and not argv[index].startswith("-"):
+        if index < len(argv) and not looks_like_flag(argv[index]):
             extras.append(argv[index])
             index += 1
 
@@ -338,6 +351,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     validate_parser = secrets_subparsers.add_parser("validate")
     validate_parser.add_argument("workflow", nargs="?")
     validate_parser.add_argument("--config", action="append", default=[])
+
+    # Prefix abbreviation is off throughout: an abbreviated ginkgo flag is absent
+    # from _all_option_strings, so ``--job 4`` would be partitioned off as a
+    # workflow parameter and rejected as undeclared. Abbreviations are not
+    # supported, and rejecting them everywhere keeps that consistent.
+    for subparser in _parser_tree(parser):
+        subparser.allow_abbrev = False
 
     return parser, run_parser
 
