@@ -37,6 +37,7 @@ from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from tests._vw_support import append_line
 
@@ -863,6 +864,14 @@ class TestEvaluate:
         assert "HTML export failed" in html_path.read_text(encoding="utf-8")
         assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
         assert manifest["tasks"]["task_0000"]["render_error"] == "render blew up"
+
+        # The failure must be visible through the run-summary model, not just
+        # buried in the manifest — see issue #138.
+        run_summary = RunSummary.load(recorder.run_dir)
+        assert len(run_summary.notebooks) == 1
+        notebook_summary = run_summary.notebooks[0]
+        assert notebook_summary.render_status == "failed"
+        assert notebook_summary.render_error == "render blew up"
 
     def test_script_task_runs_and_validates_outputs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

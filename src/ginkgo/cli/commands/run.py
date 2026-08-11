@@ -466,7 +466,14 @@ def _render_notebooks(
         task_label = (
             renderer.label_for_node(node_id) if isinstance(node_id, int) else None
         ) or notebook.base_name
-        rows.append(CliNotebookSummary(task_label=task_label, html_path=html_path))
+        rows.append(
+            CliNotebookSummary(
+                task_label=task_label,
+                html_path=html_path,
+                render_status=notebook.render_status,
+                render_error=notebook.render_error,
+            )
+        )
     return rows
 
 
