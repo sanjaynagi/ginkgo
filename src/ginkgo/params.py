@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import sys
 from typing import Any, Callable, Iterable, Sequence
 
 _NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
@@ -144,9 +145,103 @@ class ParamContext:
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class GlobalParamRead:
+    """A task body that reads a declared parameter from a module global.
+
+    Parameters
+    ----------
+    task_name : str
+        Name of the task whose body reads the global.
+    param_name : str
+        The declared parameter being read.
+    """
+
+    task_name: str
+    param_name: str
+
+    def message(self) -> str:
+        """Return a one-line explanation of why this read is a problem."""
+        return (
+            f"Task {self.task_name!r} reads parameter {self.param_name!r} from a module "
+            f"global. Cache keys hash task arguments, so changing {flag_for(self.param_name)} "
+            f"will not re-run this task. Pass it as an argument instead."
+        )
+
+
 def flag_for(name: str) -> str:
     """Return the command-line flag for a parameter name (``n_reps`` → ``--n-reps``)."""
     return f"--{name.replace('_', '-')}"
+
+
+def find_global_param_reads(
+    *,
+    declaration_globals: dict[str, dict[str, Any]],
+    tasks: Iterable[tuple[str, Any]],
+) -> list[GlobalParamRead]:
+    """Find task bodies that read a declared parameter from a module global.
+
+    Parameters must reach a task as arguments: cache keys hash task arguments, so
+    a parameter read from a global is invisible to the key and a changed value
+    silently reuses the previous result.
+
+    Detection reads each function's ``LOAD_GLOBAL`` instructions — not
+    ``co_names``, which also holds attribute names — and matches only against the
+    globals of the module that declared the parameter, so an unrelated global of
+    the same name in another module is not reported. It is deliberately
+    best-effort: a read from a helper the task calls is not found, which is why
+    callers report findings as warnings rather than failing the run.
+
+    Parameters
+    ----------
+    declaration_globals : dict[str, dict[str, Any]]
+        Parameter name to the ``globals()`` mapping of its declaring module.
+    tasks : Iterable[tuple[str, Any]]
+        ``(task_name, function)`` pairs to inspect. Repeated functions are
+        inspected once.
+
+    Returns
+    -------
+    list[GlobalParamRead]
+        One finding per task and parameter, ordered by task then parameter.
+    """
+    if not declaration_globals:
+        return []
+
+    findings: list[GlobalParamRead] = []
+    seen: set[tuple[int, str]] = set()
+    for task_name, function in tasks:
+        code = getattr(function, "__code__", None)
+        function_globals = getattr(function, "__globals__", None)
+        if code is None or function_globals is None:
+            continue
+
+        key = (id(code), task_name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        for name in sorted(_loaded_global_names(function)):
+            declared_in = declaration_globals.get(name)
+            if declared_in is not None and declared_in is function_globals:
+                findings.append(GlobalParamRead(task_name=task_name, param_name=name))
+
+    return findings
+
+
+def _loaded_global_names(function: Any) -> set[str]:
+    """Return the names a function loads as globals."""
+    import dis
+
+    try:
+        instructions = list(dis.get_instructions(function))
+    except (TypeError, ValueError):  # pragma: no cover - non-Python callables
+        return set()
+    return {
+        instruction.argval
+        for instruction in instructions
+        if instruction.opname == "LOAD_GLOBAL" and isinstance(instruction.argval, str)
+    }
 
 
 def param(
@@ -208,7 +303,18 @@ def param(
     session = current_session()
     if session is None:
         return _resolve_without_session(decl)
-    return session.declare_param(decl)
+    return session.declare_param(decl, declaring_globals=_caller_globals())
+
+
+def _caller_globals() -> dict[str, Any] | None:
+    """Return the module globals of the code that declared a parameter.
+
+    Recorded so that a task body reading the parameter as a global can be
+    identified by the identity of the mapping it would read from, rather than by
+    a name that another module might also use.
+    """
+    frame = sys._getframe(2) if hasattr(sys, "_getframe") else None
+    return None if frame is None else frame.f_globals
 
 
 def resolve_param(

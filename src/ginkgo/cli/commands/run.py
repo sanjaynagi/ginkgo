@@ -29,6 +29,7 @@ from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import CliRunRenderer
 from ginkgo.cli.workflow_params import (
     collect_param_declarations,
+    global_param_reads,
     params_table,
     validate_param_extras,
 )
@@ -184,6 +185,7 @@ def run_workflow(
         params = session.merged_loaded_values()
         declared_params = session.resolved_params()
         param_sources = session.param_sources()
+        declaration_globals = dict(session.declaration_globals)
     # Workers re-import the workflow module, so they need the same inputs to
     # resolve its parameters to the values this run is using.
     param_context = ParamContext(config=param_config, cli_extras=tuple(param_extras))
@@ -229,6 +231,16 @@ def run_workflow(
     with profiler.timed("evaluator_validate"):
         evaluator.validate(expr)
     validate_elapsed = time.perf_counter() - validate_started
+
+    # A parameter must reach a task as an argument. One read from a module global
+    # is invisible to that task's cache key, so a changed value would silently
+    # reuse the previous result. Detection is best-effort, hence a warning.
+    for finding in global_param_reads(
+        declaration_globals=declaration_globals,
+        evaluator=evaluator,
+    ):
+        console(sys.stderr).print(f"[yellow]⚠[/] {finding.message()}")
+
     task_count = len(evaluator._nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
     env_count = len({node.task_def.env for node in evaluator._nodes.values() if node.task_def.env})

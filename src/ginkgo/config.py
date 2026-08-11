@@ -53,12 +53,18 @@ class _ConfigSession:
     declarations: dict[str, ParamDecl] = field(default_factory=dict)
     resolutions: dict[str, ParamResolution] = field(default_factory=dict)
     consumed_extras: set[int] = field(default_factory=set)
+    declaration_globals: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def merged_loaded_values(self) -> dict[str, Any]:
         """Return all loaded config mappings merged in load order."""
         return _merge_top_level_dicts(self.loaded_values)
 
-    def declare_param(self, decl: ParamDecl) -> Any:
+    def declare_param(
+        self,
+        decl: ParamDecl,
+        *,
+        declaring_globals: dict[str, Any] | None = None,
+    ) -> Any:
         """Register a parameter declaration and return its resolved value.
 
         Re-declaring a parameter identically is a no-op returning the value
@@ -68,6 +74,9 @@ class _ConfigSession:
         ----------
         decl : ParamDecl
             The declaration to register.
+        declaring_globals : dict[str, Any] | None, optional
+            The ``globals()`` mapping of the module making the declaration, used
+            to spot task bodies that read the parameter as a global.
 
         Returns
         -------
@@ -102,6 +111,8 @@ class _ConfigSession:
         self.declarations[decl.name] = decl
         self.resolutions[decl.name] = resolution
         self.consumed_extras |= consumed
+        if declaring_globals is not None:
+            self.declaration_globals[decl.name] = declaring_globals
         return resolution.value
 
     def resolved_params(self) -> dict[str, Any]:

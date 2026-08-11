@@ -1887,3 +1887,27 @@ def main():
         assert params["label"] == "effective"
         assert params["other"] == "kept"
         assert "params" not in params
+
+    def test_run_warns_when_a_task_body_reads_a_parameter_global(self) -> None:
+        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--tag", "XYZ", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        # Rich wraps the warning, so compare against whitespace-normalised output.
+        combined = " ".join((result.stdout + result.stderr).split())
+        assert "reads parameter 'tag' from a module global" in combined
+        assert "Pass it as an argument instead." in combined
+
+    def test_run_does_not_warn_when_a_parameter_is_passed_as_an_argument(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--n-reps", "5", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "from a module global" not in result.stdout + result.stderr
+
+    def test_doctor_reports_a_global_read_as_a_warning_and_still_passes(self) -> None:
+        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("doctor", "workflow.py", "--json", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        codes = {(item["severity"], item["code"]) for item in payload["diagnostics"]}
+        assert ("warning", "param_read_from_global") in codes

@@ -119,11 +119,12 @@ ginkgo run workflow.py --item alpha --item beta --verbose
 Resolved values are recorded in the run's `params.yaml`, and where each came
 from &mdash; the CLI, config, or the default &mdash; in `manifest.yaml`.
 
-```{tip}
-Pass a parameter into a task as an argument rather than reading it from a module
-global inside the task body. Cache keys hash task arguments, so a parameter
-passed as an argument correctly re-runs the tasks that used it; one read from a
-global is not part of the key and will reuse the previous result.
+```{important}
+**Pass a parameter into a task as an argument.** Cache keys hash task arguments,
+so a parameter passed as one correctly re-runs the tasks that used it. A
+parameter read from a module global inside a task body is not part of the key, so
+changing it would silently reuse the previous result. Both `ginkgo run` and
+`ginkgo doctor` warn when they spot this.
 ```
 
 ## Validation And Diagnostics

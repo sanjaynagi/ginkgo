@@ -65,11 +65,11 @@ Resolved values are written to `params.yaml` alongside the loaded config, and
 each parameter's source (`cli`, `config`, or `default`) is recorded under
 `param_sources` in `manifest.yaml`.
 
-### Parameters and caching
+### Parameters must be passed as task arguments
 
-Pass a parameter into a task as an argument. Task cache keys hash task
-arguments, so a changed parameter correctly invalidates the tasks that received
-it:
+**A parameter reaches a task as an argument.** Task cache keys hash task
+arguments, so a parameter passed as one correctly invalidates the tasks that
+received it:
 
 ```python
 n_reps = ginkgo.param("n_reps", type=int, default=3)
@@ -79,23 +79,38 @@ def main():
     return simulate(n=n_reps)          # changing --n-reps re-runs simulate
 ```
 
-A parameter read directly from a module global inside a task body is **not**
-part of that task's cache key, so changing it will reuse the previous result:
+A parameter read from a module global inside a task body breaks that rule. The
+read is invisible to the task's cache key, so a changed value silently reuses the
+previous result:
 
 ```python
 tag = ginkgo.param("tag", default="a")
 
 @task()
 def write_it(output_path: str) -> file:
-    Path(output_path).write_text(tag)  # changing --tag does NOT re-run this task
+    Path(output_path).write_text(tag)  # WRONG: changing --tag will not re-run this
     return output_path
 ```
 
-The same is true of a value read from `config()` at module level, so this is not
-new; parameters simply make the pattern easier to reach for. Worker processes do
-receive the run's real parameter values — they re-import the workflow module and
-re-resolve against the same inputs — so the value is correct on a cold run and
-only cache reuse is affected.
+Using a parameter in the flow body to shape the graph — output paths, `.map()`
+lists, which tasks exist at all — is fine, because those become task arguments
+and paths.
+
+`ginkgo run` and `ginkgo doctor` both warn when a task body reads a declared
+parameter as a global (`param_read_from_global`). Detection disassembles each
+task function, matching `LOAD_GLOBAL` reads against the globals of the module
+that declared the parameter, so an unrelated global of the same name elsewhere is
+not reported. It is deliberately best-effort: a read made by a helper the task
+calls is not found. That is why it warns rather than failing the run — a check
+that cannot see every violation should not present itself as authoritative.
+
+The same cache gap applies to a value read from `config()` at module level, so
+this is not new behaviour; parameters make the pattern easier to reach, which is
+why it is checked.
+
+Worker processes do receive the run's real parameter values — they re-import the
+workflow module and re-resolve against the same inputs — so a value is correct
+whenever it is computed. Only cache reuse is affected.
 
 ## Secrets
 

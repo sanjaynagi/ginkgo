@@ -13,6 +13,7 @@ from ginkgo.params import (
     ParamDecl,
     ParamError,
     extract_flag_values,
+    find_global_param_reads,
     flag_for,
     format_param_help,
     resolve_param,
@@ -296,3 +297,88 @@ def test_nested_sessions_do_not_leak_declarations():
             ginkgo.param("b", type=int, default=0)
             assert set(inner.declarations) == {"b"}
         assert set(outer.declarations) == {"a"}
+
+
+def _task_reading_global(param_globals: dict) -> object:
+    """Build a function whose body loads ``tag`` as a global of *param_globals*."""
+    source = "def reads_tag():\n    return tag\n"
+    exec(compile(source, "<generated>", "exec"), param_globals)
+    return param_globals["reads_tag"]
+
+
+def test_find_global_param_reads_flags_a_global_read():
+    param_globals: dict = {}
+    function = _task_reading_global(param_globals)
+
+    findings = find_global_param_reads(
+        declaration_globals={"tag": param_globals},
+        tasks=[("write_it", function)],
+    )
+
+    assert [(item.task_name, item.param_name) for item in findings] == [("write_it", "tag")]
+    assert "Pass it as an argument" in findings[0].message()
+    assert "--tag" in findings[0].message()
+
+
+def test_find_global_param_reads_ignores_argument_use():
+    param_globals: dict = {}
+    exec(compile("def uses_arg(tag):\n    return tag\n", "<generated>", "exec"), param_globals)
+
+    findings = find_global_param_reads(
+        declaration_globals={"tag": param_globals},
+        tasks=[("write_it", param_globals["uses_arg"])],
+    )
+
+    assert findings == []
+
+
+def test_find_global_param_reads_ignores_same_name_in_another_module():
+    """A global of the same name in a module that did not declare it is not a violation."""
+    declaring_globals: dict = {}
+    other_globals: dict = {}
+    function = _task_reading_global(other_globals)
+
+    findings = find_global_param_reads(
+        declaration_globals={"tag": declaring_globals},
+        tasks=[("write_it", function)],
+    )
+
+    assert findings == []
+
+
+def test_find_global_param_reads_ignores_attribute_of_the_same_name():
+    """Detection reads LOAD_GLOBAL, not co_names, so an attribute access is not flagged."""
+    param_globals: dict = {}
+    exec(
+        compile("def uses_attr(obj):\n    return obj.tag\n", "<generated>", "exec"),
+        param_globals,
+    )
+
+    findings = find_global_param_reads(
+        declaration_globals={"tag": param_globals},
+        tasks=[("write_it", param_globals["uses_attr"])],
+    )
+
+    assert findings == []
+
+
+def test_find_global_param_reads_without_declarations():
+    param_globals: dict = {}
+    function = _task_reading_global(param_globals)
+    assert find_global_param_reads(declaration_globals={}, tasks=[("t", function)]) == []
+
+
+def test_find_global_param_reads_tolerates_non_python_callables():
+    assert (
+        find_global_param_reads(
+            declaration_globals={"tag": {}},
+            tasks=[("t", len), ("u", None)],
+        )
+        == []
+    )
+
+
+def test_declaring_globals_recorded_on_the_session():
+    with config_session() as session:
+        ginkgo.param("tag", default="a")
+        assert session.declaration_globals["tag"] is globals()
