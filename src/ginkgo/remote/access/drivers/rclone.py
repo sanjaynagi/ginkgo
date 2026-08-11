@@ -7,6 +7,7 @@ we assume a remote named ``<scheme>`` is configured.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -39,10 +40,18 @@ class RcloneDriver:
         """Mount ``<remote>:<bucket>`` at ``spec.mount_point``."""
         spec.mount_point.mkdir(parents=True, exist_ok=True)
         remote_name = self._remote or spec.scheme
+
+        # OCI refs carry the namespace in the bucket component
+        # ("bucket@namespace"), but rclone's oracleobjectstorage backend
+        # takes the namespace from the remote's config and rejects "@" in
+        # bucket names. Mount only the bucket component; the configured
+        # remote must point at the matching namespace.
+        bucket = spec.bucket.split("@", 1)[0]
+
         cmd = [
             self._binary,
             "mount",
-            f"{remote_name}:{spec.bucket}",
+            f"{remote_name}:{bucket}",
             str(spec.mount_point),
             "--daemon",
         ]
@@ -78,6 +87,18 @@ class RcloneDriver:
                 "rclone mount failed: "
                 f"rc={result.returncode} stderr={result.stderr.decode(errors='replace')}"
             )
+
+        # The daemon exits 0 even when the remote is misconfigured (bad
+        # bucket, bad credentials) and reads then fail with EIO. Probe the
+        # mount with one directory listing so a broken mount surfaces as
+        # MountFailedError, letting hydration fall back to staging.
+        try:
+            os.listdir(spec.mount_point)
+        except OSError as exc:
+            self.unmount(mount_point=spec.mount_point)
+            raise MountFailedError(
+                f"rclone mount at {spec.mount_point} is not readable: {exc}"
+            ) from exc
         return 0
 
     def unmount(self, *, mount_point: Path) -> None:

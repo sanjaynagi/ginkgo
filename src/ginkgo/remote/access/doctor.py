@@ -8,6 +8,7 @@ annotations) before a task dispatch fails obscurely.
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 from dataclasses import dataclass
@@ -15,6 +16,46 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.remote.access.resolver import AccessConfig, load_access_config
+
+
+def local_streaming_available(*, scheme: str) -> bool:
+    """Return whether the local host can FUSE-mount objects for ``scheme``.
+
+    Streaming on the local host requires both the kernel FUSE device
+    (``/dev/fuse``) and a healthy driver binary for the URI scheme on
+    ``PATH``. Used to gate local (non-dispatched) tasks into the fuse
+    path; when it returns ``False`` the resolver degrades to ``stage``.
+
+    The probe runs a driver health check (a subprocess), so results are
+    cached per scheme for the lifetime of the process.
+
+    Parameters
+    ----------
+    scheme : str
+        Remote URI scheme (``"s3"`` / ``"gs"`` / ``"oci"``).
+
+    Returns
+    -------
+    bool
+        ``True`` when ``/dev/fuse`` exists and the scheme's driver passes
+        its health check; ``False`` otherwise (including on macOS, where
+        ``/dev/fuse`` is absent).
+    """
+    return _probe_local_streaming(scheme)
+
+
+@functools.lru_cache(maxsize=None)
+def _probe_local_streaming(scheme: str) -> bool:
+    """Uncached probe body behind :func:`local_streaming_available`."""
+    if not Path("/dev/fuse").exists():
+        return False
+    from ginkgo.remote.access.drivers.base import resolve_driver
+
+    try:
+        resolve_driver(scheme=scheme).health_check()
+    except Exception:  # noqa: BLE001 - any driver failure means unavailable
+        return False
+    return True
 
 
 @dataclass(frozen=True, kw_only=True)

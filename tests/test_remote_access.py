@@ -430,6 +430,176 @@ class TestWorkerHydration:
 
 
 # ---------------------------------------------------------------------------
+# Local streaming probe
+# ---------------------------------------------------------------------------
+
+
+class TestRcloneDriver:
+    def _spec(self, tmp_path: Path, *, bucket: str) -> MountSpec:
+        return MountSpec(
+            scheme="oci",
+            bucket=bucket,
+            mount_point=tmp_path / "mount",
+            cache_dir=None,
+            cache_max_bytes=None,
+            read_only=True,
+        )
+
+    def test_mount_strips_oci_namespace_from_bucket(self, tmp_path: Path, monkeypatch) -> None:
+        from ginkgo.remote.access.drivers import rclone as rclone_mod
+
+        commands: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):  # noqa: ARG001
+            commands.append(cmd)
+
+            class _Result:
+                returncode = 0
+                stderr = b""
+
+            return _Result()
+
+        monkeypatch.setattr(rclone_mod.subprocess, "run", _fake_run)
+        driver = rclone_mod.RcloneDriver()
+        driver.mount(spec=self._spec(tmp_path, bucket="my-bucket@my-namespace"))
+        assert commands[0][2] == "oci:my-bucket"
+
+    def test_mount_probe_failure_raises_and_unmounts(self, tmp_path: Path, monkeypatch) -> None:
+        from ginkgo.remote.access.drivers import rclone as rclone_mod
+
+        def _fake_run(cmd, **kwargs):  # noqa: ARG001
+            class _Result:
+                returncode = 0
+                stderr = b""
+
+            return _Result()
+
+        def _fail_listdir(path):  # noqa: ARG001
+            raise OSError(5, "Input/output error")
+
+        unmounted: list[Path] = []
+        monkeypatch.setattr(rclone_mod.subprocess, "run", _fake_run)
+        monkeypatch.setattr(rclone_mod.os, "listdir", _fail_listdir)
+        driver = rclone_mod.RcloneDriver()
+        monkeypatch.setattr(
+            driver, "unmount", lambda *, mount_point: unmounted.append(mount_point)
+        )
+        with pytest.raises(MountFailedError, match="not readable"):
+            driver.mount(spec=self._spec(tmp_path, bucket="my-bucket@my-namespace"))
+        assert unmounted == [tmp_path / "mount"]
+
+
+class TestLocalStreamingAvailable:
+    @pytest.fixture(autouse=True)
+    def _clear_probe_cache(self):
+        from ginkgo.remote.access import doctor
+
+        doctor._probe_local_streaming.cache_clear()
+        yield
+        doctor._probe_local_streaming.cache_clear()
+
+    def test_probe_is_cached_per_scheme(self, monkeypatch) -> None:
+        from ginkgo.remote.access import doctor
+        from ginkgo.remote.access.drivers import base as driver_base
+
+        monkeypatch.setattr(doctor.Path, "exists", lambda self: True)
+
+        calls: list[str] = []
+
+        class _HealthyDriver:
+            def health_check(self) -> None:
+                return
+
+        def _resolve(*, scheme: str):
+            calls.append(scheme)
+            return _HealthyDriver()
+
+        monkeypatch.setattr(driver_base, "resolve_driver", _resolve)
+        assert doctor.local_streaming_available(scheme="s3") is True
+        assert doctor.local_streaming_available(scheme="s3") is True
+        assert calls == ["s3"]
+
+    def test_false_when_dev_fuse_missing(self, monkeypatch) -> None:
+        from ginkgo.remote.access import doctor
+
+        monkeypatch.setattr(doctor.Path, "exists", lambda self: False)
+        assert doctor.local_streaming_available(scheme="s3") is False
+
+    def test_false_when_driver_unhealthy(self, monkeypatch) -> None:
+        from ginkgo.remote.access import doctor
+        from ginkgo.remote.access.drivers import base as driver_base
+
+        monkeypatch.setattr(doctor.Path, "exists", lambda self: True)
+
+        class _DeadDriver:
+            def health_check(self) -> None:
+                raise DriverUnavailableError("missing")
+
+        monkeypatch.setattr(driver_base, "resolve_driver", lambda *, scheme: _DeadDriver())
+        assert doctor.local_streaming_available(scheme="s3") is False
+
+    def test_true_when_device_and_driver_present(self, monkeypatch) -> None:
+        from ginkgo.remote.access import doctor
+        from ginkgo.remote.access.drivers import base as driver_base
+
+        monkeypatch.setattr(doctor.Path, "exists", lambda self: True)
+
+        class _HealthyDriver:
+            def health_check(self) -> None:
+                return
+
+        monkeypatch.setattr(driver_base, "resolve_driver", lambda *, scheme: _HealthyDriver())
+        assert doctor.local_streaming_available(scheme="s3") is True
+
+
+# ---------------------------------------------------------------------------
+# Local process-pool worker hydration
+# ---------------------------------------------------------------------------
+
+
+class TestLocalWorkerFuseHydration:
+    def test_args_have_fuse_markers_detects_nested(self) -> None:
+        from ginkgo.runtime.worker import _args_have_fuse_markers
+
+        ref = remote_file("s3://bucket/one.txt", access="fuse")
+        marker = encode_fuse_ref(ref=ref, policy="fuse")
+        assert _args_have_fuse_markers({"a": marker}) is True
+        assert _args_have_fuse_markers({"a": [1, {"b": marker}]}) is True
+        assert _args_have_fuse_markers({"a": 1, "b": "s3://x/y"}) is False
+
+    def test_local_fuse_access_mounts_under_transport_dir(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from ginkgo.core.types import file as file_type
+        from ginkgo.remote.access import mounted as mounted_mod
+        from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
+        from ginkgo.runtime.worker import _local_fuse_access
+
+        driver = _StubDriver()
+        monkeypatch.setattr(mounted_mod, "resolve_driver", lambda *, scheme: driver)
+
+        ref = remote_file("s3://bucket/one.txt", access="fuse")
+        marker = encode_fuse_ref(ref=ref, policy="fuse")
+        access = _local_fuse_access(args={"data": marker}, base_dir=tmp_path)
+
+        assert access is not None
+        rewritten, _ = hydrate_fuse_refs(args={"data": marker}, mounted_access=access)
+        assert isinstance(rewritten["data"], file_type)
+        # Mount lives under the task-local transport dir, not a shared root.
+        assert str(rewritten["data"]).startswith(str(tmp_path / "fuse"))
+        assert access.stats().policy == "fuse"
+
+        access.close()
+        assert len(driver.unmounted) == 1
+
+    def test_local_fuse_access_none_without_markers(self, tmp_path: Path) -> None:
+        from ginkgo.runtime.worker import _local_fuse_access
+
+        args = {"data": 5, "uri": "s3://bucket/plain.txt"}
+        assert _local_fuse_access(args=args, base_dir=tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
 # Executor fuse detection
 # ---------------------------------------------------------------------------
 
@@ -465,6 +635,7 @@ class _MockTaskDef:
 
     remote: bool = True
     gpu: int = 0
+    kind: str = "python"
     remote_input_access: str | None = None
     streaming_compatible: bool = True
     fuse_prefetch: tuple = ()
@@ -542,9 +713,15 @@ class TestRemoteStagerFuseRouting:
         assert is_fuse_ref(staged["data"])
         assert staged["data"]["uri"] == "s3://bucket/k.txt"
 
-    def test_non_remote_task_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
+    def test_local_task_without_driver_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
         from ginkgo.remote.access.resolver import AccessConfig
+        from ginkgo.runtime import remote_input_resolver
         from ginkgo.runtime.remote_input_resolver import RemoteStager
+
+        # No healthy local driver: fuse must degrade to a staged download.
+        monkeypatch.setattr(
+            remote_input_resolver, "local_streaming_available", lambda *, scheme: False
+        )
 
         # The stager must route through StagingCache.stage_file; patch it to
         # avoid a real download.
@@ -576,7 +753,74 @@ class TestRemoteStagerFuseRouting:
             task_def=task_def,
             resolved_args={"data": ref},
         )
-        # Local task ignores fuse; output is a staged local path (file instance).
+        # Without a local driver, output is a staged local path (file instance).
+        from ginkgo.core.types import file as file_type
+
+        assert isinstance(staged["data"], file_type)
+        assert not is_fuse_ref(staged["data"])
+
+    def test_local_task_streams_when_driver_available(self, monkeypatch) -> None:
+        from ginkgo.remote.access.resolver import AccessConfig
+        from ginkgo.runtime import remote_input_resolver
+        from ginkgo.runtime.remote_input_resolver import RemoteStager
+
+        # Healthy local driver: a fuse-marked ref streams instead of staging.
+        monkeypatch.setattr(
+            remote_input_resolver, "local_streaming_available", lambda *, scheme: True
+        )
+
+        stager = RemoteStager(access_config=AccessConfig(default="stage"))
+        from inspect import Parameter, Signature
+
+        task_def = _MockTaskDef(
+            remote=False,
+            type_hints={"data": RemoteFileRef},
+            signature=Signature(parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]),
+        )
+        ref = remote_file("s3://bucket/k.txt", access="fuse")
+        staged = stager.stage_remote_refs(
+            task_def=task_def,
+            resolved_args={"data": ref},
+        )
+        assert is_fuse_ref(staged["data"])
+        assert staged["data"]["uri"] == "s3://bucket/k.txt"
+
+    def test_local_driver_kind_task_forces_stage(self, tmp_path: Path, monkeypatch) -> None:
+        from ginkgo.remote.access.resolver import AccessConfig
+        from ginkgo.runtime import remote_input_resolver
+        from ginkgo.runtime.remote_input_resolver import RemoteStager
+
+        # Even with a healthy driver, driver-kind tasks (shell/notebook/script)
+        # have no local mount lifecycle and must stage.
+        monkeypatch.setattr(
+            remote_input_resolver, "local_streaming_available", lambda *, scheme: True
+        )
+        from ginkgo.remote import staging
+
+        class _FakeCache:
+            def stage_file(self, *, ref: RemoteFileRef) -> Path:  # noqa: ARG002
+                return tmp_path / "staged.bin"
+
+            def stage_folder(self, *, ref: RemoteFolderRef) -> Path:  # noqa: ARG002
+                raise NotImplementedError
+
+        (tmp_path / "staged.bin").write_bytes(b"")
+        monkeypatch.setattr(staging, "StagingCache", lambda: _FakeCache())
+
+        stager = RemoteStager(access_config=AccessConfig(default="stage"))
+        from inspect import Parameter, Signature
+
+        task_def = _MockTaskDef(
+            remote=False,
+            kind="shell",
+            type_hints={"data": RemoteFileRef},
+            signature=Signature(parameters=[Parameter("data", Parameter.POSITIONAL_OR_KEYWORD)]),
+        )
+        ref = remote_file("s3://bucket/k.txt", access="fuse")
+        staged = stager.stage_remote_refs(
+            task_def=task_def,
+            resolved_args={"data": ref},
+        )
         from ginkgo.core.types import file as file_type
 
         assert isinstance(staged["data"], file_type)

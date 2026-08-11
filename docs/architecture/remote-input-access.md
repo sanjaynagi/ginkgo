@@ -16,6 +16,12 @@ inside the worker pod:
 Streaming is **opt-in** per input, per task, or via config default. The
 staged path remains the correctness fallback.
 
+Both the **remote dispatch path** and the **local process-pool path**
+can stream. Local streaming applies to worker (Python) tasks on a host
+with a healthy driver + `/dev/fuse`; driver-kind tasks (`notebook` /
+`script` / `shell`) always stage locally (see
+[Local FUSE](#local-fuse)).
+
 ## Strategy interface
 
 Both strategies satisfy `RemoteInputAccess` in
@@ -81,6 +87,39 @@ The worker:
    unmounts every active mount and records `unmount_seconds`.
 5. Folds `AccessStats.to_dict()` into the result envelope as
    `remote_input_access`.
+
+## Local FUSE
+
+Local (non-dispatched) worker tasks stream through the same
+`MountedAccess` strategy without any pod / privileged-container / CSI
+surface — just the driver binary + `/dev/fuse`.
+
+- **Gating.** `RemoteStager.stage_remote_refs`
+  (`ginkgo/runtime/remote_input_resolver.py`) lifts the remote-only
+  short-circuit for local worker tasks. Fuse selection is resolved
+  per scheme with `driver_available=local_streaming_available(scheme=...)`
+  (`ginkgo/remote/access/doctor.py`) — `/dev/fuse` present **and** the
+  scheme's driver passing its health check. When the host cannot stream,
+  `resolve_access` degrades to `stage`. Driver-kind tasks
+  (`notebook` / `script` / `shell`) run on the scheduler thread with no
+  mount lifecycle and are still forced to `stage`. macOS has no
+  `/dev/fuse`, so it is stage-only there.
+
+- **Hydration + teardown.** `ginkgo/runtime/worker.py::run_task` mirrors
+  `remote/worker.py`: it detects fuse markers in the decoded args, mounts
+  them through a `MountedAccess` rooted **under the task's transport dir**
+  (`<transport>/fuse`, cache `<transport>/fuse-cache`), runs the body,
+  and tears the mount down in a `finally`. The per-task mount root keeps
+  concurrent process-pool workers from colliding on a shared bucket mount
+  point. On success `AccessStats.to_dict()` is folded into the result
+  envelope as `remote_input_access`.
+
+- **Provenance.** `ConcurrentEvaluator._fold_remote_input_access` records
+  the stats from `_handle_completed_worker_phase`, covering both local
+  and remote workers, and surfaces a notice on staged fallback.
+
+This is **one `MountedAccess` per task**, not one shared across the pool;
+a shared, ref-counted mount pool is a possible later optimisation.
 
 ## Pod security
 
