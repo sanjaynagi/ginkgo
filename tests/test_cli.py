@@ -1582,3 +1582,308 @@ def main():
         run_dir = _extract_run_dir(result.stdout)
         manifest = load_manifest(run_dir)
         assert manifest["timings"]["profile"] == {}
+
+
+_PARAM_WORKFLOW = (
+    """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+n_reps = ginkgo.param("n_reps", type=int, default=3, help="Number of replicates")
+label = ginkgo.param("label", default="base", help="Run label")
+
+@task()
+def write_it(n: int, tag: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f"{tag}:{n}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_it(n=n_reps, tag=label, output_path="result.txt")
+""".strip()
+    + "\n"
+)
+
+
+# Reads the parameter from a module global inside the task body, which a worker
+# subprocess only sees correctly if the run's parameters cross the boundary.
+_GLOBAL_PARAM_WORKFLOW = (
+    """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+tag = ginkgo.param("tag", default="DEFAULT")
+
+@task()
+def write_global(output_path: str) -> file:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f"tag={tag}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_global(output_path="result.txt")
+""".strip()
+    + "\n"
+)
+
+
+_REQUIRED_PARAM_WORKFLOW = (
+    """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+region = ginkgo.param("region", help="Genome region")
+
+@task()
+def write_region(r: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(r, encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_region(r=region, output_path="result.txt")
+""".strip()
+    + "\n"
+)
+
+
+class TestCliWorkflowParams:
+    def test_cli_flag_supplies_declared_parameter(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli(
+            "run", "workflow.py", "--n-reps", "24", "--label", "wide", cwd=Path.cwd()
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "wide:24"
+
+    def test_defaults_used_when_nothing_supplied(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "base:3"
+
+    def test_cli_beats_config_which_beats_default(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("ginkgo.toml").write_text(
+            '[params]\nn_reps = 9\nlabel = "from-config"\n', encoding="utf-8"
+        )
+
+        from_config = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert from_config.returncode == 0, from_config.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "from-config:9"
+
+        from_cli = _run_cli("run", "workflow.py", "--n-reps", "99", cwd=Path.cwd())
+        assert from_cli.returncode == 0, from_cli.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "from-config:99"
+
+    def test_params_and_sources_recorded_in_provenance(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("ginkgo.toml").write_text('[params]\nlabel = "cfg"\n', encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--n-reps", "7", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        run_dir = _extract_run_dir(result.stdout)
+        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
+        assert params["n_reps"] == 7
+        assert params["label"] == "cfg"
+
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
+
+    def test_unknown_flag_is_rejected_and_lists_declared_parameters(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--nope", "1", cwd=Path.cwd())
+        assert result.returncode == 1
+        combined = result.stdout + result.stderr
+        assert "unrecognized arguments: --nope 1" in combined
+        assert "--n-reps" in combined and "--label" in combined
+
+    def test_type_error_names_the_parameter(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--n-reps", "many", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "Cannot read 'many' as int for parameter 'n_reps'" in result.stdout + result.stderr
+
+    def test_required_parameter_missing_fails_before_any_task_runs(self) -> None:
+        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "is required but was not supplied" in result.stdout + result.stderr
+        assert not Path("result.txt").exists()
+
+    def test_required_parameter_supplied_runs(self) -> None:
+        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--region", "2L:1-100", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "2L:1-100"
+
+    def test_worker_sees_cli_value_read_from_a_module_global(self) -> None:
+        Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--tag", "FROM_CLI", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "tag=FROM_CLI"
+
+    def test_parameter_passed_as_task_argument_invalidates_cache(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        first = _run_cli("run", "workflow.py", "--n-reps", "1", cwd=Path.cwd())
+        assert first.returncode == 0, first.stderr
+        second = _run_cli("run", "workflow.py", "--n-reps", "2", cwd=Path.cwd())
+        assert second.returncode == 0, second.stderr
+        assert "1 tasks executed, 0 cached" in second.stdout
+        assert Path("result.txt").read_text(encoding="utf-8") == "base:2"
+
+    def test_inline_equals_and_repeated_values(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+items = ginkgo.param("items", multiple=True, default=())
+
+@task()
+def write_items(values: tuple, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(",".join(values), encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_items(values=items, output_path="result.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        result = _run_cli("run", "workflow.py", "--items=a", "--items", "b", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "a,b"
+
+    def test_run_help_lists_declared_parameters(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "parameters declared by workflow.py" in result.stdout
+        assert "--n-reps INT" in result.stdout
+        assert "Number of replicates" in result.stdout
+        assert "--label STR" in result.stdout
+
+    def test_run_help_still_shows_usage_for_unimportable_workflow(self) -> None:
+        Path("workflow.py").write_text("import nonexistent_module_xyz\n", encoding="utf-8")
+        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
+        assert result.returncode == 0
+        assert "--dry-run" in result.stdout
+        assert "Could not import workflow.py" in result.stdout
+
+    def test_other_commands_still_reject_unknown_flags(self) -> None:
+        result = _run_cli("cache", "ls", "--bogus", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "unrecognized arguments: --bogus" in result.stderr
+
+    def test_inspect_workflow_exposes_declared_parameters(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        by_name = {item["name"]: item for item in payload["params"]}
+        assert by_name["n_reps"]["type"] == "int"
+        assert by_name["n_reps"]["default"] == 3
+        assert by_name["n_reps"]["flag"] == "--n-reps"
+        assert by_name["label"]["help"] == "Run label"
+
+    def test_inspect_workflow_tolerates_unsupplied_required_parameter(self) -> None:
+        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["task_count"] == 1
+        assert payload["params"][0]["required"] is True
+        assert payload["params"][0]["supplied"] is False
+
+    def test_doctor_tolerates_unsupplied_required_parameter(self) -> None:
+        Path("workflow.py").write_text(_REQUIRED_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+    def test_config_override_layers_over_project_config(self) -> None:
+        """A base key absent from every override must survive the merge."""
+        Path("ginkgo.toml").write_text(
+            'kept = "from-base"\nreplaced = "from-base"\n', encoding="utf-8"
+        )
+        Path("override.toml").write_text('replaced = "from-override"\n', encoding="utf-8")
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+cfg = ginkgo.config("ginkgo.toml")
+
+@task()
+def write_both(kept: str, replaced: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(f"{kept}/{replaced}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_both(
+        kept=cfg["kept"], replaced=cfg["replaced"], output_path="result.txt"
+    )
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "from-base/from-override"
+
+    def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
+        """A parameter value must not be captured by the optional workflow positional."""
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "--label", "discovered", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"
+
+    def test_params_yaml_records_effective_values_only(self) -> None:
+        """The raw [params] table must not sit beside the values that superseded it."""
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+cfg = ginkgo.config("ginkgo.toml")
+label = ginkgo.param("label", default="base")
+
+@task()
+def write_it(tag: str, other: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(f"{tag}/{other}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_it(tag=label, other=cfg["other"], output_path="result.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        Path("ginkgo.toml").write_text(
+            'other = "kept"\n\n[params]\nlabel = "stale"\n', encoding="utf-8"
+        )
+        result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        run_dir = _extract_run_dir(result.stdout)
+        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
+        assert params["label"] == "effective"
+        assert params["other"] == "kept"
+        assert "params" not in params

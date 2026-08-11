@@ -11,7 +11,7 @@ import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
@@ -27,9 +27,15 @@ from ginkgo.cli.renderers.models import (
 )
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import CliRunRenderer
+from ginkgo.cli.workflow_params import (
+    collect_param_declarations,
+    params_table,
+    validate_param_extras,
+)
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
-from ginkgo.config import config_session, load_runtime_config
+from ginkgo.config import PARAMS_CONFIG_KEY, config_session, load_runtime_config
 from ginkgo.core.flow import discover_flow
+from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
@@ -66,7 +72,56 @@ def command_run(args, *, output_mode: RunMode) -> int:
         trust_workspace=getattr(args, "trust_workspace", False),
         profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
+        param_extras=getattr(args, "param_extras", ()),
     )
+
+
+def command_run_help(args, *, usage: str) -> int:
+    """Handle ``ginkgo run --help``.
+
+    Prints the ``run`` usage text, then imports the workflow to list the
+    parameters it declares. The import is best-effort: a workflow that cannot be
+    imported still gets its usage text, with a warning in place of parameters.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed ``run`` arguments.
+    usage : str
+        Usage text rendered by the ``run`` subparser.
+
+    Returns
+    -------
+    int
+        Process exit code.
+    """
+    rich_console = console(sys.stdout)
+    rich_console.print(usage.rstrip(), highlight=False)
+
+    try:
+        workflow_path = resolve_workflow_path(
+            project_root=Path.cwd(),
+            workflow=args.workflow,
+        ).path
+    except BaseException:
+        # No workflow resolved, so the usage text alone is the whole answer.
+        return 0
+
+    try:
+        declarations = collect_param_declarations(
+            workflow_path=workflow_path,
+            config_paths=[Path(path).resolve() for path in args.config],
+        )
+    except BaseException as exc:
+        rich_console.print(
+            f"\n[yellow]⚠[/] Could not import {workflow_path.name} to list its parameters: {exc}"
+        )
+        return 0
+
+    rich_console.print(f"\nparameters declared by {workflow_path.name}:", highlight=False)
+    for line in format_param_help(declarations) or ["  (none)"]:
+        rich_console.print(line, highlight=False)
+    return 0
 
 
 def run_workflow(
@@ -82,6 +137,7 @@ def run_workflow(
     profile: bool = False,
     executor: str = "local",
     plan_preview: bool = True,
+    param_extras: Sequence[str] = (),
 ) -> int:
     profiler = ProfileRecorder(enabled=profile)
     cli_startup_started = time.perf_counter()
@@ -106,15 +162,31 @@ def run_workflow(
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
 
     load_started = time.perf_counter()
-    with config_session(override_paths=config_paths) as session:
+    # The runtime config is loaded before the workflow is imported so that
+    # declared parameters resolve against it regardless of whether the workflow
+    # calls config() before or after param().
+    with profiler.timed("runtime_config_load"):
+        runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
+        param_config = params_table(runtime_config)
+    with config_session(
+        override_paths=config_paths,
+        param_config=param_config,
+        cli_extras=param_extras,
+    ) as session:
         with profiler.timed("workflow_module_import"):
             module = load_module_from_path(workflow_path)
         with profiler.timed("flow_construction"):
             flow = discover_flow(module)
             expr = flow()
+        # Validated after the flow body has run, so parameters declared inside
+        # it have had their chance to claim a flag.
+        validate_param_extras(session)
         params = session.merged_loaded_values()
-    with profiler.timed("runtime_config_load"):
-        runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
+        declared_params = session.resolved_params()
+        param_sources = session.param_sources()
+    # Workers re-import the workflow module, so they need the same inputs to
+    # resolve its parameters to the values this run is using.
+    param_context = ParamContext(config=param_config, cli_extras=tuple(param_extras))
     runtime_params = dict(runtime_config)
     runtime_params.update(params)
     load_elapsed = time.perf_counter() - load_started
@@ -151,6 +223,7 @@ def run_workflow(
         code_bundle_config=code_bundle_config,
         secret_resolver=secret_resolver,
         profiler=profiler,
+        param_context=param_context,
     )
     validate_started = time.perf_counter()
     with profiler.timed("evaluator_validate"):
@@ -224,7 +297,15 @@ def run_workflow(
         jobs=jobs,
         cores=cores,
         memory=memory,
-        params=params,
+        # Declared parameters layer over the loaded config so the record shows
+        # the values the run actually used, including any given on the CLI. The
+        # raw [params] table is dropped: recording it alongside would show a
+        # config value next to the resolved value that superseded it.
+        params={
+            **{key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY},
+            **declared_params,
+        },
+        param_sources=param_sources,
     )
     recorder.add_run_timing(phase="workflow_load_seconds", seconds=load_elapsed)
     recorder.add_run_timing(phase="workflow_validate_seconds", seconds=validate_elapsed)
@@ -283,6 +364,7 @@ def run_workflow(
                 event_bus=bus,
                 trust_workspace=trust_workspace,
                 profiler=profiler,
+                param_context=param_context,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)

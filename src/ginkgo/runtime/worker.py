@@ -45,11 +45,14 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         "display_label": payload.get("display_label"),
     }
     try:
-        with _task_log_context(
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            secret_values=secret_values,
-            log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
+        with (
+            _task_log_context(
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                secret_values=secret_values,
+                log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
+            ),
+            _worker_param_session(payload=payload),
         ):
             task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
@@ -75,6 +78,28 @@ def _is_dynamic_result(value: Any) -> bool:
     from ginkgo.core.expr import Expr, ExprList
 
     return isinstance(value, (Expr, ExprList, ExecutionDirective))
+
+
+@contextlib.contextmanager
+def _worker_param_session(*, payload: dict[str, Any]) -> Any:
+    """Make the run's workflow parameters available while the module is imported.
+
+    Loading the task binding imports the workflow module, re-running its
+    ``param()`` calls in this process. Without the run's resolution inputs those
+    calls would fall back to the declared defaults, so a value supplied on the
+    command line would be silently ignored, and a required parameter would raise.
+    """
+    from ginkgo.config import config_session
+    from ginkgo.params import ParamContext
+
+    raw_context = payload.get("param_context")
+    if raw_context is None:
+        yield
+        return
+
+    context = ParamContext.from_payload(raw_context)
+    with config_session(param_config=context.config, cli_extras=context.cli_extras):
+        yield
 
 
 def _load_task_binding(*, payload: dict[str, Any]) -> Any:

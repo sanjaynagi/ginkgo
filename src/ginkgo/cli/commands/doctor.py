@@ -51,6 +51,7 @@ def command_doctor(args) -> int:
             environ=os.environ,
         ),
         backend_factory=build_backend,
+        param_extras=getattr(args, "param_extras", ()),
     )
 
     # Additional FUSE-streaming probes. These produce their own diagnostic

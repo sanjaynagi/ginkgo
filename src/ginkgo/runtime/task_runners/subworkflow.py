@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 import yaml
 
+from ginkgo.config import PARAMS_CONFIG_KEY
 from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult
 from ginkgo.runtime.task_runners.shell import ShellRunner
 
@@ -130,8 +131,15 @@ class SubworkflowRunner:
             config_paths: list[str] = []
             if directive.params:
                 tmp_params_path = tmp_dir / "params.yaml"
+                # Written in both shapes so either style of child works: at the
+                # top level for a child reading config() subscripts, and under
+                # [params] for one declaring ginkgo.param(). Both come from the
+                # same dict at this one call site, so they cannot disagree.
                 tmp_params_path.write_text(
-                    yaml.safe_dump(directive.params, sort_keys=True),
+                    yaml.safe_dump(
+                        {**directive.params, PARAMS_CONFIG_KEY: dict(directive.params)},
+                        sort_keys=True,
+                    ),
                     encoding="utf-8",
                 )
                 config_paths.append(str(tmp_params_path))

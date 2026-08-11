@@ -37,6 +37,14 @@ fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
 keeps its terse per-workflow validation line rather than printing a full plan
 for each discovered workflow.
 
+Commands that import a workflow — `run`, `doctor`, `secrets`, and
+`inspect workflow` — accept flags for the parameters that workflow declares with
+`ginkgo.param(...)`, resolved CLI-first, then the config `[params]` table, then
+the declared default. `ginkgo run <workflow> --help` renders the run flags and
+then imports the workflow to list its declared parameters; an unrecognised flag
+is reported together with the parameters the workflow does declare. See
+[Configuration, Parameters, and Secrets](config-secrets.md).
+
 `ginkgo cache prune` accepts `--older-than <duration>`, `--max-size <size>`,
 and `--max-entries <N>`. At least one of the three is required; multiple
 may be combined, and eviction always proceeds oldest-first with orphan

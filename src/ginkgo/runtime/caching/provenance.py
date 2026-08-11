@@ -40,6 +40,7 @@ class RunProvenanceRecorder:
     cores: int | None
     memory: int | None = None
     params: dict[str, Any] = field(default_factory=dict)
+    param_sources: dict[str, str] = field(default_factory=dict)
     status: str = field(default="running", init=False)
     run_dir: Path = field(init=False)
     manifest_path: Path = field(init=False)
@@ -71,6 +72,10 @@ class RunProvenanceRecorder:
             "started_at": _timestamp(),
             "resources": _empty_resources(),
             "timings": _empty_timings(),
+            # Where each declared parameter's value came from: cli, config, or
+            # default. Kept beside the values rather than inside them so that
+            # params.yaml stays a plain name-to-value mapping.
+            "param_sources": dict(self.param_sources),
             "tasks": {},
         }
         self.write_params(self.params)

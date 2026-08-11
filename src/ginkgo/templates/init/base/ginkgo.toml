@@ -1,2 +1,4 @@
-run_label = "Starter demo"
 items = ["alpha", "beta", "gamma"]
+
+[params]
+run_label = "Starter demo"

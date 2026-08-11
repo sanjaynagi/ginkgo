@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from ginkgo.cli.common import console
+from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
@@ -22,10 +23,18 @@ def command_secrets(args) -> int:
         workflow=args.workflow,
     ).path
 
-    with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
+    config_paths = [Path(path).resolve() for path in args.config]
+    param_config = load_param_config(project_root=Path.cwd(), config_paths=config_paths)
+    with config_session(
+        override_paths=config_paths,
+        param_config=param_config,
+        cli_extras=getattr(args, "param_extras", ()),
+        require_params=False,
+    ) as session:
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
+        validate_param_extras(session)
         config = session.merged_loaded_values()
 
     evaluator = ConcurrentEvaluator()
