@@ -1466,7 +1466,7 @@ class ConcurrentEvaluator:
 
         return payload
 
-    def _fold_remote_input_access(self, *, node: _TaskNode, payload: Any) -> None:
+    def _fold_remote_input_access(self, *, node: TaskNode, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
 
         Records FUSE mount cost, cache hits, and fallbacks for both remote
