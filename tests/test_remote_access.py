@@ -435,6 +435,35 @@ class TestWorkerHydration:
 
 
 class TestLocalStreamingAvailable:
+    @pytest.fixture(autouse=True)
+    def _clear_probe_cache(self):
+        from ginkgo.remote.access import doctor
+
+        doctor._probe_local_streaming.cache_clear()
+        yield
+        doctor._probe_local_streaming.cache_clear()
+
+    def test_probe_is_cached_per_scheme(self, monkeypatch) -> None:
+        from ginkgo.remote.access import doctor
+        from ginkgo.remote.access.drivers import base as driver_base
+
+        monkeypatch.setattr(doctor.Path, "exists", lambda self: True)
+
+        calls: list[str] = []
+
+        class _HealthyDriver:
+            def health_check(self) -> None:
+                return
+
+        def _resolve(*, scheme: str):
+            calls.append(scheme)
+            return _HealthyDriver()
+
+        monkeypatch.setattr(driver_base, "resolve_driver", _resolve)
+        assert doctor.local_streaming_available(scheme="s3") is True
+        assert doctor.local_streaming_available(scheme="s3") is True
+        assert calls == ["s3"]
+
     def test_false_when_dev_fuse_missing(self, monkeypatch) -> None:
         from ginkgo.remote.access import doctor
 

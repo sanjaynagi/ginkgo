@@ -66,6 +66,15 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
             result = fn(**decoded_args)
+
+        # Encode while any fuse mounts are still live: the result may
+        # reference paths inside a mount (e.g. an input path returned
+        # through), and encoding reads file content.
+        if payload.get("dynamic_result", True) and _is_dynamic_result(result):
+            response = {"ok": True, "result": result, "result_encoding": "direct"}
+        else:
+            encoded_result = encode_value(result, base_dir=base_dir)
+            response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         if stderr_path is not None:
             with Path(stderr_path).open("a", encoding="utf-8") as handle:
@@ -77,12 +86,6 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         if mounted_access is not None:
             mounted_access.close()
-
-    if payload.get("dynamic_result", True) and _is_dynamic_result(result):
-        response = {"ok": True, "result": result, "result_encoding": "direct"}
-    else:
-        encoded_result = encode_value(result, base_dir=base_dir)
-        response = {"ok": True, "result": encoded_result, "result_encoding": "encoded"}
 
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()

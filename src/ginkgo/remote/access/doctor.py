@@ -8,6 +8,7 @@ annotations) before a task dispatch fails obscurely.
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ def local_streaming_available(*, scheme: str) -> bool:
     ``PATH``. Used to gate local (non-dispatched) tasks into the fuse
     path; when it returns ``False`` the resolver degrades to ``stage``.
 
+    The probe runs a driver health check (a subprocess), so results are
+    cached per scheme for the lifetime of the process.
+
     Parameters
     ----------
     scheme : str
@@ -37,6 +41,12 @@ def local_streaming_available(*, scheme: str) -> bool:
         its health check; ``False`` otherwise (including on macOS, where
         ``/dev/fuse`` is absent).
     """
+    return _probe_local_streaming(scheme)
+
+
+@functools.lru_cache(maxsize=None)
+def _probe_local_streaming(scheme: str) -> bool:
+    """Uncached probe body behind :func:`local_streaming_available`."""
     if not Path("/dev/fuse").exists():
         return False
     from ginkgo.remote.access.drivers.base import resolve_driver
