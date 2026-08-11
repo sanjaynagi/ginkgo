@@ -349,6 +349,61 @@ class TestPartialCallMap:
         result = process().map(sample=["s1"]).product_map(lr=[0.01], epochs=[10])
         assert result[0].display_label_parts == ("s1", "lr=0.01", "epochs=10")
 
+    def test_map_single_varying_scalar_labels_by_value(self):
+        @task()
+        def simulate_variants(sample: str) -> str:
+            return sample
+
+        result = simulate_variants().map(sample=["chr1", "chr2"])
+        assert result[0].display_label_parts == ("chr1",)
+        assert result[1].display_label_parts == ("chr2",)
+
+    def test_map_prefers_short_scalar_over_earlier_path_like_key(self):
+        @task()
+        def compute_window_stat(path: str, chrom: str) -> str:
+            return path
+
+        result = compute_window_stat().map(
+            path=["results/raw/chr1.csv", "results/raw/chr2.csv"],
+            chrom=["chr1", "chr2"],
+        )
+        # The first varying key ("path") looks like a file path, so the
+        # short scalar "chrom" key should be used for the label instead.
+        assert result[0].display_label_parts == ("chr1",)
+        assert result[1].display_label_parts == ("chr2",)
+
+    def test_map_short_decimal_scalar_is_not_treated_as_path_like(self):
+        @task()
+        def train(version: str, path: str) -> str:
+            return version
+
+        result = train().map(
+            version=["v2.1", "v3.0"],
+            path=["results/raw/chr1.csv", "results/raw/chr2.csv"],
+        )
+        # A short decimal-looking scalar (e.g. a version string) must not be
+        # rejected as path-like just because it contains a ".<digits>" suffix.
+        assert result[0].display_label_parts == ("v2.1",)
+        assert result[1].display_label_parts == ("v3.0",)
+
+    def test_map_all_expression_values_inherits_upstream_label(self):
+        @task()
+        def build_brief(item: str) -> str:
+            return item
+
+        @task()
+        def package_brief(brief: str) -> str:
+            return brief
+
+        briefs = build_brief().map(item=["alpha", "beta"])
+        result = package_brief().map(brief=briefs)
+
+        # Every varying value is an Expr, so no short scalar exists; the
+        # label should inherit the producing upstream branch's label
+        # rather than come back empty.
+        assert result[0].display_label_parts == ("alpha",)
+        assert result[1].display_label_parts == ("beta",)
+
 
 class TestTaskThreadsContract:
     def test_threads_default_is_one(self):
