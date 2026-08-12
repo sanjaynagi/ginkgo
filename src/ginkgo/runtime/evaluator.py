@@ -30,7 +30,7 @@ from ginkgo.core.shell import ShellDirective
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import tmp_dir
+from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.remote_executor import (
@@ -1084,7 +1084,10 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
-                resolved_args[name] = self._rehydrate_wrapped_refs(value=materialised)
+                resolved_args[name] = self._rehydrate_wrapped_refs(
+                    value=materialised,
+                    annotation=annotation,
+                )
                 continue
 
             if name == "threads":
@@ -1143,7 +1146,7 @@ class ConcurrentEvaluator:
 
         return value
 
-    def _rehydrate_wrapped_refs(self, *, value: Any) -> Any:
+    def _rehydrate_wrapped_refs(self, *, value: Any, annotation: Any = None) -> Any:
         """Replace wrapped ``AssetRef`` values with live Python payloads.
 
         Recurses into lists, tuples, and dicts. ``AssetRef`` entries with a
@@ -1153,7 +1156,20 @@ class ConcurrentEvaluator:
         ``file`` and ``fig`` refs are left as-is: the former flow through
         the existing file coercion path, and the latter carry binary
         payloads that users rarely consume as live Python objects.
+
+        Parameters
+        ----------
+        value : Any
+            The materialised argument value, possibly nesting ``AssetRef``.
+        annotation : Any
+            The consuming parameter's annotation. When it is or includes
+            ``file`` / ``folder`` no rehydration happens: the parameter binds
+            a filesystem path, so the ``AssetRef`` passes through untouched
+            rather than becoming a live object that later gets stringified as
+            a path.
         """
+        if is_path_shaped_annotation(annotation):
+            return value
         if isinstance(value, AssetRef):
             if value.kind in REHYDRATABLE_KINDS:
                 cached = self._live_payloads.get(artifact_id=value.artifact_id)

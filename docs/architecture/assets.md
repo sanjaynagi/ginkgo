@@ -97,7 +97,9 @@ downstream behaviour.
 for typed-unknown bytes. The semantic kinds can all be file-backed at
 construction (a CSV is a valid `table`, a PNG is a valid `fig`) but the
 kind tag always determines serialization format, preview renderer,
-loader, and rehydration behaviour downstream.
+loader, and rehydration behaviour downstream. A consequence is that only
+the `file` kind may be returned from a task annotated `-> file`; a
+semantic kind returned there is rejected with a kind-aware error.
 
 ### Equivalence of `asset()` and shorthand factories
 
@@ -274,7 +276,26 @@ resumes, and cross-run consumers. `fig` refs are left as `AssetRef`
 since binary image payloads are rarely consumed as live Python objects.
 `file` refs flow through the existing `file` coercion path.
 
-Rehydration is transparent to task authors: a task annotated
+Rehydration is annotation-aware. A parameter whose annotation is or includes
+`file` or `folder` (`is_path_shaped_annotation` in `core/types.py`) binds a
+filesystem path, so `_rehydrate_wrapped_refs` returns the `AssetRef`
+untouched rather than a live object that later code would stringify as a
+path. This keeps the documented `file | AssetRef` idiom stable: the consumer
+sees an `AssetRef` on both the cold run and the cache hit, and the cache key
+comes from `AssetRef.content_hash` without touching the filesystem.
+
+For the same reason the live registry only caches a payload that is already
+the canonical in-memory form. A path-style payload (`table("data.csv")`) is
+skipped, since the on-disk loader would return the deserialised object — a
+live hit and a loader fallback must not disagree about what a ref rehydrates
+to.
+
+A `file` / `folder` annotation bound to an `AssetRef` of another kind, or to
+any other non-path value, is rejected with a kind-aware error in
+`task_validation._require_path_value` and `cache._require_path_like` rather
+than stringified into a path.
+
+Rehydration is otherwise transparent to task authors: a task annotated
 `compounds: pd.DataFrame` continues to work unchanged when its upstream
 switches from returning a raw DataFrame to `table(df, name="...")`.
 The examples in `examples/chem/.../inputs.py::annotate_compounds` and

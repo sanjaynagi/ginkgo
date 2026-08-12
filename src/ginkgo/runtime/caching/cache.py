@@ -15,7 +15,7 @@ from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.types import annotation_includes, file, folder, is_path_like, tmp_dir
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -540,9 +540,9 @@ class CacheStore:
         if annotation is tmp_dir:
             return None
         if isinstance(value, AssetRef):
-            if _annotation_includes(annotation=annotation, expected=file):
+            if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
-            if _annotation_includes(annotation=annotation, expected=folder):
+            if annotation_includes(annotation=annotation, expected=folder):
                 return {"sha256": value.content_hash, "type": "folder"}
             return {
                 "asset": str(value.key),
@@ -645,7 +645,8 @@ class CacheStore:
                 "type": "tuple",
             }
 
-        if _annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+        if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+            _require_path_like(value=value, annotation_label="file")
             # Use pre-computed digest from upstream task output when available.
             if known_digests is not None:
                 resolved_key = str(Path(str(value)).resolve())
@@ -654,9 +655,10 @@ class CacheStore:
                     return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if _annotation_includes(annotation=annotation, expected=folder) or isinstance(
+        if annotation_includes(annotation=annotation, expected=folder) or isinstance(
             value, folder
         ):
+            _require_path_like(value=value, annotation_label="folder")
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
@@ -904,13 +906,21 @@ def _save_stat_index(*, root: Path, index: dict[str, str]) -> None:
         raise
 
 
-def _annotation_includes(*, annotation: Any, expected: Any) -> bool:
-    """Return whether an annotation directly or indirectly allows ``expected``."""
-    if annotation is expected:
-        return True
-    origin = get_origin(annotation)
-    if origin is None:
-        return False
-    return any(
-        _annotation_includes(annotation=item, expected=expected) for item in get_args(annotation)
+def _require_path_like(*, value: Any, annotation_label: str) -> None:
+    """Reject a non-path value bound to a path-shaped annotation.
+
+    Parameters
+    ----------
+    value : Any
+        The resolved argument or return value.
+    annotation_label : str
+        ``"file"`` or ``"folder"`` — the annotation the value is bound to.
+    """
+    if is_path_like(value):
+        return
+    received = f"{type(value).__module__}.{type(value).__name__}"
+    raise TypeError(
+        f"value annotated `{annotation_label}` is not a path: received a {received}. "
+        f"Annotate the parameter with the payload type (or `object`) to receive the "
+        f"live value, or return `asset(path)` upstream to produce a file asset."
     )

@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import array, fig, model, table, task, text
+from ginkgo import array, fig, file, model, table, task, text
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
@@ -842,6 +842,41 @@ def produce_sklearn_model() -> object:
 
 
 @task()
+def produce_table_from_csv(output_path: str) -> object:
+    """Return a table asset whose payload is a CSV path, not a live frame."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}).to_csv(out, index=False)
+    return table(out, name="summary")
+
+
+@task()
+def record_payload_type(upstream: object) -> str:
+    return type(upstream).__name__
+
+
+@task()
+def consume_file_or_ref(summary: file | AssetRef, output_path: str) -> file:
+    """Consume an upstream asset through the documented ``file | AssetRef`` idiom."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f"{type(summary).__name__}\n", encoding="utf-8")
+    return file(str(out))
+
+
+@task()
+def return_table_from_file_annotation() -> file:
+    """Declare ``-> file`` but return a table asset — always invalid."""
+    return table(pd.DataFrame({"x": [1, 2, 3]}), name="tbl")
+
+
+@task()
+def consume_table_as_file(summary: file) -> str:
+    """Declare a bare ``file`` parameter fed by a table asset — always invalid."""
+    return str(summary)
+
+
+@task()
 def consume_model_predict(trained: object) -> list[int]:
     # Rehydration should hand us back the trained sklearn estimator.
     predictions = trained.predict(np.array([[0.5], [2.5]]))
@@ -942,6 +977,24 @@ class TestRehydration:
         result = ginkgo.evaluate(consume_model_predict(trained=produce_sklearn_model()))
         assert result == [0, 1]
 
+    def test_live_payload_and_loader_agree_for_csv_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ref rehydrates to the same type from memory and from disk."""
+        monkeypatch.chdir(tmp_path)
+
+        first = ginkgo.evaluate(
+            record_payload_type(upstream=produce_table_from_csv(output_path="out/table.csv"))
+        )
+        assert first == "DataFrame"
+
+        # A second evaluator has an empty live registry, so this run takes the
+        # on-disk loader branch. Both branches must agree.
+        second = ginkgo.evaluate(
+            record_payload_type(upstream=produce_table_from_csv(output_path="out/table2.csv"))
+        )
+        assert second == first
+
     def test_live_registry_capacity_eviction(self) -> None:
         """The registry is bounded — oldest entries evict when full."""
         from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
@@ -955,6 +1008,71 @@ class TestRehydration:
         assert registry.get(artifact_id="a") is None
         assert registry.get(artifact_id="b") == "second"
         assert registry.get(artifact_id="d") == "fourth"
+
+
+# ---------------------------------------------------------------------------
+# Asset kind vs path-shaped annotation
+# ---------------------------------------------------------------------------
+
+
+class TestKindVersusPathAnnotation:
+    """Behaviour when an asset kind meets a ``file`` / ``folder`` annotation."""
+
+    def test_file_union_consumer_survives_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``file | AssetRef`` consumer of a table asset works cold and warm."""
+        monkeypatch.chdir(tmp_path)
+
+        def build() -> Any:
+            return consume_file_or_ref(
+                summary=produce_table_from_csv(output_path="results/summary.csv"),
+                output_path="results/report.txt",
+            )
+
+        cold = ginkgo.evaluate(build())
+        warm = ginkgo.evaluate(build())
+
+        assert Path(cold).read_text(encoding="utf-8").strip() == "AssetRef"
+        assert warm == cold
+
+    def test_file_annotation_rejects_table_asset_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare ``file`` parameter fed a table asset names the kind."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError, match=r"annotated `file` but is a `table` asset"):
+            ginkgo.evaluate(
+                consume_table_as_file(
+                    summary=produce_table_from_csv(output_path="results/summary.csv")
+                )
+            )
+
+    def test_file_return_annotation_rejects_table_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``-> file`` returning ``table(...)`` names the kind, not path syntax."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            ginkgo.evaluate(return_table_from_file_annotation())
+
+        message = str(excinfo.value)
+        assert "annotated `file` but is a `table` asset" in message
+        assert "must not contain spaces" not in message
+
+    def test_file_annotation_rejects_non_path_value(self) -> None:
+        """A non-path, non-asset value bound to ``file`` names the type."""
+        from ginkgo.runtime.task_validation import TaskValidator
+
+        validator = TaskValidator()
+        with pytest.raises(TypeError, match=r"received a pandas\.DataFrame"):
+            validator.validate_annotated_value(
+                annotation=file,
+                value=pd.DataFrame({"x": [1]}),
+                label="demo.summary",
+            )
 
 
 # ---------------------------------------------------------------------------
