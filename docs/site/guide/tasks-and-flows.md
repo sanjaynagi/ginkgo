@@ -249,6 +249,20 @@ Supplying only some of a task's arguments is what makes this work: the call
 returns a `PartialCall` instead of running, and `.map()` then fills in the rest,
 one set of values per fanned-out call.
 
+### `.product_map()` — Every Combination
+
+Use `.product_map()` when the varying arguments should form a **grid** — every
+combination — rather than being zipped by position:
+
+```python
+models = train().product_map(
+    sample_id=["sample_a", "sample_b"],
+    lr=[0.01, 0.1],
+)
+```
+
+This runs `train` four times: each `sample_id` paired with each `lr`.
+
 ### Building The Varying Lists With `expand()`
 
 The varying arguments are plain lists, so they can come from anywhere — a
@@ -293,21 +307,6 @@ that does not appear in the template is an error. The pairing
 matches `.map()` (positional zip) and `.product_map()` (Cartesian product), so
 use `zip_expand()` with `.map()` and `expand()` with `.product_map()` when a
 template has more than one wildcard.
-
-### `.product_map()` — Every Combination
-
-Use `.product_map()` when the varying arguments should form a **grid** — every
-combination — rather than being zipped by position:
-
-```python
-models = train().product_map(
-    sample_id=["sample_a", "sample_b"],
-    lr=[0.01, 0.1],
-)
-```
-
-This runs `train` four times: each `sample_id` paired with each `lr`.
-
 ### Chaining Fan-Out
 
 You can chain fan-out calls. Chaining always returns a flat `ExprList`, with
@@ -334,13 +333,20 @@ one of those outputs into a downstream task, index into the result with the
 `.output` proxy:
 
 ```python
-from ginkgo import file, shell, task
+from ginkgo import AssetRef, file, shell, task
 
 
 @task("shell")
-def normalize_seed_card(seed_card: file, output_path: str, check_path: str) -> list[file]:
+def normalize_seed_card(
+    seed_card: file | AssetRef, output_path: str, check_path: str
+) -> list[file]:
     return shell(cmd=..., output=[output_path, check_path])
 ```
+
+`seed_card` is widened to `file | AssetRef` because the upstream task returns an
+asset — see
+[Consuming Assets Downstream](assets.md#consuming-assets-downstream). A task fed
+by plain `file` returns needs only `file`.
 
 ```python
 norm_results = normalize_seed_card().map(

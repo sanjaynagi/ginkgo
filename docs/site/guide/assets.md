@@ -35,13 +35,12 @@ The typed helpers each map to an asset **kind**:
 | `text(payload)` | `text` | plain, markdown, or JSON text |
 | `model(payload)` | `model` | a trained model object |
 
-The return annotation must match the payload, not the helper. Only a `file`-kind
-asset — `asset(path)`, or `asset(path, kind="file")` — satisfies a `-> file`
-annotation, because the value that reaches the runtime is an asset reference to
-a file on disk. Every other kind, including `table()` given a DataFrame *or* a
-path to a CSV, must be returned from a task annotated `-> object` (or the
-payload's own type). Returning `table(...)` from a `-> file` task always fails
-validation.
+The return annotation follows the kind, not the payload. Only the `file` kind —
+`asset(path)` — satisfies a `-> file` annotation. Every other kind is a semantic
+asset rather than a path, so its producing task is annotated `-> object` (or the
+payload's own type), even when the payload you passed in was a file path:
+`table("data/frame.csv")` yields a `table` asset, not the CSV. Declaring
+`-> file` and returning `table(...)` fails validation.
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
@@ -103,17 +102,21 @@ bytes, so an asset key gives you a stable handle with full version history.
 ### Consuming Assets Downstream
 
 A task that depends on an asset-producing task does not receive a plain path.
-What arrives depends on the asset kind:
+What arrives is decided by the **consuming parameter's annotation**:
 
-- `table`, `array`, `text`, and `model` refs are rehydrated into the live Python
-  payload before the task body runs — a downstream task takes the DataFrame, the
-  array, or the model object directly.
-- `file` and `fig` refs arrive as an `AssetRef`: a record carrying the asset
-  `key`, `version_id`, `kind`, `content_hash`, `metadata`, and
-  `artifact_path` (the path to the immutable stored bytes).
+- Annotated `file`, `folder`, or a union including one of them (`file |
+  AssetRef`) — the parameter binds a filesystem path, so the value passes
+  through as an `AssetRef`: a record carrying the asset `key`, `version_id`,
+  `kind`, `content_hash`, `metadata`, and `artifact_path` (the path to the
+  immutable stored bytes). This holds on cache hits as well as cold runs.
+- Annotated `object` or the payload's own type (`pd.DataFrame`) — a `table`,
+  `array`, `text`, or `model` ref is rehydrated into the live Python payload
+  before the task body runs, so the task takes the DataFrame, array, or model
+  object directly. `file` and `fig` refs stay as an `AssetRef`, since they
+  carry paths and binary blobs rather than objects worth loading.
 
-So a consumer of a file asset must handle an `AssetRef` as well as a plain
-path. Widen the parameter annotation and branch on the type:
+So a consumer of a file asset receives an `AssetRef`, not the path its `file`
+annotation suggests. Widen the annotation and branch on the type:
 
 ```python
 from pathlib import Path
@@ -131,12 +134,8 @@ def normalize_seed_card(seed_card: file | AssetRef, output_path: str) -> file:
     ...
 ```
 
-The widening is needed because the producing task's `-> file` annotation is not
-what the consumer actually gets — the producer returns `asset(output, ...)`, so
-the value handed downstream is an asset reference, not the path the annotation
-suggests. The same task called with a plain `file` still works, which is why
-both branches are kept. This is the pattern the `ginkgo init` scaffold uses in
-`modules/prep.py`.
+Both branches are kept because the same task also works when called with a plain
+`file` path, from a producer that returns `file(...)` rather than `asset(...)`.
 
 `AssetRef` also offers two accessors instead of reading `artifact_path`
 directly: `load()` returns the artifact path as a string, and `as_file()`
