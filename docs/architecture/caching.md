@@ -21,6 +21,47 @@ Implemented cache hashing includes:
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
+## Untracked path boundaries
+
+Content hashing is dispatched on the declared annotation:
+`is_path_shaped_annotation` (`ginkgo/core/types.py`) decides whether a parameter
+or return carries a `file` / `folder` marker. A path that crosses a task boundary
+annotated only `str` or `Path` falls through to the scalar branch, so the
+downstream cache key records the *path string* and nothing about the bytes at
+that path. The producer can rewrite the file and the consumer still reports a
+cache hit — the stale-result failure in issue #121.
+
+Ginkgo cannot silently promote those boundaries to content hashing: `str` is
+also the legitimate way to pass a path deliberately left untracked (a log, a
+scratch location, an append-only sink). Instead the evaluator warns.
+`ConcurrentEvaluator._warn_on_untracked_path_inputs` runs in `_prepare_node`,
+before the cache-hit branch, and emits a `TaskNotice` when all of the following
+hold:
+
+- the argument was resolved from an upstream `Expr` / `OutputIndex` / `ExprList`
+  in this graph, so a producer in the same run can rewrite it;
+- the resolved value is path-like (`is_path_like`) but not a `file` / `folder`
+  marker instance;
+- the parameter annotation is not path-shaped;
+- the value names something that exists on disk
+  (`is_untracked_path_value` in `ginkgo/runtime/task_validation.py`, built from
+  the `core/types.py` predicates rather than repeating them).
+
+An `AssetRef` never trips this: it is not path-like, and the cache keys it by
+version id, so a content change does invalidate the consumer.
+
+Arguments are walked in step with their resolved values, so a path reaching the
+task inside a list, tuple, dict, or fan-out `ExprList` — the ordinary fan-in
+shape, `inputs=[a, b]` — is checked exactly as one passed directly. The
+container annotation is carried down unchanged, since `annotation_includes`
+looks inside `list[file]` for it. A dict key that is itself an expression
+resolves to a different key, so its value is skipped rather than mispaired.
+
+Warnings are deduplicated per producer/consumer/parameter, so a fan-out reports
+once. Literal path arguments never trigger it — the signal is the graph edge,
+not the shape of the string. Detection is inherently runtime: it needs a
+resolved value, so `ginkgo doctor` does not report it.
+
 The runtime hashes the top-level task function source and the statically
 imported closure of already-loaded local Python modules during task
 registration. The resulting `source_hash` is stored in both the cache key

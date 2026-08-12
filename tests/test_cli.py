@@ -695,6 +695,57 @@ def main():
         runs_root = Path(".ginkgo") / "runs"
         assert not runs_root.exists() or list(runs_root.iterdir()) == []
 
+    def test_run_dry_run_reports_calls_dropped_from_the_graph(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def label(text: str) -> str:
+    return text
+
+@flow
+def main():
+    label(text="dropped")
+    return label(text="kept")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--dry-run", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "1 task" in result.stdout
+        assert "Dropped (not reachable from the flow return value)" in result.stdout
+        assert "! label()" in result.stdout
+        # The plan section is the only report; the run-header warning is
+        # suppressed so a dry run does not say it twice.
+        assert "⚠" not in result.stderr
+
+    def test_run_reports_dropped_calls_before_executing(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def label(text: str) -> str:
+    return text
+
+@flow
+def main():
+    label(text="dropped")
+    return label(text="kept")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "not reachable from the flow return value" in result.stderr
+
     def test_run_dry_run_groups_waves_and_expands_fanout(self) -> None:
         Path("workflow.py").write_text(
             """

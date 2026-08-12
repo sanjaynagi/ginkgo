@@ -6,6 +6,9 @@ than executing. The evaluator recursively resolves these nodes.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -183,3 +186,88 @@ class ExprList(Generic[T]):
             mode="product",
             max_concurrent=max_concurrent,
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConstructedCall:
+    """A task call minted while a flow body was executing.
+
+    Recorded so the evaluator can tell which calls the graph walk reached and
+    which were constructed and then discarded.
+
+    Parameters
+    ----------
+    value : Expr | ExprList
+        The object the call handed back to the flow body.
+    exprs : tuple[Expr, ...]
+        The expressions the call produced — one for a plain call, one per
+        branch for a fan-out. Never empty.
+    """
+
+    value: Expr | ExprList
+    exprs: tuple[Expr, ...]
+
+    @property
+    def task_name(self) -> str:
+        """Fully qualified name of the called task."""
+        return self.exprs[0].task_def.name
+
+    @property
+    def label(self) -> str:
+        """Short human-readable form, e.g. ``analyse()`` or ``analyse() × 4``."""
+        base = f"{self.task_name.rsplit('.', 1)[-1]}()"
+        return base if len(self.exprs) <= 1 else f"{base} × {len(self.exprs)}"
+
+
+_active_call_log: ContextVar[list[ConstructedCall] | None] = ContextVar(
+    "ginkgo_construction_log",
+    default=None,
+)
+
+
+@contextmanager
+def record_constructed_calls() -> Iterator[list[ConstructedCall]]:
+    """Record every task call constructed inside the block.
+
+    Recording is inactive outside this context manager, so expressions built by
+    library users or minted inside running tasks cost nothing.
+
+    Yields
+    ------
+    list[ConstructedCall]
+        The log, filled as the block executes.
+    """
+    log: list[ConstructedCall] = []
+    token = _active_call_log.set(log)
+    try:
+        yield log
+    finally:
+        _active_call_log.reset(token)
+
+
+def record_call(value: Expr | ExprList) -> None:
+    """Append a constructed task call to the active log, if any."""
+    log = _active_call_log.get()
+    if log is None:
+        return
+    exprs = (value,) if isinstance(value, Expr) else tuple(value)
+    # A fan-out over an empty sequence produces no branches, so there is no
+    # call to drop and nothing to report.
+    if not exprs:
+        return
+    log.append(ConstructedCall(value=value, exprs=exprs))
+
+
+def supersede_call(value: Expr | ExprList) -> None:
+    """Drop a logged call that a chained fan-out has replaced.
+
+    ``ExprList.map`` rebuilds every branch, so the expressions of the list it
+    was called on are legitimately unreachable and must not be reported.
+    """
+    log = _active_call_log.get()
+    if log is None:
+        return
+    for index, call in enumerate(log):
+        if call.value is value:
+            del log[index]
+            return

@@ -42,6 +42,7 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
 
     if plan.task_count == 0:
         console.print(Text("  no tasks in workflow", style="dim"))
+        _render_dropped(plan=plan, console=console)
         return
 
     label_width = min(
@@ -52,8 +53,21 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
         console.print()
         _render_wave(wave=wave, console=console, label_width=label_width, verbose=verbose)
 
+    _render_dropped(plan=plan, console=console)
+
     console.print()
     console.print(_summary(plan))
+
+
+def _render_dropped(*, plan: DryRunPlan, console: Console) -> None:
+    """Print the calls the flow constructed but never returned."""
+    if not plan.dropped_labels:
+        return
+
+    console.print()
+    console.print(Text("Dropped (not reachable from the flow return value)", style="yellow"))
+    for label in plan.dropped_labels:
+        console.print(Text(f"  ! {label}", style="yellow"))
 
 
 def _header(plan: DryRunPlan) -> Text:

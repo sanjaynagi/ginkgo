@@ -40,6 +40,7 @@ from ginkgo.config import (
     load_runtime_config_layers,
     merge_config_layers,
 )
+from ginkgo.core.expr import record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
@@ -53,6 +54,7 @@ from ginkgo.runtime.caching.provenance import (
     combined_log_tail,
     make_run_id,
 )
+from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
@@ -189,9 +191,11 @@ def run_workflow(
             module = load_module_from_path(workflow_path)
         with profiler.timed("flow_construction"):
             flow = discover_flow(module)
-            expr = flow()
+            with record_constructed_calls() as constructed_calls:
+                expr = flow()
         # Validated after the flow body has run, so parameters declared inside
-        # it have had their chance to claim a flag.
+        # it have had their chance to claim a flag. Deliberately outside the
+        # construction recorder: parameter resolution mints no task calls.
         validate_param_extras(session)
         params = session.merged_loaded_values()
         declared_params = session.resolved_params()
@@ -237,6 +241,7 @@ def run_workflow(
         secret_resolver=secret_resolver,
         profiler=profiler,
         param_context=param_context,
+        constructed_calls=tuple(constructed_calls),
     )
     validate_started = time.perf_counter()
     with profiler.timed("evaluator_validate"):
@@ -251,6 +256,17 @@ def run_workflow(
         evaluator=evaluator,
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {finding.message()}")
+
+    # A call the flow never returns is not in the graph, so its side effects
+    # never happen. Warned about for the same reason: the run otherwise looks
+    # like a smaller but healthy one. Suppressed only when the dry-run plan is
+    # about to render its own "Dropped" section, which would say it twice.
+    plan_reports_dropped = (
+        dry_run and plan_preview and output_mode not in {"agent", "agent_verbose"}
+    )
+    if not plan_reports_dropped:
+        for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
+            console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
     task_count = len(evaluator._nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())

@@ -22,7 +22,7 @@ from types import ModuleType
 import math
 import re
 
-from ginkgo.core.expr import Expr, ExprList
+from ginkgo.core.expr import Expr, ExprList, record_call, supersede_call
 from ginkgo.core.hashing import hash_file, hash_str
 from ginkgo.core.types import tmp_dir
 
@@ -280,7 +280,9 @@ class TaskDef:
 
         if self._required_params <= supplied:
             # All required params supplied — produce an Expr
-            return Expr(task_def=self, args=kwargs, mapped=False)
+            expr = Expr(task_def=self, args=kwargs, mapped=False)
+            record_call(expr)
+            return expr
 
         # Partial call — some required params are missing
         return PartialCall(task_def=self, fixed_args=kwargs)
@@ -406,7 +408,9 @@ def _fan_out_partial_call(
         )
         for row in rows
     ]
-    return ExprList(exprs=exprs, task_def=partial_call.task_def)
+    expr_list = ExprList(exprs=exprs, task_def=partial_call.task_def)
+    record_call(expr_list)
+    return expr_list
 
 
 def _fan_out_expr_list(
@@ -452,7 +456,12 @@ def _fan_out_expr_list(
         for base_expr in expr_list
         for row in rows
     ]
-    return ExprList(exprs=exprs, task_def=task_def)
+    # The base branches are rebuilt here, so their original call is no longer
+    # part of the graph and must not be reported as dropped.
+    supersede_call(expr_list)
+    extended = ExprList(exprs=exprs, task_def=task_def)
+    record_call(extended)
+    return extended
 
 
 _concurrency_group_counter: int = 0

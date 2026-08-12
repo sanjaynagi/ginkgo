@@ -19,7 +19,14 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, require_path_value, tmp_dir
+from ginkgo.core.types import (
+    file,
+    folder,
+    is_path_like,
+    is_path_shaped_annotation,
+    require_path_value,
+    tmp_dir,
+)
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
@@ -28,6 +35,45 @@ from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 def is_path_annotation(annotation: Any) -> bool:
     """Return whether an annotation is a pathlib path type."""
     return isinstance(annotation, type) and issubclass(annotation, Path)
+
+
+def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value is a path whose contents miss the cache key.
+
+    True when the declared annotation is not path-shaped and the value is
+    nonetheless a bare path naming something that exists on disk. Such an
+    argument contributes only its path string to the downstream cache key, so
+    content changes never invalidate it.
+
+    A ``file`` / ``folder`` marker instance is excluded because the cache key
+    content-hashes it whatever the annotation says. An ``AssetRef`` is excluded
+    for free: it is not path-like, so it never reaches the check — which is the
+    right answer, since the cache keys it by version id and a content change
+    therefore does invalidate the consumer.
+
+    Parameters
+    ----------
+    annotation : Any
+        The declared annotation of the parameter receiving ``value``.
+    value : Any
+        The resolved argument value.
+
+    Returns
+    -------
+    bool
+        ``True`` when the value is a path the cache key does not track.
+    """
+    if annotation is tmp_dir or is_path_shaped_annotation(annotation):
+        return False
+    if isinstance(value, (file, folder, tmp_dir)):
+        return False
+    if not is_path_like(value):
+        return False
+
+    text = str(value)
+    if not text or is_remote_uri(text):
+        return False
+    return Path(text).exists()
 
 
 def is_remote_path_value(value: Any) -> bool:

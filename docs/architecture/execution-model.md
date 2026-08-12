@@ -17,6 +17,35 @@ Ginkgo also exposes small workflow-authoring helpers:
 - `flatten(items)` for flattening nested list/tuple structures into a single list
 - `slug(value)` for deterministic file-safe artifact names
 
+### Reachability and dropped calls
+
+The graph is exactly what is reachable from the flow's return value:
+`ConcurrentEvaluator._register_value` walks the returned expression, and a task
+call the flow constructs but never returns is not part of the run. That rule
+stands, but it used to be silent — a bare side-effecting statement, or a literal
+path written where an upstream expression belonged, produced a smaller graph
+with no message (issue #122).
+
+Constructed calls are now recorded so the drop can be reported. `record_call`
+in `ginkgo/core/expr.py` appends a `ConstructedCall` for every `Expr` minted by
+`TaskDef.__call__` and every `ExprList` minted by the fan-out helpers, but only
+while a `record_constructed_calls()` context manager is open. A chained
+`ExprList.map()` rebuilds its base branches, so the helper calls
+`supersede_call` to drop the superseded entry rather than report it.
+
+Callers that build a flow (`cli/commands/run.py`, `runtime/diagnostics.py`) open
+the recorder around the flow body and pass the log to the evaluator as
+`constructed_calls`. `ConcurrentEvaluator.unreachable_calls` then diffs it
+against `_expr_nodes`, keyed by object identity. Nothing is recorded outside
+that context manager, so expressions built by library users or minted inside
+running tasks are unaffected.
+
+Dropped calls surface as `warning`-severity `unreachable_task_call` diagnostics
+in `ginkgo doctor`, as a "Dropped" section in the `--dry-run` plan, and as a
+warning on stderr before a real run, alongside the `param_read_from_global`
+warning that shares its shape. They are warnings, not errors: a flow may build
+an expression and discard it deliberately.
+
 ## Dynamic DAG Expansion
 
 Tasks receive resolved concrete argument values at execution time. A task can inspect those values and return:
