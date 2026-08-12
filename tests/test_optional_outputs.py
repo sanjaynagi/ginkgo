@@ -17,6 +17,8 @@ from ginkgo import file, folder, optional, shell, task
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.types import unwrap_optional_annotation
 from ginkgo.runtime.artifacts.output_index import output_summary
+from ginkgo.runtime.artifacts.remote_arg_transfer import _stage_encoded_value
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.task_runners.shell import (
     iter_output_values,
     iter_required_output_values,
@@ -325,6 +327,68 @@ class TestOptionalCaching:
             ginkgo.evaluate(consume_pair(pair=(with_extra.output[0], with_extra.output[1])))
             == "main.txt:extra.txt"
         )
+
+
+@task(kind="shell")
+def emit_per_name(*, name: str) -> tuple[file, file | None]:
+    """Produce the optional output for one branch only, to vary presence."""
+    extra = f" && echo x > results/{name}_extra.txt" if name == "b" else ""
+    return shell(
+        cmd=(
+            f"mkdir -p results && echo {name} > results/{name}.txt{extra} "
+            "&& echo ran >> results/executions.txt"
+        ),
+        output=(f"results/{name}.txt", optional(f"results/{name}_extra.txt")),
+    )
+
+
+class TestOptionalFanOut:
+    """Presence may differ per branch of a fan-out."""
+
+    def test_branches_carry_independent_presence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        mapped = emit_per_name().map(name=["a", "b", "c"])
+
+        assert ginkgo.evaluate(mapped.output[1]) == [
+            None,
+            "results/b_extra.txt",
+            None,
+        ]
+
+    def test_mixed_presence_fan_out_caches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A list of heterogeneous tuples must cache every branch."""
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(emit_per_name().map(name=["a", "b", "c"]))
+        ginkgo.evaluate(emit_per_name().map(name=["a", "b", "c"]))
+
+        assert _execution_count() == 3, "second fan-out re-executed instead of caching"
+
+
+class TestOptionalRemoteTransport:
+    """Absence survives the encode / stage / decode path used for remote runs."""
+
+    def test_none_round_trips_through_the_codec(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.txt"
+        target.write_text("a", encoding="utf-8")
+        encoded = encode_value((file(str(target)), None), base_dir=tmp_path)
+
+        assert decode_value(encoded, base_dir=tmp_path) == (str(target), None)
+
+    def test_remote_staging_leaves_none_untouched(self, tmp_path: Path) -> None:
+        """Staging walks the encoded tree structurally, so None needs no store."""
+
+        class NeverStore:
+            def store(self, **kwargs: Any) -> Any:
+                raise AssertionError("remote store called for an absent output")
+
+        encoded = encode_value((None, None), base_dir=tmp_path)
+        staged = _stage_encoded_value(value=encoded, remote_store=NeverStore())
+
+        assert decode_value(staged, base_dir=tmp_path) == (None, None)
 
 
 # ---------------------------------------------------------------------------
