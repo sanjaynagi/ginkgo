@@ -10,7 +10,7 @@ so `ginkgo init <dir>` never produces a `<dir>/<dir>/` nesting.
 ├── ginkgo.toml
 ├── workflow/           # fixed package name
 │   ├── __init__.py
-│   ├── workflow.py     # contains flow definition
+│   ├── flow.py         # contains flow definition
 │   ├── modules/        # contains tasks, grouped in modules
 │   ├── envs/           # per-task Pixi manifests
 │   ├── notebooks/      # notebook-task source
@@ -23,7 +23,7 @@ so `ginkgo init <dir>` never produces a `<dir>/<dir>/` nesting.
 
 Within that layout:
 
-- `workflow/workflow.py` is the canonical CLI entrypoint and should remain thin,
+- `workflow/flow.py` is the canonical CLI entrypoint and should remain thin,
   containing flow definitions and graph wiring only.
 - Reusable task implementations live under `workflow/modules/`.
 - Task-specific Pixi manifests may live under `workflow/envs/`.
@@ -48,7 +48,7 @@ following run today:
   relative imports both resolve.
 - **flat, no packages** — sibling modules import as top-level; no `__init__.py`
   needed.
-- **`src/<pkg>/workflow.py`** — `src/` goes on the path, so
+- **`src/<pkg>/flow.py`** — `src/` goes on the path, so
   `from <pkg>.modules… import …` resolves.
 
 Only auto-discovery is structure-aware: it is convenience for running without
@@ -58,7 +58,7 @@ typing a path, not a structural requirement.
 
 `load_module_from_path` loads the entry file under its **real dotted name** when
 an `__init__.py` sits beside it, setting `__package__`. In the canonical layout
-the entry is therefore `workflow.workflow`, and both forms work:
+the entry is therefore `workflow.flow`, and both forms work:
 
 ```python
 from .modules.analysis import build_brief          # relative
@@ -77,9 +77,16 @@ run-in-place execution, which is how ginkgo runs workflows.
 
 ## Discovery
 
-The CLI auto-discovers the canonical `workflow/workflow.py` when `ginkgo run` is
+The CLI auto-discovers the canonical `workflow/flow.py` when `ginkgo run` is
 invoked from the repository root without an explicit workflow argument.
-`canonical_workflow_candidates` accepts any single direct child package
-containing `workflow.py`, so projects scaffolded before the package name was
-fixed keep working. Legacy root-level `workflow.py` files and explicit workflow
-paths remain supported.
+`canonical_workflow_candidates` scans direct child packages for
+`_PACKAGE_ENTRY_NAMES` — `flow.py` first, then `workflow.py` — so projects
+scaffolded before the package name and entry file were fixed keep working.
+Legacy root-level `workflow.py` files and explicit workflow paths remain
+supported.
+
+Because the entry file's own directory is on `sys.path`, a module inside the
+package that shares the package's name shadows the package. `flow.py` avoids
+that for new projects, but `_load_package_module` still puts the package root's
+parent first on `sys.path` so pre-rename `workflow/workflow.py` scaffolds load
+correctly.

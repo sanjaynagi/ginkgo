@@ -7,7 +7,7 @@ return deferred expressions rather than running immediately.
 
 ## Keep Flows Thin
 
-The canonical project layout expects workflow wiring in `workflow.py` and task
+The canonical project layout expects workflow wiring in `flow.py` and task
 implementations in modules owned by the `workflow` package. The package
 directory is always named `workflow`, whatever the project is called.
 
@@ -17,7 +17,7 @@ directory is always named `workflow`, whatever the project is called.
 ├── ginkgo.toml
 ├── workflow/
 │   ├── __init__.py
-│   ├── workflow.py
+│   ├── flow.py
 │   ├── modules/
 │   ├── envs/
 │   ├── notebooks/

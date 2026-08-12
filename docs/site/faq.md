@@ -42,7 +42,7 @@ my-project/
 ├── ginkgo.toml
 ├── workflow/              # always named "workflow"
 │   ├── __init__.py
-│   ├── workflow.py        # flow definitions and wiring — keep this thin
+│   ├── flow.py            # flow definitions and wiring — keep this thin
 │   ├── modules/           # contain tasks
 │   ├── envs/              # per-task environment manifests
 │   ├── notebooks/         # notebook-task source
@@ -52,7 +52,8 @@ my-project/
 
 `results/` and `.ginkgo/` are created at runtime. When you run `ginkgo run` with
 no explicit path, autodiscovery scans the project root's child directories and
-picks the Python package (one with `__init__.py`) that contains a `workflow.py`.
+picks the Python package (one with `__init__.py`) that contains a `flow.py`
+(or, for projects scaffolded before the rename, a `workflow.py`).
 Exactly one candidate is used automatically; several candidates raise an error
 asking you to pass an explicit path; if none are found it falls back to a legacy
 root-level `./workflow.py`.

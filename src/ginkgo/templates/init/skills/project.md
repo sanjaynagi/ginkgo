@@ -13,11 +13,11 @@ Key files and directories:
 - `.ginkgo/`: runtime state for runs, cache, artifacts, and provenance
 
 The package directory is always named `workflow/`, whatever the project is
-called. `workflow/workflow.py` lives inside a package, so it may import task
+called. `workflow/flow.py` lives inside a package, so it may import task
 modules relatively (`from .modules.analysis import build_brief`) or absolutely
 (`from workflow.modules.analysis import build_brief`).
 
-Keep `workflow.py` thin:
+Keep `flow.py` thin:
 
 - good: flow definitions, config lookups, task composition, `.map()`,
   `.product_map()`, `expand(...)`

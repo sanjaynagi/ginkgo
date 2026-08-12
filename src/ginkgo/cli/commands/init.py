@@ -106,7 +106,7 @@ def _template_context(*, root: Path) -> TemplateContext:
     package_dir = Path(PACKAGE_NAME)
     return TemplateContext(
         project_name=root.name,
-        workflow_relpath=str(package_dir / "workflow.py"),
+        workflow_relpath=str(package_dir / "flow.py"),
         modules_relpath=str(package_dir / "modules"),
         envs_relpath=str(package_dir / "envs"),
         notebooks_relpath=str(package_dir / "notebooks"),

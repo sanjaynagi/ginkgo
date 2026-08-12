@@ -68,7 +68,7 @@ def package_qualified_name(path: str | Path) -> str | None:
     Returns
     -------
     str | None
-        The dotted name (e.g. ``workflow.workflow``) when an ``__init__.py``
+        The dotted name (e.g. ``workflow.flow``) when an ``__init__.py``
         sits beside the file, otherwise ``None``.
     """
     source_path = Path(path).resolve()
@@ -129,8 +129,9 @@ def _load_package_module(*, source_path: Path, dotted_name: str) -> ModuleType:
     _purge_package_modules(top_level_name)
 
     # The package root's parent must win over the entry file's own directory,
-    # which is also on sys.path and would otherwise shadow the package with a
-    # like-named sibling module (workflow/workflow.py shadowing workflow/).
+    # which is also on sys.path. Otherwise a module inside the package that
+    # shares the package's name shadows the package itself — as pre-rename
+    # scaffolds do, where workflow/workflow.py shadows workflow/.
     package_root_parent = str(source_path.parents[dotted_name.count(".")])
     if package_root_parent in sys.path:
         sys.path.remove(package_root_parent)

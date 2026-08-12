@@ -11,10 +11,10 @@ from ginkgo.cli.app import main
 
 def _canonical_project(root: Path, *, env: str = "analysis_tools") -> Path:
     """Create a canonical ``ginkgo init`` style layout with one Pixi env."""
-    package = root / "pkg"
+    package = root / "workflow"
     (package / "envs" / env).mkdir(parents=True)
     (package / "__init__.py").write_text("")
-    (package / "workflow.py").write_text("")
+    (package / "flow.py").write_text("")
     (package / "envs" / env / "pixi.toml").write_text('[project]\nname = "env"\n')
     (root / "ginkgo.toml").write_text("")
     return package / "envs" / env / "pixi.toml"
@@ -55,7 +55,7 @@ def test_env_clear_absent_env_reports_every_root_searched(
     # genuinely absent env is distinguishable from looking in the wrong place.
     err = capsys.readouterr().err.replace("\n", "")
     assert "'missing_env' not found" in err
-    assert "pkg/envs (envs: ['analysis_tools'])" in err
+    assert "workflow/envs (envs: ['analysis_tools'])" in err
 
 
 def test_env_commands_degrade_without_a_resolvable_workflow(

@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+#: Entry-file names looked for inside a project's workflow package, in
+#: preference order. ``flow.py`` is canonical; ``workflow.py`` is accepted so
+#: projects scaffolded before the rename keep working.
+_PACKAGE_ENTRY_NAMES = ("flow.py", "workflow.py")
+
+#: Entry file accepted directly at the project root for legacy flat projects.
+_LEGACY_ROOT_ENTRY_NAME = "workflow.py"
+
 _IGNORED_DIR_NAMES = {
     ".git",
     ".ginkgo",
@@ -65,28 +73,35 @@ def discover_default_workflow(*, project_root: Path) -> Path:
             f"{candidate_list}"
         )
 
-    legacy_workflow = project_root / "workflow.py"
+    legacy_workflow = project_root / _LEGACY_ROOT_ENTRY_NAME
     if legacy_workflow.is_file():
         return legacy_workflow.resolve()
 
     raise FileNotFoundError(
         "No workflow path provided and no canonical workflow was discovered. "
-        "Expected either <package>/workflow.py or ./workflow.py from "
+        "Expected either workflow/flow.py or ./workflow.py from "
         f"{project_root}."
     )
 
 
 def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
-    """Return direct child package workflow entrypoints under the project root."""
+    """Return direct child package workflow entrypoints under the project root.
+
+    A package contributes at most one candidate: ``flow.py`` when present,
+    otherwise the pre-rename ``workflow.py``.
+    """
     candidates: list[Path] = []
     for child in sorted(project_root.iterdir(), key=lambda path: path.name):
         if not child.is_dir() or child.name in _IGNORED_DIR_NAMES or child.name.startswith("."):
             continue
         if not (child / "__init__.py").is_file():
             continue
-        workflow_path = child / "workflow.py"
-        if workflow_path.is_file():
-            candidates.append(workflow_path.resolve())
+        entry_path = next(
+            (child / name for name in _PACKAGE_ENTRY_NAMES if (child / name).is_file()),
+            None,
+        )
+        if entry_path is not None:
+            candidates.append(entry_path.resolve())
     return candidates
 
 
@@ -98,7 +113,7 @@ def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
     projects, ``project_root`` itself). This is independent of which
     workflow file is actually being executed, so a test workflow under
     ``tests/workflows/`` resolves the same envs root as the real
-    ``<pkg>/workflow.py``.
+    ``workflow/flow.py``.
 
     Parameters
     ----------

@@ -7,7 +7,7 @@ at the nearest `ginkgo.toml`.
 ## Command Overview
 
 `ginkgo init`
-: Scaffold a new project &mdash; `ginkgo.toml`, a starter `workflow.py`, the
+: Scaffold a new project &mdash; `ginkgo.toml`, a starter `workflow/flow.py`, the
   canonical layout, and a `skills/` directory for coding agents. See
   [Working with Coding Agents](coding-agents.md).
 
@@ -69,7 +69,7 @@ ginkgo run workflow.py --dry-run
 `ginkgo run` builds the expression tree, validates the workflow, evaluates ready
 tasks subject to the `--jobs`, `--cores`, and `--memory` budgets, and writes run
 history under `.ginkgo/runs/`. Run it from a project root with no path argument
-and Ginkgo discovers the canonical `workflow.py` entrypoint.
+and Ginkgo discovers the canonical `workflow/flow.py` entrypoint.
 
 `--dry-run` resolves the graph and computes cache keys without executing any
 task body &mdash; the fastest way to confirm a workflow is wired correctly.

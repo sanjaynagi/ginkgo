@@ -38,7 +38,7 @@ patterns in one small workflow:
 
 ## Project Layout
 
-- `workflow/workflow.py` contains the top-level flow wiring.
+- `workflow/flow.py` contains the top-level flow wiring.
 - `workflow/modules/` contains the reusable task implementations.
 - `workflow/envs/analysis_tools/` contains a task-local Pixi env.
 - `workflow/scripts/` contains the script used by the script task.

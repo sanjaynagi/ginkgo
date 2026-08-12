@@ -158,34 +158,65 @@ class TestLoadModuleFromPath:
         assert module.RESULT == "ok"
 
 
+def _scaffold_package(tmp_path: Path, *, entry_name: str) -> Path:
+    """Create a canonical ``workflow/`` package whose entry imports relatively."""
+    package_dir = tmp_path / "w1" / "workflow"
+    (package_dir / "modules").mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "modules" / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "modules" / "analysis.py").write_text(
+        "def build() -> str:\n    return 'ok'\n",
+        encoding="utf-8",
+    )
+    entry_path = package_dir / entry_name
+    entry_path.write_text(
+        "from .modules.analysis import build\n\nRESULT = build()\n",
+        encoding="utf-8",
+    )
+    return entry_path
+
+
+def _forget_workflow_package() -> None:
+    """Drop the scaffolded package from ``sys.modules`` between tests."""
+    for name in [
+        name for name in sys.modules if name == "workflow" or name.startswith("workflow.")
+    ]:
+        del sys.modules[name]
+
+
 class TestPackageQualifiedLoading:
     def test_entry_in_package_supports_relative_imports(self, tmp_path: Path) -> None:
-        project_root = tmp_path / "w1"
-        package_dir = project_root / "workflow"
-        (package_dir / "modules").mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "modules" / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "modules" / "analysis.py").write_text(
-            "def build() -> str:\n    return 'ok'\n",
-            encoding="utf-8",
-        )
-        workflow_path = package_dir / "workflow.py"
-        workflow_path.write_text(
-            "from .modules.analysis import build\n\nRESULT = build()\n",
-            encoding="utf-8",
-        )
+        workflow_path = _scaffold_package(tmp_path, entry_name="flow.py")
 
         original_sys_path = list(sys.path)
         try:
             module = load_module_from_path(workflow_path)
         finally:
             sys.path[:] = original_sys_path
-            sys.modules.pop("workflow", None)
-            sys.modules.pop("workflow.workflow", None)
+            _forget_workflow_package()
 
-        assert package_qualified_name(workflow_path) == "workflow.workflow"
-        assert module.__name__ == "workflow.workflow"
+        assert package_qualified_name(workflow_path) == "workflow.flow"
+        assert module.__name__ == "workflow.flow"
         assert module.__package__ == "workflow"
+        assert module.RESULT == "ok"
+
+    def test_entry_named_after_its_own_package_does_not_shadow_it(self, tmp_path: Path) -> None:
+        """Pre-rename scaffolds put workflow.py inside workflow/.
+
+        The entry file's own directory is on sys.path, so ``import workflow``
+        would resolve to that sibling module rather than the package unless the
+        package root's parent is ordered ahead of it.
+        """
+        workflow_path = _scaffold_package(tmp_path, entry_name="workflow.py")
+
+        original_sys_path = list(sys.path)
+        try:
+            module = load_module_from_path(workflow_path)
+        finally:
+            sys.path[:] = original_sys_path
+            _forget_workflow_package()
+
+        assert module.__name__ == "workflow.workflow"
         assert module.RESULT == "ok"
 
     def test_bare_entry_file_keeps_synthetic_top_level_name(self, tmp_path: Path) -> None:
@@ -207,7 +238,7 @@ class TestPackageQualifiedLoading:
         package_dir = project_root / "workflow"
         package_dir.mkdir(parents=True)
         (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        workflow_path = package_dir / "workflow.py"
+        workflow_path = package_dir / "flow.py"
         workflow_path.write_text("VALUE = 1\n", encoding="utf-8")
 
         original_sys_path = list(sys.path)
@@ -218,8 +249,7 @@ class TestPackageQualifiedLoading:
             second = load_module_from_path(workflow_path)
         finally:
             sys.path[:] = original_sys_path
-            sys.modules.pop("workflow", None)
-            sys.modules.pop("workflow.workflow", None)
+            _forget_workflow_package()
 
         assert first.VALUE == 1
         assert second.VALUE == 22222
