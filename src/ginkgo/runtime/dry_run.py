@@ -126,6 +126,9 @@ class DryRunPlan:
         Aggregate resource demand.
     cached_count, will_run_count, unknown_count : int
         Task counts per cache status.
+    dropped_labels : tuple[str, ...]
+        Labels of task calls constructed by the flow but unreachable from its
+        return value, and so absent from the waves above.
     """
 
     workflow_label: str
@@ -136,6 +139,7 @@ class DryRunPlan:
     cached_count: int
     will_run_count: int
     unknown_count: int
+    dropped_labels: tuple[str, ...] = ()
 
 
 def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
@@ -198,6 +202,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         cached_count=statuses.count("cached"),
         will_run_count=statuses.count("will_run"),
         unknown_count=statuses.count("unknown"),
+        dropped_labels=tuple(call.label for call in evaluator.unreachable_calls),
     )
 
 

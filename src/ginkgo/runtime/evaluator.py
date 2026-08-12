@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 from ginkgo.core.asset import AssetRef, AssetVersion
 from ginkgo.core.directive import ExecutionDirective
-from ginkgo.core.expr import Expr, ExprList, OutputIndex
+from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
@@ -96,7 +96,11 @@ from ginkgo.runtime.task_runners.shell import (
     sanitize_exception,
 )
 from ginkgo.runtime.task_runners.subworkflow import SubworkflowRunner
-from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
+from ginkgo.runtime.task_validation import (
+    TaskValidator,
+    contains_dynamic_expression,
+    is_untracked_path_value,
+)
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 
@@ -269,6 +273,7 @@ class ConcurrentEvaluator:
     event_bus: EventBus | None = None
     trust_workspace: bool = False
     profiler: ProfileRecorder | None = None
+    constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
     _asset_store: AssetStore = field(init=False, repr=False)
     _nodes: dict[int, TaskNode] = field(default_factory=dict, init=False, repr=False)
@@ -299,6 +304,23 @@ class ConcurrentEvaluator:
         default_factory=RemoteDispatchStats, init=False, repr=False
     )
     _staging_cache_path: Path = field(init=False, repr=False)
+    _untracked_path_warnings: set[tuple[str, str, str]] = field(
+        default_factory=set, init=False, repr=False
+    )
+
+    @property
+    def unreachable_calls(self) -> list[ConstructedCall]:
+        """Task calls that were constructed but never reached by the graph walk.
+
+        Empty unless the caller passed ``constructed_calls`` recorded around the
+        flow body. Only meaningful after ``validate`` or ``evaluate`` has
+        registered the graph.
+        """
+        return [
+            call
+            for call in self.constructed_calls
+            if not any(id(expr) in self._expr_nodes for expr in call.exprs)
+        ]
 
     def __post_init__(self) -> None:
         if self.profiler is None:
@@ -642,6 +664,7 @@ class ConcurrentEvaluator:
             include_tmp_dirs=False,
             stage_remote_refs=False,
         )
+        self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
         self._validator.validate_task_preconditions(
             task_def=node.task_def,
@@ -1786,6 +1809,105 @@ class ConcurrentEvaluator:
             return self.provenance.root_dir.parent
         return Path.cwd() / ".ginkgo"
 
+    def _warn_on_untracked_path_inputs(
+        self,
+        *,
+        node: TaskNode,
+        resolved_args: dict[str, Any],
+    ) -> None:
+        """Warn when a path crosses a task boundary without content tracking.
+
+        Fires only for arguments resolved from an upstream expression in this
+        graph: those are the ones where the producer can rewrite the file while
+        the consumer's cache key, built from the path string alone, stays put.
+        Deduplicated per producer/consumer/parameter so fan-out branches report
+        once. Runs before the cache-hit branch so the warning appears on the
+        run that serves the stale result.
+        """
+        for name, unresolved in node.expr.args.items():
+            self._scan_untracked_path_argument(
+                node=node,
+                parameter=name,
+                annotation=node.task_def.type_hints.get(name),
+                unresolved=unresolved,
+                resolved=resolved_args.get(name),
+            )
+
+    def _scan_untracked_path_argument(
+        self,
+        *,
+        node: TaskNode,
+        parameter: str,
+        annotation: Any,
+        unresolved: Any,
+        resolved: Any,
+    ) -> None:
+        """Warn for each upstream path one argument carries, at any depth.
+
+        Containers are walked in step with their resolved counterparts, so a
+        path arriving inside ``inputs=[a, b]`` — the ordinary fan-in shape — is
+        checked exactly as one passed directly. The container annotation is
+        carried down unchanged: ``annotation_includes`` already looks inside
+        ``list[file]``, so the same predicate answers for the elements.
+        """
+        if isinstance(unresolved, ExprList) and isinstance(resolved, list | tuple):
+            unresolved = list(unresolved)
+
+        if isinstance(unresolved, list | tuple) and isinstance(resolved, list | tuple):
+            for item, item_resolved in zip(unresolved, resolved):
+                self._scan_untracked_path_argument(
+                    node=node,
+                    parameter=parameter,
+                    annotation=annotation,
+                    unresolved=item,
+                    resolved=item_resolved,
+                )
+            return
+
+        if isinstance(unresolved, dict) and isinstance(resolved, dict):
+            for key, item in unresolved.items():
+                # A key that is itself an expression resolves to a different
+                # key, so its value cannot be paired up.
+                if key not in resolved:
+                    continue
+                self._scan_untracked_path_argument(
+                    node=node,
+                    parameter=parameter,
+                    annotation=annotation,
+                    unresolved=item,
+                    resolved=resolved[key],
+                )
+            return
+
+        producer = _producer_task_name(unresolved)
+        if producer is None:
+            return
+
+        # Checked before the filesystem probe below, so a fan-out costs one
+        # stat rather than one per branch.
+        warning_key = (producer, node.task_def.name, parameter)
+        if warning_key in self._untracked_path_warnings:
+            return
+        if not is_untracked_path_value(annotation=annotation, value=resolved):
+            return
+        self._untracked_path_warnings.add(warning_key)
+
+        producer_base = producer.rsplit(".", 1)[-1]
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=(
+                    f"{producer_base} returns a path as 'str', so '{parameter}' is cached on the "
+                    "path only and content changes will not invalidate this task. Annotate "
+                    f"{producer_base}'s return '-> file' and '{parameter}: file'."
+                ),
+            )
+        )
+
     def _emit_notebook_notice(self, node: TaskNode, message: str) -> None:
         """Surface a notebook runner notice (e.g. ipykernel install) as an event."""
         self._emit_event(
@@ -2234,6 +2356,20 @@ class ConcurrentEvaluator:
 def _task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a node."""
     return f"task_{node_id:04d}"
+
+
+def _producer_task_name(value: Any) -> str | None:
+    """Return the name of the task an unresolved argument came from, if any.
+
+    Only single expressions are named: an ``ExprList`` resolves to a list, which
+    the caller walks element by element, so each branch arrives here as its own
+    ``Expr``.
+    """
+    if isinstance(value, OutputIndex):
+        return _producer_task_name(value.expr)
+    if isinstance(value, Expr):
+        return value.task_def.name
+    return None
 
 
 def _classify_access_method(*, value: Any) -> str:

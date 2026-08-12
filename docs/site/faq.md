@@ -251,6 +251,33 @@ on success (kept on failure for debugging), and deliberately excluded from the
 cache key — you do not pass it yourself; it is auto-injected from the
 annotation.
 
+The consequence of *not* using them matters just as much. If a path crosses a
+task boundary annotated `str` (or `Path`), its cache-key contribution is the
+path string alone. The upstream task can rerun and rewrite the file while the
+downstream task still reports `↺ cached` and serves its previous, now stale,
+output. Because `file` is itself a `str` subclass, the type checker sees no
+difference. Annotate the producer's return `-> file` and the consumer's
+parameter `coords: file` whenever a path carries data between tasks; leave `str`
+for paths whose contents genuinely should not invalidate the cache, such as an
+output location or a log sink. Ginkgo warns when it can tell the difference: if
+an argument resolved from an upstream task arrives as a plain `str` naming an
+existing path, the run prints a notice naming both ends and the annotation to
+add.
+
+### Why did a task in my flow never run?
+
+The task graph is exactly what is reachable from the value your `@flow` function
+returns. A call whose result is never referenced — a bare `plot(...)` statement
+written for its side effects, or a producer orphaned because you passed a
+literal path to the consumer instead of the upstream expression — is not part of
+the run. Return its result (on its own, or inside a tuple, list, or dict) to
+include it.
+
+Ginkgo reports these rather than dropping them quietly: `ginkgo doctor` emits an
+`unreachable_task_call` warning, `ginkgo run --dry-run` lists them under
+"Dropped (not reachable from the flow return value)", and a real run prints a
+notice before starting.
+
 ## Environments
 
 ### How does Ginkgo use Pixi to make task environments reproducible?

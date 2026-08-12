@@ -8,12 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.config import config_session
+from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
+
+UNREACHABLE_CALL_CODE = "unreachable_task_call"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -81,17 +84,22 @@ def collect_workflow_diagnostics(
         ) as session:
             module = load_module_from_path(workflow_path)
             flow = discover_flow(module)
-            expr = flow()
+            with record_constructed_calls() as constructed_calls:
+                expr = flow()
             validate_param_extras(session)
         backend = backend_factory() if backend_factory is not None else None
-        evaluator = ConcurrentEvaluator(secret_resolver=secret_resolver, backend=backend)
+        evaluator = ConcurrentEvaluator(
+            secret_resolver=secret_resolver,
+            backend=backend,
+            constructed_calls=tuple(constructed_calls),
+        )
         evaluator.validate(expr)
 
         # A parameter read from a module global inside a task body is invisible
         # to that task's cache key, so a changed value silently reuses the
         # previous result. Reported as a warning because detection cannot see a
         # read made by a helper the task calls.
-        return [
+        diagnostics = [
             WorkflowDiagnostic(
                 severity="warning",
                 code="param_read_from_global",
@@ -104,8 +112,42 @@ def collect_workflow_diagnostics(
                 evaluator=evaluator,
             )
         ]
+        diagnostics.extend(unreachable_call_diagnostics(calls=evaluator.unreachable_calls))
+        return diagnostics
     except BaseException as exc:
         return [_diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
+
+
+def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[WorkflowDiagnostic]:
+    """Build one warning per task call the graph never reached.
+
+    Parameters
+    ----------
+    calls : Sequence[ConstructedCall]
+        Constructed-but-unregistered calls, from
+        ``ConcurrentEvaluator.unreachable_calls``.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per dropped call.
+    """
+    return [
+        WorkflowDiagnostic(
+            severity="warning",
+            code=UNREACHABLE_CALL_CODE,
+            message=(
+                f"{call.label} is not reachable from the flow return value, so it was "
+                "dropped from the graph and will not run."
+            ),
+            location=call.task_name,
+            suggestion=(
+                "Return its result from the flow (directly or inside a tuple, list, or dict) "
+                "if the task should run."
+            ),
+        )
+        for call in calls
+    ]
 
 
 def _diagnostic_from_exception(

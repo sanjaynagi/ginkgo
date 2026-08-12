@@ -87,6 +87,48 @@ def main():
         assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
 
 
+class TestDoctorUnreachableCalls:
+    """A task call the flow never returns is reported, but is not an error."""
+
+    def _write_workflow_with_dropped_call(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task("shell")
+def greet(text: str) -> str:
+    return f"echo {text}"
+
+@flow
+def main():
+    greet(text="dropped")
+    return greet(text="kept")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_dropped_call_is_a_warning_not_a_failure(self) -> None:
+        self._write_workflow_with_dropped_call()
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "unreachable_task_call" in result.stdout
+        assert "greet()" in result.stdout
+
+    def test_dropped_call_is_reported_in_json_as_ok(self) -> None:
+        self._write_workflow_with_dropped_call()
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert payload["diagnostics"][0]["severity"] == "warning"
+        assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
+
+
 class TestDoctorEnvValidation:
     def test_nonexistent_env_produces_a_diagnostic(self) -> None:
         _write_workflow(env="not_a_real_env")
