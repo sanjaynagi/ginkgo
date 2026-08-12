@@ -35,26 +35,16 @@ The typed helpers each map to an asset **kind**:
 | `text(payload)` | `text` | plain, markdown, or JSON text | `object` |
 | `model(payload)` | `model` | a trained model object | `object` |
 
-Only `asset(path)` — the `file` kind — may be returned from a task annotated
-`-> file`. Every other kind is a semantic asset rather than a path, so its
-producing task returns `object`, even when the payload you passed in was a
+The return annotation follows the kind, not the payload. Only `asset(path)` —
+the `file` kind — may be returned from a task annotated `-> file`. Every other
+kind is a semantic asset rather than a path, so its producing task returns
+`object` (or the payload's own type), even when the payload you passed in was a
 file path: `table("data/frame.csv")` stores the rows as Parquet and yields a
 `table` asset, not the CSV you handed it. Declaring `-> file` and returning
 `table(...)` fails with an error naming the kind.
 
-The same rule applies to consumers. A parameter annotated `file` or
-`file | AssetRef` binds a filesystem path, so Ginkgo passes the `AssetRef`
-through without rehydrating it — use `AssetRef.load()` or `as_file()` to reach
-the payload. To receive the live object instead (a `DataFrame` for a `table`,
-an `ndarray` for an `array`), annotate the parameter `object` or the payload
-type, as in the example below.
-
-The return annotation follows the kind, not the payload. Only the `file` kind —
-`asset(path)` — satisfies a `-> file` annotation. Every other kind is a semantic
-asset rather than a path, so its producing task is annotated `-> object` (or the
-payload's own type), even when the payload you passed in was a file path:
-`table("data/frame.csv")` yields a `table` asset, not the CSV. Declaring
-`-> file` and returning `table(...)` fails validation.
+The annotation decides what a *consuming* task receives too, covered in
+[Consuming Assets Downstream](#consuming-assets-downstream) below.
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
@@ -89,11 +79,11 @@ cards. Checks are not rerun for cached assets.
 `model()` also takes `framework` and `metrics`:
 
 ```python
-from ginkgo import model, task
+from ginkgo import AssetRef, file, model, task
 
 
 @task()
-def train_classifier(features: file) -> file:
+def train_classifier(features: file | AssetRef) -> object:
     clf = fit_model(features)
     return model(
         clf,
