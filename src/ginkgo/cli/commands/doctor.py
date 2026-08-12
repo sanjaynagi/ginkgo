@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from ginkgo.cli.common import console
-from ginkgo.cli.workspace import resolve_workflow_path
+from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
@@ -28,15 +28,17 @@ def command_doctor(args) -> int:
         config = session.merged_loaded_values()
 
     # Same environment pair that ``run`` builds, so doctor reaches the
-    # declared-env check. Validation only resolves manifests and probes PATH;
-    # nothing is built or installed. Built inside collect_workflow_diagnostics's
-    # try/except so construction failures surface as a diagnostic, not a crash.
+    # declared-env check and searches the env directories the run will use --
+    # the canonical package's, not those beside whichever file is being checked.
+    # Validation only resolves manifests and probes PATH; nothing is built or
+    # installed. Built inside collect_workflow_diagnostics's try/except so
+    # construction failures surface as a diagnostic, not a crash.
     def build_backend() -> CompositeEnvironment:
         return CompositeEnvironment(
             local=LocalEnvironment(
                 pixi_registry=PixiRegistry(
                     project_root=Path.cwd(),
-                    workflow_root=workflow_path.parent,
+                    workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
                 )
             ),
             container=ContainerBackend(project_root=Path.cwd()),

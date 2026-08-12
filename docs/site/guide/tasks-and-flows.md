@@ -7,18 +7,26 @@ return deferred expressions rather than running immediately.
 
 ## Keep Flows Thin
 
-The canonical project layout expects workflow wiring in `workflow.py` and task
-implementations in modules owned by the project package.
+The canonical project layout expects workflow wiring in `flow.py` and task
+implementations in modules owned by the `workflow` package. The package
+directory is always named `workflow`, whatever the project is called.
 
 ```text
 <project-root>/
 ├── pixi.toml
 ├── ginkgo.toml
-├── <project_package>/
-│   ├── workflow.py
+├── workflow/
+│   ├── __init__.py
+│   ├── flow.py
 │   ├── modules/
-│   └── envs/
+│   ├── envs/
+│   ├── notebooks/
+│   └── scripts/
 ```
+
+The layout is a convention, not a contract: `ginkgo run <entry.py>` runs an
+entry file whatever the surrounding structure. The canonical layout is what
+auto-discovery targets.
 
 The flow should primarily:
 
@@ -80,7 +88,7 @@ def render_overview(summary_path: file) -> file:
 
 @task("subworkflow")                        # subworkflow
 def run_child(dataset: file) -> SubWorkflowResult:
-    return subworkflow("child/workflow.py")
+    return subworkflow("child/flow.py")
 ```
 
 The sections below cover each kind.
@@ -212,7 +220,7 @@ from ginkgo import SubWorkflowResult, file, subworkflow, task
 
 @task("subworkflow")
 def run_child(dataset: file) -> SubWorkflowResult:
-    return subworkflow("child/workflow.py", params={"dataset": str(dataset)})
+    return subworkflow("child/flow.py", params={"dataset": str(dataset)})
 ```
 
 `subworkflow()` accepts `params` (parameter overrides forwarded to the child as

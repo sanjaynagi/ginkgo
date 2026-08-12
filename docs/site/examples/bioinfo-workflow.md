@@ -6,7 +6,7 @@ in one place.
 
 Source files:
 
-- `examples/bioinfo/bioinfo/workflow.py`
+- `examples/bioinfo/workflow/flow.py`
 - `examples/bioinfo/ginkgo.toml`
 
 ## What The Workflow Does

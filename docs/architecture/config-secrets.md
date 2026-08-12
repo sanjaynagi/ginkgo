@@ -22,7 +22,7 @@ region = ginkgo.param("region", help="Genome region")   # no default: required
 ```
 
 ```bash
-ginkgo run workflow.py --n-replicates 24 --region 2L:1-100000
+ginkgo run flow.py --n-replicates 24 --region 2L:1-100000
 ```
 
 A parameter resolves from three sources, in order:

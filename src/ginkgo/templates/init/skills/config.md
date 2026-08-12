@@ -11,7 +11,7 @@ import ginkgo
 cfg = ginkgo.config("ginkgo.toml")
 ```
 
-Load config near the top of `workflow.py` and thread values from `cfg` into flow
+Load config near the top of `flow.py` and thread values from `cfg` into flow
 composition instead of hard-coding project settings.
 
 Use `--config` to apply one or more overlays at command time without editing the

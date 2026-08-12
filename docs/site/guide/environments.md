@@ -10,7 +10,7 @@ Pixi is the default way to define reproducible task environments.
 In the canonical project layout, task-specific manifests typically live under:
 
 ```text
-<project_package>/envs/<env_name>/pixi.toml
+workflow/envs/<env_name>/pixi.toml
 ```
 
 A shell, script, or notebook task references that environment by name through

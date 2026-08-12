@@ -33,9 +33,9 @@ def large_computation(input_path: str) -> str:
 Run the workflow with a remote executor:
 
 ```bash
-ginkgo run --executor k8s workflow.py
+ginkgo run --executor k8s flow.py
 # or
-ginkgo run --executor batch workflow.py
+ginkgo run --executor batch flow.py
 ```
 
 ## Task Resource Declarations

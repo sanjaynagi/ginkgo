@@ -34,8 +34,8 @@ Python task bodies must be top-level importable functions for worker execution. 
 Shell execution is expressed by declaring `@task(kind="shell")` and returning `shell(...)` from the task body. The Python wrapper runs on the scheduler, constructs the concrete shell command from resolved values, and the runtime executes only that shell payload while validating the declared outputs.
 
 For Pixi-backed shell tasks, the foreign environment does not import the task's
-defining `workflow.py` module. The scheduler evaluates the wrapper locally and
-dispatches only the shell payload through Pixi.
+defining module. The scheduler evaluates the wrapper locally and dispatches only
+the shell payload through Pixi.
 
 Shell, notebook, and script tasks can all run inside Docker or Podman containers by declaring a container env:
 

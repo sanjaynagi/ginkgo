@@ -43,7 +43,7 @@ Pass `--force` to overwrite existing files.
 newline-delimited JSON events on stdout:
 
 ```bash
-ginkgo run workflow.py --agent
+ginkgo run flow.py --agent
 ```
 
 Each line is one JSON event — graph registration, task started, cache hit, task

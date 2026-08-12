@@ -40,20 +40,22 @@ A Ginkgo workflow may be structured however the user desires. The canonical layo
 my-project/
 ├── pixi.toml
 ├── ginkgo.toml
-├── my_project/
+├── workflow/              # always named "workflow"
 │   ├── __init__.py
-│   ├── workflow.py        # flow definitions and wiring — keep this thin
+│   ├── flow.py            # flow definitions and wiring — keep this thin
 │   ├── modules/           # contain tasks
-│   └── envs/              # per-task environment manifests
+│   ├── envs/              # per-task environment manifests
+│   ├── notebooks/         # notebook-task source
+│   └── scripts/           # script-task source
 └── tests/workflows/       # workflow validation checks
 ```
 
 `results/` and `.ginkgo/` are created at runtime. When you run `ginkgo run` with
-no explicit path, autodiscovery scans the project root's child directories and
-picks the Python package (one with `__init__.py`) that contains a `workflow.py`.
-Exactly one candidate is used automatically; several candidates raise an error
-asking you to pass an explicit path; if none are found it falls back to a legacy
-root-level `./workflow.py`.
+no explicit path, autodiscovery looks for a file named `flow.py` at the project
+root or in one of its immediate subdirectories. The directory name does not
+matter, and `__init__.py` is not required. Exactly one candidate is used
+automatically; several candidates raise an error asking you to pass an explicit
+path. An explicit path accepts any file name, anywhere.
 
 ### What's the smallest possible workflow?
 
@@ -76,7 +78,7 @@ def main():
 ```
 
 ```bash
-ginkgo run workflow.py
+ginkgo run flow.py
 ```
 
 ## The Workflow DSL
@@ -381,7 +383,7 @@ falls back to the machine's CPU count, `--cores` defaults to the resolved
 
 ```bash
 # Run at most 4 tasks at once, within an 8-core, 32 GiB budget
-ginkgo run workflow.py --jobs 4 --cores 8 --memory 32
+ginkgo run flow.py --jobs 4 --cores 8 --memory 32
 ```
 
 ## Caching
@@ -674,8 +676,8 @@ clusters the one Kubernetes executor talks to. GCP Batch is a distinct
 serverless executor.
 
 ```bash
-ginkgo run --executor k8s workflow.py
-ginkgo run --executor batch workflow.py
+ginkgo run --executor k8s flow.py
+ginkgo run --executor batch flow.py
 ```
 
 ### How does my code get packaged and synced to a remote worker?
@@ -841,7 +843,7 @@ from ginkgo.core.subworkflow import subworkflow
 @task(kind="subworkflow")
 def run_child(sample: str):
     return subworkflow(
-        "child/workflow.py",
+        "child/flow.py",
         params={"sample": sample},
         config=["overrides.toml"],
     )

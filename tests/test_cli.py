@@ -900,13 +900,13 @@ def main():
         """Regression test for issue #119.
 
         On a canonical ``ginkgo init`` layout, Pixi environments live under
-        ``<pkg>/envs/``, a sibling of ``<pkg>/workflow.py`` -- not of
+        ``workflow/envs/``, a sibling of ``workflow/flow.py`` -- not of
         ``tests/workflows/*.py``. ``ginkgo test`` must still resolve them.
         """
-        package_dir = Path("w1")
+        package_dir = Path("workflow")
         (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
         (package_dir / "__init__.py").write_text("")
-        (package_dir / "workflow.py").write_text("")
+        (package_dir / "flow.py").write_text("")
         (package_dir / "envs" / "analysis_tools" / "pixi.toml").write_text(
             "[workspace]\nname = 'analysis_tools'\nchannels = []\nplatforms = []\n"
         )
@@ -941,7 +941,7 @@ class TestCliInit:
         assert "🌿 ginkgo init demo-project" in result.stdout
         assert "✓ Initialized project scaffold at" in result.stdout
         assert "Created:" in result.stdout
-        assert "demo_project/workflow.py" in result.stdout
+        assert "workflow/flow.py" in result.stdout
         assert "README.md" in result.stdout
         assert "ginkgo test --dry-run" in result.stdout
 
@@ -949,14 +949,15 @@ class TestCliInit:
         assert (project_dir / "pixi.toml").is_file()
         assert (project_dir / "ginkgo.toml").is_file()
         assert (project_dir / "README.md").is_file()
-        assert (project_dir / "demo_project" / "__init__.py").is_file()
-        assert (project_dir / "demo_project" / "workflow.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "prep.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "analysis.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "reporting.py").is_file()
-        assert (project_dir / "demo_project" / "envs" / "analysis_tools" / "pixi.toml").is_file()
-        assert (project_dir / "demo_project" / "scripts" / "build_brief.py").is_file()
-        assert (project_dir / "demo_project" / "notebooks" / "overview.ipynb").is_file()
+        assert (project_dir / "workflow" / "__init__.py").is_file()
+        assert (project_dir / "workflow" / "flow.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "prep.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "analysis.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "reporting.py").is_file()
+        assert (project_dir / "workflow" / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "workflow" / "scripts" / "build_brief.py").is_file()
+        assert (project_dir / "workflow" / "notebooks" / "overview.ipynb").is_file()
+        assert not (project_dir / "demo_project").exists()
         assert (project_dir / "skills" / "index.md").is_file()
         assert (project_dir / "skills" / "commands.md").is_file()
         assert (project_dir / "skills" / "project.md").is_file()
@@ -966,7 +967,7 @@ class TestCliInit:
         assert not (project_dir / "agents.ginkgo.md").exists()
         assert not (project_dir / "__init__.py").exists()
 
-        workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
+        workflow_text = (project_dir / "workflow" / "flow.py").read_text(encoding="utf-8")
         readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
         skills_index_text = (project_dir / "skills" / "index.md").read_text(encoding="utf-8")
         commands_text = (project_dir / "skills" / "commands.md").read_text(encoding="utf-8")
@@ -974,10 +975,10 @@ class TestCliInit:
             encoding="utf-8"
         )
         assert "@flow" in workflow_text
-        assert "from demo_project.modules.pipeline import main" not in workflow_text
+        assert "from .modules.analysis import" in workflow_text
         assert "expand(" in workflow_text
         assert "ginkgo run --agent" in readme_text
-        assert "demo_project/workflow.py" in readme_text
+        assert "workflow/flow.py" in readme_text
         assert "See `skills/index.md`" in readme_text
         assert "This project uses Ginkgo" in skills_index_text
         assert "`project.md`:" in skills_index_text
@@ -994,10 +995,10 @@ class TestCliInit:
 
     def test_init_can_create_skills_only_for_existing_project(self) -> None:
         project_dir = Path("demo-project")
-        package_dir = project_dir / "demo_project"
+        package_dir = project_dir / "workflow"
         (package_dir / "modules").mkdir(parents=True)
         (project_dir / "tests" / "workflows").mkdir(parents=True)
-        (package_dir / "workflow.py").write_text("workflow\n", encoding="utf-8")
+        (package_dir / "flow.py").write_text("workflow\n", encoding="utf-8")
 
         result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -1023,23 +1024,19 @@ class TestCliInit:
     def test_init_refuses_to_overwrite_without_force(self) -> None:
         project_dir = Path("demo-project")
         project_dir.mkdir()
-        package_dir = project_dir / "demo_project"
+        package_dir = project_dir / "workflow"
         package_dir.mkdir()
-        (package_dir / "workflow.py").write_text("existing\n", encoding="utf-8")
+        (package_dir / "flow.py").write_text("existing\n", encoding="utf-8")
 
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 1
         assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
-        assert (package_dir / "workflow.py").read_text(encoding="utf-8") == "existing\n"
+        assert (package_dir / "flow.py").read_text(encoding="utf-8") == "existing\n"
 
 
 class TestCliWorkflowDiscovery:
-    def test_run_autodiscovers_canonical_package_workflow(self) -> None:
-        package_dir = Path("demo_project")
-        package_dir.mkdir()
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "workflow.py").write_text(
-            """
+    _WORKFLOW_SOURCE = (
+        """
 from ginkgo import flow, task
 
 @task()
@@ -1050,16 +1047,47 @@ def produce() -> str:
 def main():
     return produce()
 """.strip()
-            + "\n",
-            encoding="utf-8",
-        )
+        + "\n"
+    )
+
+    def test_run_autodiscovers_canonical_package_workflow(self) -> None:
+        package_dir = Path("workflow")
+        package_dir.mkdir()
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "flow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
 
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            r"🌿 ginkgo run flow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
             result.stdout,
         )
+        assert "✓ succeeded" in result.stdout
+
+    def test_run_autodiscovers_any_directory_name(self) -> None:
+        """Discovery keys on the file name, not the directory it sits in."""
+        package_dir = Path("analysis")
+        package_dir.mkdir()
+        (package_dir / "flow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+
+        result = _run_cli("run", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "✓ succeeded" in result.stdout
+
+    def test_run_reports_what_discovery_looked_for_when_nothing_matches(self) -> None:
+        Path("workflow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+
+        result = _run_cli("run", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "no flow.py was found" in result.stderr
+        assert "Create workflow/flow.py" in result.stderr
+        assert "pass an explicit path" in result.stderr
+
+    def test_explicit_path_accepts_any_file_name(self) -> None:
+        Path("anything.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+
+        result = _run_cli("run", "anything.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
         assert "✓ succeeded" in result.stdout
 
 
@@ -1939,7 +1967,7 @@ def main():
 
     def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
         """A parameter value must not be captured by the optional workflow positional."""
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
         result = _run_cli("run", "--label", "discovered", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"

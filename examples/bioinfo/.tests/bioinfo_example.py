@@ -1,5 +1,5 @@
 """Dry-run entrypoint for the bioinformatics example."""
 
-from bioinfo.workflow import main
+from workflow.flow import main
 
 __all__ = ["main"]

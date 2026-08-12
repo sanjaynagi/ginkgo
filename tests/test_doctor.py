@@ -168,3 +168,50 @@ class TestDoctorEnvValidation:
         assert not (env_dir / ".pixi").exists()
         assert not (env_dir / "pixi.lock").exists()
         assert sorted(path.name for path in env_dir.iterdir()) == ["pixi.toml"]
+
+
+class TestDoctorEnvRootMatchesRun:
+    def test_envs_resolve_from_the_canonical_package_not_the_checked_file(self) -> None:
+        """``run`` anchors Pixi discovery on the canonical package; doctor must agree.
+
+        Checking a workflow that lives outside that package must still find the
+        project's environments, or doctor validates a different env set than
+        the run it is meant to vet.
+        """
+        package_dir = Path("workflow")
+        (package_dir / "envs" / "probe_env").mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "flow.py").write_text("", encoding="utf-8")
+        (package_dir / "envs" / "probe_env" / "pixi.toml").write_text(
+            '[project]\nname = "probe"\nchannels = ["conda-forge"]\nplatforms = ["osx-arm64"]\n',
+            encoding="utf-8",
+        )
+
+        alt_dir = Path("experiments")
+        alt_dir.mkdir()
+        (alt_dir / "alt_flow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task("shell", env="probe_env")
+def greet() -> str:
+    return "echo hello"
+
+@flow
+def main():
+    return greet()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "doctor", "experiments/alt_flow.py"],
+            cwd=Path.cwd(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Workflow validation passed" in result.stdout
