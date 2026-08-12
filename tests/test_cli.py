@@ -1013,19 +1013,30 @@ def main():
         )
         assert "✓ succeeded" in result.stdout
 
-    def test_run_autodiscovers_pre_rename_package_workflow(self) -> None:
-        """Projects scaffolded before the flow.py rename still autodiscover."""
-        package_dir = Path("demo_project")
+    def test_run_autodiscovers_any_directory_name(self) -> None:
+        """Discovery keys on the file name, not the directory it sits in."""
+        package_dir = Path("analysis")
         package_dir.mkdir()
-        (package_dir / "__init__.py").write_text("", encoding="utf-8")
-        (package_dir / "workflow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+        (package_dir / "flow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
 
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        assert re.search(
-            r"🌿 ginkgo run workflow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
-            result.stdout,
-        )
+        assert "✓ succeeded" in result.stdout
+
+    def test_run_reports_what_discovery_looked_for_when_nothing_matches(self) -> None:
+        Path("workflow.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+
+        result = _run_cli("run", cwd=Path.cwd())
+        assert result.returncode == 1
+        assert "no flow.py was found" in result.stderr
+        assert "Create workflow/flow.py" in result.stderr
+        assert "pass an explicit path" in result.stderr
+
+    def test_explicit_path_accepts_any_file_name(self) -> None:
+        Path("anything.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
+
+        result = _run_cli("run", "anything.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
         assert "✓ succeeded" in result.stdout
 
 
@@ -1905,7 +1916,7 @@ def main():
 
     def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
         """A parameter value must not be captured by the optional workflow positional."""
-        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
         result = _run_cli("run", "--label", "discovered", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"

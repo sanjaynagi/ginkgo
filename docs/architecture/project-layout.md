@@ -4,6 +4,11 @@ Ginkgo scaffolds and auto-discovers a single canonical layout. The package
 directory is always named `workflow`, whatever the project directory is called,
 so `ginkgo init <dir>` never produces a `<dir>/<dir>/` nesting.
 
+**This layout is a discoverable default, not a requirement.** Nothing in the
+runtime demands it. An explicit entry path always wins; any directory name works;
+`__init__.py` is needed only for relative imports. See "Structure is a convention,
+not a contract" and "Discovery" below for exactly what is and is not enforced.
+
 ```text
 <project-root>/
 ├── pixi.toml
@@ -67,9 +72,13 @@ from workflow.modules.analysis import build_brief   # absolute
 
 A bare entry file (no `__init__.py` beside it) is loaded under a synthetic
 top-level name instead, so relative imports are unavailable there — as they are
-for any standalone script. `__init__.py` is required only where your own imports
-need package resolution: for the canonical layout that means
-`workflow/__init__.py` and `workflow/modules/__init__.py`.
+for any standalone script. Attempting one raises a ginkgo error naming the file
+and the `__init__.py` that would fix it, rather than Python's generic "attempted
+relative import with no known parent package".
+
+`__init__.py` is required only where your own imports need package resolution:
+for the canonical layout that means `workflow/__init__.py` and
+`workflow/modules/__init__.py`.
 
 Because the package name is fixed, two ginkgo projects imported into one
 interpreter would collide on the name `workflow`. This is a non-issue for
@@ -77,16 +86,39 @@ run-in-place execution, which is how ginkgo runs workflows.
 
 ## Discovery
 
-The CLI auto-discovers the canonical `workflow/flow.py` when `ginkgo run` is
-invoked from the repository root without an explicit workflow argument.
-`canonical_workflow_candidates` scans direct child packages for
-`_PACKAGE_ENTRY_NAMES` — `flow.py` first, then `workflow.py` — so projects
-scaffolded before the package name and entry file were fixed keep working.
-Legacy root-level `workflow.py` files and explicit workflow paths remain
-supported.
+Discovery runs only when `ginkgo run` is invoked without a workflow argument.
+`canonical_workflow_candidates` looks for a file named `flow.py` at the project
+root or in one of its **immediate subdirectories**. Concretely:
+
+- **An explicit path always wins.** `ginkgo run <anything>.py` skips discovery
+  entirely, so a project may keep any number of entry files anywhere.
+- **The directory name is not checked.** `workflow/` is the scaffolded name and
+  the documented convention, but `analysis/flow.py` is discovered just the same.
+- **`__init__.py` is not required.** It is a Python packaging marker, not a
+  ginkgo one; requiring it here would hide an entry file that runs perfectly
+  well. See "Entry-file imports" for when you actually need it.
+- **One level deep only.** `src/workflow/flow.py` is not discovered — pass it
+  explicitly, or run from `src/`. A root-level `./flow.py` is discovered, which
+  is what makes the flat layout usable without an argument.
+- **`flow.py` is the only name discovery accepts.** There is no fallback to
+  any other entry-file name.
+
+When more than one file qualifies, discovery refuses to guess and names the
+candidates, asking for an explicit path. When none does, the error says what was
+looked for — `flow.py` — rather than naming a file that may already be there
+under a different name.
 
 Because the entry file's own directory is on `sys.path`, a module inside the
 package that shares the package's name shadows the package. `flow.py` avoids
 that for new projects, but `_load_package_module` still puts the package root's
-parent first on `sys.path` so pre-rename `workflow/workflow.py` scaffolds load
+parent first on `sys.path`, so an explicitly-passed `pkg/pkg.py` still loads
 correctly.
+
+## Environment discovery
+
+`PixiRegistry` searches `<project_root>/envs/` and one package-local
+`<workflow_root>/envs/`. Both `ginkgo run` and `ginkgo doctor` derive that
+package-local root from `resolve_envs_workflow_root`, which anchors on the
+**discovered canonical package**, not on the directory of the file being run.
+So `ginkgo run experiments/alt_flow.py` still resolves `workflow/envs/`, and
+doctor validates the same environment set the run will use.

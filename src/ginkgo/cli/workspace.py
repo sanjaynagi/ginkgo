@@ -6,13 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-#: Entry-file names looked for inside a project's workflow package, in
-#: preference order. ``flow.py`` is canonical; ``workflow.py`` is accepted so
-#: projects scaffolded before the rename keep working.
-_PACKAGE_ENTRY_NAMES = ("flow.py", "workflow.py")
-
-#: Entry file accepted directly at the project root for legacy flat projects.
-_LEGACY_ROOT_ENTRY_NAME = "workflow.py"
+#: The entry-file name autodiscovery looks for, at the project root or one
+#: directory below it. An explicit path accepts any filename.
+_ENTRY_NAME = "flow.py"
 
 _IGNORED_DIR_NAMES = {
     ".git",
@@ -54,53 +50,47 @@ def resolve_workflow_path(*, project_root: Path, workflow: str | None) -> Workfl
 
 
 def discover_default_workflow(*, project_root: Path) -> Path:
-    """Return the default workflow for the current project root.
-
-    Canonical package workflows are preferred over the legacy root-level
-    ``workflow.py``. Legacy projects remain valid when no canonical package
-    workflow is present.
-    """
-    canonical_candidates = canonical_workflow_candidates(project_root=project_root)
-    if len(canonical_candidates) == 1:
-        return canonical_candidates[0]
-    if len(canonical_candidates) > 1:
+    """Return the workflow to run when no explicit path was given."""
+    candidates = canonical_workflow_candidates(project_root=project_root)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
         candidate_list = "\n".join(
-            f"- {candidate.relative_to(project_root)}" for candidate in canonical_candidates
+            f"- {candidate.relative_to(project_root)}" for candidate in candidates
         )
         raise RuntimeError(
-            "Found multiple canonical workflow entrypoints. "
+            "Found multiple workflow entrypoints. "
             "Pass an explicit workflow path to disambiguate:\n"
             f"{candidate_list}"
         )
 
-    legacy_workflow = project_root / _LEGACY_ROOT_ENTRY_NAME
-    if legacy_workflow.is_file():
-        return legacy_workflow.resolve()
-
     raise FileNotFoundError(
-        "No workflow path provided and no canonical workflow was discovered. "
-        "Expected either workflow/flow.py or ./workflow.py from "
-        f"{project_root}."
+        f"No workflow path provided and no {_ENTRY_NAME} was found in "
+        f"{project_root} or its immediate subdirectories. Create "
+        f"workflow/{_ENTRY_NAME}, or pass an explicit path: "
+        "ginkgo run <path/to/entry.py>."
     )
 
 
 def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
-    """Return direct child package workflow entrypoints under the project root.
+    """Return every discoverable workflow entrypoint under the project root.
 
-    A package contributes at most one candidate: ``flow.py`` when present,
-    otherwise the pre-rename ``workflow.py``.
+    An entry file is one named ``flow.py``, sitting either at the project root
+    or in one of its immediate subdirectories. The directory name is not
+    checked, and ``__init__.py`` is not required — the loader needs it only for
+    relative imports, so demanding it here would hide an entry file that runs
+    perfectly well.
     """
     candidates: list[Path] = []
+    root_entry = project_root / _ENTRY_NAME
+    if root_entry.is_file():
+        candidates.append(root_entry.resolve())
+
     for child in sorted(project_root.iterdir(), key=lambda path: path.name):
         if not child.is_dir() or child.name in _IGNORED_DIR_NAMES or child.name.startswith("."):
             continue
-        if not (child / "__init__.py").is_file():
-            continue
-        entry_path = next(
-            (child / name for name in _PACKAGE_ENTRY_NAMES if (child / name).is_file()),
-            None,
-        )
-        if entry_path is not None:
+        entry_path = child / _ENTRY_NAME
+        if entry_path.is_file():
             candidates.append(entry_path.resolve())
     return candidates
 
@@ -108,12 +98,11 @@ def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
 def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
     """Resolve the directory Pixi environment discovery should anchor on.
 
-    Environments always live under ``<project_root>/<pkg>/envs``, where
-    ``<pkg>`` is the project's canonical package directory (or, for legacy
-    projects, ``project_root`` itself). This is independent of which
-    workflow file is actually being executed, so a test workflow under
-    ``tests/workflows/`` resolves the same envs root as the real
-    ``workflow/flow.py``.
+    Environments live beside the discovered entry file, under
+    ``<workflow_root>/envs``. This is independent of which workflow file is
+    actually being executed, so a test workflow under ``tests/workflows/`` and
+    an ad-hoc entry file elsewhere both resolve the same envs root as the
+    project's own ``workflow/flow.py``.
 
     Parameters
     ----------
@@ -123,8 +112,8 @@ def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
     Returns
     -------
     Path | None
-        The canonical workflow's parent directory, or ``None`` when no
-        workflow (canonical or legacy) can be discovered.
+        The discovered workflow's parent directory, or ``None`` when no
+        workflow can be discovered.
     """
     try:
         return discover_default_workflow(project_root=project_root).parent
@@ -133,7 +122,7 @@ def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
 
 
 def discover_test_workflows(*, project_root: Path) -> list[Path]:
-    """Return canonical or legacy workflow validation files."""
+    """Return the workflow validation files ``ginkgo test`` runs."""
     canonical_dir = project_root / "tests" / "workflows"
     if canonical_dir.is_dir():
         return sorted(path.resolve() for path in canonical_dir.glob("*.py"))

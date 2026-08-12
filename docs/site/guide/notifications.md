@@ -35,7 +35,7 @@ Then export the webhook secret before running:
 
 ```bash
 export GINKGO_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
-ginkgo run workflow.py
+ginkgo run flow.py
 ```
 
 Notes:

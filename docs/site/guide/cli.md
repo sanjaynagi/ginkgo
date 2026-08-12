@@ -61,9 +61,9 @@ Run `ginkgo <command> --help` for the full flag set of any command.
 ## Running Workflows
 
 ```bash
-ginkgo run workflow.py
-ginkgo run workflow.py --jobs 8 --cores 32 --memory 64
-ginkgo run workflow.py --dry-run
+ginkgo run flow.py
+ginkgo run flow.py --jobs 8 --cores 32 --memory 64
+ginkgo run flow.py --dry-run
 ```
 
 `ginkgo run` builds the expression tree, validates the workflow, evaluates ready
@@ -91,7 +91,7 @@ region = ginkgo.param("region", help="Genome region")   # no default: required
 ```
 
 ```bash
-ginkgo run workflow.py --n-replicates 24 --region 2L:1-100000
+ginkgo run flow.py --n-replicates 24 --region 2L:1-100000
 ```
 
 The flag is the dashed form of the name. A value resolves from the command line
@@ -103,7 +103,7 @@ n_replicates = 24
 region = "2L:1-100000"
 ```
 
-`ginkgo run workflow.py --help` lists the parameters that workflow declares,
+`ginkgo run flow.py --help` lists the parameters that workflow declares,
 with their types and defaults. A flag the workflow does not declare is rejected
 before anything runs, and the error names the parameters it does declare. A
 required parameter that is not supplied fails the same way.
@@ -113,7 +113,7 @@ required parameter that is not supplied fails the same way.
 `--flag false`, and `multiple=True` makes a flag repeatable:
 
 ```bash
-ginkgo run workflow.py --item alpha --item beta --verbose
+ginkgo run flow.py --item alpha --item beta --verbose
 ```
 
 Resolved values are recorded in the run's `params.yaml`, and where each came
@@ -137,7 +137,7 @@ workload:
 
 ```bash
 ginkgo test --dry-run
-ginkgo doctor workflow.py
+ginkgo doctor flow.py
 ginkgo debug <run_id>
 ```
 
@@ -145,7 +145,7 @@ ginkgo debug <run_id>
 Pass `--json` for structured output suitable for programmatic use:
 
 ```bash
-ginkgo doctor workflow.py --json
+ginkgo doctor flow.py --json
 ```
 
 `ginkgo debug` is most useful after the fact: once a run directory exists, it

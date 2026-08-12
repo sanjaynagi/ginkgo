@@ -137,7 +137,7 @@ def main():
 Run it with:
 
 ```bash
-ginkgo run workflow.py
+ginkgo run flow.py
 ```
 
 ## Canonical Example

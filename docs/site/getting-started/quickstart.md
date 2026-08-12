@@ -12,12 +12,12 @@ The example includes:
 
 - a `ginkgo.toml` config file
 - small FASTQ inputs
-- a workflow package under `bioinfo/`
-- a task-specific Pixi environment under `bioinfo/envs/bioinfo_tools/`
+- a workflow package under `workflow/`
+- a task-specific Pixi environment under `workflow/envs/bioinfo_tools/`
 
 ## 2. Inspect The Workflow Entry Point
 
-The canonical flow lives in `examples/bioinfo/bioinfo/workflow.py`.
+The canonical flow lives in `examples/bioinfo/workflow/flow.py`.
 
 At a high level it:
 
@@ -46,12 +46,12 @@ ginkgo run
 ```
 
 When you run from the example root, Ginkgo auto-discovers the canonical
-`bioinfo/workflow.py` entrypoint.
+`workflow/flow.py` entrypoint.
 
 If you prefer to be explicit:
 
 ```bash
-ginkgo run bioinfo/workflow.py
+ginkgo run workflow/flow.py
 ```
 
 ## 5. Inspect Outputs

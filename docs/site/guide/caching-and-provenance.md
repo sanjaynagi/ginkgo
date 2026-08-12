@@ -143,7 +143,7 @@ resume mechanism.
 
 ## Dry-Run Mode
 
-`ginkgo run workflow.py --dry-run` validates the workflow without executing
+`ginkgo run flow.py --dry-run` validates the workflow without executing
 any task body. Ginkgo resolves the expression tree, checks environments and
 secrets, computes cache keys for every task, and reports which tasks would
 run, which would serve from cache, and which resources they declare. Dry-run
