@@ -18,6 +18,7 @@ adding a kind to one home without the other fails immediately.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -359,3 +360,37 @@ REHYDRATABLE_KINDS: frozenset[str] = frozenset(
 )
 
 WRAPPER_KINDS: frozenset[str] = frozenset(kind for kind in ASSET_KINDS if kind != "file")
+
+# Sub-kinds whose detect callable accepted a ``str`` path rather than an
+# in-memory value. Only ``table`` and ``fig`` accept a bare ``str`` as a path;
+# ``text`` treats ``str`` as inline content, and ``array`` / ``model`` reject
+# strings outright.
+_PATH_SUB_KINDS: dict[str, frozenset[str]] = {
+    "table": frozenset({"csv", "tsv"}),
+    "fig": frozenset({"png", "svg", "html"}),
+}
+
+
+def is_path_backed_payload(*, kind: str, sub_kind: str | None, payload: Any) -> bool:
+    """Return whether a wrapped payload names a file rather than holding a value.
+
+    Parameters
+    ----------
+    kind : str
+        The registered asset kind.
+    sub_kind : str | None
+        The sub-kind resolved by the kind's detect callable.
+    payload : Any
+        The construction-time payload carried by the ``AssetResult``.
+
+    Returns
+    -------
+    bool
+        ``True`` when the payload is a path the serializer reads from disk,
+        ``False`` when it is the in-memory value itself. Note that
+        ``sub_kind`` alone cannot decide this for ``text``, where a ``Path``
+        and an inline ``str`` share the same sub-kinds.
+    """
+    if isinstance(payload, os.PathLike):
+        return True
+    return sub_kind is not None and sub_kind in _PATH_SUB_KINDS.get(kind, frozenset())

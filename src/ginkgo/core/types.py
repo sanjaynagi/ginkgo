@@ -95,3 +95,44 @@ def is_path_like(value: Any) -> bool:
         ``True`` for ``str``, ``Path``, and any other ``os.PathLike``.
     """
     return isinstance(value, (str, Path, os.PathLike))
+
+
+def require_path_value(*, value: Any, annotation_label: str, label: str) -> None:
+    """Reject a value bound to ``file`` / ``folder`` that is not a path.
+
+    This is the single home for the rule, shared by input/return validation
+    and by cache-key hashing — both of which would otherwise stringify the
+    value and report a path-syntax complaint about an object that was never
+    meant to be a path.
+
+    Parameters
+    ----------
+    value : Any
+        The resolved argument or return value.
+    annotation_label : str
+        ``"file"`` or ``"folder"`` — the annotation the value is bound to.
+    label : str
+        Diagnostic label for the parameter or return value, e.g.
+        ``"summarise.return"``.
+
+    Raises
+    ------
+    TypeError
+        When the value is an asset reference of another kind, or any other
+        non-path value.
+    """
+    # Imported here because ``ginkgo.core.asset`` imports this module.
+    from ginkgo.core.asset import AssetRef
+
+    if isinstance(value, AssetRef):
+        raise TypeError(
+            f"{label} is annotated `{annotation_label}` but is a `{value.kind}` asset "
+            f"({value.key}). Annotate it `object` (or the payload type) to receive the "
+            f"asset payload, or return `asset(path)` to produce a `{annotation_label}` asset."
+        )
+    if not is_path_like(value):
+        received = f"{type(value).__module__}.{type(value).__name__}"
+        raise TypeError(
+            f"{label} is annotated `{annotation_label}` but received a {received}. "
+            f"Annotate it `object` (or the payload type), or use a path."
+        )

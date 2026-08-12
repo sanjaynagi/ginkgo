@@ -19,7 +19,7 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, is_path_like, tmp_dir
+from ginkgo.core.types import file, folder, require_path_value, tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
@@ -45,40 +45,6 @@ def is_remote_path_value(value: Any) -> bool:
     from ginkgo.remote.access.protocol import is_fuse_ref
 
     return is_fuse_ref(value)
-
-
-def _require_path_value(*, value: Any, annotation_label: str, label: str) -> None:
-    """Reject a value bound to ``file`` / ``folder`` that is not a path.
-
-    Parameters
-    ----------
-    value : Any
-        The resolved argument or return value.
-    annotation_label : str
-        ``"file"`` or ``"folder"`` — the declared annotation.
-    label : str
-        Diagnostic label for the parameter or return value, e.g.
-        ``"summarise.return"``.
-
-    Raises
-    ------
-    TypeError
-        When the value is an asset reference of another kind, or any other
-        non-path value. Stringifying such a value would report a path-syntax
-        complaint about an object that was never meant to be a path.
-    """
-    if isinstance(value, AssetRef):
-        raise TypeError(
-            f"{label} is annotated `{annotation_label}` but is a `{value.kind}` asset "
-            f"({value.key}). Annotate it `object` (or the payload type) to receive the "
-            f"asset payload, or return `asset(path)` to produce a `{annotation_label}` asset."
-        )
-    if not is_path_like(value):
-        received = f"{type(value).__module__}.{type(value).__name__}"
-        raise TypeError(
-            f"{label} is annotated `{annotation_label}` but received a {received}. "
-            f"Annotate it `object` (or the payload type), or return a path."
-        )
 
 
 def contains_dynamic_expression(value: Any) -> bool:
@@ -305,7 +271,7 @@ class TaskValidator:
                 return
             if is_remote_path_value(value):
                 return
-            _require_path_value(value=value, annotation_label="file", label=label)
+            require_path_value(value=value, annotation_label="file", label=label)
             self._validate_file_path(path=value, label=label)
             return
 
@@ -314,7 +280,7 @@ class TaskValidator:
                 return
             if is_remote_path_value(value):
                 return
-            _require_path_value(value=value, annotation_label="folder", label=label)
+            require_path_value(value=value, annotation_label="folder", label=label)
             self._validate_folder_path(path=value, label=label)
             return
 

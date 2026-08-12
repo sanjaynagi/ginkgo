@@ -843,10 +843,15 @@ def produce_sklearn_model() -> object:
 
 @task()
 def produce_table_from_csv(output_path: str) -> object:
-    """Return a table asset whose payload is a CSV path, not a live frame."""
+    """Return a table asset whose payload is a CSV path, not a live frame.
+
+    The contents differ from :func:`produce_table` so the two assets get
+    distinct artifact ids — the live registry is keyed by artifact id, and
+    identical bytes would otherwise let one producer serve the other.
+    """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}).to_csv(out, index=False)
+    pd.DataFrame({"site": ["north", "south"], "count": [10, 20]}).to_csv(out, index=False)
     return table(out, name="summary")
 
 
@@ -862,6 +867,12 @@ def consume_file_or_ref(summary: file | AssetRef, output_path: str) -> file:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(f"{type(summary).__name__}\n", encoding="utf-8")
     return file(str(out))
+
+
+@task()
+def consume_file_ref_list(summaries: list[file | AssetRef]) -> list[str]:
+    """A path-shaped annotation over a container — refs must survive nesting."""
+    return [type(item).__name__ for item in summaries]
 
 
 @task()
@@ -977,23 +988,62 @@ class TestRehydration:
         result = ginkgo.evaluate(consume_model_predict(trained=produce_sklearn_model()))
         assert result == [0, 1]
 
-    def test_live_payload_and_loader_agree_for_csv_table(
+    def test_live_payload_and_loader_branches_agree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A ref rehydrates to the same type from memory and from disk."""
+        """Both rehydration branches yield the same type within one run.
+
+        The DataFrame-backed table is served from the live registry; the
+        CSV-backed one is not cached live, so it takes the disk loader. The
+        loader call count proves each arm took the branch it claims.
+        """
         monkeypatch.chdir(tmp_path)
 
-        first = ginkgo.evaluate(
-            record_payload_type(upstream=produce_table_from_csv(output_path="out/table.csv"))
-        )
-        assert first == "DataFrame"
+        from ginkgo.runtime import evaluator as evaluator_mod
 
-        # A second evaluator has an empty live registry, so this run takes the
-        # on-disk loader branch. Both branches must agree.
-        second = ginkgo.evaluate(
-            record_payload_type(upstream=produce_table_from_csv(output_path="out/table2.csv"))
+        loader_call_count = {"n": 0}
+        original_loader = evaluator_mod.load_wrapped_ref
+
+        def _counting_loader(**kwargs: Any) -> Any:
+            loader_call_count["n"] += 1
+            return original_loader(**kwargs)
+
+        monkeypatch.setattr(evaluator_mod, "load_wrapped_ref", _counting_loader)
+
+        result = ginkgo.evaluate(
+            {
+                "from_frame": record_payload_type(upstream=produce_table()),
+                "from_csv": record_payload_type(
+                    upstream=produce_table_from_csv(output_path="out/table.csv")
+                ),
+            }
         )
-        assert second == first
+
+        # Exactly one disk load: the CSV-backed ref. A live-cached raw path
+        # would make this zero and hand the consumer a PosixPath.
+        assert loader_call_count["n"] == 1
+        assert result == {"from_frame": "DataFrame", "from_csv": "DataFrame"}
+
+    def test_string_text_payload_is_live_cached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An inline ``text()`` string is a live payload, not a path."""
+        monkeypatch.chdir(tmp_path)
+
+        from ginkgo.runtime import evaluator as evaluator_mod
+
+        loader_call_count = {"n": 0}
+        original_loader = evaluator_mod.load_wrapped_ref
+
+        def _counting_loader(**kwargs: Any) -> Any:
+            loader_call_count["n"] += 1
+            return original_loader(**kwargs)
+
+        monkeypatch.setattr(evaluator_mod, "load_wrapped_ref", _counting_loader)
+
+        result = ginkgo.evaluate(consume_text_length(upstream=produce_text()))
+        assert result == len("line one\nline two\n")
+        assert loader_call_count["n"] == 0  # served from the live registry
 
     def test_live_registry_capacity_eviction(self) -> None:
         """The registry is bounded — oldest entries evict when full."""
@@ -1013,6 +1063,11 @@ class TestRehydration:
 # ---------------------------------------------------------------------------
 # Asset kind vs path-shaped annotation
 # ---------------------------------------------------------------------------
+
+
+def _payload_probe(result: AssetResult) -> dict[str, Any]:
+    """Unpack the fields ``is_path_backed_payload`` dispatches on."""
+    return {"kind": result.kind, "sub_kind": result.sub_kind, "payload": result.payload}
 
 
 class TestKindVersusPathAnnotation:
@@ -1035,6 +1090,45 @@ class TestKindVersusPathAnnotation:
 
         assert Path(cold).read_text(encoding="utf-8").strip() == "AssetRef"
         assert warm == cold
+
+    def test_nested_refs_survive_path_shaped_annotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``list[file | AssetRef]`` keeps refs at every depth, not just the top."""
+        monkeypatch.chdir(tmp_path)
+
+        observed = ginkgo.evaluate(
+            consume_file_ref_list(
+                summaries=[
+                    produce_table_from_csv(output_path="results/one.csv"),
+                    produce_table_from_csv(output_path="results/two.csv"),
+                ]
+            )
+        )
+        assert observed == ["AssetRef", "AssetRef"]
+
+    def test_path_backed_payload_detection(self, tmp_path: Path) -> None:
+        """Only genuine path payloads count as path-backed, per kind."""
+        from ginkgo.runtime.artifacts.asset_kinds import is_path_backed_payload
+
+        csv_path = tmp_path / "frame.csv"
+        csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+
+        # A table given a path — by Path or by str — reads from disk.
+        assert is_path_backed_payload(**_payload_probe(table(csv_path)))
+        assert is_path_backed_payload(**_payload_probe(table(str(csv_path))))
+
+        # In-memory payloads are not path-backed, including an inline string
+        # for text() — which shares its sub-kinds with the Path form.
+        assert not is_path_backed_payload(**_payload_probe(table(pd.DataFrame({"a": [1]}))))
+        assert not is_path_backed_payload(**_payload_probe(text("some notes")))
+        assert not is_path_backed_payload(**_payload_probe(text("# heading", format="markdown")))
+        assert not is_path_backed_payload(**_payload_probe(array(np.zeros(3))))
+
+        # A text() payload given as a Path is path-backed despite the shared
+        # sub-kind, which is why sub_kind alone cannot decide this.
+        md_path = tmp_path / "notes.md"
+        assert is_path_backed_payload(**_payload_probe(text(md_path)))
 
     def test_file_annotation_rejects_table_asset_input(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

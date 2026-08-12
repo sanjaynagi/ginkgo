@@ -1084,9 +1084,14 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
-                resolved_args[name] = self._rehydrate_wrapped_refs(
-                    value=materialised,
-                    annotation=annotation,
+                # A path-shaped annotation binds a filesystem path at every
+                # depth, so the whole value — including any nested containers
+                # — keeps its ``AssetRef`` entries rather than becoming live
+                # objects that later code would stringify as paths.
+                resolved_args[name] = (
+                    materialised
+                    if is_path_shaped_annotation(annotation)
+                    else self._rehydrate_wrapped_refs(value=materialised)
                 )
                 continue
 
@@ -1146,7 +1151,7 @@ class ConcurrentEvaluator:
 
         return value
 
-    def _rehydrate_wrapped_refs(self, *, value: Any, annotation: Any = None) -> Any:
+    def _rehydrate_wrapped_refs(self, *, value: Any) -> Any:
         """Replace wrapped ``AssetRef`` values with live Python payloads.
 
         Recurses into lists, tuples, and dicts. ``AssetRef`` entries with a
@@ -1157,19 +1162,15 @@ class ConcurrentEvaluator:
         the existing file coercion path, and the latter carry binary
         payloads that users rarely consume as live Python objects.
 
+        Callers decide whether to rehydrate at all: ``_resolve_task_args``
+        skips this entirely for a path-shaped annotation, which binds a
+        filesystem path rather than a live object.
+
         Parameters
         ----------
         value : Any
             The materialised argument value, possibly nesting ``AssetRef``.
-        annotation : Any
-            The consuming parameter's annotation. When it is or includes
-            ``file`` / ``folder`` no rehydration happens: the parameter binds
-            a filesystem path, so the ``AssetRef`` passes through untouched
-            rather than becoming a live object that later gets stringified as
-            a path.
         """
-        if is_path_shaped_annotation(annotation):
-            return value
         if isinstance(value, AssetRef):
             if value.kind in REHYDRATABLE_KINDS:
                 cached = self._live_payloads.get(artifact_id=value.artifact_id)
