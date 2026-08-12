@@ -51,6 +51,7 @@ from ginkgo.runtime.caching.materialization_log import MaterializationLog
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
+    EnvPrepareFailed,
     EnvPrepareStarted,
     EventBus,
     GraphExpanded,
@@ -710,7 +711,27 @@ class ConcurrentEvaluator:
             )
         )
         env_prepare_started = time.perf_counter()
-        self.backend.prepare(env=node.task_def.env)
+        try:
+            self.backend.prepare(env=node.task_def.env)
+        except BaseException as exc:
+            # The task never starts, so nothing else would close out the
+            # preparation window for observers of the event stream.
+            self._record_task_timing(
+                node_id=node.node_id,
+                phase="env_prepare_seconds",
+                started=env_prepare_started,
+            )
+            self._emit_event(
+                EnvPrepareFailed(
+                    run_id=self._run_id,
+                    task_id=_task_id_for_node(node.node_id),
+                    task_name=node.task_def.name,
+                    attempt=node.attempt,
+                    env=node.task_def.env,
+                    error=str(exc),
+                )
+            )
+            raise
         self._record_task_timing(
             node_id=node.node_id,
             phase="env_prepare_seconds",
