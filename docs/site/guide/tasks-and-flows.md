@@ -141,6 +141,12 @@ tasks cannot.
 Use `@task("script")` to run a standalone script file — Python (`.py`) or R
 (`.r`/`.R`). The body returns a `script(...)` expression. Resolved task inputs
 are forwarded to the script as `--param-name value` command-line arguments.
+Underscores in a parameter name become hyphens on the command line: a task
+parameter `normalized_card` arrives as `--normalized-card`, so the script's
+argument parser must declare the hyphenated form. The same conversion applies to
+marimo notebook tasks, which are also executed as scripts with `--flags`;
+Jupyter notebooks receive parameters through Papermill under their original
+names.
 
 ```python
 from pathlib import Path
@@ -243,6 +249,51 @@ Supplying only some of a task's arguments is what makes this work: the call
 returns a `PartialCall` instead of running, and `.map()` then fills in the rest,
 one set of values per fanned-out call.
 
+### Building The Varying Lists With `expand()`
+
+The varying arguments are plain lists, so they can come from anywhere — a
+config value, a samples frame, a directory listing. When they are output paths
+that follow a naming pattern, `ginkgo.expand()` builds them from a
+`str.format`-style template. This is the idiom the `ginkgo init` scaffold uses:
+
+```python
+from ginkgo import expand, flow
+
+
+@flow
+def main():
+    items = ["alpha", "beta"]
+    seed_paths = expand("results/seed/{item}.txt", item=items)
+    # ["results/seed/alpha.txt", "results/seed/beta.txt"]
+
+    return write_seed_card().map(item=items, output_path=seed_paths)
+```
+
+`expand(template, **wildcards)` takes the Cartesian product of the wildcard
+values, so every placeholder combination appears once, in deterministic order:
+
+```python
+expand("results/{item}/{rep}.txt", item=["a", "b"], rep=[1, 2])
+# ["results/a/1.txt", "results/a/2.txt", "results/b/1.txt", "results/b/2.txt"]
+```
+
+`zip_expand(template, **wildcards)` instead zips the wildcards positionally,
+producing one string per position. All iterables must be the same length or it
+raises `ValueError`:
+
+```python
+from ginkgo import zip_expand
+
+zip_expand("results/{item}/{rep}.txt", item=["a", "b"], rep=[1, 2])
+# ["results/a/1.txt", "results/b/2.txt"]
+```
+
+Every placeholder in the template must be supplied as a keyword, and a keyword
+that does not appear in the template is an error. The pairing
+matches `.map()` (positional zip) and `.product_map()` (Cartesian product), so
+use `zip_expand()` with `.map()` and `expand()` with `.product_map()` when a
+template has more than one wildcard.
+
 ### `.product_map()` — Every Combination
 
 Use `.product_map()` when the varying arguments should form a **grid** — every
@@ -274,6 +325,39 @@ Tasks can return:
 - nested containers containing expressions
 
 Returning expressions is how a workflow's graph expands at runtime.
+
+### Selecting One Output With `.output[i]`
+
+A task that produces several files returns them together — a shell task
+declaring `output=[...]`, or a Python task returning a tuple or list. To wire
+one of those outputs into a downstream task, index into the result with the
+`.output` proxy:
+
+```python
+from ginkgo import file, shell, task
+
+
+@task("shell")
+def normalize_seed_card(seed_card: file, output_path: str, check_path: str) -> list[file]:
+    return shell(cmd=..., output=[output_path, check_path])
+```
+
+```python
+norm_results = normalize_seed_card().map(
+    seed_card=seed_cards,
+    output_path=normalized_paths,
+    check_path=check_paths,
+)
+normalized_cards = norm_results.output[0]
+checksums = norm_results.output[1]
+```
+
+`expr.output[i]` on a single expression yields an `OutputIndex` — a deferred
+selection of element `i`, resolved once the upstream task has run. On an
+`ExprList` (the result of `.map()` or `.product_map()`), `.output[i]` returns a
+new `ExprList` selecting element `i` from every branch, so the two lists above
+stay aligned with the branches that produced them. Either result can be passed
+straight to another task call or `.map()`.
 
 ## See Also
 

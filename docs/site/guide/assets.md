@@ -35,6 +35,14 @@ The typed helpers each map to an asset **kind**:
 | `text(payload)` | `text` | plain, markdown, or JSON text |
 | `model(payload)` | `model` | a trained model object |
 
+The return annotation must match the payload, not the helper. Only a `file`-kind
+asset — `asset(path)`, or `asset(path, kind="file")` — satisfies a `-> file`
+annotation, because the value that reaches the runtime is an asset reference to
+a file on disk. Every other kind, including `table()` given a DataFrame *or* a
+path to a CSV, must be returned from a task annotated `-> object` (or the
+payload's own type). Returning `table(...)` from a `-> file` task always fails
+validation.
+
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
 and a `metadata` dict. Each also accepts `checks`: small data-quality
@@ -91,6 +99,48 @@ are rendered as short subtitles on each asset card and are also shown by
 Assets are content-addressed and stored under `.ginkgo/assets/`. Re-running a
 task that produces the same content adds a new *version* pointing at the same
 bytes, so an asset key gives you a stable handle with full version history.
+
+### Consuming Assets Downstream
+
+A task that depends on an asset-producing task does not receive a plain path.
+What arrives depends on the asset kind:
+
+- `table`, `array`, `text`, and `model` refs are rehydrated into the live Python
+  payload before the task body runs — a downstream task takes the DataFrame, the
+  array, or the model object directly.
+- `file` and `fig` refs arrive as an `AssetRef`: a record carrying the asset
+  `key`, `version_id`, `kind`, `content_hash`, `metadata`, and
+  `artifact_path` (the path to the immutable stored bytes).
+
+So a consumer of a file asset must handle an `AssetRef` as well as a plain
+path. Widen the parameter annotation and branch on the type:
+
+```python
+from pathlib import Path
+
+from ginkgo import AssetRef, file, task
+
+
+@task()
+def normalize_seed_card(seed_card: file | AssetRef, output_path: str) -> file:
+    input_path = (
+        Path(seed_card.artifact_path)
+        if isinstance(seed_card, AssetRef)
+        else Path(str(seed_card))
+    )
+    ...
+```
+
+The widening is needed because the producing task's `-> file` annotation is not
+what the consumer actually gets — the producer returns `asset(output, ...)`, so
+the value handed downstream is an asset reference, not the path the annotation
+suggests. The same task called with a plain `file` still works, which is why
+both branches are kept. This is the pattern the `ginkgo init` scaffold uses in
+`modules/prep.py`.
+
+`AssetRef` also offers two accessors instead of reading `artifact_path`
+directly: `load()` returns the artifact path as a string, and `as_file()`
+returns it wrapped as a `ginkgo.file` marker.
 
 ### Inspecting Assets
 
