@@ -15,7 +15,16 @@ from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import annotation_includes, file, folder, require_path_value, tmp_dir
+from ginkgo.core.types import (
+    annotation_includes,
+    file,
+    folder,
+    is_path_shaped_annotation,
+    pair_elements_with_annotations,
+    require_path_value,
+    tmp_dir,
+    unwrap_optional_annotation,
+)
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -286,13 +295,21 @@ class CacheStore:
         if isinstance(value, AssetRef):
             return Path(value.artifact_path).exists()
 
+        # An absent optional output has nothing to restore, and its absence is
+        # itself the cached result. A None the annotation does not admit is not
+        # this walk's to diagnose — validation already rejected it — but the
+        # three cache walks agree on the question they ask.
+        annotation, admits_none = unwrap_optional_annotation(annotation)
+        if value is None:
+            return admits_none or not is_path_shaped_annotation(annotation)
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
-            for item in value:
+            for item_annotation, item in pair_elements_with_annotations(
+                annotation=annotation, value=value
+            ):
                 if not self._validate_output_value(
-                    annotation=inner_annotation,
+                    annotation=item_annotation,
                     value=item,
                     artifact_ids=artifact_ids,
                 ):
@@ -465,13 +482,18 @@ class CacheStore:
         artifact_ids: dict[str, str],
     ) -> None:
         """Recursively walk a result value and store file/folder outputs."""
+        # An absent optional output has nothing to store.
+        annotation, _ = unwrap_optional_annotation(annotation)
+        if value is None:
+            return
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
-            for item in value:
+            for item_annotation, item in pair_elements_with_annotations(
+                annotation=annotation, value=value
+            ):
                 self._collect_output_artifacts(
-                    annotation=inner_annotation,
+                    annotation=item_annotation,
                     value=item,
                     artifact_ids=artifact_ids,
                 )
@@ -541,6 +563,12 @@ class CacheStore:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
+
+        # An absent optional output must key differently from a present one,
+        # so absence gets its own token rather than collapsing to null.
+        annotation, admits_none = unwrap_optional_annotation(annotation)
+        if value is None and admits_none:
+            return {"type": "absent"}
         if isinstance(value, AssetRef):
             if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
@@ -590,17 +618,17 @@ class CacheStore:
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            inner_args = get_args(annotation)
-            inner_annotation = inner_args[0] if inner_args else Any
             return {
                 "items": [
                     self._hash_value(
-                        annotation=inner_annotation,
+                        annotation=item_annotation,
                         value=item,
                         known_digests=known_digests,
                         label=label,
                     )
-                    for item in value
+                    for item_annotation, item in pair_elements_with_annotations(
+                        annotation=annotation, value=value
+                    )
                 ],
                 "type": origin.__name__,
             }

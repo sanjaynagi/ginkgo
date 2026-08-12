@@ -21,6 +21,7 @@ from types import FrameType
 from typing import Any, Callable
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
@@ -164,21 +165,55 @@ def stringify_cli_argument(value: Any) -> str:
     return json.dumps(serialized, sort_keys=True)
 
 
+def _declared_item_path(item: Any) -> Path:
+    """Return the filesystem path declared by one output item."""
+    if isinstance(item, OptionalOutput):
+        return _declared_item_path(item.payload)
+    if isinstance(item, AssetResult):
+        return _asset_result_path(item)
+    return Path(str(item))
+
+
 def iter_output_values(
     output: Any,
 ) -> list[Path]:
-    """Return concrete filesystem paths from declared output values."""
-    if isinstance(output, AssetResult):
-        return [_asset_result_path(output)]
-    if isinstance(output, str):
-        return [Path(output)]
-    paths: list[Path] = []
-    for item in output:
-        if isinstance(item, AssetResult):
-            paths.append(_asset_result_path(item))
-        else:
-            paths.append(Path(item))
-    return paths
+    """Return every declared output path, required and optional alike.
+
+    Used for pre-execution cleanup and parent-directory creation, where an
+    optional path must be treated exactly like a required one: a stale file
+    left by an earlier run must not be mistaken for this run's output.
+    """
+    if isinstance(output, (str, AssetResult, OptionalOutput)):
+        return [_declared_item_path(output)]
+    return [_declared_item_path(item) for item in output]
+
+
+def iter_required_output_values(
+    output: Any,
+) -> list[Path]:
+    """Return only the declared output paths that must exist after execution."""
+    if isinstance(output, OptionalOutput):
+        return []
+    if isinstance(output, (str, AssetResult)):
+        return [_declared_item_path(output)]
+    return [_declared_item_path(item) for item in output if not isinstance(item, OptionalOutput)]
+
+
+def resolve_output_value(output: Any) -> Any:
+    """Rebuild a declared output with absent optional entries replaced by ``None``.
+
+    Preserves the declared scalar, list, or tuple shape so the task's return
+    annotation lines up positionally with what it declared.
+    """
+    if isinstance(output, OptionalOutput):
+        path = _declared_item_path(output)
+        return output.payload if path.exists() else None
+
+    if isinstance(output, (str, AssetResult)):
+        return output
+
+    resolved = [resolve_output_value(item) for item in output]
+    return tuple(resolved) if isinstance(output, tuple) else resolved
 
 
 def sanitize_exception(
@@ -545,7 +580,7 @@ class ShellRunner:
 
         missing_outputs = [
             str(output_path)
-            for output_path in iter_output_values(directive.output)
+            for output_path in iter_required_output_values(directive.output)
             if not output_path.exists()
         ]
         if missing_outputs:
@@ -554,4 +589,7 @@ class ShellRunner:
                 f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
             )
 
-        return self.validator.coerce_return_value(task_def=task_def, value=directive.output)
+        return self.validator.coerce_return_value(
+            task_def=task_def,
+            value=resolve_output_value(directive.output),
+        )

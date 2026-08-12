@@ -14,9 +14,10 @@ from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.hashing import hash_file
 
-_ScriptOutputItem = str | AssetResult
+_ScriptOutputItem = str | AssetResult | OptionalOutput
 _ScriptOutput = _ScriptOutputItem | list[_ScriptOutputItem] | None
 
 # Maps file extension (lower-case) to interpreter command.

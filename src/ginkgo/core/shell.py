@@ -12,8 +12,9 @@ from typing import TypeAlias, final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.optional import OptionalOutput
 
-ShellOutputItem: TypeAlias = str | AssetResult
+ShellOutputItem: TypeAlias = str | AssetResult | OptionalOutput
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 

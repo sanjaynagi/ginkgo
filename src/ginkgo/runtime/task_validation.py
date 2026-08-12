@@ -24,8 +24,10 @@ from ginkgo.core.types import (
     folder,
     is_path_like,
     is_path_shaped_annotation,
+    pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
+    unwrap_optional_annotation,
 )
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
@@ -291,13 +293,26 @@ class TaskValidator:
         if annotation in {None, Any}:
             return
 
+        annotation, admits_none = unwrap_optional_annotation(annotation)
+        if value is None:
+            # Only path-shaped annotations reject None. Other annotations have
+            # never validated None — CLI probes such as `doctor` and
+            # `inspect workflow` pass it as a placeholder for an unsupplied
+            # parameter — and tightening that is not this change's business.
+            if admits_none or not (is_path_shaped_annotation(annotation) or annotation is tmp_dir):
+                return
+            raise TypeError(
+                f"{label} is None but its annotation does not admit None. "
+                "Annotate it `file | None` when the output is declared "
+                "`optional(...)`."
+            )
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            for index, item in enumerate(value):
+            paired = pair_elements_with_annotations(annotation=annotation, value=value)
+            for index, (item_annotation, item) in enumerate(paired):
                 self.validate_annotated_value(
-                    annotation=inner_annotation,
+                    annotation=item_annotation,
                     value=item,
                     label=f"{label}[{index}]",
                 )
@@ -374,6 +389,12 @@ class TaskValidator:
         """Coerce values recursively for direct and container-wrapped path types."""
         if annotation in {None, Any}:
             return value
+
+        # An absent optional output stays None; a present one coerces against
+        # the inner annotation so it becomes a `file` the cache can store.
+        annotation, _ = unwrap_optional_annotation(annotation)
+        if value is None:
+            return None
 
         origin = get_origin(annotation)
         if origin is list and isinstance(value, list):

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 
 class file(str):
@@ -79,6 +80,80 @@ def is_path_shaped_annotation(annotation: Any) -> bool:
     return annotation_includes(annotation=annotation, expected=file) or annotation_includes(
         annotation=annotation, expected=folder
     )
+
+
+def unwrap_optional_annotation(annotation: Any) -> tuple[Any, bool]:
+    """Split an ``X | None`` annotation into its inner type and nullability.
+
+    An optional task output is annotated ``file | None``, so every consumer of
+    an annotation must be able to ask "does this admit ``None``, and what is it
+    otherwise?" without each re-deriving union handling.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly a union.
+
+    Returns
+    -------
+    tuple[Any, bool]
+        The annotation with ``None`` removed, and whether ``None`` was
+        admitted. A union of several non-``None`` members is returned
+        unchanged, since no single inner type describes it.
+    """
+    if get_origin(annotation) not in {Union, UnionType}:
+        return annotation, False
+
+    args = get_args(annotation)
+    if type(None) not in args:
+        return annotation, False
+
+    remaining = tuple(arg for arg in args if arg is not type(None))
+    if len(remaining) == 1:
+        return remaining[0], True
+    return Union[remaining], True
+
+
+def pair_elements_with_annotations(*, annotation: Any, value: Any) -> list[tuple[Any, Any]]:
+    """Pair each element of a container value with the annotation governing it.
+
+    A homogeneous container (``list[file]``, ``tuple[file, ...]``) governs every
+    element with the same inner annotation. A heterogeneous tuple
+    (``tuple[file, file | None]``) governs each element with its own, and
+    applying only the first — as every container walk here used to — hands an
+    absent optional the annotation ``file`` and loses the fact that it may be
+    ``None``.
+
+    Parameters
+    ----------
+    annotation : Any
+        The container's declared annotation.
+    value : Any
+        The container value, a list or tuple.
+
+    Returns
+    -------
+    list[tuple[Any, Any]]
+        One ``(annotation, element)`` pair per element. Falls back to the
+        container annotation itself when the annotation carries no arguments.
+    """
+    inner_args = get_args(annotation)
+
+    # A fixed-length tuple annotation lines up positionally with its value.
+    # Only a genuinely sized value can be paired that way — anything else
+    # (an unresolved expression proxy, say) falls through to the homogeneous
+    # walk, which is what it got before per-element pairing existed.
+    if (
+        get_origin(annotation) is tuple
+        and inner_args
+        and Ellipsis not in inner_args
+        and isinstance(value, (list, tuple))
+        and len(inner_args) == len(value)
+    ):
+        return list(zip(inner_args, value, strict=True))
+
+    inner_annotation = inner_args[0] if inner_args else annotation
+    return [(inner_annotation, item) for item in value]
 
 
 def is_path_like(value: Any) -> bool:
