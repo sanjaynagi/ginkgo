@@ -5,13 +5,13 @@ from __future__ import annotations
 import ginkgo
 from ginkgo import file, flow
 
-from chemistry_screening.modules.delivery import write_delivery_manifest
-from chemistry_screening.modules.inputs import (
+from .modules.delivery import write_delivery_manifest
+from .modules.inputs import (
     annotate_compounds,
     load_compound_panel,
     write_developability_matrix,
 )
-from chemistry_screening.modules.reports import (
+from .modules.reports import (
     build_portfolio_summary,
     plan_series_packets,
     write_candidate_register,

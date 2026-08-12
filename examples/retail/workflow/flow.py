@@ -6,15 +6,15 @@ import ginkgo
 import pandas as pd
 from ginkgo import file, flow
 
-from retail_analytics.modules.delivery import write_delivery_manifest
-from retail_analytics.modules.inputs import (
+from .modules.delivery import write_delivery_manifest
+from .modules.inputs import (
     clean_orders,
     enrich_orders,
     read_customers,
     read_orders,
     read_products,
 )
-from retail_analytics.modules.reporting import (
+from .modules.reporting import (
     build_executive_report,
     render_channel_performance_notebook,
     write_channel_metrics,

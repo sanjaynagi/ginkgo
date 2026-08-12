@@ -26,7 +26,7 @@ from ginkgo.cli import (
 from ginkgo.cli.renderers.common import _MultiStateBar
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
 

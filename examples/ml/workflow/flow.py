@@ -5,19 +5,19 @@ from __future__ import annotations
 import ginkgo
 from ginkgo import file, flow
 
-from ml_model_ops.modules.delivery import write_delivery_manifest
-from ml_model_ops.modules.inputs import (
+from .modules.delivery import write_delivery_manifest
+from .modules.inputs import (
     build_feature_matrix,
     load_training_events,
     write_feature_profile,
     write_holdout_summary,
 )
-from ml_model_ops.modules.modeling import (
+from .modules.modeling import (
     evaluate_candidate,
     select_champion,
     write_candidate_scorecard,
 )
-from ml_model_ops.modules.reporting import write_model_card, write_serving_checklist
+from .modules.reporting import write_model_card, write_serving_checklist
 
 
 cfg = ginkgo.config("ginkgo.toml")

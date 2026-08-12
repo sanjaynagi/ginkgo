@@ -14,7 +14,7 @@ import pytest
 from ginkgo.runtime.notifications.notifications import parse_notification_config
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
 

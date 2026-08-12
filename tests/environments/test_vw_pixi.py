@@ -37,7 +37,7 @@ from ginkgo.envs.pixi import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TESTS_DIR = Path(__file__).parent
+_TESTS_DIR = Path(__file__).resolve().parents[1]
 _TEST_ENV_NAME = "test_env"
 
 
