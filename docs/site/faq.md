@@ -141,10 +141,9 @@ def main():
     return summarize(data=raw)  # `raw` is an Expr; summarize depends on download
 ```
 
-If a task returns a tuple and you want a single element, use the `.output`
-proxy: `expr.output[0]` yields an `OutputIndex` selecting element 0 of the
-upstream result. Applied to an `ExprList`, `.output[i]` returns a new `ExprList`
-selecting that element from every branch.
+If a task returns several outputs and you want one of them, use the `.output`
+proxy — see
+[Selecting One Output With `.output[i]`](guide/tasks-and-flows.md#selecting-one-output-with-outputi).
 
 ### How do I fan out over a list of inputs (map) and combine results (reduce)?
 
@@ -169,10 +168,8 @@ def main():
 `ExprList.map(...)` also exists to extend each existing branch with further
 zipped columns, and `max_concurrent=` on any of these throttles how many
 generated branches run at once, independently of the global `--jobs`/`--cores`
-budget. For building the input/output path lists you map over,
-`ginkgo.expand(template, **wildcards)` (Cartesian product) and
-`ginkgo.zip_expand(...)` (positional zip) format a `str.format`-style template
-into a list of strings.
+budget. For building the input/output path lists you map over, see
+[Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand).
 
 ### How does Ginkgo build and edit dynamic DAGs at runtime?
 
@@ -486,8 +483,10 @@ An asset is a typed, named, versioned task output, produced by returning
 is registered in a catalog under `.ginkgo/assets/` and tracked across runs.
 Re-running a task that produces identical content adds a new *version* pointing
 at the same bytes, so the key stays a stable handle with full version history.
-Assets can also be consumed by downstream tasks, which receive an `AssetRef`
-they can `load()` or open `as_file()`.
+Assets can also be consumed by downstream tasks; what the consumer receives —
+an `AssetRef` or the live payload — depends on its parameter annotation, which
+[Consuming Assets Downstream](guide/assets.md#consuming-assets-downstream)
+covers.
 
 ### What asset kinds exist, and how does Ginkgo detect the kind?
 

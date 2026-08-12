@@ -49,6 +49,13 @@ the payload. To receive the live object instead (a `DataFrame` for a `table`,
 an `ndarray` for an `array`), annotate the parameter `object` or the payload
 type, as in the example below.
 
+The return annotation follows the kind, not the payload. Only the `file` kind —
+`asset(path)` — satisfies a `-> file` annotation. Every other kind is a semantic
+asset rather than a path, so its producing task is annotated `-> object` (or the
+payload's own type), even when the payload you passed in was a file path:
+`table("data/frame.csv")` yields a `table` asset, not the CSV. Declaring
+`-> file` and returning `table(...)` fails validation.
+
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,
 and a `metadata` dict. Each also accepts `checks`: small data-quality
@@ -105,6 +112,48 @@ are rendered as short subtitles on each asset card and are also shown by
 Assets are content-addressed and stored under `.ginkgo/assets/`. Re-running a
 task that produces the same content adds a new *version* pointing at the same
 bytes, so an asset key gives you a stable handle with full version history.
+
+### Consuming Assets Downstream
+
+A task that depends on an asset-producing task does not receive a plain path.
+What arrives is decided by the **consuming parameter's annotation**:
+
+- Annotated `file`, `folder`, or a union including one of them (`file |
+  AssetRef`) — the parameter binds a filesystem path, so the value passes
+  through as an `AssetRef`: a record carrying the asset `key`, `version_id`,
+  `kind`, `content_hash`, `metadata`, and `artifact_path` (the path to the
+  immutable stored bytes). This holds on cache hits as well as cold runs.
+- Annotated `object` or the payload's own type (`pd.DataFrame`) — a `table`,
+  `array`, `text`, or `model` ref is rehydrated into the live Python payload
+  before the task body runs, so the task takes the DataFrame, array, or model
+  object directly. `file` and `fig` refs stay as an `AssetRef`, since they
+  carry paths and binary blobs rather than objects worth loading.
+
+So a consumer of a file asset receives an `AssetRef`, not the path its `file`
+annotation suggests. Widen the annotation and branch on the type:
+
+```python
+from pathlib import Path
+
+from ginkgo import AssetRef, file, task
+
+
+@task()
+def normalize_seed_card(seed_card: file | AssetRef, output_path: str) -> file:
+    input_path = (
+        Path(seed_card.artifact_path)
+        if isinstance(seed_card, AssetRef)
+        else Path(str(seed_card))
+    )
+    ...
+```
+
+Both branches are kept because the same task also works when called with a plain
+`file` path, from a producer that returns `file(...)` rather than `asset(...)`.
+
+`AssetRef` also offers two accessors instead of reading `artifact_path`
+directly: `load()` returns the artifact path as a string, and `as_file()`
+returns it wrapped as a `ginkgo.file` marker.
 
 ### Inspecting Assets
 
