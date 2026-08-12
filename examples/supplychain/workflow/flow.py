@@ -5,15 +5,15 @@ from __future__ import annotations
 import ginkgo
 from ginkgo import file, flow
 
-from supply_chain.modules.inputs import (
+from .modules.inputs import (
     build_replenishment_plan,
     load_demand_forecast,
     load_shipping_lanes,
     load_supplier_capacity,
     normalize_demand,
 )
-from supply_chain.modules.reporting import build_operations_brief, write_artifact_manifest
-from supply_chain.modules.scenarios import (
+from .modules.reporting import build_operations_brief, write_artifact_manifest
+from .modules.scenarios import (
     identify_expedite_candidates,
     simulate_scenario,
     summarize_resilience,

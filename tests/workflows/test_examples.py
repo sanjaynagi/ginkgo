@@ -20,7 +20,7 @@ from ginkgo.envs.container import ContainerBackend
 from ginkgo.runtime.caching.provenance import latest_run_dir, load_manifest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 
 

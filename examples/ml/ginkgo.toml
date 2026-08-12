@@ -35,4 +35,4 @@ store = "gs://ginkgo-remote-artifacts-f02462a0/ml-example/"
 
 [remote.batch.code]
 mode = "sync"
-package = "ml_model_ops"
+package = "workflow"

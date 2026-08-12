@@ -20,7 +20,7 @@ from benchmarks.sources import BenchmarkSourceManifest
 
 def test_source_manifest_loads_pinned_bioinfo_benchmark() -> None:
     manifest = BenchmarkSourceManifest.from_toml(
-        path=Path(__file__).resolve().parents[1] / "benchmarks" / "sources" / "bioinfo_agam.toml"
+        path=Path(__file__).resolve().parents[2] / "benchmarks" / "sources" / "bioinfo_agam.toml"
     )
 
     assert manifest.name == "ampseeker-bioinfo"
