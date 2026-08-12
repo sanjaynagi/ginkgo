@@ -14,7 +14,11 @@ from ginkgo.cli.common import console
 
 
 _TEMPLATE_PROJECT_NAME = "ginkgo-init-template"
-_TEMPLATE_PACKAGE_NAME = "ginkgo_init_template"
+
+#: Fixed name of the scaffolded workflow package. Kept constant across projects
+#: so the layout is predictable and the project root is never shadowed by a
+#: like-named package directory.
+PACKAGE_NAME = "workflow"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -22,20 +26,12 @@ class TemplateContext:
     """Values rendered into scaffold templates."""
 
     project_name: str
-    package_name: str
     workflow_relpath: str
     modules_relpath: str
     envs_relpath: str
+    notebooks_relpath: str
+    scripts_relpath: str
     tests_relpath: str
-
-
-def _package_name_for_directory(*, root: Path) -> str:
-    """Return a stable importable package name for the scaffolded project."""
-    normalized = "".join(ch.lower() if ch.isalnum() else "_" for ch in root.name)
-    normalized = normalized.strip("_") or "ginkgo_project"
-    if normalized[0].isdigit():
-        normalized = f"project_{normalized}"
-    return normalized
 
 
 def _template_root(*, group: str):
@@ -43,26 +39,16 @@ def _template_root(*, group: str):
     return resources.files("ginkgo.templates.init").joinpath(group)
 
 
-def _render_template_path(*, relative_path: PurePosixPath, package_name: str) -> Path:
-    """Return the destination-relative path for one template file."""
-    rendered_parts = [
-        part.replace(_TEMPLATE_PACKAGE_NAME, package_name) for part in relative_path.parts
-    ]
-    return Path(*rendered_parts)
-
-
 def _render_template_content(*, content: str, context: TemplateContext) -> str:
     """Return template content with project and package substitutions applied."""
-    rendered = content.replace(_TEMPLATE_PROJECT_NAME, context.project_name).replace(
-        _TEMPLATE_PACKAGE_NAME,
-        context.package_name,
-    )
+    rendered = content.replace(_TEMPLATE_PROJECT_NAME, context.project_name)
     replacements = {
         "{{ project_name }}": context.project_name,
-        "{{ package_name }}": context.package_name,
         "{{ workflow_relpath }}": context.workflow_relpath,
         "{{ modules_relpath }}": context.modules_relpath,
         "{{ envs_relpath }}": context.envs_relpath,
+        "{{ notebooks_relpath }}": context.notebooks_relpath,
+        "{{ scripts_relpath }}": context.scripts_relpath,
         "{{ tests_relpath }}": context.tests_relpath,
     }
     for placeholder, value in replacements.items():
@@ -98,14 +84,12 @@ def _iter_template_files_from_dir(
 
 
 def _template_files(
-    *, template_root: Traversable, package_name: str, destination_prefix: Path | None = None
+    *, template_root: Traversable, destination_prefix: Path | None = None
 ) -> list[tuple[Traversable, Path]]:
     """Return ``(source, relative_dest)`` pairs for the starter template."""
     files: list[tuple[Traversable, Path]] = []
     for source_path, relative_path in _iter_template_files(template_root):
-        rendered_path = _render_template_path(
-            relative_path=relative_path, package_name=package_name
-        )
+        rendered_path = Path(*relative_path.parts)
         if destination_prefix is not None:
             rendered_path = destination_prefix / rendered_path
         files.append(
@@ -117,20 +101,21 @@ def _template_files(
     return files
 
 
-def _template_context(*, root: Path, package_name: str) -> TemplateContext:
+def _template_context(*, root: Path) -> TemplateContext:
     """Return the scaffold render context for one project root."""
-    package_dir = Path(package_name)
+    package_dir = Path(PACKAGE_NAME)
     return TemplateContext(
         project_name=root.name,
-        package_name=package_name,
         workflow_relpath=str(package_dir / "workflow.py"),
         modules_relpath=str(package_dir / "modules"),
         envs_relpath=str(package_dir / "envs"),
+        notebooks_relpath=str(package_dir / "notebooks"),
+        scripts_relpath=str(package_dir / "scripts"),
         tests_relpath="tests/workflows",
     )
 
 
-def _selected_template_files(*, package_name: str, args) -> list[tuple[Traversable, Path]]:
+def _selected_template_files(*, args) -> list[tuple[Traversable, Path]]:
     """Return the template files selected by CLI flags."""
     if args.no_skills and args.skills_only:
         raise ValueError("Cannot combine --no-skills with --skills-only.")
@@ -145,7 +130,6 @@ def _selected_template_files(*, package_name: str, args) -> list[tuple[Traversab
         files.extend(
             _template_files(
                 template_root=_template_root(group=group),
-                package_name=package_name,
                 destination_prefix=destination_prefix,
             )
         )
@@ -157,9 +141,8 @@ def command_init(args) -> int:
     root = Path(args.directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
     rich_console = console(sys.stdout)
-    package_name = _package_name_for_directory(root=root)
-    context = _template_context(root=root, package_name=package_name)
-    files = _selected_template_files(package_name=package_name, args=args)
+    context = _template_context(root=root)
+    files = _selected_template_files(args=args)
 
     conflicts = [
         root / relative_path for _, relative_path in files if (root / relative_path).exists()
@@ -197,7 +180,11 @@ def command_init(args) -> int:
     for path in written_paths:
         rich_console.print(f"  [green]•[/] {path.relative_to(root)}")
     rich_console.print(
-        "\n[dim]Next steps:[/] [bold]cd[/] "
+        f"\n[dim]Your workflow lives in[/] [bold]{context.workflow_relpath}[/]"
+        f"[dim]; tasks live in[/] [bold]{context.modules_relpath}/[/]"
+    )
+    rich_console.print(
+        "[dim]Next steps:[/] [bold]cd[/] "
         f"[bold]{root.name}[/] and run [bold]ginkgo test --dry-run[/]"
     )
     return 0

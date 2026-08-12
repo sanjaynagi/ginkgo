@@ -10,7 +10,11 @@ from types import ModuleType
 import pytest
 
 import ginkgo
-from ginkgo.runtime.module_loader import import_roots_for_path, load_module_from_path
+from ginkgo.runtime.module_loader import (
+    import_roots_for_path,
+    load_module_from_path,
+    package_qualified_name,
+)
 
 
 @pytest.fixture
@@ -152,3 +156,70 @@ class TestLoadModuleFromPath:
             sys.path[:] = original_sys_path
 
         assert module.RESULT == "ok"
+
+
+class TestPackageQualifiedLoading:
+    def test_entry_in_package_supports_relative_imports(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "w1"
+        package_dir = project_root / "workflow"
+        (package_dir / "modules").mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "modules" / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "modules" / "analysis.py").write_text(
+            "def build() -> str:\n    return 'ok'\n",
+            encoding="utf-8",
+        )
+        workflow_path = package_dir / "workflow.py"
+        workflow_path.write_text(
+            "from .modules.analysis import build\n\nRESULT = build()\n",
+            encoding="utf-8",
+        )
+
+        original_sys_path = list(sys.path)
+        try:
+            module = load_module_from_path(workflow_path)
+        finally:
+            sys.path[:] = original_sys_path
+            sys.modules.pop("workflow", None)
+            sys.modules.pop("workflow.workflow", None)
+
+        assert package_qualified_name(workflow_path) == "workflow.workflow"
+        assert module.__name__ == "workflow.workflow"
+        assert module.__package__ == "workflow"
+        assert module.RESULT == "ok"
+
+    def test_bare_entry_file_keeps_synthetic_top_level_name(self, tmp_path: Path) -> None:
+        workflow_path = tmp_path / "workflow.py"
+        workflow_path.write_text("RESULT = 'ok'\n", encoding="utf-8")
+
+        original_sys_path = list(sys.path)
+        try:
+            module = load_module_from_path(workflow_path)
+        finally:
+            sys.path[:] = original_sys_path
+
+        assert package_qualified_name(workflow_path) is None
+        assert module.__name__.startswith("ginkgo_user_")
+        assert module.RESULT == "ok"
+
+    def test_repeated_loads_re_execute_the_entry_module(self, tmp_path: Path) -> None:
+        project_root = tmp_path / "w1"
+        package_dir = project_root / "workflow"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        workflow_path = package_dir / "workflow.py"
+        workflow_path.write_text("VALUE = 1\n", encoding="utf-8")
+
+        original_sys_path = list(sys.path)
+        try:
+            first = load_module_from_path(workflow_path)
+            # Differ in size so the stale bytecode cache cannot mask a reload.
+            workflow_path.write_text("VALUE = 22222\n", encoding="utf-8")
+            second = load_module_from_path(workflow_path)
+        finally:
+            sys.path[:] = original_sys_path
+            sys.modules.pop("workflow", None)
+            sys.modules.pop("workflow.workflow", None)
+
+        assert first.VALUE == 1
+        assert second.VALUE == 22222

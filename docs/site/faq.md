@@ -40,11 +40,13 @@ A Ginkgo workflow may be structured however the user desires. The canonical layo
 my-project/
 ├── pixi.toml
 ├── ginkgo.toml
-├── my_project/
+├── workflow/              # always named "workflow"
 │   ├── __init__.py
 │   ├── workflow.py        # flow definitions and wiring — keep this thin
 │   ├── modules/           # contain tasks
-│   └── envs/              # per-task environment manifests
+│   ├── envs/              # per-task environment manifests
+│   ├── notebooks/         # notebook-task source
+│   └── scripts/           # script-task source
 └── tests/workflows/       # workflow validation checks
 ```
 

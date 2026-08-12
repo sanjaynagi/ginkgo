@@ -8,17 +8,25 @@ return deferred expressions rather than running immediately.
 ## Keep Flows Thin
 
 The canonical project layout expects workflow wiring in `workflow.py` and task
-implementations in modules owned by the project package.
+implementations in modules owned by the `workflow` package. The package
+directory is always named `workflow`, whatever the project is called.
 
 ```text
 <project-root>/
 ├── pixi.toml
 ├── ginkgo.toml
-├── <project_package>/
+├── workflow/
+│   ├── __init__.py
 │   ├── workflow.py
 │   ├── modules/
-│   └── envs/
+│   ├── envs/
+│   ├── notebooks/
+│   └── scripts/
 ```
+
+The layout is a convention, not a contract: `ginkgo run <entry.py>` runs an
+entry file whatever the surrounding structure. The canonical layout is what
+auto-discovery targets.
 
 The flow should primarily:
 

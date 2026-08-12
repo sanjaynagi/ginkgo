@@ -1,32 +1,85 @@
 # Canonical Workflow Project Layout
 
-Ginkgo treats the following repository structure as the canonical default for
-workflow projects:
+Ginkgo scaffolds and auto-discovers a single canonical layout. The package
+directory is always named `workflow`, whatever the project directory is called,
+so `ginkgo init <dir>` never produces a `<dir>/<dir>/` nesting.
 
 ```text
 <project-root>/
 ├── pixi.toml
 ├── ginkgo.toml
-├── <project_package>/
+├── workflow/           # fixed package name
 │   ├── __init__.py
-│   ├── workflow.py   # contains flow definition
-│   ├── modules/      # contains tasks, grouped in modules
-│   └── envs/
+│   ├── workflow.py     # contains flow definition
+│   ├── modules/        # contains tasks, grouped in modules
+│   ├── envs/           # per-task Pixi manifests
+│   ├── notebooks/      # notebook-task source
+│   └── scripts/        # script-task source
 ├── tests/
 │   └── workflows/
-├── results/          # runtime-created, optional
-└── .ginkgo/          # runtime-created, optional
+├── results/            # runtime-created, optional
+└── .ginkgo/            # runtime-created, optional
 ```
 
 Within that layout:
 
-- `<project_package>/workflow.py` is the canonical CLI entrypoint and should
-  remain thin, containing flow definitions and graph wiring only.
-- Reusable task implementations live under `<project_package>/modules/`.
-- Task-specific Pixi manifests may live under `<project_package>/envs/`.
+- `workflow/workflow.py` is the canonical CLI entrypoint and should remain thin,
+  containing flow definitions and graph wiring only.
+- Reusable task implementations live under `workflow/modules/`.
+- Task-specific Pixi manifests may live under `workflow/envs/`.
+- Notebook-task and script-task sources live under `workflow/notebooks/` and
+  `workflow/scripts/`.
 - `tests/workflows/` holds workflow validation files for `ginkgo test`.
 
-The CLI auto-discovers the canonical `<project_package>/workflow.py` when
-`ginkgo run` is invoked from the repository root without an explicit workflow
-argument. Legacy root-level `workflow.py` files and explicit workflow paths
-remain supported for non-canonical project layouts.
+The scaffold is produced by `cli/commands/init.py` from
+`src/ginkgo/templates/init/`, where `PACKAGE_NAME` pins the package directory to
+`workflow`.
+
+## Structure is a convention, not a contract
+
+`ginkgo run` takes an entry file and runs it whatever the surrounding structure.
+`runtime/module_loader.py` loads the entry file **by path**, and
+`import_roots_for_path` derives `sys.path` roots adaptively: it adds the entry
+file's own directory, climbs the `__init__.py` chain and adds the parent of the
+topmost package, and adds the nearest `ginkgo.toml` project root. So all of the
+following run today:
+
+- **`workflow/` package** (canonical) — `from workflow.modules… import …` and
+  relative imports both resolve.
+- **flat, no packages** — sibling modules import as top-level; no `__init__.py`
+  needed.
+- **`src/<pkg>/workflow.py`** — `src/` goes on the path, so
+  `from <pkg>.modules… import …` resolves.
+
+Only auto-discovery is structure-aware: it is convenience for running without
+typing a path, not a structural requirement.
+
+## Entry-file imports
+
+`load_module_from_path` loads the entry file under its **real dotted name** when
+an `__init__.py` sits beside it, setting `__package__`. In the canonical layout
+the entry is therefore `workflow.workflow`, and both forms work:
+
+```python
+from .modules.analysis import build_brief          # relative
+from workflow.modules.analysis import build_brief   # absolute
+```
+
+A bare entry file (no `__init__.py` beside it) is loaded under a synthetic
+top-level name instead, so relative imports are unavailable there — as they are
+for any standalone script. `__init__.py` is required only where your own imports
+need package resolution: for the canonical layout that means
+`workflow/__init__.py` and `workflow/modules/__init__.py`.
+
+Because the package name is fixed, two ginkgo projects imported into one
+interpreter would collide on the name `workflow`. This is a non-issue for
+run-in-place execution, which is how ginkgo runs workflows.
+
+## Discovery
+
+The CLI auto-discovers the canonical `workflow/workflow.py` when `ginkgo run` is
+invoked from the repository root without an explicit workflow argument.
+`canonical_workflow_candidates` accepts any single direct child package
+containing `workflow.py`, so projects scaffolded before the package name was
+fixed keep working. Legacy root-level `workflow.py` files and explicit workflow
+paths remain supported.

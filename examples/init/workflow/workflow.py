@@ -3,24 +3,12 @@
 import ginkgo
 from ginkgo import expand, flow
 
-from ginkgo_init_template.modules.analysis import build_brief, package_brief, write_summary
-from ginkgo_init_template.modules.prep import normalize_seed_card, write_seed_card
-from ginkgo_init_template.modules.reporting import (
-    render_overview_notebook,
-    write_delivery_manifest,
-)
+from .modules.analysis import build_brief, package_brief, write_summary
+from .modules.prep import normalize_seed_card, write_seed_card
+from .modules.reporting import render_overview_notebook, write_delivery_manifest
 
 
 cfg = ginkgo.config("ginkgo.toml")
-
-# Declared parameter: override on the command line with --run-label "...".
-# A [params] table in ginkgo.toml could supply it instead, but is not required —
-# without one the default below applies.
-run_label = ginkgo.param(
-    "run_label",
-    default="Starter demo",
-    help="Label recorded in the run's overview notebook",
-)
 
 
 @flow
@@ -69,7 +57,7 @@ def main():
     )
     notebook_html = render_overview_notebook(
         summary_path=summary,
-        run_label=run_label,
+        run_label=str(cfg["run_label"]),
     )
     return write_delivery_manifest(
         summary_path=summary,

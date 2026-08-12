@@ -30,8 +30,9 @@ The repository currently implements:
 - Remote-input access policy with staged download or FUSE streaming
   (gcsfuse / mountpoint-s3 / rclone), per-ref / per-task / pattern / config
   resolution, cache-stable mode switching, and graceful fallback
-- A canonical package-oriented project layout with workflow autodiscovery and
-  scaffolded project initialization
+- A canonical project layout built on a fixed `workflow/` package, with workflow
+  autodiscovery, scaffolded project initialization, and a structure-agnostic
+  module loader for non-canonical layouts
 - An example-driven benchmark harness with generated benchmark inputs, checked-
   in baselines, and a separate CI lane for slowdown detection
 - Selective retry policies with exponential backoff, size- and count-based

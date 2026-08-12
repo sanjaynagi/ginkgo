@@ -890,7 +890,7 @@ class TestCliInit:
         assert "🌿 ginkgo init demo-project" in result.stdout
         assert "✓ Initialized project scaffold at" in result.stdout
         assert "Created:" in result.stdout
-        assert "demo_project/workflow.py" in result.stdout
+        assert "workflow/workflow.py" in result.stdout
         assert "README.md" in result.stdout
         assert "ginkgo test --dry-run" in result.stdout
 
@@ -898,14 +898,15 @@ class TestCliInit:
         assert (project_dir / "pixi.toml").is_file()
         assert (project_dir / "ginkgo.toml").is_file()
         assert (project_dir / "README.md").is_file()
-        assert (project_dir / "demo_project" / "__init__.py").is_file()
-        assert (project_dir / "demo_project" / "workflow.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "prep.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "analysis.py").is_file()
-        assert (project_dir / "demo_project" / "modules" / "reporting.py").is_file()
-        assert (project_dir / "demo_project" / "envs" / "analysis_tools" / "pixi.toml").is_file()
-        assert (project_dir / "demo_project" / "scripts" / "build_brief.py").is_file()
-        assert (project_dir / "demo_project" / "notebooks" / "overview.ipynb").is_file()
+        assert (project_dir / "workflow" / "__init__.py").is_file()
+        assert (project_dir / "workflow" / "workflow.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "prep.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "analysis.py").is_file()
+        assert (project_dir / "workflow" / "modules" / "reporting.py").is_file()
+        assert (project_dir / "workflow" / "envs" / "analysis_tools" / "pixi.toml").is_file()
+        assert (project_dir / "workflow" / "scripts" / "build_brief.py").is_file()
+        assert (project_dir / "workflow" / "notebooks" / "overview.ipynb").is_file()
+        assert not (project_dir / "demo_project").exists()
         assert (project_dir / "skills" / "index.md").is_file()
         assert (project_dir / "skills" / "commands.md").is_file()
         assert (project_dir / "skills" / "project.md").is_file()
@@ -915,7 +916,7 @@ class TestCliInit:
         assert not (project_dir / "agents.ginkgo.md").exists()
         assert not (project_dir / "__init__.py").exists()
 
-        workflow_text = (project_dir / "demo_project" / "workflow.py").read_text(encoding="utf-8")
+        workflow_text = (project_dir / "workflow" / "workflow.py").read_text(encoding="utf-8")
         readme_text = (project_dir / "README.md").read_text(encoding="utf-8")
         skills_index_text = (project_dir / "skills" / "index.md").read_text(encoding="utf-8")
         commands_text = (project_dir / "skills" / "commands.md").read_text(encoding="utf-8")
@@ -923,10 +924,10 @@ class TestCliInit:
             encoding="utf-8"
         )
         assert "@flow" in workflow_text
-        assert "from demo_project.modules.pipeline import main" not in workflow_text
+        assert "from .modules.analysis import" in workflow_text
         assert "expand(" in workflow_text
         assert "ginkgo run --agent" in readme_text
-        assert "demo_project/workflow.py" in readme_text
+        assert "workflow/workflow.py" in readme_text
         assert "See `skills/index.md`" in readme_text
         assert "This project uses Ginkgo" in skills_index_text
         assert "`project.md`:" in skills_index_text
@@ -943,7 +944,7 @@ class TestCliInit:
 
     def test_init_can_create_skills_only_for_existing_project(self) -> None:
         project_dir = Path("demo-project")
-        package_dir = project_dir / "demo_project"
+        package_dir = project_dir / "workflow"
         (package_dir / "modules").mkdir(parents=True)
         (project_dir / "tests" / "workflows").mkdir(parents=True)
         (package_dir / "workflow.py").write_text("workflow\n", encoding="utf-8")
@@ -972,7 +973,7 @@ class TestCliInit:
     def test_init_refuses_to_overwrite_without_force(self) -> None:
         project_dir = Path("demo-project")
         project_dir.mkdir()
-        package_dir = project_dir / "demo_project"
+        package_dir = project_dir / "workflow"
         package_dir.mkdir()
         (package_dir / "workflow.py").write_text("existing\n", encoding="utf-8")
 

@@ -57,16 +57,61 @@ def import_roots_for_path(path: str | Path) -> list[str]:
     return roots
 
 
-def load_module_from_path(path: str | Path, *, module_name: str | None = None) -> ModuleType:
-    """Import a Python source file under a synthetic module name."""
+def package_qualified_name(path: str | Path) -> str | None:
+    """Return the dotted module name for a source file that lives in a package.
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to a Python source file.
+
+    Returns
+    -------
+    str | None
+        The dotted name (e.g. ``workflow.workflow``) when an ``__init__.py``
+        sits beside the file, otherwise ``None``.
+    """
     source_path = Path(path).resolve()
-    chosen_name = module_name or module_name_for_path(source_path)
-    if chosen_name in sys.modules:
-        del sys.modules[chosen_name]
+    if not (source_path.parent / "__init__.py").is_file():
+        return None
+
+    parts = [source_path.stem]
+    current = source_path.parent
+    while (current / "__init__.py").is_file():
+        parts.append(current.name)
+        current = current.parent
+    return ".".join(reversed(parts))
+
+
+def _purge_package_modules(package_name: str) -> None:
+    """Drop a package and its submodules from ``sys.modules`` to force a fresh exec."""
+    prefix = f"{package_name}."
+    for name in [name for name in sys.modules if name == package_name or name.startswith(prefix)]:
+        del sys.modules[name]
+
+
+def load_module_from_path(path: str | Path, *, module_name: str | None = None) -> ModuleType:
+    """Import a Python source file, preferring its real dotted name inside a package.
+
+    When the file lives in a package (an ``__init__.py`` sits beside it) and no
+    explicit ``module_name`` is given, it is loaded under its real dotted name
+    with ``__package__`` set, so relative imports resolve. A bare source file
+    is loaded under a synthetic top-level name instead.
+    """
+    source_path = Path(path).resolve()
 
     for import_root in reversed(import_roots_for_path(source_path)):
         if import_root not in sys.path:
             sys.path.insert(0, import_root)
+
+    if module_name is None:
+        dotted_name = package_qualified_name(source_path)
+        if dotted_name is not None:
+            return _load_package_module(source_path=source_path, dotted_name=dotted_name)
+
+    chosen_name = module_name or module_name_for_path(source_path)
+    if chosen_name in sys.modules:
+        del sys.modules[chosen_name]
 
     spec = importlib.util.spec_from_file_location(chosen_name, source_path)
     if spec is None or spec.loader is None:
@@ -74,6 +119,34 @@ def load_module_from_path(path: str | Path, *, module_name: str | None = None) -
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[chosen_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_package_module(*, source_path: Path, dotted_name: str) -> ModuleType:
+    """Load a source file under its real dotted name, with its parent package imported."""
+    top_level_name = dotted_name.split(".", 1)[0]
+    _purge_package_modules(top_level_name)
+
+    # The package root's parent must win over the entry file's own directory,
+    # which is also on sys.path and would otherwise shadow the package with a
+    # like-named sibling module (workflow/workflow.py shadowing workflow/).
+    package_root_parent = str(source_path.parents[dotted_name.count(".")])
+    if package_root_parent in sys.path:
+        sys.path.remove(package_root_parent)
+    sys.path.insert(0, package_root_parent)
+
+    parent_name = dotted_name.rsplit(".", 1)[0]
+    parent = importlib.import_module(parent_name)
+
+    spec = importlib.util.spec_from_file_location(dotted_name, source_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec from {source_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = parent_name
+    sys.modules[dotted_name] = module
+    setattr(parent, dotted_name.rsplit(".", 1)[1], module)
     spec.loader.exec_module(module)
     return module
 
