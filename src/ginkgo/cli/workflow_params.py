@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ginkgo.cli.renderers.common import task_base_name
-from ginkgo.config import PARAMS_CONFIG_KEY, config_session, load_runtime_config
+from ginkgo.config import PARAMS_CONFIG_KEY, config_session, load_runtime_config_layers
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import (
     GlobalParamRead,
@@ -28,31 +28,40 @@ if TYPE_CHECKING:
     from ginkgo.config import _ConfigSession
 
 
-def params_table(runtime_config: dict[str, Any]) -> dict[str, Any]:
-    """Return the ``[params]`` table from an already-loaded runtime config.
+def params_table(layers: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Build the ``[params]`` table by layering it across config sources.
+
+    Parameters layer key by key, so an override that sets one parameter leaves
+    the rest of an earlier table intact. Merging the configs first and reading
+    ``[params]`` from the result would instead replace the whole table, silently
+    dropping parameters the override did not mention.
 
     Parameters
     ----------
-    runtime_config : dict[str, Any]
-        A loaded runtime config mapping.
+    layers : Sequence[dict[str, Any]]
+        Config sources in load order, from
+        :func:`ginkgo.config.load_runtime_config_layers`.
 
     Returns
     -------
     dict[str, Any]
-        The parameter table, empty when the config declares none.
+        The layered parameter table, empty when no source declares one.
 
     Raises
     ------
     TypeError
-        If the config's ``params`` key is not a mapping.
+        If any source's ``params`` key is not a mapping.
     """
-    table = runtime_config.get(PARAMS_CONFIG_KEY, {})
-    if not isinstance(table, dict):
-        raise TypeError(
-            f"Config key {PARAMS_CONFIG_KEY!r} must be a mapping of parameter names to "
-            f"values, got {type(table).__name__}."
-        )
-    return table
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        table = layer.get(PARAMS_CONFIG_KEY, {})
+        if not isinstance(table, dict):
+            raise TypeError(
+                f"Config key {PARAMS_CONFIG_KEY!r} must be a mapping of parameter names to "
+                f"values, got {type(table).__name__}."
+            )
+        merged.update(table)
+    return merged
 
 
 def load_param_config(
@@ -78,7 +87,7 @@ def load_param_config(
         The parameter table, empty when the config declares none.
     """
     return params_table(
-        load_runtime_config(project_root=project_root, override_paths=config_paths)
+        load_runtime_config_layers(project_root=project_root, override_paths=config_paths)
     )
 
 

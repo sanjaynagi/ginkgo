@@ -34,7 +34,12 @@ from ginkgo.cli.workflow_params import (
     validate_param_extras,
 )
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
-from ginkgo.config import PARAMS_CONFIG_KEY, config_session, load_runtime_config
+from ginkgo.config import (
+    PARAMS_CONFIG_KEY,
+    config_session,
+    load_runtime_config_layers,
+    merge_config_layers,
+)
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
@@ -167,8 +172,14 @@ def run_workflow(
     # declared parameters resolve against it regardless of whether the workflow
     # calls config() before or after param().
     with profiler.timed("runtime_config_load"):
-        runtime_config = load_runtime_config(project_root=Path.cwd(), override_paths=config_paths)
-        param_config = params_table(runtime_config)
+        # Loaded as layers so top-level keys and the [params] table can combine
+        # by their own rules, without reading the files twice.
+        config_layers = load_runtime_config_layers(
+            project_root=Path.cwd(),
+            override_paths=config_paths,
+        )
+        runtime_config = merge_config_layers(config_layers)
+        param_config = params_table(config_layers)
     with config_session(
         override_paths=config_paths,
         param_config=param_config,

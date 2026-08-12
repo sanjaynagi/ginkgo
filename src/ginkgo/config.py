@@ -175,27 +175,58 @@ def config(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def load_runtime_config_layers(
+    *,
+    project_root: Path,
+    override_paths: Sequence[str | Path] | None = None,
+) -> list[dict[str, Any]]:
+    """Load each runtime config source separately, in load order.
+
+    The canonical project config comes first, then each ``--config`` override.
+    Kept as separate layers because top-level keys and the ``[params]`` table
+    combine differently: top-level keys replace wholesale, while parameters
+    layer key by key. Merging first would lose the distinction.
+
+    Parameters
+    ----------
+    project_root : Path
+        Directory holding the canonical ``ginkgo.toml``/``ginkgo.yaml``.
+    override_paths : Sequence[str | Path] | None, optional
+        Config files given with ``--config``.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One mapping per config source, in load order. Empty when none exist.
+    """
+    resolved_overrides = [Path(path).resolve() for path in override_paths or ()]
+    default_path = _default_runtime_config_path(project_root=project_root)
+
+    layers: list[dict[str, Any]] = []
+    if default_path is not None:
+        layers.append(_load_config_mapping(default_path))
+    layers.extend(_load_config_mapping(path) for path in resolved_overrides)
+    return layers
+
+
+def merge_config_layers(layers: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Merge config layers into one mapping, later sources winning per top-level key."""
+    return _merge_top_level_dicts(layers)
+
+
 def load_runtime_config(
     *,
     project_root: Path,
     override_paths: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
-    """Load the CLI runtime config mapping.
+    """Load the CLI runtime config as one mapping, later sources winning.
 
-    When explicit override paths are provided, they fully define the runtime
-    config. Otherwise the canonical project config file is loaded if present.
+    Top-level keys replace wholesale. For the ``[params]`` table, which layers
+    key by key, build it from :func:`load_runtime_config_layers` instead.
     """
-    resolved_overrides = [Path(path).resolve() for path in override_paths or ()]
-    default_path = _default_runtime_config_path(project_root=project_root)
-
-    mappings: list[dict[str, Any]] = []
-    if default_path is not None:
-        mappings.append(_load_config_mapping(default_path))
-    mappings.extend(_load_config_mapping(path) for path in resolved_overrides)
-
-    if not mappings:
-        return {}
-    return _merge_top_level_dicts(mappings)
+    return _merge_top_level_dicts(
+        load_runtime_config_layers(project_root=project_root, override_paths=override_paths)
+    )
 
 
 @contextmanager

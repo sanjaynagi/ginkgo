@@ -65,6 +65,24 @@ Resolved values are written to `params.yaml` alongside the loaded config, and
 each parameter's source (`cli`, `config`, or `default`) is recorded under
 `param_sources` in `manifest.yaml`.
 
+The `[params]` table layers key by key across config sources, unlike top-level
+keys which replace wholesale. An override that sets one parameter therefore
+leaves the rest of the base table intact. This is why the runtime config is
+loaded as separate layers rather than merged first: merging would take the last
+source's table whole and silently drop parameters the override did not mention.
+
+The table is read from the discovered project config (`ginkgo.toml`,
+`ginkgo.yaml`, or `ginkgo.yml`) and any `--config` overlay — not from a
+differently named file the workflow happens to load itself. Parameters must
+resolve before the workflow module is imported, so the name it will pass to
+`config()` is not yet known. Pass such a file with `--config` to have its
+`[params]` table count.
+
+A sub-workflow's `params=` is delivered the same way: `subworkflow(path,
+params={...})` writes a `[params]` table into a temporary `--config` file, so the
+child resolves them through `ginkgo.param` like any other source, and a parameter
+the parent does not pass keeps whatever the child's own table gives it.
+
 ### Parameters must be passed as task arguments
 
 **A parameter reaches a task as an argument.** Task cache keys hash task

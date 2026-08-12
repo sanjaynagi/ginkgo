@@ -1952,3 +1952,34 @@ def main():
         assert payload["ok"] is True
         codes = {(item["severity"], item["code"]) for item in payload["diagnostics"]}
         assert ("warning", "param_read_from_global") in codes
+
+    def test_config_override_layers_the_params_table(self) -> None:
+        """An override setting one parameter must not drop the others in the base table."""
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+a = ginkgo.param("a", type=int, default=-1)
+b = ginkgo.param("b", type=int, default=-1)
+
+@task()
+def write_both(x: int, y: int, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(f"a={x} b={y}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_both(x=a, y=b, output_path="result.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        Path("ginkgo.toml").write_text("[params]\na = 1\nb = 2\n", encoding="utf-8")
+        Path("override.toml").write_text("[params]\na = 9\n", encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert Path("result.txt").read_text(encoding="utf-8") == "a=9 b=2"

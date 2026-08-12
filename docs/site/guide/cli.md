@@ -119,6 +119,9 @@ ginkgo run workflow.py --item alpha --item beta --verbose
 Resolved values are recorded in the run's `params.yaml`, and where each came
 from &mdash; the CLI, config, or the default &mdash; in `manifest.yaml`.
 
+The `[params]` table layers across config files, so `--config extra.toml` setting
+one parameter leaves the others in `ginkgo.toml` alone.
+
 ```{important}
 **Pass a parameter into a task as an argument.** Cache keys hash task arguments,
 so a parameter passed as one correctly re-runs the tasks that used it. A

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import ginkgo
+from ginkgo.cli.workflow_params import params_table
 from ginkgo.config import config_session
 from ginkgo.params import (
     ParamContext,
@@ -393,3 +394,21 @@ def test_declaring_globals_recorded_on_the_session():
     with config_session() as session:
         ginkgo.param("tag", default="a")
         assert session.declaration_globals["tag"] is globals()
+
+
+def test_params_table_layers_across_sources():
+    """An override that sets one parameter must leave the rest of the base table intact."""
+    assert params_table([{"params": {"a": 1, "b": 2}}, {"params": {"a": 9}}]) == {"a": 9, "b": 2}
+
+
+def test_params_table_ignores_sources_without_a_table():
+    assert params_table([{"other": 1}, {"params": {"a": 1}}, {}]) == {"a": 1}
+
+
+def test_params_table_empty_when_no_source_declares_one():
+    assert params_table([{"other": 1}, {}]) == {}
+
+
+def test_params_table_rejects_a_non_mapping_table():
+    with pytest.raises(TypeError, match="must be a mapping"):
+        params_table([{"params": ["a", "b"]}])

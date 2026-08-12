@@ -13,8 +13,9 @@ from ginkgo_init_template.modules.reporting import (
 
 cfg = ginkgo.config("ginkgo.toml")
 
-# Declared parameter: override on the command line with --run-label "...",
-# set params.run_label in ginkgo.toml, or fall back to the default below.
+# Declared parameter: override on the command line with --run-label "...".
+# A [params] table in ginkgo.toml could supply it instead, but is not required —
+# without one the default below applies.
 run_label = ginkgo.param(
     "run_label",
     default="Starter demo",

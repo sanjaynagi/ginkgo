@@ -131,13 +131,13 @@ class SubworkflowRunner:
             config_paths: list[str] = []
             if directive.params:
                 tmp_params_path = tmp_dir / "params.yaml"
-                # Written in both shapes so either style of child works: at the
-                # top level for a child reading config() subscripts, and under
-                # [params] for one declaring ginkgo.param(). Both come from the
-                # same dict at this one call site, so they cannot disagree.
+                # Written as a [params] table so the child resolves them through
+                # ginkgo.param() like any other parameter source. The table layers
+                # over the child's own, so a parameter the parent does not pass
+                # keeps whatever the child's config set.
                 tmp_params_path.write_text(
                     yaml.safe_dump(
-                        {**directive.params, PARAMS_CONFIG_KEY: dict(directive.params)},
+                        {PARAMS_CONFIG_KEY: dict(directive.params)},
                         sort_keys=True,
                     ),
                     encoding="utf-8",
