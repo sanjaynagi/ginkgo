@@ -45,8 +45,16 @@ from ginkgo.cli.renderers.models import (
 _GROUP_THRESHOLD = 6
 """Minimum invocation count to collapse same-task rows into a group."""
 
-_LIVE_REFRESH_STATUSES = frozenset({"staging", "submitted", "running", "succeeded", "failed"})
+_LIVE_REFRESH_STATUSES = frozenset(
+    {"preparing env", "staging", "submitted", "running", "succeeded", "failed"}
+)
 """Status transitions significant enough to force an immediate Live refresh."""
+
+_ENV_PREPARE_STATUS = "preparing env"
+"""Display status shown while a task's execution environment is installed."""
+
+_ENV_PREPARE_REPORT_THRESHOLD_SECONDS = 1.0
+"""Minimum total environment preparation time worth explaining in the summary."""
 
 
 class _RunEventState:
@@ -57,6 +65,9 @@ class _RunEventState:
         self.rows: dict[int, _TaskRow] = {}
         self.row_order: list[int] = []
         self.notices: list[str] = []
+        self.env_prepare_seconds = 0.0
+        self.prepared_envs: list[str] = []
+        self._env_prepare_started: dict[int, float] = {}
 
     def seed(self, *, planned_tasks: list[tuple[int, str, str]]) -> None:
         """Register the planned task set before any events arrive."""
@@ -109,7 +120,15 @@ class _RunEventState:
         row = self.rows[node_id]
         if isinstance(display_label, str):
             self._apply_display_label(node_id=node_id, display_label=display_label)
+        prepare_ended = self._track_env_prepare(
+            node_id=node_id,
+            status=status,
+            env=payload.get("env"),
+            event_time=event_time,
+        )
         row.status = status
+        # Environment preparation deliberately does not start the row clock:
+        # the reported duration is the task's own work, not its install.
         if status in {"staging", "submitted", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
@@ -118,8 +137,39 @@ class _RunEventState:
             row.finished_at = event_time
         # Only refresh on state transitions that the user needs to see
         # immediately. Rapid cache hits are batched by Rich's internal
-        # refresh rate to avoid flicker.
-        return status if status in _LIVE_REFRESH_STATUSES else ""
+        # refresh rate to avoid flicker. Leaving `preparing env` is as visible
+        # a transition as entering it, whatever status follows.
+        if status in _LIVE_REFRESH_STATUSES or prepare_ended:
+            return status
+        return ""
+
+    def _track_env_prepare(
+        self,
+        *,
+        node_id: int,
+        status: str,
+        env: object,
+        event_time: float,
+    ) -> bool:
+        """Accumulate time a node spent preparing its execution environment.
+
+        Returns
+        -------
+        bool
+            True when this event ended an in-progress preparation window,
+            whether it completed or failed.
+        """
+        if status == _ENV_PREPARE_STATUS:
+            self._env_prepare_started[node_id] = event_time
+            if isinstance(env, str) and env not in self.prepared_envs:
+                self.prepared_envs.append(env)
+            return False
+
+        started = self._env_prepare_started.pop(node_id, None)
+        if started is None:
+            return False
+        self.env_prepare_seconds += max(0.0, event_time - started)
+        return True
 
     def label_for(self, *, node_id: int, task_name: str) -> str:
         """Return a stable display label, disambiguating repeated task names."""
@@ -452,6 +502,19 @@ class _RunLayoutRenderer:
             expand=False,
         )
 
+    def render_env_prepare_summary(self) -> Text | None:
+        """Explain a slow first run caused by environment preparation."""
+        if self._state.env_prepare_seconds < _ENV_PREPARE_REPORT_THRESHOLD_SECONDS:
+            return None
+        envs = ", ".join(self._state.prepared_envs)
+        env_part = f" ({envs})" if envs else ""
+        return Text(
+            f"⚙ Environment preparation took "
+            f"{format_duration(self._state.env_prepare_seconds)}{env_part} - "
+            f"first runs install environments, later runs reuse them",
+            style="dim",
+        )
+
     def render_failure_separator(self) -> Rule:
         """Render a separator before end-of-run failure diagnostics."""
         return Rule(style="dim")
@@ -622,6 +685,9 @@ class CliRunRenderer:
                 f"\n[bold red]✖[/] Failed in [bold]{format_duration(elapsed)}[/] - "
                 f"{executed} tasks executed, {cached} cached, {failed} failed"
             )
+        env_prepare_summary = self._layout.render_env_prepare_summary()
+        if env_prepare_summary is not None:
+            self._console.print(env_prepare_summary)
         resource_summary = resources or self._layout.resource_summary()
         if resource_summary is not None:
             resource_footer = self._layout.render_resource_footer(resource_summary)

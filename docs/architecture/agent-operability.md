@@ -27,6 +27,19 @@ same runtime event stream.
 - `ginkgo run --agent --verbose` extends the JSONL stream with per-task log
   output, which is omitted from the default agent stream.
 
+Environment preparation is visible in both renderings. `EnvPrepareStarted`,
+`EnvPrepareCompleted`, and `EnvPrepareFailed` reach agents verbatim in the JSONL
+stream; the Rich renderer maps them onto the task status cell, showing
+`preparing env` while `pixi install` runs and then returning the row to
+`waiting` (prepared) or `failed` (install failed). Every started preparation is
+closed by exactly one of the two outcome events, so neither renderer is left
+with a task stuck mid-preparation.
+
+Preparation time is tracked separately from task duration: the row clock starts
+when the task itself starts, and the accumulated preparation time is reported
+once in the run summary when it is material. A slow or failed first run is then
+attributed to environment installation rather than to the workflow.
+
 The legacy structured stderr task stream used by direct `evaluate(...)`
 callers remains available when no event bus is attached, preserving backward
 compatibility for existing tests and programmatic use.

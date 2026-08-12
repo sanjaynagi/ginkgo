@@ -18,6 +18,7 @@ def _status_style(status: str) -> str:
     """Return the Rich style name for a task status."""
     return {
         "waiting": "yellow",
+        "preparing env": "bold yellow",
         "staging": "bold magenta",
         "submitted": "bold blue",
         "running": "bold cyan",
@@ -31,6 +32,7 @@ def _status_icon(status: str) -> str:
     """Return the icon used for a task status."""
     return {
         "waiting": "•",
+        "preparing env": "⚙",
         "staging": "↓",
         "submitted": "↑",
         "running": "◐",
@@ -130,7 +132,16 @@ def _format_cpu_percent(value: float | None) -> str:
     return f"{value:.1f}%"
 
 
-_SEGMENT_ORDER = ("succeeded", "cached", "running", "submitted", "staging", "waiting", "failed")
+_SEGMENT_ORDER = (
+    "succeeded",
+    "cached",
+    "running",
+    "submitted",
+    "staging",
+    "preparing env",
+    "waiting",
+    "failed",
+)
 """Display order for multi-state bar segments (left-to-right)."""
 
 _BAR_FILL_CHAR = "█"

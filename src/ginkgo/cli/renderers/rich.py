@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
-from ginkgo.cli.renderers.run import CliRunRenderer
+from ginkgo.cli.renderers.run import _ENV_PREPARE_STATUS, CliRunRenderer
 from ginkgo.runtime.events import (
+    EnvPrepareCompleted,
+    EnvPrepareFailed,
+    EnvPrepareStarted,
     GinkgoEvent,
     TaskCacheHit,
     TaskCompleted,
@@ -16,6 +19,14 @@ from ginkgo.runtime.events import (
     TaskStaging,
     TaskStarted,
 )
+
+
+_ENV_PREPARE_STATUS_BY_EVENT = {
+    EnvPrepareStarted: _ENV_PREPARE_STATUS,
+    EnvPrepareCompleted: "waiting",
+    EnvPrepareFailed: "failed",
+}
+"""Row status each environment-preparation event puts a task into."""
 
 
 class RichEventRenderer:
@@ -62,6 +73,20 @@ class RichEventRenderer:
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
                 "remote_input_count": event.remote_input_count,
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
+        if isinstance(event, (EnvPrepareStarted, EnvPrepareCompleted, EnvPrepareFailed)):
+            # Completed preparation returns the task to the scheduler until it
+            # is dispatched; failed preparation ends the task before it starts.
+            payload = {
+                "task": event.task_name,
+                "status": _ENV_PREPARE_STATUS_BY_EVENT[type(event)],
+                "node_id": _node_id_from_task_id(event.task_id),
+                "attempt": event.attempt,
+                "env": event.env,
             }
             if event.display_label is not None:
                 payload["display_label"] = event.display_label

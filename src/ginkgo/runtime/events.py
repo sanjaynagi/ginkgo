@@ -204,6 +204,15 @@ class EnvPrepareCompleted(TaskEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class EnvPrepareFailed(TaskEvent):
+    """Environment preparation failed, aborting the task before it started."""
+
+    event: str = "env_prepare_failed"
+    env: str | None = None
+    error: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
 class RunStarted(RunEvent):
     """Run start event."""
 
