@@ -30,7 +30,7 @@ from ginkgo.core.shell import ShellDirective
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import tmp_dir
+from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.remote_executor import (
@@ -1084,7 +1084,15 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
-                resolved_args[name] = self._rehydrate_wrapped_refs(value=materialised)
+                # A path-shaped annotation binds a filesystem path at every
+                # depth, so the whole value — including any nested containers
+                # — keeps its ``AssetRef`` entries rather than becoming live
+                # objects that later code would stringify as paths.
+                resolved_args[name] = (
+                    materialised
+                    if is_path_shaped_annotation(annotation)
+                    else self._rehydrate_wrapped_refs(value=materialised)
+                )
                 continue
 
             if name == "threads":
@@ -1153,6 +1161,15 @@ class ConcurrentEvaluator:
         ``file`` and ``fig`` refs are left as-is: the former flow through
         the existing file coercion path, and the latter carry binary
         payloads that users rarely consume as live Python objects.
+
+        Callers decide whether to rehydrate at all: ``_resolve_task_args``
+        skips this entirely for a path-shaped annotation, which binds a
+        filesystem path rather than a live object.
+
+        Parameters
+        ----------
+        value : Any
+            The materialised argument value, possibly nesting ``AssetRef``.
         """
         if isinstance(value, AssetRef):
             if value.kind in REHYDRATABLE_KINDS:

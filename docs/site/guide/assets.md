@@ -26,14 +26,28 @@ def write_seed_card(item: str, output_path: str) -> file:
 
 The typed helpers each map to an asset **kind**:
 
-| Helper | Kind | Payload |
-|---|---|---|
-| `asset(payload, kind=...)` | any | explicit kind |
-| `table(payload)` | `table` | a dataframe or tabular file |
-| `array(payload)` | `array` | a NumPy / array payload |
-| `fig(payload)` | `fig` | a matplotlib figure or image |
-| `text(payload)` | `text` | plain, markdown, or JSON text |
-| `model(payload)` | `model` | a trained model object |
+| Helper | Kind | Payload | Return annotation |
+|---|---|---|---|
+| `asset(payload, kind=...)` | any | explicit kind | `file` only for `kind="file"`, else `object` |
+| `table(payload)` | `table` | a dataframe, or a path to a CSV/TSV file | `object` |
+| `array(payload)` | `array` | a NumPy / array payload | `object` |
+| `fig(payload)` | `fig` | a matplotlib figure, or a path to an image | `object` |
+| `text(payload)` | `text` | plain, markdown, or JSON text | `object` |
+| `model(payload)` | `model` | a trained model object | `object` |
+
+Only `asset(path)` — the `file` kind — may be returned from a task annotated
+`-> file`. Every other kind is a semantic asset rather than a path, so its
+producing task returns `object`, even when the payload you passed in was a
+file path: `table("data/frame.csv")` stores the rows as Parquet and yields a
+`table` asset, not the CSV you handed it. Declaring `-> file` and returning
+`table(...)` fails with an error naming the kind.
+
+The same rule applies to consumers. A parameter annotated `file` or
+`file | AssetRef` binds a filesystem path, so Ginkgo passes the `AssetRef`
+through without rehydrating it — use `AssetRef.load()` or `as_file()` to reach
+the payload. To receive the live object instead (a `DataFrame` for a `table`,
+an `ndarray` for an `array`), annotate the parameter `object` or the payload
+type, as in the example below.
 
 Each helper accepts a `name` (the asset key, written `namespace/name`), a
 `group` label for report sections, a `caption` shown beneath the asset name,

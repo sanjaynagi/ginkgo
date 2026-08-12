@@ -19,7 +19,7 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.types import file, folder, require_path_value, tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
@@ -271,6 +271,7 @@ class TaskValidator:
                 return
             if is_remote_path_value(value):
                 return
+            require_path_value(value=value, annotation_label="file", label=label)
             self._validate_file_path(path=value, label=label)
             return
 
@@ -279,6 +280,7 @@ class TaskValidator:
                 return
             if is_remote_path_value(value):
                 return
+            require_path_value(value=value, annotation_label="folder", label=label)
             self._validate_folder_path(path=value, label=label)
             return
 

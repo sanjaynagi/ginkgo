@@ -27,7 +27,11 @@ from ginkgo.core.asset import (
     collect_asset_refs,
     make_asset_version,
 )
-from ginkgo.runtime.artifacts.asset_kinds import WRAPPER_KINDS, get_kind_spec
+from ginkgo.runtime.artifacts.asset_kinds import (
+    WRAPPER_KINDS,
+    get_kind_spec,
+    is_path_backed_payload,
+)
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
     SerializedAsset,
@@ -298,8 +302,20 @@ class AssetRegistrar:
         # File assets don't benefit (consumers get a path either way); fig
         # payloads are binary blobs that are rarely consumed as live Python
         # objects — skipping them aligns the registry with the evaluator's
-        # rehydrate-on-receive set.
-        if self.live_payloads is not None and spec.rehydrate_on_receive and result.kind != "fig":
+        # rehydrate-on-receive set. Path-backed payloads (a CSV given to
+        # ``table()``) are skipped too: the on-disk loader returns the
+        # deserialised object, so caching the raw path would make a live hit
+        # and a loader fallback disagree about what a ref rehydrates to.
+        if (
+            self.live_payloads is not None
+            and spec.rehydrate_on_receive
+            and result.kind != "fig"
+            and not is_path_backed_payload(
+                kind=result.kind,
+                sub_kind=result.sub_kind,
+                payload=result.payload,
+            )
+        ):
             self.live_payloads.put(
                 artifact_id=record.artifact_id,
                 payload=result.payload,

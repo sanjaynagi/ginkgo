@@ -15,7 +15,7 @@ from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.types import annotation_includes, file, folder, require_path_value, tmp_dir
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -122,6 +122,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 known_digests=known_digests,
+                label=f"{task_def.name}.{name}",
             )
 
         env_hash = self._env_hash(task_def=task_def)
@@ -535,14 +536,15 @@ class CacheStore:
         annotation: Any,
         value: Any,
         known_digests: dict[str, str] | None = None,
+        label: str = "value",
     ) -> Any:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
         if isinstance(value, AssetRef):
-            if _annotation_includes(annotation=annotation, expected=file):
+            if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
-            if _annotation_includes(annotation=annotation, expected=folder):
+            if annotation_includes(annotation=annotation, expected=folder):
                 return {"sha256": value.content_hash, "type": "folder"}
             return {
                 "asset": str(value.key),
@@ -596,6 +598,7 @@ class CacheStore:
                         annotation=inner_annotation,
                         value=item,
                         known_digests=known_digests,
+                        label=label,
                     )
                     for item in value
                 ],
@@ -611,11 +614,13 @@ class CacheStore:
                             annotation=key_annotation,
                             value=key,
                             known_digests=known_digests,
+                            label=label,
                         ),
                         "value": self._hash_value(
                             annotation=value_annotation,
                             value=item,
                             known_digests=known_digests,
+                            label=label,
                         ),
                     }
                     for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
@@ -627,7 +632,10 @@ class CacheStore:
             return {
                 "items": [
                     self._hash_value(
-                        annotation=annotation, value=item, known_digests=known_digests
+                        annotation=annotation,
+                        value=item,
+                        known_digests=known_digests,
+                        label=label,
                     )
                     for item in value
                 ],
@@ -638,14 +646,18 @@ class CacheStore:
             return {
                 "items": [
                     self._hash_value(
-                        annotation=annotation, value=item, known_digests=known_digests
+                        annotation=annotation,
+                        value=item,
+                        known_digests=known_digests,
+                        label=label,
                     )
                     for item in value
                 ],
                 "type": "tuple",
             }
 
-        if _annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+        if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+            require_path_value(value=value, annotation_label="file", label=label)
             # Use pre-computed digest from upstream task output when available.
             if known_digests is not None:
                 resolved_key = str(Path(str(value)).resolve())
@@ -654,9 +666,10 @@ class CacheStore:
                     return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if _annotation_includes(annotation=annotation, expected=folder) or isinstance(
+        if annotation_includes(annotation=annotation, expected=folder) or isinstance(
             value, folder
         ):
+            require_path_value(value=value, annotation_label="folder", label=label)
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
@@ -751,7 +764,11 @@ class CacheStore:
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir:
                 continue
-            stat_parts[name] = self._stat_value(annotation=annotation, value=resolved_args[name])
+            stat_parts[name] = self._stat_value(
+                annotation=annotation,
+                value=resolved_args[name],
+                label=f"{task_def.name}.{name}",
+            )
 
         source_hash = task_def.cache_source_hash
         if extra_source_hash is not None:
@@ -787,7 +804,7 @@ class CacheStore:
         """Persist the stat index to disk."""
         _save_stat_index(root=self._root, index=self._stat_index)
 
-    def _stat_value(self, *, annotation: Any, value: Any) -> Any:
+    def _stat_value(self, *, annotation: Any, value: Any, label: str = "value") -> Any:
         """Build a stat-based representation for a value (no content reading)."""
         if annotation is tmp_dir:
             return None
@@ -858,7 +875,7 @@ class CacheStore:
             return {"type": "folder", "missing": True}
 
         # For non-path types, use the same hash as the content-addressed path.
-        return self._hash_value(annotation=annotation, value=value)
+        return self._hash_value(annotation=annotation, value=value, label=label)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""
@@ -902,15 +919,3 @@ def _save_stat_index(*, root: Path, index: dict[str, str]) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-
-
-def _annotation_includes(*, annotation: Any, expected: Any) -> bool:
-    """Return whether an annotation directly or indirectly allows ``expected``."""
-    if annotation is expected:
-        return True
-    origin = get_origin(annotation)
-    if origin is None:
-        return False
-    return any(
-        _annotation_includes(annotation=item, expected=expected) for item in get_args(annotation)
-    )

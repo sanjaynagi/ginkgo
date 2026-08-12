@@ -97,7 +97,9 @@ downstream behaviour.
 for typed-unknown bytes. The semantic kinds can all be file-backed at
 construction (a CSV is a valid `table`, a PNG is a valid `fig`) but the
 kind tag always determines serialization format, preview renderer,
-loader, and rehydration behaviour downstream.
+loader, and rehydration behaviour downstream. A consequence is that only
+the `file` kind may be returned from a task annotated `-> file`; a
+semantic kind returned there is rejected with a kind-aware error.
 
 ### Equivalence of `asset()` and shorthand factories
 
@@ -274,7 +276,34 @@ resumes, and cross-run consumers. `fig` refs are left as `AssetRef`
 since binary image payloads are rarely consumed as live Python objects.
 `file` refs flow through the existing `file` coercion path.
 
-Rehydration is transparent to task authors: a task annotated
+Rehydration is annotation-aware. A parameter whose annotation is or includes
+`file` or `folder` (`is_path_shaped_annotation` in `core/types.py`) binds a
+filesystem path at every depth, so `_resolve_task_args` skips rehydration for
+that argument entirely — the decision is made once, before the recursive walk,
+and nested `AssetRef` entries survive too. This keeps the documented
+`file | AssetRef` idiom stable: the consumer sees an `AssetRef` on both the
+cold run and the cache hit, and the cache key comes from
+`AssetRef.content_hash` without touching the filesystem.
+
+For the same reason the live registry only caches a payload that is already
+the canonical in-memory form. `is_path_backed_payload` in `asset_kinds.py`
+decides this, next to the `detect` callables whose semantics it depends on:
+a payload is path-backed when it is an `os.PathLike`, or when its sub-kind is
+one the kind only produces from a path (`csv` / `tsv` for `table`, the image
+formats for `fig`). Sub-kind alone cannot decide it — a `text` asset built
+from a `Path` and one built from an inline `str` share the same sub-kinds —
+and `os.PathLike` alone cannot either, since `table("data.csv")` passes a
+plain `str`. A path-backed payload is skipped, since the on-disk loader
+returns the deserialised object; a live hit and a loader fallback must not
+disagree about what a ref rehydrates to.
+
+A `file` / `folder` annotation bound to an `AssetRef` of another kind, or to
+any other non-path value, is rejected with a kind-aware error rather than
+stringified into a path. `core/types.require_path_value` is the single home
+for that rule, called both from input/return validation and from cache-key
+hashing (which runs first, during the prepare-phase cache probe).
+
+Rehydration is otherwise transparent to task authors: a task annotated
 `compounds: pd.DataFrame` continues to work unchanged when its upstream
 switches from returning a raw DataFrame to `table(df, name="...")`.
 The examples in `examples/chem/.../inputs.py::annotate_compounds` and
