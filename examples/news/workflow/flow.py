@@ -5,9 +5,9 @@ from __future__ import annotations
 import ginkgo
 from ginkgo import file, flow
 
-from newsroom.modules.delivery import write_delivery_manifest
-from newsroom.modules.packets import compile_newsroom_digest, plan_desk_packets
-from newsroom.modules.scoring import (
+from .modules.delivery import write_delivery_manifest
+from .modules.packets import compile_newsroom_digest, plan_desk_packets
+from .modules.scoring import (
     enrich_story_scores,
     load_story_backlog,
     write_budget_summary,
