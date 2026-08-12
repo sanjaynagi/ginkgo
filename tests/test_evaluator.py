@@ -49,7 +49,7 @@ def _notebook_subprocess_stub(
     calls: list[str] | None = None,
     declared_output: Path | None = None,
 ):
-    """Build a fake ``_run_subprocess`` for a single-task ipynb notebook run.
+    """Build a fake ``run_subprocess`` for a single-task ipynb notebook run.
 
     Handles the four commands a notebook task issues — the ipykernel probe,
     kernel install, papermill execution, and nbconvert render — materialising
@@ -531,7 +531,7 @@ class TestEvaluate:
         )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
         manifest = load_manifest(recorder.run_dir)
 
@@ -550,7 +550,7 @@ class TestEvaluate:
         cached = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
         monkeypatch.setattr(
             cached._shell_runner,
-            "_run_subprocess",
+            "run_subprocess",
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
         assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
@@ -583,7 +583,7 @@ class TestEvaluate:
         )
 
         first_evaluator = ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
-        monkeypatch.setattr(first_evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(first_evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         first_result = first_evaluator.evaluate(expr)
         first_manifest = load_manifest(first_recorder.run_dir)
         first_html = first_recorder.run_dir / "notebooks" / "task_0000.html"
@@ -604,7 +604,7 @@ class TestEvaluate:
         cached_evaluator = ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
         monkeypatch.setattr(
             cached_evaluator._shell_runner,
-            "_run_subprocess",
+            "run_subprocess",
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
 
@@ -661,7 +661,7 @@ class TestEvaluate:
             cores=1,
             backend=LocalEnvironment(pixi_registry=registry),
         )
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
 
@@ -696,7 +696,7 @@ class TestEvaluate:
         )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
 
@@ -733,7 +733,7 @@ class TestEvaluate:
                 )
             raise AssertionError(command)
 
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         with pytest.raises(RuntimeError, match="ipykernel"):
             evaluator.evaluate(expr)
@@ -817,7 +817,7 @@ class TestEvaluate:
             cores=2,
             backend=LocalEnvironment(pixi_registry=registry),
         )
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(notebooks)
 
@@ -855,7 +855,7 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
         html_path = Path(result)
@@ -894,7 +894,7 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
         evaluator = ConcurrentEvaluator(jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
         assert Path(result).is_file()
@@ -941,7 +941,7 @@ class TestEvaluate:
         evaluator = ConcurrentEvaluator(
             jobs=1, cores=1, backend=LocalEnvironment(pixi_registry=registry)
         )
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
         assert Path(result).is_file()
@@ -1056,7 +1056,7 @@ class TestEvaluate:
             match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
             "test_evaluator.passthrough_task -> test_evaluator.passthrough_task",
         ):
-            evaluator.validate(first)
+            evaluator.build_and_validate(first)
 
     def test_evaluate_rejects_cycles_nested_inside_containers(self):
         first = passthrough_task()
@@ -1457,7 +1457,7 @@ class TestInterruptHandling:
 
         monkeypatch.setattr("ginkgo.runtime.task_runners.shell.subprocess.Popen", FakePopen)
 
-        completed = evaluator._shell_runner._run_subprocess(argv=["echo", "hi"], use_shell=False)
+        completed = evaluator._shell_runner.run_subprocess(argv=["echo", "hi"], use_shell=False)
 
         assert completed.returncode == 0
         assert completed.stdout == "stdout"

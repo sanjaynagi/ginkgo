@@ -582,7 +582,7 @@ def _mock_docker() -> Iterator[None]:
     """Mock Docker execution so container shell tasks run locally."""
     from ginkgo.runtime.task_runners.shell import ShellRunner
 
-    original_run_subprocess = ShellRunner._run_subprocess
+    original_run_subprocess = ShellRunner.run_subprocess
 
     def _patched_run_subprocess(
         self_runner: Any,
@@ -619,7 +619,7 @@ def _mock_docker() -> Iterator[None]:
         )
 
     with (
-        patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess),
+        patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess),
         patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
         patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:benchmark_digest"),
@@ -632,7 +632,7 @@ def _mock_notebook_tools() -> Iterator[None]:
     """Mock notebook tooling so notebook examples remain benchmarkable."""
     from ginkgo.runtime.task_runners.shell import ShellRunner
 
-    original_run_subprocess = ShellRunner._run_subprocess
+    original_run_subprocess = ShellRunner.run_subprocess
 
     def _patched_run_subprocess(
         self_runner: Any,
@@ -679,5 +679,5 @@ def _mock_notebook_tools() -> Iterator[None]:
             on_stderr=on_stderr,
         )
 
-    with patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess):
+    with patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess):
         yield

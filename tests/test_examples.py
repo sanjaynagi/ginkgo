@@ -64,13 +64,13 @@ def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
 def _mock_docker() -> Iterator[None]:
     """Mock Docker runtime so container shell tasks execute locally.
 
-    Docker argv is intercepted at the shell runner's ``_run_subprocess`` level:
+    Docker argv is intercepted at the shell runner's ``run_subprocess`` level:
     the shell command is extracted and executed directly via ``bash -c``,
     bypassing the container runtime while producing real file outputs.
     """
     from ginkgo.runtime.task_runners.shell import ShellRunner
 
-    original_run_subprocess = ShellRunner._run_subprocess
+    original_run_subprocess = ShellRunner.run_subprocess
 
     def _patched_run_subprocess(
         self_runner: Any,
@@ -109,7 +109,7 @@ def _mock_docker() -> Iterator[None]:
         )
 
     with (
-        patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess),
+        patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess),
         patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
         patch.object(ContainerBackend, "_resolve_digest", return_value="sha256:fake_test_digest"),
@@ -122,7 +122,7 @@ def _mock_notebook_tools() -> Iterator[None]:
     """Mock notebook tooling so example workflows do not need real installs."""
     from ginkgo.runtime.task_runners.shell import ShellRunner
 
-    original_run_subprocess = ShellRunner._run_subprocess
+    original_run_subprocess = ShellRunner.run_subprocess
 
     def _patched_run_subprocess(
         self_runner: Any,
@@ -171,7 +171,7 @@ def _mock_notebook_tools() -> Iterator[None]:
             on_stderr=on_stderr,
         )
 
-    with patch.object(ShellRunner, "_run_subprocess", _patched_run_subprocess):
+    with patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess):
         yield
 
 

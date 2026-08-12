@@ -428,7 +428,7 @@ class NotebookRunner(DriverTaskRunner):
         command: ExecutionCommand,
     ) -> subprocess.CompletedProcess[str]:
         """Run one notebook helper command without attaching task logs."""
-        return self.shell_runner._run_subprocess(
+        return self.shell_runner.run_subprocess(
             argv=command.argv,
             use_shell=command.use_shell,
             on_stdout=lambda _chunk: None,

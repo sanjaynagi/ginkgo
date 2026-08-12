@@ -407,7 +407,7 @@ class ConcurrentEvaluator:
     def task_nodes(self) -> Mapping[int, TaskNode]:
         """Read-only view of the task graph, keyed by scheduler node id.
 
-        Populated once the graph has been built (after :meth:`validate` or
+        Populated once the graph has been built (after :meth:`build_and_validate` or
         during :meth:`evaluate`). Intended for read-only consumers such as
         the dry-run planner.
         """
@@ -1921,7 +1921,7 @@ class ConcurrentEvaluator:
             )
         )
 
-    def validate(self, expr: Any) -> None:
+    def build_and_validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)

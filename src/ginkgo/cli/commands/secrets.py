@@ -38,10 +38,14 @@ def command_secrets(args) -> int:
         config = session.merged_loaded_values()
 
     evaluator = ConcurrentEvaluator()
-    evaluator.validate(expr)
+    evaluator.build_and_validate(expr)
 
     refs = sorted(
-        {ref for node in evaluator._nodes.values() for ref in collect_secret_refs(node.expr.args)},
+        {
+            ref
+            for node in evaluator.task_nodes.values()
+            for ref in collect_secret_refs(node.expr.args)
+        },
         key=lambda item: (item.backend, item.name),
     )
     rich_console = console(sys.stdout)

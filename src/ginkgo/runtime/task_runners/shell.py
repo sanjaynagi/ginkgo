@@ -1,6 +1,6 @@
 """Shell task execution and subprocess lifecycle management.
 
-The ``ShellRunner`` owns the subprocess registry, the ``_run_subprocess``
+The ``ShellRunner`` owns the subprocess registry, the ``run_subprocess``
 implementation, and the ``run_shell`` driver-task path. Centralising this
 here keeps subprocess termination on interrupt in one place and lets the
 notebook runner reuse the logged-command machinery.
@@ -416,7 +416,7 @@ class ShellRunner:
 
     # Subprocess execution ---------------------------------------------------
 
-    def _run_subprocess(
+    def run_subprocess(
         self,
         *,
         argv: str | list[str],
@@ -535,7 +535,7 @@ class ShellRunner:
             self.log_emitter_factory(node=node, stream=stream)(chunk)
 
         try:
-            completed = self._run_subprocess(
+            completed = self.run_subprocess(
                 argv=argv,
                 use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
