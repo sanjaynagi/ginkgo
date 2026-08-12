@@ -13,11 +13,12 @@ from typing import final
 
 from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.hashing import hash_file
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
-_NotebookOutputItem = str | AssetResult
+_NotebookOutputItem = str | AssetResult | OptionalOutput
 _NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 

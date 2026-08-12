@@ -124,3 +124,53 @@ Ginkgo currently ships three path-oriented marker types:
 - `tmp_dir`
 
 These drive validation, caching, and scratch-directory lifecycle management.
+
+## Optional Outputs
+
+Shell, script, and notebook tasks validate every declared output after
+execution. Some tools legitimately emit different file sets under different
+configuration modes, so a declared path can be wrapped in `optional()`:
+
+```python
+@task(kind="shell")
+def filter_bam(bam: file, mode: str) -> tuple[file, file | None]:
+    return shell(
+        cmd=f"filter --mode {mode} {bam}",
+        output=("results/filtered.bam", optional("results/unmapped.fastq.gz")),
+    )
+```
+
+`OptionalOutput` (`core/optional.py`) wraps a *declaration*, which is why it
+lives apart from the `file` / `folder` / `tmp_dir` markers above — those
+describe a *value*. It is accepted at item level in every driver output alias.
+
+The contract:
+
+- A present optional path is hashed, stored, restored, and validated exactly
+  like a required file output.
+- An absent one resolves to `None` and does not fail the task. A missing
+  *required* output fails as before.
+- Absence is a cacheable result, not a suppressed error:
+  `CacheStore._hash_value` encodes it as a distinct `{"type": "absent"}` token,
+  so present and absent are different cache keys and cannot serve each other.
+- Consumers annotate `file | None` and branch explicitly.
+  `unwrap_optional_annotation` (`core/types.py`) is the single home for
+  splitting `X | None` into its inner type and a nullability flag; validation,
+  coercion, cache hashing, and the output index all share it.
+
+Three walks over a declared output serve different needs, all in
+`runtime/task_runners/shell.py`: `iter_output_values` returns every path
+(pre-execution cleanup must remove a stale optional file too, or it would be
+mistaken for this run's output), `iter_required_output_values` returns only
+paths that must exist, and `resolve_output_value` rebuilds the declared
+scalar/list/tuple shape with absent optionals replaced by `None`.
+
+Manifests carry presence explicitly: `output_summary` emits `optional` and
+`present` keys rather than dropping an absent output, so `ginkgo inspect run`
+shows which optional outputs materialised.
+
+Two limits are deliberate. Dry-run cannot report optionality, because a driver
+task's output paths are computed inside the task body at execution time and the
+plan does not know them. And a cache hit recording absence does not delete a
+file that exists at that path from another source — the result value is `None`
+either way, and deleting files Ginkgo did not create would be worse.

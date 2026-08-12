@@ -15,7 +15,14 @@ from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import annotation_includes, file, folder, require_path_value, tmp_dir
+from ginkgo.core.types import (
+    annotation_includes,
+    file,
+    folder,
+    require_path_value,
+    tmp_dir,
+    unwrap_optional_annotation,
+)
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -286,6 +293,12 @@ class CacheStore:
         if isinstance(value, AssetRef):
             return Path(value.artifact_path).exists()
 
+        # An absent optional output has nothing to restore, and its absence is
+        # itself the cached result.
+        annotation, _ = unwrap_optional_annotation(annotation)
+        if value is None:
+            return True
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
             inner_args = get_args(annotation)
@@ -465,6 +478,11 @@ class CacheStore:
         artifact_ids: dict[str, str],
     ) -> None:
         """Recursively walk a result value and store file/folder outputs."""
+        # An absent optional output has nothing to store.
+        annotation, _ = unwrap_optional_annotation(annotation)
+        if value is None:
+            return
+
         origin = get_origin(annotation)
         if origin in {list, tuple}:
             inner_args = get_args(annotation)
@@ -541,6 +559,12 @@ class CacheStore:
         """Hash a concrete value according to its declared Ginkgo type."""
         if annotation is tmp_dir:
             return None
+
+        # An absent optional output must key differently from a present one,
+        # so absence gets its own token rather than collapsing to null.
+        annotation, admits_none = unwrap_optional_annotation(annotation)
+        if value is None and admits_none:
+            return {"type": "absent"}
         if isinstance(value, AssetRef):
             if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}

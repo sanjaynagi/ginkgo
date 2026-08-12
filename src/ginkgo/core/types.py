@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 
 class file(str):
@@ -79,6 +80,38 @@ def is_path_shaped_annotation(annotation: Any) -> bool:
     return annotation_includes(annotation=annotation, expected=file) or annotation_includes(
         annotation=annotation, expected=folder
     )
+
+
+def unwrap_optional_annotation(annotation: Any) -> tuple[Any, bool]:
+    """Split an ``X | None`` annotation into its inner type and nullability.
+
+    An optional task output is annotated ``file | None``, so every consumer of
+    an annotation must be able to ask "does this admit ``None``, and what is it
+    otherwise?" without each re-deriving union handling.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly a union.
+
+    Returns
+    -------
+    tuple[Any, bool]
+        The annotation with ``None`` removed, and whether ``None`` was
+        admitted. A union of several non-``None`` members is returned
+        unchanged, since no single inner type describes it.
+    """
+    if get_origin(annotation) not in {Union, UnionType}:
+        return annotation, False
+
+    args = get_args(annotation)
+    if type(None) not in args:
+        return annotation, False
+
+    remaining = tuple(arg for arg in args if arg is not type(None))
+    if len(remaining) == 1:
+        return remaining[0], True
+    return Union[remaining], True
 
 
 def is_path_like(value: Any) -> bool:

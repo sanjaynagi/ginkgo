@@ -4,6 +4,7 @@ from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList
 from ginkgo.core.flow import FlowDef, flow
 from ginkgo.core.notebook import NotebookDirective, notebook
+from ginkgo.core.optional import OptionalOutput, optional
 from ginkgo.core.script import ScriptDirective, script
 from ginkgo.core.shell import ShellDirective, shell
 from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult, subworkflow
@@ -16,6 +17,7 @@ __all__ = [
     "ExprList",
     "FlowDef",
     "NotebookDirective",
+    "OptionalOutput",
     "PartialCall",
     "ScriptDirective",
     "ShellDirective",
@@ -26,6 +28,7 @@ __all__ = [
     "flow",
     "folder",
     "notebook",
+    "optional",
     "script",
     "shell",
     "subworkflow",

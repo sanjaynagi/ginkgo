@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from ginkgo.core.task import TaskDef
-from ginkgo.runtime.task_runners.shell import ShellRunner, iter_output_values
+from ginkgo.runtime.task_runners.shell import (
+    ShellRunner,
+    iter_required_output_values,
+    resolve_output_value,
+)
 from ginkgo.runtime.task_validation import TaskValidator
 
 
@@ -40,12 +44,19 @@ class DriverTaskRunner:
         task_def: TaskDef,
         output: Any,
     ) -> Any:
-        """Validate declared output paths exist and return coerced value."""
-        output_paths = iter_output_values(output)
+        """Validate required output paths exist and return the coerced value.
+
+        Paths wrapped in ``optional()`` may be absent; they resolve to ``None``
+        in the returned value rather than failing the task.
+        """
+        output_paths = iter_required_output_values(output)
         missing = [str(path) for path in output_paths if not path.exists()]
         if missing:
             label = missing[0] if len(missing) == 1 else missing
             raise FileNotFoundError(
                 f"Task {task_name} completed but did not create declared output {label!r}"
             )
-        return self.validator.coerce_return_value(task_def=task_def, value=output)
+        return self.validator.coerce_return_value(
+            task_def=task_def,
+            value=resolve_output_value(output),
+        )
