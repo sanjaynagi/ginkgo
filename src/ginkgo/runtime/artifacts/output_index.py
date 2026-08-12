@@ -8,7 +8,7 @@ shapes, ndarray dtypes, etc.). This module owns that rendering.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, get_origin
 
 from ginkgo.core.asset import AssetRef
 from ginkgo.core.types import (
@@ -16,6 +16,7 @@ from ginkgo.core.types import (
     file,
     folder,
     is_path_shaped_annotation,
+    pair_elements_with_annotations,
     unwrap_optional_annotation,
 )
 from ginkgo.runtime.artifacts.value_codec import summarise_value
@@ -57,11 +58,10 @@ def _present_output_summary(
     """Return the output index for a value that is known to be present."""
     origin = get_origin(annotation)
     if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        inner_args = get_args(annotation)
-        inner_annotation = inner_args[0] if inner_args else Any
         outputs: list[dict[str, Any]] = []
-        for index, item in enumerate(value):
-            outputs.extend(output_summary(inner_annotation, item, name=f"{name}[{index}]"))
+        paired = pair_elements_with_annotations(annotation=annotation, value=value)
+        for index, (item_annotation, item) in enumerate(paired):
+            outputs.extend(output_summary(item_annotation, item, name=f"{name}[{index}]"))
         return outputs
 
     if isinstance(value, (list, tuple)):

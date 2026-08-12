@@ -142,7 +142,10 @@ def filter_bam(bam: file, mode: str) -> tuple[file, file | None]:
 
 `OptionalOutput` (`core/optional.py`) wraps a *declaration*, which is why it
 lives apart from the `file` / `folder` / `tmp_dir` markers above — those
-describe a *value*. It is accepted at item level in every driver output alias.
+describe a *value*. It is accepted wherever a path may be declared: as a bare
+output, or as an item of the list and tuple forms. There is no dict/named
+output form, so issue #98's `output={"unmapped_fastq": optional(...)}` sketch
+is not the implemented spelling.
 
 The contract:
 
@@ -157,6 +160,18 @@ The contract:
   `unwrap_optional_annotation` (`core/types.py`) is the single home for
   splitting `X | None` into its inner type and a nullability flag; validation,
   coercion, cache hashing, and the output index all share it.
+
+A heterogeneous tuple such as `tuple[file, file | None]` governs each element
+with its own annotation. Every container walk previously applied only the
+first (`inner_args[0]`) to all elements, which handed an absent optional the
+annotation `file` and lost its nullability — crashing cache-key hashing,
+dropping the element from the manifest, and, for `tuple[file, folder | None]`,
+storing nothing so the task never cached. `pair_elements_with_annotations`
+(`core/types.py`) is the one home for that pairing, shared by
+`validate_annotated_value`, `CacheStore._hash_value`,
+`_collect_output_artifacts`, `_validate_output_value`, and `output_summary`.
+Anything else walking a container annotation should use it rather than
+reaching for `get_args(...)[0]`.
 
 Three walks over a declared output serve different needs, all in
 `runtime/task_runners/shell.py`: `iter_output_values` returns every path

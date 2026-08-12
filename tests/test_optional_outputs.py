@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import ginkgo
-from ginkgo import file, optional, shell, task
+from ginkgo import file, folder, optional, shell, task
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.types import unwrap_optional_annotation
 from ginkgo.runtime.artifacts.output_index import output_summary
@@ -206,6 +206,50 @@ class TestOptionalExecution:
 # ---------------------------------------------------------------------------
 
 
+def _execution_count() -> int:
+    """Return how many times a counting task body has actually run.
+
+    Asserting equal results across two evaluations proves nothing — it holds
+    whether the task was cached or re-executed. The task appends a line per
+    execution, so this counts real runs.
+    """
+    counter = Path("results/executions.txt")
+    if not counter.is_file():
+        return 0
+    return len(counter.read_text(encoding="utf-8").strip().splitlines())
+
+
+@task(kind="shell")
+def emit_counted(*, emit_extra: bool) -> tuple[file, file | None]:
+    """As ``emit_with_optional``, but records each real execution."""
+    extra = " && echo extra > results/extra.txt" if emit_extra else ""
+    return shell(
+        cmd=(
+            "mkdir -p results && echo main > results/main.txt"
+            f"{extra} && echo ran >> results/executions.txt"
+        ),
+        output=("results/main.txt", optional("results/extra.txt")),
+    )
+
+
+@task(kind="shell")
+def emit_optional_folder() -> tuple[file, folder | None]:
+    """A heterogeneous tuple whose optional element is a folder, not a file."""
+    return shell(
+        cmd=(
+            "mkdir -p results/tree && echo main > results/main.txt "
+            "&& echo x > results/tree/x.txt && echo ran >> results/executions.txt"
+        ),
+        output=("results/main.txt", optional("results/tree")),
+    )
+
+
+@task()
+def consume_pair(*, pair: tuple[file, file | None]) -> str:
+    """Receive a heterogeneous tuple as a task input, exercising cache hashing."""
+    return f"{Path(pair[0]).name}:{'absent' if pair[1] is None else Path(pair[1]).name}"
+
+
 class TestOptionalCaching:
     """Both presence states survive a cache round trip, and key differently."""
 
@@ -213,30 +257,74 @@ class TestOptionalCaching:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        first = ginkgo.evaluate(emit_with_optional(emit_extra=False))
-        second = ginkgo.evaluate(emit_with_optional(emit_extra=False))
+        first = ginkgo.evaluate(emit_counted(emit_extra=False))
+        second = ginkgo.evaluate(emit_counted(emit_extra=False))
+
         assert first == second
         assert second[1] is None
+        assert _execution_count() == 1, "second evaluation re-executed instead of hitting cache"
 
     def test_present_optional_is_restored_from_cache(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        first = ginkgo.evaluate(emit_with_optional(emit_extra=True))
+        first = ginkgo.evaluate(emit_counted(emit_extra=True))
         Path(first[1]).unlink()
 
-        second = ginkgo.evaluate(emit_with_optional(emit_extra=True))
+        second = ginkgo.evaluate(emit_counted(emit_extra=True))
         assert Path(second[1]).read_text(encoding="utf-8").strip() == "extra"
+        assert _execution_count() == 1, "restoring the optional output re-ran the task"
 
-    def test_presence_and_absence_are_distinct_cache_keys(
+    def test_optional_folder_output_is_cached(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A present optional must not be served from an absent entry."""
+        """A `folder | None` element must not be stored as if it were a file.
+
+        Applying the tuple's first annotation to every element made the folder
+        arrive annotated `file`, so it was silently never stored and the task
+        re-ran forever.
+        """
         monkeypatch.chdir(tmp_path)
-        absent = ginkgo.evaluate(emit_with_optional(emit_extra=False))
-        present = ginkgo.evaluate(emit_with_optional(emit_extra=True))
-        assert absent[1] is None
-        assert present[1] is not None
+        ginkgo.evaluate(emit_optional_folder())
+        ginkgo.evaluate(emit_optional_folder())
+
+        assert _execution_count() == 1, "optional folder output never cached"
+
+    def test_heterogeneous_tuple_survives_as_a_downstream_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hashing a `tuple[file, file | None]` input must tolerate the None.
+
+        The cache key walk applied the tuple's first annotation to every
+        element, so an absent optional arrived annotated `file` and was
+        rejected as a non-path value.
+        """
+        monkeypatch.chdir(tmp_path)
+        produced = emit_counted(emit_extra=False)
+        result = ginkgo.evaluate(consume_pair(pair=(produced.output[0], produced.output[1])))
+        assert result == "main.txt:absent"
+
+    def test_presence_and_absence_key_a_consumer_differently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A consumer fed a present optional must not be served the absent entry.
+
+        This is what the distinct ``{"type": "absent"}`` token in the cache key
+        buys. Were absence hashed as plain null — or were the two states to
+        collide — the second call would return the first call's cached answer.
+        """
+        monkeypatch.chdir(tmp_path)
+        without = emit_counted(emit_extra=False)
+        assert (
+            ginkgo.evaluate(consume_pair(pair=(without.output[0], without.output[1])))
+            == "main.txt:absent"
+        )
+
+        with_extra = emit_counted(emit_extra=True)
+        assert (
+            ginkgo.evaluate(consume_pair(pair=(with_extra.output[0], with_extra.output[1])))
+            == "main.txt:extra.txt"
+        )
 
 
 # ---------------------------------------------------------------------------

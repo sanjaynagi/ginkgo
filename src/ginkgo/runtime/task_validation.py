@@ -24,6 +24,7 @@ from ginkgo.core.types import (
     folder,
     is_path_like,
     is_path_shaped_annotation,
+    pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
     unwrap_optional_annotation,
@@ -307,31 +308,11 @@ class TaskValidator:
             )
 
         origin = get_origin(annotation)
-        if origin is tuple:
-            inner_annotations = get_args(annotation)
-            # A heterogeneous tuple pairs each element with its own annotation,
-            # which is what `tuple[file, file | None]` needs.
-            if (
-                inner_annotations
-                and Ellipsis not in inner_annotations
-                and len(inner_annotations) == len(value)
-            ):
-                for index, (item_annotation, item) in enumerate(
-                    zip(inner_annotations, value, strict=True)
-                ):
-                    self.validate_annotated_value(
-                        annotation=item_annotation,
-                        value=item,
-                        label=f"{label}[{index}]",
-                    )
-                return
-
         if origin in {list, tuple}:
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            for index, item in enumerate(value):
+            paired = pair_elements_with_annotations(annotation=annotation, value=value)
+            for index, (item_annotation, item) in enumerate(paired):
                 self.validate_annotated_value(
-                    annotation=inner_annotation,
+                    annotation=item_annotation,
                     value=item,
                     label=f"{label}[{index}]",
                 )
