@@ -37,4 +37,8 @@ docs/_build/
 .DS_Store
 
 *.lock
+# Env lockfiles that are part of a fixture or example are inputs, not build
+# output: an example whose lock is missing re-solves on first use, which
+# changes its env identity between runs and silently breaks cache reuse.
 !tests/**/pixi.lock
+!examples/**/pixi.lock
