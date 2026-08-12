@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ginkgo.cli.common import resolve_run_dir
 from ginkgo.cli.renderers.common import task_base_name
+from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
@@ -25,6 +26,7 @@ def command_inspect(args) -> int:
                 workflow=args.workflow,
             ).path,
             config_paths=[Path(path).resolve() for path in args.config],
+            param_extras=getattr(args, "param_extras", ()),
         )
     else:
         payload = inspect_run(run_dir=resolve_run_dir(args.run_id))
@@ -33,12 +35,50 @@ def command_inspect(args) -> int:
     return 0
 
 
-def inspect_workflow(*, workflow_path: Path, config_paths: list[Path]) -> dict[str, Any]:
-    """Return a static workflow graph snapshot."""
-    with config_session(override_paths=config_paths):
+def inspect_workflow(
+    *,
+    workflow_path: Path,
+    config_paths: list[Path],
+    param_extras: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Return a static workflow graph snapshot.
+
+    Parameters
+    ----------
+    workflow_path : Path
+        The workflow module to inspect.
+    config_paths : list[Path]
+        Config files given with ``--config``.
+    param_extras : Sequence[str], optional
+        Command-line tokens supplying declared workflow parameters. A required
+        parameter left unsupplied is reported rather than raised, so a workflow
+        can still be described without its inputs.
+
+    Returns
+    -------
+    dict[str, Any]
+        Graph snapshot, including a ``params`` list describing every parameter
+        the workflow declares.
+    """
+    param_config = load_param_config(project_root=Path.cwd(), config_paths=config_paths)
+    with config_session(
+        override_paths=config_paths,
+        param_config=param_config,
+        cli_extras=param_extras,
+        require_params=False,
+    ) as session:
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
+        validate_param_extras(session)
+        params = [
+            {
+                **decl.to_payload(),
+                "source": session.param_sources()[name],
+                "supplied": session.param_sources()[name] != "default" or not decl.required,
+            }
+            for name, decl in session.declarations.items()
+        ]
 
     evaluator = ConcurrentEvaluator()
     evaluator.validate(expr)
@@ -61,6 +101,7 @@ def inspect_workflow(*, workflow_path: Path, config_paths: list[Path]) -> dict[s
         "workflow": str(workflow_path),
         "task_count": len(nodes),
         "edge_count": sum(len(node["dependencies"]) for node in nodes),
+        "params": params,
         "tasks": nodes,
     }
 

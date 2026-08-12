@@ -78,6 +78,58 @@ task body &mdash; the fastest way to confirm a workflow is wired correctly.
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
 
+## Workflow Parameters
+
+A workflow declares the inputs it accepts with `ginkgo.param(...)`, and each one
+becomes a command-line flag:
+
+```python
+import ginkgo
+
+n_replicates = ginkgo.param("n_replicates", type=int, default=12, help="Replicates per item")
+region = ginkgo.param("region", help="Genome region")   # no default: required
+```
+
+```bash
+ginkgo run workflow.py --n-replicates 24 --region 2L:1-100000
+```
+
+The flag is the dashed form of the name. A value resolves from the command line
+first, then the `[params]` table of `ginkgo.toml`, then the declared default:
+
+```toml
+[params]
+n_replicates = 24
+region = "2L:1-100000"
+```
+
+`ginkgo run workflow.py --help` lists the parameters that workflow declares,
+with their types and defaults. A flag the workflow does not declare is rejected
+before anything runs, and the error names the parameters it does declare. A
+required parameter that is not supplied fails the same way.
+
+`type` follows `argparse`'s convention, so `type=int`, `type=float`, and
+`type=Path` all work. Booleans accept a bare `--flag` or an explicit
+`--flag false`, and `multiple=True` makes a flag repeatable:
+
+```bash
+ginkgo run workflow.py --item alpha --item beta --verbose
+```
+
+Resolved values are recorded in the run's `params.yaml`, and where each came
+from &mdash; the CLI, config, or the default &mdash; in `manifest.yaml`.
+
+The `[params]` table layers across config files, so `--config extra.toml` setting
+one parameter leaves the others in `ginkgo.toml` alone.
+
+```{important}
+**Pass a parameter into a task as an argument.** Cache keys hash task arguments,
+so a parameter passed as one correctly re-runs the tasks that used it. A
+parameter read from a module global inside a task body is not part of the key, so
+changing it would silently reuse the previous result. Both `ginkgo run` and
+`ginkgo doctor` warn when they spot this.
+```
+
 ## Validation And Diagnostics
 
 Use these commands to inspect a workflow without committing to the full

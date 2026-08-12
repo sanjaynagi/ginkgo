@@ -7,19 +7,46 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 import ginkgo
 from ginkgo.runtime.module_loader import import_roots_for_path, load_module_from_path
 
 
+@pytest.fixture
+def reimportable_ginkgo_config():
+    """Restore ``ginkgo.config`` after a test drops it from ``sys.modules``.
+
+    Re-importing the module builds a second module object with its own session
+    stack. A module that already imported names from the original keeps pushing
+    onto the old stack while lazy importers read the new one, so every later test
+    in the session sees an empty stack. Restoring the original object keeps the
+    two views in agreement.
+    """
+    original = sys.modules.get("ginkgo.config")
+    try:
+        yield
+    finally:
+        if original is None:
+            sys.modules.pop("ginkgo.config", None)
+        else:
+            sys.modules["ginkgo.config"] = original
+        importlib.reload(ginkgo)
+
+
 class TestLoadModuleFromPath:
-    def test_importing_ginkgo_does_not_eagerly_import_config_module(self) -> None:
+    def test_importing_ginkgo_does_not_eagerly_import_config_module(
+        self, reimportable_ginkgo_config
+    ) -> None:
         sys.modules.pop("ginkgo.config", None)
 
         importlib.reload(ginkgo)
 
         assert "ginkgo.config" not in sys.modules
 
-    def test_importing_config_submodule_preserves_ginkgo_config_callable(self) -> None:
+    def test_importing_config_submodule_preserves_ginkgo_config_callable(
+        self, reimportable_ginkgo_config
+    ) -> None:
         sys.modules.pop("ginkgo.config", None)
 
         importlib.reload(ginkgo)

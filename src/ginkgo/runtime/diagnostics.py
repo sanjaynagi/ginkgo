@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ def collect_workflow_diagnostics(
     config_paths: list[Path],
     secret_resolver: SecretResolver | None,
     backend_factory: Callable[[], ExecutionEnvironment] | None = None,
+    param_extras: Sequence[str] = (),
 ) -> list[WorkflowDiagnostic]:
     """Collect structured workflow diagnostics.
 
@@ -54,6 +55,10 @@ def collect_workflow_diagnostics(
         construction failure (bad project layout, unreadable envs/) is
         reported as a diagnostic rather than raised. When ``None``, env
         resolution is not checked.
+    param_extras : Sequence[str], optional
+        Command-line tokens supplying declared workflow parameters. Required
+        parameters need not be supplied: a workflow is still worth diagnosing
+        without its inputs.
 
     Returns
     -------
@@ -61,14 +66,44 @@ def collect_workflow_diagnostics(
         One diagnostic per validation failure; empty when validation passes.
     """
     try:
-        with config_session(override_paths=config_paths):
+        from ginkgo.cli.workflow_params import (
+            global_param_reads,
+            load_param_config,
+            validate_param_extras,
+        )
+
+        param_config = load_param_config(project_root=Path.cwd(), config_paths=config_paths)
+        with config_session(
+            override_paths=config_paths,
+            param_config=param_config,
+            cli_extras=param_extras,
+            require_params=False,
+        ) as session:
             module = load_module_from_path(workflow_path)
             flow = discover_flow(module)
             expr = flow()
+            validate_param_extras(session)
         backend = backend_factory() if backend_factory is not None else None
         evaluator = ConcurrentEvaluator(secret_resolver=secret_resolver, backend=backend)
         evaluator.validate(expr)
-        return []
+
+        # A parameter read from a module global inside a task body is invisible
+        # to that task's cache key, so a changed value silently reuses the
+        # previous result. Reported as a warning because detection cannot see a
+        # read made by a helper the task calls.
+        return [
+            WorkflowDiagnostic(
+                severity="warning",
+                code="param_read_from_global",
+                message=finding.message(),
+                location=finding.task_name,
+                suggestion=(f"Pass {finding.param_name} into {finding.task_name} as an argument."),
+            )
+            for finding in global_param_reads(
+                declaration_globals=session.declaration_globals,
+                evaluator=evaluator,
+            )
+        ]
     except BaseException as exc:
         return [_diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
 

@@ -19,19 +19,40 @@ from ginkgo.cli.commands.inspect import command_inspect
 from ginkgo.cli.commands.models import command_models
 from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.report import command_report
-from ginkgo.cli.commands.run import command_run
+from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.common import RunMode, console
+from ginkgo.params import looks_like_flag
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ``ginkgo`` CLI."""
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    parser, run_parser = _build_parser()
+
+    # Unknown flags and their values are removed before argparse runs. Left in,
+    # a parameter's value would be captured by an optional positional: in
+    # ``ginkgo run --run-label "wide"`` with the workflow path omitted, argparse
+    # binds "wide" to the workflow positional and tries to load it as a module.
+    known_argv, extras = _partition_param_extras(
+        argv=list(sys.argv[1:] if argv is None else argv),
+        known_options=_all_option_strings(parser),
+    )
+    args = parser.parse_args(known_argv)
+
+    # Commands that import a workflow accept its declared parameters as flags.
+    # Every other command must still reject anything it does not recognise.
+    if _accepts_workflow_params(args):
+        args.param_extras = tuple(extras)
+    elif extras:
+        parser.error(f"unrecognized arguments: {' '.join(extras)}")
+    else:
+        args.param_extras = ()
 
     try:
         if args.command == "run":
+            if getattr(args, "show_help", False):
+                return command_run_help(args, usage=run_parser.format_help())
             return command_run(args, output_mode=_run_mode_from_args(args))
         if args.command == "cache":
             return command_cache(args)
@@ -74,7 +95,106 @@ def _ginkgo_version() -> str:
         return "unknown"
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _parser_tree(parser: argparse.ArgumentParser) -> list[argparse.ArgumentParser]:
+    """Return *parser* together with every subcommand parser beneath it."""
+    found: list[argparse.ArgumentParser] = []
+    pending = [parser]
+    while pending:
+        current = pending.pop()
+        found.append(current)
+        for action in current._actions:
+            choices = getattr(action, "choices", None) or {}
+            if isinstance(choices, dict):
+                pending.extend(
+                    value
+                    for value in choices.values()
+                    if isinstance(value, argparse.ArgumentParser)
+                )
+    return found
+
+
+def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """Collect every flag the parser tree recognises, including subcommands.
+
+    A token starting with ``-`` that is absent from this set belongs to a
+    workflow parameter rather than to ginkgo itself. The set is exact only
+    because abbreviation is disabled in :func:`_build_parser`: an abbreviated
+    flag argparse would accept is absent here, so it would be misread as a
+    parameter.
+    """
+    found: set[str] = set()
+    for current in _parser_tree(parser):
+        for action in current._actions:
+            found.update(action.option_strings)
+    return frozenset(found)
+
+
+def _partition_param_extras(
+    *,
+    argv: list[str],
+    known_options: frozenset[str],
+) -> tuple[list[str], list[str]]:
+    """Split *argv* into tokens ginkgo parses and tokens belonging to parameters.
+
+    An unrecognised ``--flag`` takes the following token as its value unless that
+    token is itself a flag — the same rule argparse applies to its own optionals,
+    so a parameter behaves like every other flag. A negative number is a value
+    rather than a flag, so ``--offset -5`` holds together. A boolean parameter
+    given immediately before a positional needs the ``--flag=value`` form.
+
+    Parameters
+    ----------
+    argv : list[str]
+        Raw argument vector, without the program name.
+    known_options : frozenset[str]
+        Every flag the parser tree recognises.
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        Tokens for argparse, and tokens belonging to workflow parameters.
+    """
+    known_argv: list[str] = []
+    extras: list[str] = []
+
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        name = token.split("=", 1)[0]
+
+        if not looks_like_flag(token) or name in known_options:
+            known_argv.append(token)
+            index += 1
+            continue
+
+        extras.append(token)
+        index += 1
+        if "=" in token:
+            continue
+        if index < len(argv) and not looks_like_flag(argv[index]):
+            extras.append(argv[index])
+            index += 1
+
+    return known_argv, extras
+
+
+def _accepts_workflow_params(args: argparse.Namespace) -> bool:
+    """Whether this command imports a workflow and so accepts its parameter flags."""
+    if args.command in {"run", "doctor", "secrets"}:
+        return True
+    return args.command == "inspect" and getattr(args, "inspect_command", None) == "workflow"
+
+
+def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
+    """Build the CLI parser.
+
+    Returns
+    -------
+    tuple[argparse.ArgumentParser, argparse.ArgumentParser]
+        The top-level parser, and the ``run`` subparser. The latter is returned
+        so ``ginkgo run <workflow> --help`` can render its own usage text
+        alongside the workflow's declared parameters.
+    """
     parser = argparse.ArgumentParser(prog="ginkgo")
     parser.add_argument(
         "--version",
@@ -83,7 +203,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run")
+    # ``run`` handles help itself: argparse's own help action would fire during
+    # the first parse and exit before the workflow could be imported, so the
+    # declared parameters could never be listed.
+    run_parser = subparsers.add_parser("run", add_help=False)
+    run_parser.add_argument(
+        "-h",
+        "--help",
+        dest="show_help",
+        action="store_true",
+        help="Show this message, including the workflow's declared parameters",
+    )
     run_parser.add_argument("workflow", nargs="?")
     run_parser.add_argument("--config", action="append", default=[])
     run_parser.add_argument("--jobs", type=int, default=None)
@@ -222,7 +352,14 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("workflow", nargs="?")
     validate_parser.add_argument("--config", action="append", default=[])
 
-    return parser
+    # Prefix abbreviation is off throughout: an abbreviated ginkgo flag is absent
+    # from _all_option_strings, so ``--job 4`` would be partitioned off as a
+    # workflow parameter and rejected as undeclared. Abbreviations are not
+    # supported, and rejecting them everywhere keeps that consistent.
+    for subparser in _parser_tree(parser):
+        subparser.allow_abbrev = False
+
+    return parser, run_parser
 
 
 def _run_mode_from_args(args: argparse.Namespace) -> RunMode:

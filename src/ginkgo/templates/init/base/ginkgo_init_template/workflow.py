@@ -13,6 +13,15 @@ from ginkgo_init_template.modules.reporting import (
 
 cfg = ginkgo.config("ginkgo.toml")
 
+# Declared parameter: override on the command line with --run-label "...".
+# A [params] table in ginkgo.toml could supply it instead, but is not required —
+# without one the default below applies.
+run_label = ginkgo.param(
+    "run_label",
+    default="Starter demo",
+    help="Label recorded in the run's overview notebook",
+)
+
 
 @flow
 def main():
@@ -60,7 +69,7 @@ def main():
     )
     notebook_html = render_overview_notebook(
         summary_path=summary,
-        run_label=str(cfg["run_label"]),
+        run_label=run_label,
     )
     return write_delivery_manifest(
         summary_path=summary,

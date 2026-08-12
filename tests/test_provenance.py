@@ -220,3 +220,36 @@ class TestRunProvenanceRecorder:
         )
         assert raw_manifest["status"] == "succeeded"
         assert raw_manifest["tasks"]["task_0000"]["status"] == "cached"
+
+
+def test_manifest_records_param_sources(tmp_path: Path) -> None:
+    recorder = RunProvenanceRecorder(
+        run_id="run-params",
+        workflow_path=tmp_path / "workflow.py",
+        root_dir=tmp_path / "runs",
+        jobs=1,
+        cores=1,
+        params={"n_reps": 7, "label": "cfg"},
+        param_sources={"n_reps": "cli", "label": "config"},
+    )
+    recorder.finalize(status="succeeded")
+
+    manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
+
+    params = yaml.safe_load(recorder.params_path.read_text(encoding="utf-8"))
+    assert params == {"n_reps": 7, "label": "cfg"}
+
+
+def test_manifest_param_sources_defaults_to_empty(tmp_path: Path) -> None:
+    recorder = RunProvenanceRecorder(
+        run_id="run-no-params",
+        workflow_path=tmp_path / "workflow.py",
+        root_dir=tmp_path / "runs",
+        jobs=1,
+        cores=1,
+    )
+    recorder.finalize(status="succeeded")
+
+    manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["param_sources"] == {}

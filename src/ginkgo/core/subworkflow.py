@@ -75,8 +75,10 @@ def subworkflow(
     path : str or Path
         Path to the child workflow file.
     params : dict, optional
-        Parameter overrides for the child run. Serialised as YAML and
-        passed via a temporary ``--config`` file.
+        Values for parameters the child declares with ``ginkgo.param``. Passed
+        as a ``[params]`` table in a temporary ``--config`` file, layering over
+        the child's own table, so a parameter not named here keeps the value the
+        child's config gives it.
     config : str, Path, or sequence of either, optional
         Additional ``--config`` paths to forward to the child.
 

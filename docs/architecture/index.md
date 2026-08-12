@@ -37,6 +37,10 @@ The repository currently implements:
 - Selective retry policies with exponential backoff, size- and count-based
   cache eviction, task-level scheduling priority as a strict tiebreaker, and
   end-of-run failure classification that groups diagnostics by category
+- Declared workflow parameters via `ginkgo.param(...)`, resolved from the CLI,
+  the config `[params]` table, or a declared default, with generated
+  `ginkgo run <workflow> --help`, structured enumeration through
+  `ginkgo inspect workflow`, and per-parameter source recorded in provenance
 - Sub-workflow composition via `@task(kind="subworkflow")` returning a
   `subworkflow(path, params=..., config=...)` descriptor, running the
   child workflow as an opaque `ginkgo run` subprocess with child run-id
@@ -54,7 +58,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Assets](assets.md) — asset catalog, wrapped asset sentinels (`table`/`array`/`fig`/`text`/`model`), and live-payload rehydration.
 - [Reporting](reporting.md) — static HTML report export, typed report data, asset previews, and bundle layout.
 - [Value Transport](value-transport.md) — codec layer for cross-process task inputs/outputs.
-- [Configuration and Secrets](config-secrets.md) — secret references, resolvers, and redaction.
+- [Configuration, Parameters, and Secrets](config-secrets.md) — config layering, `ginkgo.param` declarations and resolution, secret references, resolvers, and redaction.
 - [Provenance and Run State](provenance.md) — on-disk run layout and manifest contents.
 - [CLI](cli.md) — available commands and capabilities.
 - [Remote Execution](remote-execution.md) — `RemoteExecutor` protocol, Kubernetes and GCP Batch executors, remote worker, code sync, GCS backend, infrastructure scripts.

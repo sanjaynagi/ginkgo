@@ -51,6 +51,7 @@ def command_doctor(args) -> int:
             environ=os.environ,
         ),
         backend_factory=build_backend,
+        param_extras=getattr(args, "param_extras", ()),
     )
 
     # Additional FUSE-streaming probes. These produce their own diagnostic
@@ -73,9 +74,7 @@ def command_doctor(args) -> int:
             }
             for item in access_diagnostics
         )
-        has_errors = any(item.severity == "error" for item in access_diagnostics) or bool(
-            diagnostics
-        )
+        has_errors = any(item.severity == "error" for item in (*diagnostics, *access_diagnostics))
         print(
             json.dumps(
                 {"ok": not has_errors, "diagnostics": combined},
@@ -88,14 +87,16 @@ def command_doctor(args) -> int:
     rich_console_out = console(sys.stdout)
     rich_console_err = console(sys.stderr)
 
-    if diagnostics:
-        for item in diagnostics:
-            rich_console_err.print(f"[red]✖[/] {item.code}: {item.message}")
-            if item.suggestion:
-                rich_console_err.print(f"[dim]{item.suggestion}[/]")
-    else:
+    workflow_errors = [item for item in diagnostics if item.severity == "error"]
+    if not workflow_errors:
         rich_console_out.print("[bold green]🌿 ginkgo doctor[/]\n")
         rich_console_out.print("[green]✓[/] Workflow validation passed")
+    for item in diagnostics:
+        marker = {"error": "[red]✖[/]", "warning": "[yellow]⚠[/]"}.get(item.severity, "[cyan]ℹ[/]")
+        target = rich_console_err if item.severity == "error" else rich_console_out
+        target.print(f"{marker} {item.code}: {item.message}")
+        if item.suggestion:
+            target.print(f"[dim]{item.suggestion}[/]")
 
     for item in access_diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]![/]"}.get(item.severity, "[cyan]ℹ[/]")
@@ -104,7 +105,9 @@ def command_doctor(args) -> int:
         if item.suggestion:
             target.print(f"[dim]{item.suggestion}[/]")
 
-    has_errors = bool(diagnostics) or any(item.severity == "error" for item in access_diagnostics)
+    has_errors = bool(workflow_errors) or any(
+        item.severity == "error" for item in access_diagnostics
+    )
     return 1 if has_errors else 0
 
 

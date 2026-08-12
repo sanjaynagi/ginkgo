@@ -27,6 +27,7 @@ from ginkgo.core.expr import Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
+from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
@@ -284,6 +285,7 @@ class ConcurrentEvaluator:
     _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
     code_bundle_config: dict[str, Any] | None = None
+    param_context: ParamContext | None = None
     _remote_handles: dict[int, RemoteJobHandle] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -1695,6 +1697,11 @@ class ConcurrentEvaluator:
             "task_kind": node.task_def.kind,
             "binding_name": node.task_def.fn.__name__,
             "transport_dir": str(node.transport_path),
+            # Workers re-import the workflow module, which re-runs its param()
+            # calls; without this they would resolve to the declared defaults.
+            "param_context": (
+                self.param_context.to_payload() if self.param_context is not None else None
+            ),
         }
 
     def _decode_worker_result(self, *, node: TaskNode, payload: dict[str, Any]) -> Any:

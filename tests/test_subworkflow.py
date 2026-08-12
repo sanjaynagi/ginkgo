@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
 from ginkgo.runtime.caching.provenance import (
@@ -319,3 +320,99 @@ class TestEndToEnd:
         run_dirs = sorted(p for p in runs_dir.iterdir() if p.is_dir())
         # Two runs: parent + child.
         assert len(run_dirs) == 2
+
+
+@task(kind="subworkflow")
+def call_child_with_region(*, workflow_path: str, region: str) -> SubWorkflowResult:
+    return subworkflow(workflow_path, params={"region": region})
+
+
+_CHILD_DECLARING_PARAMS = (
+    """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+region = ginkgo.param("region")
+depth = ginkgo.param("depth", type=int, default=7)
+
+@task()
+def write_region(r: str, d: int, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(f"{r}/{d}", encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_region(r=region, d=depth, output_path="child-result.txt")
+""".strip()
+    + "\n"
+)
+
+
+class TestSubworkflowParams:
+    def test_params_are_written_as_a_params_table(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The child receives params under [params], not as top-level config keys."""
+        child_path = tmp_path / "child.py"
+        child_path.write_text("", encoding="utf-8")
+
+        recorder = RunProvenanceRecorder(
+            run_id="parent_run",
+            workflow_path=tmp_path / "parent.py",
+            root_dir=tmp_path / "runs",
+            jobs=1,
+            cores=1,
+        )
+        written: dict[str, Any] = {}
+
+        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+            argv = kwargs.get("argv", "")
+            cmd = argv if isinstance(argv, str) else " ".join(argv)
+            # Read the temp config while it still exists; it is deleted on return.
+            config_path = Path(cmd.split("--config")[1].strip().strip("'\""))
+            written["payload"] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            stdout = "GINKGO_CHILD_RUN_ID=child_run_1\n"
+            on_stdout = kwargs.get("on_stdout")
+            if on_stdout is not None:
+                on_stdout(stdout)
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=stdout, stderr="")
+
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+
+        evaluator.evaluate(
+            call_child_with_region(workflow_path=str(child_path), region="2L:1-100")
+        )
+
+        assert written["payload"] == {"params": {"region": "2L:1-100"}}
+
+    @pytest.mark.integration
+    def test_child_resolves_parent_params_through_declared_parameters(self) -> None:
+        """Parent params reach the child's ginkgo.param, layering over its own table."""
+        workspace = Path.cwd()
+        child_path = workspace / "child.py"
+        child_path.write_text(_CHILD_DECLARING_PARAMS, encoding="utf-8")
+        # The child's own table supplies depth; the parent supplies only region,
+        # so depth must survive the layering rather than fall back to its default.
+        (workspace / "ginkgo.toml").write_text("[params]\ndepth = 42\n", encoding="utf-8")
+
+        recorder = RunProvenanceRecorder(
+            run_id="parent_run",
+            workflow_path=workspace / "parent.py",
+            root_dir=workspace / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+
+        result = evaluator.evaluate(
+            call_child_with_region(workflow_path=str(child_path), region="2L:1-100")
+        )
+
+        assert isinstance(result, SubWorkflowResult)
+        assert result.status == "success"
+        assert (workspace / "child-result.txt").read_text(encoding="utf-8") == "2L:1-100/42"
