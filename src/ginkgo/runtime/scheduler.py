@@ -20,6 +20,9 @@ class SchedulableTask:
         Core footprint for the task.
     memory_gb : int
         Declared memory footprint for the task in GiB.
+    gpu : int
+        Declared local GPU footprint for the task. Remote-placed tasks
+        report 0 — their GPUs are satisfied by the executor.
     priority : int
         Declared scheduling priority. Higher values run first when multiple
         ready tasks contend for the same resources. Default is ``0``.
@@ -32,6 +35,7 @@ class SchedulableTask:
     node_id: int
     threads: int
     memory_gb: int
+    gpu: int = 0
     priority: int = 0
     concurrency_group: str | None = None
 
@@ -42,6 +46,7 @@ def select_dispatch_subset(
     jobs: int,
     cores: int,
     memory: int | None = None,
+    gpus: int = 0,
     available_group_slots: dict[str, int] | None = None,
 ) -> list[int]:
     """Select a feasible subset of ready tasks to dispatch.
@@ -57,6 +62,8 @@ def select_dispatch_subset(
     memory : int | None
         Available memory budget in GiB for this cycle, or ``None`` when
         memory-aware scheduling is disabled.
+    gpus : int
+        Available local GPU budget for this cycle.
     available_group_slots : dict[str, int] | None
         Remaining concurrency-group budgets after accounting for in-flight
         tasks. The scheduler enforces ``sum(selected in group) <= slot``
@@ -76,6 +83,7 @@ def select_dispatch_subset(
         jobs=jobs,
         cores=cores,
         memory=memory,
+        gpus=gpus,
         available_group_slots=available_group_slots or {},
     )
 
@@ -86,6 +94,7 @@ def _select_with_cp_sat(
     jobs: int,
     cores: int,
     memory: int | None,
+    gpus: int,
     available_group_slots: dict[str, int],
 ) -> list[int]:
     """Select tasks using OR-Tools CP-SAT when available."""
@@ -96,6 +105,7 @@ def _select_with_cp_sat(
     model.Add(sum(task.threads * selected[task.node_id] for task in tasks) <= cores)
     if memory is not None:
         model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= memory)
+    model.Add(sum(task.gpu * selected[task.node_id] for task in tasks) <= max(0, gpus))
 
     # Per-group concurrency limits — each named group consumes one slot per
     # selected task; tasks already in flight have already been deducted from

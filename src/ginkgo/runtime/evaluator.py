@@ -153,6 +153,7 @@ def evaluate(
     jobs: int | None = None,
     cores: int | None = None,
     memory: int | None = None,
+    gpus: int | None = None,
     backend: ExecutionEnvironment | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
@@ -170,6 +171,9 @@ def evaluate(
         Maximum total thread budget across running tasks.
     memory : int | None
         Maximum total declared memory budget across running tasks in GiB.
+    gpus : int | None
+        Local GPU budget across running tasks. Defaults to 0 (no local
+        GPUs); tasks declaring ``gpu > 0`` then require a remote executor.
     backend : ExecutionEnvironment | None
         Execution environment for environment-isolated tasks.
     event_bus : EventBus | None
@@ -185,6 +189,7 @@ def evaluate(
         jobs=jobs,
         cores=cores,
         memory=memory,
+        gpus=gpus,
         backend=backend,
         provenance=provenance,
         secret_resolver=secret_resolver,
@@ -236,6 +241,7 @@ class TaskNode:
     threads: int = 1
     memory_gb: int = 0
     gpu: int = 0
+    remote: bool = False
     concurrency_group: str | None = None
     concurrency_group_limit: int | None = None
     result: Any = MISSING
@@ -268,6 +274,7 @@ class ConcurrentEvaluator:
     jobs: int | None = None
     cores: int | None = None
     memory: int | None = None
+    gpus: int | None = None
     backend: ExecutionEnvironment | None = None
     remote_executor: RemoteExecutor | None = None
     provenance: RunProvenanceRecorder | None = None
@@ -337,6 +344,9 @@ class ConcurrentEvaluator:
             raise ValueError("cores must be at least 1")
         if self.memory is not None and self.memory < 1:
             raise ValueError("memory must be at least 1 when provided")
+        self.gpus = 0 if self.gpus is None else self.gpus
+        if self.gpus < 0:
+            raise ValueError("gpus must be at least 0")
 
         self._hash_memo = HashMemo()
         self._staging_cache_path = WorkspaceLayout.for_cwd().staging_cache_file
@@ -698,19 +708,22 @@ class ConcurrentEvaluator:
         self._prepare_task_environment(node=node)
         self._record_task_metadata(node=node)
 
-        node.threads = self._task_threads(node.task_def)
-        node.memory_gb = self._task_memory_gb(node.task_def, resolved_args)
-        node.gpu = node.task_def.gpu
-        if node.threads > self.cores:
-            raise ValueError(
-                f"{node.task_def.name} requires {node.threads} cores but only "
-                f"{self.cores} are available"
-            )
-        if self.memory is not None and node.memory_gb > self.memory:
-            raise ValueError(
-                f"{node.task_def.name} requires {node.memory_gb} GiB but only "
-                f"{self.memory} GiB are available"
-            )
+        resources = node.task_def.resources
+        node.threads = resources.threads
+        node.memory_gb = resources.memory_gb
+        node.gpu = resources.gpu
+        node.remote = self._resolve_placement(node=node)
+        if not node.remote:
+            if node.threads > self.cores:
+                raise ValueError(
+                    f"{node.task_def.name} requires {node.threads} cores but only "
+                    f"{self.cores} are available"
+                )
+            if self.memory is not None and node.memory_gb > self.memory:
+                raise ValueError(
+                    f"{node.task_def.name} requires {node.memory_gb} GiB but only "
+                    f"{self.memory} GiB are available"
+                )
         node.state = "ready"
         self._emit_event(
             TaskReady(
@@ -788,13 +801,17 @@ class ConcurrentEvaluator:
         available_jobs = self.jobs - len(self._running_futures)
         available_cores = self.cores - self._running_cores()
         available_memory = None if self.memory is None else self.memory - self._running_memory_gb()
+        available_gpus = (self.gpus or 0) - self._running_gpus()
         available_group_slots = self._available_group_slots(ready_nodes=ready_nodes)
+        # Remote-placed tasks consume a jobs slot but no local resource
+        # budget — their threads/memory/gpu are satisfied by the executor.
         selected = select_dispatch_subset(
             ready_tasks=[
                 SchedulableTask(
                     node_id=node.node_id,
-                    threads=node.threads,
-                    memory_gb=node.memory_gb,
+                    threads=0 if node.remote else node.threads,
+                    memory_gb=0 if node.remote else node.memory_gb,
+                    gpu=0 if node.remote else node.gpu,
                     priority=node.task_def.priority,
                     concurrency_group=node.concurrency_group,
                 )
@@ -803,6 +820,7 @@ class ConcurrentEvaluator:
             jobs=available_jobs,
             cores=available_cores,
             memory=available_memory,
+            gpus=available_gpus,
             available_group_slots=available_group_slots,
         )
 
@@ -1302,8 +1320,20 @@ class ConcurrentEvaluator:
         self._remote_handles.clear()
 
     def _running_cores(self) -> int:
-        """Return the core footprint of currently running tasks."""
-        return sum(self._nodes[node_id].threads for node_id, _ in self._running_futures.values())
+        """Return the local core footprint of currently running tasks."""
+        return sum(
+            self._nodes[node_id].threads
+            for node_id, _ in self._running_futures.values()
+            if not self._nodes[node_id].remote
+        )
+
+    def _running_gpus(self) -> int:
+        """Return the local GPU footprint of currently running tasks."""
+        return sum(
+            self._nodes[node_id].gpu
+            for node_id, _ in self._running_futures.values()
+            if not self._nodes[node_id].remote
+        )
 
     def _available_group_slots(self, *, ready_nodes: list[TaskNode]) -> dict[str, int]:
         """Return the remaining concurrency budget per active group.
@@ -1336,8 +1366,12 @@ class ConcurrentEvaluator:
         }
 
     def _running_memory_gb(self) -> int:
-        """Return the declared memory footprint of currently running tasks."""
-        return sum(self._nodes[node_id].memory_gb for node_id, _ in self._running_futures.values())
+        """Return the declared local memory footprint of currently running tasks."""
+        return sum(
+            self._nodes[node_id].memory_gb
+            for node_id, _ in self._running_futures.values()
+            if not self._nodes[node_id].remote
+        )
 
     def _start_task_execution(
         self,
@@ -1378,11 +1412,8 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             execution_args=node.execution_args,
         )
-        # Determine execution backend for events/provenance.
-        task_is_remote = node.task_def.remote or node.gpu > 0
-        execution_backend = (
-            "remote" if (task_is_remote and self.remote_executor is not None) else "local"
-        )
+        # Placement was resolved when the node was prepared.
+        execution_backend = "remote" if node.remote else "local"
 
         self._emit_event(
             TaskStarted(
@@ -1419,9 +1450,10 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "driver")
             return
 
-        # Remote dispatch: submit to remote executor when the task opts in
-        # (via gpu > 0 or remote=True) and an executor is configured.
-        if task_is_remote and self.remote_executor is not None:
+        # Remote dispatch: the node was placed on the remote executor either
+        # explicitly (remote=True) or because its GPU requirement exceeds the
+        # local budget.
+        if node.remote:
             node.transport_path = Path(
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
@@ -1432,6 +1464,7 @@ class ConcurrentEvaluator:
                 "threads": node.threads,
                 "memory_gb": node.memory_gb,
                 "gpu": node.gpu,
+                "gpu_type": node.task_def.resources.gpu_type,
             }
             if self._code_bundle_meta is not None:
                 payload["code_bundle"] = self._code_bundle_meta
@@ -1450,6 +1483,7 @@ class ConcurrentEvaluator:
                     "bucket": self._remote_artifact_store.bucket,
                     "prefix": self._remote_artifact_store.prefix,
                 }
+            assert self.remote_executor is not None  # guaranteed by placement
             handle = self.remote_executor.submit(attempt=payload)
             self._remote_stats.record_submit()
             self._remote_handles[node.node_id] = handle
@@ -1713,30 +1747,38 @@ class ConcurrentEvaluator:
             local=self._cache_store._artifact_store,
         )
 
-    def _task_threads(self, task_def: TaskDef) -> int:
-        """Return the scheduler core footprint for a task."""
-        return task_def.threads
+    def _resolve_placement(self, *, node: TaskNode) -> bool:
+        """Decide whether a node runs on the remote executor.
 
-    def _task_memory_gb(self, task_def: TaskDef, resolved_args: dict[str, Any]) -> int:
-        """Return the scheduler memory footprint for a task in GiB.
-
-        Prefers the ``memory`` declared on the ``@task`` decorator. Falls
-        back to a ``memory_gb`` key in *resolved_args* for backward
-        compatibility.
+        Placement is derived from the declared requirement and the available
+        capability: ``remote=True`` is an explicit directive, and a GPU
+        requirement the local ``--gpus`` budget cannot satisfy falls back to
+        the remote executor. Either route without a usable remote executor
+        is a build error rather than a silent local run.
         """
-        if task_def.memory_gb > 0:
-            return task_def.memory_gb
-
-        raw_memory = resolved_args.get("memory_gb", 0)
-        try:
-            memory_gb = int(raw_memory)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(f"memory_gb must be an integer, got {raw_memory!r}") from exc
-
-        if memory_gb < 0:
-            raise ValueError(f"memory_gb must be at least 0, got {memory_gb}")
-
-        return memory_gb
+        task_def = node.task_def
+        remote_capable = self.remote_executor is not None and task_def.kind == "python"
+        if task_def.remote:
+            if not remote_capable:
+                if task_def.kind != "python":
+                    raise ValueError(
+                        f"{task_def.name} declares remote=True but remote dispatch "
+                        f"only supports python tasks, not kind={task_def.kind!r}"
+                    )
+                raise ValueError(
+                    f"{task_def.name} declares remote=True but no remote executor "
+                    "is configured (pass --executor k8s or --executor batch)"
+                )
+            return True
+        if node.gpu > (self.gpus or 0):
+            if not remote_capable:
+                raise ValueError(
+                    f"{task_def.name} requires {node.gpu} GPU(s) but only {self.gpus} "
+                    "are available locally (--gpus) and no remote executor is "
+                    "configured (--executor)"
+                )
+            return True
+        return False
 
     def _build_worker_payload(self, *, node: TaskNode) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""

@@ -1,9 +1,14 @@
 # Remote Execution
 
 Ginkgo supports dispatching individual tasks to cloud infrastructure while the
-rest of the workflow runs locally. Remote dispatch is opt-in at the task level:
-tasks with `gpu > 0` or `remote=True` are sent to the configured executor;
-everything else stays local.
+rest of the workflow runs locally. Placement is decided per task from its
+declared requirement and the available capability: `remote=True` is an
+explicit directive to the configured executor, and a task whose `gpu`
+requirement exceeds the local `--gpus` budget is dispatched remotely when an
+executor is configured. Either route without a usable executor is a build
+error — a task never silently runs somewhere its requirement cannot be met.
+Remote-placed tasks consume a `--jobs` slot but no local core/memory/GPU
+budget; their resources are satisfied by the executor.
 
 ## Remote Executor Protocol
 
@@ -24,14 +29,16 @@ through the same code path as local worker completions.
 **KubernetesExecutor** (`remote/kubernetes.py`) submits `batch/v1` Jobs to any
 Kubernetes cluster. Resource declarations on `@task` map to pod resource
 requests: `threads` → CPU, `memory` → memory, `gpu` → `nvidia.com/gpu`. GPU
-tasks receive a `cloud.google.com/gke-accelerator` node selector when
-`gpu_type` is configured, enabling automatic GPU node provisioning on GKE
-Autopilot.
+tasks receive a `cloud.google.com/gke-accelerator` node selector when an
+accelerator type is available — `@task(gpu_type=...)` per task, falling back
+to the executor-level `gpu_type` — enabling automatic GPU node provisioning
+on GKE Autopilot.
 
 **GCPBatchExecutor** (`remote/gcp_batch.py`) submits jobs to GCP Batch, a
 serverless batch compute service. No cluster required — each job runs on
 Google-managed infrastructure. GPU tasks use the Batch accelerator allocation
-policy. Job logs are retrieved from Cloud Logging.
+policy; a GPU task with no accelerator type (task-level or executor-level) is
+rejected at submit rather than silently scheduled without a GPU. Job logs are retrieved from Cloud Logging.
 
 ## Remote Worker
 

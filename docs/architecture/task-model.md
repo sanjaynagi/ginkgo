@@ -6,8 +6,15 @@
 
 - `version=...`
 - `retries=...`
-- `threads=...`, `memory=...`, `gpu=...` for resource declarations
-- `remote=True` for explicit remote dispatch
+- `threads=...`, `memory=...`, `gpu=...`, `gpu_type=...` for resource
+  declarations, stored as a single `Resources` value (`core/resources.py`) on
+  the `TaskDef`. Resources state what a task *needs* and never imply
+  placement.
+- `remote=True` for explicit remote dispatch. Placement is otherwise decided
+  by the evaluator: a `gpu` requirement is satisfied from the local `--gpus`
+  budget when it fits, dispatched to the remote executor when one is
+  configured, and a build error otherwise (see
+  [remote execution](remote-execution.md)).
 
 Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,
 spawn context). A `ThreadPoolExecutor` fallback is used when the OS disallows

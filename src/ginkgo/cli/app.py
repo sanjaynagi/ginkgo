@@ -219,6 +219,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     run_parser.add_argument("--jobs", type=int, default=None)
     run_parser.add_argument("--cores", type=int, default=None)
     run_parser.add_argument("--memory", type=int, default=None)
+    run_parser.add_argument("--gpus", type=int, default=None)
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
     run_parser.add_argument("--agent", action="store_true")
