@@ -197,9 +197,19 @@ the manifest's *path*, so two identical environments in different workflows
 still install twice. The content key is what makes sharing possible.
 
 Sharing is skipped, falling back to a local install, whenever relocating the
-manifest would break it: a `pyproject.toml` manifest (which builds the
-surrounding project), or any manifest declaring a dependency by `path` or as
-`editable`, since those are written relative to the manifest that declares them.
+manifest would break it. `_blocks_relocation()` walks the whole parsed manifest
+for anything named by a relative location — a `path` or `editable` dependency in
+any position, or `[activation] scripts` — rather than enumerating the dependency
+tables it knows about, since Pixi accepts the same spec at the top level, under
+`[feature.<name>.*]`, under `[target.<platform>.*]`, and in the two nested. A
+`pyproject.toml` manifest is never relocatable, as it builds the surrounding
+project.
+
+Because Pixi writes the solved lock next to the manifest it installs, an
+environment that ships without a `pixi.lock` gets one inside the prefix rather
+than in the workflow. `PixiRegistry.lock_path()` prefers the committed lock and
+falls back to the shared one, so environment identity and provenance capture
+keep working under a shared prefix.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for shell, notebook, and script tasks. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 

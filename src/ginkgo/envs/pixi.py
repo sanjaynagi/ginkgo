@@ -23,15 +23,6 @@ from typing import Any
 
 from ginkgo.core.hashing import hash_bytes, hash_file
 
-# Dependency table keys whose entries may name a path relative to the manifest.
-# A manifest holding one of these cannot be relocated into the shared prefix.
-_DEPENDENCY_TABLES = (
-    "dependencies",
-    "pypi-dependencies",
-    "host-dependencies",
-    "build-dependencies",
-)
-
 
 class PixiEnvNotFoundError(RuntimeError):
     """Raised when a declared environment cannot be located.
@@ -72,13 +63,42 @@ class PixiEnvPrepareError(RuntimeError):
         super().__init__(f"Failed to prepare Pixi env {str(manifest)!r}: {details}")
 
 
-def _declares_relative_dependency(manifest: Path) -> bool:
-    """Return whether *manifest* names a dependency by path.
+def _names_a_relative_location(node: Any, *, key: str | None = None) -> bool:
+    """Return whether *node* holds a location written relative to its manifest.
 
-    A path dependency is written relative to the manifest that declares it, so
-    a manifest holding one cannot be copied into the shared prefix without
-    breaking the reference. Reported conservatively: an unreadable or
-    unparseable manifest counts as path-dependent so it stays local.
+    Scans the whole parsed document rather than an enumerated set of dependency
+    tables, because Pixi accepts the same dependency spec in many positions:
+    top level, ``[feature.<name>.*]``, ``[target.<platform>.*]``, and the two
+    nested. Enumerating positions means every new one Pixi adds is a silent
+    hole, so this matches on the spec's own shape instead.
+
+    Parameters
+    ----------
+    node : Any
+        A parsed TOML value.
+    key : str | None
+        The table key *node* was found under, used to recognise
+        ``[activation] scripts``.
+    """
+    if isinstance(node, dict):
+        # `{ path = ... }` and `{ editable = true }` dependency specs.
+        if isinstance(node.get("path"), str) or node.get("editable") is True:
+            return True
+        return any(_names_a_relative_location(value, key=name) for name, value in node.items())
+
+    # Activation scripts are manifest-relative script paths, not a spec table.
+    if key == "scripts" and isinstance(node, list):
+        return any(isinstance(entry, str) for entry in node)
+    return False
+
+
+def _blocks_relocation(manifest: Path) -> bool:
+    """Return whether *manifest* cannot be copied into the shared prefix.
+
+    A manifest that names anything by a relative path — a dependency, an
+    activation script — resolves that path against its own directory, so moving
+    it breaks the reference. Reported conservatively: an unreadable or
+    unparseable manifest counts as non-relocatable so it stays local.
     """
     # A pyproject.toml manifest always builds the surrounding project, which is
     # itself a path reference, so it can never be relocated.
@@ -90,20 +110,7 @@ def _declares_relative_dependency(manifest: Path) -> bool:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return True
 
-    tables: list[Any] = []
-    for table_name in _DEPENDENCY_TABLES:
-        tables.append(data.get(table_name))
-    for feature in (data.get("feature") or {}).values():
-        if isinstance(feature, dict):
-            tables.extend(feature.get(name) for name in _DEPENDENCY_TABLES)
-
-    for table in tables:
-        if not isinstance(table, dict):
-            continue
-        for spec in table.values():
-            if isinstance(spec, dict) and ("path" in spec or spec.get("editable")):
-                return True
-    return False
+    return _names_a_relative_location(data)
 
 
 def _is_pixi_pyproject(path: Path) -> bool:
@@ -182,6 +189,7 @@ def resolve_shared_env_root(
     *,
     cli_value: str | None = None,
     config: dict[str, Any] | None = None,
+    project_root: Path | None = None,
 ) -> Path | None:
     """Return the shared environment prefix, or ``None`` when not configured.
 
@@ -192,9 +200,15 @@ def resolve_shared_env_root(
     Parameters
     ----------
     cli_value : str | None
-        Value of ``--env-prefix``, when given.
+        Value of ``--env-prefix``, when given. A relative value resolves
+        against the working directory, as command-line paths do.
     config : dict | None
         Parsed runtime config.
+    project_root : Path | None
+        Directory holding the ``ginkgo.toml`` that supplied the config. A
+        relative ``shared_prefix`` resolves against it, so the prefix names the
+        same directory no matter where ginkgo was invoked from. Defaults to the
+        working directory.
 
     Returns
     -------
@@ -206,9 +220,13 @@ def resolve_shared_env_root(
 
     envs_config = (config or {}).get("envs")
     configured = envs_config.get("shared_prefix") if isinstance(envs_config, dict) else None
-    if isinstance(configured, str) and configured:
-        return Path(configured).expanduser().resolve()
-    return None
+    if not isinstance(configured, str) or not configured:
+        return None
+
+    prefix = Path(configured).expanduser()
+    if prefix.is_absolute():
+        return prefix.resolve()
+    return ((project_root or Path.cwd()) / prefix).resolve()
 
 
 @dataclass(kw_only=True)
@@ -317,7 +335,7 @@ class PixiRegistry:
         environments resolve to one directory and install once.
 
         Falls back to the declaring manifest when the environment cannot be
-        shared safely — see :func:`_declares_relative_dependency`.
+        shared safely — see :func:`_blocks_relocation`.
 
         Parameters
         ----------
@@ -329,28 +347,70 @@ class PixiRegistry:
         Path
             Absolute path to the manifest to hand to ``pixi``.
         """
-        source = self.resolve(env=env)
-        if self.shared_env_root is None:
-            return source
-        if source in self._shared_manifests:
-            return self._shared_manifests[source]
+        return self.install_manifest_for(manifest=self.resolve(env=env))
 
-        shared = self._materialize_shared_manifest(source=source)
-        self._shared_manifests[source] = shared
+    def install_manifest_for(self, *, manifest: Path) -> Path:
+        """Return the manifest Pixi installs from, given the declaring one.
+
+        The by-name entry point is :meth:`install_manifest`; this variant serves
+        callers that have already resolved a manifest and must not resolve the
+        name a second time, such as ``ginkgo env ls`` walking the discovery
+        roots.
+
+        Parameters
+        ----------
+        manifest : Path
+            The declaring manifest.
+
+        Returns
+        -------
+        Path
+        """
+        if self.shared_env_root is None:
+            return manifest
+        if manifest in self._shared_manifests:
+            return self._shared_manifests[manifest]
+
+        shared = self._materialize_shared_manifest(source=manifest)
+        self._shared_manifests[manifest] = shared
         return shared
+
+    def install_dir_for(self, *, manifest: Path) -> Path:
+        """Return the directory Pixi installs *manifest*'s environments into.
+
+        Pixi installs into ``.pixi/`` beside the manifest it is given, so under
+        a shared prefix this is inside the prefix rather than in the workflow.
+
+        Parameters
+        ----------
+        manifest : Path
+            The declaring manifest.
+
+        Returns
+        -------
+        Path
+        """
+        return self.install_manifest_for(manifest=manifest).parent / ".pixi"
 
     def _materialize_shared_manifest(self, *, source: Path) -> Path:
         """Copy *source* into the shared prefix, keyed by its content."""
-        if _declares_relative_dependency(source):
+        if _blocks_relocation(source):
             return source
 
         lock_path = source.parent / "pixi.lock"
         # The lock joins the key so a manifest pinned to different resolutions
         # never collides, and so a shared env is reproducible from what the
         # workflow actually committed.
-        payload = source.read_bytes()
-        if lock_path.is_file():
-            payload += lock_path.read_bytes()
+        manifest_bytes = source.read_bytes()
+        lock_bytes = lock_path.read_bytes() if lock_path.is_file() else b""
+        # Length-prefixed so that moving the boundary between the two cannot
+        # produce the same digest from a different pair.
+        payload = b"%d\0%s%d\0%s" % (
+            len(manifest_bytes),
+            manifest_bytes,
+            len(lock_bytes),
+            lock_bytes,
+        )
         target_dir = self.shared_env_root / hash_bytes(payload)
         target_manifest = target_dir / source.name
         if target_manifest.is_file():
@@ -365,11 +425,19 @@ class PixiRegistry:
             try:
                 os.replace(staging, target_dir)
             except OSError:
-                # Another process materialized the same key first. Its copy is
-                # byte-identical by construction, so prefer it and drop ours.
-                if not target_manifest.is_file():
+                if target_manifest.is_file():
+                    # Another process materialized the same key first. Its copy
+                    # is byte-identical by construction, so prefer it.
+                    shutil.rmtree(staging, ignore_errors=True)
+                elif target_dir.is_dir():
+                    # The directory exists without the manifest: a half-removed
+                    # entry, or one pruned by hand. Fill it in rather than
+                    # failing, since the contents are known.
+                    for child in staging.iterdir():
+                        shutil.copy2(child, target_dir / child.name)
+                    shutil.rmtree(staging, ignore_errors=True)
+                else:
                     raise
-                shutil.rmtree(staging, ignore_errors=True)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -445,17 +513,43 @@ class PixiRegistry:
         Returns
         -------
         str | None
-            Hex digest, or ``None`` if no lockfile exists alongside the
-            ``pixi.toml``.
+            Hex digest, or ``None`` if no lockfile exists yet.
         """
-        if env in self._lock_cache:
-            return self._lock_cache[env]
+        cached = self._lock_cache.get(env)
+        if cached is not None:
+            return cached
 
-        manifest = self.resolve(env=env)
-        lock_path = manifest.parent / "pixi.lock"
-        digest = hash_file(lock_path) if lock_path.is_file() else None
-        self._lock_cache[env] = digest
+        lock_path = self.lock_path(env=env)
+        digest = hash_file(lock_path) if lock_path is not None else None
+        # A miss is not memoized: the lock may not exist until `prepare` solves
+        # it, and callers ask for the identity on both sides of that.
+        if digest is not None:
+            self._lock_cache[env] = digest
         return digest
+
+    def lock_path(self, *, env: str) -> Path | None:
+        """Return the ``pixi.lock`` governing *env*, or ``None`` if none exists.
+
+        Prefers the lock the workflow committed beside its manifest. Falls back
+        to the one in the shared prefix, which is where Pixi writes the solved
+        lock for an environment that shipped without one — without this the
+        environment's identity and provenance would be lost precisely when
+        sharing is enabled.
+
+        Parameters
+        ----------
+        env : str
+            Environment name or path.
+
+        Returns
+        -------
+        Path | None
+        """
+        candidates = [self.resolve(env=env).parent / "pixi.lock"]
+        if self.shared_env_root is not None:
+            candidates.append(self.install_manifest(env=env).parent / "pixi.lock")
+
+        return next((path for path in candidates if path.is_file()), None)
 
     def validate_envs(self, *, env_names: set[str]) -> None:
         """Raise for any environment name that cannot be resolved.

@@ -216,6 +216,7 @@ def run_workflow(
         shared_env_root=resolve_shared_env_root(
             cli_value=env_prefix,
             config=runtime_config,
+            project_root=Path.cwd(),
         ),
     )
     secret_resolver = build_secret_resolver(

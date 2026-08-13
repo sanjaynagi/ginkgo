@@ -13,7 +13,14 @@ from rich.text import Text
 
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.envs.pixi import PixiEnvNotFoundError, PixiRegistry, _env_manifest, _list_envs
+from ginkgo.config import load_runtime_config
+from ginkgo.envs.pixi import (
+    PixiEnvNotFoundError,
+    PixiRegistry,
+    _env_manifest,
+    _list_envs,
+    resolve_shared_env_root,
+)
 
 
 @dataclass(frozen=True)
@@ -113,7 +120,20 @@ def _build_project_registry(*, project_root: Path) -> PixiRegistry:
         # so any failure to locate one (missing file, unreadable directory,
         # ambiguous candidates) just falls back to project_root alone.
         workflow_root = None
-    return PixiRegistry(project_root=project_root, workflow_root=workflow_root)
+    return PixiRegistry(
+        project_root=project_root,
+        workflow_root=workflow_root,
+        shared_env_root=_shared_env_root(project_root=project_root),
+    )
+
+
+def _shared_env_root(*, project_root: Path) -> Path | None:
+    """Return the configured shared env prefix, ignoring an unreadable config."""
+    try:
+        config = load_runtime_config(project_root=project_root)
+    except Exception:  # noqa: BLE001
+        return None
+    return resolve_shared_env_root(config=config, project_root=project_root)
 
 
 def _searched_roots(*, registry: PixiRegistry) -> str:
@@ -141,7 +161,7 @@ def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
                 continue
             seen_manifests.add(resolved_manifest)
 
-            install_dir = manifest.parent / ".pixi"
+            install_dir = registry.install_dir_for(manifest=manifest)
             entries.append(
                 EnvEntryRow(
                     env=child.name,
@@ -172,7 +192,7 @@ def _clear_targets(
         raise ValueError(
             f"Pixi environment {env!r} not found. Searched: {_searched_roots(registry=registry)}"
         ) from None
-    install_dir = manifest.parent / ".pixi"
+    install_dir = registry.install_dir_for(manifest=manifest)
     return [
         EnvEntryRow(
             env=env,

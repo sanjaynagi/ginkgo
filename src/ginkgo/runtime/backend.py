@@ -99,9 +99,7 @@ class LocalEnvironment:
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
-        manifest = self.pixi_registry.resolve(env=env)
-        lock_path = manifest.parent / "pixi.lock"
-        return lock_path if lock_path.is_file() else None
+        return self.pixi_registry.lock_path(env=env)
 
 
 @dataclass(kw_only=True)
