@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import subprocess
 import sys
 import webbrowser
@@ -59,7 +61,7 @@ def _resolve_output_dir(*, run_dir: Path, out: str | None, single_file: bool) ->
         return Path(out).resolve()
     # Default: <workspace>/.ginkgo/reports/<run-id>/
     workspace = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
-    reports_root = workspace / "reports"
+    reports_root = WorkspaceLayout(root=workspace).reports
     return (reports_root / run_dir.name).resolve()
 
 

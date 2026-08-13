@@ -15,6 +15,8 @@ missing.
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import os
 import time
 from dataclasses import dataclass
@@ -192,7 +194,7 @@ def _default_mount_root() -> Path:
             return candidate_path / "ginkgo-fuse"
     if Path("/tmp").exists():
         return Path("/tmp/ginkgo-fuse")
-    return Path.cwd() / ".ginkgo" / "fuse"
+    return WorkspaceLayout.for_cwd().fuse
 
 
 def _safe_component(value: str) -> str:

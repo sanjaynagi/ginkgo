@@ -13,6 +13,8 @@ hit fast path in the evaluator.
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import os
 import time
 from concurrent.futures import Future
@@ -157,7 +159,7 @@ def load_remote_publisher() -> Any | None:
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
-    artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
+    artifacts_root = WorkspaceLayout.for_cwd().artifacts
     return RemotePublisher(
         backend=backend,
         bucket=parsed["bucket"],

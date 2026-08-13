@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import json
 import shutil
 import sys
@@ -376,7 +378,7 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
     artifact IDs and anything the artifact store holds beyond their union
     is deleted.
     """
-    artifacts_root = cache_root.parent / "artifacts"
+    artifacts_root = WorkspaceLayout.containing(cache_root).artifacts
     if not artifacts_root.exists():
         return
 
@@ -387,7 +389,9 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
     from ginkgo.runtime.caching.cache import CacheStore
 
     referenced = CacheStore(root=cache_root).referenced_artifact_ids()
-    referenced |= AssetStore(root=cache_root.parent / "assets").referenced_artifact_ids()
+    referenced |= AssetStore(
+        root=WorkspaceLayout.containing(cache_root).assets
+    ).referenced_artifact_ids()
 
     store = LocalArtifactStore(root=artifacts_root)
     for artifact_id in store.list_artifact_ids():

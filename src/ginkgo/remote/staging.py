@@ -13,6 +13,8 @@ Layout::
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -340,4 +342,4 @@ def _default_staging_root() -> Path:
         if staging_root:
             return Path(str(staging_root)).expanduser()
 
-    return Path.cwd() / ".ginkgo" / "staging"
+    return WorkspaceLayout.for_cwd().staging

@@ -14,6 +14,8 @@ Storage layout::
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import shutil
 import stat
 from datetime import datetime, timezone
@@ -190,7 +192,7 @@ class LocalArtifactStore:
         hash_memo: HashMemo | None = None,
         materialization_log: MaterializationLog | None = None,
     ) -> None:
-        self._root = root if root is not None else Path.cwd() / ".ginkgo" / "artifacts"
+        self._root = root if root is not None else WorkspaceLayout.for_cwd().artifacts
         self._blobs_dir = self._root / "blobs"
         self._trees_dir = self._root / "trees"
         self._refs_dir = self._root / "refs"

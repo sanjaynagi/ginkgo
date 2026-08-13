@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 import os
 import shutil
 import tempfile
@@ -337,8 +339,8 @@ class ConcurrentEvaluator:
             raise ValueError("memory must be at least 1 when provided")
 
         self._hash_memo = HashMemo()
-        self._staging_cache_path = Path.cwd() / ".ginkgo" / "remote-staged.json"
-        artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
+        self._staging_cache_path = WorkspaceLayout.for_cwd().staging_cache_file
+        artifacts_root = WorkspaceLayout.for_cwd().artifacts
         self._materialization_log = MaterializationLog(
             path=artifacts_root / "materializations.json"
         )
@@ -349,7 +351,9 @@ class ConcurrentEvaluator:
             materialization_log=self._materialization_log,
             trust_workspace=self.trust_workspace,
         )
-        self._asset_store = AssetStore(root=self._cache_store._root.parent / "assets")
+        self._asset_store = AssetStore(
+            root=WorkspaceLayout.containing(self._cache_store._root).assets
+        )
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
 
         # Helper runners. Constructed once per evaluation so unit tests can
@@ -386,7 +390,7 @@ class ConcurrentEvaluator:
             runs_root=(
                 self.provenance.root_dir
                 if self.provenance is not None
-                else Path.cwd() / ".ginkgo" / "runs"
+                else WorkspaceLayout.for_cwd().runs
             ),
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
@@ -1807,7 +1811,7 @@ class ConcurrentEvaluator:
         """Return the shared runtime root for notebook support files."""
         if self.provenance is not None:
             return self.provenance.root_dir.parent
-        return Path.cwd() / ".ginkgo"
+        return WorkspaceLayout.for_cwd().root
 
     def _warn_on_untracked_path_inputs(
         self,
