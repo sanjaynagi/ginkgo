@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+
 from pathlib import Path
 from typing import Literal
 
 from rich.console import Console
 
 from ginkgo.runtime.caching.provenance import latest_run_dir
+from ginkgo.workspace_layout import WorkspaceLayout
 
-RUNS_ROOT = Path(".ginkgo") / "runs"
-CACHE_ROOT = Path(".ginkgo") / "cache"
-ASSETS_ROOT = Path(".ginkgo") / "assets"
+_LAYOUT = WorkspaceLayout.relative()
+RUNS_ROOT = _LAYOUT.runs
+CACHE_ROOT = _LAYOUT.cache
+ASSETS_ROOT = _LAYOUT.assets
 RunMode = Literal["default", "verbose", "agent", "agent_verbose"]
 
 

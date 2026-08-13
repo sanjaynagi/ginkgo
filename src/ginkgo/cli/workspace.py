@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 from pathlib import Path
+
+from ginkgo.workspace_layout import DIRECTORY_NAME
 
 
 #: The entry-file name autodiscovery looks for, at the project root or one
@@ -12,7 +15,7 @@ _ENTRY_NAME = "flow.py"
 
 _IGNORED_DIR_NAMES = {
     ".git",
-    ".ginkgo",
+    DIRECTORY_NAME,
     ".pixi",
     ".pytest_cache",
     ".ruff_cache",

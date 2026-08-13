@@ -7,6 +7,7 @@ prose. Templates read these fields directly without computing anything.
 
 from __future__ import annotations
 
+
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.workspace_layout import WorkspaceLayout
 
 from .sizing import (
     LogTail,
@@ -392,8 +394,9 @@ def build_report_data(
 
     policy = policy or SizingPolicy()
     workspace_root = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
-    assets_root = assets_root if assets_root is not None else workspace_root / "assets"
-    artifacts_root = artifacts_root if artifacts_root is not None else workspace_root / "artifacts"
+    layout = WorkspaceLayout(root=workspace_root)
+    assets_root = assets_root if assets_root is not None else layout.assets
+    artifacts_root = artifacts_root if artifacts_root is not None else layout.artifacts
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 

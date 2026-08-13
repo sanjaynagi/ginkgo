@@ -13,6 +13,7 @@ Layout::
 
 from __future__ import annotations
 
+
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
 from ginkgo.remote.backend import RemoteObjectMeta, ObjectStore
 from ginkgo.remote.resolve import resolve_backend
 from ginkgo.core.hashing import hash_file, hash_str
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -340,4 +342,4 @@ def _default_staging_root() -> Path:
         if staging_root:
             return Path(str(staging_root)).expanduser()
 
-    return Path.cwd() / ".ginkgo" / "staging"
+    return WorkspaceLayout.for_cwd().staging

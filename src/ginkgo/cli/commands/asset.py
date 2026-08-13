@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import sys
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 def command_asset(args) -> int:
@@ -76,7 +78,7 @@ def command_asset(args) -> int:
 
     asset_ref = parse_asset_selector(args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
-    artifact_store = LocalArtifactStore(root=ASSETS_ROOT.parent / "artifacts")
+    artifact_store = LocalArtifactStore(root=WorkspaceLayout.sibling_of(ASSETS_ROOT).artifacts)
     artifact_path = (
         artifact_store.artifact_path(artifact_id=version.artifact_id)
         if artifact_store.exists(artifact_id=version.artifact_id)

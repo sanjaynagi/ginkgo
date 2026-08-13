@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ from urllib.parse import quote, unquote
 import yaml
 
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -40,7 +42,7 @@ class AssetStore:
     """
 
     def __init__(self, *, root: Path | None = None) -> None:
-        self._root = root if root is not None else Path.cwd() / ".ginkgo" / "assets"
+        self._root = root if root is not None else WorkspaceLayout.for_cwd().assets
         self._root.mkdir(parents=True, exist_ok=True)
 
     def register_version(self, *, version: AssetVersion) -> AssetVersion:

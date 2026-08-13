@@ -10,6 +10,7 @@ validation) lives in ``DriverTaskRunner``; the sibling ``ScriptRunner`` in
 
 from __future__ import annotations
 
+
 import inspect
 import shlex
 import subprocess
@@ -39,6 +40,7 @@ from ginkgo.runtime.task_runners.shell import (
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 # ----- Exceptions -----------------------------------------------------------
@@ -380,7 +382,7 @@ class NotebookRunner(DriverTaskRunner):
         root_dir = (
             self.provenance.run_dir / "notebooks"
             if self.provenance is not None
-            else Path.cwd() / ".ginkgo" / "notebooks"
+            else WorkspaceLayout.for_cwd().notebooks
         )
         root_dir.mkdir(parents=True, exist_ok=True)
         executed_path = root_dir / f"{task_key}.ipynb" if notebook_kind == "ipynb" else None

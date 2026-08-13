@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 import shutil
 import sys
@@ -18,6 +19,7 @@ from rich.text import Text
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 def command_cache(args) -> int:
@@ -376,7 +378,7 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
     artifact IDs and anything the artifact store holds beyond their union
     is deleted.
     """
-    artifacts_root = cache_root.parent / "artifacts"
+    artifacts_root = WorkspaceLayout.sibling_of(cache_root).artifacts
     if not artifacts_root.exists():
         return
 
@@ -387,7 +389,9 @@ def _gc_orphan_artifacts(cache_root: Path) -> None:
     from ginkgo.runtime.caching.cache import CacheStore
 
     referenced = CacheStore(root=cache_root).referenced_artifact_ids()
-    referenced |= AssetStore(root=cache_root.parent / "assets").referenced_artifact_ids()
+    referenced |= AssetStore(
+        root=WorkspaceLayout.sibling_of(cache_root).assets
+    ).referenced_artifact_ids()
 
     store = LocalArtifactStore(root=artifacts_root)
     for artifact_id in store.list_artifact_ids():

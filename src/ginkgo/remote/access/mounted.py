@@ -15,6 +15,7 @@ missing.
 
 from __future__ import annotations
 
+
 import os
 import time
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from ginkgo.remote.access.drivers import (
 )
 from ginkgo.remote.access.drivers.base import MountSpec
 from ginkgo.remote.access.protocol import AccessStats, PerInputStats
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @dataclass(kw_only=True)
@@ -192,7 +194,7 @@ def _default_mount_root() -> Path:
             return candidate_path / "ginkgo-fuse"
     if Path("/tmp").exists():
         return Path("/tmp/ginkgo-fuse")
-    return Path.cwd() / ".ginkgo" / "fuse"
+    return WorkspaceLayout.for_cwd().fuse
 
 
 def _safe_component(value: str) -> str:

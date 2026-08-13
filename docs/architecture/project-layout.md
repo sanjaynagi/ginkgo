@@ -40,6 +40,41 @@ The scaffold is produced by `cli/commands/init.py` from
 `src/ginkgo/templates/init/`, where `PACKAGE_NAME` pins the package directory to
 `workflow`.
 
+## The `.ginkgo/` directory
+
+Runtime state lives under `.ginkgo/`, one subdirectory per concern:
+
+```
+.ginkgo/
+├── runs/                 # per-run provenance
+├── cache/                # task cache entries
+├── assets/               # asset catalog
+├── artifacts/            # content-addressed artifact store
+├── staging/              # downloaded remote inputs
+├── fuse/                 # mount points for streamed remote inputs
+├── notebooks/            # notebook artifacts for runs without provenance
+├── reports/              # exported HTML report bundles
+└── remote-staged.json    # persisted staging state
+```
+
+`WorkspaceLayout` (`src/ginkgo/workspace_layout.py`) owns this convention.
+Components ask it for a path rather than rebuilding one, so renaming a
+directory or relocating the root is a single edit.
+
+Use `WorkspaceLayout.for_cwd()` for the working-directory default,
+`.relative()` where the CLI wants workspace-relative paths for display, and
+`.sibling_of(path)` where a component holding one root needs another beside it —
+which is how a configured cache root reaches its artifact store, without each
+call site restating that the two are siblings.
+
+`sibling_of` does not check that its argument sits inside a `.ginkgo`
+directory, and callers do pass roots that do not: a store's `root=` is
+caller-supplied. It gathers the assumption the bare `.parent` at each call site
+already made rather than validating it.
+
+Stores still accept an explicit `root=`, so a caller can point one somewhere
+else; the layout supplies the default and the sibling relationships.
+
 ## Structure is a convention, not a contract
 
 `ginkgo run` takes an entry file and runs it whatever the surrounding structure.

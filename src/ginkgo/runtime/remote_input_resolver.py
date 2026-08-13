@@ -13,6 +13,7 @@ hit fast path in the evaluator.
 
 from __future__ import annotations
 
+
 import os
 import time
 from concurrent.futures import Future
@@ -32,6 +33,7 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
+from ginkgo.workspace_layout import WorkspaceLayout
 
 # Task kinds whose bodies run on the scheduler thread / in a driver
 # subprocess rather than through ``run_task`` in the process pool. These
@@ -157,7 +159,7 @@ def load_remote_publisher() -> Any | None:
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
-    artifacts_root = Path.cwd() / ".ginkgo" / "artifacts"
+    artifacts_root = WorkspaceLayout.for_cwd().artifacts
     return RemotePublisher(
         backend=backend,
         bucket=parsed["bucket"],
