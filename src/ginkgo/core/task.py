@@ -7,23 +7,17 @@ arguments), enabling lazy expression tree construction.
 
 from __future__ import annotations
 
-import ast
 import inspect
-import sys
-import tokenize
 from dataclasses import dataclass, field
 from importlib import import_module
-from importlib.util import resolve_name
 from itertools import product
-from pathlib import Path
 from typing import Any, Callable, Literal, get_type_hints
-from types import ModuleType
 
 import math
 import re
 
 from ginkgo.core.expr import Expr, ExprList, record_call, supersede_call
-from ginkgo.core.hashing import hash_file, hash_str
+from ginkgo.core.source_hash import compute_source_hash
 from ginkgo.core.types import tmp_dir
 
 _TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
@@ -159,7 +153,7 @@ class TaskDef:
         object.__setattr__(self, "_signature", sig)
         object.__setattr__(self, "_type_hints", hints)
         object.__setattr__(self, "_required_params", required)
-        object.__setattr__(self, "_source_hash", _compute_source_hash(self.fn))
+        object.__setattr__(self, "_source_hash", compute_source_hash(self.fn))
 
     @property
     def name(self) -> str:
@@ -820,137 +814,6 @@ def _parse_memory(value: str | None) -> int:
     unit = match.group(2)
     gib = amount * _MEMORY_MULTIPLIERS[unit]
     return max(1, math.ceil(gib)) if gib > 0 else 0
-
-
-def _compute_source_hash(fn: Callable[..., Any]) -> str:
-    """Return the BLAKE3 digest of task source and local imports.
-
-    Parameters
-    ----------
-    fn : Callable
-        The function to hash.
-
-    Returns
-    -------
-    str
-        Hex-encoded BLAKE3 digest.
-
-    Raises
-    ------
-    ValueError
-        If the source cannot be extracted (lambdas, dynamic functions), or
-        if a module in the local import closure cannot be read or parsed.
-    """
-    try:
-        source = inspect.getsource(fn)
-    except OSError as exc:
-        raise ValueError(
-            f"Cannot extract source for task '{fn.__qualname__}'. "
-            "Tasks must be defined as named, top-level functions."
-        ) from exc
-    module = sys.modules.get(fn.__module__)
-    if not isinstance(module, ModuleType):
-        return hash_str(source)
-
-    modules = _local_import_closure(module)
-    module_hashes = [f"{name}:{hash_file(path)}" for name, path in sorted(modules.items())]
-    return hash_str("\n".join((source, *module_hashes)))
-
-
-def _local_import_closure(module: ModuleType) -> dict[str, Path]:
-    """Return loaded local Python modules statically imported by ``module``."""
-    source_path = _module_source_path(module)
-    if source_path is None:
-        return {}
-
-    source_root = _module_source_root(module=module, source_path=source_path)
-    pending = [module]
-    sources: dict[str, Path] = {}
-
-    while pending:
-        current = pending.pop()
-        if current.__name__ in sources:
-            continue
-
-        current_path = _module_source_path(current)
-        if current_path is None or not current_path.is_relative_to(source_root):
-            continue
-
-        sources[current.__name__] = current_path
-        pending.extend(_imported_modules(module=current, source_path=current_path))
-
-    return sources
-
-
-def _module_source_path(module: ModuleType) -> Path | None:
-    """Return the resolved Python source path for ``module``, when available."""
-    filename = getattr(module, "__file__", None)
-    if filename is None:
-        return None
-
-    path = Path(filename).resolve()
-    return path if path.suffix == ".py" and path.is_file() else None
-
-
-def _module_source_root(*, module: ModuleType, source_path: Path) -> Path:
-    """Return the import root containing the task module's package."""
-    package_depth = len(module.__name__.split("."))
-    if source_path.name != "__init__.py":
-        package_depth -= 1
-
-    source_root = source_path.parent
-    for _ in range(package_depth):
-        source_root = source_root.parent
-    return source_root
-
-
-def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleType]:
-    """Return already-loaded modules named by static imports in ``module``.
-
-    Raises
-    ------
-    ValueError
-        If the module source cannot be read or parsed. Swallowing the error
-        would silently truncate the import closure and stop deeper helper
-        changes from invalidating the cache.
-    """
-    try:
-        with tokenize.open(source_path) as source_file:
-            tree = ast.parse(source_file.read(), filename=str(source_path))
-    except (OSError, SyntaxError, UnicodeDecodeError) as exc:
-        raise ValueError(
-            f"Cannot parse imports of module '{module.__name__}' ({source_path}) "
-            "while hashing the task's local import closure. Fix the module source "
-            "so cache invalidation can track the full import closure."
-        ) from exc
-
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base = _import_base_name(node=node, package=module.__package__)
-            if base is None:
-                continue
-            names.add(base)
-            names.update(f"{base}.{alias.name}" for alias in node.names)
-
-    return [
-        imported
-        for name in sorted(names)
-        if isinstance(imported := sys.modules.get(name), ModuleType)
-    ]
-
-
-def _import_base_name(*, node: ast.ImportFrom, package: str | None) -> str | None:
-    """Resolve the module portion of an import statement without importing it."""
-    if node.level == 0:
-        return node.module
-    if not package:
-        return None
-
-    relative_name = "." * node.level + (node.module or "")
-    return resolve_name(relative_name, package)
 
 
 def _load_taskdef(module_name: str, task_name: str) -> TaskDef:

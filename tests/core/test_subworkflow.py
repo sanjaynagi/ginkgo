@@ -160,7 +160,7 @@ class TestEvaluatorDispatch:
             )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(call_child_task(workflow_path=str(child_path), region="emea"))
 
@@ -205,7 +205,7 @@ class TestEvaluatorDispatch:
             )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         with pytest.raises(SubWorkflowError) as exc_info:
             evaluator.evaluate(call_child_no_params_task(workflow_path=str(child_path)))
@@ -247,7 +247,7 @@ class TestEvaluatorDispatch:
             )
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         with pytest.raises(RuntimeError, match="GINKGO_CHILD_RUN_ID"):
             evaluator.evaluate(call_child_no_params_task(workflow_path=str(child_path)))
@@ -382,7 +382,7 @@ class TestSubworkflowParams:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout=stdout, stderr="")
 
         evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
-        monkeypatch.setattr(evaluator._shell_runner, "_run_subprocess", fake_run_subprocess)
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         evaluator.evaluate(
             call_child_with_region(workflow_path=str(child_path), region="2L:1-100")

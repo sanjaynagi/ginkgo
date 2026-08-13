@@ -93,7 +93,7 @@ def collect_workflow_diagnostics(
             backend=backend,
             constructed_calls=tuple(constructed_calls),
         )
-        evaluator.validate(expr)
+        evaluator.build_and_validate(expr)
 
         # A parameter read from a module global inside a task body is invisible
         # to that task's cache key, so a changed value silently reuses the

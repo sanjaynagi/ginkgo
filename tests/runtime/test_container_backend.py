@@ -376,7 +376,7 @@ class TestContainerShellE2E:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
         with (
-            patch.object(ShellRunner, "_run_subprocess", mock_run_subprocess),
+            patch.object(ShellRunner, "run_subprocess", mock_run_subprocess),
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
         ):
             result = evaluate(
@@ -434,7 +434,7 @@ class TestContainerShellE2E:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
         with (
-            patch.object(ShellRunner, "_run_subprocess", mock_run_subprocess),
+            patch.object(ShellRunner, "run_subprocess", mock_run_subprocess),
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch("ginkgo.envs.container.subprocess.run") as mock_container_run,
         ):

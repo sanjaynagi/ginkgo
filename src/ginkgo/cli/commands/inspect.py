@@ -81,10 +81,10 @@ def inspect_workflow(
         ]
 
     evaluator = ConcurrentEvaluator()
-    evaluator.validate(expr)
+    evaluator.build_and_validate(expr)
 
     nodes = []
-    for node in sorted(evaluator._nodes.values(), key=lambda item: item.node_id):
+    for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id):
         nodes.append(
             {
                 "task_id": f"task_{node.node_id:04d}",

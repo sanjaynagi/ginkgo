@@ -145,7 +145,7 @@ class DryRunPlan:
 def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
     """Build a static execution plan from a validated evaluator.
 
-    Must be called after ``evaluator.validate(...)``. Read-only: it resolves
+    Must be called after ``evaluator.build_and_validate(...)``. Read-only: it resolves
     arguments and probes the cache, but executes no tasks and materialises
     nothing into the workspace.
 

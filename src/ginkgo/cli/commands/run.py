@@ -245,7 +245,7 @@ def run_workflow(
     )
     validate_started = time.perf_counter()
     with profiler.timed("evaluator_validate"):
-        evaluator.validate(expr)
+        evaluator.build_and_validate(expr)
     validate_elapsed = time.perf_counter() - validate_started
 
     # A parameter must reach a task as an argument. One read from a module global
@@ -268,12 +268,14 @@ def run_workflow(
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
-    task_count = len(evaluator._nodes)
-    edge_count = sum(len(node.dependency_ids) for node in evaluator._nodes.values())
-    env_count = len({node.task_def.env for node in evaluator._nodes.values() if node.task_def.env})
+    task_count = len(evaluator.task_nodes)
+    edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
+    env_count = len(
+        {node.task_def.env for node in evaluator.task_nodes.values() if node.task_def.env}
+    )
     planned_tasks = [
         (node.node_id, node.task_def.name, environment_label(node.task_def.env))
-        for node in sorted(evaluator._nodes.values(), key=lambda item: item.node_id)
+        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
     ]
 
     if dry_run:
