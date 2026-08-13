@@ -15,7 +15,6 @@ missing.
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import os
 import time
@@ -32,6 +31,7 @@ from ginkgo.remote.access.drivers import (
 )
 from ginkgo.remote.access.drivers.base import MountSpec
 from ginkgo.remote.access.protocol import AccessStats, PerInputStats
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @dataclass(kw_only=True)

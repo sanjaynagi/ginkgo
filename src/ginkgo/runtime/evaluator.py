@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import os
 import shutil
@@ -105,6 +104,7 @@ from ginkgo.runtime.task_validation import (
 )
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
+from ginkgo.workspace_layout import WorkspaceLayout
 
 # Maps each ExecutionDirective subclass to the (runner_attr, method_name) pair used
 # to dispatch it. The completeness check below catches any imported subclass that
@@ -352,7 +352,7 @@ class ConcurrentEvaluator:
             trust_workspace=self.trust_workspace,
         )
         self._asset_store = AssetStore(
-            root=WorkspaceLayout.containing(self._cache_store._root).assets
+            root=WorkspaceLayout.sibling_of(self._cache_store._root).assets
         )
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
 

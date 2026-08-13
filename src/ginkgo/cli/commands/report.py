@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import subprocess
 import sys
@@ -11,6 +10,7 @@ from pathlib import Path
 
 from ginkgo.cli.common import console, resolve_run_dir
 from ginkgo.reporting import SizingPolicy, export_report
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 def command_report(args) -> int:

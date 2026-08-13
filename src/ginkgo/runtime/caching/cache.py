@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import json
 import os
@@ -39,6 +38,7 @@ from ginkgo.runtime.artifacts.value_codec import (
     hash_value_bytes,
     summarise_value,
 )
+from ginkgo.workspace_layout import WorkspaceLayout
 
 MISSING = object()
 
@@ -85,7 +85,7 @@ class CacheStore:
             object.__setattr__(self, "_artifact_store", self.artifact_store)
         else:
             # Default: sibling directory to the cache root.
-            artifacts_root = WorkspaceLayout.containing(self._root).artifacts
+            artifacts_root = WorkspaceLayout.sibling_of(self._root).artifacts
             object.__setattr__(
                 self,
                 "_artifact_store",

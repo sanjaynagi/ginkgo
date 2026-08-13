@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 from pathlib import Path
 from typing import Literal
@@ -10,6 +9,7 @@ from typing import Literal
 from rich.console import Console
 
 from ginkgo.runtime.caching.provenance import latest_run_dir
+from ginkgo.workspace_layout import WorkspaceLayout
 
 _LAYOUT = WorkspaceLayout.relative()
 RUNS_ROOT = _LAYOUT.runs

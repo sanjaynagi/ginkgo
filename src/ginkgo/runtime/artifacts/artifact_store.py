@@ -14,7 +14,6 @@ Storage layout::
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import shutil
 import stat
@@ -33,6 +32,7 @@ from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_file
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 DIGEST_ALGORITHM = "blake3"

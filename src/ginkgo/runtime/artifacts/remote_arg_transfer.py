@@ -27,6 +27,7 @@ from ginkgo.remote.access.protocol import (
     is_fuse_ref,
 )
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 _REMOTE_FILE_TAG = "__ginkgo_remote_file__"
@@ -34,13 +35,17 @@ _REMOTE_FOLDER_TAG = "__ginkgo_remote_folder__"
 
 # Parent directories whose contents are managed content-addressed blobs.
 # Paths resolving into these trees are safe to hardlink rather than copy.
-_MANAGED_BLOB_PARENTS = ("staging/blobs", "artifacts/blobs")
+_LAYOUT = WorkspaceLayout.relative()
+_MANAGED_BLOB_PARENTS = (
+    str(_LAYOUT.staging / "blobs"),
+    str(_LAYOUT.artifacts / "blobs"),
+)
 
 
 def _is_managed_cas_blob(*, path: Path) -> bool:
     """Return whether ``path`` resolves inside a Ginkgo CAS blob directory."""
     resolved = str(path)
-    return any(f"/.ginkgo/{marker}/" in resolved for marker in _MANAGED_BLOB_PARENTS)
+    return any(f"/{marker}/" in resolved for marker in _MANAGED_BLOB_PARENTS)
 
 
 def _annotation_matches(*, annotation: Any, target: type) -> bool:

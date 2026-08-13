@@ -10,7 +10,6 @@ validation) lives in ``DriverTaskRunner``; the sibling ``ScriptRunner`` in
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import inspect
 import shlex
@@ -41,6 +40,7 @@ from ginkgo.runtime.task_runners.shell import (
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 # ----- Exceptions -----------------------------------------------------------

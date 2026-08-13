@@ -63,9 +63,14 @@ directory or relocating the root is a single edit.
 
 Use `WorkspaceLayout.for_cwd()` for the working-directory default,
 `.relative()` where the CLI wants workspace-relative paths for display, and
-`.containing(path)` to recover the layout from one of its own subdirectories —
-which is how a component holding a configured cache root reaches the sibling
-artifact store, without each call site restating that the two are siblings.
+`.sibling_of(path)` where a component holding one root needs another beside it —
+which is how a configured cache root reaches its artifact store, without each
+call site restating that the two are siblings.
+
+`sibling_of` does not check that its argument sits inside a `.ginkgo`
+directory, and callers do pass roots that do not: a store's `root=` is
+caller-supplied. It gathers the assumption the bare `.parent` at each call site
+already made rather than validating it.
 
 Stores still accept an explicit `root=`, so a caller can point one somewhere
 else; the layout supplies the default and the sibling relationships.

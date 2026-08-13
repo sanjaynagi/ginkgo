@@ -13,7 +13,6 @@ hit fast path in the evaluator.
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import os
 import time
@@ -34,6 +33,7 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
+from ginkgo.workspace_layout import WorkspaceLayout
 
 # Task kinds whose bodies run on the scheduler thread / in a driver
 # subprocess rather than through ``run_task`` in the process pool. These

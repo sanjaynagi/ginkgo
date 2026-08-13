@@ -45,24 +45,22 @@ class WorkspaceLayout:
         return cls(root=Path(DIRECTORY_NAME))
 
     @classmethod
-    def for_workspace(cls, workspace: Path) -> WorkspaceLayout:
-        """Return the layout for the workspace rooted at *workspace*."""
-        return cls(root=workspace / DIRECTORY_NAME)
+    def sibling_of(cls, path: Path) -> WorkspaceLayout:
+        """Return the layout whose directories sit alongside *path*.
 
-    @classmethod
-    def containing(cls, path: Path) -> WorkspaceLayout:
-        """Return the layout that owns *path*, one of its subdirectories.
-
-        Used where a component holds one root and needs a sibling — an
-        artifact store built from a configured cache root, say. Naming the
-        assumption here keeps it in one place instead of leaving a bare
-        ``.parent`` at each call site.
+        Used where a component holds one root and needs another beside it — an
+        artifact store built from a configured cache root, say. This does not
+        verify that *path* sits inside a ``.ginkgo`` directory, and callers do
+        pass roots that do not: a store's ``root=`` is caller-supplied, so a
+        test pointing one at a scratch directory gets a layout rooted there.
+        That is the same assumption the bare ``.parent`` at each call site
+        already made, gathered into one place rather than validated.
 
         Parameters
         ----------
         path : Path
-            A direct child of the ``.ginkgo`` directory, such as a cache or
-            assets root.
+            A directory whose siblings form the wanted layout, typically a
+            cache or assets root.
         """
         return cls(root=path.parent)
 

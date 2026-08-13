@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ginkgo.workspace_layout import WorkspaceLayout
 
 import tempfile
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from urllib.parse import quote, unquote
 import yaml
 
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @dataclass(frozen=True, kw_only=True)
