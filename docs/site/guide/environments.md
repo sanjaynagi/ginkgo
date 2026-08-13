@@ -59,6 +59,34 @@ def count_reads(sample_id: str, fastq: file) -> file:
 Container-backed execution is currently intended for shell tasks only. Python
 tasks still run in the scheduler's Python environment.
 
+## Sharing Environments Between Workflows
+
+By default each workflow installs its own copy of every environment, beside the
+manifest that declares it. If you run several workflows that declare the same
+environment, point them at a shared prefix and they will install it once:
+
+```bash
+ginkgo run --env-prefix ~/.cache/ginkgo/envs
+```
+
+Or set it once per project:
+
+```toml
+[envs]
+shared_prefix = "~/.cache/ginkgo/envs"
+```
+
+Environments are stored under the prefix by a hash of the manifest and its lock
+file, so workflows share an install only when they declare byte-identical
+environments. Changing a dependency produces a new directory and leaves the old
+one in place; nothing is removed automatically, so the prefix is safe to delete
+whole when you want to reclaim the space.
+
+Some environments cannot be relocated and are installed locally as usual: a
+`pyproject.toml` manifest, or any manifest depending on a local `path` or an
+`editable` install. These reference files relative to their own location, so
+moving them would break the reference. This is silent and needs no action.
+
 ## Environment Commands
 
 The CLI includes environment inspection and cleanup commands:

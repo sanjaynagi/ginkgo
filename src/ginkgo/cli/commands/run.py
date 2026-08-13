@@ -44,7 +44,7 @@ from ginkgo.core.expr import record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
-from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.envs.pixi import PixiRegistry, resolve_shared_env_root
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
@@ -80,6 +80,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         trust_workspace=getattr(args, "trust_workspace", False),
         profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
+        env_prefix=getattr(args, "env_prefix", None),
         param_extras=getattr(args, "param_extras", ()),
     )
 
@@ -144,6 +145,7 @@ def run_workflow(
     trust_workspace: bool = False,
     profile: bool = False,
     executor: str = "local",
+    env_prefix: str | None = None,
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
 ) -> int:
@@ -211,6 +213,10 @@ def run_workflow(
     registry = PixiRegistry(
         project_root=Path.cwd(),
         workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
+        shared_env_root=resolve_shared_env_root(
+            cli_value=env_prefix,
+            config=runtime_config,
+        ),
     )
     secret_resolver = build_secret_resolver(
         project_root=Path.cwd(),

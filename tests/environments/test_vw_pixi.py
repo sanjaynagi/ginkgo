@@ -27,6 +27,7 @@ from ginkgo.envs.pixi import (
     PixiEnvNotFoundError,
     PixiEnvPrepareError,
     PixiRegistry,
+    resolve_shared_env_root,
     _env_manifest,
     _is_pixi_pyproject,
     _list_envs,
@@ -466,3 +467,174 @@ def needs_foreign_env(x: int) -> int:
 
         with pytest.raises(TypeError, match="Foreign environments only support driver tasks"):
             _evaluate(module.needs_foreign_env(x=1), registry=registry)
+
+
+# ---------------------------------------------------------------------------
+# Shared environment prefix
+# ---------------------------------------------------------------------------
+
+
+def _write_shared_env(dir_path: Path, *, deps: str = "", lock: str | None = None) -> Path:
+    """Write a minimal pixi env under ``dir_path/envs/demo`` and return its root."""
+    env_dir = dir_path / "envs" / "demo"
+    env_dir.mkdir(parents=True)
+    (env_dir / "pixi.toml").write_text(
+        '[workspace]\nname = "demo"\nchannels = ["conda-forge"]\n'
+        'platforms = ["linux-64"]\n\n[dependencies]\n' + deps,
+        encoding="utf-8",
+    )
+    if lock is not None:
+        (env_dir / "pixi.lock").write_text(lock, encoding="utf-8")
+    return dir_path
+
+
+class TestSharedEnvPrefix:
+    """Content-keyed sharing of installed environments across workflows."""
+
+    def test_without_prefix_installs_beside_the_manifest(self, tmp_path):
+        project = _write_shared_env(tmp_path / "a")
+        registry = PixiRegistry(project_root=project)
+
+        assert registry.install_manifest(env="demo") == project / "envs" / "demo" / "pixi.toml"
+
+    def test_identical_envs_in_two_projects_share_one_directory(self, tmp_path):
+        shared = tmp_path / "shared"
+        first = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "a", deps='python = "3.13.*"\n'),
+            shared_env_root=shared,
+        )
+        second = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "b", deps='python = "3.13.*"\n'),
+            shared_env_root=shared,
+        )
+
+        first_manifest = first.install_manifest(env="demo")
+        second_manifest = second.install_manifest(env="demo")
+
+        assert first_manifest == second_manifest
+        assert first_manifest.is_relative_to(shared)
+        assert [path.name for path in shared.iterdir()] == [first_manifest.parent.name]
+
+    def test_differing_envs_do_not_share(self, tmp_path):
+        shared = tmp_path / "shared"
+        first = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "a", deps='python = "3.13.*"\n'),
+            shared_env_root=shared,
+        )
+        second = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "b", deps='python = "3.12.*"\n'),
+            shared_env_root=shared,
+        )
+
+        assert first.install_manifest(env="demo") != second.install_manifest(env="demo")
+        assert len(list(shared.iterdir())) == 2
+
+    def test_lock_file_joins_the_key_and_is_copied(self, tmp_path):
+        shared = tmp_path / "shared"
+        locked = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "a", lock="version: 6\n"),
+            shared_env_root=shared,
+        )
+        unlocked = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "b"),
+            shared_env_root=shared,
+        )
+
+        locked_manifest = locked.install_manifest(env="demo")
+
+        # Same manifest, different lock state, so they must not collide.
+        assert locked_manifest != unlocked.install_manifest(env="demo")
+        assert (locked_manifest.parent / "pixi.lock").read_text() == "version: 6\n"
+
+    def test_path_dependency_stays_local(self, tmp_path):
+        project = _write_shared_env(tmp_path / "a", deps='local = { path = "../pkg" }\n')
+        registry = PixiRegistry(project_root=project, shared_env_root=tmp_path / "shared")
+
+        # Relocating would break the relative path, so it must not be shared.
+        assert registry.install_manifest(env="demo") == project / "envs" / "demo" / "pixi.toml"
+
+    def test_editable_dependency_stays_local(self, tmp_path):
+        project = _write_shared_env(tmp_path / "a")
+        (project / "envs" / "demo" / "pixi.toml").write_text(
+            '[workspace]\nname = "demo"\nchannels = ["conda-forge"]\n'
+            'platforms = ["linux-64"]\n\n[pypi-dependencies]\n'
+            'mine = { path = "..", editable = true }\n',
+            encoding="utf-8",
+        )
+        registry = PixiRegistry(project_root=project, shared_env_root=tmp_path / "shared")
+
+        assert registry.install_manifest(env="demo") == project / "envs" / "demo" / "pixi.toml"
+
+    def test_feature_table_path_dependency_stays_local(self, tmp_path):
+        project = _write_shared_env(tmp_path / "a")
+        (project / "envs" / "demo" / "pixi.toml").write_text(
+            '[workspace]\nname = "demo"\nchannels = ["conda-forge"]\n'
+            'platforms = ["linux-64"]\n\n[feature.dev.pypi-dependencies]\n'
+            'helper = { path = "../helper" }\n',
+            encoding="utf-8",
+        )
+        registry = PixiRegistry(project_root=project, shared_env_root=tmp_path / "shared")
+
+        assert registry.install_manifest(env="demo") == project / "envs" / "demo" / "pixi.toml"
+
+    def test_exec_argv_targets_the_shared_manifest(self, tmp_path):
+        shared = tmp_path / "shared"
+        registry = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "a"),
+            shared_env_root=shared,
+        )
+
+        argv = registry.exec_argv(env="demo", cmd="echo hi")
+
+        assert str(registry.install_manifest(env="demo")) in argv
+        assert not any(str(tmp_path / "a") in part for part in argv)
+
+    def test_existing_shared_copy_is_reused_not_rewritten(self, tmp_path):
+        shared = tmp_path / "shared"
+        registry = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "a"),
+            shared_env_root=shared,
+        )
+
+        first = registry.install_manifest(env="demo")
+        marker = first.parent / "installed-marker"
+        marker.write_text("x", encoding="utf-8")
+
+        # A second registry must adopt the existing directory untouched.
+        again = PixiRegistry(
+            project_root=_write_shared_env(tmp_path / "b"),
+            shared_env_root=shared,
+        ).install_manifest(env="demo")
+
+        assert again == first
+        assert marker.is_file()
+        assert not any(child.name.startswith(".staging-") for child in shared.iterdir())
+
+
+class TestResolveSharedEnvRoot:
+    """Precedence between the CLI flag and ``[envs] shared_prefix``."""
+
+    def test_returns_none_when_unset(self):
+        assert resolve_shared_env_root(cli_value=None, config={}) is None
+
+    def test_reads_the_config_table(self, tmp_path):
+        config = {"envs": {"shared_prefix": str(tmp_path / "envs")}}
+
+        assert resolve_shared_env_root(cli_value=None, config=config) == tmp_path / "envs"
+
+    def test_cli_value_wins_over_config(self, tmp_path):
+        config = {"envs": {"shared_prefix": str(tmp_path / "from-config")}}
+
+        resolved = resolve_shared_env_root(cli_value=str(tmp_path / "from-cli"), config=config)
+
+        assert resolved == tmp_path / "from-cli"
+
+    def test_expands_user_home(self):
+        resolved = resolve_shared_env_root(cli_value="~/ginkgo-envs", config={})
+
+        assert resolved == Path.home() / "ginkgo-envs"
+
+    def test_ignores_a_non_string_prefix(self):
+        assert (
+            resolve_shared_env_root(cli_value=None, config={"envs": {"shared_prefix": 7}}) is None
+        )

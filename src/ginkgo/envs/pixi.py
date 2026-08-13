@@ -12,13 +12,25 @@ the normal Pixi path.
 from __future__ import annotations
 
 
+import os
 import subprocess
 import shutil
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from ginkgo.core.hashing import hash_file
+from ginkgo.core.hashing import hash_bytes, hash_file
+
+# Dependency table keys whose entries may name a path relative to the manifest.
+# A manifest holding one of these cannot be relocated into the shared prefix.
+_DEPENDENCY_TABLES = (
+    "dependencies",
+    "pypi-dependencies",
+    "host-dependencies",
+    "build-dependencies",
+)
 
 
 class PixiEnvNotFoundError(RuntimeError):
@@ -58,6 +70,40 @@ class PixiEnvPrepareError(RuntimeError):
     def __init__(self, *, manifest: Path, output: str) -> None:
         details = output.strip() or "pixi did not provide any error output"
         super().__init__(f"Failed to prepare Pixi env {str(manifest)!r}: {details}")
+
+
+def _declares_relative_dependency(manifest: Path) -> bool:
+    """Return whether *manifest* names a dependency by path.
+
+    A path dependency is written relative to the manifest that declares it, so
+    a manifest holding one cannot be copied into the shared prefix without
+    breaking the reference. Reported conservatively: an unreadable or
+    unparseable manifest counts as path-dependent so it stays local.
+    """
+    # A pyproject.toml manifest always builds the surrounding project, which is
+    # itself a path reference, so it can never be relocated.
+    if manifest.name == "pyproject.toml":
+        return True
+
+    try:
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return True
+
+    tables: list[Any] = []
+    for table_name in _DEPENDENCY_TABLES:
+        tables.append(data.get(table_name))
+    for feature in (data.get("feature") or {}).values():
+        if isinstance(feature, dict):
+            tables.extend(feature.get(name) for name in _DEPENDENCY_TABLES)
+
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for spec in table.values():
+            if isinstance(spec, dict) and ("path" in spec or spec.get("editable")):
+                return True
+    return False
 
 
 def _is_pixi_pyproject(path: Path) -> bool:
@@ -132,6 +178,39 @@ def _is_explicit_path(env: str) -> bool:
     return "/" in env or env.startswith(".")
 
 
+def resolve_shared_env_root(
+    *,
+    cli_value: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> Path | None:
+    """Return the shared environment prefix, or ``None`` when not configured.
+
+    Sharing is opt-in. The CLI flag wins over ``[envs] shared_prefix`` in
+    ``ginkgo.toml``; when neither is set, environments install beside their
+    declaring manifest as before.
+
+    Parameters
+    ----------
+    cli_value : str | None
+        Value of ``--env-prefix``, when given.
+    config : dict | None
+        Parsed runtime config.
+
+    Returns
+    -------
+    Path | None
+        Absolute prefix directory, with ``~`` expanded.
+    """
+    if cli_value:
+        return Path(cli_value).expanduser().resolve()
+
+    envs_config = (config or {}).get("envs")
+    configured = envs_config.get("shared_prefix") if isinstance(envs_config, dict) else None
+    if isinstance(configured, str) and configured:
+        return Path(configured).expanduser().resolve()
+    return None
+
+
 @dataclass(kw_only=True)
 class PixiRegistry:
     """Locates Pixi environments and builds subprocess arguments for them.
@@ -145,6 +224,11 @@ class PixiRegistry:
     workflow_root : Path | None
         Directory containing the resolved workflow entrypoint. Canonical
         package-local envs are discovered from ``workflow_root/envs/``.
+    shared_env_root : Path | None
+        When set, environments are installed under
+        ``shared_env_root/<content-hash>/`` instead of beside the declaring
+        manifest, so workflows declaring byte-identical environments install
+        once and share. ``None`` (default) keeps the per-workflow behaviour.
 
     Raises
     ------
@@ -154,9 +238,11 @@ class PixiRegistry:
 
     project_root: Path = field(default_factory=Path.cwd)
     workflow_root: Path | None = None
+    shared_env_root: Path | None = None
     _envs_dirs: tuple[Path, ...] = field(init=False, repr=False)
     _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
     _prepared_manifests: set[Path] = field(default_factory=set, init=False, repr=False)
+    _shared_manifests: dict[Path, Path] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         env_dirs: list[Path] = []
@@ -220,6 +306,75 @@ class PixiRegistry:
     def env_directories(self) -> tuple[Path, ...]:
         """Return the environment discovery roots for this project."""
         return self._envs_dirs
+
+    def install_manifest(self, *, env: str) -> Path:
+        """Return the manifest Pixi should install and run *env* from.
+
+        With no shared prefix configured this is the declaring manifest, so
+        Pixi installs into ``.pixi/envs/`` beside it. With a shared prefix, the
+        manifest is copied into ``shared_env_root/<content-hash>/`` and that
+        copy is returned, so two workflows declaring byte-identical
+        environments resolve to one directory and install once.
+
+        Falls back to the declaring manifest when the environment cannot be
+        shared safely — see :func:`_declares_relative_dependency`.
+
+        Parameters
+        ----------
+        env : str
+            Environment name or path.
+
+        Returns
+        -------
+        Path
+            Absolute path to the manifest to hand to ``pixi``.
+        """
+        source = self.resolve(env=env)
+        if self.shared_env_root is None:
+            return source
+        if source in self._shared_manifests:
+            return self._shared_manifests[source]
+
+        shared = self._materialize_shared_manifest(source=source)
+        self._shared_manifests[source] = shared
+        return shared
+
+    def _materialize_shared_manifest(self, *, source: Path) -> Path:
+        """Copy *source* into the shared prefix, keyed by its content."""
+        if _declares_relative_dependency(source):
+            return source
+
+        lock_path = source.parent / "pixi.lock"
+        # The lock joins the key so a manifest pinned to different resolutions
+        # never collides, and so a shared env is reproducible from what the
+        # workflow actually committed.
+        payload = source.read_bytes()
+        if lock_path.is_file():
+            payload += lock_path.read_bytes()
+        target_dir = self.shared_env_root / hash_bytes(payload)
+        target_manifest = target_dir / source.name
+        if target_manifest.is_file():
+            return target_manifest
+
+        self.shared_env_root.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=self.shared_env_root, prefix=".staging-"))
+        try:
+            shutil.copy2(source, staging / source.name)
+            if lock_path.is_file():
+                shutil.copy2(lock_path, staging / "pixi.lock")
+            try:
+                os.replace(staging, target_dir)
+            except OSError:
+                # Another process materialized the same key first. Its copy is
+                # byte-identical by construction, so prefer it and drop ours.
+                if not target_manifest.is_file():
+                    raise
+                shutil.rmtree(staging, ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+        return target_manifest
 
     def _resolve_conda_env_file(self, *, manifest: Path) -> Path:
         """Import a conda env spec into a generated neighboring Pixi workspace."""
@@ -350,7 +505,7 @@ class PixiRegistry:
         RuntimeError
             If ``pixi`` is not found on PATH.
         """
-        manifest = self.resolve(env=env)
+        manifest = self.install_manifest(env=env)
         if manifest in self._prepared_manifests:
             return manifest
 
@@ -399,7 +554,7 @@ class PixiRegistry:
         list[str]
             Argument vector suitable for ``subprocess.run(..., shell=False)``.
         """
-        manifest = self.resolve(env=env)
+        manifest = self.install_manifest(env=env)
         return [
             "pixi",
             "run",

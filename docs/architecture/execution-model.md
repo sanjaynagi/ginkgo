@@ -182,6 +182,25 @@ explicit manifest path. This path is
 responsible for env discovery, validation, lock hashing for cache invalidation,
 environment preparation before dispatch, and shell execution through Pixi.
 
+*Shared environment prefix.* By default Pixi installs into `.pixi/envs/` beside
+the declaring manifest, so each workflow gets a private copy of every
+environment. Setting `--env-prefix PATH` or `[envs] shared_prefix` in
+`ginkgo.toml` makes `PixiRegistry.install_manifest()` copy the manifest (and its
+`pixi.lock`, when present) into `PATH/<content-hash>/` and install from there.
+Workflows declaring byte-identical environments therefore resolve to one
+directory and install once. The key is a BLAKE3 digest of the manifest bytes
+plus the lock bytes, so a differing lock never collides with a matching
+manifest.
+
+Pixi's own `detached-environments` setting is deliberately not used: it keys on
+the manifest's *path*, so two identical environments in different workflows
+still install twice. The content key is what makes sharing possible.
+
+Sharing is skipped, falling back to a local install, whenever relocating the
+manifest would break it: a `pyproject.toml` manifest (which builds the
+surrounding project), or any manifest declaring a dependency by `path` or as
+`editable`, since those are written relative to the manifest that declares them.
+
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for shell, notebook, and script tasks. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
 
 **CompositeEnvironment** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalEnvironment`.
