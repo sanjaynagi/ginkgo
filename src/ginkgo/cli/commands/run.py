@@ -325,10 +325,13 @@ def run_workflow(
         )
         if evaluator.memory is not None:
             rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
+        if evaluator.gpus:
+            rich_console.print(f"[cyan]🎛[/] GPU budget: [bold]{evaluator.gpus}[/]")
         if output_mode == "verbose":
             rich_console.print(
                 f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
                 f"memory={evaluator.memory if evaluator.memory is not None else 'auto'}, "
+                f"gpus={evaluator.gpus}, "
                 f"config overlays={len(config_paths)}"
             )
             rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")

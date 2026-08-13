@@ -75,7 +75,10 @@ def select_dispatch_subset(
         The selected task identifiers.
     """
     tasks = list(ready_tasks)
-    if jobs <= 0 or cores <= 0 or (memory is not None and memory < 0) or not tasks:
+    # Only a missing jobs slot blocks everything. An exhausted core/memory/gpu
+    # budget must not short-circuit: remote-placed tasks carry a zero local
+    # footprint and stay dispatchable; the CP-SAT constraints handle the rest.
+    if jobs <= 0 or not tasks:
         return []
 
     return _select_with_cp_sat(
@@ -102,9 +105,9 @@ def _select_with_cp_sat(
     selected = {task.node_id: model.NewBoolVar(f"task_{task.node_id}") for task in tasks}
 
     model.Add(sum(selected.values()) <= jobs)
-    model.Add(sum(task.threads * selected[task.node_id] for task in tasks) <= cores)
+    model.Add(sum(task.threads * selected[task.node_id] for task in tasks) <= max(0, cores))
     if memory is not None:
-        model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= memory)
+        model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= max(0, memory))
     model.Add(sum(task.gpu * selected[task.node_id] for task in tasks) <= max(0, gpus))
 
     # Per-group concurrency limits — each named group consumes one slot per

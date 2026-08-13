@@ -6,15 +6,16 @@ resource budget and to decide ordering and retry behaviour.
 
 ## Declaring Resource Requirements
 
-Pass resource arguments to `@task`. The scheduler respects them against the
-`--jobs`, `--cores`, and `--memory` budgets passed to `ginkgo run`.
+Pass resource arguments to `@task`. Resources declare what a task *needs*,
+never where it runs. The scheduler packs them against the `--jobs`, `--cores`,
+`--memory`, and `--gpus` budgets passed to `ginkgo run`.
 
 ```python
 @task(threads=4, memory="8Gi")
 def align_reads(sample_id: str, reads: file) -> file:
     ...
 
-@task(kind="shell", gpu=1, remote=True, memory="16Gi")
+@task(gpu=1, gpu_type="nvidia-tesla-t4", memory="16Gi")
 def train_model(dataset: folder) -> file:
     ...
 ```
@@ -25,8 +26,17 @@ def train_model(dataset: folder) -> file:
   to additionally export `OMP_NUM_THREADS` and related BLAS/OpenMP variables.
 - `memory="8Gi"` declares the memory footprint. Format is Kubernetes-style
   (`512Mi`, `4Gi`, `16Gi`). Remote executors map this to pod resource requests.
-- `gpu=N` and `remote=True` dispatch the task to the configured remote executor.
-  Tasks with `gpu > 0` are implicitly remote.
+- `gpu=N` declares a GPU requirement. It is satisfied from the local `--gpus`
+  budget when it fits, dispatched to the remote executor when one is
+  configured (`--executor`), and a build error otherwise. `gpu_type` selects
+  the accelerator for remote execution, overriding the executor-level default.
+- `remote=True` explicitly dispatches a python task to the configured remote
+  executor; running without `--executor` is a build error rather than a
+  silent local fallback.
+
+The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
+oversubscribing GPUs across concurrent tasks, but it does not pin devices —
+every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
 
 ## Priority
 

@@ -712,7 +712,7 @@ class ConcurrentEvaluator:
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
-        node.remote = self._resolve_placement(node=node)
+        node.remote = self._resolve_placement(task_def=node.task_def)
         if not node.remote:
             if node.threads > self.cores:
                 raise ValueError(
@@ -732,7 +732,7 @@ class ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                resources={"cores": node.threads, "memory_gb": node.memory_gb},
+                resources={"cores": node.threads, "memory_gb": node.memory_gb, "gpu": node.gpu},
             )
         )
 
@@ -1021,6 +1021,7 @@ class ConcurrentEvaluator:
         node.threads = 1
         node.memory_gb = 0
         node.gpu = 0
+        node.remote = False
         node.tmp_paths = []
         node.transport_path = None
         node.dynamic_template = None
@@ -1427,6 +1428,7 @@ class ConcurrentEvaluator:
                 resources={
                     "cores": node.threads,
                     "memory_gb": node.memory_gb,
+                    "gpu": node.gpu,
                     "max_attempts": node.task_def.retries + 1,
                 },
                 execution_backend=execution_backend,
@@ -1747,16 +1749,18 @@ class ConcurrentEvaluator:
             local=self._cache_store._artifact_store,
         )
 
-    def _resolve_placement(self, *, node: TaskNode) -> bool:
-        """Decide whether a node runs on the remote executor.
+    def _resolve_placement(self, *, task_def: TaskDef) -> bool:
+        """Decide whether a task runs on the remote executor.
 
         Placement is derived from the declared requirement and the available
         capability: ``remote=True`` is an explicit directive, and a GPU
         requirement the local ``--gpus`` budget cannot satisfy falls back to
         the remote executor. Either route without a usable remote executor
-        is a build error rather than a silent local run.
+        is an error rather than a silent local run. Placement depends only
+        on the task definition, so it is validated for every node up front
+        in ``build_and_validate``.
         """
-        task_def = node.task_def
+        gpu = task_def.resources.gpu
         remote_capable = self.remote_executor is not None and task_def.kind == "python"
         if task_def.remote:
             if not remote_capable:
@@ -1770,10 +1774,16 @@ class ConcurrentEvaluator:
                     "is configured (pass --executor k8s or --executor batch)"
                 )
             return True
-        if node.gpu > (self.gpus or 0):
+        if gpu > (self.gpus or 0):
             if not remote_capable:
+                if self.remote_executor is not None:
+                    raise ValueError(
+                        f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
+                        "are available locally (--gpus), and remote dispatch only "
+                        f"supports python tasks, not kind={task_def.kind!r}"
+                    )
                 raise ValueError(
-                    f"{task_def.name} requires {node.gpu} GPU(s) but only {self.gpus} "
+                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
                     "are available locally (--gpus) and no remote executor is "
                     "configured (--executor)"
                 )
@@ -1977,6 +1987,10 @@ class ConcurrentEvaluator:
         for node in self._nodes.values():
             self._validator.validate_task_importable(task_def=node.task_def)
             self._validator.validate_static_inputs(node=node)
+            # Placement is static per task definition; resolving it here
+            # surfaces misconfiguration (remote=True or an unsatisfiable GPU
+            # requirement without a usable executor) before anything runs.
+            self._resolve_placement(task_def=node.task_def)
 
     def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
         """Return whether a cached value still satisfies return validation.
