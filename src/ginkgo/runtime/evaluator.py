@@ -44,6 +44,7 @@ from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
 from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
+from ginkgo.runtime.caching.coordinator import CacheCoordinator
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
@@ -354,6 +355,7 @@ class ConcurrentEvaluator:
     param_context: ParamContext | None = None
     _digests: DigestRegistry = field(init=False, repr=False)
     _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
+    _cache_coordinator: CacheCoordinator = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
@@ -424,6 +426,11 @@ class ConcurrentEvaluator:
         self._validator = TaskValidator(
             backend=self.backend,
             secret_resolver=self.secret_resolver,
+        )
+        self._cache_coordinator = CacheCoordinator(
+            cache_store=self._cache_store,
+            validator=self._validator,
+            digests=self._digests,
         )
         self._log_drain = LogDrain(
             event_bus=self.event_bus,
@@ -1129,7 +1136,7 @@ class ConcurrentEvaluator:
         self._digests.record_artifacts(artifact_ids)
 
         # Record stat-index for future --trust-workspace runs.
-        self._record_stat_index_entry(node=node, cache_key=node.cache_key)
+        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
         for path in tmp_paths:
             shutil.rmtree(path)
@@ -1856,27 +1863,6 @@ class ConcurrentEvaluator:
             # requirement without a usable executor) before anything runs.
             self._resolve_placement(task_def=node.task_def)
 
-    def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
-        """Return whether a cached value still satisfies return validation.
-
-        For file/folder outputs, the cache store ensures the working tree has a
-        matching writable materialization before standard return validation
-        checks run.
-        """
-        if not self._cache_store.validate_cached_outputs(
-            cache_key=cache_key,
-            task_def=task_def,
-            value=value,
-        ):
-            return False
-
-        try:
-            self._validator.validate_return_value(task_def=task_def, value=value)
-        except (FileNotFoundError, ValueError):
-            return False
-
-        return True
-
     def _try_prepare_cache_hit(self, *, node: NodeRun) -> bool:
         """Attempt to complete a node from cache during preparation.
 
@@ -1895,40 +1881,19 @@ class ConcurrentEvaluator:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-
-        if node.cache_key is None or node.input_hashes is None:
-            cache_key, input_hashes = self._cache_store.build_cache_key(
-                task_def=node.task_def,
-                resolved_args=node.resolved_args,
-                extra_source_hash=node.extra_source_hash,
-                known_digests=self._digests.known,
-            )
-            node.cache_key = cache_key
-            node.input_hashes = input_hashes
-
+        hit = self._cache_coordinator.content_lookup(node=node)
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
         )
-        cached_result = self._cache_store.load(cache_key=node.cache_key)
-        if cached_result is MISSING or not self._is_valid_cached_result(
-            cache_key=node.cache_key,
-            task_def=node.task_def,
-            value=cached_result,
-        ):
-            self._record_task_timing(
-                node_id=node.node_id,
-                phase="cache_lookup_seconds",
-                started=cache_lookup_started,
-            )
-            return False
-
         self._record_task_timing(
             node_id=node.node_id,
             phase="cache_lookup_seconds",
             started=cache_lookup_started,
         )
-        self._mark_node_cached(node=node, value=cached_result, cache_key=node.cache_key)
+        if hit is None:
+            return False
+        self._mark_node_cached(node=node, value=hit.value, cache_key=hit.cache_key)
         return True
 
     def _try_stat_index_hit(self, *, node: NodeRun) -> bool:
@@ -1938,13 +1903,8 @@ class ConcurrentEvaluator:
         complete, ``False`` to fall through to the content-addressed path.
         """
         cache_lookup_started = time.perf_counter()
-        stat_key = self._cache_store.stat_fingerprint(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-            extra_source_hash=node.extra_source_hash,
-        )
-        cached_result = self._cache_store.try_stat_index(stat_key=stat_key)
-        if cached_result is MISSING:
+        hit = self._cache_coordinator.stat_lookup(node=node)
+        if hit is None:
             self._record_task_timing(
                 node_id=node.node_id,
                 phase="cache_lookup_seconds",
@@ -1952,19 +1912,6 @@ class ConcurrentEvaluator:
             )
             return False
 
-        # In trust-workspace mode we only check that output files exist,
-        # not that their content matches the artifact store.
-        content_key = self._cache_store._stat_index.get(stat_key)
-        if content_key is None:
-            self._record_task_timing(
-                node_id=node.node_id,
-                phase="cache_lookup_seconds",
-                started=cache_lookup_started,
-            )
-            return False
-
-        node.cache_key = content_key
-        node.input_hashes = {}
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
@@ -1974,37 +1921,15 @@ class ConcurrentEvaluator:
             phase="cache_lookup_seconds",
             started=cache_lookup_started,
         )
-        self._mark_node_cached(node=node, value=cached_result, cache_key=content_key)
+        self._mark_node_cached(node=node, value=hit.value, cache_key=hit.cache_key)
         return True
-
-    def _record_stat_index_entry(self, *, node: NodeRun, cache_key: str) -> None:
-        """Record a stat-index entry for a completed task."""
-        if node.resolved_args is None:
-            return
-        stat_key = self._cache_store.stat_fingerprint(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-            extra_source_hash=node.extra_source_hash,
-        )
-        self._cache_store.record_stat_index(stat_key=stat_key, cache_key=cache_key)
-
-    def _propagate_known_digests(self, *, cache_key: str) -> None:
-        """Populate the digest registry from a cache entry's artifact IDs.
-
-        Called on cache hits so that downstream tasks can skip re-hashing
-        file outputs that this task produced.
-        """
-        artifact_ids = self._cache_store.load_artifact_ids(cache_key=cache_key)
-        if artifact_ids is None:
-            return
-        self._digests.record_artifacts(artifact_ids)
 
     def _mark_node_cached(self, *, node: NodeRun, value: Any, cache_key: str) -> None:
         """Mark one node complete from cache and emit cached completion events."""
         if node.attempt == 0:
             node.attempt = 1
 
-        self._propagate_known_digests(cache_key=cache_key)
+        self._cache_coordinator.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
@@ -2045,7 +1970,7 @@ class ConcurrentEvaluator:
 
         # Record stat-index entry so future --trust-workspace runs can
         # find this cache key without content hashing.
-        self._record_stat_index_entry(node=node, cache_key=cache_key)
+        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=cache_key)
 
     def _record_task_metadata(
         self,
