@@ -254,3 +254,8 @@ class EventBus:
         """Deliver one event to all subscribers."""
         for handler in tuple(self._handlers):
             handler(event)
+
+
+def task_id_for_node(node_id: int) -> str:
+    """Return the stable task identifier for a scheduler node."""
+    return f"task_{node_id:04d}"

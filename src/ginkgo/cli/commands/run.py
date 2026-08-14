@@ -459,7 +459,7 @@ def run_workflow(
                             success=False,
                             resources=resource_summary,
                             failure_details=failure_details,
-                            remote_summary=evaluator._remote_stats.summary(),
+                            remote_summary=evaluator.remote_stats.summary(),
                         )
                     print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
                 if profiler.enabled:
@@ -495,7 +495,7 @@ def run_workflow(
                             renderer=renderer,
                         ),
                         assets=_render_assets(run_summary=run_summary),
-                        remote_summary=evaluator._remote_stats.summary(),
+                        remote_summary=evaluator.remote_stats.summary(),
                     )
             if profiler.enabled:
                 recorder.set_profile(profile=profiler.snapshot())

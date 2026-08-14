@@ -9,7 +9,7 @@ import tempfile
 import time
 import builtins
 from collections.abc import Mapping, Set as AbstractSet
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -35,12 +35,8 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.remote_executor import (
-    RemoteDispatchStats,
-    RemoteExecutor,
-    RemoteJobHandle,
-    RemoteJobState,
-)
+from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
+from ginkgo.runtime.remote_executor import RemoteDispatchStats, RemoteExecutor
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
@@ -48,6 +44,7 @@ from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
 from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
+from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.materialization_log import MaterializationLog
 from ginkgo.runtime.executors import Executors
@@ -65,9 +62,9 @@ from ginkgo.runtime.events import (
     TaskNotice,
     TaskReady,
     TaskRetrying,
-    TaskRunning,
     TaskStaging,
     TaskStarted,
+    task_id_for_node,
 )
 from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
@@ -355,18 +352,8 @@ class ConcurrentEvaluator:
     _staging_jobs: int = field(default=0, init=False, repr=False)
     code_bundle_config: dict[str, Any] | None = None
     param_context: ParamContext | None = None
-    _remote_handles: dict[int, RemoteJobHandle] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _code_bundle_meta: dict[str, str] | None = field(default=None, init=False, repr=False)
-    _known_digests: dict[str, str] = field(default_factory=dict, init=False, repr=False)
-    _remote_artifact_store: Any = field(default=None, init=False, repr=False)
-    _remote_artifact_store_checked: bool = field(default=False, init=False, repr=False)
-    _remote_published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
-    _remote_stats: RemoteDispatchStats = field(
-        default_factory=RemoteDispatchStats, init=False, repr=False
-    )
-    _staging_cache_path: Path = field(init=False, repr=False)
+    _digests: DigestRegistry = field(init=False, repr=False)
+    _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
@@ -406,7 +393,6 @@ class ConcurrentEvaluator:
             raise ValueError("gpus must be at least 0")
 
         self._hash_memo = HashMemo()
-        self._staging_cache_path = WorkspaceLayout.for_cwd().staging_cache_file
         artifacts_root = WorkspaceLayout.for_cwd().artifacts
         self._materialization_log = MaterializationLog(
             path=artifacts_root / "materializations.json"
@@ -422,6 +408,16 @@ class ConcurrentEvaluator:
             root=WorkspaceLayout.sibling_of(self._cache_store._root).assets
         )
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
+        self._digests = DigestRegistry()
+        self._remote_dispatch = RemoteDispatchManager(
+            executor=self.remote_executor,
+            code_bundle_config=self.code_bundle_config,
+            digests=self._digests,
+            local_artifact_store=self._cache_store._artifact_store,
+            staging_cache_path=WorkspaceLayout.for_cwd().staging_cache_file,
+            run_id_provider=lambda: self._run_id,
+            emit_event=self._emit_event,
+        )
 
         # Helper runners. Constructed once per evaluation so unit tests can
         # exercise them in isolation and substitute fakes.
@@ -473,6 +469,11 @@ class ConcurrentEvaluator:
     def cache_store(self) -> CacheStore:
         """The cache store backing this evaluator."""
         return self._cache_store
+
+    @property
+    def remote_stats(self) -> RemoteDispatchStats:
+        """Aggregated remote-dispatch statistics for this run."""
+        return self._remote_dispatch.stats
 
     @property
     def task_nodes(self) -> Mapping[int, NodeRun]:
@@ -581,7 +582,7 @@ class ConcurrentEvaluator:
                 self._executors = None
                 self._materialization_log.save()
                 self._cache_store.save_stat_index()
-                self._save_staging_cache()
+                self._remote_dispatch.save_staging_cache()
 
         assert self._failure is not None
         raise self._failure
@@ -688,11 +689,11 @@ class ConcurrentEvaluator:
         self._emit_event(
             GraphNodeRegistered(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node_id),
+                task_id=task_id_for_node(node_id),
                 task_name=expr.task_def.name,
                 kind=expr.task_def.kind,
                 env=expr.task_def.env,
-                dependency_ids=[_task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
+                dependency_ids=[task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
             )
         )
         if self.provenance is not None:
@@ -784,7 +785,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskReady(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -800,7 +801,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             EnvPrepareStarted(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 env=node.task_def.env,
@@ -820,7 +821,7 @@ class ConcurrentEvaluator:
             self._emit_event(
                 EnvPrepareFailed(
                     run_id=self._run_id,
-                    task_id=_task_id_for_node(node.node_id),
+                    task_id=task_id_for_node(node.node_id),
                     task_name=node.task_def.name,
                     attempt=node.attempt,
                     env=node.task_def.env,
@@ -836,7 +837,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             EnvPrepareCompleted(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 env=node.task_def.env,
@@ -898,7 +899,7 @@ class ConcurrentEvaluator:
                 self._emit_event(
                     TaskStaging(
                         run_id=self._run_id,
-                        task_id=_task_id_for_node(node.node_id),
+                        task_id=task_id_for_node(node.node_id),
                         task_name=node.task_def.name,
                         attempt=node.attempt,
                         display_label=node.display_label,
@@ -925,19 +926,19 @@ class ConcurrentEvaluator:
 
             if future.cancelled():
                 node.state = "failed"
-                self._remote_handles.pop(node.node_id, None)
+                self._remote_dispatch.pop_handle(node.node_id)
                 continue
 
             # Capture remote job id for provenance before processing result.
             if phase == "remote":
-                handle = self._remote_handles.get(node.node_id)
+                handle = self._remote_dispatch.handle_for(node.node_id)
                 if handle is not None:
                     node.remote_job_id = handle.job_id
 
             try:
                 completed_value = future.result()
             except BaseException as exc:
-                self._remote_handles.pop(node.node_id, None)
+                self._remote_dispatch.pop_handle(node.node_id)
                 self._handle_task_exception(node=node, exc=exc)
                 continue
 
@@ -947,9 +948,9 @@ class ConcurrentEvaluator:
                         node=node, completed_value=completed_value
                     )
                 elif phase in ("python", "remote"):
-                    remote_handle = self._remote_handles.pop(node.node_id, None)
+                    remote_handle = self._remote_dispatch.pop_handle(node.node_id)
                     if phase == "remote" and remote_handle is not None:
-                        self._capture_remote_logs(node=node, handle=remote_handle)
+                        self._remote_dispatch.capture_logs(node=node, handle=remote_handle)
                     self._handle_completed_worker_phase(
                         node=node,
                         completed_value=completed_value,
@@ -1035,7 +1036,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskFailed(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1098,7 +1099,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskRetrying(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1125,9 +1126,7 @@ class ConcurrentEvaluator:
         )
 
         # Propagate output digests so downstream tasks can skip re-hashing.
-        for path_str, artifact_id in artifact_ids.items():
-            resolved_key = str(Path(path_str).resolve())
-            self._known_digests[resolved_key] = artifact_id
+        self._digests.record_artifacts(artifact_ids)
 
         # Record stat-index for future --trust-workspace runs.
         self._record_stat_index_entry(node=node, cache_key=node.cache_key)
@@ -1155,7 +1154,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskCompleted(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1363,17 +1362,10 @@ class ConcurrentEvaluator:
     def _interrupt_running_work(self) -> None:
         """Stop queued and active work after an external interrupt."""
         self._cancel_pending_futures()
-        self._cancel_remote_handles()
+        self._remote_dispatch.cancel_all()
         self._shell_runner.terminate_all()
         if self._executors is not None:
             self._executors.shutdown_all()
-
-    def _cancel_remote_handles(self) -> None:
-        """Cancel all in-flight remote job handles."""
-        for handle in self._remote_handles.values():
-            with suppress(Exception):
-                handle.cancel()
-        self._remote_handles.clear()
 
     def _running_cores(self) -> int:
         """Return the local core footprint of currently running tasks."""
@@ -1450,7 +1442,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskCacheMiss(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1474,7 +1466,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskStarted(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1514,39 +1506,13 @@ class ConcurrentEvaluator:
             node.transport_path = Path(
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
-            self._ensure_code_bundle()
-            self._ensure_remote_artifact_store()
-            payload = self._build_worker_payload(node=node)
-            payload["resources"] = {
-                "threads": node.threads,
-                "memory_gb": node.memory_gb,
-                "gpu": node.gpu,
-                "gpu_type": self.effective_resources(task_def=node.task_def).gpu_type,
-            }
-            if self._code_bundle_meta is not None:
-                payload["code_bundle"] = self._code_bundle_meta
-            if self._remote_artifact_store is not None:
-                from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
-
-                payload["args"] = stage_args_for_remote(
-                    args=payload["args"],
-                    type_hints=node.task_def.type_hints,
-                    remote_store=self._remote_artifact_store,
-                    known_digests=self._known_digests,
-                    published_artifacts=self._remote_published_artifacts,
-                )
-                payload["remote_artifact_store"] = {
-                    "scheme": self._remote_artifact_store.scheme,
-                    "bucket": self._remote_artifact_store.bucket,
-                    "prefix": self._remote_artifact_store.prefix,
-                }
-            assert self.remote_executor is not None  # guaranteed by placement
-            handle = self.remote_executor.submit(attempt=payload)
-            self._remote_stats.record_submit()
-            self._remote_handles[node.node_id] = handle
             assert self._executors is not None
-            watcher = self._executors.get_or_create_remote_watcher()
-            future = watcher.submit(self._poll_remote_job, handle, node=node)
+            future = self._remote_dispatch.dispatch(
+                node=node,
+                payload=self._build_worker_payload(node=node),
+                gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
+                watcher=self._executors.get_or_create_remote_watcher(),
+            )
             self._running_futures[future] = (node.node_id, "remote")
             return
 
@@ -1554,75 +1520,6 @@ class ConcurrentEvaluator:
         payload = self._build_worker_payload(node=node)
         future = python_executor.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, "python")
-
-    def _poll_remote_job(self, handle: RemoteJobHandle, *, node: NodeRun) -> dict[str, Any]:
-        """Poll a remote job handle until it reaches a terminal state.
-
-        Called on a watcher thread — blocks until the remote job finishes.
-        Returns the worker result payload for consumption by the evaluator
-        loop (same shape as a local ``run_task`` return value).
-        """
-        poll_interval = 5.0
-        max_interval = 30.0
-        emitted_running = False
-        t_submit = time.monotonic()
-        t_running: float | None = None
-        while True:
-            state = handle.state()
-            if state.is_terminal:
-                break
-            if not emitted_running and state == RemoteJobState.RUNNING:
-                emitted_running = True
-                t_running = time.monotonic()
-                self._emit_event(
-                    TaskRunning(
-                        run_id=self._run_id,
-                        task_id=_task_id_for_node(node.node_id),
-                        task_name=node.task_def.name,
-                        attempt=node.attempt,
-                        display_label=node.display_label,
-                        remote_job_id=handle.job_id,
-                    )
-                )
-            time.sleep(poll_interval)
-            poll_interval = min(poll_interval * 1.5, max_interval)
-
-        t_done = time.monotonic()
-        pending_s = (t_running or t_done) - t_submit
-        running_s = t_done - t_running if t_running else 0.0
-        self._remote_stats.record_terminal(state=state)
-        self._remote_stats.record_phase_time(pending=pending_s, running=running_s)
-
-        result = handle.result()
-
-        if result.state == RemoteJobState.CANCELLED:
-            raise KeyboardInterrupt("Remote job was cancelled")
-
-        if result.state == RemoteJobState.FAILED and not result.payload:
-            raise RuntimeError(
-                f"Remote job {handle.job_id} failed"
-                + (f" (exit code {result.exit_code})" if result.exit_code is not None else "")
-                + (f"\n{result.logs}" if result.logs else "")
-            )
-
-        payload = result.payload
-        if (
-            self._remote_artifact_store is not None
-            and isinstance(payload, dict)
-            and payload.get("ok")
-            and payload.get("result_encoding") == "encoded"
-            and "result" in payload
-        ):
-            from ginkgo.runtime.artifacts.remote_arg_transfer import hydrate_result_from_remote
-
-            scratch_dir = self._remote_artifact_store.local._root / "remote-outputs"
-            payload["result"] = hydrate_result_from_remote(
-                result=payload["result"],
-                remote_store=self._remote_artifact_store,
-                scratch_dir=scratch_dir,
-            )
-
-        return payload
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
@@ -1665,143 +1562,12 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
                 message=f"FUSE access fell back to staging: {reason}",
             )
-        )
-
-    def _capture_remote_logs(self, *, node: NodeRun, handle: RemoteJobHandle) -> None:
-        """Fetch pod logs and write them to the standard task log paths."""
-        try:
-            logs = handle.logs_tail(lines=10000)
-        except Exception:
-            return
-        if not logs:
-            return
-
-        # Remote workers merge stdout/stderr into one stream — write to both
-        # paths so users find tracebacks where they expect them.
-        for log_path in (node.stdout_path, node.stderr_path):
-            if log_path is not None:
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                log_path.write_text(logs, encoding="utf-8")
-
-    def _load_staging_cache(self) -> None:
-        """Restore persisted staging state from ``.ginkgo/remote-staged.json``."""
-        from ginkgo.runtime.artifacts.remote_arg_transfer import load_staging_cache
-
-        digests, published = load_staging_cache(cache_path=self._staging_cache_path)
-        self._known_digests.update(digests)
-        self._remote_published_artifacts.update(published)
-
-    def _save_staging_cache(self) -> None:
-        """Persist staging state so the next run skips re-hashing unchanged inputs."""
-        if not self._known_digests and not self._remote_published_artifacts:
-            return
-        from ginkgo.runtime.artifacts.remote_arg_transfer import save_staging_cache
-
-        save_staging_cache(
-            cache_path=self._staging_cache_path,
-            known_digests=self._known_digests,
-            published_artifacts=self._remote_published_artifacts,
-        )
-
-    def _ensure_code_bundle(self) -> None:
-        """Create and publish the code bundle on first remote dispatch.
-
-        Reads ``code_bundle_config`` (from ``[remote.k8s.code]``) to decide
-        whether to sync workflow code to the remote backend. The bundle is
-        created once per evaluator run and reused for all remote tasks.
-        """
-        if self._code_bundle_meta is not None:
-            return
-        if self.code_bundle_config is None:
-            return
-        mode = self.code_bundle_config.get("mode", "baked")
-        if mode != "sync":
-            return
-
-        package = self.code_bundle_config.get("package")
-        if not package:
-            raise ValueError(
-                "Code-sync mode requires [remote.k8s.code] package to be set "
-                'in ginkgo.toml (e.g. package = "my_workflow")'
-            )
-
-        from ginkgo.remote.code_bundle import create_code_bundle, publish_code_bundle
-        from ginkgo.remote.resolve import resolve_backend
-        from ginkgo.core.remote import _parse_uri
-
-        package_path = Path.cwd() / package
-        if not package_path.is_dir():
-            raise FileNotFoundError(f"Code-sync package directory not found: {package_path}")
-
-        # Determine remote storage from [remote.artifacts] config.
-        from ginkgo.config import load_runtime_config
-
-        config = load_runtime_config(project_root=Path.cwd())
-        artifacts_config = config.get("remote", {}).get("artifacts", {})
-        store_uri = artifacts_config.get("store") if isinstance(artifacts_config, dict) else None
-        if store_uri is None:
-            raise ValueError(
-                "Code-sync mode requires [remote.artifacts] store to be configured in ginkgo.toml"
-            )
-
-        parsed = _parse_uri(store_uri)
-        backend = resolve_backend(parsed["scheme"])
-        prefix = parsed["key"]
-        if prefix and not prefix.endswith("/"):
-            prefix += "/"
-
-        extra_excludes = self.code_bundle_config.get("exclude")
-        if isinstance(extra_excludes, str):
-            extra_excludes = [extra_excludes]
-        bundle_path, digest = create_code_bundle(
-            package_path=package_path,
-            extra_excludes=extra_excludes,
-        )
-        try:
-            remote_key = publish_code_bundle(
-                backend=backend,
-                bucket=parsed["bucket"],
-                prefix=prefix,
-                bundle_path=bundle_path,
-                digest=digest,
-            )
-        finally:
-            Path(bundle_path).unlink(missing_ok=True)
-
-        self._code_bundle_meta = {
-            "scheme": parsed["scheme"],
-            "bucket": parsed["bucket"],
-            "key": remote_key,
-            "digest": digest,
-            "package": package,
-            "package_parent": str(package_path.parent.resolve()),
-        }
-
-    def _ensure_remote_artifact_store(self) -> None:
-        """Lazily construct a ``RemoteArtifactStore`` from project config.
-
-        Uses the ``[remote.artifacts]`` store URI, wrapping the local
-        artifact store already owned by the cache. Called just before
-        dispatching a remote task so that ``file`` / ``folder`` inputs
-        can be uploaded to the shared object store and hydrated inside
-        the worker pod.
-        """
-        if self._remote_artifact_store_checked:
-            return
-        self._remote_artifact_store_checked = True
-        self._load_staging_cache()
-        from ginkgo.runtime.artifacts.remote_artifact_store import (
-            load_remote_artifact_store,
-        )
-
-        self._remote_artifact_store = load_remote_artifact_store(
-            local=self._cache_store._artifact_store,
         )
 
     def effective_resources(self, *, task_def: TaskDef) -> Resources:
@@ -1839,7 +1605,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -1901,7 +1667,7 @@ class ConcurrentEvaluator:
             "stderr_path": str(node.stderr_path) if node.stderr_path is not None else None,
             "secret_values": list(node.secret_values),
             "run_id": self._run_id,
-            "task_id": _task_id_for_node(node.node_id),
+            "task_id": task_id_for_node(node.node_id),
             "task_name": node.task_def.name,
             "attempt": node.attempt,
             "display_label": node.display_label,
@@ -2050,7 +1816,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -2067,7 +1833,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -2135,7 +1901,7 @@ class ConcurrentEvaluator:
                 task_def=node.task_def,
                 resolved_args=node.resolved_args,
                 extra_source_hash=node.extra_source_hash,
-                known_digests=self._known_digests,
+                known_digests=self._digests.known,
             )
             node.cache_key = cache_key
             node.input_hashes = input_hashes
@@ -2223,7 +1989,7 @@ class ConcurrentEvaluator:
         self._cache_store.record_stat_index(stat_key=stat_key, cache_key=cache_key)
 
     def _propagate_known_digests(self, *, cache_key: str) -> None:
-        """Populate ``_known_digests`` from a cache entry's artifact IDs.
+        """Populate the digest registry from a cache entry's artifact IDs.
 
         Called on cache hits so that downstream tasks can skip re-hashing
         file outputs that this task produced.
@@ -2231,9 +1997,7 @@ class ConcurrentEvaluator:
         artifact_ids = self._cache_store.load_artifact_ids(cache_key=cache_key)
         if artifact_ids is None:
             return
-        for path_str, artifact_id in artifact_ids.items():
-            resolved_key = str(Path(path_str).resolve())
-            self._known_digests[resolved_key] = artifact_id
+        self._digests.record_artifacts(artifact_ids)
 
     def _mark_node_cached(self, *, node: NodeRun, value: Any, cache_key: str) -> None:
         """Mark one node complete from cache and emit cached completion events."""
@@ -2259,7 +2023,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskCacheHit(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -2269,7 +2033,7 @@ class ConcurrentEvaluator:
         self._emit_event(
             TaskCompleted(
                 run_id=self._run_id,
-                task_id=_task_id_for_node(node.node_id),
+                task_id=task_id_for_node(node.node_id),
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
@@ -2455,9 +2219,9 @@ class ConcurrentEvaluator:
                 self._emit_event(
                     GraphExpanded(
                         run_id=self._run_id,
-                        parent_task_id=_task_id_for_node(node.node_id),
+                        parent_task_id=task_id_for_node(node.node_id),
                         new_node_ids=[
-                            _task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
+                            task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
                         ],
                     )
                 )
@@ -2489,9 +2253,9 @@ class ConcurrentEvaluator:
             self._emit_event(
                 GraphExpanded(
                     run_id=self._run_id,
-                    parent_task_id=_task_id_for_node(node.node_id),
+                    parent_task_id=task_id_for_node(node.node_id),
                     new_node_ids=[
-                        _task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
+                        task_id_for_node(dep_id) for dep_id in sorted(dynamic_dependencies)
                     ],
                 )
             )
@@ -2509,11 +2273,6 @@ class ConcurrentEvaluator:
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
             f"{_expected.get(kind, 'an execution directive')} or dynamic task expressions."
         )
-
-
-def _task_id_for_node(node_id: int) -> str:
-    """Return the stable task identifier for a node."""
-    return f"task_{node_id:04d}"
 
 
 def _producer_task_name(value: Any) -> str | None:

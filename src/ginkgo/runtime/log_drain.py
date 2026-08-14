@@ -20,11 +20,7 @@ from queue import Empty
 from threading import Event, Thread
 from typing import Any, Callable
 
-from ginkgo.runtime.events import EventBus, TaskLog
-
-
-def _task_id_for_node(node_id: int) -> str:
-    return f"task_{node_id:04d}"
+from ginkgo.runtime.events import EventBus, TaskLog, task_id_for_node
 
 
 @dataclass(kw_only=True)
@@ -76,7 +72,7 @@ class LogDrain:
             self._emit(
                 TaskLog(
                     run_id=self.run_id_provider(),
-                    task_id=_task_id_for_node(node.node_id),
+                    task_id=task_id_for_node(node.node_id),
                     task_name=node.task_def.name,
                     attempt=node.attempt,
                     display_label=node.display_label,
