@@ -38,6 +38,10 @@ class TestResourceOverridesParsing:
         with pytest.raises(ValueError, match="must be a table"):
             ResourceOverrides.from_config({"overrides": {"sized_step": 4}})
 
+    def test_non_table_resources_config_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"\[resources\] must be a table"):
+            ResourceOverrides.from_config("big")  # type: ignore[arg-type]
+
 
 class TestResourceOverridesMatching:
     def test_short_name_match(self) -> None:
@@ -99,13 +103,52 @@ class TestEffectiveResources:
             {"overrides": {"sized_step": {"threads": 8, "memory": "16Gi"}}}
         )
         evaluator = ConcurrentEvaluator(jobs=1, resource_overrides=overrides)
-        effective = evaluator._effective_resources(task_def=sized_step)
+        effective = evaluator.effective_resources(task_def=sized_step)
         assert effective.threads == 8
         assert effective.memory_gb == 16
 
     def test_no_overrides_returns_declaration(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
-        assert evaluator._effective_resources(task_def=sized_step) is sized_step.resources
+        assert evaluator.effective_resources(task_def=sized_step) is sized_step.resources
+
+
+class TestRunWorkflowOverrides:
+    """End-to-end: overrides in a config file reach the executing evaluator."""
+
+    def test_override_reaches_the_run(self) -> None:
+        Path("workflow.py").write_text(
+            "from pathlib import Path\n"
+            "from ginkgo import flow, task\n"
+            "\n"
+            "\n"
+            "@task(threads=1)\n"
+            "def report_threads(threads: int = 1) -> int:\n"
+            '    Path("threads.txt").write_text(str(threads), encoding="utf-8")\n'
+            "    return threads\n"
+            "\n"
+            "\n"
+            "@flow\n"
+            "def main():\n"
+            "    return report_threads()\n",
+            encoding="utf-8",
+        )
+        Path("overrides.toml").write_text(
+            "[resources.overrides.report_threads]\nthreads = 3\n",
+            encoding="utf-8",
+        )
+
+        from ginkgo.cli.commands.run import run_workflow
+
+        exit_code = run_workflow(
+            workflow_path=Path("workflow.py").resolve(),
+            config_paths=[Path("overrides.toml").resolve()],
+            jobs=1,
+            cores=4,
+            memory=None,
+            dry_run=False,
+        )
+        assert exit_code == 0
+        assert Path("threads.txt").read_text(encoding="utf-8") == "3"
 
 
 class TestMemoryEscalation:

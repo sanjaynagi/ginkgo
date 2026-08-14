@@ -58,7 +58,10 @@ name (`workflow.modules.align.align_reads`), and may be an `fnmatch` glob
 over either. Exact matches beat globs; among globs, the first selector in
 config order wins. Keys an override omits keep their declared values.
 Overridden `threads` flow everywhere the declaration would: the scheduler,
-the injected `threads` parameter, and `GINKGO_THREADS`.
+the dry-run plan, the injected `threads` parameter, and `GINKGO_THREADS`.
+Note that for tasks declaring a `threads` parameter the injected value is a
+task input, so a site override changes those tasks' cache keys — the same
+way editing the declaration would.
 
 ## Retrying With More Memory
 

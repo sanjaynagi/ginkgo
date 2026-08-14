@@ -717,7 +717,7 @@ class ConcurrentEvaluator:
         self._prepare_task_environment(node=node)
         self._record_task_metadata(node=node)
 
-        resources = self._effective_resources(task_def=node.task_def)
+        resources = self.effective_resources(task_def=node.task_def)
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
@@ -1176,7 +1176,7 @@ class ConcurrentEvaluator:
                 # Inject the effective thread count (declaration plus any site
                 # override) so user code can use it for shell command
                 # interpolation or in-process work.
-                resolved_args[name] = self._effective_resources(task_def=task_def).threads
+                resolved_args[name] = self.effective_resources(task_def=task_def).threads
                 continue
 
             if parameter.default is not parameter.empty:
@@ -1477,7 +1477,7 @@ class ConcurrentEvaluator:
                 "threads": node.threads,
                 "memory_gb": node.memory_gb,
                 "gpu": node.gpu,
-                "gpu_type": self._effective_resources(task_def=node.task_def).gpu_type,
+                "gpu_type": self.effective_resources(task_def=node.task_def).gpu_type,
             }
             if self._code_bundle_meta is not None:
                 payload["code_bundle"] = self._code_bundle_meta
@@ -1760,7 +1760,7 @@ class ConcurrentEvaluator:
             local=self._cache_store._artifact_store,
         )
 
-    def _effective_resources(self, *, task_def: TaskDef) -> Resources:
+    def effective_resources(self, *, task_def: TaskDef) -> Resources:
         """Return the task's declared resources with site overrides applied.
 
         Site overrides come from the ``[resources.overrides]`` runtime-config
@@ -1799,9 +1799,7 @@ class ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                message=(
-                    f"memory escalated to {escalated} GiB for retry attempt {node.attempt + 1}"
-                ),
+                message=f"memory escalated to {escalated} GiB for attempt {node.attempt + 1}",
             )
         )
 
@@ -1816,7 +1814,7 @@ class ConcurrentEvaluator:
         on the task definition, so it is validated for every node up front
         in ``build_and_validate``.
         """
-        gpu = self._effective_resources(task_def=task_def).gpu
+        gpu = self.effective_resources(task_def=task_def).gpu
         remote_capable = self.remote_executor is not None and task_def.kind == "python"
         if task_def.remote:
             if not remote_capable:

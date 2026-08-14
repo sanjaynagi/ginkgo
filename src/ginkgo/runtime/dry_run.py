@@ -170,6 +170,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     for node_id in topo_order:
         node = nodes[node_id]
         task_def = node.task_def
+        resources = evaluator.effective_resources(task_def=task_def)
         planned[node_id] = PlannedTask(
             node_id=node_id,
             base_name=task_def.name.rsplit(".", 1)[-1],
@@ -177,9 +178,9 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
             kind=task_def.kind,
             env=task_def.env,
             mapped=node.expr.mapped,
-            threads=task_def.threads,
-            memory_gb=_memory_gb(task_def),
-            gpu=task_def.gpu,
+            threads=resources.threads,
+            memory_gb=resources.memory_gb,
+            gpu=resources.gpu,
             cache_status=cache_status[node_id],
         )
 
@@ -290,12 +291,6 @@ def _task_label(node: TaskNode) -> str:
     if parts:
         return f"{base_name}[{','.join(parts)}]"
     return f"{base_name}()"
-
-
-def _memory_gb(task_def: object) -> int:
-    """Return a task's declared memory budget in whole GiB (``0`` when unset)."""
-    memory = getattr(task_def, "memory_gb", None)
-    return int(memory) if memory else 0
 
 
 def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:

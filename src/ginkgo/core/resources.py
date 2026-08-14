@@ -11,7 +11,7 @@ from __future__ import annotations
 import fnmatch
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 _MEMORY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*(Gi|Mi|G|M|Ti|Ki)$")
 
@@ -126,7 +126,8 @@ class Resources:
         return math.ceil(self.memory_gb * self.memory_retry_multiplier**attempt)
 
 
-_OVERRIDE_KEYS = frozenset({"threads", "memory", "gpu", "gpu_type", "memory_retry_multiplier"})
+# The overridable fields are exactly the declared (init) fields of Resources.
+_OVERRIDE_KEYS = frozenset(f.name for f in fields(Resources) if f.init)
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,8 @@ class ResourceOverrides:
             If a selector's overrides are not a table or contain keys that
             are not resource fields.
         """
+        if config is not None and not isinstance(config, dict):
+            raise ValueError("[resources] must be a table")
         overrides = (config or {}).get("overrides", {})
         if not isinstance(overrides, dict):
             raise ValueError("[resources.overrides] must be a table of task selectors")
@@ -182,13 +185,7 @@ class ResourceOverrides:
         values = self._match(task_name=task_name)
         if values is None:
             return base
-        merged: dict[str, object] = {
-            "threads": base.threads,
-            "memory": base.memory,
-            "gpu": base.gpu,
-            "gpu_type": base.gpu_type,
-            "memory_retry_multiplier": base.memory_retry_multiplier,
-        }
+        merged: dict[str, object] = {key: getattr(base, key) for key in _OVERRIDE_KEYS}
         merged.update(values)
         try:
             return Resources(**merged)  # type: ignore[arg-type]
