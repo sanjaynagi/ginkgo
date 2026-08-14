@@ -239,6 +239,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         default="local",
         help="Task execution backend: 'local' (default), 'k8s' for Kubernetes, or 'batch' for GCP Batch",
     )
+    run_parser.add_argument(
+        "--env-prefix",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Install Pixi environments under PATH, keyed by content, so workflows "
+            "declaring identical environments share one install. Overrides "
+            "[envs] shared_prefix in ginkgo.toml"
+        ),
+    )
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
