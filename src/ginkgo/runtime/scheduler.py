@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Iterable
 
 from ortools.sat.python import cp_model
@@ -30,6 +31,11 @@ class SchedulableTask:
         Optional named concurrency group. When set, the scheduler will
         respect the corresponding entry in ``available_group_slots`` when
         selecting tasks to dispatch.
+    custom : Mapping[str, int]
+        User-defined resource demands, constrained per dimension by
+        ``custom_budgets``. Dimensions absent from the budgets mapping are
+        unconstrained. Unlike the built-in dimensions, custom demands are
+        not zeroed for remote-placed tasks — their budgets are run-level.
     """
 
     node_id: int
@@ -38,6 +44,7 @@ class SchedulableTask:
     gpu: int = 0
     priority: int = 0
     concurrency_group: str | None = None
+    custom: Mapping[str, int] = field(default_factory=dict)
 
 
 def select_dispatch_subset(
@@ -48,6 +55,7 @@ def select_dispatch_subset(
     memory: int | None = None,
     gpus: int = 0,
     available_group_slots: dict[str, int] | None = None,
+    custom_budgets: Mapping[str, int] | None = None,
 ) -> list[int]:
     """Select a feasible subset of ready tasks to dispatch.
 
@@ -68,6 +76,12 @@ def select_dispatch_subset(
         Remaining concurrency-group budgets after accounting for in-flight
         tasks. The scheduler enforces ``sum(selected in group) <= slot``
         for each group present in this mapping.
+    custom_budgets : Mapping[str, int] | None
+        Remaining budget per user-defined resource dimension after
+        accounting for in-flight tasks. The scheduler enforces
+        ``sum(selected demand) <= budget`` for each dimension present in
+        this mapping; dimensions tasks request but the mapping omits are
+        unconstrained.
 
     Returns
     -------
@@ -88,6 +102,7 @@ def select_dispatch_subset(
         memory=memory,
         gpus=gpus,
         available_group_slots=available_group_slots or {},
+        custom_budgets=custom_budgets or {},
     )
 
 
@@ -99,6 +114,7 @@ def _select_with_cp_sat(
     memory: int | None,
     gpus: int,
     available_group_slots: dict[str, int],
+    custom_budgets: Mapping[str, int],
 ) -> list[int]:
     """Select tasks using OR-Tools CP-SAT when available."""
     model = cp_model.CpModel()
@@ -109,6 +125,13 @@ def _select_with_cp_sat(
     if memory is not None:
         model.Add(sum(task.memory_gb * selected[task.node_id] for task in tasks) <= max(0, memory))
     model.Add(sum(task.gpu * selected[task.node_id] for task in tasks) <= max(0, gpus))
+
+    # One weighted-sum constraint per budgeted user-defined dimension.
+    for dimension, budget in custom_budgets.items():
+        model.Add(
+            sum(task.custom.get(dimension, 0) * selected[task.node_id] for task in tasks)
+            <= max(0, int(budget))
+        )
 
     # Per-group concurrency limits — each named group consumes one slot per
     # selected task; tasks already in flight have already been deducted from

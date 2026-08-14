@@ -47,6 +47,8 @@ class PlannedTask:
         Declared memory budget in GiB (``0`` when unset).
     gpu : int
         Declared GPU count.
+    custom : dict[str, int]
+        Declared user-defined resource demands (empty when none).
     cache_status : CacheStatus
         ``cached``, ``will_run``, or ``unknown`` (not determinable without
         running an upstream task).
@@ -61,6 +63,7 @@ class PlannedTask:
     threads: int
     memory_gb: int
     gpu: int
+    custom: dict[str, int]
     cache_status: CacheStatus
 
 
@@ -106,6 +109,7 @@ class ResourceSummary:
     total_memory_gb: int
     peak_wave_memory_gb: int
     gpu_task_count: int
+    custom_totals: dict[str, int]
 
 
 @dataclass(kw_only=True)
@@ -181,6 +185,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
             threads=resources.threads,
             memory_gb=resources.memory_gb,
             gpu=resources.gpu,
+            custom=dict(resources.custom),
             cache_status=cache_status[node_id],
         )
 
@@ -306,6 +311,11 @@ def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:
             peak_index = wave.index
         peak_memory = max(peak_memory, sum(task.memory_gb for task in wave.tasks))
 
+    custom_totals: dict[str, int] = {}
+    for task in all_tasks:
+        for dimension, demand in task.custom.items():
+            custom_totals[dimension] = custom_totals.get(dimension, 0) + demand
+
     return ResourceSummary(
         total_threads=sum(task.threads for task in all_tasks),
         peak_wave_threads=peak_threads,
@@ -313,4 +323,5 @@ def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:
         total_memory_gb=sum(task.memory_gb for task in all_tasks),
         peak_wave_memory_gb=peak_memory,
         gpu_task_count=sum(1 for task in all_tasks if task.gpu > 0),
+        custom_totals=custom_totals,
     )
