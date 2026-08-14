@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal
 from ginkgo.runtime.caching.cache import MISSING
 
 if TYPE_CHECKING:
-    from ginkgo.runtime.evaluator import ConcurrentEvaluator, TaskNode
+    from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
 
 CacheStatus = Literal["cached", "will_run", "unknown"]
 
@@ -207,7 +207,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     )
 
 
-def _assign_waves(nodes: Mapping[int, TaskNode]) -> dict[int, int]:
+def _assign_waves(nodes: Mapping[int, NodeRun]) -> dict[int, int]:
     """Assign each node a 0-based wave (longest dependency path to a root)."""
     indegree = {node_id: len(node.dependency_ids) for node_id, node in nodes.items()}
     dependents: dict[int, list[int]] = {node_id: [] for node_id in nodes}
@@ -244,7 +244,7 @@ def _resolve_cache_status(
 
 
 def _probe_node(
-    *, evaluator: ConcurrentEvaluator, node: TaskNode, status: dict[int, CacheStatus]
+    *, evaluator: ConcurrentEvaluator, node: NodeRun, status: dict[int, CacheStatus]
 ) -> CacheStatus:
     """Return the cache status of one node, given resolved upstream statuses."""
     # Downstream of anything not known-cached: the cache key cannot be
@@ -284,7 +284,7 @@ def _probe_node(
     return "cached"
 
 
-def _task_label(node: TaskNode) -> str:
+def _task_label(node: NodeRun) -> str:
     """Return a display label, including resolved fan-out parameters."""
     base_name = node.task_def.name.rsplit(".", 1)[-1]
     parts = node.expr.display_label_parts

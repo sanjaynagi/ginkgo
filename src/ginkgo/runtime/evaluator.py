@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import time
 import builtins
-from collections.abc import Mapping
+from collections.abc import Mapping, Set as AbstractSet
 from contextlib import ExitStack, suppress
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -226,18 +226,47 @@ _NodeState = Literal[
 ]
 
 
-@dataclass(kw_only=True)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class TaskNode:
-    """One task in the evaluator's dependency graph.
+    """Immutable identity of one task in the evaluator's dependency graph.
 
-    Nodes are created and mutated by :class:`ConcurrentEvaluator` as it
-    schedules work. Read-only consumers (such as the dry-run planner)
-    access them through :attr:`ConcurrentEvaluator.task_nodes`.
+    A node's identity is fixed when the graph is registered; everything
+    that changes as the scheduler drives the task through its lifecycle
+    lives on :class:`NodeRun`. Instances hash and compare by object
+    identity, so pure scheduling code can hold them safely.
     """
 
     node_id: int
     expr: Expr
-    dependency_ids: set[int]
+    dependency_ids: frozenset[int]
+
+    @property
+    def task_def(self) -> TaskDef:
+        """Return the task definition for the node."""
+        return self.expr.task_def
+
+    @property
+    def concurrency_group(self) -> str | None:
+        """Return the node's declared concurrency group, if any."""
+        return self.expr.concurrency_group
+
+    @property
+    def concurrency_group_limit(self) -> int | None:
+        """Return the concurrency limit for the node's group, if any."""
+        return self.expr.concurrency_group_limit
+
+
+@dataclass(kw_only=True)
+class NodeRun:
+    """Mutable run state of one task node.
+
+    Runs are created and mutated by :class:`ConcurrentEvaluator` as it
+    schedules work; the immutable graph vertex lives at :attr:`node`.
+    Read-only consumers (such as the dry-run planner) access runs
+    through :attr:`ConcurrentEvaluator.task_nodes`.
+    """
+
+    node: TaskNode
     state: _NodeState = "pending"
     resolved_args: dict[str, Any] | None = None
     execution_args: dict[str, Any] | None = None
@@ -247,8 +276,6 @@ class TaskNode:
     memory_gb: int = 0
     gpu: int = 0
     remote: bool = False
-    concurrency_group: str | None = None
-    concurrency_group_limit: int | None = None
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
     transport_path: Path | None = None
@@ -266,10 +293,31 @@ class TaskNode:
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
 
+    # Identity views, delegated so collaborators that receive a run can
+    # read the vertex without reaching through ``.node``.
+    @property
+    def node_id(self) -> int:
+        return self.node.node_id
+
+    @property
+    def expr(self) -> Expr:
+        return self.node.expr
+
     @property
     def task_def(self) -> TaskDef:
-        """Return the task definition for the node."""
-        return self.expr.task_def
+        return self.node.task_def
+
+    @property
+    def dependency_ids(self) -> frozenset[int]:
+        return self.node.dependency_ids
+
+    @property
+    def concurrency_group(self) -> str | None:
+        return self.node.concurrency_group
+
+    @property
+    def concurrency_group_limit(self) -> int | None:
+        return self.node.concurrency_group_limit
 
 
 @dataclass(kw_only=True)
@@ -291,7 +339,7 @@ class ConcurrentEvaluator:
     constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
     _asset_store: AssetStore = field(init=False, repr=False)
-    _nodes: dict[int, TaskNode] = field(default_factory=dict, init=False, repr=False)
+    _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
     _expr_nodes: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     _running_futures: dict[Future[Any], tuple[int, str]] = field(
         default_factory=dict,
@@ -427,7 +475,7 @@ class ConcurrentEvaluator:
         return self._cache_store
 
     @property
-    def task_nodes(self) -> Mapping[int, TaskNode]:
+    def task_nodes(self) -> Mapping[int, NodeRun]:
         """Read-only view of the task graph, keyed by scheduler node id.
 
         Populated once the graph has been built (after :meth:`build_and_validate` or
@@ -436,7 +484,7 @@ class ConcurrentEvaluator:
         """
         return self._nodes
 
-    def resolve_probe_args(self, *, node: TaskNode) -> dict[str, Any]:
+    def resolve_probe_args(self, *, node: NodeRun) -> dict[str, Any]:
         """Resolve one node's concrete arguments without side effects.
 
         Read-only companion to the internal argument resolver, for cache
@@ -445,7 +493,7 @@ class ConcurrentEvaluator:
 
         Parameters
         ----------
-        node : TaskNode
+        node : NodeRun
             A node whose dependencies have all completed (for example from
             cache hits recorded by a previous probe).
 
@@ -457,7 +505,6 @@ class ConcurrentEvaluator:
         return self._resolve_task_args(
             expr=node.expr,
             task_def=node.task_def,
-            node=node,
             include_tmp_dirs=False,
             stage_remote_refs=False,
         )
@@ -630,12 +677,12 @@ class ConcurrentEvaluator:
                 task_path=next_task_path,
             )
 
-        self._nodes[node_id] = TaskNode(
-            node_id=node_id,
-            expr=expr,
-            dependency_ids=dependency_ids,
-            concurrency_group=expr.concurrency_group,
-            concurrency_group_limit=expr.concurrency_group_limit,
+        self._nodes[node_id] = NodeRun(
+            node=TaskNode(
+                node_id=node_id,
+                expr=expr,
+                dependency_ids=frozenset(dependency_ids),
+            )
         )
         self._expr_nodes[expr_id] = node_id
         self._emit_event(
@@ -677,13 +724,12 @@ class ConcurrentEvaluator:
             if not progressed:
                 return
 
-    def _prepare_node(self, node: TaskNode) -> None:
+    def _prepare_node(self, node: NodeRun) -> None:
         """Resolve non-ephemeral inputs, then either cache-hit or ready the task."""
         prepare_started = time.perf_counter()
         resolved_args = self._resolve_task_args(
             expr=node.expr,
             task_def=node.task_def,
-            node=node,
             include_tmp_dirs=False,
             stage_remote_refs=False,
         )
@@ -746,7 +792,7 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _prepare_task_environment(self, *, node: TaskNode) -> None:
+    def _prepare_task_environment(self, *, node: NodeRun) -> None:
         """Materialize any external execution environment required by a task."""
         if node.task_def.env is None or self.backend is None:
             return
@@ -840,7 +886,6 @@ class ConcurrentEvaluator:
             node.resolved_args = self._resolve_task_args(
                 expr=node.expr,
                 task_def=node.task_def,
-                node=node,
                 include_tmp_dirs=True,
                 existing_args=node.resolved_args,
                 tmp_paths=node.tmp_paths,
@@ -941,7 +986,7 @@ class ConcurrentEvaluator:
     def _handle_completed_worker_phase(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         completed_value: Any,
         remote_job_id: str | None = None,
     ) -> None:
@@ -951,7 +996,7 @@ class ConcurrentEvaluator:
         node.remote_job_id = remote_job_id
         self._handle_task_body_result(node=node, completed_value=completed_value)
 
-    def _handle_completed_staging_phase(self, *, node: TaskNode, completed_value: Any) -> None:
+    def _handle_completed_staging_phase(self, *, node: NodeRun, completed_value: Any) -> None:
         """Start task execution after remote inputs have been staged locally."""
         if not isinstance(completed_value, dict):
             raise TypeError("Expected staged task arguments from staging phase")
@@ -965,16 +1010,16 @@ class ConcurrentEvaluator:
             shell_executor=self._executors.shell,
         )
 
-    def _handle_completed_driver_phase(self, *, node: TaskNode, completed_value: Any) -> None:
+    def _handle_completed_driver_phase(self, *, node: NodeRun, completed_value: Any) -> None:
         """Handle the result returned from a driver-executed task wrapper."""
         self._handle_task_body_result(node=node, completed_value=completed_value)
 
-    def _handle_completed_shell_phase(self, *, node: TaskNode, completed_value: Any) -> None:
+    def _handle_completed_shell_phase(self, *, node: NodeRun, completed_value: Any) -> None:
         """Handle the result produced by the shell executor."""
         final_value = self._finalize_result_value(node=node, value=completed_value)
         self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
 
-    def _handle_task_exception(self, *, node: TaskNode, exc: BaseException) -> None:
+    def _handle_task_exception(self, *, node: NodeRun, exc: BaseException) -> None:
         """Either retry a failed task attempt or fail the run."""
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
         if self._failure is None and self._should_retry(node=node, exc=sanitized_exc):
@@ -1000,13 +1045,13 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _should_retry(self, *, node: TaskNode, exc: BaseException) -> bool:
+    def _should_retry(self, *, node: NodeRun, exc: BaseException) -> bool:
         """Return whether the current failed attempt should be retried."""
         if node.attempt > node.task_def.retries:
             return False
         return node.task_def.should_retry_exception(exc=exc)
 
-    def _schedule_retry(self, *, node: TaskNode, exc: BaseException) -> None:
+    def _schedule_retry(self, *, node: NodeRun, exc: BaseException) -> None:
         """Reset node state so the scheduler can rerun the task from scratch."""
         self._cleanup_transport(node)
 
@@ -1063,7 +1108,7 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _complete_node(self, *, node: TaskNode, value: Any, tmp_paths: list[Path]) -> None:
+    def _complete_node(self, *, node: NodeRun, value: Any, tmp_paths: list[Path]) -> None:
         """Persist and mark a task node as fully completed."""
         finalize_started = time.perf_counter()
         self._cleanup_transport(node)
@@ -1136,7 +1181,6 @@ class ConcurrentEvaluator:
         *,
         expr: Expr,
         task_def: TaskDef,
-        node: TaskNode | None = None,
         include_tmp_dirs: bool,
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
@@ -1193,7 +1237,7 @@ class ConcurrentEvaluator:
 
         return resolved_args
 
-    def _resolve_execution_args(self, *, node: TaskNode) -> dict[str, Any]:
+    def _resolve_execution_args(self, *, node: NodeRun) -> dict[str, Any]:
         """Resolve runtime-only inputs such as secret references."""
         assert node.resolved_args is not None
         if self.secret_resolver is None:
@@ -1267,7 +1311,7 @@ class ConcurrentEvaluator:
             return {key: self._rehydrate_wrapped_refs(value=item) for key, item in value.items()}
         return value
 
-    def _dependencies_complete(self, dependency_ids: set[int]) -> bool:
+    def _dependencies_complete(self, dependency_ids: AbstractSet[int]) -> bool:
         """Return whether all referenced nodes have completed."""
         return all(self._nodes[node_id].state == "completed" for node_id in dependency_ids)
 
@@ -1347,7 +1391,7 @@ class ConcurrentEvaluator:
             if not self._nodes[node_id].remote
         )
 
-    def _available_group_slots(self, *, ready_nodes: list[TaskNode]) -> dict[str, int]:
+    def _available_group_slots(self, *, ready_nodes: list[NodeRun]) -> dict[str, int]:
         """Return the remaining concurrency budget per active group.
 
         For each named concurrency group represented in the ready set, the
@@ -1388,7 +1432,7 @@ class ConcurrentEvaluator:
     def _start_task_execution(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         python_executor: ProcessPoolExecutor | ThreadPoolExecutor,
         shell_executor: ThreadPoolExecutor,
     ) -> None:
@@ -1511,7 +1555,7 @@ class ConcurrentEvaluator:
         future = python_executor.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, "python")
 
-    def _poll_remote_job(self, handle: RemoteJobHandle, *, node: TaskNode) -> dict[str, Any]:
+    def _poll_remote_job(self, handle: RemoteJobHandle, *, node: NodeRun) -> dict[str, Any]:
         """Poll a remote job handle until it reaches a terminal state.
 
         Called on a watcher thread — blocks until the remote job finishes.
@@ -1580,7 +1624,7 @@ class ConcurrentEvaluator:
 
         return payload
 
-    def _fold_remote_input_access(self, *, node: TaskNode, payload: Any) -> None:
+    def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
 
         Records FUSE mount cost, cache hits, and fallbacks for both remote
@@ -1602,7 +1646,7 @@ class ConcurrentEvaluator:
     def _warn_on_access_fallback(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         access_stats: dict[str, Any],
     ) -> None:
         """Surface a user-visible notice when fuse mounts fell back to staging.
@@ -1629,7 +1673,7 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _capture_remote_logs(self, *, node: TaskNode, handle: RemoteJobHandle) -> None:
+    def _capture_remote_logs(self, *, node: NodeRun, handle: RemoteJobHandle) -> None:
         """Fetch pod logs and write them to the standard task log paths."""
         try:
             logs = handle.logs_tail(lines=10000)
@@ -1776,7 +1820,7 @@ class ConcurrentEvaluator:
             self._effective_resources_cache[name] = cached
         return cached
 
-    def _apply_memory_escalation(self, *, node: TaskNode, resources: Resources) -> None:
+    def _apply_memory_escalation(self, *, node: NodeRun, resources: Resources) -> None:
         """Raise a retrying node's memory footprint per its retry multiplier.
 
         Locally-placed escalation is capped at the run's ``--memory`` budget
@@ -1844,7 +1888,7 @@ class ConcurrentEvaluator:
             return True
         return False
 
-    def _build_worker_payload(self, *, node: TaskNode) -> dict[str, Any]:
+    def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""
         assert node.transport_path is not None
         assert node.execution_args is not None
@@ -1875,7 +1919,7 @@ class ConcurrentEvaluator:
             ),
         }
 
-    def _decode_worker_result(self, *, node: TaskNode, payload: dict[str, Any]) -> Any:
+    def _decode_worker_result(self, *, node: NodeRun, payload: dict[str, Any]) -> Any:
         """Decode a process-pool worker response."""
         if not payload["ok"]:
             self._cleanup_transport(node)
@@ -1898,7 +1942,7 @@ class ConcurrentEvaluator:
         assert node.transport_path is not None
         return decode_value(payload["result"], base_dir=node.transport_path)
 
-    def _cleanup_transport(self, node: TaskNode) -> None:
+    def _cleanup_transport(self, node: NodeRun) -> None:
         """Remove temporary transport artifacts for a task node."""
         if node.transport_path is None:
             return
@@ -1906,7 +1950,7 @@ class ConcurrentEvaluator:
             shutil.rmtree(node.transport_path)
         node.transport_path = None
 
-    def _finalize_result_value(self, *, node: TaskNode, value: Any) -> Any:
+    def _finalize_result_value(self, *, node: NodeRun, value: Any) -> Any:
         """Coerce and validate a fully resolved task result."""
         coerced = self._validator.coerce_return_value(task_def=node.task_def, value=value)
         finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
@@ -1922,7 +1966,7 @@ class ConcurrentEvaluator:
     def _warn_on_untracked_path_inputs(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         resolved_args: dict[str, Any],
     ) -> None:
         """Warn when a path crosses a task boundary without content tracking.
@@ -1946,7 +1990,7 @@ class ConcurrentEvaluator:
     def _scan_untracked_path_argument(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         parameter: str,
         annotation: Any,
         unresolved: Any,
@@ -2018,7 +2062,7 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _emit_notebook_notice(self, node: TaskNode, message: str) -> None:
+    def _emit_notebook_notice(self, node: NodeRun, message: str) -> None:
         """Surface a notebook runner notice (e.g. ipykernel install) as an event."""
         self._emit_event(
             TaskNotice(
@@ -2067,7 +2111,7 @@ class ConcurrentEvaluator:
 
         return True
 
-    def _try_prepare_cache_hit(self, *, node: TaskNode) -> bool:
+    def _try_prepare_cache_hit(self, *, node: NodeRun) -> bool:
         """Attempt to complete a node from cache during preparation.
 
         This fast path only runs when cache identity can be decided without
@@ -2081,7 +2125,7 @@ class ConcurrentEvaluator:
 
         return self._try_content_cache_hit(node=node)
 
-    def _try_content_cache_hit(self, *, node: TaskNode) -> bool:
+    def _try_content_cache_hit(self, *, node: NodeRun) -> bool:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
@@ -2121,7 +2165,7 @@ class ConcurrentEvaluator:
         self._mark_node_cached(node=node, value=cached_result, cache_key=node.cache_key)
         return True
 
-    def _try_stat_index_hit(self, *, node: TaskNode) -> bool:
+    def _try_stat_index_hit(self, *, node: NodeRun) -> bool:
         """Attempt a stat-index cache hit for ``--trust-workspace`` mode.
 
         Returns ``True`` if the hit succeeded and the node was marked
@@ -2167,7 +2211,7 @@ class ConcurrentEvaluator:
         self._mark_node_cached(node=node, value=cached_result, cache_key=content_key)
         return True
 
-    def _record_stat_index_entry(self, *, node: TaskNode, cache_key: str) -> None:
+    def _record_stat_index_entry(self, *, node: NodeRun, cache_key: str) -> None:
         """Record a stat-index entry for a completed task."""
         if node.resolved_args is None:
             return
@@ -2191,7 +2235,7 @@ class ConcurrentEvaluator:
             resolved_key = str(Path(path_str).resolve())
             self._known_digests[resolved_key] = artifact_id
 
-    def _mark_node_cached(self, *, node: TaskNode, value: Any, cache_key: str) -> None:
+    def _mark_node_cached(self, *, node: NodeRun, value: Any, cache_key: str) -> None:
         """Mark one node complete from cache and emit cached completion events."""
         if node.attempt == 0:
             node.attempt = 1
@@ -2242,7 +2286,7 @@ class ConcurrentEvaluator:
     def _record_task_metadata(
         self,
         *,
-        node: TaskNode,
+        node: NodeRun,
         include_env_metadata: bool = True,
     ) -> None:
         """Update provenance inputs and environment copies for a task node."""
@@ -2296,7 +2340,7 @@ class ConcurrentEvaluator:
             seconds=time.perf_counter() - started,
         )
 
-    def _record_task_failure(self, *, node: TaskNode, exc: BaseException) -> None:
+    def _record_task_failure(self, *, node: NodeRun, exc: BaseException) -> None:
         """Persist task failure details to the run manifest."""
         if self.provenance is None:
             return
@@ -2308,7 +2352,7 @@ class ConcurrentEvaluator:
             failure=classify_failure(exc=exc),
         )
 
-    def _display_label_for(self, *, node: TaskNode) -> str | None:
+    def _display_label_for(self, *, node: NodeRun) -> str | None:
         """Return a richer CLI label for mapped tasks once args are resolved."""
         if not node.expr.mapped or node.resolved_args is None:
             return None
@@ -2328,7 +2372,7 @@ class ConcurrentEvaluator:
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"
 
-    def _output_summary_for(self, *, node: TaskNode, value: Any) -> list[dict[str, Any]]:
+    def _output_summary_for(self, *, node: NodeRun, value: Any) -> list[dict[str, Any]]:
         """Return a compact typed output summary for one task result."""
         annotation = node.task_def.type_hints.get(
             "return", node.task_def.signature.return_annotation
@@ -2352,7 +2396,7 @@ class ConcurrentEvaluator:
             with self.profiler.timed("event_emit"):
                 self.event_bus.emit(event)
 
-    def _run_driver_task(self, *, node: TaskNode) -> Any:
+    def _run_driver_task(self, *, node: NodeRun) -> Any:
         """Run a driver-task wrapper on the scheduler process.
 
         For notebook and script tasks the body was already evaluated eagerly
@@ -2373,7 +2417,7 @@ class ConcurrentEvaluator:
         ):
             return node.task_def.fn(**node.execution_args)
 
-    def _handle_task_body_result(self, *, node: TaskNode, completed_value: Any) -> None:
+    def _handle_task_body_result(self, *, node: NodeRun, completed_value: Any) -> None:
         """Advance a task after its driver wrapper has finished."""
         if self._failure is not None and (
             isinstance(completed_value, ExecutionDirective)
