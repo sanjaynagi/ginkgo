@@ -76,10 +76,12 @@ The current evaluator is concurrent and futures-based:
 The scheduler performs explicit cycle detection when registering expressions.
 
 **Per-task thread declaration.** A task's CPU footprint is declared on the
-decorator (`@task(threads=4)`). The scheduler uses this value as the task's
-core budget against `--cores`. When a task function's signature includes a
-`threads` parameter, the declared value is injected automatically so the task
-body can reference it. Shell tasks additionally receive `GINKGO_THREADS` in
+decorator (`@task(threads=4)`) and may be overridden per site via the
+`[resources.overrides]` runtime-config table; the evaluator resolves one
+*effective* value per task. The scheduler uses the effective value as the
+task's core budget against `--cores`. When a task function's signature
+includes a `threads` parameter, the effective value is injected automatically
+so the task body can reference it. Shell tasks additionally receive `GINKGO_THREADS` in
 their subprocess environment, and `@task(threads=N, export_thread_env=True)`
 also exports `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 and `NUMEXPR_NUM_THREADS` so ordinary BLAS/OpenMP tools honour the budget

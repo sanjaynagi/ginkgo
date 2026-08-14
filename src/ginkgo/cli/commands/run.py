@@ -41,6 +41,7 @@ from ginkgo.config import (
     merge_config_layers,
 )
 from ginkgo.core.expr import record_constructed_calls
+from ginkgo.core.resources import ResourceOverrides
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
@@ -233,18 +234,25 @@ def run_workflow(
         remote_executor = _build_batch_executor(runtime_config=runtime_config)
         code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
 
+    resource_overrides = ResourceOverrides.from_config(runtime_config.get("resources"))
+    # Shared by the validate/dry-run evaluator and the run evaluator below —
+    # the two must resolve resources and placement identically.
+    evaluator_kwargs: dict[str, Any] = {
+        "jobs": jobs,
+        "cores": cores,
+        "memory": memory,
+        "gpus": gpus,
+        "resource_overrides": resource_overrides,
+        "backend": backend,
+        "remote_executor": remote_executor,
+        "code_bundle_config": code_bundle_config,
+        "secret_resolver": secret_resolver,
+        "profiler": profiler,
+        "param_context": param_context,
+    }
     evaluator = ConcurrentEvaluator(
-        jobs=jobs,
-        cores=cores,
-        memory=memory,
-        gpus=gpus,
-        backend=backend,
-        remote_executor=remote_executor,
-        code_bundle_config=code_bundle_config,
-        secret_resolver=secret_resolver,
-        profiler=profiler,
-        param_context=param_context,
         constructed_calls=tuple(constructed_calls),
+        **evaluator_kwargs,
     )
     validate_started = time.perf_counter()
     with profiler.timed("evaluator_validate"):
@@ -400,18 +408,10 @@ def run_workflow(
                 )
                 bus.subscribe(RichEventRenderer(renderer=renderer))
             evaluator = ConcurrentEvaluator(
-                jobs=jobs,
-                cores=cores,
-                memory=memory,
-                backend=backend,
-                remote_executor=remote_executor,
-                code_bundle_config=code_bundle_config,
                 provenance=recorder,
-                secret_resolver=secret_resolver,
                 event_bus=bus,
                 trust_workspace=trust_workspace,
-                profiler=profiler,
-                param_context=param_context,
+                **evaluator_kwargs,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)

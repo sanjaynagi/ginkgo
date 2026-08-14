@@ -6,10 +6,16 @@
 
 - `version=...`
 - `retries=...`
-- `threads=...`, `memory=...`, `gpu=...`, `gpu_type=...` for resource
-  declarations, stored as a single `Resources` value (`core/resources.py`) on
-  the `TaskDef`. Resources state what a task *needs* and never imply
-  placement.
+- `threads=...`, `memory=...`, `gpu=...`, `gpu_type=...`,
+  `memory_retry_multiplier=...` for resource declarations, stored as a single
+  `Resources` value (`core/resources.py`) on the `TaskDef`. Resources state
+  what a task *needs* and never imply placement. The evaluator resolves an
+  *effective* `Resources` per task by merging the `[resources.overrides]`
+  runtime-config table (selectors: exact or fnmatch-glob task names; exact
+  beats glob) over the declaration — `ResourceOverrides` in
+  `core/resources.py` owns the matching rules. `memory_retry_multiplier`
+  escalates the memory footprint per retry attempt, capped at the local
+  `--memory` budget for locally-placed tasks.
 - `remote=True` for explicit remote dispatch. Placement is otherwise decided
   by the evaluator: a `gpu` requirement is satisfied from the local `--gpus`
   budget when it fits, dispatched to the remote executor when one is

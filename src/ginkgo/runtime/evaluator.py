@@ -30,6 +30,7 @@ from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
+from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
@@ -154,6 +155,7 @@ def evaluate(
     cores: int | None = None,
     memory: int | None = None,
     gpus: int | None = None,
+    resource_overrides: ResourceOverrides | None = None,
     backend: ExecutionEnvironment | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
@@ -174,6 +176,8 @@ def evaluate(
     gpus : int | None
         Local GPU budget across running tasks. Defaults to 0 (no local
         GPUs); tasks declaring ``gpu > 0`` then require a remote executor.
+    resource_overrides : ResourceOverrides | None
+        Site-level resource overrides merged over each task's declaration.
     backend : ExecutionEnvironment | None
         Execution environment for environment-isolated tasks.
     event_bus : EventBus | None
@@ -190,6 +194,7 @@ def evaluate(
         cores=cores,
         memory=memory,
         gpus=gpus,
+        resource_overrides=resource_overrides,
         backend=backend,
         provenance=provenance,
         secret_resolver=secret_resolver,
@@ -275,6 +280,7 @@ class ConcurrentEvaluator:
     cores: int | None = None
     memory: int | None = None
     gpus: int | None = None
+    resource_overrides: ResourceOverrides | None = None
     backend: ExecutionEnvironment | None = None
     remote_executor: RemoteExecutor | None = None
     provenance: RunProvenanceRecorder | None = None
@@ -315,6 +321,9 @@ class ConcurrentEvaluator:
     _staging_cache_path: Path = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
+    )
+    _effective_resources_cache: dict[str, Resources] = field(
+        default_factory=dict, init=False, repr=False
     )
 
     @property
@@ -708,11 +717,12 @@ class ConcurrentEvaluator:
         self._prepare_task_environment(node=node)
         self._record_task_metadata(node=node)
 
-        resources = node.task_def.resources
+        resources = self.effective_resources(task_def=node.task_def)
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
         node.remote = self._resolve_placement(task_def=node.task_def)
+        self._apply_memory_escalation(node=node, resources=resources)
         if not node.remote:
             if node.threads > self.cores:
                 raise ValueError(
@@ -1163,9 +1173,10 @@ class ConcurrentEvaluator:
                 continue
 
             if name == "threads":
-                # Inject the decorator-declared thread count so user code can
-                # use it for shell command interpolation or in-process work.
-                resolved_args[name] = task_def.threads
+                # Inject the effective thread count (declaration plus any site
+                # override) so user code can use it for shell command
+                # interpolation or in-process work.
+                resolved_args[name] = self.effective_resources(task_def=task_def).threads
                 continue
 
             if parameter.default is not parameter.empty:
@@ -1466,7 +1477,7 @@ class ConcurrentEvaluator:
                 "threads": node.threads,
                 "memory_gb": node.memory_gb,
                 "gpu": node.gpu,
-                "gpu_type": node.task_def.resources.gpu_type,
+                "gpu_type": self.effective_resources(task_def=node.task_def).gpu_type,
             }
             if self._code_bundle_meta is not None:
                 payload["code_bundle"] = self._code_bundle_meta
@@ -1749,6 +1760,49 @@ class ConcurrentEvaluator:
             local=self._cache_store._artifact_store,
         )
 
+    def effective_resources(self, *, task_def: TaskDef) -> Resources:
+        """Return the task's declared resources with site overrides applied.
+
+        Site overrides come from the ``[resources.overrides]`` runtime-config
+        table and are merged over the decorator declaration. Memoized per
+        task name — the inputs are static for the lifetime of a run.
+        """
+        name = task_def.name
+        cached = self._effective_resources_cache.get(name)
+        if cached is None:
+            cached = task_def.resources
+            if self.resource_overrides is not None:
+                cached = self.resource_overrides.apply(task_name=name, base=cached)
+            self._effective_resources_cache[name] = cached
+        return cached
+
+    def _apply_memory_escalation(self, *, node: TaskNode, resources: Resources) -> None:
+        """Raise a retrying node's memory footprint per its retry multiplier.
+
+        Locally-placed escalation is capped at the run's ``--memory`` budget
+        so a retry always remains dispatchable; remote-placed tasks escalate
+        uncapped because the executor satisfies their request. A change from
+        the declared footprint is surfaced as a task notice.
+        """
+        if node.attempt == 0:
+            return
+        escalated = resources.memory_gb_for_attempt(node.attempt)
+        if not node.remote and self.memory is not None and escalated > self.memory:
+            escalated = self.memory
+        if escalated == node.memory_gb:
+            return
+        node.memory_gb = escalated
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=_task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=f"memory escalated to {escalated} GiB for attempt {node.attempt + 1}",
+            )
+        )
+
     def _resolve_placement(self, *, task_def: TaskDef) -> bool:
         """Decide whether a task runs on the remote executor.
 
@@ -1760,7 +1814,7 @@ class ConcurrentEvaluator:
         on the task definition, so it is validated for every node up front
         in ``build_and_validate``.
         """
-        gpu = task_def.resources.gpu
+        gpu = self.effective_resources(task_def=task_def).gpu
         remote_capable = self.remote_executor is not None and task_def.kind == "python"
         if task_def.remote:
             if not remote_capable:

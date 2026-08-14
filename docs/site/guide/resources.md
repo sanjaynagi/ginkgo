@@ -38,6 +38,47 @@ The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
 oversubscribing GPUs across concurrent tasks, but it does not pin devices —
 every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
 
+## Site Overrides
+
+The same workflow file can run on a laptop, an HPC node, and the cloud with
+per-site sizing. A `[resources.overrides]` table in the runtime config merges
+over the decorator declarations, keyed by task name:
+
+```toml
+[resources.overrides.align_reads]
+threads = 16
+memory = "64Gi"
+
+[resources.overrides."variant_*"]      # fnmatch glob
+memory = "32Gi"
+```
+
+A selector matches a task's short name (`align_reads`) or fully qualified
+name (`workflow.modules.align.align_reads`), and may be an `fnmatch` glob
+over either. Exact matches beat globs; among globs, the first selector in
+config order wins. Keys an override omits keep their declared values.
+Overridden `threads` flow everywhere the declaration would: the scheduler,
+the dry-run plan, the injected `threads` parameter, and `GINKGO_THREADS`.
+Note that for tasks declaring a `threads` parameter the injected value is a
+task input, so a site override changes those tasks' cache keys — the same
+way editing the declaration would.
+
+## Retrying With More Memory
+
+For tools whose memory needs are input-dependent, declare a baseline and let
+retries escalate instead of sizing every run for the worst case:
+
+```python
+@task(memory="16Gi", retries=2, memory_retry_multiplier=2)
+def sort_bam(bam: file) -> file:   # attempts run at 16, 32, then 64 GiB
+    ...
+```
+
+Escalation applies exponentially per retry attempt. Locally it is capped at
+the run's `--memory` budget so a retry always remains dispatchable (a task
+notice reports the escalated figure); remote-placed tasks escalate uncapped
+because the executor satisfies their request.
+
 ## Priority
 
 ```python
