@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import yaml
 
 from ginkgo import file, shell, task
@@ -81,6 +82,16 @@ def _shell_work(out: str):
     return shell(cmd=f"sleep 0.4 && echo done > {out}", output=file(out))
 
 
+@task(retries=1)
+def _retried_work() -> int:
+    return 1
+
+
+@task()
+def _failing_work() -> int:
+    raise RuntimeError("boom")
+
+
 def _run_with_provenance(expr: Any, tmp_path: Path) -> dict[str, Any]:
     recorder = RunProvenanceRecorder(
         run_id="run-measured",
@@ -114,3 +125,36 @@ class TestManifestRecording:
         assert usage["measured"]["source"] == "sampled"
         assert usage["measured"]["peak_rss_bytes"] > 0
         assert usage["declared"]["threads"] == 1
+
+    def test_failed_task_records_usage(self, tmp_path: Path) -> None:
+        recorder = RunProvenanceRecorder(
+            run_id="run-failed",
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / "runs",
+            jobs=1,
+            cores=1,
+        )
+        evaluator = ConcurrentEvaluator(jobs=1, provenance=recorder)
+        with pytest.raises(RuntimeError, match="boom"):
+            evaluator.evaluate(_failing_work())
+        recorder.finalize(status="failed")
+        manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
+        usage = _single_task_usage(manifest)
+        assert usage["measured"]["source"] == "rusage"
+        assert usage["measured"]["peak_rss_bytes"] > 0
+
+
+class TestRetryCarry:
+    def test_schedule_retry_keeps_measurements(self) -> None:
+        evaluator = ConcurrentEvaluator(jobs=1)
+        node_id = evaluator._register_expr(_retried_work())
+        node = evaluator.task_nodes[node_id]
+        node.measured_resources = {"peak_rss_bytes": 42, "cpu_seconds": 0.1, "source": "rusage"}
+
+        evaluator._schedule_retry(node=node, exc=RuntimeError("oom"))
+
+        assert node.measured_resources == {
+            "peak_rss_bytes": 42,
+            "cpu_seconds": 0.1,
+            "source": "rusage",
+        }

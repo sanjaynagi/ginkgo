@@ -41,6 +41,28 @@ def _rusage_snapshot() -> Any | None:
     return resource.getrusage(resource.RUSAGE_SELF)
 
 
+def _attach_measured_resources(*, response: dict[str, Any], usage_start: Any | None) -> None:
+    """Add the task-body usage measurement to a worker response.
+
+    Attached to error responses too — the usage measured before a failure
+    is what right-sizes an OOM-prone task.
+    """
+    usage_end = _rusage_snapshot() if usage_start is not None else None
+    if usage_start is None or usage_end is None:
+        return
+    # ru_maxrss is the worker process's high-water mark, so a task run
+    # after a heavier one in a reused pool worker inherits its peak.
+    response["measured_resources"] = {
+        "peak_rss_bytes": _max_rss_bytes(usage_end.ru_maxrss),
+        "cpu_seconds": round(
+            (usage_end.ru_utime - usage_start.ru_utime)
+            + (usage_end.ru_stime - usage_start.ru_stime),
+            3,
+        ),
+        "source": "rusage",
+    }
+
+
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
     usage_start = _rusage_snapshot()
@@ -101,24 +123,14 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                     file=_RedactingWriter(handle=handle, secret_values=secret_values)
                 )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
-        return error_response(exc)
+        response = error_response(exc)
+        _attach_measured_resources(response=response, usage_start=usage_start)
+        return response
     finally:
         if mounted_access is not None:
             mounted_access.close()
 
-    usage_end = _rusage_snapshot() if usage_start is not None else None
-    if usage_start is not None and usage_end is not None:
-        # ru_maxrss is the worker process's high-water mark, so a task run
-        # after a heavier one in a reused pool worker inherits its peak.
-        response["measured_resources"] = {
-            "peak_rss_bytes": _max_rss_bytes(usage_end.ru_maxrss),
-            "cpu_seconds": round(
-                (usage_end.ru_utime - usage_start.ru_utime)
-                + (usage_end.ru_stime - usage_start.ru_stime),
-                3,
-            ),
-            "source": "rusage",
-        }
+    _attach_measured_resources(response=response, usage_start=usage_start)
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     return response

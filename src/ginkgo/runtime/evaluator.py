@@ -1098,7 +1098,10 @@ class ConcurrentEvaluator:
         node.secret_values = ()
         node.extra_source_hash = None
         node.asset_versions = []
-        node.measured_resources = None
+        # measured_resources is deliberately NOT reset: a retried attempt's
+        # peak (an OOM kill under memory_retry_multiplier, say) is exactly
+        # the number needed to right-size the task, so measurements span
+        # attempts — peaks take the max, CPU seconds accumulate.
 
         retries_remaining = node.task_def.retries - node.attempt
         if self.provenance is not None:
@@ -2031,7 +2034,8 @@ class ConcurrentEvaluator:
         """Fold one usage measurement into the node's running totals.
 
         A task may run several subprocesses (a notebook executes, then
-        renders), so peaks take the max and CPU seconds accumulate.
+        renders) and several attempts, so peaks take the max and CPU
+        seconds accumulate.
         """
         current = node.measured_resources
         if current is None:
@@ -2045,7 +2049,11 @@ class ConcurrentEvaluator:
         )
 
     def _record_resource_usage(self, *, node: NodeRun) -> None:
-        """Persist measured-vs-declared resource usage for one task."""
+        """Persist measured-vs-declared resource usage for one task.
+
+        The measured values cover every attempt of the task: the peak is
+        the maximum across attempts and CPU seconds are the total cost.
+        """
         if self.provenance is None or node.measured_resources is None:
             return
         self.provenance.update_task_extra(
