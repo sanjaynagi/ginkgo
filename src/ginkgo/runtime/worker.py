@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 from pathlib import Path
 import traceback
 from typing import Any
@@ -26,8 +27,23 @@ def error_response(exc: BaseException) -> dict[str, Any]:
     }
 
 
+def _max_rss_bytes(ru_maxrss: int) -> int:
+    """Normalize ``ru_maxrss`` to bytes (macOS reports bytes, Linux KiB)."""
+    return int(ru_maxrss if sys.platform == "darwin" else ru_maxrss * 1024)
+
+
+def _rusage_snapshot() -> Any | None:
+    """Return this process's rusage, or ``None`` where unsupported (Windows)."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - resource is POSIX-only
+        return None
+    return resource.getrusage(resource.RUSAGE_SELF)
+
+
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
+    usage_start = _rusage_snapshot()
     base_dir = Path(payload["transport_dir"])
     decoded_args = {
         name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
@@ -90,6 +106,19 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         if mounted_access is not None:
             mounted_access.close()
 
+    usage_end = _rusage_snapshot() if usage_start is not None else None
+    if usage_start is not None and usage_end is not None:
+        # ru_maxrss is the worker process's high-water mark, so a task run
+        # after a heavier one in a reused pool worker inherits its peak.
+        response["measured_resources"] = {
+            "peak_rss_bytes": _max_rss_bytes(usage_end.ru_maxrss),
+            "cpu_seconds": round(
+                (usage_end.ru_utime - usage_start.ru_utime)
+                + (usage_end.ru_stime - usage_start.ru_stime),
+                3,
+            ),
+            "source": "rusage",
+        }
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     return response

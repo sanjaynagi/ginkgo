@@ -105,6 +105,12 @@ class TaskSummary:
         return None
 
     @property
+    def resource_usage(self) -> dict[str, Any] | None:
+        """Return measured-vs-declared resource usage, when recorded."""
+        value = self.raw.get("resource_usage")
+        return value if isinstance(value, dict) else None
+
+    @property
     def kind_label(self) -> str:
         """Return a display label for the task kind (``"task"`` fallback)."""
         raw = self.raw.get("kind")
