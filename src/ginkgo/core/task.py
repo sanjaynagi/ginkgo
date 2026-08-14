@@ -648,6 +648,7 @@ def task(
     memory: str | None = None,
     gpu: int = 0,
     gpu_type: str | None = None,
+    memory_retry_multiplier: float = 1.0,
     remote: bool = False,
     export_thread_env: bool = False,
     remote_input_access: str | None = None,
@@ -706,6 +707,11 @@ def task(
     gpu_type : str | None
         Accelerator type for remote execution (e.g. ``"nvidia-tesla-t4"``).
         Overrides the executor-level default. Requires ``gpu > 0``.
+    memory_retry_multiplier : float
+        Factor applied to ``memory`` on each retry attempt, capped at the
+        run's ``--memory`` budget. Use with ``retries`` for OOM-prone tasks
+        (e.g. ``memory="16Gi", retries=2, memory_retry_multiplier=2`` runs
+        attempts at 16, 32, and 64 GiB). Requires ``memory``.
     remote : bool
         When ``True``, dispatch this task to the remote executor. Requires
         an executor to be configured via ``--executor``.
@@ -750,7 +756,13 @@ def task(
             retry_on_exit_codes=retry_on_exit_codes,
             priority=priority,
             kind=resolved_kind,
-            resources=Resources(threads=threads, memory=memory, gpu=gpu, gpu_type=gpu_type),
+            resources=Resources(
+                threads=threads,
+                memory=memory,
+                gpu=gpu,
+                gpu_type=gpu_type,
+                memory_retry_multiplier=memory_retry_multiplier,
+            ),
             remote=remote,
             export_thread_env=export_thread_env,
             remote_input_access=remote_input_access,

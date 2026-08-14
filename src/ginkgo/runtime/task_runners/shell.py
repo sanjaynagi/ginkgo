@@ -67,16 +67,19 @@ _THREAD_ENV_VARS = (
 )
 
 
-def build_shell_subprocess_env(*, task_def: Any) -> dict[str, str]:
+def build_shell_subprocess_env(*, task_def: Any, threads: int | None = None) -> dict[str, str]:
     """Return the environment for a shell-task subprocess.
 
-    Always exports ``GINKGO_THREADS`` carrying the task's declared thread
-    count. When ``task_def.export_thread_env`` is ``True``, also exports the
-    common BLAS/OpenMP thread variables so off-the-shelf tools pick up the
-    declared budget without per-workflow boilerplate.
+    Always exports ``GINKGO_THREADS`` carrying the task's effective thread
+    count (*threads* when given — the scheduler passes the node's resolved
+    value, which includes site overrides — else the declaration). When
+    ``task_def.export_thread_env`` is ``True``, also exports the common
+    BLAS/OpenMP thread variables so off-the-shelf tools pick up the budget
+    without per-workflow boilerplate.
     """
     env = dict(os.environ)
-    threads = int(getattr(task_def, "threads", 1))
+    if threads is None:
+        threads = int(getattr(task_def, "threads", 1))
     env["GINKGO_THREADS"] = str(threads)
     if getattr(task_def, "export_thread_env", False):
         for name in _THREAD_ENV_VARS:
@@ -514,7 +517,7 @@ class ShellRunner:
             argv = cmd
             use_shell = True
 
-        subprocess_env = build_shell_subprocess_env(task_def=node.task_def)
+        subprocess_env = build_shell_subprocess_env(task_def=node.task_def, threads=node.threads)
         if extra_env:
             subprocess_env.update(extra_env)
 
