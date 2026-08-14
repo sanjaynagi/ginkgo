@@ -793,7 +793,7 @@ class ConcurrentEvaluator:
             if budget is not None and demand > budget:
                 raise ValueError(
                     f"{node.task_def.name} requires {demand} {dimension} but only "
-                    f"{budget} are available (--resource {dimension}={budget})"
+                    f"{budget} are available in the run's {dimension} budget"
                 )
         if not node.remote:
             if node.threads > self.cores:

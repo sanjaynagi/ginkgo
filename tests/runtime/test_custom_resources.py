@@ -13,6 +13,7 @@ from ginkgo.core.resources import (
     parse_resource_budget_args,
     resource_budgets_from_config,
 )
+from ginkgo.runtime.dry_run import PlannedTask, PlanWave, _summarise_resources
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 
 
@@ -65,9 +66,15 @@ class TestBudgetParsing:
         with pytest.raises(ValueError, match="positive integer"):
             parse_resource_budget_args(["api_calls=ten"])
 
-    def test_cli_reserved_name_rejected(self) -> None:
-        with pytest.raises(ValueError, match="built-in dimension"):
+    def test_cli_reserved_name_points_at_run_option(self) -> None:
+        with pytest.raises(ValueError, match="dedicated --gpus run option"):
             parse_resource_budget_args(["gpu=2"])
+        with pytest.raises(ValueError, match="dedicated --cores run option"):
+            parse_resource_budget_args(["threads=2"])
+
+    def test_cli_unbudgetable_builtin_rejected(self) -> None:
+        with pytest.raises(ValueError, match="has no run-level budget"):
+            parse_resource_budget_args(["gpu_type=1"])
 
     def test_config_budgets_parse(self) -> None:
         assert resource_budgets_from_config({"budgets": {"api_calls": 10}}) == {"api_calls": 10}
@@ -80,8 +87,8 @@ class TestBudgetParsing:
         with pytest.raises(ValueError, match=r"\[resources.budgets\] must be a table"):
             resource_budgets_from_config({"budgets": 10})
 
-    def test_config_reserved_name_rejected(self) -> None:
-        with pytest.raises(ValueError, match="built-in dimension"):
+    def test_config_reserved_name_points_at_run_option(self) -> None:
+        with pytest.raises(ValueError, match="dedicated --memory run option"):
             resource_budgets_from_config({"budgets": {"memory": 4}})
 
     def test_config_non_positive_rejected(self) -> None:
@@ -138,6 +145,22 @@ class TestSchedulerCustomBudget:
         assert len([n for n in selected if n in {1, 2}]) == 1
         assert 3 in selected
 
+    def test_independent_dimensions_constrain_separately(self) -> None:
+        ready = [
+            SchedulableTask(node_id=1, threads=1, memory_gb=0, custom={"api_calls": 1, "db": 1}),
+            SchedulableTask(node_id=2, threads=1, memory_gb=0, custom={"api_calls": 1}),
+            SchedulableTask(node_id=3, threads=1, memory_gb=0, custom={"db": 1}),
+        ]
+        selected = select_dispatch_subset(
+            ready_tasks=ready,
+            jobs=10,
+            cores=10,
+            custom_budgets={"api_calls": 1, "db": 1},
+        )
+        # Task 1 consumes both budgets, so it excludes both others; the
+        # count-maximizing objective must instead pick tasks 2 and 3.
+        assert sorted(selected) == [2, 3]
+
     def test_unbudgeted_dimension_unconstrained(self) -> None:
         ready = [
             SchedulableTask(node_id=i, threads=1, memory_gb=0, custom={"api_calls": 2})
@@ -147,13 +170,39 @@ class TestSchedulerCustomBudget:
         assert len(selected) == 5
 
 
+class TestDryRunSummary:
+    def test_custom_demands_are_totalled(self) -> None:
+        def planned(node_id: int, custom: dict[str, int]) -> PlannedTask:
+            return PlannedTask(
+                node_id=node_id,
+                base_name="fetch",
+                label="fetch()",
+                kind="python",
+                env=None,
+                mapped=False,
+                threads=1,
+                memory_gb=0,
+                gpu=0,
+                custom=custom,
+                cache_status="will_run",
+            )
+
+        waves = [
+            PlanWave(index=1, tasks=[planned(0, {"api_calls": 2})]),
+            PlanWave(index=2, tasks=[planned(1, {"api_calls": 1, "db": 1}), planned(2, {})]),
+        ]
+        assert _summarise_resources(waves).custom_totals == {"api_calls": 3, "db": 1}
+
+
 # ----- End-to-end evaluator tests ---------------------------------------------
 
 
 @task(resources={"api_calls": 1})
 def _timed_api_call(item: str) -> dict[str, float]:
     started = time.perf_counter()
-    time.sleep(0.1)
+    # Long enough that concurrently dispatched branches reliably overlap
+    # even when process-pool workers spawn slowly on a loaded machine.
+    time.sleep(0.3)
     ended = time.perf_counter()
     return {"start": started, "end": ended}
 

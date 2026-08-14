@@ -151,6 +151,17 @@ _OVERRIDE_KEYS = frozenset(f.name for f in fields(Resources) if f.init)
 # Built-in dimension names a custom resource must not shadow.
 _RESERVED_DIMENSIONS = _OVERRIDE_KEYS - {"custom"}
 
+# Run options that budget the built-in dimensions; the rest have no
+# run-level budget at all.
+_BUILTIN_BUDGET_OPTIONS = {"threads": "--cores", "memory": "--memory", "gpu": "--gpus"}
+
+
+def _builtin_dimension_hint(name: str) -> str:
+    option = _BUILTIN_BUDGET_OPTIONS.get(name)
+    if option is not None:
+        return f"set its budget with the dedicated {option} run option instead"
+    return "it has no run-level budget"
+
 
 def parse_resource_budget_args(args: Iterable[str]) -> dict[str, int]:
     """Parse repeated ``--resource name=value`` flags into budget mappings.
@@ -171,8 +182,7 @@ def parse_resource_budget_args(args: Iterable[str]) -> dict[str, int]:
             )
         if name in _RESERVED_DIMENSIONS:
             raise ValueError(
-                f"--resource {name!r} is a built-in dimension; use the dedicated "
-                f"--{'cores' if name == 'threads' else name} option instead"
+                f"--resource {name!r} is a built-in dimension; {_builtin_dimension_hint(name)}"
             )
         try:
             value = int(raw_value)
@@ -205,7 +215,7 @@ def resource_budgets_from_config(config: dict[str, object] | None) -> dict[str, 
         if name in _RESERVED_DIMENSIONS:
             raise ValueError(
                 f"[resources.budgets] {name!r} is a built-in dimension; "
-                "set it with the run options (--cores, --memory, --gpus) instead"
+                f"{_builtin_dimension_hint(name)}"
             )
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(
