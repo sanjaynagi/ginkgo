@@ -20,6 +20,7 @@ _EXPORTS = {
     "NotebookDirective": ("ginkgo.core.notebook", "NotebookDirective"),
     "OptionalOutput": ("ginkgo.core.optional", "OptionalOutput"),
     "PartialCall": ("ginkgo.core.task", "PartialCall"),
+    "Resources": ("ginkgo.core.resources", "Resources"),
     "ScriptDirective": ("ginkgo.core.script", "ScriptDirective"),
     "SecretRef": ("ginkgo.core.secret", "SecretRef"),
     "ShellDirective": ("ginkgo.core.shell", "ShellDirective"),

@@ -75,6 +75,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         jobs=args.jobs,
         cores=args.cores,
         memory=args.memory,
+        gpus=args.gpus,
         dry_run=args.dry_run,
         output_mode=output_mode,
         trust_workspace=getattr(args, "trust_workspace", False),
@@ -139,6 +140,7 @@ def run_workflow(
     jobs: int | None,
     cores: int | None,
     memory: int | None,
+    gpus: int | None = None,
     dry_run: bool,
     output_mode: RunMode = "default",
     trust_workspace: bool = False,
@@ -235,6 +237,7 @@ def run_workflow(
         jobs=jobs,
         cores=cores,
         memory=memory,
+        gpus=gpus,
         backend=backend,
         remote_executor=remote_executor,
         code_bundle_config=code_bundle_config,
@@ -322,10 +325,13 @@ def run_workflow(
         )
         if evaluator.memory is not None:
             rich_console.print(f"[cyan]🧠[/] Memory budget: [bold]{evaluator.memory}[/] GiB")
+        if evaluator.gpus:
+            rich_console.print(f"[cyan]🎛[/] GPU budget: [bold]{evaluator.gpus}[/]")
         if output_mode == "verbose":
             rich_console.print(
                 f"[cyan]🧭[/] Verbose mode: jobs={evaluator.jobs}, cores={evaluator.cores}, "
                 f"memory={evaluator.memory if evaluator.memory is not None else 'auto'}, "
+                f"gpus={evaluator.gpus}, "
                 f"config overlays={len(config_paths)}"
             )
             rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")

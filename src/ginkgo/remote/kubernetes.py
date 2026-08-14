@@ -184,6 +184,7 @@ class KubernetesExecutor:
             resource_limits["ephemeral-storage"] = self.ephemeral_storage
 
         gpu = resources.get("gpu", 0)
+        gpu_type = resources.get("gpu_type") or self.gpu_type
         if gpu > 0:
             resource_limits["nvidia.com/gpu"] = str(gpu)
 
@@ -218,8 +219,8 @@ class KubernetesExecutor:
         # Merge node selectors: start with user-configured selectors, then
         # add the GKE accelerator selector for GPU tasks.
         merged_node_selector: dict[str, str] = dict(self.node_selector or {})
-        if gpu > 0 and self.gpu_type is not None:
-            merged_node_selector["cloud.google.com/gke-accelerator"] = self.gpu_type
+        if gpu > 0 and gpu_type is not None:
+            merged_node_selector["cloud.google.com/gke-accelerator"] = gpu_type
         if merged_node_selector:
             pod_spec_kwargs["node_selector"] = merged_node_selector
         if self.tolerations is not None:

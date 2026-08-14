@@ -63,11 +63,14 @@ The evaluator registers those returned expressions dynamically and extends the g
 The current evaluator is concurrent and futures-based:
 
 - the scheduler tracks dependency completion
-- ready tasks are selected subject to `--jobs`, `--cores`, and optional `--memory`
+- ready tasks are selected subject to `--jobs`, `--cores`, `--gpus`, and
+  optional `--memory`
 - shell tasks run via subprocesses
 - Python tasks run in a `ProcessPoolExecutor`
-- tasks with `gpu > 0` or `remote=True` are dispatched to the configured remote
-  executor (Kubernetes or GCP Batch) when `--executor` is set
+- placement is requirement-driven: `remote=True` tasks, and tasks whose `gpu`
+  requirement exceeds the local `--gpus` budget, are dispatched to the remote
+  executor (Kubernetes or GCP Batch) configured via `--executor`; either
+  without a usable executor is a build error
 - failures are fail-fast for new dispatch, but in-flight tasks are allowed to complete
 
 The scheduler performs explicit cycle detection when registering expressions.

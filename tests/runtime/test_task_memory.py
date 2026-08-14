@@ -2,11 +2,12 @@
 
 import pytest
 
-from ginkgo.core.task import _parse_memory, task
+from ginkgo.core.resources import parse_memory
+from ginkgo.core.task import task
 
 
 class TestParseMemory:
-    """Unit tests for the _parse_memory helper."""
+    """Unit tests for the parse_memory helper."""
 
     @pytest.mark.parametrize(
         ("spec", "expected"),
@@ -25,7 +26,7 @@ class TestParseMemory:
         ],
     )
     def test_parse_memory_valid(self, spec: str | None, expected: int) -> None:
-        assert _parse_memory(spec) == expected
+        assert parse_memory(spec) == expected
 
     @pytest.mark.parametrize(
         "spec",
@@ -38,7 +39,7 @@ class TestParseMemory:
     )
     def test_parse_memory_invalid_raises(self, spec: str) -> None:
         with pytest.raises(ValueError, match="Invalid memory specification"):
-            _parse_memory(spec)
+            parse_memory(spec)
 
 
 class TestTaskDefMemory:

@@ -11,7 +11,7 @@ from ginkgo import evaluate, flow, task
 from tests._vw_support import compute_peaks, load_intervals, write_interval
 
 
-@task(threads=2)
+@task(threads=2, memory="16Gi")
 def high_mem(item: str, events_dir: str, threads: int = 2, memory_gb: int = 16) -> str:
     started_at = time.time()
     time.sleep(0.15)
@@ -28,7 +28,7 @@ def high_mem(item: str, events_dir: str, threads: int = 2, memory_gb: int = 16) 
     return f"high:{item}"
 
 
-@task()
+@task(memory="4Gi")
 def low_mem(item: str, events_dir: str, threads: int = 1, memory_gb: int = 4) -> str:
     started_at = time.time()
     time.sleep(0.15)
@@ -45,7 +45,7 @@ def low_mem(item: str, events_dir: str, threads: int = 1, memory_gb: int = 4) ->
     return f"low:{item}"
 
 
-@task()
+@task(memory="64Gi")
 def too_large(marker_path: str, memory_gb: int = 64) -> str:
     Path(marker_path).write_text("ran", encoding="utf-8")
     return "ran"

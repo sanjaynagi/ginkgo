@@ -648,11 +648,13 @@ backend.
 
 ### How do I mark a task to run remotely?
 
-Remote dispatch is opt-in per task on the `@task` decorator. A task is sent to
-the remote executor when it declares either `remote=True` or `gpu` greater than
-zero. Dispatch only actually happens if a remote executor was configured for the
-run; if you declare `remote=True` but run without `--executor`, the task simply
-runs locally. Everything else runs in the local process pool as usual.
+Remote placement is decided per task from its declaration and the run's
+capability. `remote=True` is an explicit directive: the task is sent to the
+executor configured with `--executor`, and running without one is a build
+error (no silent local fallback). A task declaring `gpu > 0` runs locally
+when the `--gpus` budget covers it, is dispatched remotely when it doesn't
+and an executor is configured, and is a build error otherwise. Everything
+else runs in the local process pool as usual.
 
 ```python
 from ginkgo import task
@@ -661,7 +663,7 @@ from ginkgo import task
 def large_computation(input_path: str) -> str:
     ...
 
-@task(gpu=1, threads=8)          # gpu > 0 also triggers remote dispatch
+@task(gpu=1, threads=8)          # remote only if --gpus can't satisfy it
 def train_model(dataset: str) -> str:
     ...
 ```
@@ -701,12 +703,12 @@ store = "gs://my-bucket/ginkgo-artifacts/"
 
 ### How do I request a GPU, or set per-task memory / CPU for a remote task?
 
-Use the `@task` decorator resource hints: `threads` (int, CPU cores), `memory`
-(a string in Kubernetes notation such as `"16Gi"`), and `gpu` (int). These are
-sent to the worker as the job's resource request. `gpu` also serves as an
-implicit remote trigger. The GPU accelerator type itself is not set per task — it
-comes from the executor config (`gpu_type` under `[remote.k8s]` or
-`[remote.batch]`).
+Use the `@task` decorator resource declarations: `threads` (int, CPU cores),
+`memory` (a string in Kubernetes notation such as `"16Gi"`), `gpu` (int), and
+`gpu_type` (accelerator type, e.g. `"nvidia-tesla-t4"`). These are sent to the
+worker as the job's resource request. A per-task `gpu_type` overrides the
+executor-level default (`gpu_type` under `[remote.k8s]` or `[remote.batch]`);
+GCP Batch rejects a GPU job that has no accelerator type from either source.
 
 ```python
 @task(remote=True, threads=8, memory="16Gi", gpu=1)

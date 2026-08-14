@@ -97,6 +97,12 @@ class GCPBatchExecutor:
         threads = resources.get("threads", 1)
         memory_gb = resources.get("memory_gb", 0)
         gpu = resources.get("gpu", 0)
+        gpu_type = resources.get("gpu_type") or self.gpu_type
+        if gpu > 0 and gpu_type is None:
+            raise ValueError(
+                "GPU task requires an accelerator type: declare gpu_type on the task "
+                "or configure gpu_type on the GCP Batch executor"
+            )
         fuse_required = _payload_requires_fuse(attempt)
 
         # Container configuration.
@@ -138,9 +144,9 @@ class GCPBatchExecutor:
         instances = []
         policy_kwargs: dict[str, Any] = {}
 
-        if gpu > 0 and self.gpu_type is not None:
+        if gpu > 0 and gpu_type is not None:
             accelerator = batch_v1.AllocationPolicy.Accelerator(
-                type_=self.gpu_type,
+                type_=gpu_type,
                 count=gpu,
                 install_gpu_drivers=True,
                 driver_version=self.gpu_driver_version,
