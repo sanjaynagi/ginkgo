@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from ginkgo.cli.commands.doctor import _extract_executor_config
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
@@ -215,3 +217,29 @@ def main():
 
         assert result.returncode == 0, result.stderr + result.stdout
         assert "Workflow validation passed" in result.stdout
+
+
+class TestDoctorExecutorSelection:
+    """Which executor's settings the FUSE probes are diagnosed against."""
+
+    def test_named_executor_with_fuse_image_is_preferred(self) -> None:
+        config = {
+            "remote": {
+                "k8s": {"image": "plain"},
+                "executors": {
+                    "cheap-batch": {"type": "batch", "image": "plain"},
+                    "stream-k8s": {"type": "k8s", "fuse_image": "fuse-worker"},
+                },
+            }
+        }
+        assert _extract_executor_config(config=config) == {
+            "type": "k8s",
+            "fuse_image": "fuse-worker",
+        }
+
+    def test_first_section_is_used_when_none_streams(self) -> None:
+        config = {"remote": {"executors": {"a": {"type": "k8s", "image": "one"}}}}
+        assert _extract_executor_config(config=config) == {"type": "k8s", "image": "one"}
+
+    def test_no_remote_config_yields_nothing(self) -> None:
+        assert _extract_executor_config(config={}) is None

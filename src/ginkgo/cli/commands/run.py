@@ -52,6 +52,7 @@ from ginkgo.envs.container import ContainerBackend
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.caching.provenance import (
@@ -231,14 +232,10 @@ def run_workflow(
         container=ContainerBackend(project_root=Path.cwd()),
     )
 
-    remote_executor = None
-    code_bundle_config = None
-    if executor == "k8s":
-        remote_executor = _build_k8s_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
-    elif executor == "batch":
-        remote_executor = _build_batch_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
+    # Named executors: --executor picks the run default, and tasks may pin
+    # any configured one. Backends are constructed on first dispatch, so a
+    # run that never reaches a remote task never builds its client.
+    executor_registry = ExecutorRegistry.from_config(runtime_config, default=executor)
 
     resource_overrides = ResourceOverrides.from_config(runtime_config.get("resources"))
     # CLI --resource flags win over [resources.budgets] per dimension.
@@ -254,8 +251,7 @@ def run_workflow(
         "resource_overrides": resource_overrides,
         "resource_budgets": resource_budgets or None,
         "backend": backend,
-        "remote_executor": remote_executor,
-        "code_bundle_config": code_bundle_config,
+        "executor_registry": executor_registry,
         "secret_resolver": secret_resolver,
         "profiler": profiler,
         "param_context": param_context,
@@ -412,7 +408,11 @@ def run_workflow(
                         run_dir=recorder.run_dir,
                         cores=evaluator.cores,
                         memory=memory,
-                        executor=executor,
+                        executor_label=(
+                            executor_registry.label(executor_registry.default_name)
+                            if executor_registry.default_name is not None
+                            else "local"
+                        ),
                     ),
                     resources=ResourceRenderState(provider=resource_monitor.current_summary),
                 )
@@ -619,82 +619,3 @@ def _render_notebooks(
 def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
     return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
-
-
-def _load_code_bundle_config(*, runtime_config: dict[str, Any]) -> dict[str, Any] | None:
-    """Read code-sync configuration from ``[remote.k8s.code]`` or ``[remote.batch.code]``."""
-    remote = runtime_config.get("remote", {})
-    for section in ("k8s", "batch"):
-        backend_config = remote.get(section, {})
-        if not isinstance(backend_config, dict):
-            continue
-        code_config = backend_config.get("code")
-        if isinstance(code_config, dict):
-            return dict(code_config)
-    return None
-
-
-def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``KubernetesExecutor`` from ``[remote.k8s]`` config."""
-    from ginkgo.remote.kubernetes import KubernetesExecutor
-
-    k8s_config = runtime_config.get("remote", {}).get("k8s", {})
-    if not isinstance(k8s_config, dict):
-        k8s_config = {}
-
-    image = k8s_config.get("image")
-    if not image:
-        raise ValueError(
-            "Kubernetes executor requires an image. Set [remote.k8s] image in ginkgo.toml."
-        )
-
-    return KubernetesExecutor(
-        namespace=k8s_config.get("namespace", "default"),
-        image=image,
-        service_account=k8s_config.get("service_account"),
-        pull_policy=k8s_config.get("pull_policy", "IfNotPresent"),
-        gpu_type=k8s_config.get("gpu_type"),
-        node_selector=k8s_config.get("node_selector"),
-        tolerations=k8s_config.get("tolerations"),
-        ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 3600)),
-        ephemeral_storage=k8s_config.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(k8s_config.get("backoff_limit", 2)),
-        fuse_image=k8s_config.get("fuse_image"),
-        fuse_annotations=k8s_config.get("fuse_annotations"),
-        fuse_privileged=bool(k8s_config.get("fuse_privileged", False)),
-    )
-
-
-def _build_batch_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``GCPBatchExecutor`` from ``[remote.batch]`` config."""
-    from ginkgo.remote.gcp_batch import GCPBatchExecutor
-
-    batch_config = runtime_config.get("remote", {}).get("batch", {})
-    if not isinstance(batch_config, dict):
-        batch_config = {}
-
-    project = batch_config.get("project")
-    if not project:
-        raise ValueError(
-            "GCP Batch executor requires a project. Set [remote.batch] project in ginkgo.toml."
-        )
-
-    image = batch_config.get("image")
-    if not image:
-        raise ValueError(
-            "GCP Batch executor requires an image. Set [remote.batch] image in ginkgo.toml."
-        )
-
-    region = batch_config.get("region", "europe-west2")
-
-    return GCPBatchExecutor(
-        project=project,
-        region=region,
-        image=image,
-        service_account=batch_config.get("service_account"),
-        gpu_type=batch_config.get("gpu_type"),
-        gpu_driver_version=batch_config.get("gpu_driver_version", "LATEST"),
-        max_run_duration=batch_config.get("max_run_duration", "3600s"),
-        fuse_image=batch_config.get("fuse_image"),
-        fuse_privileged=bool(batch_config.get("fuse_privileged", False)),
-    )

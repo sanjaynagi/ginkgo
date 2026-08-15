@@ -314,12 +314,9 @@ class _RunLayoutRenderer:
     def render_resource_info_line(self) -> Text:
         """Render the live locality and resource summary line."""
         text = Text()
-        if self._summary.executor == "k8s":
+        if self._summary.executor_label != "local":
             text.append("☁️  ", style="cyan")
-            text.append("Running on Kubernetes", style="bold")
-        elif self._summary.executor == "batch":
-            text.append("☁️  ", style="cyan")
-            text.append("Running on GCP Batch", style="bold")
+            text.append(f"Running on {self._summary.executor_label}", style="bold")
         else:
             text.append("💻 ", style="cyan")
             text.append(

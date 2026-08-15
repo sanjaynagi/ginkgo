@@ -114,12 +114,24 @@ def command_doctor(args) -> int:
 
 
 def _extract_executor_config(*, config: dict) -> dict | None:
-    """Return the executor-scoped config section, if any."""
+    """Return one executor's config section to probe FUSE settings against.
+
+    Prefers a section that configures streaming (``fuse_image``), so a run
+    with several named executors is diagnosed against the one that actually
+    needs a FUSE-capable worker image.
+    """
     remote = config.get("remote") if isinstance(config, dict) else None
     if not isinstance(remote, dict):
         return None
-    for key in ("k8s", "batch"):
-        section = remote.get(key)
-        if isinstance(section, dict):
+    named = remote.get("executors")
+    sections = [
+        section
+        for section in (remote.get("k8s"), remote.get("batch"))
+        if isinstance(section, dict)
+    ]
+    if isinstance(named, dict):
+        sections.extend(section for section in named.values() if isinstance(section, dict))
+    for section in sections:
+        if section.get("fuse_image"):
             return section
-    return None
+    return sections[0] if sections else None

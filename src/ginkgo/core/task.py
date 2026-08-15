@@ -66,8 +66,12 @@ class TaskDef:
         function signature declares a ``threads`` parameter, and shell tasks
         receive ``GINKGO_THREADS=<n>`` in the subprocess environment.
     remote : bool
-        When ``True``, dispatch this task to the remote executor. Requires
-        an executor to be configured via ``--executor``.
+        When ``True``, dispatch this task to the run's default executor —
+        the one named by ``--executor``. Requires that flag to be set.
+    executor : str | None
+        Name of a configured executor (``[remote.executors.<name>]``) this
+        task always routes to, regardless of the run's default. Implies
+        remote dispatch.
     export_thread_env : bool
         When ``True``, shell tasks additionally receive ``OMP_NUM_THREADS``,
         ``MKL_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, and
@@ -88,6 +92,7 @@ class TaskDef:
     kind: str = "python"
     resources: Resources = field(default_factory=Resources)
     remote: bool = False
+    executor: str | None = None
     export_thread_env: bool = False
     remote_input_access: str | None = None
     streaming_compatible: bool = True
@@ -112,6 +117,11 @@ class TaskDef:
         if self.retry_backoff_max < 0:
             raise ValueError(f"retry_backoff_max must be at least 0, got {self.retry_backoff_max}")
         _validate_retry_on(self.retry_on)
+        if self.executor is not None:
+            if not isinstance(self.executor, str) or not self.executor.strip():
+                raise ValueError(f"executor must be a non-empty name, got {self.executor!r}")
+            if self.remote:
+                raise ValueError("executor= already routes the task remotely; drop remote=True")
         if not isinstance(self.priority, int) or isinstance(self.priority, bool):
             raise TypeError(f"priority must be an integer, got {type(self.priority).__name__}")
         if abs(self.priority) > 1000:
@@ -651,6 +661,7 @@ def task(
     memory_retry_multiplier: float = 1.0,
     resources: dict[str, int] | None = None,
     remote: bool = False,
+    executor: str | None = None,
     export_thread_env: bool = False,
     remote_input_access: str | None = None,
     streaming_compatible: bool = True,
@@ -720,8 +731,15 @@ def task(
         configured budget are unconstrained. Counted wherever the task runs,
         including remote executors.
     remote : bool
-        When ``True``, dispatch this task to the remote executor. Requires
-        an executor to be configured via ``--executor``.
+        When ``True``, dispatch this task to the run's default executor —
+        whichever one ``--executor`` names. Keeps the workflow portable
+        across sites; use ``executor=`` to pin a specific one.
+    executor : str | None
+        Name of a configured executor (``[remote.executors.<name>]``) to
+        route this task to, e.g. ``executor="gpu-k8s"``. Implies remote
+        dispatch and overrides the run default, so a mixed workflow can send
+        training to a GPU cluster and everything else elsewhere. Unknown
+        names fail at build time.
     export_thread_env : bool
         Export common BLAS/OpenMP thread environment variables
         (``OMP_NUM_THREADS``, ``MKL_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``,
@@ -772,6 +790,7 @@ def task(
                 custom=dict(resources or {}),
             ),
             remote=remote,
+            executor=executor,
             export_thread_env=export_thread_env,
             remote_input_access=remote_input_access,
             streaming_compatible=streaming_compatible,

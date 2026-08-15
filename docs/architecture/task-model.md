@@ -16,10 +16,11 @@
   `core/resources.py` owns the matching rules. `memory_retry_multiplier`
   escalates the memory footprint per retry attempt, capped at the local
   `--memory` budget for locally-placed tasks.
-- `remote=True` for explicit remote dispatch. Placement is otherwise decided
-  by the evaluator: a `gpu` requirement is satisfied from the local `--gpus`
-  budget when it fits, dispatched to the remote executor when one is
-  configured, and a build error otherwise (see
+- `remote=True` for dispatch to the run's default executor, or
+  `executor="name"` to pin a task to a specific configured one. Placement is
+  otherwise decided by the evaluator: a `gpu` requirement is satisfied from the
+  local `--gpus` budget when it fits, dispatched to the default executor when
+  one is configured, and a build error otherwise (see
   [remote execution](remote-execution.md)).
 
 Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,

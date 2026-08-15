@@ -6,13 +6,14 @@ GPUs, large memory, or other resources not available on the local machine.
 
 ## How It Works
 
-Remote execution is opt-in at the task level. `remote=True` always dispatches
-to the configured executor. A `gpu=` requirement only goes remote when the
-local `--gpus` budget can't satisfy it — a `gpu=1` task still runs locally if
-`ginkgo run --gpus 1` (or higher) is passed, even with `--executor` set.
-Either route without a usable remote executor configured is a build error
-rather than a silent local run. The evaluator resolves cache hits before
-dispatching, so only tasks that genuinely need to execute are sent to the
+Remote execution is opt-in at the task level. `remote=True` dispatches to the
+run's **default executor** — whichever one `--executor` names. `executor="name"`
+pins a task to one specific configured executor whatever the run default is. A
+`gpu=` requirement only goes remote when the local `--gpus` budget can't satisfy
+it — a `gpu=1` task still runs locally if `ginkgo run --gpus 1` (or higher) is
+passed, even with `--executor` set. Any route without a usable executor is a
+build error rather than a silent local run. The evaluator resolves cache hits
+before dispatching, so only tasks that genuinely need to execute are sent to the
 cloud.
 
 ```python
@@ -24,14 +25,19 @@ def preprocess(data_path: str) -> str:
     ...
 
 # Runs locally if --gpus covers the request; otherwise dispatched to the
-# remote executor (requires --executor to be set).
+# run's default executor (requires --executor to be set).
 @task(threads=8, memory="16Gi", gpu=1)
 def train_model(dataset: str) -> str:
     ...
 
-# Explicitly remote, regardless of local --gpus budget.
+# Explicitly remote, on whichever executor --executor names.
 @task(remote=True, memory="32Gi")
 def large_computation(input_path: str) -> str:
+    ...
+
+# Always on this executor, whatever the run default is.
+@task(executor="gpu-k8s", gpu=1, gpu_type="nvidia-l4")
+def train(dataset: str) -> str:
     ...
 ```
 
@@ -41,7 +47,54 @@ Run the workflow with a remote executor:
 ginkgo run --executor k8s flow.py
 # or
 ginkgo run --executor batch flow.py
+# or any name from [remote.executors]
+ginkgo run --executor cheap-batch flow.py
 ```
+
+## Named Executors
+
+A workflow can span several backends: training on a GPU Kubernetes namespace,
+bulk work on a cheap batch queue. Name each one under `[remote.executors]` and
+route tasks to it by name:
+
+```toml
+# ginkgo.toml
+[remote.executors.gpu-k8s]
+type = "k8s"                 # k8s | batch
+namespace = "ml"
+image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
+gpu_type = "nvidia-l4"
+
+[remote.executors.cheap-batch]
+type = "batch"
+project = "my-gcp-project"
+region = "europe-west2"
+image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
+
+[remote.executors.cheap-batch.code]
+mode = "sync"
+package = "my_workflow"
+```
+
+Each table takes a `type` plus the same settings the corresponding
+single-executor section accepts (see below), and its own optional `code`
+sub-table for code sync.
+
+- **`@task(executor="gpu-k8s")`** always runs on that executor. An unknown name
+  fails at build time, before any task runs, listing the configured names.
+- **`@task(remote=True)`** runs on the run's default executor — the one
+  `--executor` names — which keeps a workflow portable across sites: the same
+  file runs on Kubernetes at one site and GCP Batch at another with no code
+  change.
+- **`--executor local`** (the default) leaves the run with no default executor.
+  Tasks that name an executor still dispatch to it; `remote=True` tasks and
+  GPU overflow fail with a build error.
+- Executor clients are constructed on first dispatch, so a configured executor
+  no task reaches is never contacted.
+
+`[remote.k8s]` and `[remote.batch]` keep working and are read as executors
+implicitly named `k8s` and `batch`, so `--executor k8s` and
+`@task(executor="k8s")` both resolve to `[remote.k8s]`.
 
 ## Task Resource Declarations
 
@@ -53,9 +106,13 @@ and map to cloud resource requests remotely:
 | `threads` | `int` | CPU cores (local scheduler budget + pod CPU request) |
 | `memory` | `str` | Memory in K8s notation, e.g. `"4Gi"` (local scheduler budget + pod memory request) |
 | `gpu` | `int` | GPU count (no local effect; maps to `nvidia.com/gpu` on K8s, accelerator on GCP Batch) |
-| `remote` | `bool` | Force remote dispatch even without GPU |
+| `remote` | `bool` | Force dispatch to the run's default executor, even without GPU |
+| `executor` | `str` | Force dispatch to a named executor from `[remote.executors]` |
 
 ## Supported Executors
+
+Both backend types below can also be declared under `[remote.executors.<name>]`
+with a `type` key, several times over, as shown above.
 
 ### Kubernetes (`--executor k8s`)
 
@@ -119,7 +176,7 @@ downloads and extracts it before executing the task.
 ```toml
 # ginkgo.toml — add alongside your executor config
 
-[remote.k8s.code]       # or [remote.batch.code]
+[remote.k8s.code]       # or [remote.batch.code], or [remote.executors.<name>.code]
 mode = "sync"
 package = "my_workflow"  # directory name of your Python package
 exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
@@ -129,7 +186,8 @@ store = "gs://my-bucket/ginkgo-artifacts/"
 ```
 
 The code bundle is content-addressed (SHA-256). Unchanged code is not
-re-uploaded.
+re-uploaded, and executors sharing a package and exclude list share one
+bundle rather than uploading it twice.
 
 ## Worker Docker Image
 
@@ -211,7 +269,8 @@ The header line also reflects the executor:
 
 Remote task execution is fully tracked in run provenance:
 
-- `execution_backend` records whether a task ran locally or remotely
+- `execution_backend` records where a task ran: `local`, or the executor's
+  name (`gpu-k8s`, `k8s`, ...)
 - `remote_job_id` records the K8s job name or GCP Batch job ID
 - `resources` records the CPU, memory, and GPU requests
 - Pod logs are captured at task completion
@@ -222,8 +281,9 @@ All of this is visible in `ginkgo inspect run <run_id>`.
 
 - **Cache still works.** The evaluator checks cache before dispatching, so
   re-runs skip completed tasks without touching the cloud.
-- **Local tasks stay local.** Only tasks with `gpu > 0` or `remote=True` are
-  sent to the executor. Everything else runs on your machine.
+- **Local tasks stay local.** Only tasks with `gpu > 0`, `remote=True`, or an
+  `executor=` name are sent to an executor. Everything else runs on your
+  machine.
 - **Retries work.** Each retry submits a new cloud job. The existing retry
   mechanism applies unchanged.
 - **Device portability.** Use `device = "auto"` in your config so PyTorch

@@ -20,7 +20,10 @@ class CliRunSummary:
     run_dir: Path
     cores: int
     memory: int | None = None
-    executor: str = "local"
+    # Display label for the run's default executor ("local", "Kubernetes",
+    # "gpu-k8s (Kubernetes)", ...). Tasks pinned to another executor still
+    # dispatch there; this line describes the run default.
+    executor_label: str = "local"
 
 
 @dataclass

@@ -70,10 +70,17 @@ class RemoteDispatchStats:
     total_running_seconds: float = 0.0
     upload_bytes: int = 0
     download_bytes: int = 0
+    # Submissions per executor name, so a multi-executor run can report
+    # where its work went. Insertion-ordered by first dispatch.
+    submitted_by_executor: dict[str, int] = field(default_factory=dict)
 
-    def record_submit(self) -> None:
+    def record_submit(self, *, executor: str | None = None) -> None:
         with self._lock:
             self.jobs_submitted += 1
+            if executor is not None:
+                self.submitted_by_executor[executor] = (
+                    self.submitted_by_executor.get(executor, 0) + 1
+                )
 
     def record_terminal(self, *, state: RemoteJobState) -> None:
         with self._lock:
@@ -100,6 +107,11 @@ class RemoteDispatchStats:
         if self.jobs_submitted == 0:
             return None
         parts = [f"{self.jobs_submitted} remote"]
+        if len(self.submitted_by_executor) > 1:
+            split = ", ".join(
+                f"{name} {count}" for name, count in self.submitted_by_executor.items()
+            )
+            parts[0] += f" ({split})"
         if self.jobs_succeeded:
             parts.append(f"{self.jobs_succeeded} succeeded")
         if self.jobs_failed:

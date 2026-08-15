@@ -24,6 +24,7 @@ ginkgo/
 │   ├── scheduler.py
 │   ├── worker.py
 │   ├── events.py
+│   ├── executor_registry.py # named executors: config, lookup, lazy build
 │   ├── remote_executor.py   # RemoteExecutor / RemoteJobHandle protocols
 │   ├── diagnostics.py
 │   ├── task_validation.py     # TaskValidator: contracts, inputs, coercion

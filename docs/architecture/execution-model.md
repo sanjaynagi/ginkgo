@@ -67,10 +67,10 @@ The current evaluator is concurrent and futures-based:
   optional `--memory`
 - shell tasks run via subprocesses
 - Python tasks run in a `ProcessPoolExecutor`
-- placement is requirement-driven: `remote=True` tasks, and tasks whose `gpu`
-  requirement exceeds the local `--gpus` budget, are dispatched to the remote
-  executor (Kubernetes or GCP Batch) configured via `--executor`; either
-  without a usable executor is a build error
+- placement is requirement-driven: `executor="name"` tasks go to that named
+  executor; `remote=True` tasks, and tasks whose `gpu` requirement exceeds the
+  local `--gpus` budget, go to the run's default executor (`--executor`); any
+  route without a usable executor is a build error
 - failures are fail-fast for new dispatch, but in-flight tasks are allowed to complete
 
 The scheduler performs explicit cycle detection when registering expressions.
