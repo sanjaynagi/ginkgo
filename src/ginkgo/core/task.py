@@ -649,6 +649,7 @@ def task(
     gpu: int = 0,
     gpu_type: str | None = None,
     memory_retry_multiplier: float = 1.0,
+    resources: dict[str, int] | None = None,
     remote: bool = False,
     export_thread_env: bool = False,
     remote_input_access: str | None = None,
@@ -712,6 +713,12 @@ def task(
         run's ``--memory`` budget. Use with ``retries`` for OOM-prone tasks
         (e.g. ``memory="16Gi", retries=2, memory_retry_multiplier=2`` runs
         attempts at 16, 32, and 64 GiB). Requires ``memory``.
+    resources : dict[str, int] | None
+        User-defined resource demands (e.g. ``{"api_calls": 2}``), scheduled
+        against run-level budgets from ``[resources.budgets]`` config or
+        repeated ``--resource name=value`` flags. Dimensions without a
+        configured budget are unconstrained. Counted wherever the task runs,
+        including remote executors.
     remote : bool
         When ``True``, dispatch this task to the remote executor. Requires
         an executor to be configured via ``--executor``.
@@ -762,6 +769,7 @@ def task(
                 gpu=gpu,
                 gpu_type=gpu_type,
                 memory_retry_multiplier=memory_retry_multiplier,
+                custom=dict(resources or {}),
             ),
             remote=remote,
             export_thread_env=export_thread_env,

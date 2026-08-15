@@ -83,7 +83,7 @@ class TaskReady(TaskEvent):
     """Task became dispatch-ready."""
 
     event: str = "task_ready"
-    resources: dict[str, int] = field(default_factory=dict)
+    resources: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -93,7 +93,7 @@ class TaskStarted(TaskEvent):
     event: str = "task_started"
     kind: str = "python"
     env: str | None = None
-    resources: dict[str, int] = field(default_factory=dict)
+    resources: dict[str, Any] = field(default_factory=dict)
     remote_job_id: str | None = None
     execution_backend: str | None = None
 

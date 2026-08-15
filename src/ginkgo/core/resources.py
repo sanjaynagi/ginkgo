@@ -11,6 +11,7 @@ from __future__ import annotations
 import fnmatch
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
 
 _MEMORY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*(Gi|Mi|G|M|Ti|Ki)$")
@@ -86,6 +87,13 @@ class Resources:
         with ``memory_gb * memory_retry_multiplier ** k``, capped at the
         run's ``--memory`` budget. ``1.0`` (default) disables escalation.
         Requires ``memory`` to be set.
+    custom : dict[str, int]
+        User-defined resource demands (e.g. ``{"api_calls": 2}``), scheduled
+        against run-level budgets from ``[resources.budgets]`` config or
+        repeated ``--resource name=value`` flags. A dimension no budget
+        names is unconstrained. Unlike the built-in dimensions, custom
+        demands also count for remote-placed tasks — budgets such as API
+        quotas or database connections apply wherever the task runs.
     """
 
     threads: int = 1
@@ -93,11 +101,22 @@ class Resources:
     gpu: int = 0
     gpu_type: str | None = None
     memory_retry_multiplier: float = 1.0
+    custom: dict[str, int] = field(default_factory=dict)
     _memory_gb: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.threads < 1:
             raise ValueError(f"threads must be at least 1, got {self.threads}")
+        for name, demand in self.custom.items():
+            if name in _RESERVED_DIMENSIONS:
+                raise ValueError(
+                    f"custom resource {name!r} collides with a built-in resource field; "
+                    f"declare it with the {name!r} argument instead"
+                )
+            if isinstance(demand, bool) or not isinstance(demand, int) or demand < 1:
+                raise ValueError(
+                    f"custom resource {name!r} must be a positive integer, got {demand!r}"
+                )
         if self.gpu < 0:
             raise ValueError(f"gpu must be at least 0, got {self.gpu}")
         if self.gpu_type is not None and self.gpu == 0:
@@ -128,6 +147,82 @@ class Resources:
 
 # The overridable fields are exactly the declared (init) fields of Resources.
 _OVERRIDE_KEYS = frozenset(f.name for f in fields(Resources) if f.init)
+
+# Built-in dimension names a custom resource must not shadow.
+_RESERVED_DIMENSIONS = _OVERRIDE_KEYS - {"custom"}
+
+# Run options that budget the built-in dimensions; the rest have no
+# run-level budget at all.
+_BUILTIN_BUDGET_OPTIONS = {"threads": "--cores", "memory": "--memory", "gpu": "--gpus"}
+
+
+def _builtin_dimension_hint(name: str) -> str:
+    option = _BUILTIN_BUDGET_OPTIONS.get(name)
+    if option is not None:
+        return f"set its budget with the dedicated {option} run option instead"
+    return "it has no run-level budget"
+
+
+def parse_resource_budget_args(args: Iterable[str]) -> dict[str, int]:
+    """Parse repeated ``--resource name=value`` flags into budget mappings.
+
+    Raises
+    ------
+    ValueError
+        If an entry is not ``name=value`` with a positive integer value, or
+        names a built-in resource dimension.
+    """
+    budgets: dict[str, int] = {}
+    for arg in args:
+        name, separator, raw_value = arg.partition("=")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError(
+                f"invalid --resource {arg!r}: expected name=value, e.g. --resource api_calls=10"
+            )
+        if name in _RESERVED_DIMENSIONS:
+            raise ValueError(
+                f"--resource {name!r} is a built-in dimension; {_builtin_dimension_hint(name)}"
+            )
+        try:
+            value = int(raw_value)
+        except ValueError:
+            value = -1
+        if value < 1:
+            raise ValueError(f"invalid --resource {arg!r}: budget must be a positive integer")
+        budgets[name] = value
+    return budgets
+
+
+def resource_budgets_from_config(config: dict[str, object] | None) -> dict[str, int]:
+    """Parse the ``[resources.budgets]`` table of the runtime config.
+
+    Raises
+    ------
+    ValueError
+        If the table is malformed, a budget is not a positive integer, or a
+        dimension shadows a built-in resource field.
+    """
+    if config is not None and not isinstance(config, dict):
+        raise ValueError("[resources] must be a table")
+    budgets = (config or {}).get("budgets", {})
+    if not isinstance(budgets, dict):
+        raise ValueError("[resources.budgets] must be a table of dimension budgets")
+    parsed: dict[str, int] = {}
+    for name, value in budgets.items():
+        if not isinstance(name, str):
+            raise ValueError(f"[resources.budgets] dimension names must be strings, got {name!r}")
+        if name in _RESERVED_DIMENSIONS:
+            raise ValueError(
+                f"[resources.budgets] {name!r} is a built-in dimension; "
+                f"{_builtin_dimension_hint(name)}"
+            )
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"[resources.budgets] {name!r} must be a positive integer, got {value!r}"
+            )
+        parsed[name] = value
+    return parsed
 
 
 @dataclass(frozen=True)

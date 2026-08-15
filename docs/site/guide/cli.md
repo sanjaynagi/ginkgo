@@ -67,9 +67,14 @@ ginkgo run flow.py --dry-run
 ```
 
 `ginkgo run` builds the expression tree, validates the workflow, evaluates ready
-tasks subject to the `--jobs`, `--cores`, and `--memory` budgets, and writes run
-history under `.ginkgo/runs/`. Run it from a project root with no path argument
-and Ginkgo discovers the canonical `workflow/flow.py` entrypoint.
+tasks subject to the `--jobs`, `--cores`, `--memory`, and `--gpus` budgets,
+and writes run history under `.ginkgo/runs/`. Run it from a project root with
+no path argument and Ginkgo discovers the canonical `workflow/flow.py`
+entrypoint.
+
+Repeated `--resource name=value` flags budget any custom resource dimensions
+tasks declare (e.g. `--resource api_calls=10`) — see
+[Custom Resource Dimensions](resources.md#custom-resource-dimensions).
 
 `--dry-run` resolves the graph and computes cache keys without executing any
 task body &mdash; the fastest way to confirm a workflow is wired correctly.

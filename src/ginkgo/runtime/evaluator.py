@@ -154,6 +154,7 @@ def evaluate(
     memory: int | None = None,
     gpus: int | None = None,
     resource_overrides: ResourceOverrides | None = None,
+    resource_budgets: dict[str, int] | None = None,
     backend: ExecutionEnvironment | None = None,
     provenance: RunProvenanceRecorder | None = None,
     secret_resolver: SecretResolver | None = None,
@@ -176,6 +177,10 @@ def evaluate(
         GPUs); tasks declaring ``gpu > 0`` then require a remote executor.
     resource_overrides : ResourceOverrides | None
         Site-level resource overrides merged over each task's declaration.
+    resource_budgets : dict[str, int] | None
+        Run-level budgets for user-defined resource dimensions (e.g.
+        ``{"api_calls": 10}``). Dimensions tasks request but this mapping
+        omits are unconstrained.
     backend : ExecutionEnvironment | None
         Execution environment for environment-isolated tasks.
     event_bus : EventBus | None
@@ -193,6 +198,7 @@ def evaluate(
         memory=memory,
         gpus=gpus,
         resource_overrides=resource_overrides,
+        resource_budgets=resource_budgets,
         backend=backend,
         provenance=provenance,
         secret_resolver=secret_resolver,
@@ -273,6 +279,7 @@ class NodeRun:
     threads: int = 1
     memory_gb: int = 0
     gpu: int = 0
+    custom_resources: dict[str, int] = field(default_factory=dict)
     remote: bool = False
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
@@ -328,6 +335,7 @@ class ConcurrentEvaluator:
     memory: int | None = None
     gpus: int | None = None
     resource_overrides: ResourceOverrides | None = None
+    resource_budgets: dict[str, int] | None = None
     backend: ExecutionEnvironment | None = None
     remote_executor: RemoteExecutor | None = None
     provenance: RunProvenanceRecorder | None = None
@@ -777,8 +785,18 @@ class ConcurrentEvaluator:
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
+        node.custom_resources = dict(resources.custom)
         node.remote = self._resolve_placement(task_def=node.task_def)
         self._apply_memory_escalation(node=node, resources=resources)
+        # Custom budgets are run-level, so the demand check applies wherever
+        # the task is placed.
+        for dimension, demand in node.custom_resources.items():
+            budget = (self.resource_budgets or {}).get(dimension)
+            if budget is not None and demand > budget:
+                raise ValueError(
+                    f"{node.task_def.name} requires {demand} {dimension} but only "
+                    f"{budget} are available in the run's {dimension} budget"
+                )
         if not node.remote:
             if node.threads > self.cores:
                 raise ValueError(
@@ -798,7 +816,7 @@ class ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                resources={"cores": node.threads, "memory_gb": node.memory_gb, "gpu": node.gpu},
+                resources=self._resources_payload(node=node),
             )
         )
 
@@ -869,8 +887,10 @@ class ConcurrentEvaluator:
         available_memory = None if self.memory is None else self.memory - self._running_memory_gb()
         available_gpus = (self.gpus or 0) - self._running_gpus()
         available_group_slots = self._available_group_slots(ready_nodes=ready_nodes)
+        available_custom = self._available_custom_budgets()
         # Remote-placed tasks consume a jobs slot but no local resource
         # budget — their threads/memory/gpu are satisfied by the executor.
+        # Custom demands stay: those budgets are run-level.
         selected = select_dispatch_subset(
             ready_tasks=[
                 SchedulableTask(
@@ -880,6 +900,7 @@ class ConcurrentEvaluator:
                     gpu=0 if node.remote else node.gpu,
                     priority=node.task_def.priority,
                     concurrency_group=node.concurrency_group,
+                    custom=node.custom_resources,
                 )
                 for node in ready_nodes
             ],
@@ -888,6 +909,7 @@ class ConcurrentEvaluator:
             memory=available_memory,
             gpus=available_gpus,
             available_group_slots=available_group_slots,
+            custom_budgets=available_custom,
         )
 
         for node_id in selected:
@@ -1090,6 +1112,7 @@ class ConcurrentEvaluator:
         node.threads = 1
         node.memory_gb = 0
         node.gpu = 0
+        node.custom_resources = {}
         node.remote = False
         node.tmp_paths = []
         node.transport_path = None
@@ -1431,6 +1454,36 @@ class ConcurrentEvaluator:
             for group_id, limit in active_groups.items()
         }
 
+    def _resources_payload(self, *, node: NodeRun) -> dict[str, Any]:
+        """Return the event-payload view of a node's resolved resources."""
+        payload: dict[str, Any] = {
+            "cores": node.threads,
+            "memory_gb": node.memory_gb,
+            "gpu": node.gpu,
+        }
+        if node.custom_resources:
+            payload["custom"] = dict(node.custom_resources)
+        return payload
+
+    def _available_custom_budgets(self) -> dict[str, int] | None:
+        """Return the remaining budget per user-defined resource dimension.
+
+        Unlike the built-in dimensions, in-flight remote-placed tasks are
+        counted too: custom budgets (API quotas, database connections) are
+        run-level and apply wherever the task runs. Returns ``None`` when no
+        budgets are configured.
+        """
+        if not self.resource_budgets:
+            return None
+        running: dict[str, int] = {}
+        for node_id, _ in self._running_futures.values():
+            for dimension, demand in self._nodes[node_id].custom_resources.items():
+                running[dimension] = running.get(dimension, 0) + demand
+        return {
+            dimension: budget - running.get(dimension, 0)
+            for dimension, budget in self.resource_budgets.items()
+        }
+
     def _running_memory_gb(self) -> int:
         """Return the declared local memory footprint of currently running tasks."""
         return sum(
@@ -1491,9 +1544,7 @@ class ConcurrentEvaluator:
                 kind=node.task_def.kind,
                 env=node.task_def.env,
                 resources={
-                    "cores": node.threads,
-                    "memory_gb": node.memory_gb,
-                    "gpu": node.gpu,
+                    **self._resources_payload(node=node),
                     "max_attempts": node.task_def.retries + 1,
                 },
                 execution_backend=execution_backend,

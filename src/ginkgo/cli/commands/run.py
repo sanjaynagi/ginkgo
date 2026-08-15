@@ -41,7 +41,11 @@ from ginkgo.config import (
     merge_config_layers,
 )
 from ginkgo.core.expr import record_constructed_calls
-from ginkgo.core.resources import ResourceOverrides
+from ginkgo.core.resources import (
+    ResourceOverrides,
+    parse_resource_budget_args,
+    resource_budgets_from_config,
+)
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import ContainerBackend
@@ -77,6 +81,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         cores=args.cores,
         memory=args.memory,
         gpus=args.gpus,
+        resource_args=tuple(getattr(args, "resource", ()) or ()),
         dry_run=args.dry_run,
         output_mode=output_mode,
         trust_workspace=getattr(args, "trust_workspace", False),
@@ -142,6 +147,7 @@ def run_workflow(
     cores: int | None,
     memory: int | None,
     gpus: int | None = None,
+    resource_args: Sequence[str] = (),
     dry_run: bool,
     output_mode: RunMode = "default",
     trust_workspace: bool = False,
@@ -235,6 +241,9 @@ def run_workflow(
         code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
 
     resource_overrides = ResourceOverrides.from_config(runtime_config.get("resources"))
+    # CLI --resource flags win over [resources.budgets] per dimension.
+    resource_budgets = resource_budgets_from_config(runtime_config.get("resources"))
+    resource_budgets.update(parse_resource_budget_args(resource_args))
     # Shared by the validate/dry-run evaluator and the run evaluator below —
     # the two must resolve resources and placement identically.
     evaluator_kwargs: dict[str, Any] = {
@@ -243,6 +252,7 @@ def run_workflow(
         "memory": memory,
         "gpus": gpus,
         "resource_overrides": resource_overrides,
+        "resource_budgets": resource_budgets or None,
         "backend": backend,
         "remote_executor": remote_executor,
         "code_bundle_config": code_bundle_config,

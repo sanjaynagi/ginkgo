@@ -3,3 +3,8 @@ story_backlog_csv = "data/story_backlog.csv"
 
 [editorial]
 flagged_priority = 12
+
+# Caps concurrent wire-service lookups across desk-packet rendering,
+# regardless of how many desks are discovered at runtime.
+[resources.budgets]
+wire_api_calls = 2

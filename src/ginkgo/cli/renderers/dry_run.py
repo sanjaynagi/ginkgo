@@ -159,5 +159,7 @@ def _summary(plan: DryRunPlan) -> Text:
     if resources.gpu_task_count:
         suffix = "" if resources.gpu_task_count == 1 else "s"
         parts.append(f"{resources.gpu_task_count} GPU task{suffix}")
+    for dimension, total in resources.custom_totals.items():
+        parts.append(f"{total} {dimension} total")
     parts.append("no tasks executed")
     return Text("  ·  ".join(parts), style="dim")
