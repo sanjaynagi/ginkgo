@@ -158,6 +158,8 @@ def inspect_run(*, run_dir: Path) -> dict[str, Any]:
                 row["execution_backend"] = task["execution_backend"]
             if task.get("resources") is not None:
                 row["resources"] = task["resources"]
+            if task.get("resource_usage") is not None:
+                row["resource_usage"] = task["resource_usage"]
             if task.get("sub_run_id") is not None:
                 row["sub_run_id"] = task["sub_run_id"]
             task_rows.append(row)

@@ -25,6 +25,7 @@ from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator
 from ginkgo.runtime.artifacts.value_codec import CodecError
@@ -359,11 +360,16 @@ class ShellRunner:
     log_emitter_factory : Callable
         Factory ``log_emitter_factory(node=..., stream=...)`` returning a
         ``Callable[[str], None]`` that consumes one log chunk.
+    usage_recorder : Callable | None
+        Optional ``usage_recorder(node=..., measured=...)`` callback that
+        receives one measured-usage dict per task subprocess (peak RSS and
+        CPU seconds, sampled from the process tree).
     """
 
     backend: ExecutionEnvironment | None
     validator: TaskValidator
     log_emitter_factory: LogEmitterFactory
+    usage_recorder: Callable[..., None] | None = None
     _subprocess_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _active_subprocesses: dict[int, subprocess.Popen[str]] = field(
         default_factory=dict,
@@ -427,8 +433,14 @@ class ShellRunner:
         on_stdout: Any = None,
         on_stderr: Any = None,
         env: dict[str, str] | None = None,
+        usage_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Run a subprocess while tracking it for interrupt-time termination."""
+        """Run a subprocess while tracking it for interrupt-time termination.
+
+        When ``usage_callback`` is given, the subprocess tree's peak RSS and
+        CPU time are sampled while it runs and reported to the callback once
+        the process exits (skipped when nothing could be sampled).
+        """
         popen_kwargs: dict[str, Any] = {
             "shell": use_shell,
             "stderr": subprocess.PIPE,
@@ -442,6 +454,20 @@ class ShellRunner:
 
         process = subprocess.Popen(argv, **popen_kwargs)
         self.register(process=process)
+        sampler = (
+            SubprocessUsageSampler(root_pid=process.pid) if usage_callback is not None else None
+        )
+        if sampler is not None:
+            sampler.start()
+
+        def finish_sampler() -> None:
+            if sampler is None:
+                return
+            sampler.stop()
+            usage = sampler.result()
+            if usage is not None and usage_callback is not None:
+                usage_callback(usage)
+
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
@@ -449,6 +475,7 @@ class ShellRunner:
             try:
                 stdout_text, stderr_text = process.communicate()
             finally:
+                finish_sampler()
                 self.unregister(process=process)
             return subprocess.CompletedProcess(
                 args=argv,
@@ -486,6 +513,7 @@ class ShellRunner:
         finally:
             stdout_thread.join()
             stderr_thread.join()
+            finish_sampler()
             self.unregister(process=process)
 
         return subprocess.CompletedProcess(
@@ -537,6 +565,13 @@ class ShellRunner:
                 user_log_handle.flush()
             self.log_emitter_factory(node=node, stream=stream)(chunk)
 
+        usage_callback: Callable[[dict[str, Any]], None] | None = None
+        if self.usage_recorder is not None:
+            recorder = self.usage_recorder
+
+            def usage_callback(measured: dict[str, Any]) -> None:
+                recorder(node=node, measured=measured)
+
         try:
             completed = self.run_subprocess(
                 argv=argv,
@@ -544,6 +579,7 @@ class ShellRunner:
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
                 env=subprocess_env,
+                usage_callback=usage_callback,
             )
         finally:
             if stdout_handle is not None:

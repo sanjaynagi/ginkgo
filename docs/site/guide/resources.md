@@ -38,6 +38,22 @@ The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
 oversubscribing GPUs across concurrent tasks, but it does not pin devices —
 every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
 
+## Measured Usage
+
+Declared resources are a guess; ginkgo also records what a task actually
+used, so right-sizing a declaration doesn't require guesswork. Every task
+run measures peak memory (RSS) and CPU time — `resource.getrusage` for
+Python tasks, periodic `ps` sampling of the subprocess tree for shell,
+notebook, script, and subworkflow tasks — and persists both alongside the
+declared `threads`/`memory` in the run manifest. Measurement happens on
+failure too: usage recorded right before an OOM kill is exactly what you
+need to size the retry.
+
+`ginkgo report` surfaces it as a **Peak RSS** column in the task ledger
+(`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo inspect run`
+includes the raw `resource_usage` record per task. See
+[Assets and Reports](assets.md#html-reports).
+
 ## Site Overrides
 
 The same workflow file can run on a laptop, an HPC node, and the cloud with
@@ -118,3 +134,5 @@ grows by `retry_backoff_multiplier` on each attempt and is capped at
 - [Remote Execution](remote-execution.md) &mdash; running tasks on Kubernetes or
   GCP Batch.
 - [CLI](cli.md) &mdash; the `--jobs`, `--cores`, and `--memory` run budgets.
+- [Assets and Reports](assets.md#html-reports) &mdash; the Peak RSS column in
+  `ginkgo report`.
