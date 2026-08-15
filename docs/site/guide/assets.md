@@ -171,6 +171,11 @@ timing, failure detail with log tails, asset previews (tables, figures, model
 metrics), and links to rendered notebooks. By default it is written to
 `.ginkgo/reports/<run-id>/`.
 
+The task ledger's **Peak RSS** column shows each task's measured peak memory
+against what it declared (`3.2 GiB / 16 GiB`), or the measured figure alone
+when the task declared no `memory`. It reads an em dash for tasks that never
+ran or were served from cache. See [Measured Usage](resources.md#measured-usage).
+
 Useful flags:
 
 - `--single-file` — emit one HTML file with CSS, fonts, figures, and log files
