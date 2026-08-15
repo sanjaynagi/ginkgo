@@ -6,10 +6,14 @@ GPUs, large memory, or other resources not available on the local machine.
 
 ## How It Works
 
-Remote execution is opt-in at the task level. Tasks that declare `gpu=` or
-`remote=True` are dispatched to the configured executor; everything else runs
-locally as usual. The evaluator resolves cache hits before dispatching, so
-only tasks that genuinely need to execute are sent to the cloud.
+Remote execution is opt-in at the task level. `remote=True` always dispatches
+to the configured executor. A `gpu=` requirement only goes remote when the
+local `--gpus` budget can't satisfy it — a `gpu=1` task still runs locally if
+`ginkgo run --gpus 1` (or higher) is passed, even with `--executor` set.
+Either route without a usable remote executor configured is a build error
+rather than a silent local run. The evaluator resolves cache hits before
+dispatching, so only tasks that genuinely need to execute are sent to the
+cloud.
 
 ```python
 from ginkgo import task
@@ -19,12 +23,13 @@ from ginkgo import task
 def preprocess(data_path: str) -> str:
     ...
 
-# Dispatched to the remote executor when --executor is set.
+# Runs locally if --gpus covers the request; otherwise dispatched to the
+# remote executor (requires --executor to be set).
 @task(threads=8, memory="16Gi", gpu=1)
 def train_model(dataset: str) -> str:
     ...
 
-# Explicitly remote, even without GPU.
+# Explicitly remote, regardless of local --gpus budget.
 @task(remote=True, memory="32Gi")
 def large_computation(input_path: str) -> str:
     ...
@@ -65,7 +70,12 @@ namespace = "ginkgo"
 gpu_type = "nvidia-l4"        # GKE accelerator node selector (GPU tasks only)
 service_account = "ginkgo-worker"  # optional
 pull_policy = "IfNotPresent"       # optional
-ttl_seconds_after_finished = 300   # auto-cleanup delay
+ttl_seconds_after_finished = 300   # auto-cleanup delay (default 3600)
+node_selector = { "cloud.google.com/gke-nodepool" = "pool-1" }  # optional
+tolerations = []                   # optional, list of V1Toleration dicts
+ephemeral_storage = "10Gi"         # optional, per-pod scratch disk (default shown)
+backoff_limit = 2                  # optional, K8s-level pod retries (default shown)
+unschedulable_timeout = 300.0      # optional, seconds before an unschedulable pod fails
 ```
 
 **Setup with GKE Autopilot:**
@@ -112,6 +122,7 @@ downloads and extracts it before executing the task.
 [remote.k8s.code]       # or [remote.batch.code]
 mode = "sync"
 package = "my_workflow"  # directory name of your Python package
+exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
 
 [remote.artifacts]
 store = "gs://my-bucket/ginkgo-artifacts/"
@@ -184,6 +195,8 @@ The CLI distinguishes remote task states:
 
 | Symbol | State | Meaning |
 |--------|-------|---------|
+| `⚙` | preparing env | Environment (image/deps) being prepared |
+| `↓` | staging | Remote inputs downloading/hydrating before the task starts |
 | `↑` | submitted | Job created, waiting for cloud resources |
 | `◐` | running | Pod/container is actively executing |
 
@@ -242,14 +255,19 @@ count_reads(bam=bam)
 ```
 
 The access policy resolves layered: `ref.access` → task decorator
-(`remote_input_access=`) → pattern match → config default.
+(`remote_input_access=`) → pattern match → size-based auto-enable heuristic
+→ config default.
 
 Config defaults live under `[remote.access]`:
 
 ```toml
 [remote.access]
-default = "stage"     # or "fuse"
-auto_fuse = false     # enable pattern-based auto-fuse heuristics
+default = "stage"          # or "fuse"
+auto_fuse = false          # enable the size-based auto-fuse heuristic
+auto_fuse_min_bytes = 2147483648  # 2GiB default; threshold for auto_fuse
+default_for_pattern = [    # optional, first match wins over `default`
+    { glob = "*.bam", access = "fuse" },
+]
 ```
 
 ### Worker image for streaming
@@ -272,11 +290,14 @@ image = "<registry>/ginkgo/worker:v2"            # regular workloads
 fuse_image = "<registry>/ginkgo/worker-fuse:latest"  # swapped in when a
                                                      # task needs fuse
 fuse_privileged = true   # required on EKS, GKE Standard, GCP Batch
+fuse_annotations = { "gke-gcsfuse/volumes" = "true" }  # optional override
 ```
 
-GKE Autopilot rejects privileged pods; use the gcsfuse CSI sidecar by
-keeping `fuse_privileged = false` — Ginkgo emits the
-`gke-gcsfuse/volumes: "true"` annotation automatically.
+Any pod that needs fuse gets the `gke-gcsfuse/volumes: "true"` annotation
+by default, regardless of `fuse_privileged` — override it with
+`fuse_annotations` if you're not on GKE. GKE Autopilot rejects privileged
+pods; use the gcsfuse CSI sidecar by keeping `fuse_privileged = false`, and
+the default annotation wires the sidecar in automatically.
 
 ### When fuse falls back
 
