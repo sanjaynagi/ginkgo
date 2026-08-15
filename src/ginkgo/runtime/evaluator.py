@@ -297,6 +297,7 @@ class NodeRun:
     asset_versions: list[AssetVersion] = field(default_factory=list)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
+    measured_resources: dict[str, Any] | None = None
 
     # Identity views, delegated so collaborators that receive a run can
     # read the vertex without reaching through ``.node``.
@@ -448,6 +449,7 @@ class ConcurrentEvaluator:
             backend=self.backend,
             validator=self._validator,
             log_emitter_factory=self._log_drain.make_emitter,
+            usage_recorder=self._record_measured_usage,
         )
         self._notebook_runner = NotebookRunner(
             backend=self.backend,
@@ -1021,6 +1023,10 @@ class ConcurrentEvaluator:
         remote_job_id: str | None = None,
     ) -> None:
         """Handle the result returned from a Python worker."""
+        if isinstance(completed_value, dict) and isinstance(
+            completed_value.get("measured_resources"), dict
+        ):
+            self._record_measured_usage(node=node, measured=completed_value["measured_resources"])
         self._fold_remote_input_access(node=node, payload=completed_value)
         completed_value = self._decode_worker_result(node=node, payload=completed_value)
         node.remote_job_id = remote_job_id
@@ -1115,6 +1121,10 @@ class ConcurrentEvaluator:
         node.secret_values = ()
         node.extra_source_hash = None
         node.asset_versions = []
+        # measured_resources is deliberately NOT reset: a retried attempt's
+        # peak (an OOM kill under memory_retry_multiplier, say) is exactly
+        # the number needed to right-size the task, so measurements span
+        # attempts — peaks take the max, CPU seconds accumulate.
 
         retries_remaining = node.task_def.retries - node.attempt
         if self.provenance is not None:
@@ -1199,6 +1209,7 @@ class ConcurrentEvaluator:
                 node_id=node.node_id,
                 remote_job_id=node.remote_job_id,
             )
+        self._record_resource_usage(node=node)
         self._record_task_timing(
             node_id=node.node_id,
             phase="finalize_seconds",
@@ -2070,6 +2081,40 @@ class ConcurrentEvaluator:
                         lock_path=lock_path,
                     )
 
+    def _record_measured_usage(self, *, node: NodeRun, measured: dict[str, Any]) -> None:
+        """Fold one usage measurement into the node's running totals.
+
+        A task may run several subprocesses (a notebook executes, then
+        renders) and several attempts, so peaks take the max and CPU
+        seconds accumulate.
+        """
+        current = node.measured_resources
+        if current is None:
+            node.measured_resources = dict(measured)
+            return
+        current["peak_rss_bytes"] = max(
+            current.get("peak_rss_bytes", 0), measured.get("peak_rss_bytes", 0)
+        )
+        current["cpu_seconds"] = round(
+            current.get("cpu_seconds", 0.0) + measured.get("cpu_seconds", 0.0), 3
+        )
+
+    def _record_resource_usage(self, *, node: NodeRun) -> None:
+        """Persist measured-vs-declared resource usage for one task.
+
+        The measured values cover every attempt of the task: the peak is
+        the maximum across attempts and CPU seconds are the total cost.
+        """
+        if self.provenance is None or node.measured_resources is None:
+            return
+        self.provenance.update_task_extra(
+            node_id=node.node_id,
+            resource_usage={
+                "declared": {"threads": node.threads, "memory_gb": node.memory_gb},
+                "measured": dict(node.measured_resources),
+            },
+        )
+
     def _record_task_timing(self, *, node_id: int, phase: str, started: float) -> None:
         """Record one task-phase timing bucket when provenance is enabled."""
         if self.provenance is None:
@@ -2084,6 +2129,8 @@ class ConcurrentEvaluator:
         """Persist task failure details to the run manifest."""
         if self.provenance is None:
             return
+        # Usage measured before the failure helps right-size OOM-prone tasks.
+        self._record_resource_usage(node=node)
         self.provenance.mark_failed(
             node_id=node.node_id,
             task_name=node.task_def.name,

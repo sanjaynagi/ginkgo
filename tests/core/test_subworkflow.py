@@ -146,6 +146,7 @@ class TestEvaluatorDispatch:
             on_stdout: Any = None,
             on_stderr: Any = None,
             env: dict[str, str] | None = None,
+            usage_callback: Any = None,
         ) -> subprocess.CompletedProcess[str]:
             captured["argv"] = argv
             captured["env"] = env

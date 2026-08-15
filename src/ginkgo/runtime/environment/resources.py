@@ -268,3 +268,110 @@ def _descendant_process_ids(*, rows: dict[int, dict[str, float | int]], root_pid
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_cputime(text: str) -> float:
+    """Parse a ``ps`` cumulative CPU time (``[dd-]hh:mm:ss`` or ``mm:ss.ss``)."""
+    days = 0
+    if "-" in text:
+        day_part, text = text.split("-", 1)
+        days = int(day_part)
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return days * 86400 + seconds
+
+
+def _sample_tree_usage(*, root_pid: int) -> tuple[int, float] | None:
+    """Return ``(rss_bytes, cpu_seconds)`` summed over one live process tree.
+
+    Returns ``None`` when ``ps`` fails or the root process has already
+    exited.
+    """
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,rss=,time="],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    rows: dict[int, dict[str, float | int]] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        try:
+            rows[int(parts[0])] = {
+                "ppid": int(parts[1]),
+                "rss_kb": int(parts[2]),
+                "cpu_seconds": _parse_cputime(parts[3]),
+            }
+        except ValueError:
+            continue
+
+    pids = _descendant_process_ids(rows=rows, root_pid=root_pid)
+    if not pids:
+        return None
+    rss_bytes = sum(int(rows[pid]["rss_kb"]) * 1024 for pid in pids)
+    cpu_seconds = sum(float(rows[pid]["cpu_seconds"]) for pid in pids)
+    return rss_bytes, cpu_seconds
+
+
+class SubprocessUsageSampler:
+    """Track a subprocess tree's peak RSS and CPU time while it runs.
+
+    Samples ``ps`` on a daemon thread between :meth:`start` and
+    :meth:`stop`. Descendants that exit between samples stop contributing,
+    so both numbers are lower bounds — good enough for right-sizing
+    declarations, not accounting.
+    """
+
+    def __init__(self, *, root_pid: int, interval_seconds: float = 0.25) -> None:
+        self._root_pid = root_pid
+        self._interval = interval_seconds
+        self._stop = Event()
+        self._thread: Thread | None = None
+        self._peak_rss_bytes = 0
+        self._cpu_seconds = 0.0
+        self._sampled = False
+
+    def start(self) -> None:
+        """Take a first sample and begin sampling on a daemon thread."""
+        self._sample_once()
+        self._thread = Thread(target=self._run, name="ginkgo-usage-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the sampling thread."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def result(self) -> dict[str, Any] | None:
+        """Return the measured usage, or ``None`` when nothing was sampled."""
+        if not self._sampled:
+            return None
+        return {
+            "peak_rss_bytes": self._peak_rss_bytes,
+            "cpu_seconds": round(self._cpu_seconds, 3),
+            "source": "sampled",
+        }
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._sample_once()
+
+    def _sample_once(self) -> None:
+        sample = _sample_tree_usage(root_pid=self._root_pid)
+        if sample is None:
+            return
+        rss_bytes, cpu_seconds = sample
+        self._sampled = True
+        self._peak_rss_bytes = max(self._peak_rss_bytes, rss_bytes)
+        # Cumulative per-process counters: the tree total only grows while
+        # the same processes live, so keep the highest sum seen.
+        self._cpu_seconds = max(self._cpu_seconds, cpu_seconds)

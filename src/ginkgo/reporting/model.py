@@ -97,6 +97,7 @@ class TaskRow:
     cache_label: str
     duration_label: str
     attempts_label: str
+    memory_label: str
     failed: bool
 
 
@@ -498,10 +499,32 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
                 cache_label=task.cache_label,
                 duration_label=format_duration(task.duration_s),
                 attempts_label=task.attempts_label,
+                memory_label=_memory_label(task),
                 failed=task.status == "failed",
             )
         )
     return tuple(rows)
+
+
+def _memory_label(task: TaskSummary) -> str:
+    """Return ``measured / declared`` peak memory for the task ledger.
+
+    Shows the measured peak RSS alone when the task declared no memory, and
+    an em dash when nothing was measured (cached or never-ran tasks).
+    """
+    usage = task.resource_usage or {}
+    measured = usage.get("measured")
+    if not isinstance(measured, dict):
+        return "—"
+    peak = measured.get("peak_rss_bytes")
+    if not isinstance(peak, int) or peak <= 0:
+        return "—"
+    label = format_bytes(peak)
+    declared = usage.get("declared")
+    declared_gb = declared.get("memory_gb") if isinstance(declared, dict) else None
+    if isinstance(declared_gb, int) and declared_gb > 0:
+        return f"{label} / {declared_gb} GiB"
+    return label
 
 
 # ----- Graph --------------------------------------------------------------
