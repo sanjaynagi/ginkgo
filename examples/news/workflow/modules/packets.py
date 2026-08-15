@@ -10,9 +10,16 @@ import pandas as pd
 from ginkgo import ExprList, expand, file, slug, task
 
 
-@task()
+@task(resources={"wire_api_calls": 1})
 def write_desk_packet(desk: str, stories: list[dict[str, object]]) -> file:
-    """Render a desk-specific planning packet."""
+    """Render a desk-specific planning packet.
+
+    Declares a custom ``wire_api_calls`` demand: each packet cross-checks its
+    stories against a rate-limited wire service, so the number of desks that
+    can render concurrently is capped by ``[resources.budgets]`` in
+    ``ginkgo.toml`` (or a ``--resource wire_api_calls=N`` flag), independent
+    of the desk count discovered at runtime.
+    """
     ordered = sorted(
         stories,
         key=lambda item: (float(item["priority_score"]), str(item["story_id"])),

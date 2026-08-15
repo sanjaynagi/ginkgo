@@ -38,6 +38,42 @@ The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
 oversubscribing GPUs across concurrent tasks, but it does not pin devices —
 every local task still sees all GPUs (no `CUDA_VISIBLE_DEVICES` isolation).
 
+## Custom Resource Dimensions
+
+Threads, memory, and GPUs cover hardware. Some tasks are constrained by
+something else entirely — a third-party API's rate limit, a shared database's
+connection pool — and `custom` lets the scheduler pack against those too:
+
+```python
+@task(resources={"api_calls": 2})
+def fetch_records(query: str) -> file:
+    ...
+```
+
+Each dimension is budgeted separately from `[resources.budgets]` in the
+runtime config, and/or repeated `--resource name=value` flags:
+
+```toml
+[resources.budgets]
+api_calls = 10
+```
+
+```bash
+ginkgo run flow.py --resource api_calls=10 --resource db_connections=4
+```
+
+The CLI flag wins over the config value per dimension. A dimension that
+tasks request but that has no budget name in either source is
+**unconstrained** — the same opt-in behaviour as `--memory`. Custom names
+cannot shadow `threads`, `memory`, `gpu`, or `gpu_type`; use the dedicated
+argument for those instead.
+
+Unlike the built-in dimensions, custom demands are **not** zeroed out for
+remote-placed tasks — they count wherever the task runs. An API quota or a
+database connection pool doesn't stop applying because the task went to
+Kubernetes, so a saturated custom budget can hold back remote dispatch as
+well as local.
+
 ## Site Overrides
 
 The same workflow file can run on a laptop, an HPC node, and the cloud with
@@ -56,7 +92,9 @@ memory = "32Gi"
 A selector matches a task's short name (`align_reads`) or fully qualified
 name (`workflow.modules.align.align_reads`), and may be an `fnmatch` glob
 over either. Exact matches beat globs; among globs, the first selector in
-config order wins. Keys an override omits keep their declared values.
+config order wins. Keys an override omits keep their declared values. An
+override's `custom` table replaces the declared `custom` dict wholesale
+rather than merging key by key.
 Overridden `threads` flow everywhere the declaration would: the scheduler,
 the dry-run plan, the injected `threads` parameter, and `GINKGO_THREADS`.
 Note that for tasks declaring a `threads` parameter the injected value is a
@@ -117,4 +155,5 @@ grows by `retry_backoff_multiplier` on each attempt and is capped at
 - [Tasks and Flows](tasks-and-flows.md) &mdash; the task authoring model.
 - [Remote Execution](remote-execution.md) &mdash; running tasks on Kubernetes or
   GCP Batch.
-- [CLI](cli.md) &mdash; the `--jobs`, `--cores`, and `--memory` run budgets.
+- [CLI](cli.md) &mdash; the `--jobs`, `--cores`, `--memory`, `--gpus`, and
+  `--resource` run budgets.
