@@ -3,7 +3,7 @@
 Layer 1: Per-run hash memoization (HashMemo)
 Layer 2: Artifact identity propagation
 Layer 3: Stat-gated output validation (MaterializationLog)
-Layer 4: --trust-workspace stat-index fast path
+Layer 4: --trust-mtimes stat-index fast path
 """
 
 from __future__ import annotations
@@ -277,12 +277,12 @@ class TestWarmRunIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Layer 4: --trust-workspace
+# Layer 4: --trust-mtimes
 # ---------------------------------------------------------------------------
 
 
-class TestTrustWorkspace:
-    """Stat-index fast path for --trust-workspace mode."""
+class TestTrustMtimes:
+    """Stat-index fast path for --trust-mtimes mode."""
 
     def test_stat_index_round_trip(self, tmp_path: Path) -> None:
         """Stat index can be saved and loaded."""
@@ -296,8 +296,8 @@ class TestTrustWorkspace:
         store2 = CacheStore(root=tmp_path / "cache")
         assert store2._stat_index.get("stat_abc") == "content_xyz"
 
-    def test_trust_workspace_warm_run(self, tmp_path: Path) -> None:
-        """A --trust-workspace warm run should hit cache via stat index."""
+    def test_trust_mtimes_warm_run(self, tmp_path: Path) -> None:
+        """A --trust-mtimes warm run should hit cache via stat index."""
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         output = tmp_path / "output.txt"
@@ -308,10 +308,10 @@ class TestTrustWorkspace:
         result1 = evaluator1.evaluate(expr1)
         assert result1 == 7
 
-        # Warm run with trust_workspace.
+        # Warm run with trust_mtimes.
         collector = EventCollector()
         expr2 = consume_file(input_file=produce_file(output_path=str(output)))
-        evaluator2 = ConcurrentEvaluator(trust_workspace=True, event_bus=collector.bus)
+        evaluator2 = ConcurrentEvaluator(trust_mtimes=True, event_bus=collector.bus)
         result2 = evaluator2.evaluate(expr2)
         assert result2 == 7
 

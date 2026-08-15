@@ -84,7 +84,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         resource_args=tuple(getattr(args, "resource", ()) or ()),
         dry_run=args.dry_run,
         output_mode=output_mode,
-        trust_workspace=getattr(args, "trust_workspace", False),
+        trust_mtimes=getattr(args, "trust_mtimes", False),
         profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
@@ -150,7 +150,7 @@ def run_workflow(
     resource_args: Sequence[str] = (),
     dry_run: bool,
     output_mode: RunMode = "default",
-    trust_workspace: bool = False,
+    trust_mtimes: bool = False,
     profile: bool = False,
     executor: str = "local",
     plan_preview: bool = True,
@@ -420,7 +420,7 @@ def run_workflow(
             evaluator = ConcurrentEvaluator(
                 provenance=recorder,
                 event_bus=bus,
-                trust_workspace=trust_workspace,
+                trust_mtimes=trust_mtimes,
                 **evaluator_kwargs,
             )
             if renderer is not None:

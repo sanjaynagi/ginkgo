@@ -70,7 +70,7 @@ def run_once(*, access: str, bucket: str, prefix: str, executor: str) -> dict[st
             memory=None,
             dry_run=False,
             output_mode="default",
-            trust_workspace=True,
+            trust_mtimes=True,
             profile=False,
             executor=executor,
         )

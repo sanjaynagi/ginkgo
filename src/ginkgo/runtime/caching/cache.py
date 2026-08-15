@@ -71,7 +71,7 @@ class CacheStore:
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None
     materialization_log: MaterializationLog | None = None
-    trust_workspace: bool = False
+    trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
     _stat_index: dict[str, str] = field(init=False, repr=False)
@@ -770,7 +770,7 @@ class CacheStore:
         resolved_args: dict[str, Any],
         extra_source_hash: str | None = None,
     ) -> str:
-        """Build a stat-based fingerprint for ``--trust-workspace`` mode.
+        """Build a stat-based fingerprint for ``--trust-mtimes`` mode.
 
         Uses file/folder stat metadata instead of content hashes to build
         a fast cache-key surrogate.

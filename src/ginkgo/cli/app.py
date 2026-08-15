@@ -231,7 +231,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     run_parser.add_argument("--verbose", action="store_true")
     run_parser.add_argument("--agent", action="store_true")
     run_parser.add_argument(
-        "--trust-workspace",
+        "--trust-mtimes",
         action="store_true",
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
