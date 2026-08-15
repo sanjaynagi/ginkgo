@@ -23,8 +23,8 @@ Rich CLI output and agent-mode JSONL output are separate renderings of the
 same runtime event stream.
 
 - Human operators continue to use the Rich run renderer.
-- Agents use `ginkgo run --agent` to receive one JSON event per line on stdout.
-- `ginkgo run --agent --verbose` extends the JSONL stream with per-task log
+- Agents use `ginkgo run --agent-output` to receive one JSON event per line on stdout.
+- `ginkgo run --agent-output --verbose` extends the JSONL stream with per-task log
   output, which is omitted from the default agent stream.
 
 Environment preparation is visible in both renderings. `EnvPrepareStarted`,

@@ -39,11 +39,11 @@ Pass `--force` to overwrite existing files.
 
 ## Agent Run Mode
 
-`ginkgo run --agent` replaces the live terminal UI with a stream of
+`ginkgo run --agent-output` replaces the live terminal UI with a stream of
 newline-delimited JSON events on stdout:
 
 ```bash
-ginkgo run flow.py --agent
+ginkgo run flow.py --agent-output
 ```
 
 Each line is one JSON event — graph registration, task started, cache hit, task
@@ -51,7 +51,7 @@ completed, run completed, and so on. An agent can parse the stream to follow run
 progress, detect failures, and read task results without scraping a rendered
 terminal UI.
 
-Add `--verbose` (`ginkgo run --agent --verbose`) to also include task log output
+Add `--verbose` (`ginkgo run --agent-output --verbose`) to also include task log output
 in the event stream.
 
 ## Inspection Commands

@@ -68,8 +68,8 @@ ginkgo test --dry-run
 ginkgo run --cores 8
 
 # Execute the workflow and stream machine-readable JSONL events.
-ginkgo run --agent
-ginkgo run --cores 8 --agent
+ginkgo run --agent-output
+ginkgo run --cores 8 --agent-output
 
 # Inspect the static workflow graph without running any tasks.
 ginkgo inspect workflow
