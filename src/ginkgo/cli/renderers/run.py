@@ -323,6 +323,10 @@ class _RunLayoutRenderer:
                 f"Running locally on {self._summary.cores} {_core_unit_label(self._summary.cores)}",
                 style="bold",
             )
+        # Tasks pinned with executor= dispatch to their own executor whatever
+        # the run default is, so a "locally" header would otherwise hide them.
+        if self._summary.pinned_executors:
+            text.append(f" → {', '.join(self._summary.pinned_executors)}", style="cyan")
         text.append(" ")
         text.append("(")
         text.append(self.resource_label(), style="dim")

@@ -30,9 +30,12 @@ def train_model(dataset: folder) -> file:
   budget when it fits, dispatched to the remote executor when one is
   configured (`--executor`), and a build error otherwise. `gpu_type` selects
   the accelerator for remote execution, overriding the executor-level default.
-- `remote=True` explicitly dispatches a python task to the configured remote
-  executor; running without `--executor` is a build error rather than a
-  silent local fallback.
+- `remote=True` explicitly dispatches a python task to the run's default
+  executor (whichever `--executor` names); running without `--executor` is a
+  build error rather than a silent local fallback.
+- `executor="name"` pins a python task to one executor declared under
+  `[remote.executors]`, whatever the run default is — an unknown name is a
+  build error. See [remote execution](remote-execution.md).
 
 The local `--gpus` budget is scheduler bookkeeping: it stops ginkgo
 oversubscribing GPUs across concurrent tasks, but it does not pin devices —

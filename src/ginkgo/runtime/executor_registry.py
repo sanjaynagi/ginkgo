@@ -28,7 +28,9 @@ makes ``--executor k8s`` keep working unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ginkgo.runtime.remote_executor import RemoteExecutor
@@ -146,6 +148,27 @@ class ExecutorRegistry:
         return cls(specs=specs, default_name=default_name)
 
     @classmethod
+    def for_validation(
+        cls,
+        *,
+        project_root: Path,
+        config_paths: Sequence[str | Path] | None = None,
+    ) -> ExecutorRegistry:
+        """Registry for commands that validate a graph without running it.
+
+        ``ginkgo doctor``, ``inspect workflow``, and ``secrets list`` build the
+        graph but choose no executor, so the registry carries every configured
+        name with no default. A task pinned with ``executor=`` then validates
+        exactly as it would under ``ginkgo run``, while ``remote=True`` still
+        reports the missing default — which is genuinely unknown here, since
+        it comes from the ``--executor`` flag of a run that has not happened.
+        """
+        from ginkgo.config import load_runtime_config
+
+        config = load_runtime_config(project_root=project_root, override_paths=config_paths)
+        return cls.from_config(config, default=None)
+
+    @classmethod
     def for_executor(cls, executor: RemoteExecutor, *, name: str = "remote") -> ExecutorRegistry:
         """Wrap an already-constructed executor as the run's default.
 
@@ -260,6 +283,7 @@ def _build_k8s_executor(spec: ExecutorSpec) -> RemoteExecutor:
         node_selector=config.get("node_selector"),
         tolerations=config.get("tolerations"),
         ttl_seconds_after_finished=int(config.get("ttl_seconds_after_finished", 3600)),
+        unschedulable_timeout=float(config.get("unschedulable_timeout", 300.0)),
         ephemeral_storage=config.get("ephemeral_storage", "10Gi"),
         backoff_limit=int(config.get("backoff_limit", 2)),
         fuse_image=config.get("fuse_image"),

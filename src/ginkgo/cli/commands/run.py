@@ -285,6 +285,19 @@ def run_workflow(
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
+    # Executors named by tasks themselves, which dispatch there regardless of
+    # the run default — surfaced in the header so a locally-defaulted run does
+    # not look like it stayed on this machine.
+    pinned_executors = tuple(
+        sorted(
+            {
+                node.task_def.executor
+                for node in evaluator.task_nodes.values()
+                if node.task_def.executor is not None
+                and node.task_def.executor != executor_registry.default_name
+            }
+        )
+    )
     task_count = len(evaluator.task_nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
     env_count = len(
@@ -413,6 +426,7 @@ def run_workflow(
                             if executor_registry.default_name is not None
                             else "local"
                         ),
+                        pinned_executors=pinned_executors,
                     ),
                     resources=ResourceRenderState(provider=resource_monitor.current_summary),
                 )

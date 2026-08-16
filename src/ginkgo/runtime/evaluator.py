@@ -35,7 +35,7 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.executor_registry import ExecutorRegistry
+from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
@@ -1537,7 +1537,7 @@ class ConcurrentEvaluator:
         )
         # Placement was resolved when the node was prepared; the backend
         # recorded in events and provenance is the executor's name.
-        execution_backend = node.executor_name or "local"
+        execution_backend = node.executor_name or LOCAL
 
         self._emit_event(
             TaskStarted(

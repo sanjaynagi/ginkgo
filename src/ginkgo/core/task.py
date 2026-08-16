@@ -120,6 +120,9 @@ class TaskDef:
         if self.executor is not None:
             if not isinstance(self.executor, str) or not self.executor.strip():
                 raise ValueError(f"executor must be a non-empty name, got {self.executor!r}")
+            # Normalised so a stray-space name matches its config table rather
+            # than failing later as "not configured".
+            object.__setattr__(self, "executor", self.executor.strip())
             if self.remote:
                 raise ValueError("executor= already routes the task remotely; drop remote=True")
         if not isinstance(self.priority, int) or isinstance(self.priority, bool):

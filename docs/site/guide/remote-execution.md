@@ -189,6 +189,10 @@ The code bundle is content-addressed (SHA-256). Unchanged code is not
 re-uploaded, and executors sharing a package and exclude list share one
 bundle rather than uploading it twice.
 
+Code config is read from the executor that runs the task, and only from it.
+A `[remote.k8s.code]` table does not apply to `--executor batch` — give each
+executor that needs code sync its own `code` table.
+
 ## Worker Docker Image
 
 The worker image needs Python 3.11+ and ginkgo installed:

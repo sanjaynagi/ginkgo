@@ -13,6 +13,7 @@ from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.caching.provenance import load_manifest
 
@@ -80,7 +81,12 @@ def inspect_workflow(
             for name, decl in session.declarations.items()
         ]
 
-    evaluator = ConcurrentEvaluator()
+    evaluator = ConcurrentEvaluator(
+        executor_registry=ExecutorRegistry.for_validation(
+            project_root=Path.cwd(),
+            config_paths=config_paths,
+        )
+    )
     evaluator.build_and_validate(expr)
 
     nodes = []

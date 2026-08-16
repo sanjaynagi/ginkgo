@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import sys
 
+from rich.markup import escape
+
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import config_session
@@ -93,19 +95,22 @@ def command_doctor(args) -> int:
     if not workflow_errors:
         rich_console_out.print("[bold green]🌿 ginkgo doctor[/]\n")
         rich_console_out.print("[green]✓[/] Workflow validation passed")
+    # Diagnostic text quotes config sections and task declarations, so it can
+    # contain square brackets ("[remote.executors.<name>]") that Rich would
+    # otherwise parse as a style tag and silently drop.
     for item in diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]⚠[/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
-        target.print(f"{marker} {item.code}: {item.message}")
+        target.print(f"{marker} {item.code}: {escape(item.message)}")
         if item.suggestion:
-            target.print(f"[dim]{item.suggestion}[/]")
+            target.print(f"[dim]{escape(item.suggestion)}[/]")
 
     for item in access_diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]![/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
-        target.print(f"{marker} {item.code}: {item.message}")
+        target.print(f"{marker} {item.code}: {escape(item.message)}")
         if item.suggestion:
-            target.print(f"[dim]{item.suggestion}[/]")
+            target.print(f"[dim]{escape(item.suggestion)}[/]")
 
     has_errors = bool(workflow_errors) or any(
         item.severity == "error" for item in access_diagnostics
