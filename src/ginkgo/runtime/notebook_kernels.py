@@ -142,12 +142,24 @@ class NotebookKernelManager:
 
 
 def build_jupyter_env_prefix(*, jupyter_path: Path) -> str:
-    """Return shell-safe environment assignments for managed kernel discovery."""
+    """Return shell-safe environment assignments for managed Jupyter subprocesses.
+
+    ``JUPYTER_PATH`` adds ginkgo's managed kernel prefix to Jupyter's data
+    search path. It is purely additive, so on its own it leaves the system
+    data directories (``/usr/local/share/jupyter``, ``/usr/share/jupyter``)
+    in the search path, where an unreadable ``conf.json`` makes nbconvert
+    raise ``PermissionError`` before it renders anything.
+    ``JUPYTER_PLATFORM_DIRS=1`` moves the system directories to
+    platform-appropriate locations, taking ``/usr/local/share/jupyter`` out
+    of the path entirely. Ginkgo owns the kernel prefix it hands these
+    subprocesses, so it also owns the search path they see.
+    """
 
     return " ".join(
         [
             "env",
             f"JUPYTER_PATH={shlex.quote(str(jupyter_path))}",
+            "JUPYTER_PLATFORM_DIRS=1",
         ]
     )
 

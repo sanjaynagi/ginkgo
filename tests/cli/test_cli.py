@@ -424,6 +424,59 @@ def main():
         assert str(newer_html.resolve()) in result.stdout
         assert str(newer_notebook.resolve()) in result.stdout
 
+    def test_notebooks_attributes_a_replayed_artifact_to_the_producing_run(self) -> None:
+        """A cached rerun must not claim the earlier run's artifact (#202)."""
+        producing_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
+        replaying_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
+        notebooks = producing_run / "notebooks"
+        notebooks.mkdir(parents=True)
+        replaying_run.mkdir(parents=True)
+        executed = notebooks / "task_0014.ipynb"
+        html = notebooks / "task_0014.html"
+        executed.write_text("{}", encoding="utf-8")
+        html.write_text("<html></html>", encoding="utf-8")
+
+        task_entry = {
+            "task": "demo.render_overview_notebook",
+            "task_type": "notebook",
+            "render_status": "failed",
+            "notebook_artifact_run_id": producing_run.name,
+        }
+        for run_dir, pointers in (
+            (
+                producing_run,
+                {
+                    "executed_notebook": "notebooks/task_0014.ipynb",
+                    "rendered_html": "notebooks/task_0014.html",
+                },
+            ),
+            (
+                # A cache hit replays absolute pointers into the new manifest.
+                replaying_run,
+                {
+                    "executed_notebook": str(executed.resolve()),
+                    "rendered_html": str(html.resolve()),
+                },
+            ),
+        ):
+            manifest = {
+                "run_id": run_dir.name,
+                "workflow": "workflow.py",
+                "status": "succeeded",
+                "started_at": f"2026-03-0{1 if run_dir is producing_run else 2}T09:00:00+00:00",
+                "tasks": {"task_0014": {**task_entry, **pointers}},
+            }
+            (run_dir / "manifest.yaml").write_text(
+                yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+            )
+
+        result = _run_cli("notebooks", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert f"run={producing_run.name}" in result.stdout
+        assert f"run={replaying_run.name}" not in result.stdout
+        assert f"↺ replayed in {replaying_run.name}" in result.stdout
+
     def test_notebooks_empty_state_is_styled(self) -> None:
         result = _run_cli("notebooks", cwd=Path.cwd())
         assert result.returncode == 0

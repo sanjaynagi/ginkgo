@@ -91,6 +91,19 @@ Implemented notebook behavior includes:
 - notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
 
+Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
+run under `build_jupyter_env_prefix`, which sets `JUPYTER_PATH` to Ginkgo's
+managed kernel prefix and `JUPYTER_PLATFORM_DIRS=1`. `JUPYTER_PATH` is purely
+additive, so it alone leaves the host's system Jupyter data directories in the
+search path; `JUPYTER_PLATFORM_DIRS=1` takes them out, so an unreadable
+`/usr/local/share/jupyter/conf.json` cannot fail the export.
+
+A notebook task records `notebook_artifact_run_id` alongside its artifact
+pointers, naming the run that rendered them. The value travels into the cache
+entry with the pointers, so a later run that replays them on a cache hit can
+report a reused artifact — and its recorded render status — as belonging to the
+run that produced it rather than to itself.
+
 For Papermill-backed notebooks, Ginkgo prefers the runtime-selected task
 environment over embedded notebook kernelspec metadata. When a notebook task
 declares `env=...`, the managed kernelspec is prepared from that environment;

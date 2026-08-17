@@ -84,6 +84,7 @@ class TaskSummary:
     notebook_path: str | None
     render_status: str | None
     render_error: str | None
+    notebook_artifact_run_id: str | None
     task_type: str
     dependency_ids: tuple[int, ...]
     dynamic_dependency_ids: tuple[int, ...]
@@ -168,6 +169,8 @@ class NotebookSummary:
     notebook_path: str | None
     rendered_html: str | None
     rendered_html_path: Path | None
+    notebook_artifact_run_id: str | None = None
+    """Run that produced the artifacts, which is not this run on a cache hit."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -378,6 +381,9 @@ def _build_task_summary(*, task_key: str, task: dict[str, Any]) -> TaskSummary:
         render_error=task.get("render_error")
         if isinstance(task.get("render_error"), str)
         else None,
+        notebook_artifact_run_id=task.get("notebook_artifact_run_id")
+        if isinstance(task.get("notebook_artifact_run_id"), str)
+        else None,
         task_type=str(task.get("task_type", "task")),
         dependency_ids=dependency_ids,
         dynamic_dependency_ids=dynamic_dependency_ids,
@@ -419,6 +425,7 @@ def _load_notebooks(*, tasks: tuple[TaskSummary, ...]) -> tuple[NotebookSummary,
                 notebook_path=task.notebook_path,
                 rendered_html=task.rendered_html,
                 rendered_html_path=None,
+                notebook_artifact_run_id=task.notebook_artifact_run_id,
             )
         )
     return tuple(notebooks)
