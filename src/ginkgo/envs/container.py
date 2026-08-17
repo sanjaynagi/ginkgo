@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.envs.mounts import Mount, parse_extra_mount, resolve_mounts
+from ginkgo.errors import GinkgoError
 
 
 # ------------------------------------------------------------------
@@ -83,7 +84,7 @@ def parse_container_uri(env: str) -> ContainerRef:
 # ------------------------------------------------------------------
 
 
-class ContainerRuntimeNotFoundError(RuntimeError):
+class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
     """Raised when the container runtime binary is not on PATH."""
 
     def __init__(self, *, runtime: str) -> None:
@@ -93,7 +94,7 @@ class ContainerRuntimeNotFoundError(RuntimeError):
         )
 
 
-class ContainerPrepareError(RuntimeError):
+class ContainerPrepareError(GinkgoError, RuntimeError):
     """Raised when an image cannot be pulled."""
 
     def __init__(self, *, image: str, output: str) -> None:

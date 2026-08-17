@@ -104,6 +104,9 @@ def command_doctor(args) -> int:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]⚠[/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
         target.print(f"{marker} {item.code}: {item.message}")
+        if item.location:
+            # Printed whole: a wrapped path cannot be clicked or copied.
+            target.print(f"[dim]  at {item.location}[/]", soft_wrap=True)
         if item.suggestion:
             target.print(f"[dim]{item.suggestion}[/]")
 

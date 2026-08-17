@@ -35,12 +35,15 @@ def command_report(args) -> int:
             out_dir=out_dir,
             policy=policy,
             single_file=bool(args.single_file),
+            managed_destination=args.out is None,
+            force=bool(args.force),
         )
     except ValueError as exc:
         rich_console.print(f"[red]✖[/] {exc}")
         return 1
     except FileExistsError as exc:
         rich_console.print(f"[red]✖[/] {exc}")
+        rich_console.print("  Pass --force to replace it, or choose an empty --out directory.")
         return 1
 
     rich_console.print("[bold green]🌿 ginkgo report[/]\n")

@@ -29,6 +29,7 @@ import yaml
 from ginkgo.config import PARAMS_CONFIG_KEY
 from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult
 from ginkgo.envs.mounts import mount
+from ginkgo.errors import GinkgoError
 from ginkgo.runtime.task_runners.shell import ShellRunner
 
 
@@ -39,7 +40,7 @@ DEFAULT_MAX_CALL_DEPTH = 8
 _CHILD_RUN_ID_RE = re.compile(r"^GINKGO_CHILD_RUN_ID=(\S+)\s*$", re.MULTILINE)
 
 
-class SubWorkflowError(RuntimeError):
+class SubWorkflowError(GinkgoError, RuntimeError):
     """Sub-workflow subprocess returned a non-zero exit code."""
 
     def __init__(

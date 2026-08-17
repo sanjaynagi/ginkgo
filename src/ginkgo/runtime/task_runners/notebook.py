@@ -25,6 +25,7 @@ import yaml
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
+from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.notebook_kernels import (
@@ -47,7 +48,7 @@ from ginkgo.workspace_layout import WorkspaceLayout
 # ----- Exceptions -----------------------------------------------------------
 
 
-class NotebookTaskError(RuntimeError):
+class NotebookTaskError(GinkgoError, RuntimeError):
     """Notebook task execution failure."""
 
     def __init__(

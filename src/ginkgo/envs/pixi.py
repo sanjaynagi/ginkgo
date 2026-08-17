@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ginkgo.core.hashing import hash_file
+from ginkgo.errors import GinkgoError
 
 
-class PixiEnvNotFoundError(RuntimeError):
+class PixiEnvNotFoundError(GinkgoError, RuntimeError):
     """Raised when a declared environment cannot be located.
 
     Parameters
@@ -44,7 +45,7 @@ class PixiEnvNotFoundError(RuntimeError):
         super().__init__(msg)
 
 
-class PixiEnvImportError(RuntimeError):
+class PixiEnvImportError(GinkgoError, RuntimeError):
     """Raised when a conda environment spec cannot be imported into Pixi."""
 
     def __init__(self, *, source: Path, output: str) -> None:
@@ -52,7 +53,7 @@ class PixiEnvImportError(RuntimeError):
         super().__init__(f"Failed to import conda env spec {str(source)!r} into Pixi: {details}")
 
 
-class PixiEnvPrepareError(RuntimeError):
+class PixiEnvPrepareError(GinkgoError, RuntimeError):
     """Raised when a Pixi environment cannot be materialized."""
 
     def __init__(self, *, manifest: Path, output: str) -> None:

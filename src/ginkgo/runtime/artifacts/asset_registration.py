@@ -27,6 +27,7 @@ from ginkgo.core.asset import (
     collect_asset_refs,
     make_asset_version,
 )
+from ginkgo.errors import GinkgoError
 from ginkgo.runtime.artifacts.asset_kinds import (
     WRAPPER_KINDS,
     get_kind_spec,
@@ -47,7 +48,7 @@ ASSET_CAPTION_METADATA_KEY = "ginkgo_caption"
 ASSET_CHECKS_METADATA_KEY = "ginkgo_checks"
 
 
-class AssetCheckError(RuntimeError):
+class AssetCheckError(GinkgoError, RuntimeError):
     """Raised when an asset check cannot verify a wrapped payload."""
 
 

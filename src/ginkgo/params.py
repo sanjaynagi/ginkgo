@@ -20,6 +20,8 @@ import re
 import sys
 from typing import Any, Callable, Iterable, Sequence
 
+from ginkgo.errors import GinkgoError
+
 _NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
 
 _TRUE_LITERALS = frozenset({"true", "1", "yes", "on"})
@@ -29,7 +31,7 @@ ParamSource = str
 """Where a resolved value came from: ``"cli"``, ``"config"``, or ``"default"``."""
 
 
-class ParamError(Exception):
+class ParamError(GinkgoError):
     """Raised when a parameter is declared or supplied incorrectly."""
 
 

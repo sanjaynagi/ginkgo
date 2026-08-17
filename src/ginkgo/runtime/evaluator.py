@@ -28,6 +28,7 @@ from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
+from ginkgo.errors import GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
@@ -123,7 +124,7 @@ if _unregistered:
 del _unregistered
 
 
-class CycleError(RuntimeError):
+class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
 
     def __init__(self, cycle: list[str]) -> None:

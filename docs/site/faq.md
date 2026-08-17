@@ -171,7 +171,9 @@ def main():
 zipped columns, and `max_concurrent=` on any of these throttles how many
 generated branches run at once, independently of the global `--jobs`/`--cores`
 budget. For building the input/output path lists you map over, see
-[Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand).
+[Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand);
+for one output path per grid cell, see
+[Per-Cell Output Paths With `per_branch()`](guide/tasks-and-flows.md#per-cell-output-paths-with-per_branch).
 
 ### How does Ginkgo build and edit dynamic DAGs at runtime?
 
@@ -289,7 +291,9 @@ named environment lives in a directory (typically `envs/<name>/`) containing a
 `pixi.toml` (or a `pyproject.toml` with a `[tool.pixi]` section), and a task
 references it by name with `env=`. Before running, Ginkgo materialises the
 environment with `pixi install` and runs each command inside it, so the task
-sees the locked set of dependencies.
+sees the locked set of dependencies — see
+[Environments](guide/environments.md#ginkgo-materialises-declared-environments)
+for what that means for a first run and what must be on your `PATH`.
 
 Ginkgo folds the environment into the cache key by hashing the manifest, so
 editing the declared dependencies invalidates cached results. The neighbouring
