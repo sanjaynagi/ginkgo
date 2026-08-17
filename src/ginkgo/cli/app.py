@@ -288,12 +288,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     asset_parser = subparsers.add_parser("asset")
     asset_subparsers = asset_parser.add_subparsers(dest="asset_command", required=True)
     asset_subparsers.add_parser("ls")
+    asset_key_help = "Asset key: '<kind>:<name>' as printed by 'ginkgo asset ls', or a bare name."
+    asset_ref_help = f"{asset_key_help} Append '@<version-or-alias>' to pin a version."
     asset_versions_parser = asset_subparsers.add_parser("versions")
-    asset_versions_parser.add_argument("key")
+    asset_versions_parser.add_argument("key", help=asset_key_help)
     asset_inspect_parser = asset_subparsers.add_parser("inspect")
-    asset_inspect_parser.add_argument("ref")
+    asset_inspect_parser.add_argument("ref", help=asset_ref_help)
     asset_show_parser = asset_subparsers.add_parser("show")
-    asset_show_parser.add_argument("ref")
+    asset_show_parser.add_argument("ref", help=asset_ref_help)
 
     env_parser = subparsers.add_parser("env")
     env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)

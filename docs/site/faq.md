@@ -530,7 +530,8 @@ encoded, so unpicklable objects fail loudly rather than mid-transport.
 An asset is a typed, named, versioned task output, produced by returning
 `asset(...)` (or a typed helper) instead of a plain value. Where an ordinary
 `file` return is just bytes at a path, an asset also carries a *kind*, a stable
-*key* (`namespace/name`), a content hash, a producer task, and metadata, and it
+*key* (`<kind>:<name>`, where the name is exactly what you passed as `name=`),
+a content hash, a producer task, and metadata, and it
 is registered in a catalog under `.ginkgo/assets/` and tracked across runs.
 Re-running a task that produces identical content adds a new *version* pointing
 at the same bytes, so the key stays a stable handle with full version history.
@@ -584,7 +585,9 @@ ginkgo asset inspect <ref>      # raw AssetVersion record, including the on-disk
 ```
 
 A `<ref>` is an asset key with an optional version/alias selector resolved by the
-catalog; `<key>` is the plain `namespace/name`. There is no CLI subcommand that
+catalog; `<key>` is either the full `<kind>:<name>` printed by `ginkgo asset ls`
+or the bare `<name>`, which the catalog searches across kinds and asks you to
+qualify only when several kinds share it. There is no CLI subcommand that
 streams the payload bytes for you — `ginkgo asset inspect` prints the resolved
 artifact path so you can open the bytes directly, and within a workflow a
 downstream task loads a version through the `AssetRef` it receives. Separately,

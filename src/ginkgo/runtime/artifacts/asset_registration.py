@@ -95,27 +95,32 @@ def asset_index_for(*, value: Any) -> list[dict[str, Any]]:
 class _AssetRegistrationState:
     """Per-task state used while assigning keys to non-file asset outputs.
 
-    File-kind assets default to the task function's name; every other
-    kind keeps a per-kind counter so unnamed outputs get deterministic
-    indexed names (``<task>.<kind>[<index>]``).
+    An explicit ``name=`` is the asset name verbatim, for every kind. Only
+    unnamed outputs get a generated name: file-kind assets default to the
+    task function's name, and every other kind keeps a per-kind counter so
+    unnamed outputs get deterministic indexed names
+    (``<task>.<kind>[<index>]``).
     """
 
     kind_counters: dict[str, int] = field(default_factory=dict)
     used_names: set[tuple[str, str]] = field(default_factory=set)
 
     def reserve_name(self, *, result: AssetResult, task_name: str) -> str:
-        """Return the local asset name for a result, enforcing uniqueness."""
+        """Return the local asset name for a result, enforcing uniqueness.
+
+        Uniqueness is scoped by ``(kind, name)`` within the task, so the
+        task name stays out of the user-visible key.
+        """
         kind = result.kind
         if result.name is not None:
-            local = f"{task_name}.{result.name}"
-            key = (kind, local)
+            key = (kind, result.name)
             if key in self.used_names:
                 raise ValueError(
                     f"duplicate wrapped asset name in task {task_name!r}: "
                     f"kind={kind} name={result.name!r}"
                 )
             self.used_names.add(key)
-            return local
+            return result.name
 
         index = self.kind_counters.get(kind, 0)
         self.kind_counters[kind] = index + 1
