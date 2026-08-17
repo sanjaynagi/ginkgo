@@ -36,7 +36,7 @@ GINKGO_REPO_URL = "https://github.com/sanjaynagi/ginkgo.git"
 #: Until then, bump it when the templates start needing newer ginkgo.
 #: ``test_fallback_pin_can_still_run_the_scaffold_it_pins`` fails when this
 #: commit no longer carries every ginkgo name the templates reach for.
-FALLBACK_GINKGO_REV = "2471fcd00bc606f6ad6702151452fb0e6ea76396"
+FALLBACK_GINKGO_REV = "2471fcd00bc606f6ad6702151452fb0e6ea76396"  # pragma: allowlist secret
 
 
 @dataclass(frozen=True, kw_only=True)
