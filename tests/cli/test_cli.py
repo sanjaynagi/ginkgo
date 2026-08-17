@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import Counter
 import re
+import shutil
 import subprocess
+import sys
 import tomllib
 from datetime import datetime, timedelta, timezone
 import json
@@ -934,6 +936,37 @@ def main():
         assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 
 
+_IMPORT_PATTERN = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
+
+
+def _scaffold_notebook(*, project_dir: Path) -> dict:
+    """Return the parsed starter notebook from a scaffolded project."""
+    notebook_path = project_dir / "workflow" / "notebooks" / "overview.ipynb"
+    return json.loads(notebook_path.read_text(encoding="utf-8"))
+
+
+def _third_party_imports(*, project_dir: Path) -> set[str]:
+    """Return the root module names a scaffolded project imports from outside the stdlib.
+
+    Covers both the Python sources and the code cells of the starter notebook,
+    since a notebook task's body executes in the same environment as the CLI.
+    Relative imports are skipped by the pattern, so the project's own packages
+    do not appear.
+    """
+    sources = [path.read_text(encoding="utf-8") for path in sorted(project_dir.rglob("*.py"))]
+    sources.extend(
+        "".join(cell["source"])
+        for cell in _scaffold_notebook(project_dir=project_dir)["cells"]
+        if cell["cell_type"] == "code"
+    )
+    roots = {
+        match.group(1).split(".")[0]
+        for text in sources
+        for match in _IMPORT_PATTERN.finditer(text)
+    }
+    return {root for root in roots if root not in sys.stdlib_module_names and root != "workflow"}
+
+
 class TestCliInit:
     def test_init_creates_project_scaffold(self) -> None:
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
@@ -985,6 +1018,72 @@ class TestCliInit:
         assert "JSONL runtime events" in commands_text
         assert '@task(kind="shell")' in patterns_text
         assert "oci://registry/path:tag" in patterns_text
+
+    def test_init_pixi_manifest_declares_what_the_workflow_needs(self) -> None:
+        """The scaffolded manifest must install everything the scaffold imports.
+
+        Python tasks execute in the interpreter the CLI runs from and cannot
+        declare ``env=``, so ``ginkgo`` itself and every third-party import in a
+        Python or notebook task body has to be declared here.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        project_dir = Path("demo-project")
+        manifest = tomllib.loads((project_dir / "pixi.toml").read_text(encoding="utf-8"))
+        declared = set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
+
+        assert manifest["workspace"]["name"] == "demo-project"
+        assert "ginkgo" in declared
+        assert _third_party_imports(project_dir=project_dir) <= declared
+        assert manifest["tasks"]["run"] == "ginkgo run"
+
+    def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
+        """Papermill injects into the ``parameters``-tagged cell, so one must exist.
+
+        Without the tag every run prints ``Passed unknown parameter`` per
+        argument plus ``Input notebook does not contain a cell with tag
+        'parameters'``, which reads like failure on a successful run.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        cells = _scaffold_notebook(project_dir=Path("demo-project"))["cells"]
+        parameter_cells = [
+            cell for cell in cells if "parameters" in cell["metadata"].get("tags", [])
+        ]
+        assert len(parameter_cells) == 1
+
+        assigned = {
+            line.split("=", 1)[0].strip()
+            for line in "".join(parameter_cells[0]["source"]).splitlines()
+            if "=" in line
+        }
+        # The notebook task's signature in workflow/modules/reporting.py.
+        assert assigned == {"summary_path", "run_label"}
+
+    @pytest.mark.integration
+    def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
+        if shutil.which("docker") is None or shutil.which("pixi") is None:
+            pytest.skip("running the scaffold end to end needs docker and pixi")
+
+        init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert init_result.returncode == 0, init_result.stderr
+
+        project_dir = Path("demo-project").resolve()
+        run_result = _run_cli("run", cwd=project_dir)
+        assert run_result.returncode == 0, run_result.stderr
+
+        notebook_logs = [
+            path.read_text(encoding="utf-8")
+            for path in (project_dir / ".ginkgo" / "runs").rglob(
+                "*render_overview_notebook*.stderr.log"
+            )
+        ]
+        assert notebook_logs
+        for log_text in notebook_logs:
+            assert "does not contain a cell with tag" not in log_text
+            assert "Passed unknown parameter" not in log_text
 
     def test_init_can_skip_skills(self) -> None:
         result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())

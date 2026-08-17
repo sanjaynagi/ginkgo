@@ -5,6 +5,23 @@ This starter project is the canonical `ginkgo init` scaffold.
 See `skills/index.md` for concise contributor and agent guidance tailored to
 this project layout.
 
+## Getting Started
+
+`pixi.toml` declares the environment the `ginkgo` CLI runs from, including
+Ginkgo itself. Install it once, then use the declared tasks:
+
+```bash
+pixi install
+pixi run check   # ginkgo test --dry-run
+pixi run run     # ginkgo run
+```
+
+Python tasks cannot declare `env=` — they execute in the same interpreter as the
+CLI — so any library a Python or notebook task imports belongs in the
+`[dependencies]` or `[pypi-dependencies]` table of this `pixi.toml`. Only shell,
+script, and notebook tasks can point at a task-local environment such as
+`workflow/envs/analysis_tools/`.
+
 ## What Ginkgo Is
 
 Ginkgo is a Python workflow orchestrator for building reproducible, analytical
