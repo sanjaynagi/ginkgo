@@ -19,7 +19,9 @@ you can inspect from the CLI or UI.
 - Shell tasks let you call CLI tools with explicit declared outputs.
 - Notebook tasks let you execute notebooks as part of the workflow and render them to html.
 - Script tasks let you execute standalone scripts with task-managed inputs and outputs.
-- `expand(...)` helps build deterministic output paths from small parameter grids.
+- `expand(...)` builds a deterministic list of paths to `.map()` over, one per row.
+- `per_branch(...)` derives one output path per fan-out branch from that branch's
+  own arguments — the way to give each cell of a `.product_map()` grid its own file.
 
 - ginkgo.toml is the canonical configuration file for a Ginkgo project, however, it is optional.
 
@@ -34,7 +36,7 @@ patterns in one small workflow:
 - Docker-backed shell execution
 - notebook rendering
 - fan-out and fan-in
-- `expand(...)` for deterministic output paths
+- `expand(...)` for deterministic output-path columns
 
 ## Project Layout
 
