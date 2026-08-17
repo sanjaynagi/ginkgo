@@ -195,6 +195,16 @@ are passed into the notebook as parameters. The notebook file is source material
 for both execution and cache identity — when the notebook changes, the task's
 cache key changes.
 
+Give a `.ipynb` notebook a cell tagged `parameters` that assigns a default to
+each name in the task signature. Papermill replaces that cell's contents with
+the resolved arguments, so the defaults are what you get when you open the
+notebook by hand, and the task signature wins during a run. Without such a cell
+Papermill still injects the values — it prepends an `injected-parameters` cell —
+but it prints one `Passed unknown parameter: <name>` line per argument plus
+`Input notebook does not contain a cell with tag 'parameters'`. Those lines are
+benign, and the run succeeds, but they read like errors. Tagging the cell
+removes them.
+
 `notebook()` takes two optional arguments beyond the path:
 
 - `output` — a declared output path, or list of paths, validated after the
