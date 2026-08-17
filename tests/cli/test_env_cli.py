@@ -30,6 +30,18 @@ def test_env_ls_finds_env_in_canonical_layout(
     assert "analysis_tools" in capsys.readouterr().out
 
 
+def test_env_ls_states_container_envs_are_not_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-empty listing still names its own scope, so it is not read as complete."""
+    _canonical_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["env", "ls"]) == 0
+    out = capsys.readouterr().out.replace("\n", " ")
+    assert "Container environments are managed by the container runtime" in out
+
+
 def test_env_clear_finds_env_in_canonical_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

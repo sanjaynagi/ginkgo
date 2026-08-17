@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+import difflib
 import sys
 from dataclasses import dataclass
 
@@ -48,7 +49,7 @@ def command_asset(args) -> int:
         return 0
 
     if args.asset_command == "versions":
-        key = parse_asset_key(args.key)
+        key = resolve_asset_key(store=store, value=args.key)
         rich_console.print("[bold green]🌿 ginkgo asset[/] [bold]versions[/]\n")
         versions = store.list_versions(key=key)
         if not versions:
@@ -72,11 +73,11 @@ def command_asset(args) -> int:
         return 0
 
     if args.asset_command == "show":
-        asset_ref = parse_asset_selector(args.ref)
+        asset_ref = resolve_asset_selector(store=store, value=args.ref)
         version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
         return render_asset_show(console=rich_console, version=version)
 
-    asset_ref = parse_asset_selector(args.ref)
+    asset_ref = resolve_asset_selector(store=store, value=args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
     artifact_store = LocalArtifactStore(root=WorkspaceLayout.sibling_of(ASSETS_ROOT).artifacts)
     artifact_path = (
@@ -133,20 +134,66 @@ def list_asset_rows(*, store: AssetStore) -> list[AssetListRow]:
     return rows
 
 
-def parse_asset_key(value: str) -> AssetKey:
-    """Parse a CLI asset key.
+def resolve_asset_key(*, store: AssetStore, value: str) -> AssetKey:
+    """Resolve CLI key text against the catalog.
 
-    Accepts ``namespace:name`` or ``name``. Bare names default to ``file``;
-    malformed input raises :class:`ValueError`.
+    ``<kind>:<name>`` addresses one asset directly. A bare ``<name>`` is
+    searched across kinds: exactly one match resolves, several report the
+    ambiguity, and none reports near matches. Nothing is assumed about the
+    kind, so an unknown key never masquerades as a ``file`` asset the user
+    never created.
+
+    Parameters
+    ----------
+    store : AssetStore
+        Catalog to resolve against.
+    value : str
+        Key text as typed on the command line.
+
+    Returns
+    -------
+    AssetKey
     """
-    return AssetKey.parse(value, strict=True)
+    known = store.list_asset_keys()
+    if ":" in value:
+        key = AssetKey.parse(value)
+        if key in set(known):
+            return key
+        raise FileNotFoundError(_unknown_asset_message(value=value, known=known))
+
+    matches = [key for key in known if key.name == value]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        rendered = ", ".join(sorted(str(key) for key in matches))
+        raise ValueError(
+            f"Asset name {value!r} exists in several kinds: {rendered}. "
+            "Qualify it as '<kind>:<name>'."
+        )
+    raise FileNotFoundError(_unknown_asset_message(value=value, known=known))
 
 
-def parse_asset_selector(value: str) -> AssetSelector:
-    """Parse ``<key>[@<version|alias>]`` syntax."""
+def resolve_asset_selector(*, store: AssetStore, value: str) -> AssetSelector:
+    """Resolve ``<key>[@<version|alias>]`` syntax against the catalog."""
     key_text, separator, selector = value.partition("@")
-    key = parse_asset_key(key_text)
+    key = resolve_asset_key(store=store, value=key_text)
     return AssetSelector(key=key, selector=selector if separator else None)
+
+
+def _unknown_asset_message(*, value: str, known: list[AssetKey]) -> str:
+    """Build a not-found message, suggesting near matches from the catalog."""
+    if not known:
+        return f"No asset {value!r} in the catalog: it is empty. Run a workflow first."
+
+    keys_by_text: dict[str, str] = {}
+    for key in known:
+        keys_by_text[str(key)] = str(key)
+        keys_by_text.setdefault(key.name, str(key))
+    close = difflib.get_close_matches(value, list(keys_by_text), n=3, cutoff=0.4)
+    suggestions = sorted({keys_by_text[text] for text in close})
+    if suggestions:
+        return f"No asset {value!r} in the catalog. Did you mean: {', '.join(suggestions)}?"
+    return f"No asset {value!r} in the catalog. Run 'ginkgo asset ls' to list keys."
 
 
 def render_asset_show(*, console, version) -> int:

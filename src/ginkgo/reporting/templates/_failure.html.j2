@@ -1,4 +1,5 @@
-<h2 id="failure"><span class="num">05</span>Failure</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "failure") -}}
 {% for card in report.failures %}
 <div class="failure-card">
   <div class="failure-head">

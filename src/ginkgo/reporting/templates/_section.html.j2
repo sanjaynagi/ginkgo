@@ -1,0 +1,4 @@
+{% macro section_heading(report, anchor) %}
+{% set section = report.section(anchor) %}
+<h2 id="{{ section.anchor }}"><span class="num">{{ section.number }}</span>{{ section.title }}</h2>
+{% endmacro %}

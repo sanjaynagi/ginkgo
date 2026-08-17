@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 from collections import Counter
 import re
+import shutil
 import subprocess
+import sys
 import tomllib
 from datetime import datetime, timedelta, timezone
 import json
@@ -23,6 +26,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
+from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
 
 
@@ -51,6 +55,7 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
     asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
     artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
     source = cwd / f"{name}.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
     record = artifact_store.store(src_path=source)
     version = make_asset_version(
@@ -473,6 +478,29 @@ class TestCliAssets:
         assert f"Version: {second_version}" in inspected.stdout
         assert "Artifact Path:" in inspected.stdout
 
+    def test_asset_lookup_resolves_bare_names_and_reports_unknown_keys(self) -> None:
+        _seed_asset(
+            cwd=Path.cwd(),
+            name="sites/forest/note",
+            text="hello",
+            run_id="run-1",
+        )
+
+        # The name as passed to the asset helper, without naming the kind.
+        shown = _run_cli("asset", "show", "sites/forest/note", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        assert "Asset Key: file:sites/forest/note" in shown.stdout
+
+        versions = _run_cli("asset", "versions", "sites/forest/note", cwd=Path.cwd())
+        assert versions.returncode == 0, versions.stderr
+        assert "Asset Key: file:sites/forest/note" in versions.stdout
+
+        # An unknown key names no kind of its own and offers the real one.
+        missing = _run_cli("asset", "show", "sites/forest/notes", cwd=Path.cwd())
+        assert missing.returncode == 1
+        assert "No asset 'sites/forest/notes' in the catalog" in missing.stderr
+        assert "file:sites/forest/note" in missing.stderr
+
 
 class TestCliEnv:
     def test_env_ls_empty_state_is_styled(self) -> None:
@@ -688,7 +716,8 @@ def main():
         assert "Dry run" in result.stdout
         assert "1 task" in result.stdout
         assert "Wave 1" in result.stdout
-        assert "write_marker()" in result.stdout
+        # The plan labels a node exactly as the live run table does.
+        assert "• write_marker  [will run]" in result.stdout
         assert "[will run]" in result.stdout
         assert "no tasks executed" in result.stdout
         assert not Path("should-not-exist.txt").exists()
@@ -774,7 +803,7 @@ def main():
         assert "4 tasks" in result.stdout
         assert "Wave 1" in result.stdout
         assert "Wave 2" in result.stdout
-        assert "prepare()" in result.stdout
+        assert "• prepare " in result.stdout
         for sample in ("alpha", "beta", "gamma"):
             assert f"analyse[{sample}]" in result.stdout
         # The leaf task's cache state is determinable; fan-out branches
@@ -934,6 +963,70 @@ def main():
         assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 
 
+_IMPORT_PATTERN = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
+_TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
+_EXPORTED_NAME_PATTERN = re.compile(r'"([A-Za-z_]\w*)"')
+
+
+def _template_ginkgo_symbols() -> set[str]:
+    """Return every name the scaffold templates reach for on the ginkgo package.
+
+    Covers both ``from ginkgo import ...`` and attribute access on an imported
+    ``ginkgo``, which is how the templates use ``config`` and ``param``.
+    """
+    symbols: set[str] = set()
+    for path in sorted(_TEMPLATE_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and node.module == "ginkgo" and not node.level:
+                symbols.update(alias.name for alias in node.names)
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "ginkgo"
+            ):
+                symbols.add(node.attr)
+    return symbols
+
+
+def _git_show(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one read-only git command against this repository."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _scaffold_notebook(*, project_dir: Path) -> dict:
+    """Return the parsed starter notebook from a scaffolded project."""
+    notebook_path = project_dir / "workflow" / "notebooks" / "overview.ipynb"
+    return json.loads(notebook_path.read_text(encoding="utf-8"))
+
+
+def _third_party_imports(*, project_dir: Path) -> set[str]:
+    """Return the root module names a scaffolded project imports from outside the stdlib.
+
+    Covers both the Python sources and the code cells of the starter notebook,
+    since a notebook task's body executes in the same environment as the CLI.
+    Relative imports are skipped by the pattern, so the project's own packages
+    do not appear.
+    """
+    sources = [path.read_text(encoding="utf-8") for path in sorted(project_dir.rglob("*.py"))]
+    sources.extend(
+        "".join(cell["source"])
+        for cell in _scaffold_notebook(project_dir=project_dir)["cells"]
+        if cell["cell_type"] == "code"
+    )
+    roots = {
+        match.group(1).split(".")[0]
+        for text in sources
+        for match in _IMPORT_PATTERN.finditer(text)
+    }
+    return {root for root in roots if root not in sys.stdlib_module_names and root != "workflow"}
+
+
 class TestCliInit:
     def test_init_creates_project_scaffold(self) -> None:
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
@@ -985,6 +1078,115 @@ class TestCliInit:
         assert "JSONL runtime events" in commands_text
         assert '@task(kind="shell")' in patterns_text
         assert "oci://registry/path:tag" in patterns_text
+
+    def test_init_pixi_manifest_declares_what_the_workflow_needs(self) -> None:
+        """The scaffolded manifest must install everything the scaffold imports.
+
+        Python tasks execute in the interpreter the CLI runs from and cannot
+        declare ``env=``, so ``ginkgo`` itself and every third-party import in a
+        Python or notebook task body has to be declared here.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        project_dir = Path("demo-project")
+        manifest = tomllib.loads((project_dir / "pixi.toml").read_text(encoding="utf-8"))
+        declared = set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
+
+        assert manifest["workspace"]["name"] == "demo-project"
+        assert "ginkgo" in declared
+        assert _third_party_imports(project_dir=project_dir) <= declared
+        assert manifest["tasks"]["run"] == "ginkgo run"
+
+    def test_init_pins_the_ginkgo_dependency_to_a_concrete_revision(self) -> None:
+        """A scaffolded project must not float on a branch.
+
+        Ginkgo orchestrates the project, so an unpinned git requirement would
+        hand two users scaffolding a week apart different orchestrators with
+        nothing in the manifest recording which.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        manifest = tomllib.loads((Path("demo-project") / "pixi.toml").read_text(encoding="utf-8"))
+        requirement = manifest["pypi-dependencies"]["ginkgo"]
+
+        assert requirement["git"] == GINKGO_REPO_URL
+        assert "branch" not in requirement
+        pin = requirement.get("rev") or requirement.get("tag")
+        assert pin, f"ginkgo requirement is unpinned: {requirement}"
+        assert re.fullmatch(r"[0-9a-f]{40}|v\d+\.\d+\.\d+.*", pin)
+
+    def test_fallback_pin_can_still_run_the_scaffold_it_pins(self) -> None:
+        """The fallback commit must carry every ginkgo name the templates use.
+
+        A pin that predates a template's requirements installs cleanly and then
+        fails at run time on a user's machine — which is exactly why neither
+        v0.1.0 nor v0.2.0 could serve as the pin, since both lack
+        ``ginkgo.param``. Nothing else makes that staleness fail, so it fails
+        here, offline, against the local object database.
+        """
+        rev = FALLBACK_GINKGO_REV
+        if _git_show("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
+            pytest.skip(f"pinned rev {rev} is not in this clone's object database")
+
+        exports = _git_show("show", f"{rev}:src/ginkgo/__init__.py")
+        assert exports.returncode == 0, exports.stderr
+
+        exported = set(_EXPORTED_NAME_PATTERN.findall(exports.stdout))
+        required = _template_ginkgo_symbols()
+        assert required, "no ginkgo symbols found in the templates — the scan is broken"
+        assert required <= exported, (
+            f"FALLBACK_GINKGO_REV {rev} is too old for the current templates: "
+            f"{sorted(required - exported)} missing. Bump it to a commit that has them."
+        )
+
+    def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
+        """Papermill injects into the ``parameters``-tagged cell, so one must exist.
+
+        Without the tag every run prints ``Passed unknown parameter`` per
+        argument plus ``Input notebook does not contain a cell with tag
+        'parameters'``, which reads like failure on a successful run.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        cells = _scaffold_notebook(project_dir=Path("demo-project"))["cells"]
+        parameter_cells = [
+            cell for cell in cells if "parameters" in cell["metadata"].get("tags", [])
+        ]
+        assert len(parameter_cells) == 1
+
+        assigned = {
+            line.split("=", 1)[0].strip()
+            for line in "".join(parameter_cells[0]["source"]).splitlines()
+            if "=" in line
+        }
+        # The notebook task's signature in workflow/modules/reporting.py.
+        assert assigned == {"summary_path", "run_label"}
+
+    @pytest.mark.integration
+    def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
+        if shutil.which("docker") is None or shutil.which("pixi") is None:
+            pytest.skip("running the scaffold end to end needs docker and pixi")
+
+        init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert init_result.returncode == 0, init_result.stderr
+
+        project_dir = Path("demo-project").resolve()
+        run_result = _run_cli("run", cwd=project_dir)
+        assert run_result.returncode == 0, run_result.stderr
+
+        notebook_logs = [
+            path.read_text(encoding="utf-8")
+            for path in (project_dir / ".ginkgo" / "runs").rglob(
+                "*render_overview_notebook*.stderr.log"
+            )
+        ]
+        assert notebook_logs
+        for log_text in notebook_logs:
+            assert "does not contain a cell with tag" not in log_text
+            assert "Passed unknown parameter" not in log_text
 
     def test_init_can_skip_skills(self) -> None:
         result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
@@ -1258,6 +1460,67 @@ def main():
         assert "train[sample_a,lr=0.01,epochs=50]" in result.stdout
         assert "train[sample_a,lr=0.1,epochs=10]" in result.stdout
         assert "train[sample_a,lr=0.1,epochs=50]" in result.stdout
+
+
+class TestCliGridSweepOutputPaths:
+    """End-to-end cover for the grid sweep of issue #198."""
+
+    _TASK = """
+import json
+from pathlib import Path
+
+from ginkgo import file, flow, task
+from ginkgo import expand, per_branch
+
+TEMPS = [300, 400]
+DENS = [0.01, 0.02]
+
+@task()
+def simulate(temperature: float, defect_density: float, output_path: str) -> file:
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(
+        json.dumps({"t": temperature, "d": defect_density}), encoding="utf-8"
+    )
+    return file(output_path)
+"""
+
+    def _write_workflow(self, fan_out: str) -> None:
+        Path("workflow.py").write_text(
+            self._TASK
+            + "\n@flow\ndef main():\n    return simulate().product_map(\n"
+            + "        temperature=TEMPS,\n        defect_density=DENS,\n"
+            + f"        output_path={fan_out},\n    )\n",
+            encoding="utf-8",
+        )
+
+    def test_expand_output_paths_fail_loudly_instead_of_mislabelling_files(self) -> None:
+        self._write_workflow('expand("results/{t}_{d}.json", t=TEMPS, d=DENS)')
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "output_path" in combined
+        assert "per_branch" in combined
+        assert not Path("results").exists()
+
+    def test_per_branch_output_paths_write_one_matching_file_per_cell(self) -> None:
+        self._write_workflow('per_branch("results/{temperature}_{defect_density}.json")')
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "4 tasks executed" in result.stdout
+        written = sorted(path.name for path in Path("results").iterdir())
+        assert written == [
+            "300_0.01.json",
+            "300_0.02.json",
+            "400_0.01.json",
+            "400_0.02.json",
+        ]
+        for path in Path("results").iterdir():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            assert path.name == f"{payload['t']}_{payload['d']}.json"
 
 
 class TestCliSpinnerSelection:

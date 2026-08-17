@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.envs.container import ContainerBackend
@@ -24,10 +25,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 
 
-def _copy_example(*, name: str, destination_root: Path) -> Path:
-    """Copy an example workflow into the isolated test workspace."""
-    source = EXAMPLES_ROOT / name
+def _materialize_example(*, name: str, destination_root: Path) -> Path:
+    """Place one example workflow in the isolated test workspace.
+
+    ``init`` is not a checked-in example: it is the starter project the packaged
+    templates scaffold, materialised here from that single source so it cannot
+    drift from what ``ginkgo init`` gives users. Every other name is copied from
+    ``examples/``.
+    """
     destination = destination_root / name
+    if name == "init":
+        return write_starter_project(root=destination)
+
+    source = EXAMPLES_ROOT / name
     shutil.copytree(
         source,
         destination,
@@ -182,7 +192,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="init", destination_root=tmp_path)
+        example_dir = _materialize_example(name="init", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         with _mock_docker(), _mock_notebook_tools():
@@ -234,7 +244,7 @@ class TestExamples:
         if not profile:
             pytest.skip("Set GINKGO_REMOTE_OCI_PROFILE to run the OCI bioinfo example")
 
-        example_dir = _copy_example(name="bioinfo", destination_root=tmp_path)
+        example_dir = _materialize_example(name="bioinfo", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         with _mock_docker():
@@ -271,7 +281,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="chem", destination_root=tmp_path)
+        example_dir = _materialize_example(name="chem", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -306,7 +316,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="retail", destination_root=tmp_path)
+        example_dir = _materialize_example(name="retail", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         with _mock_notebook_tools():
@@ -341,7 +351,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="news", destination_root=tmp_path)
+        example_dir = _materialize_example(name="news", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -372,7 +382,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="supplychain", destination_root=tmp_path)
+        example_dir = _materialize_example(name="supplychain", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)
@@ -407,7 +417,7 @@ class TestExamples:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        example_dir = _copy_example(name="ml", destination_root=tmp_path)
+        example_dir = _materialize_example(name="ml", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
         _, first_manifest = _run_example(example_dir=example_dir)

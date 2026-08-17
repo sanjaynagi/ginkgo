@@ -11,6 +11,10 @@ under `examples/`.
   structured JSON results.
 - A dedicated GitHub Actions workflow runs the benchmark lane separately from
   correctness and quality checks.
+- The `init` case is the exception to "under `examples/`": it is the `ginkgo
+  init` starter project, scaffolded into the benchmark workspace from the
+  packaged templates via `write_starter_project`, so the case measures the
+  project users are actually given.
 
 ## Benchmark Input Provenance
 

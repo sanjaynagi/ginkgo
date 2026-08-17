@@ -48,6 +48,32 @@ class TestExpr:
         assert isinstance(b.args["x"], Expr)
         assert b.args["x"].args["x"] == 1
 
+    def test_unpacking_names_the_task_and_the_output_idiom(self):
+        expr = pair_task(x=1)
+        with pytest.raises(TypeError) as excinfo:
+            first, second = expr  # noqa: F841 - the unpack itself is the subject
+        message = str(excinfo.value)
+        assert "pair_task()" in message
+        assert "r.output[0]" in message
+        # TaskDef.name carries the synthetic module prefix; the message must not.
+        assert pair_task.name not in message
+
+    def test_iterating_explains_itself(self):
+        with pytest.raises(TypeError, match=r"pair_task\(\).*output\[0\]"):
+            for _ in pair_task(x=1):
+                pass
+
+    def test_indexing_points_at_output(self):
+        with pytest.raises(TypeError, match=r"pair_task\(\).*cannot be indexed.*output\[0\]"):
+            pair_task(x=1)[0]
+
+    def test_len_points_at_output(self):
+        with pytest.raises(TypeError, match=r"pair_task\(\).*measured with len\(\).*output\[0\]"):
+            len(pair_task(x=1))
+
+    def test_expr_stays_truthy_despite_refusing_len(self):
+        assert bool(pair_task(x=1)) is True
+
 
 class TestExprList:
     def test_len(self):

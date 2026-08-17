@@ -64,35 +64,35 @@ class AssetKey:
         return cls(namespace=str(data["namespace"]), name=str(data["name"]))
 
     @classmethod
-    def parse(cls, text: str, *, strict: bool = False) -> AssetKey:
-        """Parse a ``namespace:name`` (or bare ``name``) string.
+    def parse(cls, text: str) -> AssetKey:
+        """Parse a canonical ``<kind>:<name>`` key string.
+
+        A bare name is not a key: the kind is half of the identity, so
+        inferring one would silently address a different asset than the
+        caller wrote. Callers holding a bare name resolve it against the
+        catalog instead (see ``ginkgo.cli.commands.asset``).
 
         Parameters
         ----------
         text : str
-            Key text. ``namespace:name`` yields an explicit key; a bare
-            ``name`` (no separator) defaults to the ``file`` namespace.
-        strict : bool
-            When True, malformed input (empty text, or a ``:`` with an empty
-            namespace or name) raises :class:`ValueError`. When False, such
-            input falls back to ``file:<text>``.
+            Key text as rendered by :meth:`__str__`.
 
         Returns
         -------
         AssetKey
+
+        Raises
+        ------
+        ValueError
+            If *text* is not ``<kind>:<name>`` with both parts non-empty.
         """
         namespace, separator, name = text.partition(":")
-        if separator:
-            if namespace and name:
-                return cls(namespace=namespace, name=name)
-            if strict:
-                raise ValueError(f"Invalid asset key: {text!r}")
-            return cls(namespace="file", name=text)
-        if namespace:
-            return cls(namespace="file", name=namespace)
-        if strict:
-            raise ValueError(f"Invalid asset key: {text!r}")
-        return cls(namespace="file", name=text)
+        if not (separator and namespace and name):
+            raise ValueError(
+                f"Invalid asset key {text!r}: expected '<kind>:<name>', "
+                f"where kind is one of {', '.join(ASSET_KIND_NAMES)}"
+            )
+        return cls(namespace=namespace, name=name)
 
     def __str__(self) -> str:
         """Render the canonical ``namespace:name`` string."""

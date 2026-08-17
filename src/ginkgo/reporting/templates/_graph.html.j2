@@ -1,4 +1,5 @@
-<h2 id="graph"><span class="num">03</span>Task graph</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "graph") -}}
 {% if report.graph.nodes %}
 <div class="graph-card">
   <svg viewBox="0 0 {{ report.graph.width }} {{ report.graph.height }}" width="{{ report.graph.width }}" height="{{ report.graph.height }}" xmlns="http://www.w3.org/2000/svg" class="taskgraph">

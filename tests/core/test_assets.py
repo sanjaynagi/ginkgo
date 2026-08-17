@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import array, fig, file, model, table, task, text
-from ginkgo.core.asset import AssetRef, AssetResult
+from ginkgo import array, asset, fig, file, model, table, task, text
+from ginkgo.core.asset import AssetKey, AssetRef, AssetResult
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
     serialize_asset,
@@ -447,7 +447,7 @@ class TestEvaluatorIntegration:
         result = ginkgo.evaluate(make_table_task())
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "make_table_task.features"
+        assert result.key.name == "features"
         assert result.metadata["row_count"] == 2
 
     def test_grouped_asset_persists_group_metadata(
@@ -457,7 +457,7 @@ class TestEvaluatorIntegration:
         result = ginkgo.evaluate(make_grouped_table_task())
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "make_grouped_table_task.features"
+        assert result.key.name == "features"
         assert result.metadata["ginkgo_group"] == "QC metrics"
         assert result.metadata["ginkgo_caption"] == "Variant counts after QC filtering"
 
@@ -488,11 +488,11 @@ class TestEvaluatorIntegration:
         assert scalar == 42
 
         assert table_ref.key.namespace == "table"
-        assert table_ref.key.name == "make_mixed_task.features"
+        assert table_ref.key.name == "features"
         assert array_ref.key.namespace == "array"
         assert array_ref.key.name == "make_mixed_task.array[0]"
         assert text_ref.key.namespace == "text"
-        assert text_ref.key.name == "make_mixed_task.summary"
+        assert text_ref.key.name == "summary"
 
         # Each asset carries kind-specific metadata.
         assert table_ref.metadata["sub_kind"] == "pandas"
@@ -575,6 +575,188 @@ class TestEvaluatorIntegration:
         assert ginkgo.evaluate(expr) == 1
 
 
+# ---------------------------------------------------------------------------
+# Explicit names and key format
+# ---------------------------------------------------------------------------
+
+
+EXPLICIT_NAME = "sites/forest/observations"
+
+
+@task()
+def named_file_asset_task(output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text("bytes\n", encoding="utf-8")
+    return asset(out, name=EXPLICIT_NAME)
+
+
+@task()
+def named_table_asset_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name=EXPLICIT_NAME)
+
+
+@task()
+def named_array_asset_task() -> object:
+    return array(np.arange(3), name=EXPLICIT_NAME)
+
+
+@task()
+def named_fig_asset_task(output_path: str) -> object:
+    out = Path(output_path)
+    out.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    return fig(out, name=EXPLICIT_NAME)
+
+
+@task()
+def named_text_asset_task() -> object:
+    return text("one line\n", name=EXPLICIT_NAME)
+
+
+@task()
+def other_named_text_asset_task() -> object:
+    """A second task claiming the same explicit name, with other content."""
+    return text("another line\n", name=EXPLICIT_NAME)
+
+
+@task()
+def named_model_asset_task() -> object:
+    from sklearn.linear_model import LogisticRegression
+
+    clf = LogisticRegression()
+    clf.fit(np.array([[0.0], [1.0]]), np.array([0, 1]))
+    return model(clf, name=EXPLICIT_NAME)
+
+
+class TestExplicitAssetNames:
+    """An explicit ``name=`` is the asset name, for every kind (issue #203)."""
+
+    @pytest.mark.parametrize(
+        ("kind", "expression_factory", "required_modules"),
+        [
+            ("file", lambda: named_file_asset_task(output_path="note.txt"), ()),
+            ("table", named_table_asset_task, ("pyarrow",)),
+            ("array", named_array_asset_task, ()),
+            ("fig", lambda: named_fig_asset_task(output_path="plot.png"), ()),
+            ("text", named_text_asset_task, ()),
+            ("model", named_model_asset_task, ("sklearn.linear_model", "joblib")),
+        ],
+    )
+    def test_explicit_name_is_the_key_name_for_every_kind(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        expression_factory: Any,
+        required_modules: tuple[str, ...],
+    ) -> None:
+        for module in required_modules:
+            pytest.importorskip(module)
+        monkeypatch.chdir(tmp_path)
+
+        result = ginkgo.evaluate(expression_factory())
+
+        assert isinstance(result, AssetRef)
+        assert result.key.namespace == kind
+        # No task-name prefix: the key name is exactly what the task asked for.
+        assert result.key.name == EXPLICIT_NAME
+        # And the documented format is what gets rendered and parsed back.
+        assert str(result.key) == f"{kind}:{EXPLICIT_NAME}"
+        assert AssetKey.parse(str(result.key)) == result.key
+
+        catalogued = AssetStore(root=tmp_path / ".ginkgo" / "assets").list_asset_keys()
+        assert result.key in catalogued
+
+    @pytest.mark.parametrize(
+        ("kind", "expression_factory", "required_modules"),
+        [
+            ("file", lambda: named_file_asset_task(output_path="note.txt"), ()),
+            ("table", named_table_asset_task, ("pyarrow",)),
+            ("array", named_array_asset_task, ()),
+            ("fig", lambda: named_fig_asset_task(output_path="plot.png"), ()),
+            ("text", named_text_asset_task, ()),
+            ("model", named_model_asset_task, ("sklearn.linear_model", "joblib")),
+        ],
+    )
+    def test_explicit_name_round_trips_through_asset_show(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        kind: str,
+        expression_factory: Any,
+        required_modules: tuple[str, ...],
+    ) -> None:
+        for module in required_modules:
+            pytest.importorskip(module)
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(expression_factory())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        # The bare name the task passed resolves without naming the kind.
+        assert main(["asset", "show", EXPLICIT_NAME]) == 0
+        assert f"Asset Key: {kind}:{EXPLICIT_NAME}" in capsys.readouterr().out
+
+        # The qualified key from ``asset ls`` resolves too.
+        assert main(["asset", "show", f"{kind}:{EXPLICIT_NAME}"]) == 0
+        assert f"Asset Key: {kind}:{EXPLICIT_NAME}" in capsys.readouterr().out
+
+    def test_bare_name_shared_by_two_kinds_asks_for_qualification(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pytest.importorskip("pyarrow")
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(named_table_asset_task())
+        ginkgo.evaluate(named_text_asset_task())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        assert main(["asset", "show", EXPLICIT_NAME]) == 1
+        error = capsys.readouterr().err
+        assert "exists in several kinds" in error
+        assert f"table:{EXPLICIT_NAME}" in error
+        assert f"text:{EXPLICIT_NAME}" in error
+
+    def test_unknown_name_suggests_catalogued_keys(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pytest.importorskip("pyarrow")
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(named_table_asset_task())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        assert main(["asset", "show", "sites/forest/observation"]) == 1
+        error = capsys.readouterr().err
+        # No invented ``file:`` asset, and the real key is offered instead.
+        assert "file:" not in error
+        assert f"table:{EXPLICIT_NAME}" in error
+
+    def test_two_tasks_naming_one_key_share_the_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dropping the task prefix makes an explicit name shared, by design."""
+        monkeypatch.chdir(tmp_path)
+
+        first = ginkgo.evaluate(named_text_asset_task())
+        second = ginkgo.evaluate(other_named_text_asset_task())
+
+        assert isinstance(first, AssetRef)
+        assert isinstance(second, AssetRef)
+        assert first.key == second.key
+        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+        assert len(store.list_versions(key=first.key)) == 2
+
+
 class TestAssetCheckTransport:
     def test_asset_checks_round_trip_through_value_codec(self, tmp_path: Path) -> None:
         encoded = encode_value(
@@ -644,7 +826,7 @@ class TestAssetShow:
                 [
                     "asset",
                     "show",
-                    "table:make_table_task.features",
+                    "table:features",
                 ]
             )
         finally:
@@ -652,7 +834,7 @@ class TestAssetShow:
 
         assert rc == 0
         output = capsys.readouterr().out
-        assert "make_table_task.features" in output
+        assert "table:features" in output
         assert "Row count" in output
         assert "Column" in output  # schema table header
 
@@ -668,7 +850,7 @@ class TestAssetShow:
             [
                 "asset",
                 "show",
-                "table:make_grouped_table_task.features",
+                "features",
             ]
         )
 
@@ -689,7 +871,7 @@ class TestAssetShow:
             [
                 "asset",
                 "show",
-                "table:make_checked_table_task.checked",
+                "checked",
             ]
         )
 
@@ -1386,7 +1568,7 @@ class TestPathWrappedOutputs:
 
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "fig"
-        assert result.key.name == "shell_write_fig_task.plot"
+        assert result.key.name == "plot"
         assert output.is_file()
 
     def test_shell_table_path_produces_table_asset(
@@ -1399,7 +1581,7 @@ class TestPathWrappedOutputs:
 
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "shell_write_table_task.data"
+        assert result.key.name == "data"
 
     def test_wrapper_with_in_memory_payload_in_outputs_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

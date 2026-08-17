@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.envs.mounts import Mount, parse_extra_mount, resolve_mounts
+from ginkgo.errors import GinkgoError
 
 
 # ------------------------------------------------------------------
@@ -83,7 +84,7 @@ def parse_container_uri(env: str) -> ContainerRef:
 # ------------------------------------------------------------------
 
 
-class ContainerRuntimeNotFoundError(RuntimeError):
+class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
     """Raised when the container runtime binary is not on PATH."""
 
     def __init__(self, *, runtime: str) -> None:
@@ -93,7 +94,7 @@ class ContainerRuntimeNotFoundError(RuntimeError):
         )
 
 
-class ContainerPrepareError(RuntimeError):
+class ContainerPrepareError(GinkgoError, RuntimeError):
     """Raised when an image cannot be pulled."""
 
     def __init__(self, *, image: str, output: str) -> None:
@@ -162,7 +163,7 @@ class ContainerBackend:
     auto_mount: bool = True
     extra_mounts: tuple[str, ...] = ()
     _pulled_images: set[str] = field(default_factory=set, init=False, repr=False)
-    _digest_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+    _digest_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Resolved once, so the path mounted and the path mounts are compared
@@ -220,21 +221,46 @@ class ContainerBackend:
         # Invalidate digest cache after a pull since the image may have changed.
         self._digest_cache.pop(env, None)
 
-    def env_identity(self, *, env: str) -> str | None:
-        """Return the image digest for cache keying.
+    def env_identity(self, *, env: str) -> str:
+        """Return the declared image reference, which names the environment.
+
+        Cache keys fold this in, so it must not depend on whether the image has
+        been pulled yet: the local image ID only exists after :meth:`prepare`,
+        and keying on it re-ran every container task once per fresh image
+        (issue #194). A tag is as specific as the workflow author chose to be —
+        pin ``image@sha256:...`` for content-level invalidation. The image as
+        pulled is recorded separately, by :meth:`materialized_digest`.
+
+        Returns
+        -------
+        str
+            Image reference with the ``docker://`` / ``oci://`` scheme stripped.
+        """
+        return parse_container_uri(env).image
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return the ID of the image as pulled on this machine.
+
+        Recorded in provenance, and compared against the digest a cache entry
+        was written with, so an image repointed under a mutable tag stops
+        serving stale results. An absent image is not remembered: ``prepare``
+        pulls it, and a caller that asked before the pull has to see the ID
+        afterwards.
 
         Returns
         -------
         str | None
             Image ID (``sha256:...``), or ``None`` if the image cannot be
-            inspected.
+            inspected — which is the case until :meth:`prepare` has pulled it.
         """
-        if env in self._digest_cache:
-            return self._digest_cache[env]
+        cached = self._digest_cache.get(env)
+        if cached is not None:
+            return cached
 
         ref = parse_container_uri(env)
         digest = self._resolve_digest(ref.image)
-        self._digest_cache[env] = digest
+        if digest is not None:
+            self._digest_cache[env] = digest
         return digest
 
     def exec_argv(
@@ -381,13 +407,21 @@ class ContainerBackend:
         return completed.returncode == 0
 
     def _resolve_digest(self, image: str) -> str | None:
-        """Return the image ID via ``docker image inspect``."""
-        completed = subprocess.run(
-            [self.runtime, "image", "inspect", "--format", "{{.Id}}", image],
-            check=False,
-            text=True,
-            capture_output=True,
-        )
+        """Return the image ID via ``docker image inspect``.
+
+        Cache lookups ask for this, so a runtime that is not installed reads as
+        "no local image" rather than raising: an absent runtime cannot be
+        evidence about an image either way.
+        """
+        try:
+            completed = subprocess.run(
+                [self.runtime, "image", "inspect", "--format", "{{.Id}}", image],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+        except OSError:
+            return None
         if completed.returncode != 0:
             return None
 

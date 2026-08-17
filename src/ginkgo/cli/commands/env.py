@@ -58,6 +58,13 @@ def command_env(args) -> int:
                 str(entry.install_dir),
             )
         rich_console.print(table)
+        # The table only ever holds Pixi envs, so say so when it is non-empty
+        # too: a workflow can also declare container envs, and those live with
+        # the container runtime rather than in a project directory.
+        rich_console.print(
+            "[dim]Container environments are managed by the container runtime "
+            "and are not listed here.[/]"
+        )
         return 0
 
     rich_console.print("[bold green]🌿 ginkgo env[/] [bold]clear[/]\n")

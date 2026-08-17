@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
-from ginkgo import expand, flatten, slug, zip_expand
+from ginkgo import expand, flatten, per_branch, slug, zip_expand
+from ginkgo.runtime.caching.provenance import _render_value
+from ginkgo.runtime.task_runners.shell import serialize_cli_argument_value
+from ginkgo.wildcards import ExpandedTemplate
 
 
 class TestExpand:
@@ -66,6 +70,79 @@ class TestZipExpand:
 
     def test_returns_template_when_no_placeholders_are_present(self) -> None:
         assert zip_expand("results/static.txt") == ["results/static.txt"]
+
+
+class TestExpandedTemplateMarker:
+    def test_expand_result_remembers_its_template(self) -> None:
+        result = expand("{a}_{b}", a=[1, 2], b=["x"])
+        assert isinstance(result, ExpandedTemplate)
+        assert result == ["1_x", "2_x"]
+        assert result.template == "{a}_{b}"
+        assert result.function_name == "expand"
+        assert result.placeholders == ("a", "b")
+
+    def test_zip_expand_result_remembers_its_template(self) -> None:
+        result = zip_expand("{a}_{b}", a=[1], b=["x"])
+        assert isinstance(result, ExpandedTemplate)
+        assert result.function_name == "zip_expand"
+
+    def test_placeholders_matching_argument_names_all_resolve(self) -> None:
+        result = expand("results/{temperature}.json", temperature=[300])
+        assert result.unresolved_placeholders(["temperature", "defect_density"]) == ()
+
+    def test_reports_placeholders_that_name_no_argument(self) -> None:
+        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
+        assert result.unresolved_placeholders(["temperature", "d"]) == ("t",)
+
+    def test_resolution_is_by_name_not_position(self) -> None:
+        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
+        assert result.unresolved_placeholders(["temperature", "defect_density"]) == ("t", "d")
+
+
+class TestExpandedTemplateSerialization:
+    """`ExpandedTemplate` is not safe_dump-able, so normalisation must stay.
+
+    Both paths that serialise resolved task arguments rebuild plain lists.
+    These tests fail if a refactor drops that, rather than the failure
+    surfacing mid-run in a user's workflow (PR #216 review).
+    """
+
+    def test_expanded_template_is_not_directly_yaml_safe(self) -> None:
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_dump(expand("results/{sample}.txt", sample=["a", "b"]))
+
+    def test_cli_argument_serialization_yields_a_dumpable_plain_list(self) -> None:
+        serialized = serialize_cli_argument_value(
+            expand("results/{sample}.txt", sample=["a", "b"])
+        )
+        assert type(serialized) is list
+        assert yaml.safe_load(yaml.safe_dump(serialized)) == ["results/a.txt", "results/b.txt"]
+
+    def test_provenance_rendering_yields_a_dumpable_plain_list(self) -> None:
+        rendered = _render_value({"paths": expand("results/{sample}.txt", sample=["a"])})
+        assert type(rendered["paths"]) is list
+        assert yaml.safe_load(yaml.safe_dump(rendered)) == {"paths": ["results/a.txt"]}
+
+
+class TestPerBranch:
+    def test_renders_from_branch_values(self) -> None:
+        template = per_branch("results/{sample}_{rep}.txt")
+        assert template.render({"sample": "a", "rep": 2, "unused": 9}) == "results/a_2.txt"
+
+    def test_reports_placeholder_names(self) -> None:
+        assert per_branch("{sample}/{rep}").placeholder_names() == ["sample", "rep"]
+
+    def test_rejects_template_without_placeholders(self) -> None:
+        with pytest.raises(ValueError, match="no placeholders"):
+            per_branch("results/out.txt")
+
+    def test_rejects_non_simple_placeholder(self) -> None:
+        with pytest.raises(ValueError, match="simple named placeholders"):
+            per_branch("results/{sample.name}.txt")
+
+    def test_rejects_non_string_template(self) -> None:
+        with pytest.raises(TypeError, match="must be a string"):
+            per_branch(["results/{sample}.txt"])  # type: ignore[arg-type]
 
 
 class TestSlug:

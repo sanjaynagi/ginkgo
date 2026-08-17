@@ -28,6 +28,7 @@ from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
+from ginkgo.errors import GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
@@ -123,7 +124,7 @@ if _unregistered:
 del _unregistered
 
 
-class CycleError(RuntimeError):
+class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
 
     def __init__(self, cycle: list[str]) -> None:
@@ -2062,7 +2063,7 @@ class ConcurrentEvaluator:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
                 extra: dict[str, Any] = {"backend": "container"}
-                digest = self.backend.env_identity(env=node.task_def.env)
+                digest = self.backend.materialized_digest(env=node.task_def.env)
                 if digest is not None:
                     extra["container_image_digest"] = digest
                 self.provenance.update_task_extra(
@@ -2145,8 +2146,7 @@ class ConcurrentEvaluator:
             return None
 
         if node.expr.display_label_parts:
-            base_name = node.task_def.name.rsplit(".", 1)[-1]
-            return f"{base_name}[{','.join(node.expr.display_label_parts)}]"
+            return node.expr.display_label
 
         label_key = first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:

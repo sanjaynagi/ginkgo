@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: test_fallback_pin_can_still_run_the_scaffold_it_pins
+          # reads the pinned commit out of the local object database, and skips
+          # itself when that commit is absent. A shallow clone would make the
+          # scaffold's staleness guard pass by never running.
+          fetch-depth: 0
 
       - uses: prefix-dev/setup-pixi@v0.8.8
         with:

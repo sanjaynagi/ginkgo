@@ -6,7 +6,8 @@ than executing. The evaluator recursively resolves these nodes.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -21,6 +22,10 @@ T = TypeVar("T")
 @dataclass(frozen=True)
 class Expr(Generic[T]):
     """An opaque node representing a deferred computation.
+
+    A call is not the tuple its task's return annotation describes, so
+    unpacking, indexing, and ``len()`` all refuse, and point at :attr:`output`
+    instead.
 
     Parameters
     ----------
@@ -44,6 +49,65 @@ class Expr(Generic[T]):
         """Return a proxy for indexing into this expression's tuple result."""
         return _OutputProxy(self)
 
+    @property
+    def display_label(self) -> str:
+        """Return the label under which this call is reported to the user.
+
+        Built from ``display_label_parts``, which fan-out fixes at
+        graph-build time, so the label is the same before dispatch as
+        after it.
+        """
+        base_name = self.task_def.name.rsplit(".", 1)[-1]
+        if self.display_label_parts:
+            return f"{base_name}[{','.join(self.display_label_parts)}]"
+        return base_name
+
+    def __iter__(self) -> Iterator[Any]:
+        """Refuse iteration — and unpacking, which is iteration — with advice."""
+        raise self._deferred_result_error("unpacked or iterated")
+
+    def __getitem__(self, index: object) -> Any:
+        """Refuse subscripting, pointing at ``.output`` instead."""
+        raise self._deferred_result_error("indexed")
+
+    def __len__(self) -> int:
+        """Refuse ``len()``: the number of outputs is not known until the run."""
+        raise self._deferred_result_error("measured with len()")
+
+    def __bool__(self) -> bool:
+        """Report a call as truthy.
+
+        Truthiness falls back to :meth:`__len__` when a type defines no
+        ``__bool__``, and that one raises. A constructed call is a real object,
+        so ``if expr:`` must stay true rather than inherit the refusal.
+        """
+        return True
+
+    def _deferred_result_error(self, action: str) -> TypeError:
+        """Build the error explaining why *action* cannot work on a deferred call.
+
+        Parameters
+        ----------
+        action : str
+            What the user tried to do, as a past participle that completes
+            "cannot be ...".
+
+        Returns
+        -------
+        TypeError
+            The error to raise. A ``TypeError`` because that is what Python's
+            unpacking, subscripting, and ``len()`` protocols promise, and
+            because the CLI reports the user's own line for it.
+        """
+        # The task's own function name, not TaskDef.name, which carries the
+        # hashed synthetic module prefix of the loaded workflow.
+        name = self.task_def.fn.__name__
+        return TypeError(
+            f"{name}() returns one deferred result, which cannot be {action} while the "
+            f"flow is being built. Select its outputs by position instead: "
+            f"r = {name}(...); a, b = r.output[0], r.output[1]"
+        )
+
     def __repr__(self) -> str:
         arg_strs = []
         for k, v in self.args.items():
@@ -53,6 +117,34 @@ class Expr(Generic[T]):
                 arg_strs.append(f"{k}={v!r}")
         joined = ", ".join(arg_strs)
         return f"Expr({self.task_def.name}({joined}))"
+
+
+def display_labels(exprs: Mapping[int, Expr]) -> dict[int, str]:
+    """Return one display label per graph node, disambiguating repeats.
+
+    Two calls of the same task with no fan-out values to tell them apart
+    share a label, so the second and later occurrences take an ordinal.
+    Ordinals follow ascending node id, so every view of one graph agrees
+    on which node is which.
+
+    Parameters
+    ----------
+    exprs : Mapping[int, Expr]
+        The graph's expressions, keyed by node id.
+
+    Returns
+    -------
+    dict[int, str]
+        Display label per node id.
+    """
+    occurrences: Counter[str] = Counter()
+    labels: dict[int, str] = {}
+    for node_id in sorted(exprs):
+        label = exprs[node_id].display_label
+        occurrences[label] += 1
+        count = occurrences[label]
+        labels[node_id] = label if count == 1 else f"{label}[{count}]"
+    return labels
 
 
 @dataclass(frozen=True)

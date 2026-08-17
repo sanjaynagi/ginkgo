@@ -32,7 +32,9 @@
 
     {% include "_assets.html.j2" %}
 
-    {% include "_notebooks.html.j2" %}
+    {% if report.notebooks %}
+      {% include "_notebooks.html.j2" %}
+    {% endif %}
 
     {% include "_environment.html.j2" %}
 

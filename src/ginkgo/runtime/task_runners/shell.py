@@ -25,6 +25,7 @@ from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.mounts import Mount, MountMode, mount
+from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -35,7 +36,7 @@ from ginkgo.runtime.artifacts.value_codec import CodecError
 # ----- Exceptions -----------------------------------------------------------
 
 
-class ShellTaskError(RuntimeError):
+class ShellTaskError(GinkgoError, RuntimeError):
     """Shell task execution failure."""
 
     def __init__(

@@ -42,6 +42,7 @@ ginkgo/reporting/
 ├── render.py            # Jinja env, bundle writer, single-file writer
 ├── templates/
 │   ├── index.html.j2    # master document shell
+│   ├── _section.html.j2 # numbered <h2> heading macro
 │   ├── _sidebar.html.j2
 │   ├── _masthead.html.j2
 │   ├── _summary.html.j2
@@ -116,6 +117,7 @@ checks. Assets created before checks have an empty check collection.
 
 ```
 <out>/
+├── .ginkgo-report.json            # ownership marker: run id, timestamp, version
 ├── index.html                     # entry point, references relative paths
 ├── assets/
 │   ├── report.css
@@ -133,6 +135,42 @@ checks. Assets created before checks have an empty check collection.
 Figures, notebooks, and logs are copied rather than inlined. The
 `--single-file` mode switches to data URIs for everything so the bundle
 collapses to one HTML document.
+
+## Destination safety
+
+Writing a bundle replaces the contents of `<out>`, so `export_report` first
+decides whether the directory is ginkgo's to replace. Two signals say it is,
+and `_prepare_out_dir` accepts either:
+
+- `managed_destination=True` — the caller derived the path rather than taking
+  it from a user. `command_report` sets it whenever `--out` was omitted, since
+  `.ginkgo/reports/<run-id>/` is ginkgo's by construction. Ownership is known
+  here, so it is stated, not inferred.
+- `.ginkgo-report.json` at the bundle root, stamped by every export. This is
+  what lets a user's own `--out` directory be re-rendered once ginkgo has
+  written a report into it.
+
+| `out_dir` state                       | Behaviour                             |
+| ------------------------------------- | ------------------------------------- |
+| missing or empty                      | used as is                            |
+| `managed_destination`                 | emptied and rewritten                 |
+| holds `.ginkgo-report.json`           | emptied and rewritten                 |
+| non-empty, neither signal             | `FileExistsError`, nothing is touched |
+| non-empty, neither signal, `force`    | emptied and rewritten                 |
+
+The marker alone would not do: a report directory written before the marker
+existed carries none, so inferring ownership from it would break re-rendering
+the default destination and push users towards `--force` on the one path where
+it should never be needed. Sniffing for `index.html` instead would re-open the
+original hole for any `--out` target that happens to hold one.
+
+`force=False` and `managed_destination=False` are the library defaults, so the
+Python API cannot lose a caller's files by omission either.
+
+In `--single-file` mode the marker sits beside `index.html` as the directory's
+only companion file. The HTML stays self-contained, so sharing it alone still
+works; the dotfile is what allows a second `--single-file` export over the same
+directory.
 
 ## Size caps (`SizingPolicy`)
 
@@ -200,9 +238,19 @@ structure is drawn with hairline `--line*` borders on neutral panels.
   full KV grid → numbered sections.
 - Mobile (< 960 px) collapses to a single column.
 
-Section indices (`01..08`) are stable regardless of which optional
-sections render. `05 Failure` is only rendered — and only linked from the
-sidebar — when the manifest reports at least one failure.
+Sections are numbered over the ones a given run actually renders, so the
+numerals are always contiguous: a clean run with no notebooks reads
+`01..06`, and the same run with a failure reads `01..07` with `05 Failure`
+inserted. `_SECTION_LAYOUT` in `model.py` is the single home for section
+order, titles, anchors, and sidebar grouping; `build_report_data` turns it
+into the `ReportSectionGroup` tree on `ReportData`, which both the sidebar
+and the `section_heading` macro read. Numbering a section in its own
+partial is what previously left holes (`01 02 03 04 06 08`) and read as
+sections having silently vanished.
+
+`Failure` renders — and is linked from the sidebar — only when the manifest
+reports at least one failure; `Notebooks` only when the run produced one.
+Both conditions live in `index.html.j2` beside the include.
 
 ## Interactivity (islands)
 
@@ -222,7 +270,11 @@ enhancement. There is no framework, no bundler, no build step.
 
 - Stylesheet inlined in a `<style>` block.
 - Fonts rewritten to `data:font/woff2;base64,…` URIs inside `@font-face`.
-- Figure images rewritten to `data:image/*;base64,…` URIs.
+- Figure images rewritten to `data:image/*;base64,…` URIs. The MIME type is
+  derived from the figure's bundle path (`figures/<artifact_id><ext>`), not
+  from its source: sources are extensionless CAS blobs, and guessing from
+  them yields `application/octet-stream`, which survives only by browser
+  content sniffing and fails under a strict CSP or an HTML sanitiser.
 - Islands script inlined in a `<script type="module">` block.
 
 Notebook iframes remain as relative references (their content is too
@@ -251,6 +303,7 @@ ordering hooks worth knowing about:
 ```
 ginkgo report <run-id>
     [--out DIR]                 # default: <workspace>/.ginkgo/reports/<run-id>/
+    [--force]                   # replace an --out dir ginkgo did not write
     [--single-file]             # inline CSS, fonts, figures as data URIs
     [--embed-full-assets]       # copy raw artifact bytes into the bundle
     [--max-log-lines N]         # default 80
@@ -259,17 +312,27 @@ ginkgo report <run-id>
 
 ## Testing
 
-`tests/test_reporting.py` covers:
+`tests/reporting/test_reporting.py` covers:
 
 - Formatters (`format_duration`, `format_bytes`) across s/m/h ranges.
 - Sizing helpers (`build_log_tail`, `build_table_preview`) on synthetic
   inputs with explicit truncation assertions.
 - `build_report_data` against fixture runs produced via
-  `RunProvenanceRecorder` — success and failure paths, graph layout,
-  asset resolution, running-run rejection.
+  `RunProvenanceRecorder` — success, failure, and all-cached paths, graph
+  layout, asset resolution, section numbering, running-run rejection. The
+  all-cached run must yield the same asset cards and sections as the executed
+  one; only the cache labels differ.
 - `export_report` — bundle and single-file modes, presence of key
-  strings, absence of external URLs, conditional failure section,
-  overwrite guard, deterministic re-render.
+  strings, absence of external URLs, contiguous section numerals,
+  `image/*` MIME types on inlined figures, conditional failure section,
+  the destination guard (foreign directory refused, `force=True`
+  replaces it, an own report directory re-renders, a
+  `managed_destination` replaces an unmarked bundle), deterministic
+  re-render.
+- `ginkgo report` end to end — `--out` at a directory holding unrelated
+  files leaves them intact and exits 1, `--force` replaces it, and the
+  managed report directory re-renders with no flag whether or not it
+  carries the marker.
 
 The fixture helper builds a two-task run with an optional failure and a
 registered file asset, mirroring the real provenance flow end-to-end.

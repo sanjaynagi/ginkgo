@@ -1,4 +1,5 @@
-<h2 id="env"><span class="num">08</span>Environment</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "env") -}}
 <dl class="kv">
   {% for entry in report.environment %}
   <dt>{{ entry.key }}</dt>

@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
+from ginkgo.errors import GinkgoError
+
 MountMode = Literal["ro", "rw"]
 MountOrigin = Literal["declared", "configured"]
 
@@ -69,7 +71,7 @@ def _refused_paths() -> frozenset[Path]:
 _REFUSED_PATHS = _refused_paths()
 
 
-class UnsafeMountError(ValueError):
+class UnsafeMountError(GinkgoError, ValueError):
     """Raised when a path is too broad or too sensitive to bind-mount."""
 
     def __init__(self, *, path: Path, reason: str) -> None:
@@ -80,7 +82,7 @@ class UnsafeMountError(ValueError):
         )
 
 
-class MountModeConflictError(ValueError):
+class MountModeConflictError(GinkgoError, ValueError):
     """Raised when a declared mount would widen a configured read-only mount."""
 
     def __init__(self, *, path: Path) -> None:
@@ -91,7 +93,7 @@ class MountModeConflictError(ValueError):
         )
 
 
-class MissingMountError(ValueError):
+class MissingMountError(GinkgoError, ValueError):
     """Raised when a configured mount names a path that does not exist."""
 
     def __init__(self, *, path: Path) -> None:

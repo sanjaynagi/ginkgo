@@ -46,11 +46,21 @@ file path: `table("data/frame.csv")` stores the rows as Parquet and yields a
 The annotation decides what a *consuming* task receives too, covered in
 [Consuming Assets Downstream](#consuming-assets-downstream) below.
 
-Each helper accepts a `name` (the asset key, written `namespace/name`), a
-`group` label for report sections, a `caption` shown beneath the asset name,
-and a `metadata` dict. Each also accepts `checks`: small data-quality
-assertions that run before Ginkgo registers the asset version. `model()` also
-takes `framework` and `metrics`.
+Each helper accepts a `name`, a `group` label for report sections, a `caption`
+shown beneath the asset name, and a `metadata` dict. Each also accepts
+`checks`: small data-quality assertions that run before Ginkgo registers the
+asset version. `model()` also takes `framework` and `metrics`.
+
+The `name` you pass is the asset's name verbatim, for every kind. The full key
+is `<kind>:<name>` — a colon, with the kind coming from the helper you called,
+not from you. So `table(frame, name="sites/forest/trend")` is keyed
+`table:sites/forest/trend`, and slashes inside the name are just part of the
+name. Omit `name` and Ginkgo generates one: `<task>` for a `file` asset,
+`<task>.<kind>[<n>]` for the others.
+
+Two tasks that pass the same `name` to the same helper write two versions of
+one asset key. That is the point of naming an asset — the key is yours — but
+give distinct outputs distinct names.
 
 ```python
 import pandas as pd
@@ -212,6 +222,14 @@ ginkgo asset inspect <ref>      # raw AssetVersion record (artifact_id, content_
 ginkgo models [run_id]          # model assets with their recorded metrics
 ```
 
+`<key>` is either the full `<kind>:<name>` printed by `ginkgo asset ls`, or the
+bare `<name>` you passed to the helper — a bare name is searched across kinds,
+and Ginkgo asks you to qualify it only when the same name exists under more
+than one kind. A name it does not recognise is reported with the nearest keys
+in the catalog. `<ref>` additionally accepts `@<version-or-alias>`, as in
+`ginkgo asset show table:sites/forest/trend@<version-id>`; without it you get
+the latest version.
+
 ## HTML Reports
 
 `ginkgo report` renders a **completed** run (status `succeeded` or `failed`) as
@@ -237,8 +255,15 @@ Useful flags:
 
 - `--single-file` — emit one HTML file with CSS, fonts, figures, and log files
   inlined as data URIs; easy to share or attach. Notebook iframes are not
-  inlined and remain as relative references.
-- `--out <dir>` — write the report bundle somewhere other than the default.
+  inlined and remain as relative references. A small `.ginkgo-report.json`
+  marker is written beside it so the directory can be re-rendered; the HTML
+  itself is self-contained and can be shared on its own.
+- `--out <dir>` — write the report bundle somewhere other than the default. The
+  directory must be empty, missing, or hold an earlier ginkgo report; otherwise
+  the command stops and changes nothing. The default destination always
+  re-renders.
+- `--force` — replace the contents of an `--out` directory that holds files
+  ginkgo did not write.
 - `--open` / `--no-open` — open (or do not open) the report in a browser when
   the build finishes.
 - `--embed-full-assets` — copy artifact bytes into the bundle alongside the

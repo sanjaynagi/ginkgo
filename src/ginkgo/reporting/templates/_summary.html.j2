@@ -1,4 +1,5 @@
-<h2 id="summary"><span class="num">01</span>Summary</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "summary") -}}
 <div class="stats">
   {% for card in report.summary_cards %}
   <div class="stat {{ card.tone }}">
