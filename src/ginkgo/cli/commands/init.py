@@ -276,13 +276,19 @@ def command_init(args) -> int:
     rich_console.print(f"[green]✓[/] Initialized project scaffold at [bold]{root}[/]")
     rich_console.print("[cyan]Created:[/]")
     for path in written_paths:
-        rich_console.print(f"  [green]•[/] {path.relative_to(root)}")
+        rich_console.print(f"  [green]•[/] {path.relative_to(root).as_posix()}")
     rich_console.print(
         f"\n[dim]Your workflow lives in[/] [bold]{context.workflow_relpath}[/]"
         f"[dim]; tasks live in[/] [bold]{context.modules_relpath}/[/]"
     )
-    rich_console.print(
-        "[dim]Next steps:[/] [bold]cd[/] "
-        f"[bold]{root.name}[/] and run [bold]ginkgo test --dry-run[/]"
-    )
+    if root == Path.cwd().resolve():
+        rich_console.print(
+            "[dim]Next steps:[/] run [bold]ginkgo test --dry-run[/]"
+        )
+    else:
+        display_dir = args.directory if args.directory != "." else root.name
+        rich_console.print(
+            "[dim]Next steps:[/] [bold]cd[/] "
+            f"[bold]{display_dir}[/] and run [bold]ginkgo test --dry-run[/]"
+        )
     return 0
