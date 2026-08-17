@@ -71,7 +71,7 @@ class AccessDiagnostic:
 def collect_access_diagnostics(
     *,
     project_root: Path | None = None,
-    executor_config: dict[str, Any] | None = None,
+    executor_configs: dict[str, dict[str, Any]] | None = None,
 ) -> list[AccessDiagnostic]:
     """Run the FUSE-specific doctor probes.
 
@@ -80,10 +80,12 @@ def collect_access_diagnostics(
     project_root : Path | None
         Project directory used to locate ``ginkgo.toml``. Defaults to the
         current working directory.
-    executor_config : dict[str, Any] | None
-        Parsed ``[remote.k8s]`` / ``[remote.batch]`` section. Used to
-        check whether a ``fuse_image`` is configured when any task is
-        expected to stream.
+    executor_configs : dict[str, dict[str, Any]] | None
+        Every configured executor section, keyed by its name in
+        ``ginkgo.toml`` (``"[remote.k8s]"``,
+        ``"[remote.executors.gpu-k8s]"``). Each is checked for a
+        ``fuse_image`` when any task is expected to stream, since a task
+        may be pinned to any of them.
 
     Returns
     -------
@@ -116,23 +118,22 @@ def collect_access_diagnostics(
             )
         )
 
-    # Probe 3: worker image has a dedicated fuse variant when configured.
-    if executor_config is not None:
-        fuse_image = (
-            executor_config.get("fuse_image") if isinstance(executor_config, dict) else None
-        )
-        if not fuse_image:
+    # Probe 3: every executor's worker image has a dedicated fuse variant.
+    # Checked per section, not once for the run: a task pinned to an
+    # executor without a fuse_image fails to mount however well the other
+    # executors are configured.
+    for section, executor_config in (executor_configs or {}).items():
+        if isinstance(executor_config, dict) and not executor_config.get("fuse_image"):
             diagnostics.append(
                 AccessDiagnostic(
                     code="FUSE_IMAGE_NOT_CONFIGURED",
                     severity="warning",
                     message=(
-                        "Remote streaming is enabled but no fuse_image is "
-                        "configured in the executor section."
+                        f"Remote streaming is enabled but no fuse_image is "
+                        f"configured in {section}."
                     ),
                     suggestion=(
-                        'Set fuse_image = "<registry>/ginkgo-worker-fuse:<tag>" '
-                        "in [remote.k8s] or [remote.batch]."
+                        f'Set fuse_image = "<registry>/ginkgo-worker-fuse:<tag>" in {section}.'
                     ),
                 )
             )

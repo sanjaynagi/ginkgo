@@ -147,6 +147,73 @@ class TestExecutorRegistryConfig:
         assert legacy.label("batch") == "GCP Batch"
 
 
+class TestSettingsValidation:
+    """Missing required settings fail before the run, not at first dispatch."""
+
+    INCOMPLETE = {"remote": {"executors": {"half-k8s": {"type": "k8s", "namespace": "ml"}}}}
+
+    def test_missing_image_is_reported_for_a_dispatch_target(self) -> None:
+        registry = ExecutorRegistry.from_config(self.INCOMPLETE, default="half-k8s")
+        with pytest.raises(ValueError, match=r"requires a image.*\[remote.executors.half-k8s\]"):
+            registry.validate_settings(names=["half-k8s"])
+
+    def test_unused_executor_section_stays_legal(self) -> None:
+        """A local run must not fail over a section it never dispatches to."""
+        registry = ExecutorRegistry.from_config(self.INCOMPLETE, default=None)
+        registry.validate_settings(names=[])
+
+    def test_batch_requires_a_project(self) -> None:
+        config = {"remote": {"executors": {"b": {"type": "batch", "image": "i"}}}}
+        registry = ExecutorRegistry.from_config(config, default="b")
+        with pytest.raises(ValueError, match="requires a project"):
+            registry.validate_settings(names=["b"])
+
+
+class TestCodeSyncGaps:
+    """Executors that ship no code while a configured peer syncs its own."""
+
+    SPLIT = {
+        "remote": {
+            "k8s": {"image": "i", "code": {"mode": "sync", "package": "wf"}},
+            "executors": {"cheap-batch": {"type": "batch", "project": "p", "image": "i"}},
+        }
+    }
+
+    def test_executor_without_code_table_is_reported(self) -> None:
+        registry = ExecutorRegistry.from_config(self.SPLIT, default="cheap-batch")
+        (message,) = registry.code_sync_gaps(names=["cheap-batch"])
+        assert "[remote.executors.cheap-batch]" in message
+        assert "[remote.k8s]" in message
+        assert "[remote.executors.cheap-batch.code]" in message
+
+    def test_syncing_executor_is_not_reported(self) -> None:
+        registry = ExecutorRegistry.from_config(self.SPLIT, default="k8s")
+        assert registry.code_sync_gaps(names=["k8s"]) == []
+
+    def test_nothing_is_reported_when_no_executor_syncs(self) -> None:
+        registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
+        assert registry.code_sync_gaps(names=["gpu-k8s", "cheap-batch"]) == []
+
+    def test_explicit_section_is_named_over_the_legacy_one(self) -> None:
+        config = {
+            "remote": {
+                "k8s": {"image": "legacy"},
+                "executors": {
+                    "k8s": {"type": "k8s", "image": "explicit"},
+                    "syncer": {
+                        "type": "k8s",
+                        "image": "i",
+                        "code": {"mode": "sync", "package": "wf"},
+                    },
+                },
+            }
+        }
+        registry = ExecutorRegistry.from_config(config, default="k8s")
+        (message,) = registry.code_sync_gaps(names=["k8s"])
+        assert "[remote.executors.k8s]" in message
+        assert "[remote.k8s]" not in message
+
+
 class TestExecutorRouting:
     def _evaluator(self, *, default: str | None) -> ConcurrentEvaluator:
         registry = ExecutorRegistry.from_config(CONFIG, default=default)

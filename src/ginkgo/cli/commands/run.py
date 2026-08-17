@@ -13,6 +13,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Sequence
 
+from rich.markup import escape
+
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
@@ -298,6 +300,22 @@ def run_workflow(
             }
         )
     )
+    default_executor = executor_registry.default_name
+    dispatch_targets: list[str] = [
+        *pinned_executors,
+        *([default_executor] if default_executor is not None else []),
+    ]
+    # Backends are built on first dispatch, so a half-written executor section
+    # is caught here rather than after every local task has already run.
+    executor_registry.validate_settings(names=dispatch_targets)
+
+    # Code-sync is configured per executor, so a run that dispatches to one
+    # without a code table quietly runs its image's baked copy. Warned about
+    # for the same reason as the checks above: the run looks healthy.
+    # Messages quote config sections, whose brackets Rich would read as markup.
+    for message in executor_registry.code_sync_gaps(names=dispatch_targets):
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(message)}")
+
     task_count = len(evaluator.task_nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
     env_count = len(

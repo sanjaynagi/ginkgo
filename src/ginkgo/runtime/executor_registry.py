@@ -38,6 +38,14 @@ from ginkgo.runtime.remote_executor import RemoteExecutor
 # Executor backend types and the config sections that define them implicitly.
 _EXECUTOR_TYPES = ("k8s", "batch")
 
+# Settings a backend cannot be constructed without, checked when the config
+# is parsed so a missing one fails before any task runs rather than at the
+# first dispatch. Backend label is for the error message.
+_REQUIRED_SETTINGS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "k8s": ("Kubernetes", ("image",)),
+    "batch": ("GCP Batch", ("project", "image")),
+}
+
 # Name reserved for "no remote executor" — the default run placement.
 LOCAL = "local"
 
@@ -57,12 +65,18 @@ class ExecutorSpec:
         excluding the ``type`` key and the nested ``code`` table.
     code : dict[str, Any] | None
         Code-sync configuration from the executor's ``code`` sub-table.
+    source : str
+        Config section the spec was read from (``"[remote.k8s]"``,
+        ``"[remote.executors.gpu-k8s]"``), so a message can name the
+        section the user has to edit rather than guess it back from the
+        name.
     """
 
     name: str
     type: str
     settings: dict[str, Any]
     code: dict[str, Any] | None = None
+    source: str = ""
 
 
 @dataclass
@@ -219,6 +233,70 @@ class ExecutorRegistry:
         spec = self.specs.get(name)
         return None if spec is None or spec.code is None else dict(spec.code)
 
+    def validate_settings(self, *, names: Sequence[str]) -> None:
+        """Check that each executor in *names* can actually be built.
+
+        Backends are constructed on first dispatch, so without this a run
+        with a mistyped or half-written executor section would execute
+        every local task before failing. Called once the graph is known,
+        which is where the run learns the executors it will dispatch to.
+
+        Parameters
+        ----------
+        names : Sequence[str]
+            Executors this run may dispatch to.
+
+        Raises
+        ------
+        ValueError
+            If a named executor is missing a required setting.
+        """
+        for name in names:
+            spec = self.specs.get(name)
+            if spec is not None:
+                _validate_settings(spec)
+
+    def code_sync_gaps(self, *, names: Sequence[str]) -> list[str]:
+        """Warn about executors in *names* that ship no code while a peer does.
+
+        Code-sync config is per executor, so a project that grew a second
+        executor without copying its ``code`` table dispatches there with
+        whatever code is baked into the image. The failure is silent — a
+        stale result, or an ``ImportError`` far from its cause — so the
+        asymmetry is reported before the run rather than at dispatch.
+
+        Parameters
+        ----------
+        names : Sequence[str]
+            Executors this run may dispatch to.
+
+        Returns
+        -------
+        list[str]
+            One message per executor lacking a ``code`` table, empty when
+            no configured executor syncs code or all of *names* do.
+        """
+        syncing = [
+            spec
+            for spec in self.specs.values()
+            if spec.code is not None and spec.code.get("mode") == "sync"
+        ]
+        if not syncing:
+            return []
+        peers = ", ".join(sorted(_source_hint(spec) for spec in syncing))
+        messages = []
+        for name in names:
+            spec = self.specs.get(name)
+            if spec is None or spec.code is not None:
+                continue
+            section = _source_hint(spec)
+            messages.append(
+                f"{section} declares no code table, so tasks on executor {name!r} "
+                f"run the code baked into its image, while {peers} syncs workflow "
+                f"code. Add a [{section[1:-1]}.code] table if that is not intended."
+            )
+        return messages
+
     def label(self, name: str) -> str:
         """Human-readable label for a run header line."""
         spec = self.specs.get(name)
@@ -242,7 +320,7 @@ def _spec_from_table(
     if code is not None and not isinstance(code, dict):
         raise ValueError(f"{source} code must be a table")
     settings = {key: value for key, value in table.items() if key not in {"type", "code"}}
-    return ExecutorSpec(name=name, type=type_name, settings=settings, code=code)
+    return ExecutorSpec(name=name, type=type_name, settings=settings, code=code, source=source)
 
 
 def _available_hint(specs: dict[str, ExecutorSpec]) -> str:
@@ -253,8 +331,26 @@ def _available_hint(specs: dict[str, ExecutorSpec]) -> str:
     return f"Configured executors: {names}."
 
 
+def _validate_settings(spec: ExecutorSpec) -> None:
+    """Raise if *spec* lacks a setting its backend cannot be built without.
+
+    Raises
+    ------
+    ValueError
+        Naming the missing key and the config section that must set it.
+    """
+    label, required = _REQUIRED_SETTINGS.get(spec.type, ("", ()))
+    for key in required:
+        if not spec.settings.get(key):
+            raise ValueError(
+                f"{label} executor {spec.name!r} requires a {key}. "
+                f"Set {key} in {_source_hint(spec)}."
+            )
+
+
 def _build_executor(spec: ExecutorSpec) -> RemoteExecutor:
     """Construct the backend object for one executor spec."""
+    _validate_settings(spec)
     if spec.type == "k8s":
         return _build_k8s_executor(spec)
     if spec.type == "batch":
@@ -267,16 +363,9 @@ def _build_k8s_executor(spec: ExecutorSpec) -> RemoteExecutor:
     from ginkgo.remote.kubernetes import KubernetesExecutor
 
     config = spec.settings
-    image = config.get("image")
-    if not image:
-        raise ValueError(
-            f"Kubernetes executor {spec.name!r} requires an image. "
-            f"Set image in {_source_hint(spec)}."
-        )
-
     return KubernetesExecutor(
         namespace=config.get("namespace", "default"),
-        image=image,
+        image=config["image"],
         service_account=config.get("service_account"),
         pull_policy=config.get("pull_policy", "IfNotPresent"),
         gpu_type=config.get("gpu_type"),
@@ -297,19 +386,8 @@ def _build_batch_executor(spec: ExecutorSpec) -> RemoteExecutor:
     from ginkgo.remote.gcp_batch import GCPBatchExecutor
 
     config = spec.settings
-    project = config.get("project")
-    if not project:
-        raise ValueError(
-            f"GCP Batch executor {spec.name!r} requires a project. "
-            f"Set project in {_source_hint(spec)}."
-        )
-
-    image = config.get("image")
-    if not image:
-        raise ValueError(
-            f"GCP Batch executor {spec.name!r} requires an image. "
-            f"Set image in {_source_hint(spec)}."
-        )
+    project = config["project"]
+    image = config["image"]
 
     return GCPBatchExecutor(
         project=project,
@@ -325,7 +403,11 @@ def _build_batch_executor(spec: ExecutorSpec) -> RemoteExecutor:
 
 
 def _source_hint(spec: ExecutorSpec) -> str:
-    """Config section a spec came from, for error messages."""
-    if spec.name == spec.type:
-        return f"[remote.{spec.type}]"
-    return f"[remote.executors.{spec.name}]"
+    """Config section a spec came from, for error messages.
+
+    An explicit ``[remote.executors.k8s]`` overrides the legacy
+    ``[remote.k8s]``, so the section cannot be derived from the name --
+    it is recorded when the spec is parsed. Specs built around an
+    already-constructed backend have no section; name them instead.
+    """
+    return spec.source or f"[remote.executors.{spec.name}]"

@@ -60,10 +60,9 @@ def command_doctor(args) -> int:
 
     # Additional FUSE-streaming probes. These produce their own diagnostic
     # shape; normalise into the workflow diagnostic format for rendering.
-    executor_cfg = _extract_executor_config(config=config)
     access_diagnostics = collect_access_diagnostics(
         project_root=Path.cwd(),
-        executor_config=executor_cfg,
+        executor_configs=_extract_executor_configs(config=config),
     )
 
     if args.json:
@@ -118,25 +117,27 @@ def command_doctor(args) -> int:
     return 1 if has_errors else 0
 
 
-def _extract_executor_config(*, config: dict) -> dict | None:
-    """Return one executor's config section to probe FUSE settings against.
+def _extract_executor_configs(*, config: dict) -> dict[str, dict]:
+    """Return every configured executor section, keyed by its config path.
 
-    Prefers a section that configures streaming (``fuse_image``), so a run
-    with several named executors is diagnosed against the one that actually
-    needs a FUSE-capable worker image.
+    A task may be pinned to any configured executor, so the FUSE probes
+    have to see all of them: diagnosing only one section would clear a run
+    whose other executors cannot mount. Keys are the section names as they
+    appear in ``ginkgo.toml`` (``"[remote.k8s]"``,
+    ``"[remote.executors.gpu-k8s]"``) so a diagnostic can name the section
+    the user has to edit.
     """
     remote = config.get("remote") if isinstance(config, dict) else None
     if not isinstance(remote, dict):
-        return None
+        return {}
+    sections: dict[str, dict] = {}
+    for type_name in ("k8s", "batch"):
+        section = remote.get(type_name)
+        if isinstance(section, dict):
+            sections[f"[remote.{type_name}]"] = section
     named = remote.get("executors")
-    sections = [
-        section
-        for section in (remote.get("k8s"), remote.get("batch"))
-        if isinstance(section, dict)
-    ]
     if isinstance(named, dict):
-        sections.extend(section for section in named.values() if isinstance(section, dict))
-    for section in sections:
-        if section.get("fuse_image"):
-            return section
-    return sections[0] if sections else None
+        for name, table in named.items():
+            if isinstance(table, dict):
+                sections[f"[remote.executors.{name}]"] = table
+    return sections

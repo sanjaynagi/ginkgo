@@ -191,7 +191,10 @@ bundle rather than uploading it twice.
 
 Code config is read from the executor that runs the task, and only from it.
 A `[remote.k8s.code]` table does not apply to `--executor batch` — give each
-executor that needs code sync its own `code` table.
+executor that needs code sync its own `code` table. When one executor syncs
+code and an executor the run dispatches to has no `code` table, the run warns
+before starting, since tasks there would silently use the code baked into the
+image.
 
 ## Worker Docker Image
 
