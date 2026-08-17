@@ -50,21 +50,26 @@ def report_failure(
     code on the stack, which means one of ginkgo's own checks tripped — prints
     as a single ``✖ <message>`` line. Anything else is a bug in the workflow or
     in ginkgo, so the file and line of the innermost user frame follow the
-    message, and the traceback follows that when *show_traceback* is set.
+    message.
+
+    *show_traceback* is the user overriding that judgement, so it always wins:
+    a traceback that was asked for is printed for every failure, including the
+    ones whose default report is a bare message. The hint that advertises the
+    escape hatch is only printed alongside a location, so that ginkgo's own
+    one-line messages stay one line.
     """
     rich_console = console(stream)
     rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
 
     location = None if isinstance(exc, GinkgoError) else failure_location(exc)
-    if location is None:
-        return 1
+    if location is not None:
+        # A wrapped path is a path the user cannot click or copy, so the
+        # location line is printed whole even when wider than the terminal.
+        rich_console.print(
+            Text(f"  {type(exc).__name__} at {location}", style="dim"),
+            soft_wrap=True,
+        )
 
-    # A wrapped path is a path the user cannot click or copy, so the location
-    # line is printed whole even when it is wider than the terminal.
-    rich_console.print(
-        Text(f"  {type(exc).__name__} at {location}", style="dim"),
-        soft_wrap=True,
-    )
     if show_traceback:
         rich_console.print(
             Traceback.from_exception(
@@ -74,7 +79,7 @@ def report_failure(
                 show_locals=False,
             )
         )
-    else:
+    elif location is not None:
         rich_console.print(
             Text(
                 f"  Re-run with {_TRACEBACK_ENV_VAR}=1 (or --verbose) for the full traceback.",

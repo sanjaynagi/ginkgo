@@ -67,6 +67,12 @@ differently (`cli/errors.py`, on the taxonomy in `ginkgo/errors.py`):
   always locatable without re-running. `GINKGO_TRACEBACK=1` or `--verbose` adds
   the full rich traceback beneath it.
 
+`GINKGO_TRACEBACK=1` prints a traceback for **every** failure, including the
+ones whose default report is a bare message — a `GinkgoError`, or an internal
+crash after the flow body returned with no user frame left on the stack. Only
+the hint that advertises the variable is withheld there, so that ginkgo's
+one-line messages stay one line; the escape hatch itself always works.
+
 `KeyboardInterrupt` prints `⨯ Interrupted` and exits 130; `SystemExit`
 propagates untouched, so argparse and `--version` keep the status they chose.
 `ginkgo doctor` reports the same user-code location under each diagnostic.

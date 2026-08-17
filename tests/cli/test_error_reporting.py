@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
 
 from ginkgo.cli.app import main
+from ginkgo.cli.errors import report_failure
 from ginkgo.errors import GinkgoError, failure_location
 
 
@@ -124,6 +126,46 @@ class TestDeliberateFailures:
         assert " at " not in captured
         assert "Traceback" not in captured
         assert "GINKGO_TRACEBACK" not in captured
+
+
+class TestRequestedTracebackAlwaysWins:
+    """The flag overrides the default judgement, so nothing may veto it."""
+
+    def test_a_failure_with_no_user_frame_still_gets_its_traceback(
+        self,
+        capsys,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setenv("GINKGO_TRACEBACK", "1")
+
+        status = main(["run", "definitely_not_here.py", "--dry-run"])
+
+        captured = capsys.readouterr().err
+        assert status == 1
+        assert "Traceback" in captured
+        assert "FileNotFoundError" in captured
+
+    def test_a_ginkgo_error_still_gets_its_traceback(self) -> None:
+        stream = io.StringIO()
+        try:
+            raise GinkgoError("deliberate")
+        except GinkgoError as exc:
+            status = report_failure(exc=exc, stream=stream, show_traceback=True)
+
+        printed = stream.getvalue()
+        assert status == 1
+        assert "✖ deliberate" in printed
+        assert "Traceback" in printed
+
+    def test_a_bare_message_carries_no_hint_it_cannot_honour(self) -> None:
+        """The hint rides with the location; the flag works with or without it."""
+        stream = io.StringIO()
+        try:
+            raise GinkgoError("deliberate")
+        except GinkgoError as exc:
+            report_failure(exc=exc, stream=stream, show_traceback=False)
+
+        assert stream.getvalue().splitlines() == ["✖ deliberate"]
 
 
 class TestInterruptAndExit:
