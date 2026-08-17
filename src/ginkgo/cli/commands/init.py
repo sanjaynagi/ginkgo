@@ -25,11 +25,17 @@ PACKAGE_NAME = "workflow"
 GINKGO_REPO_URL = "https://github.com/sanjaynagi/ginkgo.git"
 
 #: Commit the starter scaffold is validated against, used when the running
-#: install does not record one of its own. Deliberately a commit rather than a
-#: release tag: the templates call ``ginkgo.param``, which landed after v0.2.0,
-#: so pinning either existing tag would scaffold a project that cannot run.
-#: Bump this when the templates start needing newer ginkgo, and switch it to a
-#: tag once a release carries everything they use.
+#: install does not record one of its own.
+#:
+#: This constant exists only because no release currently carries what the
+#: templates use: they call ``ginkgo.param``, which landed after v0.2.0, so
+#: pinning either existing tag would scaffold a project that installs cleanly
+#: and then cannot run. Whoever cuts a release that carries everything the
+#: templates use should delete this and pin that tag instead.
+#:
+#: Until then, bump it when the templates start needing newer ginkgo.
+#: ``test_fallback_pin_can_still_run_the_scaffold_it_pins`` fails when this
+#: commit no longer carries every ginkgo name the templates reach for.
 FALLBACK_GINKGO_REV = "2471fcd00bc606f6ad6702151452fb0e6ea76396"
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections import Counter
 import re
 import shutil
@@ -25,7 +26,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
-from ginkgo.cli.commands.init import GINKGO_REPO_URL
+from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
 
 
@@ -938,6 +939,39 @@ def main():
 
 
 _IMPORT_PATTERN = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
+_TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
+_EXPORTED_NAME_PATTERN = re.compile(r'"([A-Za-z_]\w*)"')
+
+
+def _template_ginkgo_symbols() -> set[str]:
+    """Return every name the scaffold templates reach for on the ginkgo package.
+
+    Covers both ``from ginkgo import ...`` and attribute access on an imported
+    ``ginkgo``, which is how the templates use ``config`` and ``param``.
+    """
+    symbols: set[str] = set()
+    for path in sorted(_TEMPLATE_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and node.module == "ginkgo" and not node.level:
+                symbols.update(alias.name for alias in node.names)
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "ginkgo"
+            ):
+                symbols.add(node.attr)
+    return symbols
+
+
+def _git_show(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one read-only git command against this repository."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
 
 def _scaffold_notebook(*, project_dir: Path) -> dict:
@@ -1057,6 +1091,30 @@ class TestCliInit:
         pin = requirement.get("rev") or requirement.get("tag")
         assert pin, f"ginkgo requirement is unpinned: {requirement}"
         assert re.fullmatch(r"[0-9a-f]{40}|v\d+\.\d+\.\d+.*", pin)
+
+    def test_fallback_pin_can_still_run_the_scaffold_it_pins(self) -> None:
+        """The fallback commit must carry every ginkgo name the templates use.
+
+        A pin that predates a template's requirements installs cleanly and then
+        fails at run time on a user's machine — which is exactly why neither
+        v0.1.0 nor v0.2.0 could serve as the pin, since both lack
+        ``ginkgo.param``. Nothing else makes that staleness fail, so it fails
+        here, offline, against the local object database.
+        """
+        rev = FALLBACK_GINKGO_REV
+        if _git_show("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
+            pytest.skip(f"pinned rev {rev} is not in this clone's object database")
+
+        exports = _git_show("show", f"{rev}:src/ginkgo/__init__.py")
+        assert exports.returncode == 0, exports.stderr
+
+        exported = set(_EXPORTED_NAME_PATTERN.findall(exports.stdout))
+        required = _template_ginkgo_symbols()
+        assert required, "no ginkgo symbols found in the templates — the scan is broken"
+        assert required <= exported, (
+            f"FALLBACK_GINKGO_REV {rev} is too old for the current templates: "
+            f"{sorted(required - exported)} missing. Bump it to a commit that has them."
+        )
 
     def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
         """Papermill injects into the ``parameters``-tagged cell, so one must exist.
