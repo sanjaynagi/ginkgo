@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ginkgo.cli import main
 from ginkgo.core.asset import AssetKey, make_asset_version
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.reporting import SizingPolicy, build_report_data, export_report
+from ginkgo.reporting.render import _MARKER_NAME
 from ginkgo.reporting.sizing import build_log_tail, build_table_preview
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
@@ -499,11 +501,112 @@ class TestExport:
         second = export_report(run_dir=run_dir, out_dir=tmp_path / "b")
         assert first.index_path.read_bytes() == second.index_path.read_bytes()
 
-    def test_refuses_to_overwrite_without_flag(self, tmp_path: Path) -> None:
+    def test_refuses_to_overwrite_foreign_directory_by_default(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-        (out_dir / "existing.txt").write_text("keep me", encoding="utf-8")
+        out_dir = tmp_path / "precious"
+        (out_dir / "subdir").mkdir(parents=True)
+        (out_dir / "my_thesis.txt").write_text("important user data", encoding="utf-8")
+        (out_dir / "subdir" / "notes.txt").write_text("more data", encoding="utf-8")
 
         with pytest.raises(FileExistsError):
-            export_report(run_dir=run_dir, out_dir=out_dir, overwrite=False)
+            export_report(run_dir=run_dir, out_dir=out_dir)
+
+        assert (out_dir / "my_thesis.txt").read_text(encoding="utf-8") == "important user data"
+        assert (out_dir / "subdir" / "notes.txt").is_file()
+        assert not (out_dir / "index.html").exists()
+
+    def test_force_replaces_foreign_directory(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "precious"
+        out_dir.mkdir()
+        (out_dir / "existing.txt").write_text("goodbye", encoding="utf-8")
+
+        result = export_report(run_dir=run_dir, out_dir=out_dir, force=True)
+
+        assert result.index_path.is_file()
+        assert not (out_dir / "existing.txt").exists()
+
+    def test_rerender_into_own_report_dir_needs_no_flag(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "reports" / "run-ok"
+
+        first = export_report(run_dir=run_dir, out_dir=out_dir)
+        assert (out_dir / _MARKER_NAME).is_file()
+        stale = out_dir / "assets" / "stale-figure.png"
+        stale.write_bytes(b"stale")
+
+        second = export_report(run_dir=run_dir, out_dir=out_dir)
+
+        assert second.index_path == first.index_path
+        assert second.index_path.is_file()
+        assert not stale.exists()
+
+    def test_empty_directory_is_used_as_is(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "empty"
+        out_dir.mkdir()
+
+        result = export_report(run_dir=run_dir, out_dir=out_dir)
+
+        assert result.index_path.is_file()
+
+    def test_single_file_export_marks_its_directory(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "sf"
+
+        export_report(run_dir=run_dir, out_dir=out_dir, single_file=True)
+        assert (out_dir / _MARKER_NAME).is_file()
+
+        # A second single-file export over the same directory is allowed.
+        result = export_report(run_dir=run_dir, out_dir=out_dir, single_file=True)
+        assert result.index_path.is_file()
+
+
+class TestReportCli:
+    """``ginkgo report`` must never delete files it did not write."""
+
+    @staticmethod
+    def _point_cli_at(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import ginkgo.cli.common as common_module
+
+        monkeypatch.setattr(common_module, "RUNS_ROOT", run_dir.parent)
+
+    def test_out_dir_with_unrelated_files_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        self._point_cli_at(run_dir, monkeypatch)
+        precious = tmp_path / "precious"
+        (precious / "subdir").mkdir(parents=True)
+        (precious / "my_thesis.txt").write_text("important user data", encoding="utf-8")
+        (precious / "subdir" / "notes.txt").write_text("more data", encoding="utf-8")
+
+        assert main(["report", "--out", str(precious), "--no-open"]) == 1
+
+        assert (precious / "my_thesis.txt").read_text(encoding="utf-8") == "important user data"
+        assert (precious / "subdir" / "notes.txt").is_file()
+        assert not (precious / "index.html").exists()
+        assert "--force" in capsys.readouterr().out
+
+    def test_force_replaces_the_out_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        self._point_cli_at(run_dir, monkeypatch)
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "stale.txt").write_text("goodbye", encoding="utf-8")
+
+        assert main(["report", "--out", str(target), "--no-open", "--force"]) == 0
+
+        assert (target / "index.html").is_file()
+        assert not (target / "stale.txt").exists()
+
+    def test_managed_report_dir_rerenders_without_a_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        self._point_cli_at(run_dir, monkeypatch)
+
+        assert main(["report", "--no-open"]) == 0
+        assert main(["report", "--no-open"]) == 0

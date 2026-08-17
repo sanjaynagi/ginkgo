@@ -9,6 +9,7 @@ self-contained HTML document with all assets inlined as data URIs.
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import shutil
 from dataclasses import dataclass
@@ -23,6 +24,10 @@ from .sizing import SizingPolicy
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
+
+#: Written at the root of every exported report. Its presence marks the
+#: directory as ginkgo-owned, so a later export may replace its contents.
+_MARKER_NAME = ".ginkgo-report.json"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -43,7 +48,7 @@ def export_report(
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
-    overwrite: bool = True,
+    force: bool = False,
 ) -> ExportResult:
     """Export a bundle or single-file report for one run.
 
@@ -65,14 +70,20 @@ def export_report(
     single_file : bool
         When True, emit one HTML file with CSS, fonts, figures, and logs
         inlined as data URIs.
-    overwrite : bool
-        When True, an existing non-empty ``out_dir`` is cleared before
-        writing. When False and the directory exists and is non-empty,
-        ``FileExistsError`` is raised.
+    force : bool
+        Replace the contents of a non-empty ``out_dir`` that ginkgo did not
+        write. An empty, missing, or previously exported directory is always
+        replaced; anything else raises ``FileExistsError`` unless this is set.
 
     Returns
     -------
     ExportResult
+
+    Raises
+    ------
+    FileExistsError
+        When ``out_dir`` holds files that no earlier export wrote and
+        ``force`` is False.
     """
     report = build_report_data(
         run_dir=run_dir,
@@ -82,12 +93,8 @@ def export_report(
         policy=policy,
     )
     out_dir = Path(out_dir)
-
-    if out_dir.exists() and any(out_dir.iterdir()):
-        if not overwrite:
-            raise FileExistsError(f"{out_dir} already exists and is not empty")
-        _clean_dir(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_out_dir(out_dir, force=force)
+    _write_marker(out_dir, report=report)
 
     if single_file:
         index_path = _render_single_file(report=report, out_path=out_dir / "index.html")
@@ -278,6 +285,39 @@ def _yaml_filter(value: Any) -> str:
 
 
 # ----- Utilities ----------------------------------------------------------
+
+
+def _is_report_dir(path: Path) -> bool:
+    """Report whether ``path`` holds a report written by an earlier export."""
+    return (path / _MARKER_NAME).is_file()
+
+
+def _prepare_out_dir(out_dir: Path, *, force: bool) -> None:
+    """Make ``out_dir`` an empty directory, refusing to destroy others' files.
+
+    A missing or empty directory is used as is. A directory an earlier export
+    wrote — marked by ``_MARKER_NAME`` — is emptied, so re-rendering a
+    report over itself needs no opt-in. Any other non-empty directory raises
+    ``FileExistsError`` unless ``force`` is set.
+    """
+    if out_dir.exists() and any(out_dir.iterdir()):
+        if not (force or _is_report_dir(out_dir)):
+            raise FileExistsError(
+                f"{out_dir} is not empty and holds no ginkgo report; "
+                "refusing to delete files ginkgo did not write"
+            )
+        _clean_dir(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _write_marker(out_dir: Path, *, report: ReportData) -> None:
+    """Stamp ``out_dir`` as a ginkgo-owned report directory."""
+    payload = {
+        "run_id": report.run_id,
+        "generated_at": report.generated_at_label,
+        "ginkgo_version": report.ginkgo_version,
+    }
+    (out_dir / _MARKER_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _clean_dir(path: Path) -> None:

@@ -116,6 +116,7 @@ checks. Assets created before checks have an empty check collection.
 
 ```
 <out>/
+├── .ginkgo-report.json            # ownership marker: run id, timestamp, version
 ├── index.html                     # entry point, references relative paths
 ├── assets/
 │   ├── report.css
@@ -133,6 +134,25 @@ checks. Assets created before checks have an empty check collection.
 Figures, notebooks, and logs are copied rather than inlined. The
 `--single-file` mode switches to data URIs for everything so the bundle
 collapses to one HTML document.
+
+## Destination safety
+
+Writing a bundle replaces the contents of `<out>`, so `export_report` first
+decides whether the directory is ginkgo's to replace. Every export stamps
+`.ginkgo-report.json` at the bundle root; `_prepare_out_dir` treats that marker
+as the ownership record:
+
+| `out_dir` state                  | Behaviour                              |
+| -------------------------------- | -------------------------------------- |
+| missing or empty                 | used as is                             |
+| holds `.ginkgo-report.json`      | emptied and rewritten                  |
+| non-empty, no marker             | `FileExistsError`, nothing is touched  |
+| non-empty, no marker, `force`    | emptied and rewritten                  |
+
+The default destination `.ginkgo/reports/<run-id>/` therefore re-renders with
+no flag, while `--out` pointed at a directory holding a user's own files fails
+loudly rather than deleting them. `force=False` is the library default too, so
+the Python API cannot lose files by omission.
 
 ## Size caps (`SizingPolicy`)
 
@@ -251,6 +271,7 @@ ordering hooks worth knowing about:
 ```
 ginkgo report <run-id>
     [--out DIR]                 # default: <workspace>/.ginkgo/reports/<run-id>/
+    [--force]                   # replace an --out dir ginkgo did not write
     [--single-file]             # inline CSS, fonts, figures as data URIs
     [--embed-full-assets]       # copy raw artifact bytes into the bundle
     [--max-log-lines N]         # default 80
@@ -269,7 +290,12 @@ ginkgo report <run-id>
   asset resolution, running-run rejection.
 - `export_report` — bundle and single-file modes, presence of key
   strings, absence of external URLs, conditional failure section,
-  overwrite guard, deterministic re-render.
+  the destination guard (foreign directory refused, `force=True`
+  replaces it, an own report directory re-renders), deterministic
+  re-render.
+- `ginkgo report` end to end — `--out` at a directory holding unrelated
+  files leaves them intact and exits 1, `--force` replaces it, and the
+  managed report directory re-renders with no flag.
 
 The fixture helper builds a two-task run with an optional failure and a
 registered file asset, mirroring the real provenance flow end-to-end.
