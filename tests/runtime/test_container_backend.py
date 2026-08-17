@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from ginkgo.envs.container import (
     is_container_env,
     parse_container_uri,
 )
+from ginkgo.envs.mounts import mount
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 
@@ -73,6 +75,7 @@ class TestContainerBackendExecArgv:
         backend = ContainerBackend(
             runtime="docker",
             project_root=tmp_path,
+            user="root",
         )
         argv = backend.exec_argv(
             env="docker://myorg/image:3.11",
@@ -96,6 +99,91 @@ class TestContainerBackendExecArgv:
         backend = ContainerBackend(runtime="podman", project_root=tmp_path)
         argv = backend.exec_argv(env="docker://img:1", cmd="ls")
         assert argv[0] == "podman"
+
+    def test_runs_as_invoking_user_by_default(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert "-u" in argv
+        assert argv[argv.index("-u") + 1] == f"{os.getuid()}:{os.getgid()}"
+        # Images that resolve $HOME need one that exists inside the container.
+        assert argv[argv.index("-e") + 1] == "HOME=/tmp"
+
+    def test_explicit_user_is_passed_through(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert argv[argv.index("-u") + 1] == "1000:1000"
+
+    def test_invalid_user_raises(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, user="nobody")
+        with pytest.raises(ValueError, match="Invalid \\[container\\] user"):
+            backend.exec_argv(env="docker://img:1", cmd="ls")
+
+    def test_configurable_shell(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, shell="sh")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert argv[-3:] == ["sh", "-c", "ls"]
+
+    def test_mounts_declared_input_outside_project(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        reads = tmp_path / "data" / "reads.fastq"
+        reads.parent.mkdir()
+        reads.write_text("@r\n")
+
+        backend = ContainerBackend(project_root=project, user="root")
+        argv = backend.exec_argv(
+            env="docker://img:1",
+            cmd=f"cat {reads}",
+            mounts=[mount(reads)],
+        )
+        assert f"{reads}:{reads}:ro" in argv
+
+    def test_input_inside_project_is_not_remounted(self, tmp_path: Path):
+        reads = tmp_path / "data" / "reads.fastq"
+        reads.parent.mkdir()
+        reads.write_text("@r\n")
+
+        backend = ContainerBackend(project_root=tmp_path, user="root")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
+        assert argv.count("-v") == 1
+
+    def test_symlinked_input_mounts_real_path_at_declared_path(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        real = tmp_path / "store" / "reads.fastq"
+        real.parent.mkdir()
+        real.write_text("@r\n")
+        link = project / "reads.fastq"
+        link.symlink_to(real)
+
+        backend = ContainerBackend(project_root=project, user="root")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(link)])
+        assert f"{real}:{link}:ro" in argv
+
+    def test_auto_mount_off_ignores_declared_inputs(self, tmp_path: Path):
+        reads = tmp_path / "reads.fastq"
+        reads.write_text("@r\n")
+
+        backend = ContainerBackend(
+            project_root=tmp_path / "project",
+            user="root",
+            auto_mount=False,
+        )
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
+        assert argv.count("-v") == 1
+
+    def test_extra_mounts_are_always_applied(self, tmp_path: Path):
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        backend = ContainerBackend(
+            project_root=tmp_path / "project",
+            user="root",
+            auto_mount=False,
+            extra_mounts=(f"{scratch}:rw",),
+        )
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert f"{scratch}:{scratch}:rw" in argv
 
 
 class TestContainerBackendValidateEnvs:

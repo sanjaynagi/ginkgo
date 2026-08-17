@@ -10,7 +10,7 @@ import sys
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import config_session
-from ginkgo.envs.container import ContainerBackend
+from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import collect_access_diagnostics
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
@@ -41,7 +41,7 @@ def command_doctor(args) -> int:
                     workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
                 )
             ),
-            container=ContainerBackend(project_root=Path.cwd()),
+            container=container_backend_from_config(project_root=Path.cwd(), config=config),
         )
 
     diagnostics = collect_workflow_diagnostics(
