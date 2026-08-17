@@ -75,15 +75,48 @@ def _notebook(tmp_path: Path) -> Path:
     return notebook
 
 
-def _plant_unreadable_conf(directory: Path) -> Path:
-    """Plant an unreadable ``conf.json`` in ``directory`` and return the file."""
-    directory.mkdir(parents=True, exist_ok=True)
-    conf = directory / "conf.json"
-    conf.write_text("{}", encoding="utf-8")
-    conf.chmod(0o000)
-    if os.access(conf, os.R_OK):  # pragma: no cover - running as root
-        pytest.skip("cannot make a file unreadable as this user")
-    return conf
+_SYSTEM_PATH_PROBE = (
+    "import json, jupyter_core.paths as jp; print(json.dumps(jp.SYSTEM_JUPYTER_PATH))"
+)
+
+
+def _system_jupyter_paths(env: dict[str, str]) -> list[Path]:
+    """Return ``SYSTEM_JUPYTER_PATH`` as computed under ``env``."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _SYSTEM_PATH_PROBE],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [Path(entry) for entry in json.loads(completed.stdout)]
+
+
+def _plant_unreadable_conf(*, env: dict[str, str], under: Path) -> list[Path]:
+    """Plant an unreadable ``conf.json`` where ``env`` says Jupyter will look.
+
+    The directory is discovered by asking ``jupyter_core`` rather than being
+    predicted, because the answer is neither stable across platforms nor
+    something this test should encode: the same override yields
+    ``.../Jupyter`` on macOS and ``.../jupyter`` on Linux. Guessing it wrong
+    plants the file where nothing reads it and the simulation passes
+    vacuously — which is how a macOS-only version of this fix survived a
+    green suite.
+    """
+    targets = [path for path in _system_jupyter_paths(env) if path.is_relative_to(under)]
+    assert targets, (
+        "the hostile environment did not redirect SYSTEM_JUPYTER_PATH under "
+        f"{under}, so nothing would read the planted file: "
+        f"{_system_jupyter_paths(env)}"
+    )
+    for target in targets:
+        target.mkdir(parents=True, exist_ok=True)
+        conf = target / "conf.json"
+        conf.write_text("{}", encoding="utf-8")
+        conf.chmod(0o000)
+        if os.access(conf, os.R_OK):  # pragma: no cover - running as root
+            pytest.skip("cannot make a file unreadable as this user")
+    return targets
 
 
 def _render_command(*, notebook: Path, html_path: Path, jupyter_path: Path) -> str:
@@ -134,13 +167,14 @@ class TestExportSurvivesAnUnreadableHostConfig:
     @staticmethod
     def _hostile_platform_dirs(tmp_path: Path) -> dict[str, str]:
         data_dir = tmp_path / "hostile-xdg"
-        _plant_unreadable_conf(data_dir / "Jupyter")
-        return _clean_env(JUPYTER_PLATFORM_DIRS="1", XDG_DATA_DIRS=str(data_dir))
+        data_dir.mkdir()
+        env = _clean_env(JUPYTER_PLATFORM_DIRS="1", XDG_DATA_DIRS=str(data_dir))
+        _plant_unreadable_conf(env=env, under=data_dir)
+        return env
 
     @staticmethod
     def _hostile_hardcoded_roots(tmp_path: Path) -> dict[str, str]:
         system_dir = tmp_path / "hostile-system" / "jupyter"
-        _plant_unreadable_conf(system_dir)
 
         sitedir = tmp_path / "sitecustomize-dir"
         sitedir.mkdir()
@@ -158,6 +192,7 @@ class TestExportSurvivesAnUnreadableHostConfig:
         )
         # Set after _clean_env, which strips GINKGO_-prefixed variables.
         env["GINKGO_TEST_SYSTEM_JUPYTER"] = str(system_dir)
+        _plant_unreadable_conf(env=env, under=tmp_path)
         return env
 
     @pytest.fixture(params=["hostile_platform_dirs", "hostile_hardcoded_roots"])
