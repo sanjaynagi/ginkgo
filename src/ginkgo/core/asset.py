@@ -285,18 +285,33 @@ class AssetRef:
         """Return the asset name."""
         return self.key.name
 
-    def load(self) -> str:
-        """Return the stored artifact path.
+    def as_file(self) -> file:
+        """Return the artifact path as a ``ginkgo.file`` marker.
+
+        Only a ``file`` asset qualifies. A ``file`` asset's artifact holds the
+        bytes the producer wrote, so its path reads as that file; every other
+        kind holds Ginkgo's own encoding of a payload (a ``table`` is Parquet
+        whatever went in), so handing its path to code that expects a readable
+        file hands over a serialized blob instead.
 
         Returns
         -------
-        str
+        file
             Absolute path to the immutable artifact content.
-        """
-        return self.artifact_path
 
-    def as_file(self) -> file:
-        """Return the artifact path as a ``ginkgo.file`` marker."""
+        Raises
+        ------
+        TypeError
+            When the asset kind is not ``file``.
+        """
+        if self.kind != "file":
+            raise TypeError(
+                f"asset {self.key} is a `{self.kind}` asset, so it has no readable file "
+                f"path: its artifact holds Ginkgo's own encoding of the payload. Consume "
+                f"it from a Python task (annotate the parameter `object` or the payload "
+                f"type) to receive the payload, or produce a `file` asset with "
+                f"`asset(path)` upstream."
+            )
         return file(self.artifact_path)
 
     def to_dict(self) -> dict[str, Any]:

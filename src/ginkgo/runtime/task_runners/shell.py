@@ -161,7 +161,15 @@ def serialize_cli_argument_value(value: Any) -> Any:
 
     Shared by every driver task kind that forwards resolved arguments to an
     external process (script, notebook parameter files).
+
+    An :class:`AssetRef` crosses that boundary as the path to its stored
+    bytes, since a CLI argument and a parameter file carry text rather than
+    Python objects. ``AssetRef.as_file`` decides whether the ref has such a
+    path at all, so a non-``file`` kind is refused by name here instead of
+    reaching ``json.dumps`` and failing as "not JSON serializable".
     """
+    if isinstance(value, AssetRef):
+        return str(value.as_file())
     if isinstance(value, Path | file | folder | tmp_dir):
         return str(value)
     if value is None or isinstance(value, bool | int | float | str):

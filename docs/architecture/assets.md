@@ -285,6 +285,26 @@ and nested `AssetRef` entries survive too. This keeps the documented
 cold run and the cache hit, and the cache key comes from
 `AssetRef.content_hash` without touching the filesystem.
 
+Only a `file` asset may bind that way. A `file` asset's artifact holds the
+bytes the producer wrote; every other kind holds the serializer's encoding of
+a payload (`table` is Parquet whatever the payload was), stored as an
+extensionless CAS blob. Binding one to a path therefore hands the task a
+serialized payload where it asked for readable bytes — silently, for a shell
+command that exits 0 on Parquet input. `require_path_value` admits an
+`AssetRef` only when `ref.kind` equals the annotation label, and
+`validate_annotated_value` routes every path-shaped annotation — bare `file`
+*and* unions such as `file | AssetRef` — through it, so the union arm is not an
+escape hatch from the kind rule. The refusal happens in `_prepare_node`, at the
+consuming task, before its body or command runs.
+
+`AssetRef.as_file` carries the same rule for the accessor: a non-`file` kind
+raises rather than wrapping the encoded blob in a `file` marker. Driver task
+kinds route through it — `serialize_cli_argument_value` in
+`task_runners/shell.py` renders a ref as `str(ref.as_file())`, since a CLI
+argument and a notebook parameter file carry text rather than Python objects.
+Before that branch existed a ref reached `json.dumps` and failed as "Object of
+type AssetRef is not JSON serializable", naming neither task nor parameter.
+
 For the same reason the live registry only caches a payload that is already
 the canonical in-memory form. `is_path_backed_payload` in `asset_kinds.py`
 decides this, next to the `detect` callables whose semantics it depends on:
@@ -297,8 +317,8 @@ plain `str`. A path-backed payload is skipped, since the on-disk loader
 returns the deserialised object; a live hit and a loader fallback must not
 disagree about what a ref rehydrates to.
 
-A `file` / `folder` annotation bound to an `AssetRef` of another kind, or to
-any other non-path value, is rejected with a kind-aware error rather than
+A path-shaped annotation bound to an `AssetRef` of another kind, or to any
+other non-path value, is rejected with a kind-aware error rather than
 stringified into a path. `core/types.require_path_value` is the single home
 for that rule, called both from input/return validation and from cache-key
 hashing (which runs first, during the prepare-phase cache probe).

@@ -20,6 +20,7 @@ from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
+    annotation_includes,
     file,
     folder,
     is_path_like,
@@ -327,9 +328,22 @@ class TaskValidator:
                 )
             return
 
+        if isinstance(value, AssetRef) and is_path_shaped_annotation(annotation):
+            # A path-shaped annotation binds a filesystem path, whether it is a
+            # bare ``file`` or a union such as ``file | AssetRef``. The union is
+            # how a consumer says "a path, or the ref that carries one", so the
+            # kind rule has to hold there too: without it a ``table`` ref binds
+            # silently and the task reads Parquet where it expected text.
+            require_path_value(
+                value=value,
+                annotation_label="file"
+                if annotation_includes(annotation=annotation, expected=file)
+                else "folder",
+                label=label,
+            )
+            return
+
         if annotation is file:
-            if isinstance(value, AssetRef) and value.kind == "file":
-                return
             if is_remote_path_value(value):
                 return
             require_path_value(value=value, annotation_label="file", label=label)
@@ -337,8 +351,6 @@ class TaskValidator:
             return
 
         if annotation is folder:
-            if isinstance(value, AssetRef) and value.kind == "folder":
-                return
             if is_remote_path_value(value):
                 return
             require_path_value(value=value, annotation_label="folder", label=label)

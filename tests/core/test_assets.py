@@ -856,6 +856,15 @@ def produce_table_from_csv(output_path: str) -> object:
 
 
 @task()
+def produce_file_asset(output_path: str) -> file:
+    """Return a ``file`` asset — the only kind whose artifact is a real file."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("site,count\nnorth,10\n", encoding="utf-8")
+    return ginkgo.asset(out, name="summary")
+
+
+@task()
 def record_payload_type(upstream: object) -> str:
     return type(upstream).__name__
 
@@ -1076,12 +1085,12 @@ class TestKindVersusPathAnnotation:
     def test_file_union_consumer_survives_rerun(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A ``file | AssetRef`` consumer of a table asset works cold and warm."""
+        """A ``file | AssetRef`` consumer of a file asset works cold and warm."""
         monkeypatch.chdir(tmp_path)
 
         def build() -> Any:
             return consume_file_or_ref(
-                summary=produce_table_from_csv(output_path="results/summary.csv"),
+                summary=produce_file_asset(output_path="results/summary.csv"),
                 output_path="results/report.txt",
             )
 
@@ -1090,6 +1099,30 @@ class TestKindVersusPathAnnotation:
 
         assert Path(cold).read_text(encoding="utf-8").strip() == "AssetRef"
         assert warm == cold
+
+    def test_file_union_consumer_rejects_table_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``file | AssetRef`` fed a table asset is refused, not silently bound.
+
+        The union arm is not an escape hatch from the kind rule: the artifact
+        behind a table ref is Parquet, so a task that treats the path as the
+        file it asked for reads a serialized blob and succeeds on garbage.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            ginkgo.evaluate(
+                consume_file_or_ref(
+                    summary=produce_table_from_csv(output_path="results/summary.csv"),
+                    output_path="results/report.txt",
+                )
+            )
+
+        message = str(excinfo.value)
+        assert "consume_file_or_ref.summary" in message
+        assert "annotated `file` but is a `table` asset" in message
+        assert not Path("results/report.txt").exists()
 
     def test_nested_refs_survive_path_shaped_annotation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1100,12 +1133,54 @@ class TestKindVersusPathAnnotation:
         observed = ginkgo.evaluate(
             consume_file_ref_list(
                 summaries=[
-                    produce_table_from_csv(output_path="results/one.csv"),
-                    produce_table_from_csv(output_path="results/two.csv"),
+                    produce_file_asset(output_path="results/one.csv"),
+                    produce_file_asset(output_path="results/two.csv"),
                 ]
             )
         )
         assert observed == ["AssetRef", "AssetRef"]
+
+    def test_nested_table_ref_rejected_under_path_shaped_annotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The kind rule reaches nested elements, naming the offending index."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError, match=r"summaries\[1\] is annotated `file`"):
+            ginkgo.evaluate(
+                consume_file_ref_list(
+                    summaries=[
+                        produce_file_asset(output_path="results/one.csv"),
+                        produce_table_from_csv(output_path="results/two.csv"),
+                    ]
+                )
+            )
+
+    def test_as_file_refuses_non_file_kind(self) -> None:
+        """``as_file()`` on a table ref names the kind instead of wrapping Parquet."""
+        from ginkgo.core.asset import AssetKey
+
+        ref = AssetRef(
+            key=AssetKey(namespace="table", name="demo.summary"),
+            version_id="v1",
+            kind="table",
+            artifact_id="abc123",
+            content_hash="def456",
+            artifact_path="/tmp/blobs/abc123",
+        )
+
+        with pytest.raises(TypeError, match=r"is a `table` asset, so it has no readable file"):
+            ref.as_file()
+
+        file_ref = AssetRef(
+            key=AssetKey(namespace="file", name="demo.notes"),
+            version_id="v1",
+            kind="file",
+            artifact_id="abc123",
+            content_hash="def456",
+            artifact_path="/tmp/blobs/abc123",
+        )
+        assert file_ref.as_file() == "/tmp/blobs/abc123"
 
     def test_path_backed_payload_detection(self, tmp_path: Path) -> None:
         """Only genuine path payloads count as path-backed, per kind."""

@@ -180,6 +180,13 @@ def require_path_value(*, value: Any, annotation_label: str, label: str) -> None
     value and report a path-syntax complaint about an object that was never
     meant to be a path.
 
+    An ``AssetRef`` passes only when its kind matches the annotation. A
+    ``file`` asset's stored bytes *are* the file the producer wrote, so its
+    path is readable as one. Every other kind is stored in Ginkgo's own
+    encoding — a ``table`` is Parquet whatever the payload was — so binding
+    it to a path hands the task a serialized payload rather than the bytes
+    the path's name implies.
+
     Parameters
     ----------
     value : Any
@@ -200,10 +207,14 @@ def require_path_value(*, value: Any, annotation_label: str, label: str) -> None
     from ginkgo.core.asset import AssetRef
 
     if isinstance(value, AssetRef):
+        if value.kind == annotation_label:
+            return
         raise TypeError(
             f"{label} is annotated `{annotation_label}` but is a `{value.kind}` asset "
-            f"({value.key}). Annotate it `object` (or the payload type) to receive the "
-            f"asset payload, or return `asset(path)` to produce a `{annotation_label}` asset."
+            f"({value.key}). Its artifact holds Ginkgo's own encoding of the payload, "
+            f"not readable `{annotation_label}` bytes, so the task would read a "
+            f"serialized blob. Annotate it `object` (or the payload type) to receive the "
+            f"asset payload, or produce a `{annotation_label}` asset with `asset(path)`."
         )
     if not is_path_like(value):
         received = f"{type(value).__module__}.{type(value).__name__}"
