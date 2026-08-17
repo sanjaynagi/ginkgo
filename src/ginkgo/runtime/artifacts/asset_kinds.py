@@ -277,6 +277,14 @@ class AssetKindSpec:
         default when no explicit ``name`` is supplied — ``file``) or
         ``"kind_index"`` (use ``<task>.<kind>[<index>]`` — all other
         kinds).
+    artifact_encoding : str | None
+        Name of the encoding this kind's serialiser writes, or ``None``
+        when the artifact holds the payload's own bytes. ``None`` means
+        the stored artifact is readable as the file it appears to be, so
+        its path may bind a ``file`` parameter; a named encoding means
+        the artifact is Ginkgo's rendering of a Python object and a task
+        reading it as a file would read a serialized blob. Every kind
+        must declare which side it is on.
     """
 
     kind: str
@@ -285,6 +293,7 @@ class AssetKindSpec:
     loader: Callable[..., Any] | None
     rehydrate_on_receive: bool
     default_name_strategy: str
+    artifact_encoding: str | None
 
 
 ASSET_KINDS: dict[str, AssetKindSpec] = {
@@ -295,6 +304,8 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=None,
         rehydrate_on_receive=False,
         default_name_strategy="task_name",
+        # The registrar copies the source path's bytes verbatim.
+        artifact_encoding=None,
     ),
     "table": AssetKindSpec(
         kind="table",
@@ -303,6 +314,7 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=_load.load_table_bytes,
         rehydrate_on_receive=True,
         default_name_strategy="kind_index",
+        artifact_encoding="Parquet",
     ),
     "array": AssetKindSpec(
         kind="array",
@@ -311,6 +323,7 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=_load.load_array_bytes,
         rehydrate_on_receive=True,
         default_name_strategy="kind_index",
+        artifact_encoding="a zipped zarr store or .npy blob",
     ),
     "fig": AssetKindSpec(
         kind="fig",
@@ -319,6 +332,10 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=_load.load_fig_bytes,
         rehydrate_on_receive=False,
         default_name_strategy="kind_index",
+        # ``serialize_fig`` writes the native image or HTML bytes: a source
+        # path is read through unchanged, and a figure object is rendered to
+        # the format a viewer expects.
+        artifact_encoding=None,
     ),
     "text": AssetKindSpec(
         kind="text",
@@ -327,6 +344,8 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=_load.load_text_bytes,
         rehydrate_on_receive=True,
         default_name_strategy="kind_index",
+        # ``serialize_text`` writes raw UTF-8.
+        artifact_encoding=None,
     ),
     "model": AssetKindSpec(
         kind="model",
@@ -335,6 +354,7 @@ ASSET_KINDS: dict[str, AssetKindSpec] = {
         loader=_load.load_model_bytes,
         rehydrate_on_receive=True,
         default_name_strategy="kind_index",
+        artifact_encoding="a framework-specific serialized model",
     ),
 }
 
@@ -354,6 +374,36 @@ def get_kind_spec(kind: str) -> AssetKindSpec:
     except KeyError as exc:
         raise ValueError(f"Unsupported asset kind: {kind!r}") from exc
 
+
+def artifact_encoding_for(kind: str) -> str | None:
+    """Return the name of Ginkgo's encoding for *kind*'s artifact.
+
+    ``None`` means the artifact holds the payload's own bytes — a ``file``
+    copied verbatim, a ``fig``'s native PNG/SVG/HTML, a ``text`` asset's raw
+    UTF-8 — so its path reads as the file it appears to be. A returned name
+    means the bytes are Ginkgo's rendering of a Python object, so code that
+    reads the path as a file reads a serialized blob instead.
+
+    Parameters
+    ----------
+    kind : str
+        Asset kind identifier.
+
+    Returns
+    -------
+    str | None
+        Encoding name, or ``None`` for native bytes. An unregistered kind
+        counts as encoded, since nothing vouches for its bytes.
+    """
+    spec = ASSET_KINDS.get(kind)
+    if spec is None:
+        return "an unrecognised encoding"
+    return spec.artifact_encoding
+
+
+NATIVE_ARTIFACT_KINDS: frozenset[str] = frozenset(
+    spec.kind for spec in ASSET_KINDS.values() if spec.artifact_encoding is None
+)
 
 REHYDRATABLE_KINDS: frozenset[str] = frozenset(
     spec.kind for spec in ASSET_KINDS.values() if spec.rehydrate_on_receive

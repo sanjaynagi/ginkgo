@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,8 +29,14 @@ def _make_run(
     tmp_path: Path,
     run_id: str,
     fail: bool,
+    cached: bool = False,
 ) -> Path:
-    """Build a minimal terminal run directory with a registered asset."""
+    """Build a minimal terminal run directory with a registered asset.
+
+    ``cached`` records both tasks as cache hits instead of fresh executions,
+    which is how a re-run of an unchanged workflow reaches the report.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo workflow\n@flow\ndef main():\n    pass\n", encoding="utf-8")
     recorder = RunProvenanceRecorder(
@@ -40,6 +47,7 @@ def _make_run(
         cores=4,
         params={"seed": 42, "targets": ["a", "b"]},
     )
+    mark_done = recorder.mark_cached if cached else recorder.mark_succeeded
 
     stdout_path, stderr_path = recorder.ensure_task(node_id=0, task_name="demo.first", env="local")
     stdout_path.write_text("starting first task\n" * 3, encoding="utf-8")
@@ -54,7 +62,7 @@ def _make_run(
         dependency_ids=[],
         dynamic_dependency_ids=[],
     )
-    recorder.mark_succeeded(node_id=0, task_name="demo.first", env="local", value="results/a.txt")
+    mark_done(node_id=0, task_name="demo.first", env="local", value="results/a.txt")
 
     stdout_path_1, stderr_path_1 = recorder.ensure_task(
         node_id=1, task_name="demo.second", env="local"
@@ -84,9 +92,7 @@ def _make_run(
             failure={"kind": "user_code_error"},
         )
     else:
-        recorder.mark_succeeded(
-            node_id=1, task_name="demo.second", env="local", value="results/b.txt"
-        )
+        mark_done(node_id=1, task_name="demo.second", env="local", value="results/b.txt")
 
     recorder.update_resources(
         {
@@ -106,6 +112,54 @@ def _make_run(
     return recorder.run_dir
 
 
+def _make_notebook_run(
+    *,
+    tmp_path: Path,
+    run_id: str,
+    render_status: str = "ok",
+    render_error: str | None = None,
+) -> Path:
+    """Build a terminal run whose single task rendered a notebook."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text("# demo\n", encoding="utf-8")
+    recorder = RunProvenanceRecorder(
+        run_id=run_id,
+        workflow_path=workflow_path,
+        root_dir=tmp_path / ".ginkgo" / "runs",
+        jobs=1,
+        cores=1,
+        params={},
+    )
+    recorder.ensure_task(node_id=0, task_name="demo.report", env="local")
+    recorder.update_task_inputs(
+        node_id=0,
+        task_name="demo.report",
+        env="local",
+        resolved_args={},
+        input_hashes={},
+        cache_key="cache-nb",
+        dependency_ids=[],
+        dynamic_dependency_ids=[],
+    )
+    html_path = recorder.run_dir / "notebooks" / "report.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text("<html>HTML export failed</html>", encoding="utf-8")
+    recorder.update_task_extra(
+        node_id=0,
+        task_type="notebook",
+        notebook_kind="marimo",
+        notebook_path=str(tmp_path / "report.py"),
+        notebook_description=None,
+        render_status=render_status,
+        render_error=render_error,
+        rendered_html="notebooks/report.html",
+    )
+    recorder.mark_succeeded(node_id=0, task_name="demo.report", env="local", value=str(html_path))
+    recorder.finalize(status="succeeded")
+    return recorder.run_dir
+
+
 def _register_asset(
     *,
     tmp_path: Path,
@@ -113,15 +167,21 @@ def _register_asset(
     run_dir: Path,
     name: str = "demo/output",
     text: str = "alpha\nbeta\ngamma\n",
+    namespace: str = "file",
+    suffix: str = ".txt",
     group: str | None = None,
     caption: str | None = None,
     checks: list[dict[str, bool | str]] | None = None,
     append: bool = False,
 ) -> None:
-    """Register a file asset and patch the manifest to reference it."""
+    """Register an asset and patch the manifest to reference it.
+
+    ``namespace`` and ``suffix`` pick the asset kind and the stored artifact's
+    extension — ``namespace="fig", suffix=".svg"`` registers a figure.
+    """
     asset_store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
     artifact_store = LocalArtifactStore(root=tmp_path / ".ginkgo" / "artifacts")
-    source = tmp_path / f"{name.replace('/', '_')}.txt"
+    source = tmp_path / f"{name.replace('/', '_')}{suffix}"
     source.write_text(text, encoding="utf-8")
     record = artifact_store.store(src_path=source)
     metadata = {"stage": "demo"}
@@ -132,8 +192,8 @@ def _register_asset(
     if checks is not None:
         metadata["ginkgo_checks"] = checks
     version = make_asset_version(
-        key=AssetKey(namespace="file", name=name),
-        kind="file",
+        key=AssetKey(namespace=namespace, name=name),
+        kind=namespace,
         artifact_id=record.artifact_id,
         content_hash=record.digest_hex,
         run_id=run_id,
@@ -151,7 +211,7 @@ def _register_asset(
         "artifact_id": version.artifact_id,
         "name": version.key.name,
         "namespace": version.key.namespace,
-        "kind": "file",
+        "kind": namespace,
         "metadata": dict(version.metadata),
     }
     existing = task_0.get("assets", []) if append else []
@@ -319,6 +379,77 @@ class TestReportData:
         asset_card = next(card for card in report.summary_cards if card.label == "Assets")
         assert asset_card.value == "3"
 
+    def test_cached_run_reports_the_same_assets_and_sections(self, tmp_path: Path) -> None:
+        # A re-run that hits cache for every task must present exactly what the
+        # executed run did; only the cache labels differ.
+        executed = build_report_data(
+            run_dir=_make_run(tmp_path=tmp_path / "executed", run_id="run-exec", fail=False)
+        )
+        cached = build_report_data(
+            run_dir=_make_run(
+                tmp_path=tmp_path / "cached", run_id="run-cached", fail=False, cached=True
+            )
+        )
+
+        assert [task.cache_label for task in cached.tasks] == ["hit", "hit"]
+        assert [task.cache_label for task in executed.tasks] == ["miss", "miss"]
+        assert [task.status_label for task in cached.tasks] == ["cached", "cached"]
+        assert cached.has_failures is False
+
+        def asset_keys(report) -> list[tuple[str, str]]:  # noqa: ANN001
+            return [
+                (section.title, card.asset_key)
+                for section in report.assets
+                for card in section.cards
+            ]
+
+        assert asset_keys(cached) == asset_keys(executed)
+        assert [(s.anchor, s.number, s.title) for s in cached.sections] == [
+            (s.anchor, s.number, s.title) for s in executed.sections
+        ]
+        cache_card = next(card for card in cached.summary_cards if card.label == "Cache hits")
+        assert cache_card.value == "2 / 2"
+
+    def test_section_numbers_skip_sections_that_do_not_render(self, tmp_path: Path) -> None:
+        clean = build_report_data(
+            run_dir=_make_run(tmp_path=tmp_path / "clean", run_id="run-ok", fail=False)
+        )
+        failed = build_report_data(
+            run_dir=_make_run(tmp_path=tmp_path / "failed", run_id="run-fail", fail=True)
+        )
+
+        assert [(s.number, s.anchor) for s in clean.sections] == [
+            ("01", "summary"),
+            ("02", "params"),
+            ("03", "graph"),
+            ("04", "tasks"),
+            ("05", "assets"),
+            ("06", "env"),
+        ]
+        # The failure section takes 05, pushing everything after it along.
+        assert [(s.number, s.anchor) for s in failed.sections] == [
+            ("01", "summary"),
+            ("02", "params"),
+            ("03", "graph"),
+            ("04", "tasks"),
+            ("05", "failure"),
+            ("06", "assets"),
+            ("07", "env"),
+        ]
+        assert [group.label for group in clean.section_groups] == [
+            "Execution",
+            "Results",
+            "Appendix",
+        ]
+
+    def test_section_lookup_rejects_an_unrendered_anchor(self, tmp_path: Path) -> None:
+        report = build_report_data(
+            run_dir=_make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        )
+        assert report.section("assets").title == "Assets"
+        with pytest.raises(KeyError, match="notebooks"):
+            report.section("notebooks")
+
     def test_failed_run_produces_failure_card(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
         report = build_report_data(run_dir=run_dir)
@@ -333,46 +464,14 @@ class TestReportData:
         assert card.log_tail.total_lines > 0
 
     def test_notebook_render_failure_card_is_flagged(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# demo\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
+        run_dir = _make_notebook_run(
+            tmp_path=tmp_path,
             run_id="run-notebook-failed",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            params={},
-        )
-        recorder.ensure_task(node_id=0, task_name="demo.report", env="local")
-        recorder.update_task_inputs(
-            node_id=0,
-            task_name="demo.report",
-            env="local",
-            resolved_args={},
-            input_hashes={},
-            cache_key="cache-nb",
-            dependency_ids=[],
-            dynamic_dependency_ids=[],
-        )
-        html_path = recorder.run_dir / "notebooks" / "report.html"
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.write_text("<html>HTML export failed</html>", encoding="utf-8")
-        recorder.update_task_extra(
-            node_id=0,
-            task_type="notebook",
-            notebook_kind="marimo",
-            notebook_path=str(tmp_path / "report.py"),
-            notebook_description=None,
             render_status="failed",
             render_error="render blew up",
-            rendered_html="notebooks/report.html",
         )
-        recorder.mark_succeeded(
-            node_id=0, task_name="demo.report", env="local", value=str(html_path)
-        )
-        recorder.finalize(status="succeeded")
 
-        report = build_report_data(run_dir=recorder.run_dir)
+        report = build_report_data(run_dir=run_dir)
 
         assert len(report.notebooks) == 1
         card = report.notebooks[0]
@@ -470,6 +569,75 @@ class TestExport:
         assert 'rel="stylesheet"' not in html
         # Font data URIs inlined.
         assert "data:font/woff2;base64," in html
+
+    def test_rendered_section_numerals_are_contiguous(self, tmp_path: Path) -> None:
+        # A run with no failures and no notebooks renders six sections; the
+        # numerals must run 01..06 with no hole where an omitted section sat.
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        headings = re.findall(r'<span class="num">(\d+)</span>', html)
+        sidebar = re.findall(r'<span class="idx">(\d+)</span>', html)
+
+        assert headings == ["01", "02", "03", "04", "05", "06"]
+        assert sidebar == headings
+
+    def test_rendered_section_numerals_include_the_failure_section(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert re.findall(r'<span class="num">(\d+)</span>', html) == [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+        ]
+        assert '<span class="num">05</span>Failure' in html
+
+    def test_notebook_section_renders_when_the_run_produced_one(self, tmp_path: Path) -> None:
+        run_dir = _make_notebook_run(tmp_path=tmp_path, run_id="run-nb")
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert '<span class="num">06</span>Notebooks' in html
+        assert re.findall(r'<span class="num">(\d+)</span>', html) == [
+            "01",
+            "02",
+            "03",
+            "04",
+            "05",
+            "06",
+            "07",
+        ]
+
+    def test_single_file_inlines_figures_with_an_image_mime_type(self, tmp_path: Path) -> None:
+        # Figure sources are extensionless CAS blobs, so the MIME type has to
+        # come from the bundle path. A generic octet-stream URI renders only by
+        # browser content sniffing and breaks under a strict CSP.
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-fig", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-fig",
+            run_dir=run_dir,
+            name="demo/figure",
+            text='<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>',
+            namespace="fig",
+            suffix=".svg",
+            append=True,
+        )
+
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "sf", single_file=True)
+        html = result.index_path.read_text(encoding="utf-8")
+
+        figure_uris = re.findall(r'<img src="data:([^;]+);base64,', html)
+        assert figure_uris, "expected the figure to be inlined as a data URI"
+        assert all(mime.startswith("image/") for mime in figure_uris), figure_uris
+        assert "data:application/octet-stream" not in html
 
     def test_no_network_references_in_rendered_html(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

@@ -251,6 +251,36 @@ class ArtifactCopy:
     dest_relpath: str  # relative to bundle root
 
 
+# ----- Document sections -------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReportSection:
+    """One numbered section of the document.
+
+    Parameters
+    ----------
+    anchor : str
+        Fragment id the heading carries and the sidebar links to.
+    title : str
+        Heading text.
+    number : str
+        Zero-padded ordinal among the sections this run actually renders.
+    """
+
+    anchor: str
+    title: str
+    number: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReportSectionGroup:
+    """One sidebar navigation group and the sections it holds."""
+
+    label: str
+    sections: tuple[ReportSection, ...]
+
+
 # ----- Top-level report data --------------------------------------------
 
 
@@ -289,6 +319,7 @@ class ReportData:
     sidebar_status_tone: str
 
     # Sections
+    section_groups: tuple[ReportSectionGroup, ...]
     summary_cards: tuple[StatCard, ...]
     params: Mapping[str, Any]
     graph: Graph
@@ -304,6 +335,26 @@ class ReportData:
 
     # Artifacts the renderer must copy into the bundle
     artifact_copies: tuple[ArtifactCopy, ...]
+
+    @property
+    def sections(self) -> tuple[ReportSection, ...]:
+        """Every rendered section in document order."""
+        return tuple(section for group in self.section_groups for section in group.sections)
+
+    def section(self, anchor: str) -> ReportSection:
+        """Return the section rendered at ``anchor``.
+
+        Raises
+        ------
+        KeyError
+            When no section with that anchor renders for this run. A template
+            asking for one it does not render is a template bug, so this is
+            loud rather than silently blank.
+        """
+        for section in self.sections:
+            if section.anchor == anchor:
+                return section
+        raise KeyError(f"no report section renders at anchor {anchor!r}")
 
 
 # ------------------------------------------------------------------------
@@ -344,6 +395,34 @@ _RUN_STATUS_LABEL: dict[str, str] = {
     "running": "running",
     "pending": "pending",
 }
+
+#: Document order of the report's sections, and the sidebar group each one
+#: belongs to. This is the single home for section order, titles, and anchors:
+#: both the sidebar and the body headings number themselves from the sections
+#: a given run renders, so an omitted section leaves no hole in the numerals.
+_SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Execution",
+        (
+            ("summary", "Summary"),
+            ("params", "Parameters"),
+            ("graph", "Task graph"),
+            ("tasks", "Tasks"),
+            ("failure", "Failure"),
+        ),
+    ),
+    (
+        "Results",
+        (
+            ("assets", "Assets"),
+            ("notebooks", "Notebooks"),
+        ),
+    ),
+    (
+        "Appendix",
+        (("env", "Environment"),),
+    ),
+)
 
 
 def build_report_data(
@@ -466,6 +545,10 @@ def build_report_data(
         sidebar_run_id=summary.run_id,
         sidebar_status_label=sidebar_status_label,
         sidebar_status_tone=sidebar_status_tone,
+        section_groups=_build_section_groups(
+            has_failures=len(failures) > 0,
+            has_notebooks=len(notebooks) > 0,
+        ),
         summary_cards=summary_cards,
         params=summary.params,
         graph=graph,
@@ -478,6 +561,34 @@ def build_report_data(
         generated_at_label=format_timestamp(generated_at or datetime.now(UTC)),
         artifact_copies=tuple(artifact_copies),
     )
+
+
+# ----- Document sections ---------------------------------------------------
+
+
+def _build_section_groups(
+    *,
+    has_failures: bool,
+    has_notebooks: bool,
+) -> tuple[ReportSectionGroup, ...]:
+    """Number the sections this run renders, in document order.
+
+    Optional sections drop out of the sequence entirely rather than reserving
+    a numeral, so the rendered numbers are always contiguous.
+    """
+    renders = {"failure": has_failures, "notebooks": has_notebooks}
+    groups: list[ReportSectionGroup] = []
+    number = 0
+    for label, entries in _SECTION_LAYOUT:
+        sections: list[ReportSection] = []
+        for anchor, title in entries:
+            if not renders.get(anchor, True):
+                continue
+            number += 1
+            sections.append(ReportSection(anchor=anchor, title=title, number=f"{number:02d}"))
+        if sections:
+            groups.append(ReportSectionGroup(label=label, sections=tuple(sections)))
+    return tuple(groups)
 
 
 # ----- Task rows ----------------------------------------------------------
@@ -756,7 +867,9 @@ def _build_assets(
         seen_version_ids.add(version_id)
         try:
             version = store.get_version(key=AssetKey.parse(key_text), version_id=version_id)
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
+            # A missing version or a manifest key that is not ``<kind>:<name>``
+            # only costs this report one card.
             continue
         card = _build_asset_card(
             version=version,

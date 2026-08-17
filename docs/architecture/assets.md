@@ -167,6 +167,7 @@ class AssetKindSpec:
     loader: Callable[..., Any] | None
     rehydrate_on_receive: bool
     default_name_strategy: str
+    artifact_encoding: str | None
 
 ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
 ```
@@ -182,10 +183,15 @@ ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
 - `rehydrate_on_receive` flags kinds that the evaluator should
   auto-rehydrate when an `AssetRef` is passed as a task argument
   (everything except `file` and `fig`).
-- `default_name_strategy` is `"task_name"` for `file` (the task
-  function's name is the default when no explicit `name` is supplied)
+- `artifact_encoding` names the encoding the serialiser writes, or is
+  `None` when the artifact holds the payload's own bytes (`file`, `fig`,
+  `text`). Only the `None` kinds may bind a `file` parameter; see
+  [Rehydration on receive](#rehydration-on-receive).
+- `default_name_strategy` names the fallback used when no explicit
+  `name` is supplied: `"task_name"` for `file` (the task function's name)
   and `"kind_index"` for every other kind (per-kind counter producing
-  `<task>.<kind>[<index>]`).
+  `<task>.<kind>[<index>]`). It has no bearing on an explicit `name=`,
+  which every kind honours verbatim.
 
 Adding a new asset kind means extending the canonical `AssetKind`
 Literal in `core/asset.py` and registering one entry in `ASSET_KINDS`
@@ -224,9 +230,19 @@ every nested `AssetResult`, and replaces it with a resolved `AssetRef`:
    downstream task in the same process can consume it without a disk
    round-trip.
 
-Named outputs use the asset key `<task_fn>.<name>`. Unnamed non-file
-outputs are indexed per kind as `<task_fn>.<kind>[<index>]`. Unnamed
-file outputs fall back to `<task_fn>` as their name. Duplicate
+An asset key is `<kind>:<name>`, rendered by `AssetKey.__str__` and parsed
+back by `AssetKey.parse`, which requires both halves — a bare name is not
+a key, since inferring the kind would address a different asset than the
+caller wrote.
+
+An explicit `name=` is the asset name verbatim, for every kind, so the
+key a workflow author writes is the key the CLI accepts. Only unnamed
+outputs get a generated name: non-file outputs are indexed per kind as
+`<task_fn>.<kind>[<index>]`, and file outputs fall back to `<task_fn>`.
+Uniqueness of explicit names is enforced per task on `(kind, name)`
+inside `_AssetRegistrationState`, which keeps the check task-local
+without leaking the task name into the key; two tasks that name the same
+`(kind, name)` therefore register two versions of one asset. Duplicate
 explicit names within a single task raise a `ValueError` before any
 artifact is written. Serialisation errors surface as
 `AssetSerializationError` identifying the offending result by name and
@@ -285,6 +301,42 @@ and nested `AssetRef` entries survive too. This keeps the documented
 cold run and the cache hit, and the cache key comes from
 `AssetRef.content_hash` without touching the filesystem.
 
+Only kinds whose artifact holds the payload's own bytes may bind that way, and
+each kind declares which side it is on via `AssetKindSpec.artifact_encoding`:
+`None` for `file` (copied verbatim), `fig` (`serialize_fig` writes native
+PNG/SVG/HTML) and `text` (`serialize_text` writes raw UTF-8); a named encoding
+for `table` (`"Parquet"`), `array` (zarr/npy) and `model`. The flag sits beside
+the serialiser whose output it describes, so a new kind cannot be added without
+answering the question, and `artifact_encoding_for` is the single reader.
+
+Binding an encoded kind to a path would hand the task a serialized payload
+where it asked for readable bytes — silently, for a shell command that exits 0
+on Parquet input. `require_path_value` therefore admits an `AssetRef` only when
+`artifact_encoding_for(ref.kind)` is `None`, and `validate_annotated_value`
+routes every path-shaped annotation — bare `file` *and* unions such as
+`file | AssetRef` — through it, so the union arm is not an escape hatch from
+the kind rule. The refusal happens in `_prepare_node`, at the consuming task,
+before its body or command runs.
+
+The remedies in the message depend on the consumer: `TaskDef.execution_mode` is
+threaded from `validate_inputs` down to `path_binding_remedy`, because
+"annotate it `object`" fixes a Python task and sends a shell-task author to a
+DataFrame interpolated into a command. A `driver` consumer is pointed at
+`asset(path)` upstream or converting the payload in Python first.
+
+`AssetRef.as_file` reads the same per-kind fact for the accessor: an encoded
+kind raises rather than wrapping the blob in a `file` marker. Driver task kinds
+route through it — `serialize_cli_argument_value` in `task_runners/shell.py`
+renders a ref as `str(ref.as_file(execution_mode="driver"))`, since a CLI
+argument and a notebook parameter file carry text rather than Python objects.
+Before that branch existed a ref reached `json.dumps` and failed as "Object of
+type AssetRef is not JSON serializable", naming neither task nor parameter.
+
+CAS blobs carry no file extension, so a consumer that dispatches on suffix can
+still be surprised by a `fig` artifact. That is an argument for recording the
+already-stored `record.extension` in the blob name, tracked separately, not for
+calling native bytes an encoding.
+
 For the same reason the live registry only caches a payload that is already
 the canonical in-memory form. `is_path_backed_payload` in `asset_kinds.py`
 decides this, next to the `detect` callables whose semantics it depends on:
@@ -297,8 +349,8 @@ plain `str`. A path-backed payload is skipped, since the on-disk loader
 returns the deserialised object; a live hit and a loader fallback must not
 disagree about what a ref rehydrates to.
 
-A `file` / `folder` annotation bound to an `AssetRef` of another kind, or to
-any other non-path value, is rejected with a kind-aware error rather than
+A path-shaped annotation bound to an `AssetRef` of another kind, or to any
+other non-path value, is rejected with a kind-aware error rather than
 stringified into a path. `core/types.require_path_value` is the single home
 for that rule, called both from input/return validation and from cache-key
 hashing (which runs first, during the prepare-phase cache probe).

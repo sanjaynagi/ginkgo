@@ -20,8 +20,8 @@
       "max_regression_pct": 15.0,
       "expected_counters": {
         "task_count": 15,
-        "executed_task_count": 3,
-        "cached_task_count": 12
+        "executed_task_count": 0,
+        "cached_task_count": 15
       }
     },
     {

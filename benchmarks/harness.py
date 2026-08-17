@@ -22,6 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from benchmarks.bioinfo import prepare_bioinfo_benchmark_dataset
+from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.envs.container import ContainerBackend
@@ -410,7 +411,7 @@ def _benchmark_example(*, example: str, mode: str, jobs: int, cores: int) -> Ben
     if workspace_root.exists():
         shutil.rmtree(workspace_root)
     workspace_root.mkdir(parents=True, exist_ok=True)
-    example_dir = _copy_example(name=example, destination_root=workspace_root)
+    example_dir = _materialize_example(name=example, destination_root=workspace_root)
 
     config_paths: list[Path] = []
     if example == "bioinfo":
@@ -506,10 +507,19 @@ def _assert_cache_behavior(
         raise AssertionError(f"Cached benchmark for {example} did not fully reuse cache.")
 
 
-def _copy_example(*, name: str, destination_root: Path) -> Path:
-    """Copy an example workflow into an isolated benchmark workspace."""
-    source = EXAMPLES_ROOT / name
+def _materialize_example(*, name: str, destination_root: Path) -> Path:
+    """Place one example workflow in an isolated benchmark workspace.
+
+    ``init`` is not a checked-in example: it is the starter project the packaged
+    templates scaffold, materialised here from that single source so the
+    benchmark measures what ``ginkgo init`` actually gives users. Every other
+    name is copied from ``examples/``.
+    """
     destination = destination_root / name
+    if name == "init":
+        return write_starter_project(root=destination)
+
+    source = EXAMPLES_ROOT / name
     shutil.copytree(
         source,
         destination,

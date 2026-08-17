@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ class PlannedTask:
     base_name : str
         Task name without its module prefix.
     label : str
-        Display label; includes resolved fan-out parameters for mapped tasks.
+        Display label; the same one the live run table gives this node.
     kind : str
         Task kind (``python``, ``shell``, ``notebook``, ``script``).
     env : str | None
@@ -169,6 +170,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     waves_by_node = _assign_waves(nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
     cache_status = _resolve_cache_status(evaluator=evaluator, topo_order=topo_order)
+    labels = display_labels({node_id: node.expr for node_id, node in nodes.items()})
 
     planned: dict[int, PlannedTask] = {}
     for node_id in topo_order:
@@ -178,7 +180,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         planned[node_id] = PlannedTask(
             node_id=node_id,
             base_name=task_def.name.rsplit(".", 1)[-1],
-            label=_task_label(node),
+            label=labels[node_id],
             kind=task_def.kind,
             env=task_def.env,
             mapped=node.expr.mapped,
@@ -274,10 +276,10 @@ def _probe_node(
         # node to "unknown" rather than aborting the preview.
         return "unknown"
 
-    if not cache_store.has_entry(cache_key=cache_key):
+    if not cache_store.has_entry(cache_key=cache_key, task_def=node.task_def):
         return "will_run"
 
-    cached_value = cache_store.load(cache_key=cache_key)
+    cached_value = cache_store.load(cache_key=cache_key, task_def=node.task_def)
     if cached_value is MISSING:
         return "will_run"
 
@@ -287,15 +289,6 @@ def _probe_node(
     node.result = cached_value
     node.state = "completed"
     return "cached"
-
-
-def _task_label(node: NodeRun) -> str:
-    """Return a display label, including resolved fan-out parameters."""
-    base_name = node.task_def.name.rsplit(".", 1)[-1]
-    parts = node.expr.display_label_parts
-    if parts:
-        return f"{base_name}[{','.join(parts)}]"
-    return f"{base_name}()"
 
 
 def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:

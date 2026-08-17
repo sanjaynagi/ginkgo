@@ -11,6 +11,7 @@ The current CLI supports:
 - `ginkgo init`
 - `ginkgo asset ls`
 - `ginkgo asset versions`
+- `ginkgo asset show`
 - `ginkgo asset inspect`
 - `ginkgo models`
 - `ginkgo cache ls`
@@ -25,6 +26,14 @@ config overrides, human-readable run summaries, structured inspection and
 diagnostics, secret discovery and validation, cache inspection and eviction,
 failed-task debugging, and asset catalog inspection for local workspaces.
 
+`asset versions`, `asset show`, and `asset inspect` resolve their key argument
+against the catalog rather than parsing it in isolation
+(`resolve_asset_key` in `cli/commands/asset.py`). A `<kind>:<name>` key is
+looked up directly; a bare `<name>` is searched across kinds, resolving when
+exactly one kind holds it and reporting the candidate keys when several do. An
+unknown key reports near matches from the catalog, so no lookup ever invents a
+kind the user did not use.
+
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each
 annotated `[cached]`, `[will run]`, or `[unknown]`, with static `.map()`
@@ -36,6 +45,18 @@ runs, no environment is prepared, and no cached output is materialised. Large
 fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
 keeps its terse per-workflow validation line rather than printing a full plan
 for each discovered workflow.
+
+Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
+base name, with its fan-out values in brackets when the graph fixed them —
+which `.map()` and `.product_map()` do at graph-build time, `per_branch()`
+arguments excluded as values derived from a branch rather than naming it.
+`display_labels()` assigns those labels across a graph, giving an ordinal to
+repeats that nothing else tells apart. Both the dry-run plan and the live run
+table label from it (`cli/commands/run.py:planned_task_rows`), so a branch
+still waiting to be dispatched reads the same in both. A mapped task whose
+fan-out left no label parts is the one case the graph cannot label; the
+evaluator supplies a label from its resolved arguments when it prepares the
+node, and the renderer adopts it on the node's first event.
 
 Commands that import a workflow — `run`, `doctor`, `secrets`, and
 `inspect workflow` — accept flags for the parameters that workflow declares with

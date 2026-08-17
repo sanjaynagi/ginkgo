@@ -293,10 +293,27 @@ references it by name with `env=`. Before running, Ginkgo materialises the
 environment with `pixi install` and runs each command inside it, so the task
 sees the locked set of dependencies — see
 [Environments](guide/environments.md#ginkgo-materialises-declared-environments)
-for what that means for a first run and what must be on your `PATH`. Ginkgo also
-folds the environment's
-identity into the cache key by hashing the neighbouring `pixi.lock`, so a change
-to the locked dependencies invalidates cached results.
+for what that means for a first run and what must be on your `PATH`.
+
+Ginkgo folds the environment into the cache key by hashing the manifest, so
+editing the declared dependencies invalidates cached results. The neighbouring
+`pixi.lock` is not part of the key: it is written by `pixi install`, which runs
+after the key is built, so keying on it made the second run of every workflow
+redo its work. It is checked instead. Each cache entry records the digest of the
+environment as it was installed when the entry was written, and a cache hit is
+only served if the environment installed here now matches. So `pixi update`,
+which re-solves every dependency without touching `pixi.toml`, does invalidate —
+the key is unchanged, but the recorded environment no longer matches. The same
+holds for containers: an image repointed under a mutable tag invalidates once
+that image has been pulled here.
+
+What does *not* invalidate: a hit served on a machine where the environment has
+never been installed, or an image never pulled. There is no local evidence to
+compare against, and getting some would mean installing or pulling an
+environment to serve a cache hit. Entries written by an older version of Ginkgo,
+which carry no recorded environment, are likewise accepted. Pin
+`image@sha256:...`, or bump `version=`, when you want the key itself to carry
+that precision.
 
 ```python
 @task(kind="shell", env="bioinfo_tools")
@@ -513,7 +530,8 @@ encoded, so unpicklable objects fail loudly rather than mid-transport.
 An asset is a typed, named, versioned task output, produced by returning
 `asset(...)` (or a typed helper) instead of a plain value. Where an ordinary
 `file` return is just bytes at a path, an asset also carries a *kind*, a stable
-*key* (`namespace/name`), a content hash, a producer task, and metadata, and it
+*key* (`<kind>:<name>`, where the name is exactly what you passed as `name=`),
+a content hash, a producer task, and metadata, and it
 is registered in a catalog under `.ginkgo/assets/` and tracked across runs.
 Re-running a task that produces identical content adds a new *version* pointing
 at the same bytes, so the key stays a stable handle with full version history.
@@ -567,7 +585,9 @@ ginkgo asset inspect <ref>      # raw AssetVersion record, including the on-disk
 ```
 
 A `<ref>` is an asset key with an optional version/alias selector resolved by the
-catalog; `<key>` is the plain `namespace/name`. There is no CLI subcommand that
+catalog; `<key>` is either the full `<kind>:<name>` printed by `ginkgo asset ls`
+or the bare `<name>`, which the catalog searches across kinds and asks you to
+qualify only when several kinds share it. There is no CLI subcommand that
 streams the payload bytes for you — `ginkgo asset inspect` prints the resolved
 artifact path so you can open the bytes directly, and within a workflow a
 downstream task loads a version through the `AssetRef` it receives. Separately,
