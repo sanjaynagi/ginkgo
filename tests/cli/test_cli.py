@@ -51,6 +51,7 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
     asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
     artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
     source = cwd / f"{name}.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
     record = artifact_store.store(src_path=source)
     version = make_asset_version(
@@ -472,6 +473,29 @@ class TestCliAssets:
         assert "Asset Key: file:prepared_data" in inspected.stdout
         assert f"Version: {second_version}" in inspected.stdout
         assert "Artifact Path:" in inspected.stdout
+
+    def test_asset_lookup_resolves_bare_names_and_reports_unknown_keys(self) -> None:
+        _seed_asset(
+            cwd=Path.cwd(),
+            name="sites/forest/note",
+            text="hello",
+            run_id="run-1",
+        )
+
+        # The name as passed to the asset helper, without naming the kind.
+        shown = _run_cli("asset", "show", "sites/forest/note", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        assert "Asset Key: file:sites/forest/note" in shown.stdout
+
+        versions = _run_cli("asset", "versions", "sites/forest/note", cwd=Path.cwd())
+        assert versions.returncode == 0, versions.stderr
+        assert "Asset Key: file:sites/forest/note" in versions.stdout
+
+        # An unknown key names no kind of its own and offers the real one.
+        missing = _run_cli("asset", "show", "sites/forest/notes", cwd=Path.cwd())
+        assert missing.returncode == 1
+        assert "No asset 'sites/forest/notes' in the catalog" in missing.stderr
+        assert "file:sites/forest/note" in missing.stderr
 
 
 class TestCliEnv:

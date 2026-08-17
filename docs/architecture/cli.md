@@ -11,6 +11,7 @@ The current CLI supports:
 - `ginkgo init`
 - `ginkgo asset ls`
 - `ginkgo asset versions`
+- `ginkgo asset show`
 - `ginkgo asset inspect`
 - `ginkgo models`
 - `ginkgo cache ls`
@@ -24,6 +25,14 @@ Implemented CLI features include the dry-run execution-plan preview, merged
 config overrides, human-readable run summaries, structured inspection and
 diagnostics, secret discovery and validation, cache inspection and eviction,
 failed-task debugging, and asset catalog inspection for local workspaces.
+
+`asset versions`, `asset show`, and `asset inspect` resolve their key argument
+against the catalog rather than parsing it in isolation
+(`resolve_asset_key` in `cli/commands/asset.py`). A `<kind>:<name>` key is
+looked up directly; a bare `<name>` is searched across kinds, resolving when
+exactly one kind holds it and reporting the candidate keys when several do. An
+unknown key reports near matches from the catalog, so no lookup ever invents a
+kind the user did not use.
 
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each

@@ -182,10 +182,11 @@ ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
 - `rehydrate_on_receive` flags kinds that the evaluator should
   auto-rehydrate when an `AssetRef` is passed as a task argument
   (everything except `file` and `fig`).
-- `default_name_strategy` is `"task_name"` for `file` (the task
-  function's name is the default when no explicit `name` is supplied)
+- `default_name_strategy` names the fallback used when no explicit
+  `name` is supplied: `"task_name"` for `file` (the task function's name)
   and `"kind_index"` for every other kind (per-kind counter producing
-  `<task>.<kind>[<index>]`).
+  `<task>.<kind>[<index>]`). It has no bearing on an explicit `name=`,
+  which every kind honours verbatim.
 
 Adding a new asset kind means extending the canonical `AssetKind`
 Literal in `core/asset.py` and registering one entry in `ASSET_KINDS`
@@ -224,9 +225,19 @@ every nested `AssetResult`, and replaces it with a resolved `AssetRef`:
    downstream task in the same process can consume it without a disk
    round-trip.
 
-Named outputs use the asset key `<task_fn>.<name>`. Unnamed non-file
-outputs are indexed per kind as `<task_fn>.<kind>[<index>]`. Unnamed
-file outputs fall back to `<task_fn>` as their name. Duplicate
+An asset key is `<kind>:<name>`, rendered by `AssetKey.__str__` and parsed
+back by `AssetKey.parse`, which requires both halves — a bare name is not
+a key, since inferring the kind would address a different asset than the
+caller wrote.
+
+An explicit `name=` is the asset name verbatim, for every kind, so the
+key a workflow author writes is the key the CLI accepts. Only unnamed
+outputs get a generated name: non-file outputs are indexed per kind as
+`<task_fn>.<kind>[<index>]`, and file outputs fall back to `<task_fn>`.
+Uniqueness of explicit names is enforced per task on `(kind, name)`
+inside `_AssetRegistrationState`, which keeps the check task-local
+without leaking the task name into the key; two tasks that name the same
+`(kind, name)` therefore register two versions of one asset. Duplicate
 explicit names within a single task raise a `ValueError` before any
 artifact is written. Serialisation errors surface as
 `AssetSerializationError` identifying the offending result by name and

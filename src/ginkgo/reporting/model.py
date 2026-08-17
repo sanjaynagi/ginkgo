@@ -756,7 +756,9 @@ def _build_assets(
         seen_version_ids.add(version_id)
         try:
             version = store.get_version(key=AssetKey.parse(key_text), version_id=version_id)
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
+            # A missing version or a manifest key that is not ``<kind>:<name>``
+            # only costs this report one card.
             continue
         card = _build_asset_card(
             version=version,
