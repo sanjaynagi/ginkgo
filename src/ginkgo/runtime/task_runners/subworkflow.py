@@ -28,6 +28,7 @@ import yaml
 
 from ginkgo.config import PARAMS_CONFIG_KEY
 from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult
+from ginkgo.envs.mounts import mount
 from ginkgo.runtime.task_runners.shell import ShellRunner
 
 
@@ -165,6 +166,10 @@ class SubworkflowRunner:
                 node=node,
                 cmd=cmd,
                 extra_env=extra_env,
+                # The params file lives in a scratch directory outside the
+                # project, so an isolated environment needs it named to see the
+                # --config path the command just referenced.
+                mounts=[mount(tmp_dir, mode="ro")] if tmp_params_path is not None else [],
             )
 
             combined = (completed.stdout or "") + (completed.stderr or "")

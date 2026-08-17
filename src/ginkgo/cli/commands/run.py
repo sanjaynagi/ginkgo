@@ -48,7 +48,7 @@ from ginkgo.core.resources import (
 )
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
-from ginkgo.envs.container import ContainerBackend
+from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -228,7 +228,7 @@ def run_workflow(
     )
     backend = CompositeEnvironment(
         local=LocalEnvironment(pixi_registry=registry),
-        container=ContainerBackend(project_root=Path.cwd()),
+        container=container_backend_from_config(project_root=Path.cwd(), config=runtime_config),
     )
 
     remote_executor = None

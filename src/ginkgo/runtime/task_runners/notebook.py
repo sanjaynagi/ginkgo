@@ -35,6 +35,7 @@ from ginkgo.runtime.notebook_kernels import (
 )
 from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
+    declared_output_mounts,
     iter_output_values,
     remove_declared_output,
     serialize_cli_argument_value,
@@ -57,6 +58,7 @@ class NotebookTaskError(RuntimeError):
         cmd: str,
         exit_code: int,
         output: str,
+        hint: str | None = None,
     ) -> None:
         self.exit_code = exit_code
         details = (
@@ -64,6 +66,8 @@ class NotebookTaskError(RuntimeError):
         )
         if output:
             details = f"{details}\n{output.strip()}"
+        if hint is not None:
+            details = f"{details}\n{hint}"
         super().__init__(details)
 
 
@@ -280,7 +284,10 @@ class NotebookRunner(DriverTaskRunner):
             executed_artifact = None
 
         completed = self.shell_runner.run_logged_command(
-            node=node, cmd=command, user_log_path=user_log_path
+            node=node,
+            cmd=command,
+            user_log_path=user_log_path,
+            mounts=declared_output_mounts(output=directive.output),
         )
         if completed.returncode != 0:
             self._record_notebook_manifest(
@@ -294,12 +301,16 @@ class NotebookRunner(DriverTaskRunner):
                 render_error=None,
                 managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
+            execute_output = (completed.stdout or "") + (completed.stderr or "")
             raise NotebookTaskError(
                 task_name=node.task_def.name,
                 phase="execute",
                 cmd=command,
                 exit_code=completed.returncode,
-                output=(completed.stdout or "") + (completed.stderr or ""),
+                output=execute_output,
+                hint=self.shell_runner.failure_hint(
+                    node=node, exit_code=completed.returncode, output=execute_output
+                ),
             )
 
         # Render notebook to HTML.

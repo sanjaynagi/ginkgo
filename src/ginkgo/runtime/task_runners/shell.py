@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock, Thread, current_thread, main_thread
 from types import FrameType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
-from ginkgo.core.asset import AssetResult
+from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
-from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
+from ginkgo.envs.mounts import Mount, MountMode, mount
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -45,6 +46,7 @@ class ShellTaskError(RuntimeError):
         exit_code: int,
         output: str,
         log: str | None,
+        hint: str | None = None,
     ) -> None:
         self.exit_code = exit_code
 
@@ -53,6 +55,8 @@ class ShellTaskError(RuntimeError):
             details = f"{details} (log: {log})"
         elif output:
             details = f"{details}\n{output.strip()}"
+        if hint is not None:
+            details = f"{details}\n{hint}"
 
         super().__init__(details)
 
@@ -86,6 +90,19 @@ def build_shell_subprocess_env(*, task_def: Any, threads: int | None = None) -> 
         for name in _THREAD_ENV_VARS:
             env[name] = str(threads)
     return env
+
+
+def computed_env_var_names(*, task_def: Any) -> tuple[str, ...]:
+    """Return the variable names :func:`build_shell_subprocess_env` computes.
+
+    An isolated environment inherits nothing, so it has to be told which
+    variables to carry across. Only Ginkgo's own computed set is named here:
+    forwarding the rest of ``os.environ`` would undermine the controlled
+    environment that is a container's whole point.
+    """
+    if getattr(task_def, "export_thread_env", False):
+        return ("GINKGO_THREADS", *_THREAD_ENV_VARS)
+    return ("GINKGO_THREADS",)
 
 
 def remove_declared_output(path: Path) -> None:
@@ -190,6 +207,75 @@ def iter_output_values(
     if isinstance(output, (str, AssetResult, OptionalOutput)):
         return [_declared_item_path(output)]
     return [_declared_item_path(item) for item in output]
+
+
+def declared_input_mounts(*, node: Any) -> list[Mount]:
+    """Return the bind mounts a node's declared path inputs need.
+
+    A container sees only what is mounted into it, and the task's command
+    carries host absolute paths.  Path-shaped inputs (``file``/``folder``) are
+    mounted read-only; a ``tmp_dir`` scratch directory is mounted read-write,
+    since the task writes into it.
+
+    A ``file`` input mounts its *directory*, not just the file. Command-line
+    bioinformatics tools routinely read a sibling of the file they are given —
+    ``ref.fa.fai`` beside ``ref.fa``, ``.bai`` beside ``.bam`` — and a mount of
+    the file alone makes an index that exists on the host invisible inside the
+    container. Read-only means a tool that wants to *write* its index fails and
+    says so; declaring that index as an output is what makes it writable, and
+    keeps it after the container exits.
+
+    Inputs that do not exist are skipped rather than mounted: the runtime would
+    create the host path to satisfy the mount, and a missing declared input is
+    better reported by the command that needs it.
+    """
+    resolved_args = getattr(node, "resolved_args", None) or {}
+    type_hints = getattr(node.task_def, "type_hints", None) or {}
+
+    mounts: list[Mount] = []
+    for name, value in resolved_args.items():
+        annotation = type_hints.get(name)
+        if annotation is tmp_dir:
+            mode: MountMode = "rw"
+        elif annotation is not None and is_path_shaped_annotation(annotation):
+            mode = "ro"
+        else:
+            continue
+        for path in _iter_declared_paths(value):
+            if not path.exists():
+                continue
+            mounts.append(mount(path if path.is_dir() else path.parent, mode=mode))
+    return mounts
+
+
+def declared_output_mounts(*, output: Any) -> list[Mount]:
+    """Return read-write mounts for a directive's declared outputs.
+
+    The parent directory is mounted rather than the output path itself: the
+    output does not exist yet, and the runtime would create a *directory* at
+    that path to satisfy the mount.  Parents have already been created by the
+    caller.
+
+    A directive's ``log`` is deliberately not included. The log is captured on
+    the host from the pipes the runtime client writes to, so the container never
+    opens that path and needs no access to its directory.
+    """
+    if output is None:
+        return []
+    return [mount(path.parent, mode="rw") for path in iter_output_values(output)]
+
+
+def _iter_declared_paths(value: Any) -> list[Path]:
+    """Return every filesystem path a resolved argument value carries."""
+    if isinstance(value, AssetRef):
+        return [Path(value.artifact_path)]
+    if isinstance(value, (str, Path, os.PathLike)):
+        return [Path(str(value))]
+    if isinstance(value, dict):
+        return [path for item in value.values() for path in _iter_declared_paths(item)]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [path for item in value for path in _iter_declared_paths(item)]
+    return []
 
 
 def iter_required_output_values(
@@ -532,22 +618,39 @@ class ShellRunner:
         cmd: str,
         user_log_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
+        mounts: Sequence[Mount] = (),
     ) -> subprocess.CompletedProcess[str]:
-        """Run one command while appending to provenance logs."""
+        """Run one command while appending to provenance logs.
+
+        The node's declared path inputs are mounted for environments that need
+        it; *mounts* carries anything else the command touches, such as the
+        declared outputs a shell directive names.
+        """
         for path in (node.stdout_path, node.stderr_path, user_log_path):
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
 
+        subprocess_env = build_shell_subprocess_env(task_def=node.task_def, threads=node.threads)
+        if extra_env:
+            subprocess_env.update(extra_env)
+
         if node.task_def.env is not None and self.backend is not None:
-            argv: str | list[str] = self.backend.exec_argv(env=node.task_def.env, cmd=cmd)
+            # The subprocess is the environment's launcher, not the command, so
+            # an isolated environment is told which of the variables just
+            # computed the command itself needs to see.
+            argv: str | list[str] = self.backend.exec_argv(
+                env=node.task_def.env,
+                cmd=cmd,
+                mounts=[*declared_input_mounts(node=node), *mounts],
+                env_vars=[
+                    *computed_env_var_names(task_def=node.task_def),
+                    *sorted(extra_env or {}),
+                ],
+            )
             use_shell = False
         else:
             argv = cmd
             use_shell = True
-
-        subprocess_env = build_shell_subprocess_env(task_def=node.task_def, threads=node.threads)
-        if extra_env:
-            subprocess_env.update(extra_env)
 
         stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
         stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
@@ -593,6 +696,18 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
+    def failure_hint(self, *, node: Any, exit_code: int, output: str) -> str | None:
+        """Ask the execution environment to diagnose a failed command.
+
+        Every driver task kind raises its own error type, so each one asks here
+        rather than the diagnosis living with one of them.
+        """
+        if node.task_def.env is None or self.backend is None:
+            return None
+        return self.backend.exec_failure_hint(
+            env=node.task_def.env, exit_code=exit_code, output=output
+        )
+
     def run_shell(self, *, node: Any, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
@@ -606,6 +721,7 @@ class ShellRunner:
             node=node,
             cmd=directive.cmd,
             user_log_path=user_log_path,
+            mounts=declared_output_mounts(output=directive.output),
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
@@ -615,6 +731,9 @@ class ShellRunner:
                 exit_code=completed.returncode,
                 output=combined_output,
                 log=directive.log,
+                hint=self.failure_hint(
+                    node=node, exit_code=completed.returncode, output=combined_output
+                ),
             )
 
         missing_outputs = [

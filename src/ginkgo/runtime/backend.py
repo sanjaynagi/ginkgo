@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
 from ginkgo.envs.container import ContainerBackend, is_container_env
+from ginkgo.envs.mounts import Mount
 from ginkgo.envs.pixi import PixiRegistry
 
 
@@ -46,13 +47,45 @@ class ExecutionEnvironment(Protocol):
         """
         ...
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
         """Build an argument vector to execute *cmd* inside the environment.
+
+        Parameters
+        ----------
+        env : str
+            Environment name, path, or container URI.
+        cmd : str
+            Shell command string.
+        mounts : Sequence[Mount]
+            Host paths the command needs, declared by the task. Only container
+            environments act on these; host-local environments ignore them.
+        env_vars : Sequence[str]
+            Names of environment variables Ginkgo computed for this task that
+            must reach the command. Host-local environments inherit them
+            already and ignore this.
 
         Returns
         -------
         list[str]
             Argument vector suitable for ``subprocess.run(..., shell=False)``.
+        """
+        ...
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Return a diagnosis to append to a failed command's error, if any.
+
+        Returns
+        -------
+        str | None
+            A message naming a cause the raw output does not, or ``None`` when
+            the environment has nothing to add.
         """
         ...
 
@@ -93,9 +126,25 @@ class LocalEnvironment:
         """Return the Pixi lock-file BLAKE3 digest."""
         return self.pixi_registry.lock_hash(env=env)
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
-        """Build argv to run *cmd* through the Pixi environment."""
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
+        """Build argv to run *cmd* through the Pixi environment.
+
+        Pixi runs on the host, where every declared path is already reachable
+        and the subprocess environment is inherited, so *mounts* and *env_vars*
+        are accepted for protocol conformance and ignored.
+        """
         return self.pixi_registry.exec_argv(env=env, cmd=cmd)
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Pixi failures surface the tool's own error; nothing to add."""
+        return None
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
@@ -156,9 +205,20 @@ class CompositeEnvironment:
         """Delegate to the correct environment."""
         return self._route(env=env).env_identity(env=env)
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
         """Delegate to the correct environment."""
-        return self._route(env=env).exec_argv(env=env, cmd=cmd)
+        return self._route(env=env).exec_argv(env=env, cmd=cmd, mounts=mounts, env_vars=env_vars)
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Delegate to the correct environment."""
+        return self._route(env=env).exec_failure_hint(env=env, exit_code=exit_code, output=output)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Delegate to the correct environment."""
