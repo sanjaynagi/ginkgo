@@ -1,4 +1,5 @@
-<h2 id="params"><span class="num">02</span>Parameters</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "params") -}}
 {% if report.params %}
 <pre class="code">{{ report.params|yaml }}</pre>
 {% else %}
