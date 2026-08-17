@@ -38,15 +38,44 @@ environment differed from the key on every run afterwards, and every env-backed
 task re-ran exactly once — issue #194, visible on the stock `ginkgo init`
 scaffold, which ships manifests and no locks.
 
-The state of the environment as materialised on this machine is still recorded,
-by `materialized_digest`, but only for provenance: the lock file is copied into
-the run directory, and a container task's manifest entry carries
-`container_image_digest`. The tradeoff is that changes not visible in the
-declaration — `pixi update` re-solving a lock, a mutable tag repointed upstream
-— no longer invalidate cache entries. Pin `image@sha256:...`, or bump `version=`,
-when that matters. Hashing the declaration also makes keys portable: a lock file
-is solved per machine and per moment, so lock-derived keys never transferred
-between machines in the first place.
+Hashing the declaration also makes keys portable, which lock-derived keys never
+were: a lock is solved per machine and per moment.
+
+### Drift is caught on the entry, not in the key
+
+Keying on the declaration leaves drift the declaration does not record —
+`pixi update` re-solving a lock while `pixi.toml` still says `numpy = ">=2.0"`,
+or a mutable tag repointed upstream. Those changes must not serve stale results,
+so they are caught where the evidence exists rather than in the key.
+
+`ExecutionEnvironment.materialized_digest` reports the environment as
+materialised on *this* machine — the lock file's digest, the pulled image's ID.
+`CacheStore.save` records it in the entry's `meta.json` as
+`env_materialized_digest`, and `CacheStore._env_materialization_matches` checks a
+candidate hit against it inside `load` and `has_entry`, so every lookup path —
+content-addressed, the `--trust-mtimes` stat index, and the `--dry-run` preview —
+gets the same answer:
+
+- materialised here and different: the entry was produced against other
+  dependencies, so it is a miss and the task re-runs;
+- materialised here and the same: a genuine hit;
+- not materialised here: no local evidence either way, and the entry stands.
+  Establishing evidence would mean installing or pulling an environment to serve
+  a cache hit, which is the cost the deferred materialisation exists to avoid.
+  This is the case a shared cache lands in on a machine that has never built the
+  environment.
+
+Neither read costs anything next to executing the task, both are memoised per
+environment per run, and neither happens on a miss. Because a lookup can ask for
+the digest before `prepare` has run, neither backend memoises a *negative*
+answer: an absent lock file or an unpulled image has to read as materialised once
+it is there.
+
+Entries written before the digest was recorded have nothing to compare and stand.
+
+The digest is also recorded for provenance, where it always has been: the lock
+file is copied into the run directory, and a container task's manifest entry
+carries `container_image_digest`.
 
 ## Untracked path boundaries
 

@@ -55,7 +55,7 @@ class CacheCoordinator:
             node.cache_key = cache_key
             node.input_hashes = input_hashes
 
-        cached_result = self.cache_store.load(cache_key=node.cache_key)
+        cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
         if cached_result is MISSING or not self._is_valid_cached_result(
             cache_key=node.cache_key,
             task_def=node.task_def,
@@ -77,7 +77,7 @@ class CacheCoordinator:
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        cached_result = self.cache_store.try_stat_index(stat_key=stat_key)
+        cached_result = self.cache_store.try_stat_index(stat_key=stat_key, task_def=node.task_def)
         if cached_result is MISSING:
             return None
 

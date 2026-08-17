@@ -166,11 +166,14 @@ class CacheStore:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded), input_hashes
 
-    def load(self, *, cache_key: str) -> Any:
-        """Load a cached result if present."""
+    def load(self, *, cache_key: str, task_def: TaskDef) -> Any:
+        """Load a cached result if present and still valid for its environment."""
         entry_dir = self._entry_dir(cache_key)
         output_path = entry_dir / "output.json"
         if not output_path.exists():
+            return MISSING
+
+        if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
             return MISSING
 
         return decode_value(
@@ -179,8 +182,8 @@ class CacheStore:
             artifact_store=self._artifact_store,
         )
 
-    def has_entry(self, *, cache_key: str) -> bool:
-        """Return whether a cache entry exists for the given key.
+    def has_entry(self, *, cache_key: str, task_def: TaskDef) -> bool:
+        """Return whether a usable cache entry exists for the given key.
 
         Read-only existence check: it does not decode or materialise the
         cached value. Used by the ``--dry-run`` plan preview to predict
@@ -190,13 +193,18 @@ class CacheStore:
         ----------
         cache_key : str
             The cache key to probe.
+        task_def : TaskDef
+            The task the key belongs to, so a declared environment that has
+            drifted since the entry was written counts as no entry.
 
         Returns
         -------
         bool
             ``True`` if a stored output exists for the key.
         """
-        return (self._entry_dir(cache_key) / "output.json").is_file()
+        if not (self._entry_dir(cache_key) / "output.json").is_file():
+            return False
+        return self._env_materialization_matches(cache_key=cache_key, task_def=task_def)
 
     def save(
         self,
@@ -251,6 +259,7 @@ class CacheStore:
                     "artifact_ids": artifact_ids,
                     "cache_key": cache_key,
                     "env": task_def.env,
+                    "env_materialized_digest": self._materialized_digest(task_def=task_def),
                     "function": task_def.name,
                     "inputs": self._serialise_inputs(
                         task_def=task_def, resolved_args=resolved_args
@@ -575,6 +584,45 @@ class CacheStore:
             "pixi_lock": identity,
         }
 
+    def _materialized_digest(self, *, task_def: TaskDef) -> str | None:
+        """Return the digest of the task's environment as materialised here."""
+        if task_def.env is None or self.backend is None:
+            return None
+        return self.backend.materialized_digest(env=task_def.env)
+
+    def _env_materialization_matches(self, *, cache_key: str, task_def: TaskDef) -> bool:
+        """Return whether an entry's environment still matches the local one.
+
+        Keys name the *declared* environment, so drift the declaration does not
+        record — ``pixi update`` re-solving a lock, a mutable tag repointed
+        upstream — leaves the key unchanged. Each entry therefore also carries
+        the digest of the environment as materialised when it was written, and a
+        candidate hit is checked against the environment on this machine:
+
+        - materialised here and different: the entry was produced against other
+          dependencies, so it is a miss;
+        - materialised here and the same: a genuine hit;
+        - not materialised here: no local evidence either way, and establishing
+          any would mean installing or pulling an environment to serve a cache
+          hit, so the entry stands.
+
+        Entries written before the digest was recorded have nothing to compare
+        and stand too.
+        """
+        if task_def.env is None or self.backend is None:
+            return True
+
+        meta = self._load_meta(cache_key=cache_key)
+        recorded = (meta or {}).get("env_materialized_digest")
+        if recorded is None:
+            return True
+
+        current = self._materialized_digest(task_def=task_def)
+        if current is None:
+            return True
+
+        return current == recorded
+
     def _hash_value(
         self,
         *,
@@ -834,7 +882,7 @@ class CacheStore:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded)
 
-    def try_stat_index(self, *, stat_key: str) -> Any:
+    def try_stat_index(self, *, stat_key: str, task_def: TaskDef) -> Any:
         """Look up a stat-based fingerprint in the persistent index.
 
         Returns
@@ -845,7 +893,7 @@ class CacheStore:
         content_key = self._stat_index.get(stat_key)
         if content_key is None:
             return MISSING
-        return self.load(cache_key=content_key)
+        return self.load(cache_key=content_key, task_def=task_def)
 
     def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
         """Record a mapping from stat fingerprint to content cache key."""

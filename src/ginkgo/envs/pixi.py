@@ -155,7 +155,7 @@ class PixiRegistry:
     project_root: Path = field(default_factory=Path.cwd)
     workflow_root: Path | None = None
     _envs_dirs: tuple[Path, ...] = field(init=False, repr=False)
-    _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+    _lock_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _identity_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _prepared_manifests: set[Path] = field(default_factory=set, init=False, repr=False)
 
@@ -317,7 +317,9 @@ class PixiRegistry:
         :meth:`prepare` has run, and is recorded for provenance. Cache keys use
         :meth:`env_identity` instead.
 
-        The hash is computed once per env name and cached in memory.
+        The hash is computed once per env name and cached in memory. A missing
+        lock file is not remembered: ``prepare`` writes one, and a caller that
+        asked before the install has to see the digest afterwards.
 
         Parameters
         ----------
@@ -330,12 +332,16 @@ class PixiRegistry:
             Hex digest, or ``None`` if no lockfile exists alongside the
             ``pixi.toml``.
         """
-        if env in self._lock_cache:
-            return self._lock_cache[env]
+        cached = self._lock_cache.get(env)
+        if cached is not None:
+            return cached
 
         manifest = self.resolve(env=env)
         lock_path = manifest.parent / "pixi.lock"
-        digest = hash_file(lock_path) if lock_path.is_file() else None
+        if not lock_path.is_file():
+            return None
+
+        digest = hash_file(lock_path)
         self._lock_cache[env] = digest
         return digest
 
