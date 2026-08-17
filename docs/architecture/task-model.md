@@ -92,11 +92,25 @@ Implemented notebook behavior includes:
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
 
 Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
-run under `build_jupyter_env_prefix`, which sets `JUPYTER_PATH` to Ginkgo's
-managed kernel prefix and `JUPYTER_PLATFORM_DIRS=1`. `JUPYTER_PATH` is purely
-additive, so it alone leaves the host's system Jupyter data directories in the
-search path; `JUPYTER_PLATFORM_DIRS=1` takes them out, so an unreadable
-`/usr/local/share/jupyter/conf.json` cannot fail the export.
+run under `build_jupyter_env_prefix`. Every such subprocess walks
+`jupyter_core.paths.jupyter_path()`, which always ends with
+`SYSTEM_JUPYTER_PATH`, so an unreadable `conf.json` under a host system
+directory can fail a render before any HTML is written. The prefix sets three
+variables to put that search path under Ginkgo's control:
+
+- `JUPYTER_PATH` — Ginkgo's managed kernel prefix, so Papermill finds the
+  kernelspec Ginkgo installed. Purely additive, so it cannot remove anything.
+- `JUPYTER_PLATFORM_DIRS=1` — makes `SYSTEM_JUPYTER_PATH` come from
+  `platformdirs.site_data_dir` rather than the hardcoded `/usr/local/share/jupyter`
+  and `/usr/share/jupyter`.
+- `XDG_DATA_DIRS` — what `site_data_dir` reads on Linux and macOS alike, pointed
+  at Ginkgo's own prefix.
+
+The last two are both required. `JUPYTER_PLATFORM_DIRS=1` on its own relocates
+the system directories on macOS but not on Linux, where the platform-appropriate
+data directories *are* `/usr/local/share` and `/usr/share`. The user-level and
+environment-level search entries are left alone: they are the user's own home
+directory and Ginkgo's interpreter prefix, where nbconvert's templates live.
 
 A notebook task records `notebook_artifact_run_id` alongside its artifact
 pointers, naming the run that rendered them. The value travels into the cache
