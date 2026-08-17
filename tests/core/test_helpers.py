@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from ginkgo import expand, flatten, per_branch, slug, zip_expand
+from ginkgo.runtime.caching.provenance import _render_value
+from ginkgo.runtime.task_runners.shell import serialize_cli_argument_value
 from ginkgo.wildcards import ExpandedTemplate
 
 
@@ -83,16 +86,42 @@ class TestExpandedTemplateMarker:
         assert isinstance(result, ExpandedTemplate)
         assert result.function_name == "zip_expand"
 
-    def test_respells_placeholders_with_fan_out_argument_names(self) -> None:
-        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
-        assert (
-            result.as_per_branch_template(["temperature", "defect_density"])
-            == "results/{temperature}_{defect_density}.json"
-        )
+    def test_placeholders_matching_argument_names_all_resolve(self) -> None:
+        result = expand("results/{temperature}.json", temperature=[300])
+        assert result.unresolved_placeholders(["temperature", "defect_density"]) == ()
 
-    def test_respelling_keeps_template_when_counts_differ(self) -> None:
+    def test_reports_placeholders_that_name_no_argument(self) -> None:
         result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
-        assert result.as_per_branch_template(["temperature"]) == "results/{t}_{d}.json"
+        assert result.unresolved_placeholders(["temperature", "d"]) == ("t",)
+
+    def test_resolution_is_by_name_not_position(self) -> None:
+        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
+        assert result.unresolved_placeholders(["temperature", "defect_density"]) == ("t", "d")
+
+
+class TestExpandedTemplateSerialization:
+    """`ExpandedTemplate` is not safe_dump-able, so normalisation must stay.
+
+    Both paths that serialise resolved task arguments rebuild plain lists.
+    These tests fail if a refactor drops that, rather than the failure
+    surfacing mid-run in a user's workflow (PR #216 review).
+    """
+
+    def test_expanded_template_is_not_directly_yaml_safe(self) -> None:
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_dump(expand("results/{sample}.txt", sample=["a", "b"]))
+
+    def test_cli_argument_serialization_yields_a_dumpable_plain_list(self) -> None:
+        serialized = serialize_cli_argument_value(
+            expand("results/{sample}.txt", sample=["a", "b"])
+        )
+        assert type(serialized) is list
+        assert yaml.safe_load(yaml.safe_dump(serialized)) == ["results/a.txt", "results/b.txt"]
+
+    def test_provenance_rendering_yields_a_dumpable_plain_list(self) -> None:
+        rendered = _render_value({"paths": expand("results/{sample}.txt", sample=["a"])})
+        assert type(rendered["paths"]) is list
+        assert yaml.safe_load(yaml.safe_dump(rendered)) == {"paths": ["results/a.txt"]}
 
 
 class TestPerBranch:

@@ -602,18 +602,31 @@ def _expanded_template_in_product_message(
     axis_keys: list[str],
 ) -> str:
     """Explain why an expanded template cannot be a ``product_map()`` axis."""
-    suggestion = column.as_per_branch_template(axis_keys)
+    unresolved = column.unresolved_placeholders(axis_keys)
+    varying = ", ".join(axis_keys) or "none"
+    if unresolved:
+        # Offering a template with placeholders that name no argument would
+        # hand over a fix that fails on the next run, so name the gap instead.
+        fix = (
+            f"Derive it per branch instead, as {key}=per_branch(...) spelled with this call's "
+            f"own varying argument names ({varying}): "
+            + "; ".join(
+                f"placeholder {name!r} names no varying argument of this call"
+                for name in unresolved
+            )
+            + ", so this template cannot be reused as written. "
+        )
+    else:
+        fix = f"Derive it per branch instead:\n    {key}=per_branch({column.template!r})\n"
+
     return (
         f"product_map() argument {key!r} was built by {column.function_name}"
         f"({column.template!r}), which already returns one value per combination of its "
         f"wildcards, not an axis to sweep. Crossing it with the grid would produce one branch "
         f"per (grid cell, {key}) pair, so branches would carry {key} values that contradict "
-        f"their other arguments. Derive it per branch instead:\n"
-        f"    {key}=per_branch({suggestion!r})\n"
-        "spelling the placeholders as this call's own argument names "
-        f"({', '.join(axis_keys) or 'none varying'}); per_branch() renders once per grid cell "
-        f"from that cell's values. {column.function_name}() output remains correct with .map(), "
-        "where every column is consumed row by row."
+        f"their other arguments. " + fix + "per_branch() renders once per grid cell from that "
+        f"cell's values. {column.function_name}() output remains correct with .map(), where "
+        "every column is consumed row by row."
     )
 
 

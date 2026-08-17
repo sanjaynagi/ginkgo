@@ -32,8 +32,13 @@ type rather than by convention (issue #198):
 
 `expand()`/`zip_expand()` return `ExpandedTemplate`, a `list[str]` subclass that
 remembers its template. Such a list is one value per wildcard combination —
-already aligned to the values it came from — so `.product_map()` rejects it
-naming the argument and the `per_branch()` spelling to use instead. Passed to
+already aligned to the values it came from — so `.product_map()` rejects it,
+naming the argument. The error offers a concrete `per_branch()` template only
+when every wildcard already names one of the call's varying arguments;
+placeholders are resolved by name, never by position, so the assumption that
+caused the original mislabelling does not reappear in the error path. Where a
+placeholder resolves to nothing, the message names it instead of printing a
+template that would fail on the next run. Passed to
 `.product_map()` it would have become a further axis crossed with the axes it
 was derived from: an N×M grid with an N·M-element path list silently became
 N·M·N·M branches, several writing each path, last writer winning, with the

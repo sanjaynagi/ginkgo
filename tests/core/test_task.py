@@ -439,7 +439,38 @@ class TestFanOutDerivedArguments:
         message = str(excinfo.value)
         assert "'output_path'" in message
         assert "expand('results/{t}_{d}.json')" in message
-        assert "per_branch('results/{temperature}_{defect_density}.json')" in message
+
+    def test_rejection_suggests_the_template_when_placeholders_name_arguments(self):
+        simulate = self._simulate()
+        template = "results/{temperature}_{defect_density}.json"
+
+        with pytest.raises(ValueError) as excinfo:
+            simulate().product_map(
+                temperature=[300, 400],
+                defect_density=[0.01, 0.02],
+                output_path=expand(template, temperature=[300, 400], defect_density=[0.01, 0.02]),
+            )
+
+        assert f"output_path=per_branch({template!r})" in str(excinfo.value)
+
+    def test_rejection_offers_no_template_when_a_placeholder_names_no_argument(self):
+        """A suggestion a user cannot copy is worse than none (PR #216 review)."""
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError) as excinfo:
+            simulate().product_map(
+                temperature=[300, 400],
+                defect_density=[0.01, 0.02],
+                output_path=expand("results/{t}.json", t=[300, 400]),
+            )
+
+        message = str(excinfo.value)
+        assert "per_branch('results/{t}.json')" not in message
+        assert "per_branch(" not in message.replace("per_branch(...)", "").replace(
+            "per_branch()", ""
+        )
+        assert "placeholder 't' names no varying argument of this call" in message
+        assert "temperature, defect_density" in message
 
     def test_product_map_rejects_zip_expand_column(self):
         simulate = self._simulate()

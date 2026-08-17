@@ -18,6 +18,12 @@ class ExpandedTemplate(list[str]):
     list behaves exactly like ``list[str]``; remembering the template lets
     ``.product_map()`` reject it by name instead of silently crossing it
     with the axes it was derived from.
+
+    The subclass must never reach ``yaml.safe_dump`` directly — the safe
+    dumper represents only exact built-in types and raises on this one.
+    Every code path that serialises task arguments already normalises
+    sequences into plain lists first, and ``tests/core/test_helpers.py``
+    holds that normalisation in place.
     """
 
     def __init__(
@@ -33,19 +39,18 @@ class ExpandedTemplate(list[str]):
         self.function_name = function_name
         self.placeholders = tuple(placeholders)
 
-    def as_per_branch_template(self, names: Sequence[str]) -> str:
-        """Return this template respelled with ``names`` as its placeholders.
+    def unresolved_placeholders(self, names: Sequence[str]) -> tuple[str, ...]:
+        """Return the placeholders that do not name one of ``names``.
 
-        Falls back to the original template when the placeholder and name
-        counts differ, since no positional correspondence can be assumed.
+        Resolution is by name, never by position: a template can be reused
+        verbatim as a ``per_branch()`` template exactly when every
+        placeholder already names an argument of the call. Positional
+        correspondence between wildcards and arguments is the assumption
+        that produced the mislabelling this type exists to prevent, so it
+        is not assumed here either.
         """
-        if len(names) != len(self.placeholders):
-            return self.template
-
-        respelled = self.template
-        for placeholder, name in zip(self.placeholders, names, strict=True):
-            respelled = respelled.replace("{" + placeholder + "}", "{" + name + "}")
-        return respelled
+        available = set(names)
+        return tuple(name for name in self.placeholders if name not in available)
 
 
 @dataclass(frozen=True)
