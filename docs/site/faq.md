@@ -293,10 +293,27 @@ references it by name with `env=`. Before running, Ginkgo materialises the
 environment with `pixi install` and runs each command inside it, so the task
 sees the locked set of dependencies — see
 [Environments](guide/environments.md#ginkgo-materialises-declared-environments)
-for what that means for a first run and what must be on your `PATH`. Ginkgo also
-folds the environment's
-identity into the cache key by hashing the neighbouring `pixi.lock`, so a change
-to the locked dependencies invalidates cached results.
+for what that means for a first run and what must be on your `PATH`.
+
+Ginkgo folds the environment into the cache key by hashing the manifest, so
+editing the declared dependencies invalidates cached results. The neighbouring
+`pixi.lock` is not part of the key: it is written by `pixi install`, which runs
+after the key is built, so keying on it made the second run of every workflow
+redo its work. It is checked instead. Each cache entry records the digest of the
+environment as it was installed when the entry was written, and a cache hit is
+only served if the environment installed here now matches. So `pixi update`,
+which re-solves every dependency without touching `pixi.toml`, does invalidate —
+the key is unchanged, but the recorded environment no longer matches. The same
+holds for containers: an image repointed under a mutable tag invalidates once
+that image has been pulled here.
+
+What does *not* invalidate: a hit served on a machine where the environment has
+never been installed, or an image never pulled. There is no local evidence to
+compare against, and getting some would mean installing or pulling an
+environment to serve a cache hit. Entries written by an older version of Ginkgo,
+which carry no recorded environment, are likewise accepted. Pin
+`image@sha256:...`, or bump `version=`, when you want the key itself to carry
+that precision.
 
 ```python
 @task(kind="shell", env="bioinfo_tools")

@@ -34,16 +34,35 @@ class ExecutionEnvironment(Protocol):
         """Ensure the execution environment is ready for dispatch."""
         ...
 
-    def env_identity(self, *, env: str) -> str | None:
+    def env_identity(self, *, env: str) -> str:
         """Return a stable identity string for cache keying.
 
-        For Pixi environments this is the lock-file digest.  For container
-        environments it would be the image digest.
+        The identity is a function of the *declared* environment: the Pixi
+        manifest digest, or the container image reference. It must be resolvable
+        before :meth:`prepare` and must read the same afterwards, because the
+        cache key is built before the environment is materialised. An identity
+        that changed on materialisation re-ran every environment-backed task on
+        the run after the environment was first installed (issue #194).
+
+        Returns
+        -------
+        str
+            Identity of the declared environment. Never empty: the cache layer
+            refuses to build a key from an unresolved identity.
+        """
+        ...
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return a digest of the environment as materialised here, for provenance.
+
+        Unlike :meth:`env_identity`, this describes local state — the solved
+        lock file, the pulled image — so it is only available once
+        :meth:`prepare` has run. Never used for cache keys.
 
         Returns
         -------
         str | None
-            Hex digest or ``None`` when identity cannot be determined.
+            Digest, or ``None`` when the environment is not materialised.
         """
         ...
 
@@ -122,8 +141,12 @@ class LocalEnvironment:
         """Materialize the Pixi environment."""
         self.pixi_registry.prepare(env=env)
 
-    def env_identity(self, *, env: str) -> str | None:
-        """Return the Pixi lock-file BLAKE3 digest."""
+    def env_identity(self, *, env: str) -> str:
+        """Return the BLAKE3 digest of the Pixi manifest."""
+        return self.pixi_registry.env_identity(env=env)
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return the BLAKE3 digest of the installed environment's lock file."""
         return self.pixi_registry.lock_hash(env=env)
 
     def exec_argv(
@@ -201,9 +224,13 @@ class CompositeEnvironment:
         """Delegate to the correct environment."""
         self._route(env=env).prepare(env=env)
 
-    def env_identity(self, *, env: str) -> str | None:
+    def env_identity(self, *, env: str) -> str:
         """Delegate to the correct environment."""
         return self._route(env=env).env_identity(env=env)
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Delegate to the correct environment."""
+        return self._route(env=env).materialized_digest(env=env)
 
     def exec_argv(
         self,

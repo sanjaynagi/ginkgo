@@ -274,10 +274,10 @@ def _probe_node(
         # node to "unknown" rather than aborting the preview.
         return "unknown"
 
-    if not cache_store.has_entry(cache_key=cache_key):
+    if not cache_store.has_entry(cache_key=cache_key, task_def=node.task_def):
         return "will_run"
 
-    cached_value = cache_store.load(cache_key=cache_key)
+    cached_value = cache_store.load(cache_key=cache_key, task_def=node.task_def)
     if cached_value is MISSING:
         return "will_run"
 
