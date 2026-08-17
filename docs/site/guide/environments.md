@@ -59,6 +59,51 @@ def count_reads(sample_id: str, fastq: file) -> file:
 Container-backed execution is currently intended for shell tasks only. Python
 tasks still run in the scheduler's Python environment.
 
+### What the container can see
+
+A container sees only what is mounted into it. Ginkgo mounts the project root,
+and then whatever the task *declares*: every `file` and `folder` argument
+read-only, and every declared output read-write. Each is mounted at the same
+absolute path it has on the host, so the paths in your command need no
+rewriting, and a symlink still resolves because Ginkgo mounts the real path at
+the declared one.
+
+This is why annotating paths matters. `fastq: file` is visible inside the
+container; the same path pulled out of config and interpolated into the command
+string is not, because nothing declared it. Annotating is already required for
+cache correctness, and the same annotation earns the mount.
+
+### What the container inherits
+
+Ginkgo forwards its own computed variables and nothing else: `GINKGO_THREADS`
+always, and `OMP_NUM_THREADS` and friends when the task declares
+`export_thread_env=True`. The rest of your shell environment stays outside,
+which is the point of running in a container at all.
+
+The container runs as you, not as root, so its outputs stay writable by later
+Python tasks and by the next run.
+
+### Configuration
+
+Anything the declarations cannot express goes in `ginkgo.toml`:
+
+```toml
+[container]
+runtime = "docker"                          # or "podman"
+pull_policy = "if-not-present"              # "always" | "never"
+user = "auto"                               # host uid:gid; "root" or "1000:1000"
+shell = "bash"                              # for images that ship only "sh"
+auto_mount = true
+extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
+```
+
+Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
+licence file. Entries take the form `"/path"`, `"/path:rw"`, or
+`"/host:/container:rw"`, and default to read-only.
+
+Set `user = "root"` for an image that installs software at runtime and needs to
+write outside its mounts. Note that its outputs will then be root-owned.
+
 ## Environment Commands
 
 The CLI includes environment inspection and cleanup commands:

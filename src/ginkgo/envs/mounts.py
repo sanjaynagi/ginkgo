@@ -33,10 +33,13 @@ _REFUSED_ROOTS = frozenset(
         "/sys",
         "/usr",
         "/var",
-        # macOS hosts.
+        # macOS hosts, where the system directories above are symlinks into
+        # /private and so resolve to a second set of names.
         "/Applications",
         "/Library",
         "/System",
+        "/private/etc",
+        "/private/var",
     }
 )
 
@@ -104,8 +107,15 @@ def parse_extra_mount(spec: str) -> Mount:
         host, container, mode = parts[0], parts[0], "ro"
     elif len(parts) == 2 and parts[1] in MOUNT_MODES:
         host, container, mode = parts[0], parts[0], parts[1]
-    elif len(parts) == 2:
+    elif len(parts) == 2 and parts[1].startswith("/"):
         host, container, mode = parts[0], parts[1], "ro"
+    elif len(parts) == 2:
+        # Neither a mode nor a container path; guessing which was meant would
+        # silently mount at a relative path or with the wrong mode.
+        raise ValueError(
+            f"Invalid container mount mode {parts[1]!r} in {spec!r}. Expected one of "
+            f"{MOUNT_MODES}, or an absolute container path."
+        )
     elif len(parts) == 3:
         host, container, mode = parts
     else:
@@ -138,8 +148,13 @@ def resolve_mounts(*, project_root: Path, mounts: Iterable[Mount]) -> list[Mount
 
     by_container: dict[Path, Mount] = {}
     for candidate in mounts:
+        declared = _absolute(candidate.host_path)
         host = _resolve_host_path(candidate.host_path)
         container = _absolute(candidate.container_path)
+        # Both names are checked: a refused directory is often a symlink to a
+        # path under another name (/etc -> /private/etc on macOS), and either
+        # spelling would otherwise get through.
+        _require_safe(declared)
         _require_safe(host)
 
         # The project root is already mounted at its own path; a declared path
