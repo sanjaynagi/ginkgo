@@ -25,6 +25,16 @@ from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.common import RunMode, console
 from ginkgo.params import looks_like_flag
 
+class _GinkgoArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if message.startswith("the following arguments are required: "):
+            for action in self._actions:
+                if isinstance(action, argparse._SubParsersAction) and action.required:
+                    self.print_help(sys.stderr)
+                    self.exit(2)
+
+        super().error(message)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ``ginkgo`` CLI."""
@@ -195,7 +205,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         so ``ginkgo run <workflow> --help`` can render its own usage text
         alongside the workflow's declared parameters.
     """
-    parser = argparse.ArgumentParser(prog="ginkgo")
+
+    parser = _GinkgoArgumentParser(prog="ginkgo")
     parser.add_argument(
         "--version",
         action="version",

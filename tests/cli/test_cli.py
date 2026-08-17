@@ -115,6 +115,26 @@ def test_version_flag_reports_pyproject_version() -> None:
     assert result.stdout.strip() == f"ginkgo {expected}"
 
 
+@pytest.mark.parametrize(
+    ("command", "subcommands"),
+    [
+        ("cache", "{ls,clear,explain,prune}"),
+        ("asset", "{ls,versions,inspect,show}"),
+        ("env", "{ls,clear}"),
+        ("inspect", "{workflow,run}"),
+        ("secrets", "{list,validate}"),
+    ],
+)
+def test_command_group_without_subcommand_shows_help(
+    command: str, subcommands: str
+) -> None:
+    result = _run_cli(command, cwd=REPO_ROOT)
+
+    assert result.returncode == 2
+    assert f"usage: ginkgo {command}" in result.stderr
+    assert subcommands in result.stderr
+    assert "the following arguments are required" not in result.stderr
+
 class TestCliRunAndCache:
     def test_run_writes_manifest_params_and_cache_metadata(self) -> None:
         Path("ginkgo.toml").write_text('message = "default"\nextra = "base"\n', encoding="utf-8")
