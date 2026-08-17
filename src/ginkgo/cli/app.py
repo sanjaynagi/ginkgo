@@ -229,9 +229,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
-    run_parser.add_argument("--agent", action="store_true")
     run_parser.add_argument(
-        "--trust-workspace",
+        "--agent-output",
+        action="store_true",
+        help="Print newline-delimited JSON events instead of the live terminal UI",
+    )
+    run_parser.add_argument(
+        "--trust-mtimes",
         action="store_true",
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
@@ -372,7 +376,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
 def _run_mode_from_args(args: argparse.Namespace) -> RunMode:
     """Return the run output mode implied by CLI flags."""
-    if getattr(args, "agent", False):
+    if getattr(args, "agent_output", False):
         if getattr(args, "verbose", False):
             return "agent_verbose"
         return "agent"

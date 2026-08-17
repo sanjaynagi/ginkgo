@@ -431,7 +431,7 @@ Once a task's inputs are resolved, Ginkgo tries to satisfy the node straight fro
 cache; on a hit the node is marked complete and no execution slot is ever used.
 The default path builds the full content-addressed key and also validates that
 cached file/folder outputs are still materialised correctly. Running with
-`--trust-workspace` enables a faster path that skips content hashing and only
+`--trust-mtimes` enables a faster path that skips content hashing and only
 checks that output files exist — quicker for warm reruns, but weaker, since it
 trusts the working tree instead of re-verifying bytes.
 

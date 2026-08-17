@@ -79,7 +79,7 @@ tasks declare (e.g. `--resource api_calls=10`) — see
 `--dry-run` resolves the graph and computes cache keys without executing any
 task body &mdash; the fastest way to confirm a workflow is wired correctly.
 
-`--agent` swaps the live terminal UI for a stream of newline-delimited JSON
+`--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
 

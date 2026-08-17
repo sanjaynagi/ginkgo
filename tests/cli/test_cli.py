@@ -977,7 +977,7 @@ class TestCliInit:
         assert "@flow" in workflow_text
         assert "from .modules.analysis import" in workflow_text
         assert "expand(" in workflow_text
-        assert "ginkgo run --agent" in readme_text
+        assert "ginkgo run --agent-output" in readme_text
         assert "workflow/flow.py" in readme_text
         assert "See `skills/index.md`" in readme_text
         assert "This project uses Ginkgo" in skills_index_text
@@ -1384,7 +1384,7 @@ def main():
             encoding="utf-8",
         )
 
-        result = _run_cli("run", "workflow.py", "--agent", cwd=Path.cwd())
+        result = _run_cli("run", "workflow.py", "--agent-output", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         event_types = {event["event"] for event in events}
@@ -1412,7 +1412,7 @@ def main():
             encoding="utf-8",
         )
 
-        result = _run_cli("run", "workflow.py", "--agent", "--verbose", cwd=Path.cwd())
+        result = _run_cli("run", "workflow.py", "--agent-output", "--verbose", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         task_logs = [event for event in events if event["event"] == "task_log"]

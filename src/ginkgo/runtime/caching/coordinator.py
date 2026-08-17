@@ -27,7 +27,7 @@ class CacheCoordinator:
     """Cache lookups and cache-side bookkeeping for the evaluator.
 
     Owns the two lookup paths — content-addressed keys and the stat-index
-    fast path for ``--trust-workspace`` runs — plus the bookkeeping both
+    fast path for ``--trust-mtimes`` runs — plus the bookkeeping both
     share with task completion: recording stat-index entries and
     propagating output digests. Lookups return a :class:`CacheHit` or
     ``None``; marking the node complete (events, provenance, notebook
@@ -65,10 +65,10 @@ class CacheCoordinator:
         return CacheHit(value=cached_result, cache_key=node.cache_key)
 
     def stat_lookup(self, *, node: NodeRun) -> CacheHit | None:
-        """Return a stat-index cached result for ``--trust-workspace`` mode.
+        """Return a stat-index cached result for ``--trust-mtimes`` mode.
 
         On a hit the node's cache key is set to the indexed content key and
-        its input hashes are cleared: trust-workspace mode only checks that
+        its input hashes are cleared: trust-mtimes mode only checks that
         output files exist, not that their content matches the artifact
         store.
         """

@@ -4,7 +4,7 @@ Start here:
 
 - `ginkgo test --dry-run`
   Validates test workflows in `{{ tests_relpath }}` without executing tasks.
-- `ginkgo run --agent`
+- `ginkgo run --agent-output`
   Executes and emits machine-readable JSONL runtime events on stdout for programmatic
   consumers or agents.
 - `ginkgo run`
