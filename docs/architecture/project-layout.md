@@ -40,6 +40,13 @@ The scaffold is produced by `cli/commands/init.py` from
 `src/ginkgo/templates/init/`, where `PACKAGE_NAME` pins the package directory to
 `workflow`.
 
+Those templates are the only copy of the starter project. Whatever needs a
+runnable starter — the example integration test, the example benchmark case —
+materialises one with `write_starter_project` in `cli/commands/init.py` rather
+than keeping a checked-in duplicate under `examples/`. A duplicate silently
+drifted from the templates once already (#217), and nothing in CI compared the
+two trees.
+
 ## The `.ginkgo/` directory
 
 Runtime state lives under `.ginkgo/`, one subdirectory per concern:

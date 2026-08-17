@@ -196,23 +196,13 @@ def _selected_template_files(*, args) -> list[tuple[Traversable, Path]]:
     return files
 
 
-def command_init(args) -> int:
-    """Handle ``ginkgo init``."""
-    root = Path(args.directory).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    rich_console = console(sys.stdout)
-    context = _template_context(root=root)
-    files = _selected_template_files(args=args)
-
-    conflicts = [
-        root / relative_path for _, relative_path in files if (root / relative_path).exists()
-    ]
-    if conflicts and not args.force:
-        conflict_list = "\n".join(str(path.relative_to(root)) for path in conflicts)
-        raise FileExistsError(
-            f"Refusing to overwrite existing scaffold files without --force:\n{conflict_list}"
-        )
-
+def _write_template_files(
+    *,
+    root: Path,
+    files: list[tuple[Traversable, Path]],
+    context: TemplateContext,
+) -> list[Path]:
+    """Write rendered template files under ``root`` and return what was written."""
     written_paths: list[Path] = []
 
     # Copy the starter template file-by-file so path and content substitutions stay explicit.
@@ -233,6 +223,54 @@ def command_init(args) -> int:
                 encoding="utf-8",
             )
         written_paths.append(destination)
+    return written_paths
+
+
+def write_starter_project(*, root: Path) -> Path:
+    """Materialise the starter project ``ginkgo init`` scaffolds, without the skills.
+
+    The packaged templates are the only copy of the starter project, so anything
+    that needs a runnable starter — the example integration test, the example
+    benchmarks — asks for one here rather than keeping a checked-in duplicate
+    that can drift from what users are actually given.
+
+    Parameters
+    ----------
+    root : Path
+        Directory to scaffold into. Created if it does not exist.
+
+    Returns
+    -------
+    Path
+        The scaffolded project root.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    _write_template_files(
+        root=root,
+        files=_template_files(template_root=_template_root(group="base")),
+        context=_template_context(root=root),
+    )
+    return root
+
+
+def command_init(args) -> int:
+    """Handle ``ginkgo init``."""
+    root = Path(args.directory).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    rich_console = console(sys.stdout)
+    context = _template_context(root=root)
+    files = _selected_template_files(args=args)
+
+    conflicts = [
+        root / relative_path for _, relative_path in files if (root / relative_path).exists()
+    ]
+    if conflicts and not args.force:
+        conflict_list = "\n".join(str(path.relative_to(root)) for path in conflicts)
+        raise FileExistsError(
+            f"Refusing to overwrite existing scaffold files without --force:\n{conflict_list}"
+        )
+
+    written_paths = _write_template_files(root=root, files=files, context=context)
 
     rich_console.print(f"[bold green]🌿 ginkgo init[/] [bold]{root.name}[/]\n")
     rich_console.print(f"[green]✓[/] Initialized project scaffold at [bold]{root}[/]")
