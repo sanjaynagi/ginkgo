@@ -426,10 +426,23 @@ class _RunLayoutRenderer:
         )
 
     def render_notebooks(self, notebooks: list[CliNotebookSummary]) -> Text:
-        """Render the list of notebooks materialised in this run."""
+        """Render this run's notebooks, separating fresh from replayed.
+
+        A cache hit does not re-render, so its artifact and recorded render
+        status both belong to an earlier run. Those rows are still listed —
+        the artifact is what a reader will open — but they are counted apart
+        from the notebooks this run materialised, so a replayed export
+        failure does not read as a new one.
+        """
         text = Text()
-        failed_count = sum(1 for nb in notebooks if nb.render_failed)
-        text.append(f"\n📓 Notebooks materialised ({len(notebooks)})", style="bold")
+        replayed = [nb for nb in notebooks if nb.replayed]
+        materialised = len(notebooks) - len(replayed)
+        failed_count = sum(1 for nb in notebooks if nb.render_failed and not nb.replayed)
+        text.append(f"\n📓 Notebooks materialised ({materialised})", style="bold")
+        if replayed:
+            source_count = len({nb.replayed_from_run_id for nb in replayed})
+            source = "an earlier run" if source_count == 1 else "earlier runs"
+            text.append(f"  ↺ {len(replayed)} from {source}", style="bold #0f766e")
         if failed_count:
             text.append(f"  ⚠ {failed_count} HTML export failed", style="bold yellow")
         text.append("\n")
@@ -437,6 +450,8 @@ class _RunLayoutRenderer:
             url = nb.html_path.as_uri()
             text.append(f"  {nb.task_label}  ", style="bold #134e4a")
             text.append(str(nb.html_path), style=f"link {url} #0f766e")
+            if nb.replayed_from_run_id is not None:
+                text.append(f"  ↺ from run {nb.replayed_from_run_id}", style="#0f766e")
             if nb.render_failed:
                 text.append("  ⚠ HTML export failed", style="bold yellow")
             text.append("\n")

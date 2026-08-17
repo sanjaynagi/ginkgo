@@ -1246,6 +1246,8 @@ def _build_notebooks(
         sub_parts.append(format_bytes(size_bytes))
         if task.notebook_description:
             sub_parts.append(task.notebook_description)
+        if task.notebook_artifact_run_id not in (None, summary.run_id):
+            sub_parts.append(f"from run {task.notebook_artifact_run_id}")
         if task.render_status == "failed":
             sub_parts.append("HTML export failed")
 

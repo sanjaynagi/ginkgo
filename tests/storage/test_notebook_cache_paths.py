@@ -3,6 +3,10 @@
 Regression cover for issue #137: a cache-hit notebook task replayed a
 cwd-relative pointer that consumers joined onto the new run directory,
 producing a path that existed nowhere.
+
+Regression cover for issue #202 part 2: the replayed pointer carried no
+provenance, so the new run claimed an earlier run's artifact — and its
+recorded export failure — as its own.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ class _StubProvenance:
     """Minimal provenance recorder capturing manifest extras."""
 
     run_dir: Path
+    run_id: str = "old_run"
     extras: dict[str, Any] = field(default_factory=dict)
 
     def update_task_extra(self, *, node_id: int, **extra: Any) -> None:
@@ -136,3 +141,40 @@ class TestReplayedPointerResolves:
         replayed = resolve_cached_artifact_pointers(extras=extras)
 
         assert replayed == {"task_type": "notebook"}
+
+    def test_replayed_pointer_is_attributed_to_the_producing_run(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """The run id travels with the pointer, so the new run can disown it."""
+        monkeypatch.chdir(tmp_path)
+        old_run = Path(".ginkgo") / "runs" / "old_run"
+        html, executed = _write_artifacts(run_dir=old_run)
+
+        provenance = _StubProvenance(run_dir=old_run, run_id="old_run")
+        runner = NotebookRunner.__new__(NotebookRunner)
+        runner.provenance = provenance
+        node = _StubNode()
+        _record(runner=runner, node=node, html=html, executed=executed)
+
+        # The producing run names itself in its own manifest.
+        assert provenance.extras["notebook_artifact_run_id"] == "old_run"
+
+        cache_extras = node.notebook_extras
+        assert cache_extras is not None
+        replayed = resolve_cached_artifact_pointers(extras=cache_extras)
+
+        # A later run replaying these extras learns which run produced them.
+        assert replayed["notebook_artifact_run_id"] == "old_run"
+        assert Path(replayed["rendered_html"]) == html.resolve()
+
+    def test_attribution_is_dropped_with_the_pointers_it_describes(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        extras = {
+            "task_type": "notebook",
+            "notebook_artifact_run_id": "pruned_run",
+            "rendered_html": str(tmp_path / "gone" / "task_0014.html"),
+        }
+
+        assert resolve_cached_artifact_pointers(extras=extras) == {"task_type": "notebook"}

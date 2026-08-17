@@ -623,6 +623,15 @@ class TestEvaluate:
         # Absolute path pointing back at the original run's HTML artifact.
         assert Path(replayed_html) == first_html
         assert (second_recorder.run_dir / replayed_html).resolve() == first_html.resolve()
+        # And the replayed pointer names the run that actually rendered it,
+        # so the second run does not claim the artifact as its own (#202).
+        assert first_manifest["tasks"]["task_0000"]["notebook_artifact_run_id"] == (
+            first_recorder.run_id
+        )
+        assert second_manifest["tasks"]["task_0000"]["notebook_artifact_run_id"] == (
+            first_recorder.run_id
+        )
+        assert second_recorder.run_id != first_recorder.run_id
 
     def test_ipynb_notebook_task_uses_env_managed_kernel(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -109,11 +109,18 @@ class CliNotebookSummary:
     html_path: Path
     render_status: str | None = None
     render_error: str | None = None
+    replayed_from_run_id: str | None = None
+    """Set when a cache hit reused an artifact an earlier run produced."""
 
     @property
     def render_failed(self) -> bool:
         """Return True when the HTML export step failed for this notebook."""
         return self.render_status == "failed"
+
+    @property
+    def replayed(self) -> bool:
+        """Return True when this run reused an earlier run's artifact."""
+        return self.replayed_from_run_id is not None
 
 
 @dataclass(frozen=True, kw_only=True)

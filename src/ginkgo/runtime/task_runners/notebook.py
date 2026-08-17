@@ -108,6 +108,9 @@ def resolve_cached_artifact_pointers(*, extras: dict[str, Any]) -> dict[str, Any
             resolved[key] = str(candidate)
         else:
             del resolved[key]
+    if not any(key in resolved for key in NOTEBOOK_ARTIFACT_KEYS):
+        # Nothing left to attribute.
+        resolved.pop("notebook_artifact_run_id", None)
     return resolved
 
 
@@ -320,6 +323,7 @@ class NotebookRunner(DriverTaskRunner):
             notebook_kind=notebook_kind,
             executed_path=artifacts.executed_path,
             html_path=artifacts.html_path,
+            jupyter_path=kernel_spec.jupyter_path if kernel_spec is not None else Path(),
         )
         render_result = self.shell_runner.run_logged_command(node=node, cmd=render_command)
         if render_result.returncode != 0 or not artifacts.html_path.is_file():
@@ -504,13 +508,20 @@ class NotebookRunner(DriverTaskRunner):
         notebook_kind: str,
         executed_path: Path | None,
         html_path: Path,
+        jupyter_path: Path,
     ) -> str:
-        """Build the HTML render command for one notebook task."""
+        """Build the HTML render command for one notebook task.
+
+        The ipynb branch runs nbconvert under ``build_jupyter_env_prefix`` so
+        the render sees ginkgo's own Jupyter search path rather than whatever
+        system configuration happens to sit on the host.
+        """
         if notebook_kind == "ipynb":
             if executed_path is None:
                 raise RuntimeError("ipynb notebooks require an executed output path")
             return " ".join(
                 [
+                    build_jupyter_env_prefix(jupyter_path=jupyter_path),
                     shlex.quote(sys.executable),
                     "-m",
                     "jupyter",
@@ -560,6 +571,11 @@ class NotebookRunner(DriverTaskRunner):
             "notebook_path": str(notebook_path),
             "notebook_description": notebook_description,
             "render_status": render_status,
+            # Names the run whose directory holds the artifacts below. It goes
+            # into the cache entry with them, so a later run that replays the
+            # pointers replays this too and can tell a reused artifact (and its
+            # recorded render status) from one it produced itself.
+            "notebook_artifact_run_id": self.provenance.run_id,
             "rendered_html": relativize_to_run_dir(
                 run_dir=self.provenance.run_dir,
                 path=rendered_html,

@@ -145,7 +145,10 @@ def _mock_notebook_tools() -> Iterator[None]:
     ) -> subprocess.CompletedProcess[str]:
         if isinstance(argv, str) and "papermill" in argv:
             parts = shlex.split(argv)
-            output_path = Path(parts[4])
+            # `papermill <notebook> <executed>`. Locate it rather than indexing a
+            # fixed position: the command carries a leading `env VAR=... ` prefix
+            # whose length is not this mock's business.
+            output_path = Path(parts[parts.index("papermill") + 2])
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("executed notebook", encoding="utf-8")
             if on_stdout is not None:

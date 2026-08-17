@@ -142,12 +142,46 @@ class NotebookKernelManager:
 
 
 def build_jupyter_env_prefix(*, jupyter_path: Path) -> str:
-    """Return shell-safe environment assignments for managed kernel discovery."""
+    """Return shell-safe environment assignments for managed Jupyter subprocesses.
+
+    Every Jupyter subprocess walks ``jupyter_core.paths.jupyter_path()`` looking
+    for data files — Papermill for the managed kernelspec, nbconvert for its
+    template roots. That list ends with ``SYSTEM_JUPYTER_PATH``, which no amount
+    of ``JUPYTER_PATH`` can remove: the variable is documented as purely
+    additive. An unreadable ``conf.json`` under one of those system directories
+    therefore fails the render with ``PermissionError`` before any HTML is
+    written. Three assignments put the whole search path under ginkgo's control:
+
+    ``JUPYTER_PATH``
+        Adds ginkgo's managed kernel prefix, so Papermill finds the kernelspec
+        ginkgo installed.
+    ``JUPYTER_PLATFORM_DIRS=1``
+        Makes ``SYSTEM_JUPYTER_PATH`` come from ``platformdirs.site_data_dir``
+        rather than the hardcoded ``/usr/local/share/jupyter`` and
+        ``/usr/share/jupyter``.
+    ``XDG_DATA_DIRS``
+        Is what ``site_data_dir`` reads, on Linux and macOS alike, so this is
+        what actually decides where those system directories land. Pointing it
+        at ginkgo's own prefix is what takes the host's directories out of the
+        path.
+
+    Both of the last two are needed. ``JUPYTER_PLATFORM_DIRS=1`` alone relocates
+    the system directories on macOS but not on Linux, where the
+    platform-appropriate data directories *are* ``/usr/local/share`` and
+    ``/usr/share`` — so on the platform ginkgo workflows most often run on, the
+    flag by itself moves nothing.
+
+    The user-level and environment-level entries are deliberately left alone:
+    they are the user's own home directory and ginkgo's own interpreter prefix,
+    which is where nbconvert's templates live.
+    """
 
     return " ".join(
         [
             "env",
             f"JUPYTER_PATH={shlex.quote(str(jupyter_path))}",
+            "JUPYTER_PLATFORM_DIRS=1",
+            f"XDG_DATA_DIRS={shlex.quote(str(jupyter_path))}",
         ]
     )
 

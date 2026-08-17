@@ -605,8 +605,9 @@ def _render_notebooks(
 ) -> list[CliNotebookSummary]:
     """Build CLI-renderer notebook rows from a run summary.
 
-    Resolves rendered HTML paths against the run directory and substitutes
-    runtime task labels when the renderer has them.
+    Resolves rendered HTML paths against the run directory, substitutes
+    runtime task labels when the renderer has them, and marks rows whose
+    artifact an earlier run produced and this run only replayed from cache.
     """
     rows: list[CliNotebookSummary] = []
     for notebook in run_summary.notebooks:
@@ -627,6 +628,11 @@ def _render_notebooks(
                 html_path=html_path,
                 render_status=notebook.render_status,
                 render_error=notebook.render_error,
+                replayed_from_run_id=(
+                    notebook.notebook_artifact_run_id
+                    if notebook.notebook_artifact_run_id not in (None, run_summary.run_id)
+                    else None
+                ),
             )
         )
     return rows
