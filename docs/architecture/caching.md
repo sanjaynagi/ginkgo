@@ -6,7 +6,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 - task version
 - task source hash
 - resolved input hashes
-- environment lock hash when `env=` is used
+- environment identity when `env=` is used
 - source file hash for driver tasks (notebook and script) folded at evaluation time
 
 Implemented cache hashing includes:
@@ -15,11 +15,38 @@ Implemented cache hashing includes:
 - scalar hashing via stable value hashing
 - file-content hashing
 - recursive folder-content hashing
-- Pixi lock hashing for local environments
-- container image digest hashing for container environments
+- Pixi manifest hashing for local environments
+- declared image reference for container environments
 - codec-based hashing for arrays, DataFrames, and other supported Python values
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
+
+## Environment identity
+
+`ExecutionEnvironment.env_identity` returns the identity of the *declared*
+environment: the digest of the Pixi manifest, or the container image reference.
+`CacheStore._env_hash` folds it into the key, and refuses (`UnresolvedEnvIdentityError`)
+to build a key from a backend that returns nothing for a declared `env=`.
+
+The identity has to be knowable before the environment is materialised, because
+`_prepare_node` builds the cache key before `_prepare_task_environment` runs —
+deliberately, so that a task about to hit the cache does not pay for a
+`pixi install` or an image pull. Identity previously came from local
+materialisation state (the `pixi.lock` that `pixi install` writes, the image ID
+of a pulled image), which meant the key on the run that materialised an
+environment differed from the key on every run afterwards, and every env-backed
+task re-ran exactly once — issue #194, visible on the stock `ginkgo init`
+scaffold, which ships manifests and no locks.
+
+The state of the environment as materialised on this machine is still recorded,
+by `materialized_digest`, but only for provenance: the lock file is copied into
+the run directory, and a container task's manifest entry carries
+`container_image_digest`. The tradeoff is that changes not visible in the
+declaration — `pixi update` re-solving a lock, a mutable tag repointed upstream
+— no longer invalidate cache entries. Pin `image@sha256:...`, or bump `version=`,
+when that matters. Hashing the declaration also makes keys portable: a lock file
+is solved per machine and per moment, so lock-derived keys never transferred
+between machines in the first place.
 
 ## Untracked path boundaries
 

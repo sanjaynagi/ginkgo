@@ -2062,7 +2062,7 @@ class ConcurrentEvaluator:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
                 extra: dict[str, Any] = {"backend": "container"}
-                digest = self.backend.env_identity(env=node.task_def.env)
+                digest = self.backend.materialized_digest(env=node.task_def.env)
                 if digest is not None:
                     extra["container_image_digest"] = digest
                 self.provenance.update_task_extra(

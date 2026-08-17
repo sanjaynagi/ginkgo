@@ -217,6 +217,11 @@ def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: str) 
     return shell(cmd="exit 7", output=output_path, log=log_path)
 
 
+@task(kind="shell", env="test_env")
+def shell_env_write_output_task(output_path: str) -> file:
+    return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
+
+
 @task(kind="shell")
 def shell_write_output_task(output_path: str, log_path: str) -> file:
     return shell(
@@ -1207,6 +1212,87 @@ class TestEvaluate:
         # Three tasks (left, right, and the parent) should each report a cache hit.
         cache_hits = [e for e in event_collector.events if type(e).__name__ == "TaskCacheHit"]
         assert len(cache_hits) == 3
+
+
+class TestEnvBackedCaching:
+    """Declaring ``env=`` must not cost a task its cache hit on the next run."""
+
+    def _backend(
+        self,
+        *,
+        project_root: Path,
+        manifest: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> LocalEnvironment:
+        """Return a Pixi-backed environment whose install is faked.
+
+        ``prepare`` stands in for ``pixi install``: the side effect that matters
+        here is that it writes the lock file next to the manifest, which is what
+        used to move the environment's identity mid-run.
+        """
+        registry = PixiRegistry(project_root=project_root)
+
+        def fake_prepare(*, env: str) -> Path:
+            (manifest.parent / "pixi.lock").write_text("version: 6\n", encoding="utf-8")
+            return manifest
+
+        monkeypatch.setattr(registry, "prepare", fake_prepare)
+        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
+        return LocalEnvironment(pixi_registry=registry)
+
+    def test_pixi_env_task_is_cached_on_the_second_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for issue #194.
+
+        The cache key is built before the environment is materialised, so an
+        environment identity that only becomes knowable once the environment is
+        installed differs between the run that installed it and every run after
+        it — and every env-backed task re-ran once, on the second run of an
+        otherwise unchanged workflow.
+
+        The two evaluators stand in for two processes: each gets its own
+        registry, so neither inherits the other's in-memory identity cache,
+        while both read the same cwd-scoped on-disk cache.
+        """
+        env_dir = tmp_path / "envs" / "test_env"
+        env_dir.mkdir(parents=True)
+        manifest = env_dir / "pixi.toml"
+        manifest.write_text(
+            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n", encoding="utf-8"
+        )
+        output_path = tmp_path / "out.txt"
+        expr = shell_env_write_output_task(output_path=str(output_path))
+
+        first_collector = EventCollector()
+        first = ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            backend=self._backend(
+                project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
+            ),
+            event_bus=first_collector.bus,
+        )
+
+        assert first.evaluate(expr) == file(str(output_path))
+        assert first_collector.cached() == []
+        # The first run materialised the environment, which is what wrote the
+        # lock file the identity used to be taken from.
+        assert (env_dir / "pixi.lock").is_file()
+
+        second_collector = EventCollector()
+        second = ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            backend=self._backend(
+                project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
+            ),
+            event_bus=second_collector.bus,
+        )
+
+        assert second.evaluate(expr) == file(str(output_path))
+        assert second_collector.cached() != []
+        assert second_collector.started() == []
 
 
 class TestShellTask:

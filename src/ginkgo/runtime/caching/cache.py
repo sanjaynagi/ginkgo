@@ -43,6 +43,19 @@ from ginkgo.workspace_layout import WorkspaceLayout
 MISSING = object()
 
 
+class UnresolvedEnvIdentityError(RuntimeError):
+    """Raised when a backend cannot identify an environment a task declares."""
+
+    def __init__(self, *, env: str, backend: Any) -> None:
+        super().__init__(
+            f"{type(backend).__name__} returned no identity for env {env!r}. "
+            "A cache key cannot be built from an unresolved environment identity: "
+            "it would change as soon as the identity resolved, re-running the task. "
+            "env_identity must be a function of the declared environment, knowable "
+            "before the environment is materialised."
+        )
+
+
 @dataclass(kw_only=True)
 class CacheStore:
     """Persistent on-disk cache for resolved task results.
@@ -54,9 +67,8 @@ class CacheStore:
         working directory.
     backend : ExecutionEnvironment | None
         Execution environment used to resolve per-environment identity hashes.
-        When ``None``, falls back to looking for a single ``pixi.lock`` in the
-        current working directory (legacy fallback used when no environment is
-        supplied, e.g. in tests).
+        When ``None``, a declared ``env=`` contributes only its own name to the
+        key (library use and tests, where no environment is supplied).
     artifact_store : LocalArtifactStore | None
         Shared artifact store for content-addressed binary and file/folder
         artifacts.  Created automatically when ``None``.
@@ -537,21 +549,30 @@ class CacheStore:
         return self._root / cache_key
 
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:
-        """Return environment identity information for cache-keying."""
+        """Return environment identity information for cache-keying.
+
+        The key is built before the environment is materialised, so an identity
+        that is only knowable afterwards would differ between the run that
+        installed the environment and every run after it. A backend that cannot
+        identify a declared environment is refused rather than folded in as
+        ``None`` (issue #194).
+        """
         if task_def.env is None:
             return None
 
-        if self.backend is not None:
-            lock_digest = self.backend.env_identity(env=task_def.env)
+        if self.backend is None:
+            # No execution environment supplied (library use, tests): the
+            # declaration is the whole of the identity available.
+            identity = None
         else:
-            # Fallback: single pixi.lock in cwd (no backend supplied).
-            pixi_lock = Path.cwd() / "pixi.lock"
-            lock_digest = self._hash_file_contents(pixi_lock) if pixi_lock.is_file() else None
+            identity = self.backend.env_identity(env=task_def.env)
+            if not identity:
+                raise UnresolvedEnvIdentityError(env=task_def.env, backend=self.backend)
 
         # Key name kept as "pixi_lock" for cache-key stability with existing entries.
         return {
             "env": task_def.env,
-            "pixi_lock": lock_digest,
+            "pixi_lock": identity,
         }
 
     def _hash_value(

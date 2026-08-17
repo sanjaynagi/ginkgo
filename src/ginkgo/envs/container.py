@@ -220,14 +220,31 @@ class ContainerBackend:
         # Invalidate digest cache after a pull since the image may have changed.
         self._digest_cache.pop(env, None)
 
-    def env_identity(self, *, env: str) -> str | None:
-        """Return the image digest for cache keying.
+    def env_identity(self, *, env: str) -> str:
+        """Return the declared image reference, which names the environment.
+
+        Cache keys fold this in, so it must not depend on whether the image has
+        been pulled yet: the local image ID only exists after :meth:`prepare`,
+        and keying on it re-ran every container task once per fresh image
+        (issue #194). A tag is as specific as the workflow author chose to be —
+        pin ``image@sha256:...`` for content-level invalidation. The image as
+        pulled is recorded separately, by :meth:`materialized_digest`.
+
+        Returns
+        -------
+        str
+            Image reference with the ``docker://`` / ``oci://`` scheme stripped.
+        """
+        return parse_container_uri(env).image
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return the ID of the image as pulled on this machine, for provenance.
 
         Returns
         -------
         str | None
             Image ID (``sha256:...``), or ``None`` if the image cannot be
-            inspected.
+            inspected — which is the case until :meth:`prepare` has pulled it.
         """
         if env in self._digest_cache:
             return self._digest_cache[env]

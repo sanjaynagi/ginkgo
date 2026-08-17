@@ -290,8 +290,11 @@ named environment lives in a directory (typically `envs/<name>/`) containing a
 references it by name with `env=`. Before running, Ginkgo materialises the
 environment with `pixi install` and runs each command inside it, so the task
 sees the locked set of dependencies. Ginkgo also folds the environment's
-identity into the cache key by hashing the neighbouring `pixi.lock`, so a change
-to the locked dependencies invalidates cached results.
+identity into the cache key by hashing the manifest, so editing the declared
+dependencies invalidates cached results. The neighbouring `pixi.lock` is copied
+into the run directory for provenance rather than keyed on: it is written by
+`pixi install`, which runs after the cache key is built, so keying on it made
+the second run of every workflow redo its work.
 
 ```python
 @task(kind="shell", env="bioinfo_tools")

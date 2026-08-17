@@ -156,6 +156,7 @@ class PixiRegistry:
     workflow_root: Path | None = None
     _envs_dirs: tuple[Path, ...] = field(init=False, repr=False)
     _lock_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+    _identity_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     _prepared_manifests: set[Path] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -277,8 +278,44 @@ class PixiRegistry:
                 output="pixi import completed without creating pixi.toml",
             )
 
+    def env_identity(self, *, env: str) -> str:
+        """Return a digest of the environment's declaration.
+
+        The identity is a function of the manifest alone, so it reads the same
+        before and after :meth:`prepare` installs the environment. It has to:
+        cache keys fold it in, and `pixi install` writes the neighbouring
+        ``pixi.lock``, so an identity taken from the lock file moved between the
+        first and second run of every workflow whose environments were not yet
+        installed (issue #194).
+
+        The manifest is also the portable half of the declaration. A lock file
+        is solved per machine and per moment, so hashing it made cache entries
+        machine-local; hashing the manifest keys on what the workflow asks for.
+
+        Parameters
+        ----------
+        env : str
+            Environment name or path.
+
+        Returns
+        -------
+        str
+            Hex digest of the resolved manifest.
+        """
+        cached = self._identity_cache.get(env)
+        if cached is not None:
+            return cached
+
+        digest = hash_file(self.resolve(env=env))
+        self._identity_cache[env] = digest
+        return digest
+
     def lock_hash(self, *, env: str) -> str | None:
         """Return the BLAKE3 digest of the environment's ``pixi.lock``, or None.
+
+        This reports what is installed on *this* machine, which only exists once
+        :meth:`prepare` has run, and is recorded for provenance. Cache keys use
+        :meth:`env_identity` instead.
 
         The hash is computed once per env name and cached in memory.
 
