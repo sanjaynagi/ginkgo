@@ -69,10 +69,14 @@ class _RunEventState:
         self.prepared_envs: list[str] = []
         self._env_prepare_started: dict[int, float] = {}
 
-    def seed(self, *, planned_tasks: list[tuple[int, str, str]]) -> None:
-        """Register the planned task set before any events arrive."""
-        for node_id, task_name, env_label in planned_tasks:
-            label = self.label_for(node_id=node_id, task_name=task_name)
+    def seed(self, *, planned_tasks: list[tuple[int, str, str, str]]) -> None:
+        """Register the planned task set before any events arrive.
+
+        Each entry is ``(node_id, task_name, label, env_label)``. The label
+        comes from the graph, so a fan-out branch reads the same here —
+        before it is dispatched — as it does under ``--dry-run``.
+        """
+        for node_id, task_name, label, env_label in planned_tasks:
             self.rows[node_id] = _TaskRow(
                 node_id=node_id,
                 task_name=task_name,
@@ -109,7 +113,7 @@ class _RunEventState:
 
         event_time = time.perf_counter()
         if node_id not in self.rows:
-            label = self.label_for(node_id=node_id, task_name=task_name)
+            label = self.label_for(task_name=task_name)
             self.rows[node_id] = _TaskRow(
                 node_id=node_id,
                 task_name=task_name,
@@ -171,11 +175,14 @@ class _RunEventState:
         self.env_prepare_seconds += max(0.0, event_time - started)
         return True
 
-    def label_for(self, *, node_id: int, task_name: str) -> str:
-        """Return a stable display label, disambiguating repeated task names."""
-        if node_id in self.rows:
-            return self.rows[node_id].label
+    def label_for(self, *, task_name: str) -> str:
+        """Return a display label for a node the plan did not announce.
 
+        Only nodes the graph grew mid-run reach this: every planned node is
+        seeded with its graph label. Such a node's own label arrives with
+        its first event carrying one, so this is a placeholder that only
+        has to stay distinct from its siblings.
+        """
         base_name = task_name.rsplit(".", 1)[-1]
         self._name_counts[base_name] += 1
         count = self._name_counts[base_name]
@@ -625,8 +632,11 @@ class CliRunRenderer:
         self._final_elapsed: float | None = None
         self._success: bool | None = None
 
-    def start(self, *, planned_tasks: list[tuple[int, str, str]]) -> None:
-        """Begin a CLI run section."""
+    def start(self, *, planned_tasks: list[tuple[int, str, str, str]]) -> None:
+        """Begin a CLI run section.
+
+        Each planned task is ``(node_id, task_name, label, env_label)``.
+        """
         self._state.seed(planned_tasks=planned_tasks)
         self._started = True
         self._run_started_at = time.perf_counter()

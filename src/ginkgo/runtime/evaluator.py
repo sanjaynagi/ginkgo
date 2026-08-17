@@ -2146,8 +2146,7 @@ class ConcurrentEvaluator:
             return None
 
         if node.expr.display_label_parts:
-            base_name = node.task_def.name.rsplit(".", 1)[-1]
-            return f"{base_name}[{','.join(node.expr.display_label_parts)}]"
+            return node.expr.display_label
 
         label_key = first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:

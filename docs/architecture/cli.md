@@ -37,6 +37,18 @@ fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
 keeps its terse per-workflow validation line rather than printing a full plan
 for each discovered workflow.
 
+Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
+base name, with its fan-out values in brackets when the graph fixed them —
+which `.map()` and `.product_map()` do at graph-build time, `per_branch()`
+arguments excluded as values derived from a branch rather than naming it.
+`display_labels()` assigns those labels across a graph, giving an ordinal to
+repeats that nothing else tells apart. Both the dry-run plan and the live run
+table label from it (`cli/commands/run.py:planned_task_rows`), so a branch
+still waiting to be dispatched reads the same in both. A mapped task whose
+fan-out left no label parts is the one case the graph cannot label; the
+evaluator supplies a label from its resolved arguments when it prepares the
+node, and the renderer adopts it on the node's first event.
+
 Commands that import a workflow — `run`, `doctor`, `secrets`, and
 `inspect workflow` — accept flags for the parameters that workflow declares with
 `ginkgo.param(...)`, resolved CLI-first, then the config `[params]` table, then

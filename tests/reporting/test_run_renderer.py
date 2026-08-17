@@ -1,4 +1,4 @@
-"""Environment-preparation progress in the Rich run renderer."""
+"""The Rich run renderer: task labels and environment-preparation progress."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from ginkgo import shell, task
+from ginkgo import per_branch, shell, task
+from ginkgo.cli.commands.run import planned_task_rows
 from ginkgo.cli.renderers.models import CliRunSummary
 from ginkgo.envs.pixi import PixiEnvPrepareError, PixiRegistry
 from ginkgo.cli.renderers.rich import RichEventRenderer
@@ -18,6 +19,9 @@ from ginkgo.cli.renderers.run import (
     CliRunRenderer,
     _RunEventState,
 )
+from ginkgo.core.expr import record_constructed_calls
+from ginkgo.runtime.dry_run import build_dry_run_plan
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareFailed,
@@ -63,7 +67,7 @@ def _event_line(status: str, *, env: str | None = None) -> str:
 
 def _seeded_state(*, env_label: str = "pixi:analysis") -> _RunEventState:
     state = _RunEventState()
-    state.seed(planned_tasks=[(0, "mod.task_a", env_label)])
+    state.seed(planned_tasks=[(0, "mod.task_a", "task_a", env_label)])
     return state
 
 
@@ -74,7 +78,7 @@ def _renderer(
     console = Console(file=output, width=120, force_terminal=False)
     summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
     renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(planned_tasks=[(0, "mod.task_a", env_label)])
+    renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", env_label)])
     return renderer, output
 
 
@@ -243,3 +247,78 @@ def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
 
     assert renderer._state.env_prepare_seconds < _ENV_PREPARE_REPORT_THRESHOLD_SECONDS
     assert "Environment preparation took" not in output.getvalue()
+
+
+_SITES = ("forest", "meadow", "wetland", "urban")
+
+
+@task()
+def fit_site_trend(*, site: str) -> str:
+    """Fan-out leaf, one branch per site."""
+    return f"trend:{site}"
+
+
+@task()
+def audit_site(*, site: str, trend: str) -> str:
+    """Downstream fan-out branch, zipped against its upstream trend."""
+    return f"{site}:{trend}"
+
+
+def _validated_evaluator(expr: object, calls: tuple[object, ...]) -> ConcurrentEvaluator:
+    """Return an evaluator with the graph behind ``expr`` built and validated."""
+    evaluator = ConcurrentEvaluator(constructed_calls=calls)
+    evaluator.build_and_validate(expr)
+    return evaluator
+
+
+def _seeded_labels(evaluator: ConcurrentEvaluator) -> dict[int, str]:
+    """Return the run table's labels for a graph, before any event arrives."""
+    state = _RunEventState()
+    state.seed(planned_tasks=planned_task_rows(evaluator))
+    assert all(row.status == "waiting" for row in state.rows.values())
+    return {node_id: row.label for node_id, row in state.rows.items()}
+
+
+def test_seeded_fanout_rows_use_graph_labels() -> None:
+    """An undispatched branch reads as it does under ``--dry-run`` (#204).
+
+    Both views label a node from the graph, so nothing still waiting to be
+    dispatched falls back to a bare ordinal.
+    """
+    with record_constructed_calls() as calls:
+        trends = fit_site_trend().map(site=list(_SITES))
+        expr = audit_site().map(site=list(_SITES), trend=trends)
+    evaluator = _validated_evaluator(expr, tuple(calls))
+
+    plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+    dry_run_labels = {task.node_id: task.label for wave in plan.waves for task in wave.tasks}
+
+    assert _seeded_labels(evaluator) == dry_run_labels
+    assert set(dry_run_labels.values()) == {f"fit_site_trend[{site}]" for site in _SITES} | {
+        f"audit_site[{site}]" for site in _SITES
+    }
+
+
+def test_per_branch_arguments_stay_out_of_seeded_labels() -> None:
+    """A ``per_branch()`` value derives from a branch, so it does not name it."""
+    with record_constructed_calls() as calls:
+        expr = audit_site().product_map(
+            site=["forest", "meadow"],
+            trend=per_branch("{site}.trend"),
+        )
+    evaluator = _validated_evaluator(expr, tuple(calls))
+
+    assert set(_seeded_labels(evaluator).values()) == {
+        "audit_site[site=forest]",
+        "audit_site[site=meadow]",
+    }
+
+
+def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
+    """Two calls of one task have nothing to tell them apart but an ordinal."""
+    with record_constructed_calls() as calls:
+        first = audit_site(site="forest", trend="forest.trend")
+        second = audit_site(site="meadow", trend="meadow.trend")
+    evaluator = _validated_evaluator((first, second), tuple(calls))
+
+    assert sorted(_seeded_labels(evaluator).values()) == ["audit_site", "audit_site[2]"]
