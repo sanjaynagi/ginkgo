@@ -435,6 +435,14 @@ new `ExprList` selecting element `i` from every branch, so the two lists above
 stay aligned with the branches that produced them. Either result can be passed
 straight to another task call or `.map()`.
 
+`.output[i]` is the only way to select an output. Tuple unpacking —
+`a, b = normalize_seed_card(...)` — cannot work on a single call, because the
+call returns one deferred expression rather than the tuple the annotation
+describes, so ginkgo raises a `TypeError` naming the task and this idiom.
+Unpacking an `ExprList` does succeed, but it means something else entirely: it
+hands back one `Expr` per fan-out branch, not the elements of any branch's
+result.
+
 ## See Also
 
 - [Resources and Scheduling](resources.md) &mdash; declaring CPU, memory, GPU,
