@@ -22,6 +22,10 @@ T = TypeVar("T")
 class Expr(Generic[T]):
     """An opaque node representing a deferred computation.
 
+    A call is not the tuple its task's return annotation describes, so
+    unpacking, indexing, and ``len()`` all refuse, and point at :attr:`output`
+    instead.
+
     Parameters
     ----------
     task_def : TaskDef
@@ -43,6 +47,52 @@ class Expr(Generic[T]):
     def output(self) -> _OutputProxy:
         """Return a proxy for indexing into this expression's tuple result."""
         return _OutputProxy(self)
+
+    def __iter__(self) -> Iterator[Any]:
+        """Refuse iteration — and unpacking, which is iteration — with advice."""
+        raise self._deferred_result_error("unpacked or iterated")
+
+    def __getitem__(self, index: object) -> Any:
+        """Refuse subscripting, pointing at ``.output`` instead."""
+        raise self._deferred_result_error("indexed")
+
+    def __len__(self) -> int:
+        """Refuse ``len()``: the number of outputs is not known until the run."""
+        raise self._deferred_result_error("measured with len()")
+
+    def __bool__(self) -> bool:
+        """Report a call as truthy.
+
+        Truthiness falls back to :meth:`__len__` when a type defines no
+        ``__bool__``, and that one raises. A constructed call is a real object,
+        so ``if expr:`` must stay true rather than inherit the refusal.
+        """
+        return True
+
+    def _deferred_result_error(self, action: str) -> TypeError:
+        """Build the error explaining why *action* cannot work on a deferred call.
+
+        Parameters
+        ----------
+        action : str
+            What the user tried to do, as a past participle that completes
+            "cannot be ...".
+
+        Returns
+        -------
+        TypeError
+            The error to raise. A ``TypeError`` because that is what Python's
+            unpacking, subscripting, and ``len()`` protocols promise, and
+            because the CLI reports the user's own line for it.
+        """
+        # The task's own function name, not TaskDef.name, which carries the
+        # hashed synthetic module prefix of the loaded workflow.
+        name = self.task_def.fn.__name__
+        return TypeError(
+            f"{name}() returns one deferred result, which cannot be {action} while the "
+            f"flow is being built. Select its outputs by position instead: "
+            f"r = {name}(...); a, b = r.output[0], r.output[1]"
+        )
 
     def __repr__(self) -> str:
         arg_strs = []
