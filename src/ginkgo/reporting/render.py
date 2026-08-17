@@ -48,6 +48,7 @@ def export_report(
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
+    managed_destination: bool = False,
     force: bool = False,
 ) -> ExportResult:
     """Export a bundle or single-file report for one run.
@@ -70,6 +71,11 @@ def export_report(
     single_file : bool
         When True, emit one HTML file with CSS, fonts, figures, and logs
         inlined as data URIs.
+    managed_destination : bool
+        Set when ``out_dir`` is a path ginkgo derived rather than one a user
+        chose — the managed ``.ginkgo/reports/<run-id>/`` directory. Such a
+        directory is ginkgo's by construction and is replaced without needing
+        the ownership marker that later exports leave behind.
     force : bool
         Replace the contents of a non-empty ``out_dir`` that ginkgo did not
         write. An empty, missing, or previously exported directory is always
@@ -82,8 +88,8 @@ def export_report(
     Raises
     ------
     FileExistsError
-        When ``out_dir`` holds files that no earlier export wrote and
-        ``force`` is False.
+        When ``out_dir`` is a user-chosen path holding files that no earlier
+        export wrote and ``force`` is False.
     """
     report = build_report_data(
         run_dir=run_dir,
@@ -93,7 +99,7 @@ def export_report(
         policy=policy,
     )
     out_dir = Path(out_dir)
-    _prepare_out_dir(out_dir, force=force)
+    _prepare_out_dir(out_dir, managed_destination=managed_destination, force=force)
     _write_marker(out_dir, report=report)
 
     if single_file:
@@ -292,16 +298,17 @@ def _is_report_dir(path: Path) -> bool:
     return (path / _MARKER_NAME).is_file()
 
 
-def _prepare_out_dir(out_dir: Path, *, force: bool) -> None:
+def _prepare_out_dir(out_dir: Path, *, managed_destination: bool, force: bool) -> None:
     """Make ``out_dir`` an empty directory, refusing to destroy others' files.
 
-    A missing or empty directory is used as is. A directory an earlier export
-    wrote — marked by ``_MARKER_NAME`` — is emptied, so re-rendering a
-    report over itself needs no opt-in. Any other non-empty directory raises
-    ``FileExistsError`` unless ``force`` is set.
+    A missing or empty directory is used as is. So is a destination ginkgo owns:
+    either one it derived itself (``managed_destination``) or one an earlier
+    export marked with ``_MARKER_NAME``, so re-rendering a report over itself
+    needs no opt-in. Any other non-empty directory belongs to the user and
+    raises ``FileExistsError`` unless ``force`` is set.
     """
     if out_dir.exists() and any(out_dir.iterdir()):
-        if not (force or _is_report_dir(out_dir)):
+        if not (force or managed_destination or _is_report_dir(out_dir)):
             raise FileExistsError(
                 f"{out_dir} is not empty and holds no ginkgo report; "
                 "refusing to delete files ginkgo did not write"

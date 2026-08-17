@@ -35,6 +35,7 @@ def command_report(args) -> int:
             out_dir=out_dir,
             policy=policy,
             single_file=bool(args.single_file),
+            managed_destination=args.out is None,
             force=bool(args.force),
         )
     except ValueError as exc:

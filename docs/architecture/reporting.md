@@ -138,21 +138,38 @@ collapses to one HTML document.
 ## Destination safety
 
 Writing a bundle replaces the contents of `<out>`, so `export_report` first
-decides whether the directory is ginkgo's to replace. Every export stamps
-`.ginkgo-report.json` at the bundle root; `_prepare_out_dir` treats that marker
-as the ownership record:
+decides whether the directory is ginkgo's to replace. Two signals say it is,
+and `_prepare_out_dir` accepts either:
 
-| `out_dir` state                  | Behaviour                              |
-| -------------------------------- | -------------------------------------- |
-| missing or empty                 | used as is                             |
-| holds `.ginkgo-report.json`      | emptied and rewritten                  |
-| non-empty, no marker             | `FileExistsError`, nothing is touched  |
-| non-empty, no marker, `force`    | emptied and rewritten                  |
+- `managed_destination=True` — the caller derived the path rather than taking
+  it from a user. `command_report` sets it whenever `--out` was omitted, since
+  `.ginkgo/reports/<run-id>/` is ginkgo's by construction. Ownership is known
+  here, so it is stated, not inferred.
+- `.ginkgo-report.json` at the bundle root, stamped by every export. This is
+  what lets a user's own `--out` directory be re-rendered once ginkgo has
+  written a report into it.
 
-The default destination `.ginkgo/reports/<run-id>/` therefore re-renders with
-no flag, while `--out` pointed at a directory holding a user's own files fails
-loudly rather than deleting them. `force=False` is the library default too, so
-the Python API cannot lose files by omission.
+| `out_dir` state                       | Behaviour                             |
+| ------------------------------------- | ------------------------------------- |
+| missing or empty                      | used as is                            |
+| `managed_destination`                 | emptied and rewritten                 |
+| holds `.ginkgo-report.json`           | emptied and rewritten                 |
+| non-empty, neither signal             | `FileExistsError`, nothing is touched |
+| non-empty, neither signal, `force`    | emptied and rewritten                 |
+
+The marker alone would not do: a report directory written before the marker
+existed carries none, so inferring ownership from it would break re-rendering
+the default destination and push users towards `--force` on the one path where
+it should never be needed. Sniffing for `index.html` instead would re-open the
+original hole for any `--out` target that happens to hold one.
+
+`force=False` and `managed_destination=False` are the library defaults, so the
+Python API cannot lose a caller's files by omission either.
+
+In `--single-file` mode the marker sits beside `index.html` as the directory's
+only companion file. The HTML stays self-contained, so sharing it alone still
+works; the dotfile is what allows a second `--single-file` export over the same
+directory.
 
 ## Size caps (`SizingPolicy`)
 
@@ -291,11 +308,13 @@ ginkgo report <run-id>
 - `export_report` — bundle and single-file modes, presence of key
   strings, absence of external URLs, conditional failure section,
   the destination guard (foreign directory refused, `force=True`
-  replaces it, an own report directory re-renders), deterministic
+  replaces it, an own report directory re-renders, a
+  `managed_destination` replaces an unmarked bundle), deterministic
   re-render.
 - `ginkgo report` end to end — `--out` at a directory holding unrelated
   files leaves them intact and exits 1, `--force` replaces it, and the
-  managed report directory re-renders with no flag.
+  managed report directory re-renders with no flag whether or not it
+  carries the marker.
 
 The fixture helper builds a two-task run with an optional failure and a
 registered file asset, mirroring the real provenance flow end-to-end.

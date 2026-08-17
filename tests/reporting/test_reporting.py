@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from ginkgo.cli import main
+from ginkgo.cli.commands.report import _resolve_output_dir
 from ginkgo.core.asset import AssetKey, make_asset_version
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.reporting import SizingPolicy, build_report_data, export_report
@@ -541,6 +542,21 @@ class TestExport:
         assert second.index_path.is_file()
         assert not stale.exists()
 
+    def test_managed_destination_replaces_an_unmarked_bundle(self, tmp_path: Path) -> None:
+        # A report directory written before the ownership marker existed carries
+        # no marker, but ginkgo derived the path and so owns it regardless.
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        out_dir = tmp_path / "reports" / "run-ok"
+        (out_dir / "assets").mkdir(parents=True)
+        (out_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
+        (out_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")
+
+        result = export_report(run_dir=run_dir, out_dir=out_dir, managed_destination=True)
+
+        assert result.index_path.is_file()
+        assert "old report" not in result.index_path.read_text(encoding="utf-8")
+        assert (out_dir / _MARKER_NAME).is_file()
+
     def test_empty_directory_is_used_as_is(self, tmp_path: Path) -> None:
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         out_dir = tmp_path / "empty"
@@ -610,3 +626,20 @@ class TestReportCli:
 
         assert main(["report", "--no-open"]) == 0
         assert main(["report", "--no-open"]) == 0
+
+    def test_unmarked_bundle_at_the_default_location_rerenders_without_a_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reports written before the ownership marker existed must keep
+        # re-rendering: the default destination needs no proof of ownership.
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        self._point_cli_at(run_dir, monkeypatch)
+        managed_dir = _resolve_output_dir(run_dir=run_dir, out=None, single_file=False)
+        (managed_dir / "assets").mkdir(parents=True)
+        (managed_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
+        (managed_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")
+
+        assert main(["report", "--no-open"]) == 0
+
+        assert "old report" not in (managed_dir / "index.html").read_text(encoding="utf-8")
+        assert (managed_dir / _MARKER_NAME).is_file()
