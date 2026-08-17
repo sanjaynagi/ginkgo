@@ -716,7 +716,8 @@ def main():
         assert "Dry run" in result.stdout
         assert "1 task" in result.stdout
         assert "Wave 1" in result.stdout
-        assert "write_marker()" in result.stdout
+        # The plan labels a node exactly as the live run table does.
+        assert "• write_marker  [will run]" in result.stdout
         assert "[will run]" in result.stdout
         assert "no tasks executed" in result.stdout
         assert not Path("should-not-exist.txt").exists()
@@ -802,7 +803,7 @@ def main():
         assert "4 tasks" in result.stdout
         assert "Wave 1" in result.stdout
         assert "Wave 2" in result.stdout
-        assert "prepare()" in result.stdout
+        assert "• prepare " in result.stdout
         for sample in ("alpha", "beta", "gamma"):
             assert f"analyse[{sample}]" in result.stdout
         # The leaf task's cache state is determinable; fan-out branches

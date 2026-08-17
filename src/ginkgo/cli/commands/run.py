@@ -40,7 +40,7 @@ from ginkgo.config import (
     load_runtime_config_layers,
     merge_config_layers,
 )
-from ginkgo.core.expr import record_constructed_calls
+from ginkgo.core.expr import display_labels, record_constructed_calls
 from ginkgo.core.resources import (
     ResourceOverrides,
     parse_resource_budget_args,
@@ -137,6 +137,25 @@ def command_run_help(args, *, usage: str) -> int:
     for line in format_param_help(declarations) or ["  (none)"]:
         rich_console.print(line, highlight=False)
     return 0
+
+
+def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, str, str]]:
+    """Return the run table's seed rows for a validated graph.
+
+    Each row is ``(node_id, task_name, label, env_label)``. The label comes
+    from the graph, the same source ``--dry-run`` labels its plan from, so a
+    fan-out branch reads the same in both before it is dispatched.
+    """
+    labels = display_labels({node_id: node.expr for node_id, node in evaluator.task_nodes.items()})
+    return [
+        (
+            node.node_id,
+            node.task_def.name,
+            labels[node.node_id],
+            environment_label(node.task_def.env),
+        )
+        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
+    ]
 
 
 def run_workflow(
@@ -294,10 +313,7 @@ def run_workflow(
     env_count = len(
         {node.task_def.env for node in evaluator.task_nodes.values() if node.task_def.env}
     )
-    planned_tasks = [
-        (node.node_id, node.task_def.name, environment_label(node.task_def.env))
-        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
-    ]
+    planned_tasks = planned_task_rows(evaluator)
 
     if dry_run:
         if output_mode in {"agent", "agent_verbose"}:
