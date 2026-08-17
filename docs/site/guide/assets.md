@@ -180,8 +180,15 @@ Useful flags:
 
 - `--single-file` — emit one HTML file with CSS, fonts, figures, and log files
   inlined as data URIs; easy to share or attach. Notebook iframes are not
-  inlined and remain as relative references.
-- `--out <dir>` — write the report bundle somewhere other than the default.
+  inlined and remain as relative references. A small `.ginkgo-report.json`
+  marker is written beside it so the directory can be re-rendered; the HTML
+  itself is self-contained and can be shared on its own.
+- `--out <dir>` — write the report bundle somewhere other than the default. The
+  directory must be empty, missing, or hold an earlier ginkgo report; otherwise
+  the command stops and changes nothing. The default destination always
+  re-renders.
+- `--force` — replace the contents of an `--out` directory that holds files
+  ginkgo did not write.
 - `--open` / `--no-open` — open (or do not open) the report in a browser when
   the build finishes.
 - `--embed-full-assets` — copy artifact bytes into the bundle alongside the

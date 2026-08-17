@@ -342,6 +342,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
     )
     report_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace the contents of an --out directory that holds files ginkgo "
+            "did not write. Without this, such a directory is left untouched."
+        ),
+    )
+    report_parser.add_argument(
         "--single-file",
         action="store_true",
         help="Emit one HTML file with CSS, fonts, and figures inlined as data URIs.",
