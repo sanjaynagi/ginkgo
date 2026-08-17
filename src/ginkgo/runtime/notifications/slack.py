@@ -8,8 +8,10 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from ginkgo.errors import GinkgoError
 
-class SlackDeliveryError(RuntimeError):
+
+class SlackDeliveryError(GinkgoError, RuntimeError):
     """Raised when a Slack webhook request cannot be delivered."""
 
 

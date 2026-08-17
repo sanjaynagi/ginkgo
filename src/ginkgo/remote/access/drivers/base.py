@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from ginkgo.errors import GinkgoError
 
-class MountFailedError(RuntimeError):
+
+class MountFailedError(GinkgoError, RuntimeError):
     """Raised when mounting a prefix fails after retries."""
 
 
-class DriverUnavailableError(RuntimeError):
+class DriverUnavailableError(GinkgoError, RuntimeError):
     """Raised when the driver binary is missing or unusable."""
 
 

@@ -11,6 +11,7 @@ from ginkgo.config import config_session
 from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.envs.pixi import PixiEnvNotFoundError
+from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.module_loader import load_module_from_path
@@ -114,7 +115,9 @@ def collect_workflow_diagnostics(
         ]
         diagnostics.extend(unreachable_call_diagnostics(calls=evaluator.unreachable_calls))
         return diagnostics
-    except BaseException as exc:
+    except Exception as exc:
+        # KeyboardInterrupt and SystemExit are left to propagate: a user who
+        # interrupts doctor wants it to stop, not to be told about a diagnostic.
         return [_diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
 
 
@@ -155,7 +158,12 @@ def _diagnostic_from_exception(
     exc: BaseException,
     workflow_path: Path,
 ) -> WorkflowDiagnostic:
-    """Convert one validation exception into a diagnostic."""
+    """Convert one validation exception into a diagnostic.
+
+    The location is the failing line in the user's own code when the traceback
+    reaches it, and the workflow path otherwise — a diagnostic that only names
+    the file the user already passed in tells them nothing.
+    """
     code = exc.__class__.__name__.upper()
     message = str(exc)
     suggestion = None
@@ -177,10 +185,11 @@ def _diagnostic_from_exception(
     elif isinstance(exc, ValueError):
         code = "INVALID_VALUE"
 
+    located = failure_location(exc)
     return WorkflowDiagnostic(
         severity="error",
         code=code,
         message=message,
-        location=str(workflow_path),
+        location=str(located) if located is not None else str(workflow_path),
         suggestion=suggestion,
     )
