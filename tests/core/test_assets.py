@@ -855,6 +855,20 @@ def produce_table_from_csv(output_path: str) -> object:
     return table(out, name="summary")
 
 
+def _ref_of_kind(kind: str) -> AssetRef:
+    """Build a resolved ref of one kind, without running a workflow."""
+    from ginkgo.core.asset import AssetKey
+
+    return AssetRef(
+        key=AssetKey(namespace=kind, name="producer.summary"),
+        version_id="v1",
+        kind=kind,
+        artifact_id="abc123",
+        content_hash="def456",
+        artifact_path="/tmp/blobs/abc123",
+    )
+
+
 @task()
 def produce_file_asset(output_path: str) -> file:
     """Return a ``file`` asset — the only kind whose artifact is a real file."""
@@ -876,6 +890,28 @@ def consume_file_or_ref(summary: file | AssetRef, output_path: str) -> file:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(f"{type(summary).__name__}\n", encoding="utf-8")
     return file(str(out))
+
+
+@task()
+def produce_text_asset() -> object:
+    """A text asset — stored as raw UTF-8, so its artifact is a readable file."""
+    return text("alpha\nbeta\n", name="notes")
+
+
+@task()
+def produce_fig_asset(output_path: str) -> object:
+    """A fig asset from a PNG path — stored as the native image bytes."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return fig(out, name="plot")
+
+
+@task()
+def read_ref_bytes(summary: file | AssetRef) -> str:
+    """Read the bound path's first bytes, as a downstream tool would."""
+    path = Path(summary.artifact_path) if isinstance(summary, AssetRef) else Path(str(summary))
+    return path.read_bytes()[:8].decode("utf-8", errors="replace")
 
 
 @task()
@@ -1124,6 +1160,24 @@ class TestKindVersusPathAnnotation:
         assert "annotated `file` but is a `table` asset" in message
         assert not Path("results/report.txt").exists()
 
+    def test_text_and_fig_assets_bind_a_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Native-byte kinds keep the union binding: the path reads as the file.
+
+        ``serialize_text`` writes raw UTF-8 and ``serialize_fig`` writes native
+        image bytes, so refusing these would deny a real capability and would
+        have to claim an encoding that is not there.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        assert ginkgo.evaluate(read_ref_bytes(summary=produce_text_asset())) == "alpha\nbe"
+
+        observed = ginkgo.evaluate(
+            read_ref_bytes(summary=produce_fig_asset(output_path="results/plot.png"))
+        )
+        assert observed.startswith("�PNG")
+
     def test_nested_refs_survive_path_shaped_annotation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1156,31 +1210,66 @@ class TestKindVersusPathAnnotation:
                 )
             )
 
-    def test_as_file_refuses_non_file_kind(self) -> None:
-        """``as_file()`` on a table ref names the kind instead of wrapping Parquet."""
-        from ginkgo.core.asset import AssetKey
+    def test_encoding_flag_matches_the_serializers(self) -> None:
+        """Native-byte kinds are exactly the ones whose serialiser writes bytes as-is.
 
-        ref = AssetRef(
-            key=AssetKey(namespace="table", name="demo.summary"),
-            version_id="v1",
-            kind="table",
-            artifact_id="abc123",
-            content_hash="def456",
-            artifact_path="/tmp/blobs/abc123",
+        ``file`` is copied verbatim, ``serialize_fig`` writes native PNG / SVG /
+        HTML, and ``serialize_text`` writes raw UTF-8. The rest render a Python
+        object into Ginkgo's own encoding, and each names it.
+        """
+        from ginkgo.runtime.artifacts.asset_kinds import (
+            ASSET_KINDS,
+            NATIVE_ARTIFACT_KINDS,
+            artifact_encoding_for,
         )
 
-        with pytest.raises(TypeError, match=r"is a `table` asset, so it has no readable file"):
-            ref.as_file()
+        assert NATIVE_ARTIFACT_KINDS == {"file", "fig", "text"}
+        assert artifact_encoding_for("table") == "Parquet"
+        assert artifact_encoding_for("fig") is None
+        # An unregistered kind counts as encoded: nothing vouches for its bytes.
+        assert artifact_encoding_for("mystery") is not None
+        for kind, spec in ASSET_KINDS.items():
+            assert (spec.artifact_encoding is None) == (kind in NATIVE_ARTIFACT_KINDS)
 
-        file_ref = AssetRef(
-            key=AssetKey(namespace="file", name="demo.notes"),
-            version_id="v1",
-            kind="file",
-            artifact_id="abc123",
-            content_hash="def456",
-            artifact_path="/tmp/blobs/abc123",
-        )
-        assert file_ref.as_file() == "/tmp/blobs/abc123"
+    def test_as_file_follows_the_per_kind_rule(self) -> None:
+        """``as_file()`` serves native-byte kinds and refuses encoded ones."""
+        assert _ref_of_kind("file").as_file() == "/tmp/blobs/abc123"
+        # A fig artifact is a real PNG and a text artifact is raw UTF-8.
+        assert _ref_of_kind("fig").as_file() == "/tmp/blobs/abc123"
+        assert _ref_of_kind("text").as_file() == "/tmp/blobs/abc123"
+
+        for kind, encoding in (("table", "Parquet"), ("array", "zarr"), ("model", "model")):
+            with pytest.raises(TypeError) as excinfo:
+                _ref_of_kind(kind).as_file()
+            message = str(excinfo.value)
+            assert f"is a `{kind}` asset, so it has no readable file path" in message
+            assert encoding in message
+
+    def test_refusal_offers_remedies_the_consuming_task_can_use(self) -> None:
+        """A driver task is not told to annotate ``object``; a Python task is."""
+        from ginkgo.core.types import require_path_value
+
+        with pytest.raises(TypeError) as driver:
+            require_path_value(
+                value=_ref_of_kind("table"),
+                annotation_label="file",
+                label="awk_the_table.scores",
+                execution_mode="driver",
+            )
+        driver_message = str(driver.value)
+        # `object` would hand a shell command a DataFrame repr.
+        assert "`object`" not in driver_message
+        assert "asset(path)" in driver_message
+        assert "the format the command expects" in driver_message
+
+        with pytest.raises(TypeError) as worker:
+            require_path_value(
+                value=_ref_of_kind("table"),
+                annotation_label="file",
+                label="summarise.scores",
+                execution_mode="worker",
+            )
+        assert "Annotate it `object`" in str(worker.value)
 
     def test_path_backed_payload_detection(self, tmp_path: Path) -> None:
         """Only genuine path payloads count as path-backed, per kind."""

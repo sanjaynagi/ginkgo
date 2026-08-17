@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
-from ginkgo.core.types import file
+from ginkgo.core.types import file, path_binding_remedy
 
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
@@ -285,14 +285,19 @@ class AssetRef:
         """Return the asset name."""
         return self.key.name
 
-    def as_file(self) -> file:
+    def as_file(self, *, execution_mode: str | None = None) -> file:
         """Return the artifact path as a ``ginkgo.file`` marker.
 
-        Only a ``file`` asset qualifies. A ``file`` asset's artifact holds the
-        bytes the producer wrote, so its path reads as that file; every other
-        kind holds Ginkgo's own encoding of a payload (a ``table`` is Parquet
-        whatever went in), so handing its path to code that expects a readable
-        file hands over a serialized blob instead.
+        Available for the kinds whose artifact holds the payload's own bytes
+        (``file``, ``fig``, ``text``). A kind stored in Ginkgo's own encoding
+        (``table``, ``array``, ``model``) has no readable file path, so it
+        raises rather than wrapping a serialized blob in a `file` marker.
+
+        Parameters
+        ----------
+        execution_mode : str | None
+            ``TaskDef.execution_mode`` of the consuming task, when known, so
+            the error offers remedies that work for that kind of task.
 
         Returns
         -------
@@ -302,15 +307,17 @@ class AssetRef:
         Raises
         ------
         TypeError
-            When the asset kind is not ``file``.
+            When the artifact holds an encoded payload rather than the bytes
+            its path implies.
         """
-        if self.kind != "file":
+        from ginkgo.runtime.artifacts.asset_kinds import artifact_encoding_for
+
+        encoding = artifact_encoding_for(self.kind)
+        if encoding is not None:
+            remedy = path_binding_remedy(annotation_label="file", execution_mode=execution_mode)
             raise TypeError(
                 f"asset {self.key} is a `{self.kind}` asset, so it has no readable file "
-                f"path: its artifact holds Ginkgo's own encoding of the payload. Consume "
-                f"it from a Python task (annotate the parameter `object` or the payload "
-                f"type) to receive the payload, or produce a `file` asset with "
-                f"`asset(path)` upstream."
+                f"path: its artifact holds {encoding}. {remedy}"
             )
         return file(self.artifact_path)
 

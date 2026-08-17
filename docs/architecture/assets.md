@@ -167,6 +167,7 @@ class AssetKindSpec:
     loader: Callable[..., Any] | None
     rehydrate_on_receive: bool
     default_name_strategy: str
+    artifact_encoding: str | None
 
 ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
 ```
@@ -182,6 +183,10 @@ ASSET_KINDS: dict[str, AssetKindSpec] = { ... }
 - `rehydrate_on_receive` flags kinds that the evaluator should
   auto-rehydrate when an `AssetRef` is passed as a task argument
   (everything except `file` and `fig`).
+- `artifact_encoding` names the encoding the serialiser writes, or is
+  `None` when the artifact holds the payload's own bytes (`file`, `fig`,
+  `text`). Only the `None` kinds may bind a `file` parameter; see
+  [Rehydration on receive](#rehydration-on-receive).
 - `default_name_strategy` is `"task_name"` for `file` (the task
   function's name is the default when no explicit `name` is supplied)
   and `"kind_index"` for every other kind (per-kind counter producing
@@ -285,25 +290,41 @@ and nested `AssetRef` entries survive too. This keeps the documented
 cold run and the cache hit, and the cache key comes from
 `AssetRef.content_hash` without touching the filesystem.
 
-Only a `file` asset may bind that way. A `file` asset's artifact holds the
-bytes the producer wrote; every other kind holds the serializer's encoding of
-a payload (`table` is Parquet whatever the payload was), stored as an
-extensionless CAS blob. Binding one to a path therefore hands the task a
-serialized payload where it asked for readable bytes — silently, for a shell
-command that exits 0 on Parquet input. `require_path_value` admits an
-`AssetRef` only when `ref.kind` equals the annotation label, and
-`validate_annotated_value` routes every path-shaped annotation — bare `file`
-*and* unions such as `file | AssetRef` — through it, so the union arm is not an
-escape hatch from the kind rule. The refusal happens in `_prepare_node`, at the
-consuming task, before its body or command runs.
+Only kinds whose artifact holds the payload's own bytes may bind that way, and
+each kind declares which side it is on via `AssetKindSpec.artifact_encoding`:
+`None` for `file` (copied verbatim), `fig` (`serialize_fig` writes native
+PNG/SVG/HTML) and `text` (`serialize_text` writes raw UTF-8); a named encoding
+for `table` (`"Parquet"`), `array` (zarr/npy) and `model`. The flag sits beside
+the serialiser whose output it describes, so a new kind cannot be added without
+answering the question, and `artifact_encoding_for` is the single reader.
 
-`AssetRef.as_file` carries the same rule for the accessor: a non-`file` kind
-raises rather than wrapping the encoded blob in a `file` marker. Driver task
-kinds route through it — `serialize_cli_argument_value` in
-`task_runners/shell.py` renders a ref as `str(ref.as_file())`, since a CLI
+Binding an encoded kind to a path would hand the task a serialized payload
+where it asked for readable bytes — silently, for a shell command that exits 0
+on Parquet input. `require_path_value` therefore admits an `AssetRef` only when
+`artifact_encoding_for(ref.kind)` is `None`, and `validate_annotated_value`
+routes every path-shaped annotation — bare `file` *and* unions such as
+`file | AssetRef` — through it, so the union arm is not an escape hatch from
+the kind rule. The refusal happens in `_prepare_node`, at the consuming task,
+before its body or command runs.
+
+The remedies in the message depend on the consumer: `TaskDef.execution_mode` is
+threaded from `validate_inputs` down to `path_binding_remedy`, because
+"annotate it `object`" fixes a Python task and sends a shell-task author to a
+DataFrame interpolated into a command. A `driver` consumer is pointed at
+`asset(path)` upstream or converting the payload in Python first.
+
+`AssetRef.as_file` reads the same per-kind fact for the accessor: an encoded
+kind raises rather than wrapping the blob in a `file` marker. Driver task kinds
+route through it — `serialize_cli_argument_value` in `task_runners/shell.py`
+renders a ref as `str(ref.as_file(execution_mode="driver"))`, since a CLI
 argument and a notebook parameter file carry text rather than Python objects.
 Before that branch existed a ref reached `json.dumps` and failed as "Object of
 type AssetRef is not JSON serializable", naming neither task nor parameter.
+
+CAS blobs carry no file extension, so a consumer that dispatches on suffix can
+still be surprised by a `fig` artifact. That is an argument for recording the
+already-stored `record.extension` in the blob name, tracked separately, not for
+calling native bytes an encoding.
 
 For the same reason the live registry only caches a payload that is already
 the canonical in-memory form. `is_path_backed_payload` in `asset_kinds.py`

@@ -9,13 +9,14 @@ kind — instead of falling through to ``json.dumps``.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import AssetRef, asset, file, script, table, task
+from ginkgo import AssetRef, asset, file, script, table, task, text
 from ginkgo.core.asset import AssetKey
 from ginkgo.runtime.task_runners.shell import (
     serialize_cli_argument_value,
@@ -48,13 +49,21 @@ class TestAssetRefArguments:
         # this branch existed the ref reached json.dumps and raised.
         assert stringify_cli_argument([ref]) == '["/blobs/abc123"]'
 
-    def test_table_ref_is_refused_by_kind(self) -> None:
-        with pytest.raises(TypeError) as excinfo:
-            serialize_cli_argument_value(_ref(kind="table"))
+    def test_native_byte_kinds_serialize_to_paths(self) -> None:
+        """A fig is native image bytes and a text asset is raw UTF-8."""
+        assert serialize_cli_argument_value(_ref(kind="fig")) == "/blobs/abc123"
+        assert serialize_cli_argument_value(_ref(kind="text")) == "/blobs/abc123"
 
-        message = str(excinfo.value)
-        assert "is a `table` asset" in message
-        assert "JSON serializable" not in message
+    def test_encoded_kinds_are_refused_by_kind(self) -> None:
+        for kind in ("table", "array", "model"):
+            with pytest.raises(TypeError) as excinfo:
+                serialize_cli_argument_value(_ref(kind=kind))
+
+            message = str(excinfo.value)
+            assert f"is a `{kind}` asset" in message
+            assert "JSON serializable" not in message
+            # The consumer is a driver task, so `object` is not the way out.
+            assert "`object`" not in message
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +106,24 @@ def produce_table_asset(output_path: str) -> object:
 @task(kind="script")
 def copy_via_script(summary: file | AssetRef, script_path: str, output_path: str) -> file:
     return script(script_path, output=output_path)
+
+
+@task()
+def produce_text_asset() -> object:
+    return text("north,10\nsouth,20\neast,30\n", name="script_args/notes")
+
+
+@task(kind="shell")
+def wc_via_shell(notes: file | AssetRef, output_path: str) -> file:
+    """A shell task reading a text asset's artifact as the file it is."""
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    src = Path(notes.artifact_path) if isinstance(notes, AssetRef) else Path(str(notes))
+    from ginkgo import shell
+
+    return shell(
+        cmd=f"wc -l < {shlex.quote(str(src))} | tr -d ' ' > {shlex.quote(output_path)}",
+        output=output_path,
+    )
 
 
 @task(kind="shell")
@@ -150,6 +177,18 @@ class TestScriptTaskAssetArguments:
         assert "copy_via_script.summary" in message
         assert "is a `table` asset" in message
         assert "JSON serializable" not in message
+
+    def test_text_asset_reaches_a_shell_command_as_a_readable_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shell task counts the lines of a text asset through the union idiom."""
+        monkeypatch.chdir(tmp_path)
+
+        produced = ginkgo.evaluate(
+            wc_via_shell(notes=produce_text_asset(), output_path="results/lines.txt")
+        )
+
+        assert Path(produced).read_text(encoding="utf-8").strip() == "3"
 
     def test_shell_task_writes_the_format_its_command_expects(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

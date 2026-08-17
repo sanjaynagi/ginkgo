@@ -165,11 +165,13 @@ def serialize_cli_argument_value(value: Any) -> Any:
     An :class:`AssetRef` crosses that boundary as the path to its stored
     bytes, since a CLI argument and a parameter file carry text rather than
     Python objects. ``AssetRef.as_file`` decides whether the ref has such a
-    path at all, so a non-``file`` kind is refused by name here instead of
-    reaching ``json.dumps`` and failing as "not JSON serializable".
+    path at all, so a kind stored in Ginkgo's own encoding is refused by name
+    here instead of reaching ``json.dumps`` and failing as "not JSON
+    serializable". Every caller is a driver task kind, so the refusal names
+    the remedies that work for one.
     """
     if isinstance(value, AssetRef):
-        return str(value.as_file())
+        return str(value.as_file(execution_mode="driver"))
     if isinstance(value, Path | file | folder | tmp_dir):
         return str(value)
     if value is None or isinstance(value, bool | int | float | str):

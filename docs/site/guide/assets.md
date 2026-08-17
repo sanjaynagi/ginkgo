@@ -109,13 +109,13 @@ A task that depends on an asset-producing task does not receive a plain path.
 What arrives is decided by the **consuming parameter's annotation**:
 
 - Annotated `file`, `folder`, or a union including one of them (`file |
-  AssetRef`) — the parameter binds a filesystem path, so a **`file` asset**
-  passes through as an `AssetRef`: a record carrying the asset `key`,
-  `version_id`, `kind`, `content_hash`, `metadata`, and `artifact_path` (the
-  path to the immutable stored bytes). This holds on cache hits as well as cold
-  runs. Any other kind bound to such a parameter is an error, named at the
-  consuming task before it runs — see [Only a `file` asset has a
-  path](#only-a-file-asset-has-a-path).
+  AssetRef`) — the parameter binds a filesystem path, so a **`file`, `fig`, or
+  `text` asset** passes through as an `AssetRef`: a record carrying the asset
+  `key`, `version_id`, `kind`, `content_hash`, `metadata`, and `artifact_path`
+  (the path to the immutable stored bytes). This holds on cache hits as well as
+  cold runs. A `table`, `array`, or `model` asset bound to such a parameter is
+  an error, named at the consuming task before it runs — see [Which assets have
+  a path](#which-assets-have-a-path).
 - Annotated `object` or the payload's own type (`pd.DataFrame`) — a `table`,
   `array`, `text`, or `model` ref is rehydrated into the live Python payload
   before the task body runs, so the task takes the DataFrame, array, or model
@@ -147,28 +147,38 @@ Both branches are kept because the same task also works when called with a plain
 Instead of reading `artifact_path` directly you can call `as_file()`, which
 returns the same path wrapped as a `ginkgo.file` marker.
 
-### Only a `file` asset has a path
+### Which assets have a path
 
-A `file` asset's artifact holds the bytes the producing task wrote, so its path
-reads as that file. Every other kind holds Ginkgo's *own* encoding of a payload
-— a `table` is Parquet whatever you passed in, an `array` is zarr or `.npy`, a
-`model` is a pickled estimator — stored as an extensionless blob under
-`.ginkgo/artifacts/blobs/`. Handing that path to code expecting a readable file
-gives it a serialized blob, and a shell command such as `awk -F,` will happily
-consume Parquet bytes and exit 0.
+It depends on what the kind's artifact holds:
 
-So the path binding is restricted to the kind that has a path:
+| Kind | Artifact holds | Binds a path |
+|---|---|---|
+| `file` | the bytes the task wrote, copied verbatim | yes |
+| `fig` | native PNG, SVG, or HTML | yes |
+| `text` | raw UTF-8 | yes |
+| `table` | Parquet | no |
+| `array` | a zipped zarr store or `.npy` blob | no |
+| `model` | a framework-specific serialized model | no |
 
-- Binding a non-`file` asset to a `file` / `folder` parameter — bare or in a
-  union — fails with an error naming the task, the parameter, and the kind. It
-  fails when the consuming task's inputs are resolved, before its command runs.
-- `as_file()` on a non-`file` ref fails the same way, rather than wrapping the
-  encoded blob in a `file` marker.
-- Passing a non-`file` ref to a `script` or `notebook` task fails by kind too,
-  since those forward arguments to another process as text.
+The first three are the file they appear to be, so a command can read them. The
+last three are Ginkgo's *encoding* of a Python object: `table("data.csv")`
+stores Parquet, not the CSV you handed it. Passing that path to code expecting
+readable text gives it a serialized blob — and a shell command such as
+`awk -F,` will consume Parquet bytes and exit 0, which is silent wrong data
+rather than a failure.
 
-To feed a semantic asset to a shell, script, or notebook task, take the payload
-in a Python task and write the format the command expects:
+So a `table`, `array`, or `model` asset does not bind a path:
+
+- Binding one to a `file` / `folder` parameter — bare or in a union — fails with
+  an error naming the task, the parameter, and the kind. It fails when the
+  consuming task's inputs are resolved, before its command runs.
+- `as_file()` on such a ref fails the same way, rather than wrapping the encoded
+  blob in a `file` marker.
+- Passing one to a `script` or `notebook` task fails by kind too, since those
+  forward arguments to another process as text.
+
+To feed one of those kinds to a shell, script, or notebook task, take the
+payload in Python and write the format the command expects:
 
 ```python
 import pandas as pd
@@ -186,6 +196,11 @@ def count_rows(scores: object, csv_path: str, output_path: str) -> file:
 Alternatively, have the producer return a `file` asset — `asset(csv_path)` —
 when the bytes on disk, rather than the typed payload, are what downstream
 tasks need.
+
+One caveat for the kinds that do bind a path: stored artifacts are
+content-addressed blobs with no file extension, so a command that switches
+behaviour on the suffix (`.png` versus `.svg`, say) may still need the bytes
+copied to a named path first.
 
 ### Inspecting Assets
 
