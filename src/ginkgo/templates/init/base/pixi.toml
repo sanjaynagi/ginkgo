@@ -12,8 +12,10 @@ python = ">=3.11"
 numpy = ">=2.0"
 pandas = ">=2.0"
 
+# Pinned to the ginkgo `ginkgo init` ran from, so this project's orchestrator is
+# reproducible. Change `rev` to move to a different ginkgo.
 [pypi-dependencies]
-ginkgo = { git = "https://github.com/sanjaynagi/ginkgo.git", extras = ["notebooks"] }
+ginkgo = { git = "https://github.com/sanjaynagi/ginkgo.git", rev = "{{ ginkgo_rev }}", extras = ["notebooks"] }
 
 [tasks]
 run = "ginkgo run"

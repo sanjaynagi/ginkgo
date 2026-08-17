@@ -25,6 +25,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
+from ginkgo.cli.commands.init import GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
 
 
@@ -1037,6 +1038,25 @@ class TestCliInit:
         assert "ginkgo" in declared
         assert _third_party_imports(project_dir=project_dir) <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
+
+    def test_init_pins_the_ginkgo_dependency_to_a_concrete_revision(self) -> None:
+        """A scaffolded project must not float on a branch.
+
+        Ginkgo orchestrates the project, so an unpinned git requirement would
+        hand two users scaffolding a week apart different orchestrators with
+        nothing in the manifest recording which.
+        """
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        manifest = tomllib.loads((Path("demo-project") / "pixi.toml").read_text(encoding="utf-8"))
+        requirement = manifest["pypi-dependencies"]["ginkgo"]
+
+        assert requirement["git"] == GINKGO_REPO_URL
+        assert "branch" not in requirement
+        pin = requirement.get("rev") or requirement.get("tag")
+        assert pin, f"ginkgo requirement is unpinned: {requirement}"
+        assert re.fullmatch(r"[0-9a-f]{40}|v\d+\.\d+\.\d+.*", pin)
 
     def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
         """Papermill injects into the ``parameters``-tagged cell, so one must exist.
