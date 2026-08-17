@@ -25,8 +25,24 @@ pixi run test
 pixi run docs-build
 ```
 
-If your workflows use Pixi-backed task environments, `pixi` must also be
-available on your `PATH` when you run those workflows.
+## Runtime Prerequisites
+
+Ginkgo materialises declared task environments itself, by shelling out, so the
+tool behind each kind of environment must be on your `PATH` when you run a
+workflow that uses it:
+
+- `pixi`, for tasks declaring a Pixi or Conda environment. Install it from
+  [pixi.sh](https://pixi.sh/). Ginkgo runs `pixi install` for you on first use.
+- `docker` or `podman`, for tasks declaring a `docker://` or `oci://` image.
+  Ginkgo runs `<runtime> pull` for you on first use.
+
+Neither is needed if your workflow declares no environments. See
+[Environments](../guide/environments.md) for what Ginkgo installs, when, and what
+that costs on a first run.
+
+Python task bodies are the exception: they run in the environment the `ginkgo`
+CLI itself runs from, so their imports must be installed there. See
+[Python Tasks Run In The CLI's Own Environment](../guide/environments.md#python-tasks-run-in-the-clis-own-environment).
 
 ## Editable Python Install
 

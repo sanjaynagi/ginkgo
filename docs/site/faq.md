@@ -289,7 +289,10 @@ named environment lives in a directory (typically `envs/<name>/`) containing a
 `pixi.toml` (or a `pyproject.toml` with a `[tool.pixi]` section), and a task
 references it by name with `env=`. Before running, Ginkgo materialises the
 environment with `pixi install` and runs each command inside it, so the task
-sees the locked set of dependencies. Ginkgo also folds the environment's
+sees the locked set of dependencies — see
+[Environments](guide/environments.md#ginkgo-materialises-declared-environments)
+for what that means for a first run and what must be on your `PATH`. Ginkgo also
+folds the environment's
 identity into the cache key by hashing the neighbouring `pixi.lock`, so a change
 to the locked dependencies invalidates cached results.
 
