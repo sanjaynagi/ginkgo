@@ -24,7 +24,7 @@ from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
-from ginkgo.envs.mounts import Mount, mount
+from ginkgo.envs.mounts import Mount, MountMode, mount
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -214,8 +214,16 @@ def declared_input_mounts(*, node: Any) -> list[Mount]:
 
     A container sees only what is mounted into it, and the task's command
     carries host absolute paths.  Path-shaped inputs (``file``/``folder``) are
-    mounted read-only at the path they already have; a ``tmp_dir`` scratch
-    directory is mounted read-write, since the task writes into it.
+    mounted read-only; a ``tmp_dir`` scratch directory is mounted read-write,
+    since the task writes into it.
+
+    A ``file`` input mounts its *directory*, not just the file. Command-line
+    bioinformatics tools routinely read a sibling of the file they are given —
+    ``ref.fa.fai`` beside ``ref.fa``, ``.bai`` beside ``.bam`` — and a mount of
+    the file alone makes an index that exists on the host invisible inside the
+    container. Read-only means a tool that wants to *write* its index fails and
+    says so; declaring that index as an output is what makes it writable, and
+    keeps it after the container exits.
 
     Inputs that do not exist are skipped rather than mounted: the runtime would
     create the host path to satisfy the mount, and a missing declared input is
@@ -228,26 +236,33 @@ def declared_input_mounts(*, node: Any) -> list[Mount]:
     for name, value in resolved_args.items():
         annotation = type_hints.get(name)
         if annotation is tmp_dir:
-            mode = "rw"
+            mode: MountMode = "rw"
         elif annotation is not None and is_path_shaped_annotation(annotation):
             mode = "ro"
         else:
             continue
-        mounts += [mount(path, mode=mode) for path in _iter_declared_paths(value) if path.exists()]
+        for path in _iter_declared_paths(value):
+            if not path.exists():
+                continue
+            mounts.append(mount(path if path.is_dir() else path.parent, mode=mode))
     return mounts
 
 
-def declared_output_mounts(*, output: Any, log: Path | None = None) -> list[Mount]:
-    """Return read-write mounts for a shell directive's declared outputs.
+def declared_output_mounts(*, output: Any) -> list[Mount]:
+    """Return read-write mounts for a directive's declared outputs.
 
-    The parent directory is mounted rather than the output file itself: the file
-    does not exist yet, and the runtime would create a *directory* at that path
-    to satisfy the mount.  Parents have already been created by the caller.
+    The parent directory is mounted rather than the output path itself: the
+    output does not exist yet, and the runtime would create a *directory* at
+    that path to satisfy the mount.  Parents have already been created by the
+    caller.
+
+    A directive's ``log`` is deliberately not included. The log is captured on
+    the host from the pipes the runtime client writes to, so the container never
+    opens that path and needs no access to its directory.
     """
-    paths = [path.parent for path in iter_output_values(output)]
-    if log is not None:
-        paths.append(log.parent)
-    return [mount(path, mode="rw") for path in paths]
+    if output is None:
+        return []
+    return [mount(path.parent, mode="rw") for path in iter_output_values(output)]
 
 
 def _iter_declared_paths(value: Any) -> list[Path]:
@@ -681,8 +696,12 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
-    def _failure_hint(self, *, node: Any, exit_code: int, output: str) -> str | None:
-        """Ask the execution environment to diagnose a failed command."""
+    def failure_hint(self, *, node: Any, exit_code: int, output: str) -> str | None:
+        """Ask the execution environment to diagnose a failed command.
+
+        Every driver task kind raises its own error type, so each one asks here
+        rather than the diagnosis living with one of them.
+        """
         if node.task_def.env is None or self.backend is None:
             return None
         return self.backend.exec_failure_hint(
@@ -702,7 +721,7 @@ class ShellRunner:
             node=node,
             cmd=directive.cmd,
             user_log_path=user_log_path,
-            mounts=declared_output_mounts(output=directive.output, log=user_log_path),
+            mounts=declared_output_mounts(output=directive.output),
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
@@ -712,7 +731,7 @@ class ShellRunner:
                 exit_code=completed.returncode,
                 output=combined_output,
                 log=directive.log,
-                hint=self._failure_hint(
+                hint=self.failure_hint(
                     node=node, exit_code=completed.returncode, output=combined_output
                 ),
             )

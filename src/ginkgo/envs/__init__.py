@@ -7,14 +7,24 @@ from ginkgo.envs.container import (
     container_backend_from_config,
     is_container_env,
 )
-from ginkgo.envs.mounts import Mount, UnsafeMountError, mount, parse_extra_mount, resolve_mounts
+from ginkgo.envs.mounts import (
+    MissingMountError,
+    Mount,
+    MountModeConflictError,
+    UnsafeMountError,
+    mount,
+    parse_extra_mount,
+    resolve_mounts,
+)
 from ginkgo.envs.pixi import PixiEnvNotFoundError, PixiEnvPrepareError, PixiRegistry
 
 __all__ = [
     "ContainerBackend",
     "ContainerPrepareError",
     "ContainerRuntimeNotFoundError",
+    "MissingMountError",
     "Mount",
+    "MountModeConflictError",
     "PixiEnvNotFoundError",
     "PixiEnvPrepareError",
     "PixiRegistry",

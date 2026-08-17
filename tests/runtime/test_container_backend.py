@@ -105,8 +105,6 @@ class TestContainerBackendExecArgv:
         argv = backend.exec_argv(env="docker://img:1", cmd="ls")
         assert "-u" in argv
         assert argv[argv.index("-u") + 1] == f"{os.getuid()}:{os.getgid()}"
-        # Images that resolve $HOME need one that exists inside the container.
-        assert argv[argv.index("-e") + 1] == "HOME=/tmp"
 
     def test_explicit_user_is_passed_through(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
@@ -145,7 +143,10 @@ class TestContainerBackendExecArgv:
 
         backend = ContainerBackend(project_root=tmp_path, user="root")
         argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
-        assert argv.count("-v") == 1
+        # The project mount is present and covers it; a second mount for the
+        # same path is what must be absent.
+        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        assert volumes == [f"{tmp_path}:{tmp_path}"]
 
     def test_symlinked_input_mounts_real_path_at_declared_path(self, tmp_path: Path):
         project = tmp_path / "project"
@@ -164,20 +165,25 @@ class TestContainerBackendExecArgv:
         reads = tmp_path / "reads.fastq"
         reads.write_text("@r\n")
 
+        project = tmp_path / "project"
+        project.mkdir()
         backend = ContainerBackend(
-            project_root=tmp_path / "project",
+            project_root=project,
             user="root",
             auto_mount=False,
         )
         argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
-        assert argv.count("-v") == 1
+        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        assert volumes == [f"{project}:{project}"]
 
     def test_extra_mounts_are_always_applied(self, tmp_path: Path):
         scratch = tmp_path / "scratch"
         scratch.mkdir()
 
+        project = tmp_path / "project"
+        project.mkdir()
         backend = ContainerBackend(
-            project_root=tmp_path / "project",
+            project_root=project,
             user="root",
             auto_mount=False,
             extra_mounts=(f"{scratch}:rw",),

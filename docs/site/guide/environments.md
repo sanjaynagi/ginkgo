@@ -66,12 +66,33 @@ and then whatever the task *declares*: every `file` and `folder` argument
 read-only, and every declared output read-write. Each is mounted at the same
 absolute path it has on the host, so the paths in your command need no
 rewriting, and a symlink still resolves because Ginkgo mounts the real path at
-the declared one.
+the path you wrote.
 
 This is why annotating paths matters. `fastq: file` is visible inside the
 container; the same path pulled out of config and interpolated into the command
 string is not, because nothing declared it. Annotating is already required for
 cache correctness, and the same annotation earns the mount.
+
+A `file` argument mounts the directory it sits in, not just the file, so a tool
+that reads a sibling — `ref.fa.fai` beside `ref.fa`, `.bai` beside `.bam` — finds
+it. That directory is read-only, so a tool that wants to *create* its index will
+fail and tell you. Declare the index as an output and it becomes writable:
+
+```python
+@task(kind="shell", env="docker://quay.io/biocontainers/samtools:1.20--h50ea8bc_0")
+def index_reference(reference: file) -> file:
+    index = f"{reference}.fai"
+    return shell(cmd=f"samtools faidx {reference}", output=index)
+```
+
+Declaring it is also what keeps it. Anything a container writes to a path that
+is not mounted goes into the container's own filesystem, which is discarded when
+the container exits — so an undeclared index appears to be written, then quietly
+isn't there.
+
+Two directories are never mounted, however a task names them: a system directory
+and your home directory. An output written straight into `$HOME` would hand the
+image `~/.ssh` and `~/.aws` along with it, so give it a directory of its own.
 
 ### What the container inherits
 
@@ -81,7 +102,10 @@ always, and `OMP_NUM_THREADS` and friends when the task declares
 which is the point of running in a container at all.
 
 The container runs as you, not as root, so its outputs stay writable by later
-Python tasks and by the next run.
+Python tasks and by the next run. Under Docker that means an explicit
+`uid:gid`; under rootless Podman it means passing nothing, because Podman
+already maps the container's own root to your user. You should not have to think
+about which — that is what `user = "auto"` is for.
 
 ### Configuration
 
@@ -99,7 +123,12 @@ extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 
 Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
 licence file. Entries take the form `"/path"`, `"/path:rw"`, or
-`"/host:/container:rw"`, and default to read-only.
+`"/host:/container:rw"`, and default to read-only. An entry you write is treated
+as a decision: if a task declares an output inside a path you marked `ro`, the
+run stops and says so rather than quietly granting write access.
+
+`auto_mount = false` turns off the mounts derived from task declarations. Your
+`extra_mounts` still apply.
 
 Set `user = "root"` for an image that installs software at runtime and needs to
 write outside its mounts. Note that its outputs will then be root-owned.

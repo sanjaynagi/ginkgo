@@ -101,16 +101,22 @@ class ContainerPrepareError(RuntimeError):
         super().__init__(f"Failed to pull container image {image!r}: {details}")
 
 
-# Docker and Podman both report a missing entry binary as an exec error naming
-# the executable, with an exit code in the runtime's own reserved range. The
-# message never says which of the runtime's assumptions failed, so a container
-# task that fails this way gets the diagnosis added.
-_MISSING_EXECUTABLE_MARKERS = (
+# Markers the *runtime* itself emits when it cannot exec the entry binary, as
+# distinct from anything the command may print once it is running. A shell that
+# started and then failed to find a file reports "no such file or directory"
+# too, so that phrase is deliberately not here: it would turn a CRLF script or
+# a missing input into a bogus "your image has no bash".
+_EXEC_FAILURE_MARKERS = (
     "executable file not found",
-    "no such file or directory",
-    "not found in $path",
+    "exec format error",
+    "oci runtime",
+    "exec:",
 )
+# Exit codes the runtime reserves for its own failures rather than the command's.
 _RUNTIME_EXIT_CODES = (125, 126, 127)
+
+# Shells to suggest, in order, when the configured one is missing.
+_FALLBACK_SHELLS = ("sh", "bash", "ash")
 
 
 # ------------------------------------------------------------------
@@ -133,9 +139,11 @@ class ContainerBackend:
         When to pull images: ``"if-not-present"``, ``"always"``, or
         ``"never"``.
     user : str
-        Who the container runs as: ``"auto"`` (the invoking user's uid:gid,
-        so outputs are not root-owned), ``"root"``, or an explicit
-        ``"uid:gid"`` pair.
+        Who the container runs as. ``"auto"`` picks whatever leaves outputs
+        owned by the invoking user, which differs by runtime: Docker needs an
+        explicit ``uid:gid``, while rootless Podman already maps the container's
+        own root to the invoking user and needs nothing. ``"root"`` lets the
+        image decide, and an explicit ``"uid:gid"`` pair overrides both.
     shell : str
         Shell used to run the task command inside the image.
     auto_mount : bool
@@ -155,6 +163,13 @@ class ContainerBackend:
     extra_mounts: tuple[str, ...] = ()
     _pulled_images: set[str] = field(default_factory=set, init=False, repr=False)
     _digest_cache: dict[str, str | None] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Resolved once, so the path mounted and the path mounts are compared
+        # against are the same one. A project reached through a symlink would
+        # otherwise have every declared input mounted a second time, read-only,
+        # over the read-write project mount.
+        self.project_root = self.project_root.resolve()
 
     # ------------------------------------------------------------------
     # ExecutionEnvironment protocol
@@ -248,9 +263,9 @@ class ContainerBackend:
         env_vars : Sequence[str]
             Names of environment variables to forward into the container.
             Emitted as bare ``-e NAME``, which both runtimes resolve from the
-            client process's own environment — the value never reaches the host
-            process table, so a forwarded secret stays out of it.  The image's
-            own environment is otherwise left intact.
+            client process's own environment, so the values are not spelled out
+            in this argument vector.  The image's own environment is otherwise
+            left intact.
 
         Returns
         -------
@@ -261,8 +276,8 @@ class ContainerBackend:
         project = str(self.project_root)
 
         argv = [self.runtime, "run", "--rm", "-v", f"{project}:{project}"]
-        for resolved in self.resolve_task_mounts(mounts=mounts):
-            argv += resolved.as_argv()
+        for resolved in self.resolve_bind_mounts(mounts=mounts):
+            argv += _mount_argv(resolved)
         argv += self._user_argv()
         for name in env_vars:
             argv += ["-e", name]
@@ -275,25 +290,45 @@ class ContainerBackend:
         Alpine- and distroless-based images often ship no ``bash``, and the
         runtime reports that as an opaque exec error. Naming the image, the
         shell, and the setting that changes it turns a dead end into a fix.
+
+        The test is deliberately narrow. It fires only on a failure the runtime
+        itself raised, and only when the shell is named as the binary that could
+        not be executed — not when a shell that started reports a missing file.
+        A command failing on a CRLF script or an absent input says
+        "no such file or directory" too, and sending its author to the shell
+        setting would cost them more time than saying nothing.
         """
         if exit_code not in _RUNTIME_EXIT_CODES:
             return None
 
         lowered = output.lower()
-        if self.shell not in output:
+        if not any(marker in lowered for marker in _EXEC_FAILURE_MARKERS):
             return None
-        if not any(marker in lowered for marker in _MISSING_EXECUTABLE_MARKERS):
+        # Both runtimes quote the binary they could not exec. Matching the
+        # quoted token keeps "sh" from matching inside "bash".
+        if f'"{self.shell}"' not in output and f"`{self.shell}`" not in output:
             return None
 
         image = parse_container_uri(env).image
-        return (
-            f"Container image {image!r} appears not to ship {self.shell!r}. "
-            f'Set [container] shell in ginkgo.toml (for example shell = "sh") '
-            f"to the shell this image provides."
+        suggestion = next(
+            (candidate for candidate in _FALLBACK_SHELLS if candidate != self.shell),
+            None,
         )
+        advice = (
+            f'Set [container] shell in ginkgo.toml (for example shell = "{suggestion}") '
+            "to a shell this image provides."
+            if suggestion is not None
+            else "Set [container] shell in ginkgo.toml to a shell this image provides."
+        )
+        return f"Container image {image!r} appears not to ship {self.shell!r}. {advice}"
 
-    def resolve_task_mounts(self, *, mounts: Sequence[Mount] = ()) -> list[Mount]:
-        """Return the bind mounts to add alongside the project root."""
+    def resolve_bind_mounts(self, *, mounts: Sequence[Mount] = ()) -> list[Mount]:
+        """Return every bind mount to add alongside the project root.
+
+        Combines the task's declared mounts with the user's ``extra_mounts``.
+        ``auto_mount = false`` suppresses the declared ones only: an entry the
+        user wrote down is not something to second-guess.
+        """
         requested = list(mounts) if self.auto_mount else []
         requested += [parse_extra_mount(spec) for spec in self.extra_mounts]
         return resolve_mounts(project_root=self.project_root, mounts=requested)
@@ -307,30 +342,34 @@ class ContainerBackend:
     # ------------------------------------------------------------------
 
     def _user_argv(self) -> list[str]:
-        """Return the ``-u``/``-e HOME`` flags implied by ``user``.
+        """Return the flags that decide who the container runs as.
 
-        Defaulting to the invoking user keeps task outputs writable by
-        downstream Python tasks and by the person who started the run.  Images
-        that resolve ``$HOME`` or want a writable home would otherwise break on
-        the missing passwd entry, so a home inside the container is supplied
-        alongside.
+        Task outputs have to stay writable by downstream Python tasks and by the
+        person who started the run, and the flag that achieves that is not the
+        same for both runtimes. Docker runs the container as the image's own
+        user, so it needs an explicit ``uid:gid``. Rootless Podman already maps
+        the container's root to the invoking user, and passing ``-u`` there
+        makes ownership *worse*: the uid maps into the subordinate range
+        instead, leaving files the user cannot chmod or delete.
+
+        The explicit ``uid:gid`` form is passed through as given on either
+        runtime, for the cases where the caller knows better.
         """
         if self.user == "root":
             return []
 
         if self.user == "auto":
-            if not hasattr(os, "getuid"):  # Non-POSIX host; let the image decide.
+            if self.runtime == "podman" or not hasattr(os, "getuid"):
                 return []
-            spec = f"{os.getuid()}:{os.getgid()}"
-        else:
-            spec = self.user
-            if not all(part.isdigit() for part in spec.split(":")) or spec.count(":") != 1:
-                raise ValueError(
-                    f'Invalid [container] user {self.user!r}. Expected "auto", "root", '
-                    'or a numeric "uid:gid" pair.'
-                )
+            return _uid_gid_argv(f"{os.getuid()}:{os.getgid()}")
 
-        return ["-u", spec, "-e", "HOME=/tmp"]
+        parts = self.user.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            raise ValueError(
+                f'Invalid [container] user {self.user!r}. Expected "auto", "root", '
+                'or a numeric "uid:gid" pair.'
+            )
+        return _uid_gid_argv(self.user)
 
     def _image_exists_locally(self, image: str) -> bool:
         """Return whether *image* is present in the local image store."""
@@ -361,10 +400,30 @@ class ContainerBackend:
 # ------------------------------------------------------------------
 
 
+def _mount_argv(mount: Mount) -> list[str]:
+    """Return the runtime flag pair that establishes *mount*."""
+    return ["-v", f"{mount.host_path}:{mount.container_path}:{mount.mode}"]
+
+
+def _uid_gid_argv(spec: str) -> list[str]:
+    """Return the flags that run a container as *spec*.
+
+    A container running as a uid with no passwd entry has no home directory
+    either, and images that resolve ``$HOME`` fail on that rather than on
+    anything the task did, so one is supplied.
+    """
+    return ["-u", spec, "-e", "HOME=/tmp"]
+
+
 def _require_container_runtime(runtime: str) -> None:
     """Raise if the container runtime binary is not on PATH."""
     if shutil.which(runtime) is None:
         raise ContainerRuntimeNotFoundError(runtime=runtime)
+
+
+_CONTAINER_CONFIG_KEYS = frozenset(
+    {"runtime", "pull_policy", "user", "shell", "auto_mount", "extra_mounts"}
+)
 
 
 def container_backend_from_config(
@@ -374,32 +433,73 @@ def container_backend_from_config(
 ) -> ContainerBackend:
     """Build a ``ContainerBackend`` from the ``[container]`` config table.
 
+    Unknown keys and mistyped values are rejected rather than ignored: a
+    typo in this table would otherwise leave a workflow running under
+    defaults that look nothing like what the file says.
+
     Parameters
     ----------
     project_root : Path
         Host directory mounted into every container.
     config : dict[str, Any] | None
-        Merged runtime config.  A missing or non-mapping ``[container]`` table
-        yields backend defaults.
+        Merged runtime config.  A missing ``[container]`` table yields backend
+        defaults.
 
     Returns
     -------
     ContainerBackend
-    """
-    table = (config or {}).get("container")
-    if not isinstance(table, dict):
-        table = {}
 
-    extra_mounts = table.get("extra_mounts", ())
-    if isinstance(extra_mounts, str):
-        extra_mounts = (extra_mounts,)
+    Raises
+    ------
+    ValueError
+        If the table is not a mapping, names an unknown key, or gives a value
+        of the wrong type.
+    """
+    table = (config or {}).get("container", {})
+    if not isinstance(table, dict):
+        raise ValueError("[container] must be a table of container settings")
+
+    unknown = set(table) - _CONTAINER_CONFIG_KEYS
+    if unknown:
+        supported = ", ".join(sorted(_CONTAINER_CONFIG_KEYS))
+        raise ValueError(
+            f"[container] has unknown keys {sorted(unknown)}; supported keys are {{{supported}}}"
+        )
 
     return ContainerBackend(
         project_root=project_root,
-        runtime=str(table.get("runtime", "docker")),
-        pull_policy=str(table.get("pull_policy", "if-not-present")),
-        user=str(table.get("user", "auto")),
-        shell=str(table.get("shell", "bash")),
-        auto_mount=bool(table.get("auto_mount", True)),
-        extra_mounts=tuple(str(spec) for spec in extra_mounts),
+        runtime=_config_str(table, "runtime", "docker"),
+        pull_policy=_config_str(table, "pull_policy", "if-not-present"),
+        user=_config_str(table, "user", "auto"),
+        shell=_config_str(table, "shell", "bash"),
+        auto_mount=_config_bool(table, "auto_mount", True),
+        extra_mounts=_config_mounts(table),
     )
+
+
+def _config_str(table: dict[str, Any], key: str, default: str) -> str:
+    value = table.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"[container] {key} must be a string, got {value!r}")
+    return value
+
+
+def _config_bool(table: dict[str, Any], key: str, default: bool) -> bool:
+    value = table.get(key, default)
+    # `bool("false")` is True, so coercing a string here would invert what the
+    # file says. TOML has a real boolean; require it.
+    if not isinstance(value, bool):
+        raise ValueError(f"[container] {key} must be true or false, got {value!r}")
+    return value
+
+
+def _config_mounts(table: dict[str, Any]) -> tuple[str, ...]:
+    value = table.get("extra_mounts", ())
+    if isinstance(value, str):
+        value = (value,)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"[container] extra_mounts must be a list of strings, got {value!r}")
+    for spec in value:
+        if not isinstance(spec, str):
+            raise ValueError(f"[container] extra_mounts entries must be strings, got {spec!r}")
+    return tuple(value)

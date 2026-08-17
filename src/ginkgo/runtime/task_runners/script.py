@@ -18,6 +18,7 @@ from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
     ShellTaskError,
+    declared_output_mounts,
     iter_output_values,
     remove_declared_output,
     stringify_cli_argument,
@@ -59,7 +60,10 @@ class ScriptRunner(DriverTaskRunner):
         cmd = " ".join(cmd_parts)
 
         completed = self.shell_runner.run_logged_command(
-            node=node, cmd=cmd, user_log_path=user_log_path
+            node=node,
+            cmd=cmd,
+            user_log_path=user_log_path,
+            mounts=declared_output_mounts(output=directive.output),
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
@@ -69,6 +73,9 @@ class ScriptRunner(DriverTaskRunner):
                 exit_code=completed.returncode,
                 output=combined_output,
                 log=directive.log,
+                hint=self.shell_runner.failure_hint(
+                    node=node, exit_code=completed.returncode, output=combined_output
+                ),
             )
 
         if directive.output is None:
