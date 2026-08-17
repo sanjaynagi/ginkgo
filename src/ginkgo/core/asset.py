@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
-from ginkgo.core.types import file
+from ginkgo.core.types import file, path_binding_remedy
 
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
@@ -285,18 +285,40 @@ class AssetRef:
         """Return the asset name."""
         return self.key.name
 
-    def load(self) -> str:
-        """Return the stored artifact path.
+    def as_file(self, *, execution_mode: str | None = None) -> file:
+        """Return the artifact path as a ``ginkgo.file`` marker.
+
+        Available for the kinds whose artifact holds the payload's own bytes
+        (``file``, ``fig``, ``text``). A kind stored in Ginkgo's own encoding
+        (``table``, ``array``, ``model``) has no readable file path, so it
+        raises rather than wrapping a serialized blob in a `file` marker.
+
+        Parameters
+        ----------
+        execution_mode : str | None
+            ``TaskDef.execution_mode`` of the consuming task, when known, so
+            the error offers remedies that work for that kind of task.
 
         Returns
         -------
-        str
+        file
             Absolute path to the immutable artifact content.
-        """
-        return self.artifact_path
 
-    def as_file(self) -> file:
-        """Return the artifact path as a ``ginkgo.file`` marker."""
+        Raises
+        ------
+        TypeError
+            When the artifact holds an encoded payload rather than the bytes
+            its path implies.
+        """
+        from ginkgo.runtime.artifacts.asset_kinds import artifact_encoding_for
+
+        encoding = artifact_encoding_for(self.kind)
+        if encoding is not None:
+            remedy = path_binding_remedy(annotation_label="file", execution_mode=execution_mode)
+            raise TypeError(
+                f"asset {self.key} is a `{self.kind}` asset, so it has no readable file "
+                f"path: its artifact holds {encoding}. {remedy}"
+            )
         return file(self.artifact_path)
 
     def to_dict(self) -> dict[str, Any]:

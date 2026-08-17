@@ -119,10 +119,13 @@ A task that depends on an asset-producing task does not receive a plain path.
 What arrives is decided by the **consuming parameter's annotation**:
 
 - Annotated `file`, `folder`, or a union including one of them (`file |
-  AssetRef`) — the parameter binds a filesystem path, so the value passes
-  through as an `AssetRef`: a record carrying the asset `key`, `version_id`,
-  `kind`, `content_hash`, `metadata`, and `artifact_path` (the path to the
-  immutable stored bytes). This holds on cache hits as well as cold runs.
+  AssetRef`) — the parameter binds a filesystem path, so a **`file`, `fig`, or
+  `text` asset** passes through as an `AssetRef`: a record carrying the asset
+  `key`, `version_id`, `kind`, `content_hash`, `metadata`, and `artifact_path`
+  (the path to the immutable stored bytes). This holds on cache hits as well as
+  cold runs. A `table`, `array`, or `model` asset bound to such a parameter is
+  an error, named at the consuming task before it runs — see [Which assets have
+  a path](#which-assets-have-a-path).
 - Annotated `object` or the payload's own type (`pd.DataFrame`) — a `table`,
   `array`, `text`, or `model` ref is rehydrated into the live Python payload
   before the task body runs, so the task takes the DataFrame, array, or model
@@ -151,9 +154,63 @@ def normalize_seed_card(seed_card: file | AssetRef, output_path: str) -> file:
 Both branches are kept because the same task also works when called with a plain
 `file` path, from a producer that returns `file(...)` rather than `asset(...)`.
 
-`AssetRef` also offers two accessors instead of reading `artifact_path`
-directly: `load()` returns the artifact path as a string, and `as_file()`
-returns it wrapped as a `ginkgo.file` marker.
+Instead of reading `artifact_path` directly you can call `as_file()`, which
+returns the same path wrapped as a `ginkgo.file` marker.
+
+### Which assets have a path
+
+It depends on what the kind's artifact holds:
+
+| Kind | Artifact holds | Binds a path |
+|---|---|---|
+| `file` | the bytes the task wrote, copied verbatim | yes |
+| `fig` | native PNG, SVG, or HTML | yes |
+| `text` | raw UTF-8 | yes |
+| `table` | Parquet | no |
+| `array` | a zipped zarr store or `.npy` blob | no |
+| `model` | a framework-specific serialized model | no |
+
+The first three are the file they appear to be, so a command can read them. The
+last three are Ginkgo's *encoding* of a Python object: `table("data.csv")`
+stores Parquet, not the CSV you handed it. Passing that path to code expecting
+readable text gives it a serialized blob — and a shell command such as
+`awk -F,` will consume Parquet bytes and exit 0, which is silent wrong data
+rather than a failure.
+
+So a `table`, `array`, or `model` asset does not bind a path:
+
+- Binding one to a `file` / `folder` parameter — bare or in a union — fails with
+  an error naming the task, the parameter, and the kind. It fails when the
+  consuming task's inputs are resolved, before its command runs.
+- `as_file()` on such a ref fails the same way, rather than wrapping the encoded
+  blob in a `file` marker.
+- Passing one to a `script` or `notebook` task fails by kind too, since those
+  forward arguments to another process as text.
+
+To feed one of those kinds to a shell, script, or notebook task, take the
+payload in Python and write the format the command expects:
+
+```python
+import pandas as pd
+
+from ginkgo import file, shell, task
+
+
+@task(kind="shell")
+def count_rows(scores: object, csv_path: str, output_path: str) -> file:
+    # `scores` arrives as the live DataFrame, not a path.
+    pd.DataFrame(scores).to_csv(csv_path, index=False)
+    return shell(cmd=f"wc -l < {csv_path} > {output_path}", output=output_path)
+```
+
+Alternatively, have the producer return a `file` asset — `asset(csv_path)` —
+when the bytes on disk, rather than the typed payload, are what downstream
+tasks need.
+
+One caveat for the kinds that do bind a path: stored artifacts are
+content-addressed blobs with no file extension, so a command that switches
+behaviour on the suffix (`.png` versus `.svg`, say) may still need the bytes
+copied to a named path first.
 
 ### Inspecting Assets
 

@@ -20,6 +20,7 @@ from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
+    annotation_includes,
     file,
     folder,
     is_path_like,
@@ -217,6 +218,7 @@ class TaskValidator:
                 annotation=annotation,
                 value=value,
                 label=f"{node.task_def.name}.{name}",
+                execution_mode=node.task_def.execution_mode,
             )
 
     def validate_task_importable(self, *, task_def: TaskDef) -> None:
@@ -271,6 +273,7 @@ class TaskValidator:
                 annotation=annotation,
                 value=resolved_args[name],
                 label=f"{task_def.name}.{name}",
+                execution_mode=task_def.execution_mode,
             )
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
@@ -280,6 +283,7 @@ class TaskValidator:
             annotation=annotation,
             value=value,
             label=f"{task_def.name}.return",
+            execution_mode=task_def.execution_mode,
         )
 
     def validate_annotated_value(
@@ -288,8 +292,14 @@ class TaskValidator:
         annotation: Any,
         value: Any,
         label: str,
+        execution_mode: str | None = None,
     ) -> None:
-        """Validate a value for direct and container-wrapped Ginkgo types."""
+        """Validate a value for direct and container-wrapped Ginkgo types.
+
+        ``execution_mode`` is the consuming task's ``TaskDef.execution_mode``,
+        carried through so a kind/path mismatch can offer the remedies that
+        work for that kind of task.
+        """
         if annotation in {None, Any}:
             return
 
@@ -315,6 +325,7 @@ class TaskValidator:
                     annotation=item_annotation,
                     value=item,
                     label=f"{label}[{index}]",
+                    execution_mode=execution_mode,
                 )
             return
 
@@ -324,24 +335,47 @@ class TaskValidator:
                     annotation=annotation,
                     value=item,
                     label=f"{label}[{index}]",
+                    execution_mode=execution_mode,
                 )
             return
 
+        if isinstance(value, AssetRef) and is_path_shaped_annotation(annotation):
+            # A path-shaped annotation binds a filesystem path, whether it is a
+            # bare ``file`` or a union such as ``file | AssetRef``. The union is
+            # how a consumer says "a path, or the ref that carries one", so the
+            # kind rule has to hold there too: without it a ``table`` ref binds
+            # silently and the task reads Parquet where it expected text.
+            require_path_value(
+                value=value,
+                annotation_label="file"
+                if annotation_includes(annotation=annotation, expected=file)
+                else "folder",
+                label=label,
+                execution_mode=execution_mode,
+            )
+            return
+
         if annotation is file:
-            if isinstance(value, AssetRef) and value.kind == "file":
-                return
             if is_remote_path_value(value):
                 return
-            require_path_value(value=value, annotation_label="file", label=label)
+            require_path_value(
+                value=value,
+                annotation_label="file",
+                label=label,
+                execution_mode=execution_mode,
+            )
             self._validate_file_path(path=value, label=label)
             return
 
         if annotation is folder:
-            if isinstance(value, AssetRef) and value.kind == "folder":
-                return
             if is_remote_path_value(value):
                 return
-            require_path_value(value=value, annotation_label="folder", label=label)
+            require_path_value(
+                value=value,
+                annotation_label="folder",
+                label=label,
+                execution_mode=execution_mode,
+            )
             self._validate_folder_path(path=value, label=label)
             return
 
