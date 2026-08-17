@@ -2,7 +2,17 @@
 
 import pytest
 
-from ginkgo import Expr, ExprList, PartialCall, TaskDef, task, tmp_dir
+from ginkgo import (
+    Expr,
+    ExprList,
+    PartialCall,
+    TaskDef,
+    expand,
+    per_branch,
+    task,
+    tmp_dir,
+    zip_expand,
+)
 
 
 class TestTaskDecorator:
@@ -403,6 +413,183 @@ class TestPartialCallMap:
         # rather than come back empty.
         assert result[0].display_label_parts == ("alpha",)
         assert result[1].display_label_parts == ("beta",)
+
+
+class TestFanOutDerivedArguments:
+    """Per-branch derived values must never become a grid axis (issue #198)."""
+
+    @staticmethod
+    def _simulate() -> TaskDef:
+        @task()
+        def simulate(temperature: float, defect_density: float, output_path: str) -> str:
+            return output_path
+
+        return simulate
+
+    def test_product_map_rejects_expand_column(self):
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError) as excinfo:
+            simulate().product_map(
+                temperature=[300, 400],
+                defect_density=[0.01, 0.02],
+                output_path=expand("results/{t}_{d}.json", t=[300, 400], d=[0.01, 0.02]),
+            )
+
+        message = str(excinfo.value)
+        assert "'output_path'" in message
+        assert "expand('results/{t}_{d}.json')" in message
+        assert "per_branch('results/{temperature}_{defect_density}.json')" in message
+
+    def test_product_map_rejects_zip_expand_column(self):
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError, match="zip_expand"):
+            simulate().product_map(
+                temperature=[300, 400],
+                defect_density=[0.01, 0.02],
+                output_path=zip_expand("results/{t}_{d}.json", t=[300, 400], d=[0.01, 0.02]),
+            )
+
+    def test_product_map_grid_derives_one_output_path_per_cell(self):
+        simulate = self._simulate()
+
+        result = simulate().product_map(
+            temperature=[300, 400],
+            defect_density=[0.01, 0.02],
+            output_path=per_branch("results/{temperature}_{defect_density}.json"),
+        )
+
+        assert len(result) == 4
+        rows = [
+            (expr.args["temperature"], expr.args["defect_density"], expr.args["output_path"])
+            for expr in result
+        ]
+        assert rows == [
+            (300, 0.01, "results/300_0.01.json"),
+            (300, 0.02, "results/300_0.02.json"),
+            (400, 0.01, "results/400_0.01.json"),
+            (400, 0.02, "results/400_0.02.json"),
+        ]
+
+    def test_every_branch_path_matches_its_own_parameters(self):
+        simulate = self._simulate()
+
+        result = simulate().product_map(
+            temperature=[300, 400, 500],
+            defect_density=[0.01, 0.02],
+            output_path=per_branch("results/{temperature}_{defect_density}.json"),
+        )
+
+        for expr in result:
+            expected = f"results/{expr.args['temperature']}_{expr.args['defect_density']}.json"
+            assert expr.args["output_path"] == expected
+
+    def test_map_expand_grid_keeps_paths_aligned_with_parameters(self):
+        """Guards the ordering `expand()` and `.map()` silently share."""
+        simulate = self._simulate()
+        temperatures = [300, 400]
+        densities = [0.01, 0.02]
+
+        result = simulate().map(
+            temperature=[t for t in temperatures for _ in densities],
+            defect_density=[d for _ in temperatures for d in densities],
+            output_path=expand("results/{t}_{d}.json", t=temperatures, d=densities),
+        )
+
+        assert len(result) == len(temperatures) * len(densities)
+        for expr in result:
+            expected = f"results/{expr.args['temperature']}_{expr.args['defect_density']}.json"
+            assert expr.args["output_path"] == expected
+
+    def test_map_accepts_per_branch_template(self):
+        simulate = self._simulate()
+
+        result = simulate(temperature=300).map(
+            defect_density=[0.01, 0.02],
+            output_path=per_branch("results/{temperature}_{defect_density}.json"),
+        )
+
+        paths = [expr.args["output_path"] for expr in result]
+        assert paths == ["results/300_0.01.json", "results/300_0.02.json"]
+
+    def test_per_branch_is_not_an_axis_or_a_label(self):
+        simulate = self._simulate()
+
+        result = simulate().product_map(
+            temperature=[300],
+            defect_density=[0.01],
+            output_path=per_branch("results/{temperature}_{defect_density}.json"),
+        )
+
+        assert len(result) == 1
+        assert result[0].display_label_parts == ("temperature=300", "defect_density=0.01")
+
+    def test_per_branch_renders_from_chained_branch_values(self):
+        simulate = self._simulate()
+
+        result = (
+            simulate()
+            .map(temperature=[300, 400])
+            .product_map(
+                defect_density=[0.01],
+                output_path=per_branch("results/{temperature}_{defect_density}.json"),
+            )
+        )
+
+        paths = [expr.args["output_path"] for expr in result]
+        assert paths == ["results/300_0.01.json", "results/400_0.01.json"]
+
+    def test_per_branch_unknown_placeholder_raises(self):
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError, match="does not take"):
+            simulate().product_map(
+                temperature=[300],
+                defect_density=[0.01],
+                output_path=per_branch("results/{pressure}.json"),
+            )
+
+    def test_per_branch_placeholder_not_set_by_branch_raises(self):
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError, match="this branch does not set"):
+            simulate().product_map(
+                temperature=[300],
+                output_path=per_branch("results/{temperature}_{defect_density}.json"),
+            )
+
+    def test_per_branch_placeholder_on_task_result_raises(self):
+        @task()
+        def upstream() -> float:
+            return 1.0
+
+        @task()
+        def downstream(temperature: float, output_path: str) -> str:
+            return output_path
+
+        with pytest.raises(ValueError, match="task result"):
+            downstream().product_map(
+                temperature=[upstream()],
+                output_path=per_branch("results/{temperature}.json"),
+            )
+
+    def test_per_branch_only_call_raises(self):
+        simulate = self._simulate()
+
+        with pytest.raises(ValueError, match="only per_branch"):
+            simulate(temperature=300, defect_density=0.01).product_map(
+                output_path=per_branch("results/{temperature}.json"),
+            )
+
+    def test_string_varying_argument_raises_instead_of_fanning_over_characters(self):
+        simulate = self._simulate()
+
+        with pytest.raises(TypeError, match="individual characters"):
+            simulate(temperature=300).product_map(
+                defect_density=[0.01, 0.02],
+                output_path="results/out.json",
+            )
 
 
 class TestTaskThreadsContract:

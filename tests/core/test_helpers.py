@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from ginkgo import expand, flatten, slug, zip_expand
+from ginkgo import expand, flatten, per_branch, slug, zip_expand
+from ginkgo.wildcards import ExpandedTemplate
 
 
 class TestExpand:
@@ -66,6 +67,53 @@ class TestZipExpand:
 
     def test_returns_template_when_no_placeholders_are_present(self) -> None:
         assert zip_expand("results/static.txt") == ["results/static.txt"]
+
+
+class TestExpandedTemplateMarker:
+    def test_expand_result_remembers_its_template(self) -> None:
+        result = expand("{a}_{b}", a=[1, 2], b=["x"])
+        assert isinstance(result, ExpandedTemplate)
+        assert result == ["1_x", "2_x"]
+        assert result.template == "{a}_{b}"
+        assert result.function_name == "expand"
+        assert result.placeholders == ("a", "b")
+
+    def test_zip_expand_result_remembers_its_template(self) -> None:
+        result = zip_expand("{a}_{b}", a=[1], b=["x"])
+        assert isinstance(result, ExpandedTemplate)
+        assert result.function_name == "zip_expand"
+
+    def test_respells_placeholders_with_fan_out_argument_names(self) -> None:
+        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
+        assert (
+            result.as_per_branch_template(["temperature", "defect_density"])
+            == "results/{temperature}_{defect_density}.json"
+        )
+
+    def test_respelling_keeps_template_when_counts_differ(self) -> None:
+        result = expand("results/{t}_{d}.json", t=[300], d=[0.01])
+        assert result.as_per_branch_template(["temperature"]) == "results/{t}_{d}.json"
+
+
+class TestPerBranch:
+    def test_renders_from_branch_values(self) -> None:
+        template = per_branch("results/{sample}_{rep}.txt")
+        assert template.render({"sample": "a", "rep": 2, "unused": 9}) == "results/a_2.txt"
+
+    def test_reports_placeholder_names(self) -> None:
+        assert per_branch("{sample}/{rep}").placeholder_names() == ["sample", "rep"]
+
+    def test_rejects_template_without_placeholders(self) -> None:
+        with pytest.raises(ValueError, match="no placeholders"):
+            per_branch("results/out.txt")
+
+    def test_rejects_non_simple_placeholder(self) -> None:
+        with pytest.raises(ValueError, match="simple named placeholders"):
+            per_branch("results/{sample.name}.txt")
+
+    def test_rejects_non_string_template(self) -> None:
+        with pytest.raises(TypeError, match="must be a string"):
+            per_branch(["results/{sample}.txt"])  # type: ignore[arg-type]
 
 
 class TestSlug:

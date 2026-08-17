@@ -1260,6 +1260,67 @@ def main():
         assert "train[sample_a,lr=0.1,epochs=50]" in result.stdout
 
 
+class TestCliGridSweepOutputPaths:
+    """End-to-end cover for the grid sweep of issue #198."""
+
+    _TASK = """
+import json
+from pathlib import Path
+
+from ginkgo import file, flow, task
+from ginkgo import expand, per_branch
+
+TEMPS = [300, 400]
+DENS = [0.01, 0.02]
+
+@task()
+def simulate(temperature: float, defect_density: float, output_path: str) -> file:
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(
+        json.dumps({"t": temperature, "d": defect_density}), encoding="utf-8"
+    )
+    return file(output_path)
+"""
+
+    def _write_workflow(self, fan_out: str) -> None:
+        Path("workflow.py").write_text(
+            self._TASK
+            + "\n@flow\ndef main():\n    return simulate().product_map(\n"
+            + "        temperature=TEMPS,\n        defect_density=DENS,\n"
+            + f"        output_path={fan_out},\n    )\n",
+            encoding="utf-8",
+        )
+
+    def test_expand_output_paths_fail_loudly_instead_of_mislabelling_files(self) -> None:
+        self._write_workflow('expand("results/{t}_{d}.json", t=TEMPS, d=DENS)')
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "output_path" in combined
+        assert "per_branch" in combined
+        assert not Path("results").exists()
+
+    def test_per_branch_output_paths_write_one_matching_file_per_cell(self) -> None:
+        self._write_workflow('per_branch("results/{temperature}_{defect_density}.json")')
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "4 tasks executed" in result.stdout
+        written = sorted(path.name for path in Path("results").iterdir())
+        assert written == [
+            "300_0.01.json",
+            "300_0.02.json",
+            "400_0.01.json",
+            "400_0.02.json",
+        ]
+        for path in Path("results").iterdir():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            assert path.name == f"{payload['t']}_{payload['d']}.json"
+
+
 class TestCliSpinnerSelection:
     def test_time_of_day_spinner_uses_earth_in_day_and_moon_at_night(self) -> None:
         assert _time_of_day_spinner(datetime(2026, 3, 12, 9, 0, 0)) == "earth"

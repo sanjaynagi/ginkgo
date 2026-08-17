@@ -14,8 +14,35 @@ Ginkgo also exposes small workflow-authoring helpers:
 
 - `expand(template, **wildcards)` for Cartesian wildcard expansion in placeholder order
 - `zip_expand(template, **wildcards)` for positional wildcard expansion with equal-length iterables
+- `per_branch(template)` for values derived from a fan-out branch's own arguments
 - `flatten(items)` for flattening nested list/tuple structures into a single list
 - `slug(value)` for deterministic file-safe artifact names
+
+### Axes versus derived columns in fan-out
+
+A fan-out argument is one of two things, and the difference is carried by its
+type rather than by convention (issue #198):
+
+- A **column**: a list of values. `.map()` consumes columns row by row;
+  `.product_map()` treats each as an axis and crosses them.
+- A **derived value**: `per_branch("...{arg}...")`, rendered once per generated
+  branch from that branch's own arguments (fan-out row values first, then
+  arguments fixed on the task call). It generates no branches of its own, takes
+  no part in labels, and so cannot fall out of step with the values it names.
+
+`expand()`/`zip_expand()` return `ExpandedTemplate`, a `list[str]` subclass that
+remembers its template. Such a list is one value per wildcard combination —
+already aligned to the values it came from — so `.product_map()` rejects it
+naming the argument and the `per_branch()` spelling to use instead. Passed to
+`.product_map()` it would have become a further axis crossed with the axes it
+was derived from: an N×M grid with an N·M-element path list silently became
+N·M·N·M branches, several writing each path, last writer winning, with the
+surviving file's name contradicting its contents.
+
+`_materialize_varying_columns` in `ginkgo/core/task.py` performs the split into
+`_VaryingArgs(columns, derived)`; `_branch_args` renders the derived templates
+per branch. String and bytes fan-out arguments are also rejected there, since
+`list("path")` would fan out over characters.
 
 ### Reachability and dropped calls
 

@@ -2,10 +2,112 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from itertools import product
 from string import Formatter
 from typing import Any
+
+
+class ExpandedTemplate(list[str]):
+    """Expanded template strings that remember the template they came from.
+
+    ``expand()`` and ``zip_expand()`` return one string per wildcard
+    combination, so the result is a column already aligned row-for-row with
+    the values it was built from — never an independent axis to sweep. The
+    list behaves exactly like ``list[str]``; remembering the template lets
+    ``.product_map()`` reject it by name instead of silently crossing it
+    with the axes it was derived from.
+    """
+
+    def __init__(
+        self,
+        values: Iterable[str],
+        *,
+        template: str,
+        function_name: str,
+        placeholders: Sequence[str],
+    ) -> None:
+        super().__init__(values)
+        self.template = template
+        self.function_name = function_name
+        self.placeholders = tuple(placeholders)
+
+    def as_per_branch_template(self, names: Sequence[str]) -> str:
+        """Return this template respelled with ``names`` as its placeholders.
+
+        Falls back to the original template when the placeholder and name
+        counts differ, since no positional correspondence can be assumed.
+        """
+        if len(names) != len(self.placeholders):
+            return self.template
+
+        respelled = self.template
+        for placeholder, name in zip(self.placeholders, names, strict=True):
+            respelled = respelled.replace("{" + placeholder + "}", "{" + name + "}")
+        return respelled
+
+
+@dataclass(frozen=True)
+class PerBranch:
+    """A template rendered once per fan-out branch from that branch's values.
+
+    Parameters
+    ----------
+    template : str
+        Template whose placeholders name arguments of the fan-out call.
+    """
+
+    template: str
+
+    def placeholder_names(self) -> list[str]:
+        """Return the argument names this template reads, in first-use order."""
+        return _placeholder_names(template=self.template, function_name="per_branch")
+
+    def render(self, values: dict[str, Any]) -> str:
+        """Render the template from one branch's argument values."""
+        names = self.placeholder_names()
+        return self.template.format_map({name: values[name] for name in names})
+
+
+def per_branch(template: str) -> PerBranch:
+    """Derive one value per fan-out branch from that branch's own arguments.
+
+    Use this for arguments that are a function of the branch — output paths
+    above all — rather than an axis to sweep. Placeholders name other
+    arguments of the same ``.map()`` / ``.product_map()`` call (or arguments
+    fixed on the task call), and are rendered per branch, so the value can
+    never drift out of step with the values it describes.
+
+    Parameters
+    ----------
+    template : str
+        Template containing named ``str.format`` placeholders, each naming
+        an argument of the fan-out call.
+
+    Returns
+    -------
+    PerBranch
+        Marker consumed by ``.map()`` and ``.product_map()``.
+
+    Examples
+    --------
+    >>> per_branch("results/{temperature}_{defect_density}.json").template
+    'results/{temperature}_{defect_density}.json'
+    """
+    if not isinstance(template, str):
+        raise TypeError(f"per_branch() template must be a string, got {type(template).__name__}.")
+
+    names = _placeholder_names(template=template, function_name="per_branch")
+    if not names:
+        raise ValueError(
+            f"per_branch() template {template!r} has no placeholders, so every branch would "
+            "receive the same value. Reference the fan-out arguments it should vary with, "
+            "e.g. per_branch('results/{sample}.txt'), or pass a plain value as a fixed "
+            "argument on the task call."
+        )
+
+    return PerBranch(template=template)
 
 
 def _placeholder_names(*, template: str, function_name: str) -> list[str]:
@@ -65,8 +167,14 @@ def _normalize_wildcards(
     return placeholder_names, wildcard_values
 
 
-def expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
+def expand(template: str, **wildcards: Iterable[Any]) -> ExpandedTemplate:
     """Expand a string template across wildcard combinations.
+
+    The result is one string per combination, aligned row-for-row with the
+    wildcard values, so it pairs with ``.map()``. It is not an axis: passing
+    it to ``.product_map()`` is rejected, since that would cross it with the
+    very axes it was derived from. For a grid, use
+    :func:`per_branch` instead.
 
     Parameters
     ----------
@@ -77,7 +185,7 @@ def expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
 
     Returns
     -------
-    list[str]
+    ExpandedTemplate
         Expanded strings in deterministic Cartesian-product order.
     """
     placeholder_names, wildcard_values = _normalize_wildcards(
@@ -86,16 +194,26 @@ def expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
         wildcards=wildcards,
     )
     if not placeholder_names:
-        return [template]
+        return ExpandedTemplate(
+            [template], template=template, function_name="expand", placeholders=()
+        )
 
-    return [
-        template.format_map(dict(zip(placeholder_names, combination, strict=True)))
-        for combination in product(*wildcard_values)
-    ]
+    return ExpandedTemplate(
+        (
+            template.format_map(dict(zip(placeholder_names, combination, strict=True)))
+            for combination in product(*wildcard_values)
+        ),
+        template=template,
+        function_name="expand",
+        placeholders=placeholder_names,
+    )
 
 
-def zip_expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
+def zip_expand(template: str, **wildcards: Iterable[Any]) -> ExpandedTemplate:
     """Expand a string template by zipping wildcard values positionally.
+
+    Like :func:`expand`, the result is a row-aligned column for ``.map()``,
+    not an axis for ``.product_map()``.
 
     Parameters
     ----------
@@ -106,7 +224,7 @@ def zip_expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
 
     Returns
     -------
-    list[str]
+    ExpandedTemplate
         Expanded strings in deterministic positional order.
     """
     placeholder_names, wildcard_values = _normalize_wildcards(
@@ -115,7 +233,9 @@ def zip_expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
         wildcards=wildcards,
     )
     if not placeholder_names:
-        return [template]
+        return ExpandedTemplate(
+            [template], template=template, function_name="zip_expand", placeholders=()
+        )
 
     lengths = {len(values) for values in wildcard_values}
     if len(lengths) > 1:
@@ -124,10 +244,15 @@ def zip_expand(template: str, **wildcards: Iterable[Any]) -> list[str]:
             f"{[len(values) for values in wildcard_values]!r} for template {template!r}."
         )
 
-    return [
-        template.format_map(dict(zip(placeholder_names, combination, strict=True)))
-        for combination in zip(*wildcard_values, strict=True)
-    ]
+    return ExpandedTemplate(
+        (
+            template.format_map(dict(zip(placeholder_names, combination, strict=True)))
+            for combination in zip(*wildcard_values, strict=True)
+        ),
+        template=template,
+        function_name="zip_expand",
+        placeholders=placeholder_names,
+    )
 
 
 def slug(value: str) -> str:

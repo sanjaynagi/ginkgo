@@ -171,7 +171,9 @@ def main():
 zipped columns, and `max_concurrent=` on any of these throttles how many
 generated branches run at once, independently of the global `--jobs`/`--cores`
 budget. For building the input/output path lists you map over, see
-[Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand).
+[Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand);
+for one output path per grid cell, see
+[Per-Cell Output Paths With `per_branch()`](guide/tasks-and-flows.md#per-cell-output-paths-with-per_branch).
 
 ### How does Ginkgo build and edit dynamic DAGs at runtime?
 
