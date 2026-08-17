@@ -51,6 +51,32 @@ may be combined, and eviction always proceeds oldest-first with orphan
 artifact garbage collection at the end. `--dry-run` previews what would be
 removed without touching disk.
 
+## Error reporting
+
+Two kinds of failure reach the CLI's top-level handler, and they are reported
+differently (`cli/errors.py`, on the taxonomy in `ginkgo/errors.py`):
+
+- A `GinkgoError` — the base class of every named ginkgo exception, from
+  `ParamError` to `PixiEnvNotFoundError` — is a mistake ginkgo detected and can
+  explain. It prints as a single `✖ <message>` line. Any other failure raised
+  with no user code on the stack is reported the same way: nothing but ginkgo's
+  own frames were involved, so its message is the whole report.
+- Anything else is a bug in the workflow or in ginkgo. The message is followed
+  by the location of the innermost frame in code the user wrote —
+  `<Type> at <file>:<line> in <function>` — so a mistake in a flow body is
+  always locatable without re-running. `GINKGO_TRACEBACK=1` or `--verbose` adds
+  the full rich traceback beneath it.
+
+`GINKGO_TRACEBACK=1` prints a traceback for **every** failure, including the
+ones whose default report is a bare message — a `GinkgoError`, or an internal
+crash after the flow body returned with no user frame left on the stack. Only
+the hint that advertises the variable is withheld there, so that ginkgo's
+one-line messages stay one line; the escape hatch itself always works.
+
+`KeyboardInterrupt` prints `⨯ Interrupted` and exits 130; `SystemExit`
+propagates untouched, so argparse and `--version` keep the status they chose.
+`ginkgo doctor` reports the same user-code location under each diagnostic.
+
 Run-time failure diagnostics classify each task failure into one of a small
 set of categories — `env_mismatch`, `import_error`, `invalid_path`,
 `missing_input`, `shell_command_error`, `serialization_error`,

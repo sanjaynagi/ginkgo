@@ -7,8 +7,6 @@ import importlib.metadata
 import sys
 from typing import Sequence
 
-from rich.text import Text
-
 from ginkgo.cli.commands.asset import command_asset
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.debug import command_debug
@@ -22,7 +20,8 @@ from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
-from ginkgo.cli.common import RunMode, console
+from ginkgo.cli.common import RunMode
+from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
 
 
@@ -78,10 +77,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_secrets(args)
         if args.command == "report":
             return command_report(args)
-    except BaseException as exc:
-        rich_console = console(sys.stderr)
-        rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
-        return 1
+    # SystemExit is deliberately not caught: argparse and ``--version`` use it
+    # to exit with a status they have already chosen.
+    except KeyboardInterrupt:
+        return report_interrupt(stream=sys.stderr)
+    except Exception as exc:
+        return report_failure(
+            exc=exc,
+            stream=sys.stderr,
+            show_traceback=traceback_requested(args),
+        )
 
     parser.error("missing command")
     return 2

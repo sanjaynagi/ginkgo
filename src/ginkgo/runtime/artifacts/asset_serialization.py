@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.asset import AssetResult
+from ginkgo.errors import GinkgoError
 
 
-class AssetSerializationError(RuntimeError):
+class AssetSerializationError(GinkgoError, RuntimeError):
     """Raised when an :class:`AssetResult` payload cannot be serialised.
 
     Parameters

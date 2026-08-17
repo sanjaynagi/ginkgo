@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ginkgo.core.secret import SecretRef
+from ginkgo.errors import GinkgoError
 
 
-class SecretResolutionError(RuntimeError):
+class SecretResolutionError(GinkgoError, RuntimeError):
     """Raised when a declared secret cannot be resolved."""
 
     def __init__(self, ref: SecretRef) -> None:

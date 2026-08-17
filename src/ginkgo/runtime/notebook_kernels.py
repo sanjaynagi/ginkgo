@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from ginkgo.core.hashing import hash_str
+from ginkgo.errors import GinkgoError
 
 
-class NotebookKernelError(RuntimeError):
+class NotebookKernelError(GinkgoError, RuntimeError):
     """Base error raised for managed notebook-kernel failures."""
 
 
