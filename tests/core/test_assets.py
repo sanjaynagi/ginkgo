@@ -988,6 +988,15 @@ def produce_text() -> object:
     return text("line one\nline two\n", name="notes")
 
 
+#: Longer than NAME_MAX, so probing it as a filesystem path raises ENAMETOOLONG.
+LONG_MARKDOWN = "# Summary\n\n" + "- a line of report prose\n" * 40
+
+
+@task()
+def produce_long_text() -> object:
+    return text(LONG_MARKDOWN, name="summary", format="markdown")
+
+
 @task()
 def consume_dataframe_sum(upstream: object) -> int:
     assert isinstance(upstream, pd.DataFrame)
@@ -1143,6 +1152,14 @@ class TestRehydration:
         monkeypatch.chdir(tmp_path)
         result = ginkgo.evaluate(consume_text_length(upstream=produce_text()))
         assert result == len("line one\nline two\n")
+
+    def test_long_text_ref_reaches_its_consumer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rehydrated contents are scanned as a possible path, and must not raise."""
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(consume_text_length(upstream=produce_long_text()))
+        assert result == len(LONG_MARKDOWN)
 
     def test_live_payload_hit_skips_disk_loader(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

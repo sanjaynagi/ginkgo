@@ -9,6 +9,7 @@ validation independently testable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, get_args, get_origin
@@ -76,7 +77,10 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     text = str(value)
     if not text or is_remote_uri(text):
         return False
-    return Path(text).exists()
+    # os.path.exists, not Path.exists: a string that cannot name a path at all
+    # — a rehydrated ``text`` asset's contents, say, longer than NAME_MAX or
+    # carrying a NUL — must answer "not an existing path" rather than raise.
+    return os.path.exists(text)
 
 
 def is_remote_path_value(value: Any) -> bool:
