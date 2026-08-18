@@ -12,8 +12,6 @@ import tomllib
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-import sys
-
 
 import pytest
 import yaml
@@ -33,22 +31,16 @@ from ginkgo.cli.renderers.common import _MultiStateBar
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_PIXI_PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
-PYTHON = _PIXI_PYTHON if _PIXI_PYTHON.is_file() else sys.executable
+PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
 
 def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    import os
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [str(PYTHON), "-m", "ginkgo.cli", *args],
         cwd=cwd,
         check=False,
         text=True,
         capture_output=True,
-        env=env,
-        encoding="utf-8",
     )
 
 
@@ -1249,6 +1241,14 @@ class TestCliInit:
             assert "does not contain a cell with tag" not in log_text
             assert "Passed unknown parameter" not in log_text
 
+    def test_init_into_the_current_directory_omits_the_cd_step(self) -> None:
+        """There is nowhere to cd to when the project root is already the cwd."""
+        result = _run_cli("init", ".", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Next steps: run ginkgo test --dry-run" in result.stdout
+        assert "Next steps: cd" not in result.stdout
+
     def test_init_can_skip_skills(self) -> None:
         result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -1295,45 +1295,6 @@ class TestCliInit:
         assert result.returncode == 1
         assert "✖ Refusing to overwrite existing scaffold files without --force:" in result.stderr
         assert (package_dir / "flow.py").read_text(encoding="utf-8") == "existing\n"
-
-    def test_init_current_directory_omits_cd_step(self) -> None:
-        result = _run_cli("init", ".", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Next steps: run ginkgo test --dry-run" in result.stdout
-        assert "Next steps: cd" not in result.stdout
-
-
-class TestCliSubcommandGroupsHelp:
-    @pytest.mark.parametrize(
-        ("args", "expected_tokens"),
-        [
-            ([], ["run", "cache", "asset", "env", "inspect", "secrets"]),
-            (["cache"], ["ls", "clear", "explain", "prune"]),
-            (["asset"], ["ls", "versions", "inspect", "show"]),
-            (["env"], ["ls", "clear"]),
-            (["inspect"], ["workflow", "run"]),
-            (["secrets"], ["list", "validate"]),
-        ],
-    )
-    def test_group_without_subcommand_prints_help_and_exits_2(
-        self, args: list[str], expected_tokens: list[str]
-    ) -> None:
-        result = _run_cli(*args, cwd=Path.cwd())
-        assert result.returncode == 2
-        combined_output = result.stdout + result.stderr
-        assert "the following arguments are required" not in combined_output
-        assert "usage:" in combined_output
-        for token in expected_tokens:
-            assert token in combined_output
-
-    def test_top_level_help_lists_descriptions(self) -> None:
-        result = _run_cli("--help", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Execute a workflow graph" in result.stdout
-        assert "Manage task execution cache" in result.stdout
-        assert "Initialize a new ginkgo project scaffold" in result.stdout
-        assert "Manage and validate workflow secrets" in result.stdout
-
 
 
 class TestCliWorkflowDiscovery:

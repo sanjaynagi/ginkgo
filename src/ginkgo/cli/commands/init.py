@@ -282,13 +282,11 @@ def command_init(args) -> int:
         f"[dim]; tasks live in[/] [bold]{context.modules_relpath}/[/]"
     )
     if root == Path.cwd().resolve():
-        rich_console.print(
-            "[dim]Next steps:[/] run [bold]ginkgo test --dry-run[/]"
-        )
+        # Nowhere to cd to: the project root is already the working directory.
+        rich_console.print("[dim]Next steps:[/] run [bold]ginkgo test --dry-run[/]")
     else:
-        display_dir = args.directory if args.directory != "." else root.name
         rich_console.print(
             "[dim]Next steps:[/] [bold]cd[/] "
-            f"[bold]{display_dir}[/] and run [bold]ginkgo test --dry-run[/]"
+            f"[bold]{args.directory}[/] and run [bold]ginkgo test --dry-run[/]"
         )
     return 0
