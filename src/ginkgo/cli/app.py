@@ -32,6 +32,7 @@ def _memory_arg(value: str) -> int:
         return int(value)
     return parse_memory(value)
 
+
 _MISSING_ARGS_PREFIX = "the following arguments are required: "
 
 
