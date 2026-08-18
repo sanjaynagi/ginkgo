@@ -16,8 +16,9 @@ at the nearest `ginkgo.toml`.
   record the run. The command you reach for most.
 
 `ginkgo test`
-: Validate a workflow without executing task bodies. Use it in CI or before a
-  long run to catch wiring errors early.
+: Run the workflow files a project keeps under `tests/workflows/`. Task bodies
+  execute unless `--dry-run` is passed. See
+  [Validation and Diagnostics](#validation-and-diagnostics).
 
 `ginkgo inspect`
 : Inspect the resolved task graph (`inspect workflow`) or the structure of a
@@ -143,10 +144,36 @@ Use these commands to inspect a workflow without committing to the full
 workload:
 
 ```bash
+ginkgo run --dry-run
 ginkgo test --dry-run
 ginkgo doctor flow.py
 ginkgo debug <run_id>
 ```
+
+The two dry runs answer different questions. `ginkgo run --dry-run` previews the
+plan for the entrypoint you actually run, and is the quickest way to confirm a
+workflow you just wrote is wired correctly. `ginkgo test` runs the workflows a
+project keeps for validation, which is what you want in CI or when a project
+holds several of them.
+
+### ginkgo test
+
+`ginkgo test` collects every `*.py` file in `tests/workflows/` &mdash; falling
+back to a legacy `.tests/` directory when `tests/workflows/` does not exist
+&mdash; and runs each one as a workflow. It is not a pytest wrapper: each file is
+expected to expose a flow, usually by re-exporting the project's own. If neither
+directory exists, the command reports that it found nothing to run.
+
+Without `--dry-run`, `ginkgo test` **executes the task bodies** of every
+discovered workflow and stops at the first one that fails. With `--dry-run` it
+validates each workflow instead, resolving the graph and computing cache keys
+without running any task body, and prints one line per workflow rather than a
+full plan.
+
+The scaffold `ginkgo init` writes holds a single `tests/workflows/smoke.py`,
+which re-exports `main` from `workflow/flow.py`. So on a fresh project
+`ginkgo test` does cover your own flow &mdash; the output just names `smoke.py`
+rather than the file you wrote it in.
 
 `ginkgo doctor` catches environment and configuration problems before a run.
 Pass `--json` for structured output suitable for programmatic use:

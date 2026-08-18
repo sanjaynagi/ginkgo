@@ -46,6 +46,18 @@ fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
 keeps its terse per-workflow validation line rather than printing a full plan
 for each discovered workflow.
 
+`ginkgo test` discovers its workflows by convention rather than by argument
+(`discover_test_workflows` in `cli/workspace.py`): every `*.py` file in
+`tests/workflows/`, falling back to a legacy `.tests/` directory when the
+canonical one is absent, and an error when neither exists. Each file is run
+through `run_workflow` with `plan_preview=False`, so without `--dry-run` the task
+bodies execute for real and the first failing workflow ends the run; with
+`--dry-run` every workflow is validated and the non-zero exit status is carried to
+the end. The recommended wiring check in user-facing docs is
+`ginkgo run --dry-run` — it needs no test-workflow convention and previews
+the entrypoint that will actually run — with `ginkgo test` presented as the
+command for a project's own validation workflows.
+
 Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
 base name, with its fan-out values in brackets when the graph fixed them —
 which `.map()` and `.product_map()` do at graph-build time, `per_branch()`

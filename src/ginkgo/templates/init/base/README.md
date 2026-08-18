@@ -67,6 +67,8 @@ patterns in one small workflow:
 - `workflow/scripts/` contains the script used by the script task.
 - `workflow/notebooks/` contains the report notebook.
 - `tests/workflows/smoke.py` is the validation workflow used by `ginkgo test`.
+  It re-exports `main` from `workflow/flow.py`, so `ginkgo test` covers the
+  same flow `ginkgo run` executes.
 
 ## What The Workflow Produces
 
@@ -80,7 +82,13 @@ Outputs are written under `results/`.
 ## CLI Usage
 
 ```bash
-# Validate the starter workflow definitions without executing tasks.
+# Preview the plan for the default workflow without executing any task body.
+# The quickest way to confirm a workflow is wired correctly.
+ginkgo run --dry-run
+
+# Run the workflow files under tests/workflows/. Task bodies execute unless
+# --dry-run is passed.
+ginkgo test
 ginkgo test --dry-run
 
 # Execute the default workflow with Rich terminal output.
