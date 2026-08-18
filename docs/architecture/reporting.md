@@ -106,6 +106,17 @@ name in the card header; they are also surfaced by `ginkgo asset show`.
 Like groups, captions are presentation-only and do not affect identity or
 cache behaviour.
 
+Each card carries an `AssetCard.anchor`, the fragment id its `.asset` div
+renders as `id` and a `#` link beside the asset name points at. The id is
+`asset-<slug of "<namespace> <name>">` with underscores rewritten to hyphens,
+so `table:sales/by-region` deep-links as `#asset-table-sales-by-region`. The
+slug comes from `ginkgo.wildcards.slug`, the codebase's one slug rule. Two keys
+can reduce to the same slug (`pca plot` and `pca-plot`), so `_build_assets`
+walks the cards in the report's own deterministic order — sections by first
+reference, cards by `(namespace, name)` — and appends `-2`, `-3` … to later
+collisions. Ordering is what makes the suffix stable across re-renders, so the
+ids stay shareable.
+
 Asset check outcomes are read from the reserved `ginkgo_checks` version-metadata
 field into typed `CheckOutcome` values on `AssetCard`. Each asset card renders
 these outcomes as pass/fail badges beside its kind and name. Current strict
@@ -321,7 +332,9 @@ ginkgo report <run-id>
   `RunProvenanceRecorder` — success, failure, and all-cached paths, graph
   layout, asset resolution, section numbering, running-run rejection. The
   all-cached run must yield the same asset cards and sections as the executed
-  one; only the cache labels differ.
+  one; only the cache labels differ. Asset anchors are asserted both for the
+  plain case and for two keys that share a slug, which must take distinct ids
+  that a rebuild reproduces.
 - `export_report` — bundle and single-file modes, presence of key
   strings, absence of external URLs, contiguous section numerals,
   `image/*` MIME types on inlined figures, conditional failure section,

@@ -649,6 +649,7 @@ pre.log {
   border-radius: var(--radius);
   margin: 14px 0;
   overflow: hidden;
+  scroll-margin-top: 20px;
 }
 
 .asset-head {
@@ -665,6 +666,26 @@ pre.log {
   font-size: 14px;
   font-weight: 600;
   color: var(--ink);
+}
+
+.asset-head .asset-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-left: 6px;
+  text-decoration: none;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+}
+
+.asset:hover .asset-link,
+.asset:target .asset-link,
+.asset-head .asset-link:focus {
+  opacity: 1;
+}
+
+.asset:target {
+  border-color: var(--accent);
 }
 
 .asset-head .caption {

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.wildcards import slug
 from ginkgo.workspace_layout import WorkspaceLayout
 
 from .sizing import (
@@ -203,9 +204,15 @@ class CheckOutcome:
 
 @dataclass(frozen=True, kw_only=True)
 class AssetCard:
-    """One asset version produced by the run."""
+    """One asset version produced by the run.
+
+    ``anchor`` is the fragment id the card carries in the document, so a reader
+    can deep-link a single asset (``report.html#asset-fig-pca-plot``). It is
+    derived from the asset key and made unique across the whole report.
+    """
 
     asset_key: str
+    anchor: str
     name: str
     caption: str | None
     namespace: str
@@ -882,10 +889,38 @@ def _build_assets(
             cards_by_section.setdefault(section_title, []).append(card)
 
     sections: list[AssetSection] = []
+    taken_anchors: set[str] = set()
     for title, cards in cards_by_section.items():
         cards.sort(key=lambda card: (card.namespace, card.name))
-        sections.append(AssetSection(title=title, cards=tuple(cards)))
+        anchored = tuple(_with_unique_anchor(card, taken=taken_anchors) for card in cards)
+        sections.append(AssetSection(title=title, cards=anchored))
     return tuple(sections)
+
+
+def _asset_anchor(*, namespace: str, name: str) -> str:
+    """Return the candidate fragment id for an asset card.
+
+    Two asset keys can reduce to the same slug — ``pca plot`` and ``pca-plot``
+    both become ``pca-plot`` — so this is only a candidate;
+    :func:`_with_unique_anchor` settles collisions.
+    """
+    return f"asset-{slug(f'{namespace} {name}').replace('_', '-')}".rstrip("-")
+
+
+def _with_unique_anchor(card: AssetCard, *, taken: set[str]) -> AssetCard:
+    """Return ``card`` carrying an anchor no other card in the report holds.
+
+    Cards are visited in the report's own deterministic order — sections by
+    first reference, cards by ``(namespace, name)`` — so the numeric suffix a
+    collision earns is stable across re-renders of the same run.
+    """
+    candidate = card.anchor
+    ordinal = 2
+    while candidate in taken:
+        candidate = f"{card.anchor}-{ordinal}"
+        ordinal += 1
+    taken.add(candidate)
+    return replace(card, anchor=candidate)
 
 
 def _build_asset_card(
@@ -919,6 +954,7 @@ def _build_asset_card(
 
     return AssetCard(
         asset_key=str(version.key),
+        anchor=_asset_anchor(namespace=namespace, name=version.key.name),
         name=version.key.name,
         caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,
