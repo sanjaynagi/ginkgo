@@ -311,6 +311,9 @@ class TestIsUntrackedPathValue:
             (str, "not a path at all", False),
             (int, 3, False),
             (str, "s3://bucket/key.csv", False),
+            # A rehydrated ``text`` asset arrives as its contents.
+            (str, "# Title\n\n" + "x" * 400, False),
+            (str, "has a \x00 in it", False),
         ],
     )
     def test_predicate(self, annotation: Any, value: Any, expected: bool) -> None:
