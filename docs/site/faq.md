@@ -697,9 +697,12 @@ def train_model(dataset: str) -> str:
 
 ### Which remote backends are actually supported?
 
-Two executors exist: Kubernetes (`--executor k8s`) and GCP Batch
-(`--executor batch`); the CLI `--executor` choices are exactly `local` (default),
-`k8s`, and `batch`. There is a single Kubernetes executor that submits
+Two executor *types* exist: Kubernetes and GCP Batch. `--executor` takes
+`local` (the default), any name declared under `[remote.executors]` in
+ginkgo.toml, or `k8s` / `batch` for the legacy single-executor config
+sections. Several named executors of either type can be configured at once,
+and a task routes to one with `@task(executor="name")`. There is a single
+Kubernetes executor implementation that submits
 `batch/v1` Jobs, so GKE / EKS / OKE are not separate backends — they are just
 clusters the one Kubernetes executor talks to. GCP Batch is a distinct
 serverless executor.

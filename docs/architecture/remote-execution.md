@@ -2,13 +2,37 @@
 
 Ginkgo supports dispatching individual tasks to cloud infrastructure while the
 rest of the workflow runs locally. Placement is decided per task from its
-declared requirement and the available capability: `remote=True` is an
-explicit directive to the configured executor, and a task whose `gpu`
-requirement exceeds the local `--gpus` budget is dispatched remotely when an
-executor is configured. Either route without a usable executor is a build
-error — a task never silently runs somewhere its requirement cannot be met.
-Remote-placed tasks consume a `--jobs` slot but no local core/memory/GPU
-budget; their resources are satisfied by the executor.
+declared requirement and the available capability: `executor="name"` pins a
+task to one configured executor, `remote=True` is an explicit directive to the
+run's *default* executor (`--executor`), and a task whose `gpu` requirement
+exceeds the local `--gpus` budget is dispatched to that default when one is
+configured. Any route without a usable executor is a build error — a task never
+silently runs somewhere its requirement cannot be met. Remote-placed tasks
+consume a `--jobs` slot but no local core/memory/GPU budget; their resources
+are satisfied by the executor.
+
+## Executor Registry
+
+`runtime/executor_registry.py` owns the name → backend mapping. It parses
+`[remote.executors.<name>]` tables (each with a `type` of `k8s` or `batch`,
+backend settings, and an optional `code` sub-table), plus the legacy
+`[remote.k8s]` / `[remote.batch]` sections as implicitly named executors
+`k8s` and `batch`. `--executor` selects the run default; `local` means the run
+has none. Backends are constructed lazily on first dispatch, so a configured
+executor no task reaches is never contacted, and unknown names — on the flag or
+on a task — fail at build time with the configured names listed. Lazy
+construction would otherwise defer settings errors to the first dispatch, so
+once the graph is known `ExecutorRegistry.validate_settings` checks the
+executors the run will reach (`_REQUIRED_SETTINGS` is the one home for which
+keys a backend cannot be built without); a section no task reaches stays
+unvalidated, so a stale `[remote.k8s]` never fails a local run.
+
+`_resolve_placement` returns the executor's name or `None` for local
+placement; `NodeRun.executor_name` carries it, and `NodeRun.remote` is the
+derived predicate. That name is what events and provenance record as
+`execution_backend` (`local` for local placement), and what
+`RemoteDispatchManager` uses to look up the backend, the per-executor code
+bundle, and the per-executor submission counters.
 
 ## Remote Executor Protocol
 
@@ -109,6 +133,7 @@ ginkgo/
 │   ├── staging.py           # remote input staging
 │   └── worker.py            # remote worker entry point
 ├── runtime/
+│   ├── executor_registry.py # named executors: config, lookup, lazy build
 │   ├── remote_executor.py   # RemoteExecutor / RemoteJobHandle protocols
 │   └── ...
 └── ...

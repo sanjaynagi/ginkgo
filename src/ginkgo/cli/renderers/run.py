@@ -321,18 +321,19 @@ class _RunLayoutRenderer:
     def render_resource_info_line(self) -> Text:
         """Render the live locality and resource summary line."""
         text = Text()
-        if self._summary.executor == "k8s":
+        if self._summary.executor_label != "local":
             text.append("☁️  ", style="cyan")
-            text.append("Running on Kubernetes", style="bold")
-        elif self._summary.executor == "batch":
-            text.append("☁️  ", style="cyan")
-            text.append("Running on GCP Batch", style="bold")
+            text.append(f"Running on {self._summary.executor_label}", style="bold")
         else:
             text.append("💻 ", style="cyan")
             text.append(
                 f"Running locally on {self._summary.cores} {_core_unit_label(self._summary.cores)}",
                 style="bold",
             )
+        # Tasks pinned with executor= dispatch to their own executor whatever
+        # the run default is, so a "locally" header would otherwise hide them.
+        if self._summary.pinned_executors:
+            text.append(f" → {', '.join(self._summary.pinned_executors)}", style="cyan")
         text.append(" ")
         text.append("(")
         text.append(self.resource_label(), style="dim")

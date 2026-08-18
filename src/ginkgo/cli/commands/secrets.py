@@ -12,6 +12,7 @@ from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import build_secret_resolver, collect_secret_refs
 
@@ -37,7 +38,12 @@ def command_secrets(args) -> int:
         validate_param_extras(session)
         config = session.merged_loaded_values()
 
-    evaluator = ConcurrentEvaluator()
+    evaluator = ConcurrentEvaluator(
+        executor_registry=ExecutorRegistry.for_validation(
+            project_root=Path.cwd(),
+            config_paths=config_paths,
+        )
+    )
     evaluator.build_and_validate(expr)
 
     refs = sorted(

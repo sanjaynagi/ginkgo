@@ -36,8 +36,9 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
-from ginkgo.runtime.remote_executor import RemoteDispatchStats, RemoteExecutor
+from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
@@ -281,7 +282,7 @@ class NodeRun:
     memory_gb: int = 0
     gpu: int = 0
     custom_resources: dict[str, int] = field(default_factory=dict)
-    remote: bool = False
+    executor_name: str | None = None
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
     transport_path: Path | None = None
@@ -299,6 +300,11 @@ class NodeRun:
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
+
+    @property
+    def remote(self) -> bool:
+        """Whether the node is placed on a remote executor."""
+        return self.executor_name is not None
 
     # Identity views, delegated so collaborators that receive a run can
     # read the vertex without reaching through ``.node``.
@@ -338,7 +344,7 @@ class ConcurrentEvaluator:
     resource_overrides: ResourceOverrides | None = None
     resource_budgets: dict[str, int] | None = None
     backend: ExecutionEnvironment | None = None
-    remote_executor: RemoteExecutor | None = None
+    executor_registry: ExecutorRegistry = field(default_factory=ExecutorRegistry)
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
@@ -361,7 +367,6 @@ class ConcurrentEvaluator:
     _executors: Executors | None = field(default=None, init=False, repr=False)
     _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
-    code_bundle_config: dict[str, Any] | None = None
     param_context: ParamContext | None = None
     _digests: DigestRegistry = field(init=False, repr=False)
     _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
@@ -422,8 +427,7 @@ class ConcurrentEvaluator:
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
-            executor=self.remote_executor,
-            code_bundle_config=self.code_bundle_config,
+            registry=self.executor_registry,
             digests=self._digests,
             local_artifact_store=self._cache_store._artifact_store,
             staging_cache_path=WorkspaceLayout.for_cwd().staging_cache_file,
@@ -787,7 +791,7 @@ class ConcurrentEvaluator:
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
-        node.remote = self._resolve_placement(task_def=node.task_def)
+        node.executor_name = self._resolve_placement(task_def=node.task_def)
         self._apply_memory_escalation(node=node, resources=resources)
         # Custom budgets are run-level, so the demand check applies wherever
         # the task is placed.
@@ -1114,7 +1118,7 @@ class ConcurrentEvaluator:
         node.memory_gb = 0
         node.gpu = 0
         node.custom_resources = {}
-        node.remote = False
+        node.executor_name = None
         node.tmp_paths = []
         node.transport_path = None
         node.dynamic_template = None
@@ -1532,8 +1536,9 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             execution_args=node.execution_args,
         )
-        # Placement was resolved when the node was prepared.
-        execution_backend = "remote" if node.remote else "local"
+        # Placement was resolved when the node was prepared; the backend
+        # recorded in events and provenance is the executor's name.
+        execution_backend = node.executor_name or LOCAL
 
         self._emit_event(
             TaskStarted(
@@ -1569,16 +1574,17 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "driver")
             return
 
-        # Remote dispatch: the node was placed on the remote executor either
-        # explicitly (remote=True) or because its GPU requirement exceeds the
-        # local budget.
-        if node.remote:
+        # Remote dispatch: the node was placed on an executor either
+        # explicitly (executor= / remote=True) or because its GPU requirement
+        # exceeds the local budget.
+        if node.executor_name is not None:
             node.transport_path = Path(
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
             assert self._executors is not None
             future = self._remote_dispatch.dispatch(
                 node=node,
+                executor_name=node.executor_name,
                 payload=self._build_worker_payload(node=node),
                 gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
                 watcher=self._executors.get_or_create_remote_watcher(),
@@ -1683,46 +1689,58 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _resolve_placement(self, *, task_def: TaskDef) -> bool:
-        """Decide whether a task runs on the remote executor.
+    def _resolve_placement(self, *, task_def: TaskDef) -> str | None:
+        """Return the executor a task is placed on, or ``None`` for local.
 
         Placement is derived from the declared requirement and the available
-        capability: ``remote=True`` is an explicit directive, and a GPU
-        requirement the local ``--gpus`` budget cannot satisfy falls back to
-        the remote executor. Either route without a usable remote executor
-        is an error rather than a silent local run. Placement depends only
-        on the task definition, so it is validated for every node up front
-        in ``build_and_validate``.
+        capability. A task naming an ``executor`` routes there whatever the
+        run default is; ``remote=True`` routes to the run's default executor
+        (``--executor``); and a GPU requirement the local ``--gpus`` budget
+        cannot satisfy falls back to that same default. Any route without a
+        usable executor is an error rather than a silent local run.
+        Placement depends only on the task definition, so it is validated
+        for every node up front in ``build_and_validate``.
         """
-        gpu = self.effective_resources(task_def=task_def).gpu
-        remote_capable = self.remote_executor is not None and task_def.kind == "python"
+        registry = self.executor_registry
+        if task_def.executor is not None:
+            self._require_remote_capable_kind(task_def=task_def, reason="executor")
+            return registry.resolve(task_def.executor, task_name=task_def.name)
         if task_def.remote:
-            if not remote_capable:
-                if task_def.kind != "python":
-                    raise ValueError(
-                        f"{task_def.name} declares remote=True but remote dispatch "
-                        f"only supports python tasks, not kind={task_def.kind!r}"
-                    )
+            self._require_remote_capable_kind(task_def=task_def, reason="remote")
+            if not registry.has_default:
                 raise ValueError(
-                    f"{task_def.name} declares remote=True but no remote executor "
-                    "is configured (pass --executor k8s or --executor batch)"
+                    f"{task_def.name} declares remote=True but this run has no default "
+                    f"executor (pass --executor <name>). {registry.available_hint()}"
                 )
-            return True
+            assert registry.default_name is not None
+            return registry.default_name
+        gpu = self.effective_resources(task_def=task_def).gpu
         if gpu > (self.gpus or 0):
-            if not remote_capable:
-                if self.remote_executor is not None:
-                    raise ValueError(
-                        f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                        "are available locally (--gpus), and remote dispatch only "
-                        f"supports python tasks, not kind={task_def.kind!r}"
-                    )
+            if task_def.kind != "python":
                 raise ValueError(
                     f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus) and no remote executor is "
-                    "configured (--executor)"
+                    "are available locally (--gpus), and remote dispatch only "
+                    f"supports python tasks, not kind={task_def.kind!r}"
                 )
-            return True
-        return False
+            if not registry.has_default:
+                raise ValueError(
+                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
+                    "are available locally (--gpus) and this run has no default "
+                    f"executor (--executor). {registry.available_hint()}"
+                )
+            return registry.default_name
+        return None
+
+    def _require_remote_capable_kind(self, *, task_def: TaskDef, reason: str) -> None:
+        """Reject remote placement for task kinds the workers cannot run."""
+        if task_def.kind != "python":
+            declaration = (
+                "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
+            )
+            raise ValueError(
+                f"{task_def.name} declares {declaration} but remote dispatch "
+                f"only supports python tasks, not kind={task_def.kind!r}"
+            )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""

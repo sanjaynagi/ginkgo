@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from ginkgo.cli.renderers.run import _ENV_PREPARE_STATUS, CliRunRenderer
+from ginkgo.runtime.executor_registry import LOCAL
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareFailed,
@@ -43,7 +44,10 @@ class RichEventRenderer:
 
     def _event_payload(self, *, event: GinkgoEvent) -> dict[str, object] | None:
         if isinstance(event, TaskStarted):
-            status = "submitted" if event.execution_backend == "remote" else "running"
+            # execution_backend is the executor's name ("local" for local
+            # placement); anything else means the task was submitted remotely.
+            remote = event.execution_backend not in (None, LOCAL)
+            status = "submitted" if remote else "running"
             payload = {
                 "task": event.task_name,
                 "status": status,

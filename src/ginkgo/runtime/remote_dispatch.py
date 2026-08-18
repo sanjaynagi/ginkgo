@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.events import TaskRunning, task_id_for_node
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.remote_executor import (
     RemoteDispatchStats,
-    RemoteExecutor,
     RemoteJobHandle,
     RemoteJobState,
 )
@@ -25,18 +25,22 @@ if TYPE_CHECKING:
 
 @dataclass(kw_only=True)
 class RemoteDispatchManager:
-    """Dispatch tasks to a remote executor and track their job handles.
+    """Dispatch tasks to named remote executors and track their job handles.
 
-    Owns the remote-only state of a run: the published code bundle, the
-    remote artifact store, in-flight job handles, dispatch statistics, and
-    the staging cache persisted between runs. The evaluator builds the base
-    worker payload (shared with local process-pool dispatch) and hands it
-    to :meth:`dispatch`, which augments it with remote transport details
-    and returns the watcher future for the evaluator loop to consume.
+    Owns the remote-only state of a run: the code bundle published per
+    executor, the remote artifact store, in-flight job handles, dispatch
+    statistics, and the staging cache persisted between runs. The evaluator
+    builds the base worker payload (shared with local process-pool dispatch)
+    and hands it to :meth:`dispatch` along with the executor name placement
+    chose; :meth:`dispatch` augments the payload with remote transport
+    details and returns the watcher future for the evaluator loop.
+
+    Executors are looked up in the registry, which builds each backend on
+    first use — a run that never dispatches to an executor never constructs
+    its client.
     """
 
-    executor: RemoteExecutor | None
-    code_bundle_config: dict[str, Any] | None
+    registry: ExecutorRegistry
     digests: DigestRegistry
     local_artifact_store: Any
     staging_cache_path: Path
@@ -44,7 +48,12 @@ class RemoteDispatchManager:
     emit_event: Callable[[object], None]
     stats: RemoteDispatchStats = field(default_factory=RemoteDispatchStats)
     _handles: dict[int, RemoteJobHandle] = field(default_factory=dict, init=False, repr=False)
-    _code_bundle_meta: dict[str, str] | None = field(default=None, init=False, repr=False)
+    _code_bundle_meta: dict[str, dict[str, str] | None] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _bundles: dict[tuple[str, tuple[str, ...]], dict[str, str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _artifact_store: Any = field(default=None, init=False, repr=False)
     _artifact_store_checked: bool = field(default=False, init=False, repr=False)
     _published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
@@ -53,12 +62,13 @@ class RemoteDispatchManager:
         self,
         *,
         node: NodeRun,
+        executor_name: str,
         payload: dict[str, Any],
         gpu_type: str | None,
         watcher: ThreadPoolExecutor,
     ) -> Future[dict[str, Any]]:
-        """Submit one task to the remote executor and return its watcher future."""
-        self._ensure_code_bundle()
+        """Submit one task to a named executor and return its watcher future."""
+        code_bundle = self._ensure_code_bundle(executor_name=executor_name)
         self._ensure_artifact_store()
         payload["resources"] = {
             "threads": node.threads,
@@ -66,8 +76,8 @@ class RemoteDispatchManager:
             "gpu": node.gpu,
             "gpu_type": gpu_type,
         }
-        if self._code_bundle_meta is not None:
-            payload["code_bundle"] = self._code_bundle_meta
+        if code_bundle is not None:
+            payload["code_bundle"] = code_bundle
         if self._artifact_store is not None:
             from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
 
@@ -83,9 +93,8 @@ class RemoteDispatchManager:
                 "bucket": self._artifact_store.bucket,
                 "prefix": self._artifact_store.prefix,
             }
-        assert self.executor is not None  # guaranteed by placement
-        handle = self.executor.submit(attempt=payload)
-        self.stats.record_submit()
+        handle = self.registry.get(executor_name).submit(attempt=payload)
+        self.stats.record_submit(executor=executor_name)
         self._handles[node.node_id] = handle
         return watcher.submit(self._poll_job, handle, node=node)
 
@@ -209,27 +218,46 @@ class RemoteDispatchManager:
         self.digests.update(digests)
         self._published_artifacts.update(published)
 
-    def _ensure_code_bundle(self) -> None:
-        """Create and publish the code bundle on first remote dispatch.
+    def _ensure_code_bundle(self, *, executor_name: str) -> dict[str, str] | None:
+        """Create and publish an executor's code bundle on its first dispatch.
 
-        Reads ``code_bundle_config`` (from ``[remote.k8s.code]``) to decide
-        whether to sync workflow code to the remote backend. The bundle is
-        created once per run and reused for all remote tasks.
+        Reads the executor's ``code`` table (``[remote.executors.<name>.code]``
+        or the legacy ``[remote.k8s.code]``) to decide whether to sync
+        workflow code to that backend. Each executor's bundle is resolved
+        once per run; executors sharing the same code config share the
+        published bundle rather than re-tarring it.
         """
-        if self._code_bundle_meta is not None:
-            return
-        if self.code_bundle_config is None:
-            return
-        mode = self.code_bundle_config.get("mode", "baked")
-        if mode != "sync":
-            return
+        if executor_name in self._code_bundle_meta:
+            return self._code_bundle_meta[executor_name]
 
-        package = self.code_bundle_config.get("package")
+        meta = self._publish_code_bundle(config=self.registry.code_config(executor_name))
+        self._code_bundle_meta[executor_name] = meta
+        return meta
+
+    def _publish_code_bundle(self, *, config: dict[str, Any] | None) -> dict[str, str] | None:
+        """Publish one code-sync bundle, reusing an identical earlier one."""
+        if config is None:
+            return None
+        mode = config.get("mode", "baked")
+        if mode != "sync":
+            return None
+
+        package = config.get("package")
         if not package:
             raise ValueError(
-                "Code-sync mode requires [remote.k8s.code] package to be set "
-                'in ginkgo.toml (e.g. package = "my_workflow")'
+                "Code-sync mode requires a code package to be set in ginkgo.toml "
+                '(e.g. package = "my_workflow")'
             )
+
+        extra_excludes = config.get("exclude")
+        if isinstance(extra_excludes, str):
+            extra_excludes = [extra_excludes]
+        # Bundles depend only on what goes into the tarball, so executors
+        # sharing a package and exclude list share one upload.
+        bundle_key = (package, tuple(extra_excludes or ()))
+        cached = self._bundles.get(bundle_key)
+        if cached is not None:
+            return cached
 
         from ginkgo.remote.code_bundle import create_code_bundle, publish_code_bundle
         from ginkgo.remote.resolve import resolve_backend
@@ -242,8 +270,8 @@ class RemoteDispatchManager:
         # Determine remote storage from [remote.artifacts] config.
         from ginkgo.config import load_runtime_config
 
-        config = load_runtime_config(project_root=Path.cwd())
-        artifacts_config = config.get("remote", {}).get("artifacts", {})
+        runtime_config = load_runtime_config(project_root=Path.cwd())
+        artifacts_config = runtime_config.get("remote", {}).get("artifacts", {})
         store_uri = artifacts_config.get("store") if isinstance(artifacts_config, dict) else None
         if store_uri is None:
             raise ValueError(
@@ -256,9 +284,6 @@ class RemoteDispatchManager:
         if prefix and not prefix.endswith("/"):
             prefix += "/"
 
-        extra_excludes = self.code_bundle_config.get("exclude")
-        if isinstance(extra_excludes, str):
-            extra_excludes = [extra_excludes]
         bundle_path, digest = create_code_bundle(
             package_path=package_path,
             extra_excludes=extra_excludes,
@@ -274,7 +299,7 @@ class RemoteDispatchManager:
         finally:
             Path(bundle_path).unlink(missing_ok=True)
 
-        self._code_bundle_meta = {
+        meta = {
             "scheme": parsed["scheme"],
             "bucket": parsed["bucket"],
             "key": remote_key,
@@ -282,6 +307,8 @@ class RemoteDispatchManager:
             "package": package,
             "package_parent": str(package_path.parent.resolve()),
         }
+        self._bundles[bundle_key] = meta
+        return meta
 
     def _ensure_artifact_store(self) -> None:
         """Lazily construct a ``RemoteArtifactStore`` from project config.

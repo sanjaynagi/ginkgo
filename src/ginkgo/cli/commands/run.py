@@ -13,6 +13,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Sequence
 
+from rich.markup import escape
+
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
@@ -52,6 +54,7 @@ from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.caching.provenance import (
@@ -250,14 +253,10 @@ def run_workflow(
         container=container_backend_from_config(project_root=Path.cwd(), config=runtime_config),
     )
 
-    remote_executor = None
-    code_bundle_config = None
-    if executor == "k8s":
-        remote_executor = _build_k8s_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
-    elif executor == "batch":
-        remote_executor = _build_batch_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
+    # Named executors: --executor picks the run default, and tasks may pin
+    # any configured one. Backends are constructed on first dispatch, so a
+    # run that never reaches a remote task never builds its client.
+    executor_registry = ExecutorRegistry.from_config(runtime_config, default=executor)
 
     resource_overrides = ResourceOverrides.from_config(runtime_config.get("resources"))
     # CLI --resource flags win over [resources.budgets] per dimension.
@@ -273,8 +272,7 @@ def run_workflow(
         "resource_overrides": resource_overrides,
         "resource_budgets": resource_budgets or None,
         "backend": backend,
-        "remote_executor": remote_executor,
-        "code_bundle_config": code_bundle_config,
+        "executor_registry": executor_registry,
         "secret_resolver": secret_resolver,
         "profiler": profiler,
         "param_context": param_context,
@@ -307,6 +305,35 @@ def run_workflow(
     if not plan_reports_dropped:
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
+
+    # Executors named by tasks themselves, which dispatch there regardless of
+    # the run default — surfaced in the header so a locally-defaulted run does
+    # not look like it stayed on this machine.
+    pinned_executors = tuple(
+        sorted(
+            {
+                node.task_def.executor
+                for node in evaluator.task_nodes.values()
+                if node.task_def.executor is not None
+                and node.task_def.executor != executor_registry.default_name
+            }
+        )
+    )
+    default_executor = executor_registry.default_name
+    dispatch_targets: list[str] = [
+        *pinned_executors,
+        *([default_executor] if default_executor is not None else []),
+    ]
+    # Backends are built on first dispatch, so a half-written executor section
+    # is caught here rather than after every local task has already run.
+    executor_registry.validate_settings(names=dispatch_targets)
+
+    # Code-sync is configured per executor, so a run that dispatches to one
+    # without a code table quietly runs its image's baked copy. Warned about
+    # for the same reason as the checks above: the run looks healthy.
+    # Messages quote config sections, whose brackets Rich would read as markup.
+    for message in executor_registry.code_sync_gaps(names=dispatch_targets):
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(message)}")
 
     task_count = len(evaluator.task_nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
@@ -428,7 +455,12 @@ def run_workflow(
                         run_dir=recorder.run_dir,
                         cores=evaluator.cores,
                         memory=memory,
-                        executor=executor,
+                        executor_label=(
+                            executor_registry.label(executor_registry.default_name)
+                            if executor_registry.default_name is not None
+                            else "local"
+                        ),
+                        pinned_executors=pinned_executors,
                     ),
                     resources=ResourceRenderState(provider=resource_monitor.current_summary),
                 )
@@ -641,82 +673,3 @@ def _render_notebooks(
 def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
     return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
-
-
-def _load_code_bundle_config(*, runtime_config: dict[str, Any]) -> dict[str, Any] | None:
-    """Read code-sync configuration from ``[remote.k8s.code]`` or ``[remote.batch.code]``."""
-    remote = runtime_config.get("remote", {})
-    for section in ("k8s", "batch"):
-        backend_config = remote.get(section, {})
-        if not isinstance(backend_config, dict):
-            continue
-        code_config = backend_config.get("code")
-        if isinstance(code_config, dict):
-            return dict(code_config)
-    return None
-
-
-def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``KubernetesExecutor`` from ``[remote.k8s]`` config."""
-    from ginkgo.remote.kubernetes import KubernetesExecutor
-
-    k8s_config = runtime_config.get("remote", {}).get("k8s", {})
-    if not isinstance(k8s_config, dict):
-        k8s_config = {}
-
-    image = k8s_config.get("image")
-    if not image:
-        raise ValueError(
-            "Kubernetes executor requires an image. Set [remote.k8s] image in ginkgo.toml."
-        )
-
-    return KubernetesExecutor(
-        namespace=k8s_config.get("namespace", "default"),
-        image=image,
-        service_account=k8s_config.get("service_account"),
-        pull_policy=k8s_config.get("pull_policy", "IfNotPresent"),
-        gpu_type=k8s_config.get("gpu_type"),
-        node_selector=k8s_config.get("node_selector"),
-        tolerations=k8s_config.get("tolerations"),
-        ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 3600)),
-        ephemeral_storage=k8s_config.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(k8s_config.get("backoff_limit", 2)),
-        fuse_image=k8s_config.get("fuse_image"),
-        fuse_annotations=k8s_config.get("fuse_annotations"),
-        fuse_privileged=bool(k8s_config.get("fuse_privileged", False)),
-    )
-
-
-def _build_batch_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``GCPBatchExecutor`` from ``[remote.batch]`` config."""
-    from ginkgo.remote.gcp_batch import GCPBatchExecutor
-
-    batch_config = runtime_config.get("remote", {}).get("batch", {})
-    if not isinstance(batch_config, dict):
-        batch_config = {}
-
-    project = batch_config.get("project")
-    if not project:
-        raise ValueError(
-            "GCP Batch executor requires a project. Set [remote.batch] project in ginkgo.toml."
-        )
-
-    image = batch_config.get("image")
-    if not image:
-        raise ValueError(
-            "GCP Batch executor requires an image. Set [remote.batch] image in ginkgo.toml."
-        )
-
-    region = batch_config.get("region", "europe-west2")
-
-    return GCPBatchExecutor(
-        project=project,
-        region=region,
-        image=image,
-        service_account=batch_config.get("service_account"),
-        gpu_type=batch_config.get("gpu_type"),
-        gpu_driver_version=batch_config.get("gpu_driver_version", "LATEST"),
-        max_run_duration=batch_config.get("max_run_duration", "3600s"),
-        fuse_image=batch_config.get("fuse_image"),
-        fuse_privileged=bool(batch_config.get("fuse_privileged", False)),
-    )

@@ -179,8 +179,10 @@ trigger streaming (`auto_fuse=true`, `default="fuse"`, or any
 - The FUSE driver binaries on the driver host's PATH (informational —
   not required).
 - `/dev/fuse` availability (warning — expected to be absent on macOS).
-- Whether a `fuse_image` is configured on the executor when streaming
-  is enabled (warning).
+- Whether a `fuse_image` is configured, for *every* configured executor
+  section, when streaming is enabled (warning per section). A task can be
+  pinned to any executor, so diagnosing one section would clear a run whose
+  other executors cannot mount.
 
 ## Deferred work
 

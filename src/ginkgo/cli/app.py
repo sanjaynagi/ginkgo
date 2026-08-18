@@ -284,9 +284,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     run_parser.add_argument(
         "--executor",
-        choices=["local", "k8s", "batch"],
         default="local",
-        help="Task execution backend: 'local' (default), 'k8s' for Kubernetes, or 'batch' for GCP Batch",
+        metavar="NAME",
+        help=(
+            "Default executor for remote tasks: 'local' (default), a name from "
+            "[remote.executors] in ginkgo.toml, or 'k8s'/'batch' for the legacy "
+            "[remote.k8s]/[remote.batch] sections. Tasks declaring "
+            "executor=... always use the executor they name."
+        ),
     )
 
     cache_parser = subparsers.add_parser("cache", help="Manage task execution cache")
