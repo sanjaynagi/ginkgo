@@ -21,7 +21,7 @@ def _header(tmp_path: Path, **summary_kwargs) -> str:
         **summary_kwargs,
     )
     renderer = CliRunRenderer(console=console, summary=summary)
-    renderer.start(planned_tasks=[(0, "mod.task_a", "")])
+    renderer.start(planned_tasks=[(0, "mod.task_a", "", "")])
     return renderer._layout.render_resource_info_line().plain
 
 
