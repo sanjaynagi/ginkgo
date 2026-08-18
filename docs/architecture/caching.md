@@ -87,6 +87,45 @@ The digest is also recorded for provenance, where it always has been: the lock
 file is copied into the run directory, and a container task's manifest entry
 carries `container_image_digest`.
 
+## Explaining a re-run
+
+`ginkgo cache explain <run_id>` answers "why did this task run again?" by
+naming the component of the key that moved, not the fact that the key did
+(issue #223). `explain_run_cache` (`cli/commands/cache.py`) reads the
+`meta.json` of the entry the run wrote and the `meta.json` of the newest other
+entry for the same task, splits both into the labelled components of the key
+payload, and reports the ones that differ:
+
+- `version`, `source_hash`, `extra_source_hash` (the notebook or script hash
+  folded in for driver tasks), `env`, `env_hash.pixi_lock`;
+- one component per input parameter, `inputs.<parameter>`, so a moved input is
+  named rather than lumped into "the inputs changed".
+
+Each reported component carries a `status` — `changed` with both values,
+`added` / `removed` for a parameter that appeared or went away, or
+`not_recorded`. The last is the honest answer for a component the compared
+entry never stored: entries written before a field existed cannot be diffed on
+it, and saying "not recorded, so a change here cannot be ruled out" is better
+than reporting no difference. The coarse codes (`source_hash_changed`,
+`version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
+component is conclusive) stay as the summary `reason` / `details`, with the
+components listed beneath them.
+
+For the diff to name components, the entry has to record them, so `meta.json`
+carries every field the key payload holds: `CacheStore.save` records
+`env_hash` (the declared environment identity that `_env_hash` folds in) and
+`extra_source_hash` alongside the `version`, `source_hash`, `env`, and
+`input_hashes` it already stored. Comparison is against the newest sibling
+entry by `timestamp` rather than whichever key sorted last, so the entry named
+in `compared_with` is the one the user last produced.
+
+The re-run reason is deliberately not carried on the run report's task rows.
+It is computable only from the cache directory, which the report is meant to
+outlive — a report exported after a `cache prune` would show reasons for some
+rows and nothing for others — and answering it costs a scan of every sibling
+entry per task. `cache explain` asks the cache at the moment the question is
+asked, which is when the answer is trustworthy.
+
 ## Untracked path boundaries
 
 Content hashing is dispatched on the declared annotation:

@@ -214,6 +214,7 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         input_hashes: dict[str, Any],
+        extra_source_hash: str | None = None,
         extra_meta: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Atomically persist a task result and metadata.
@@ -223,6 +224,10 @@ class CacheStore:
 
         Parameters
         ----------
+        extra_source_hash : str | None
+            The notebook or script source hash folded into the cache key for
+            driver tasks, recorded so `ginkgo cache explain` can name it as
+            the component that moved.
         extra_meta : dict[str, Any] | None
             Optional task-kind-specific metadata to persist alongside the
             cache entry. Stored under the top-level ``"extra"`` field of
@@ -259,7 +264,9 @@ class CacheStore:
                     "artifact_ids": artifact_ids,
                     "cache_key": cache_key,
                     "env": task_def.env,
+                    "env_hash": self._env_hash(task_def=task_def),
                     "env_materialized_digest": self._materialized_digest(task_def=task_def),
+                    "extra_source_hash": extra_source_hash,
                     "function": task_def.name,
                     "inputs": self._serialise_inputs(
                         task_def=task_def, resolved_args=resolved_args

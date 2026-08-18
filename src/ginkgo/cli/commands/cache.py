@@ -418,46 +418,145 @@ def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[st
     """Return a best-effort cache explanation for one task."""
     cache_key = task.get("cache_key")
     task_name = str(task.get("task_name") or task.get("task") or "unknown")
+    identity: dict[str, object] = {
+        "task_id": task.get("task_id"),
+        "task_name": task_name,
+        "cache_key": cache_key,
+    }
     if task.get("status") == "cached":
-        return {
-            "task_id": task.get("task_id"),
-            "task_name": task_name,
-            "cache_key": cache_key,
-            "reason": "all_inputs_match",
-        }
+        return identity | {"reason": "all_inputs_match"}
 
     current_meta = _read_cache_meta(cache_root=cache_root, cache_key=cache_key)
+    if not current_meta:
+        return identity | {"reason": "no_entry_for_key"}
+
     sibling_entries = _entries_for_function(
         cache_root=cache_root, function=task_name, exclude=cache_key
     )
     if not sibling_entries:
-        return {
-            "task_id": task.get("task_id"),
-            "task_name": task_name,
-            "cache_key": cache_key,
-            "reason": "no_prior_entry",
-        }
+        return identity | {"reason": "no_prior_entry"}
 
-    prior_meta = sibling_entries[-1]
-    reasons = []
-    if current_meta.get("source_hash") != prior_meta.get("source_hash"):
-        reasons.append("source_hash_changed")
-    if current_meta.get("version") != prior_meta.get("version"):
-        reasons.append("version_bump")
-    if current_meta.get("env") != prior_meta.get("env"):
-        reasons.append("env_lock_changed")
-    if current_meta.get("input_hashes") != prior_meta.get("input_hashes"):
-        reasons.append("input_changed")
-    if not reasons:
-        reasons.append("cache_key_changed")
-
-    return {
-        "task_id": task.get("task_id"),
-        "task_name": task_name,
-        "cache_key": cache_key,
+    prior_meta = _newest_entry(sibling_entries)
+    components = _diff_key_components(current=current_meta, prior=prior_meta)
+    reasons = _coarse_reasons(components)
+    return identity | {
+        "compared_with": prior_meta.get("cache_key"),
         "reason": reasons[0],
         "details": reasons,
+        "components": components,
     }
+
+
+def _newest_entry(entries: list[dict[str, object]]) -> dict[str, object]:
+    """Return the most recently written of several entries for one task."""
+
+    def written_at(meta: dict[str, object]) -> datetime:
+        stamp = _parse_timestamp(str(meta.get("timestamp", "")))
+        return stamp or datetime.min.replace(tzinfo=UTC)
+
+    return max(entries, key=written_at)
+
+
+def _json_object(value: object) -> dict[str, object]:
+    """Return a decoded JSON object as a string-keyed mapping."""
+    return {str(key): item for key, item in value.items()} if isinstance(value, dict) else {}
+
+
+def _key_components(meta: dict[str, object]) -> dict[str, tuple[str, object]]:
+    """Return the cache-key components an entry's ``meta.json`` records.
+
+    Each component maps to its recording state and value: ``"recorded"`` with
+    the stored value, or ``"unrecorded"`` when the entry predates the field, so
+    a diff can say "not recorded" instead of "unchanged".
+    """
+    components: dict[str, tuple[str, object]] = {}
+    for field in ("version", "source_hash", "extra_source_hash", "env"):
+        components[field] = ("recorded", meta[field]) if field in meta else ("unrecorded", None)
+
+    if "env_hash" in meta:
+        identity = _json_object(meta["env_hash"]).get("pixi_lock")
+        components["env_hash.pixi_lock"] = ("recorded", identity)
+    else:
+        components["env_hash.pixi_lock"] = ("unrecorded", None)
+
+    input_hashes = meta.get("input_hashes")
+    if isinstance(input_hashes, dict):
+        for name, value in _json_object(input_hashes).items():
+            components[f"inputs.{name}"] = ("recorded", value)
+    else:
+        components["inputs"] = ("unrecorded", None)
+    return components
+
+
+def _diff_key_components(
+    *, current: dict[str, object], prior: dict[str, object]
+) -> list[dict[str, object]]:
+    """Return the cache-key components that differ between two entries.
+
+    A component either entry does not record is reported as ``not_recorded`` rather
+    than as unchanged: nothing rules a change there out.
+    """
+    current_components = _key_components(current)
+    prior_components = _key_components(prior)
+    absent: tuple[str, object] = ("absent", None)
+    names = set(current_components) | set(prior_components)
+    if "inputs" in names:
+        # One entry records no input hashes at all, so no per-parameter
+        # comparison is possible: report the group once instead.
+        names = {name for name in names if not name.startswith("inputs.")}
+    differences: list[dict[str, object]] = []
+    for name in sorted(names):
+        current_state, current_value = current_components.get(name, absent)
+        prior_state, prior_value = prior_components.get(name, absent)
+        unrecorded = [
+            side
+            for side, state in (("current", current_state), ("prior", prior_state))
+            if state == "unrecorded"
+        ]
+        if unrecorded:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "not_recorded",
+                    "detail": (
+                        f"not recorded in the {' and '.join(unrecorded)} entry's meta.json, "
+                        "so a change here cannot be ruled out"
+                    ),
+                }
+            )
+        elif current_state == "absent":
+            differences.append({"component": name, "status": "removed", "prior": prior_value})
+        elif prior_state == "absent":
+            differences.append({"component": name, "status": "added", "current": current_value})
+        elif current_value != prior_value:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "changed",
+                    "current": current_value,
+                    "prior": prior_value,
+                }
+            )
+    return differences
+
+
+def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
+    """Return the summary reason codes implied by a component diff."""
+    moved = {
+        str(component["component"])
+        for component in components
+        if component["status"] != "not_recorded"
+    }
+    reasons = []
+    if moved & {"source_hash", "extra_source_hash"}:
+        reasons.append("source_hash_changed")
+    if "version" in moved:
+        reasons.append("version_bump")
+    if moved & {"env", "env_hash.pixi_lock"}:
+        reasons.append("env_changed")
+    if any(name.startswith("inputs") for name in moved):
+        reasons.append("input_changed")
+    return reasons or ["cache_key_changed"]
 
 
 def _read_cache_meta(*, cache_root: Path, cache_key: object) -> dict[str, object]:

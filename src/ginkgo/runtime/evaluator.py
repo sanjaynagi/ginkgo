@@ -1163,6 +1163,7 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
+            extra_source_hash=node.extra_source_hash,
             extra_meta=extra_meta,
         )
 
