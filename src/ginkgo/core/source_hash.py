@@ -5,6 +5,11 @@ local helper module it statically imports changes. This module walks that
 import closure with the ``ast`` module and folds every source file into a
 single digest.
 
+The closure covers the project's own source only. Installed distributions and
+the standard library are pinned by the environment lock instead, and a virtual
+environment nested inside the project root (``.pixi/envs/``, ``.venv/``) would
+otherwise put the whole interpreter inside the closure.
+
 It lives in ``core`` rather than ``runtime.caching`` so that ``core.task`` can
 import it without inverting the layer dependency, alongside the primitives in
 :mod:`ginkgo.core.hashing`.
@@ -15,7 +20,9 @@ from __future__ import annotations
 import ast
 import inspect
 import sys
+import sysconfig
 import tokenize
+from functools import cache
 from importlib.util import resolve_name
 from pathlib import Path
 from types import ModuleType
@@ -68,6 +75,10 @@ def _local_import_closure(module: ModuleType) -> dict[str, Path]:
         return {}
 
     source_root = _module_source_root(module=module, source_path=source_path)
+    # A task module that is itself installed has no project tree to separate
+    # from the environment, so excluding installed modules would empty its
+    # closure and stop its helpers from invalidating the cache.
+    skip_installed = not _is_installed_module(source_path)
     pending = [module]
     sources: dict[str, Path] = {}
 
@@ -78,6 +89,8 @@ def _local_import_closure(module: ModuleType) -> dict[str, Path]:
 
         current_path = _module_source_path(current)
         if current_path is None or not current_path.is_relative_to(source_root):
+            continue
+        if skip_installed and _is_installed_module(current_path):
             continue
 
         sources[current.__name__] = current_path
@@ -94,6 +107,24 @@ def _module_source_path(module: ModuleType) -> Path | None:
 
     path = Path(filename).resolve()
     return path if path.suffix == ".py" and path.is_file() else None
+
+
+@cache
+def _installed_roots() -> tuple[Path, ...]:
+    """Return the directories holding the interpreter and its installed packages.
+
+    A project that keeps its environment inside its own tree — ``.pixi/envs/``,
+    ``.venv/`` — puts every installed module below the project root, so the
+    root alone cannot tell project source from dependency.
+    """
+    candidates = [sys.prefix, sys.base_prefix, *sysconfig.get_paths().values()]
+    roots = {Path(candidate).resolve() for candidate in candidates if candidate}
+    return tuple(sorted(roots))
+
+
+def _is_installed_module(source_path: Path) -> bool:
+    """Return whether ``source_path`` belongs to the environment, not the project."""
+    return any(source_path.is_relative_to(root) for root in _installed_roots())
 
 
 def _module_source_root(*, module: ModuleType, source_path: Path) -> Path:
