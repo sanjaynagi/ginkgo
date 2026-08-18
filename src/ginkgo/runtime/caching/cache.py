@@ -42,6 +42,43 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 MISSING = object()
 
+UNRECORDED = object()
+"""A cache-key component an entry's ``meta.json`` does not carry.
+
+Entries written before a field was recorded cannot be compared on it, which is
+not the same as comparing equal.
+"""
+
+
+def key_components(meta: dict[str, Any]) -> dict[str, Any]:
+    """Split an entry's ``meta.json`` into the labelled components of its cache key.
+
+    The names mirror the payload :meth:`CacheStore.build_cache_key` hashes, one
+    per independent fact, with an ``inputs.<parameter>`` component per input, so
+    a diff of two entries can name the component that moved (issue #223). A
+    component the entry does not record is :data:`UNRECORDED`.
+    """
+    # The payload calls the task's name "task"; meta.json calls it "function".
+    components: dict[str, Any] = {"task": meta.get("function", UNRECORDED)}
+    for name in ("version", "source_hash", "extra_source_hash", "env"):
+        components[name] = meta.get(name, UNRECORDED)
+
+    env_hash = meta.get("env_hash", UNRECORDED)
+    if env_hash is UNRECORDED:
+        components["env_hash.pixi_lock"] = UNRECORDED
+    else:
+        components["env_hash.pixi_lock"] = (
+            env_hash.get("pixi_lock") if isinstance(env_hash, dict) else None
+        )
+
+    input_hashes = meta.get("input_hashes")
+    if isinstance(input_hashes, dict):
+        components.update({f"inputs.{name}": value for name, value in input_hashes.items()})
+    else:
+        # No per-parameter comparison is possible, so name the group instead.
+        components["inputs"] = UNRECORDED
+    return components
+
 
 class UnresolvedEnvIdentityError(RuntimeError):
     """Raised when a backend cannot identify an environment a task declares."""

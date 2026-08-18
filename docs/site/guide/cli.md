@@ -198,17 +198,22 @@ is a specific fact rather than "the key changed":
 ```
 
 `reason` and `details` are the summary; `components` lists what actually
-differs. Component names follow the cache key: `version`, `source_hash`,
+differs. Component names follow the cache key: `task`, `version`, `source_hash`,
 `extra_source_hash` (the notebook or script a driver task runs), `env`,
 `env_hash.pixi_lock` (the identity of the declared environment), and one
 `inputs.<parameter>` per task argument. `compared_with` is the cache key of the
-previous entry for the same task that the current one was compared against.
+newest earlier entry for the same task, which is what the current one was
+compared against.
 
 A component's `status` is `changed`, `added` or `removed` for a parameter that
 appeared or went away, or `not_recorded` — the compared entry was written by an
 older ginkgo that did not store that field, so a change there cannot be ruled
-out. Tasks that did not re-run report `all_inputs_match`; a task with no earlier
-entry to compare against reports `no_prior_entry`.
+out.
+
+Some tasks get a summary `reason` on its own, with no `components`: a task that
+did not re-run reports `all_inputs_match`, one with no earlier entry to compare
+against reports `no_prior_entry`, and one whose key has no cache entry at all —
+because it failed, or because the entry was pruned — reports `no_entry_for_key`.
 
 ## A Typical Loop
 

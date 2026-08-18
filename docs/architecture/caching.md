@@ -94,10 +94,12 @@ naming the component of the key that moved, not the fact that the key did
 (issue #223). `explain_run_cache` (`cli/commands/cache.py`) reads the
 `meta.json` of the entry the run wrote and the `meta.json` of the newest other
 entry for the same task, splits both into the labelled components of the key
-payload, and reports the ones that differ:
+payload with `key_components` (`runtime/caching/cache.py`, next to the
+`build_cache_key` payload it mirrors, so the two cannot drift), and reports the
+ones that differ:
 
-- `version`, `source_hash`, `extra_source_hash` (the notebook or script hash
-  folded in for driver tasks), `env`, `env_hash.pixi_lock`;
+- `task`, `version`, `source_hash`, `extra_source_hash` (the notebook or script
+  hash folded in for driver tasks), `env`, `env_hash.pixi_lock`;
 - one component per input parameter, `inputs.<parameter>`, so a moved input is
   named rather than lumped into "the inputs changed".
 
@@ -108,16 +110,28 @@ entry never stored: entries written before a field existed cannot be diffed on
 it, and saying "not recorded, so a change here cannot be ruled out" is better
 than reporting no difference. The coarse codes (`source_hash_changed`,
 `version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
-component is conclusive) stay as the summary `reason` / `details`, with the
-components listed beneath them.
+component is conclusive or the one that moved has no code of its own) stay as
+the summary `reason` / `details`, with the components listed beneath them. A
+task whose key has no entry in the cache at all — a task that failed, or whose
+entry has been pruned — reports `no_entry_for_key` and no components, and one
+with no sibling to compare against reports `no_prior_entry`.
 
 For the diff to name components, the entry has to record them, so `meta.json`
 carries every field the key payload holds: `CacheStore.save` records
 `env_hash` (the declared environment identity that `_env_hash` folds in) and
 `extra_source_hash` alongside the `version`, `source_hash`, `env`, and
 `input_hashes` it already stored. Comparison is against the newest sibling
-entry by `timestamp` rather than whichever key sorted last, so the entry named
-in `compared_with` is the one the user last produced.
+entry written *before* the one being explained, by `timestamp`, rather than
+whichever key sorted last: an entry written afterwards cannot be what this one
+superseded, and comparing against it would name components that moved forwards.
+The entry compared against is named in `compared_with`.
+
+Siblings are matched on task name alone, so for a task fanned out over many
+inputs the nearest earlier sibling may be a different element of the fan-out
+rather than the same element from the previous run. The components it names are
+then real differences between two real entries, but not necessarily the ones
+that caused this element to re-run — read `compared_with` before trusting a
+lone `inputs.<parameter>` on a fanned-out task.
 
 The re-run reason is deliberately not carried on the run report's task rows.
 It is computable only from the cache directory, which the report is meant to

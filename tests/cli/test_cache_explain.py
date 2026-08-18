@@ -28,7 +28,9 @@ def _write_entry(cache_root: Path, cache_key: str, **fields: Any) -> None:
     (entry / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
 
-def _explain(cache_root: Path, cache_key: str = "current") -> dict[str, Any]:
+def _explain(
+    cache_root: Path, cache_key: str = "current", task_name: str = "produce"
+) -> dict[str, Any]:
     """Explain a single ran task whose entry is ``cache_key``."""
     payload = explain_run_cache(
         cache_root=cache_root,
@@ -38,7 +40,7 @@ def _explain(cache_root: Path, cache_key: str = "current") -> dict[str, Any]:
             "tasks": [
                 {
                     "task_id": "produce-1",
-                    "task_name": "produce",
+                    "task_name": task_name,
                     "cache_key": cache_key,
                     "status": "succeeded",
                 }
@@ -161,19 +163,42 @@ class TestCacheExplainComponents:
         assert _component(explanation, "inputs")["status"] == "not_recorded"
         assert explanation["reason"] == "cache_key_changed"
 
-    def test_prior_entry_is_the_most_recently_written_sibling(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current", source_hash="src-3")
+    def test_prior_entry_is_the_newest_sibling_written_before_the_current_one(
+        self, tmp_path: Path
+    ) -> None:
+        """A sibling written after this entry cannot be what it superseded."""
+        _write_entry(
+            tmp_path, "current", source_hash="src-3", timestamp="2026-08-18T12:00:00+00:00"
+        )
         _write_entry(
             tmp_path, "aaa-newest", source_hash="src-2", timestamp="2026-08-18T11:00:00+00:00"
         )
         _write_entry(
             tmp_path, "zzz-oldest", source_hash="src-1", timestamp="2026-08-17T11:00:00+00:00"
         )
+        _write_entry(
+            tmp_path, "later-sibling", source_hash="src-4", timestamp="2026-08-18T13:00:00+00:00"
+        )
 
         explanation = _explain(tmp_path)
 
         assert explanation["compared_with"] == "aaa-newest"
         assert _component(explanation, "source_hash")["prior"] == "src-2"
+
+    def test_a_differing_task_identity_is_named(self, tmp_path: Path) -> None:
+        """Same base name, different module: the moved component is ``task``."""
+        _write_entry(tmp_path, "current", function="pipeline.produce")
+        _write_entry(tmp_path, "prior", function="analysis.produce")
+
+        explanation = _explain(tmp_path, task_name="pipeline.produce")
+
+        assert _component(explanation, "task") == {
+            "component": "task",
+            "status": "changed",
+            "current": "pipeline.produce",
+            "prior": "analysis.produce",
+        }
+        assert explanation["reason"] == "cache_key_changed"
 
     def test_cached_task_and_first_run_keep_their_summaries(self, tmp_path: Path) -> None:
         _write_entry(tmp_path, "current")

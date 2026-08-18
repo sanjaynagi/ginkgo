@@ -19,6 +19,7 @@ from rich.text import Text
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+from ginkgo.runtime.caching.cache import UNRECORDED, key_components
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -436,7 +437,7 @@ def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[st
     if not sibling_entries:
         return identity | {"reason": "no_prior_entry"}
 
-    prior_meta = _newest_entry(sibling_entries)
+    prior_meta = _prior_entry(sibling_entries, current=current_meta)
     components = _diff_key_components(current=current_meta, prior=prior_meta)
     reasons = _coarse_reasons(components)
     return identity | {
@@ -447,45 +448,25 @@ def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[st
     }
 
 
-def _newest_entry(entries: list[dict[str, object]]) -> dict[str, object]:
-    """Return the most recently written of several entries for one task."""
-
-    def written_at(meta: dict[str, object]) -> datetime:
-        stamp = _parse_timestamp(str(meta.get("timestamp", "")))
-        return stamp or datetime.min.replace(tzinfo=UTC)
-
-    return max(entries, key=written_at)
+def _written_at(meta: dict[str, object]) -> datetime:
+    """Return when a cache entry was written, oldest-possible if unrecorded."""
+    stamp = _parse_timestamp(str(meta.get("timestamp", "")))
+    return stamp or datetime.min.replace(tzinfo=UTC)
 
 
-def _json_object(value: object) -> dict[str, object]:
-    """Return a decoded JSON object as a string-keyed mapping."""
-    return {str(key): item for key, item in value.items()} if isinstance(value, dict) else {}
+def _prior_entry(
+    entries: list[dict[str, object]], *, current: dict[str, object]
+) -> dict[str, object]:
+    """Return the newest sibling entry written before the one being explained.
 
-
-def _key_components(meta: dict[str, object]) -> dict[str, tuple[str, object]]:
-    """Return the cache-key components an entry's ``meta.json`` records.
-
-    Each component maps to its recording state and value: ``"recorded"`` with
-    the stored value, or ``"unrecorded"`` when the entry predates the field, so
-    a diff can say "not recorded" instead of "unchanged".
+    An entry written after the current one cannot be what the current one
+    superseded, so comparing against it would name components that moved
+    forwards. Where no sibling is older — neither entry records a timestamp, say
+    — the newest sibling is the best available answer.
     """
-    components: dict[str, tuple[str, object]] = {}
-    for field in ("version", "source_hash", "extra_source_hash", "env"):
-        components[field] = ("recorded", meta[field]) if field in meta else ("unrecorded", None)
-
-    if "env_hash" in meta:
-        identity = _json_object(meta["env_hash"]).get("pixi_lock")
-        components["env_hash.pixi_lock"] = ("recorded", identity)
-    else:
-        components["env_hash.pixi_lock"] = ("unrecorded", None)
-
-    input_hashes = meta.get("input_hashes")
-    if isinstance(input_hashes, dict):
-        for name, value in _json_object(input_hashes).items():
-            components[f"inputs.{name}"] = ("recorded", value)
-    else:
-        components["inputs"] = ("unrecorded", None)
-    return components
+    written_at = _written_at(current)
+    earlier = [entry for entry in entries if _written_at(entry) < written_at]
+    return max(earlier or entries, key=_written_at)
 
 
 def _diff_key_components(
@@ -493,25 +474,25 @@ def _diff_key_components(
 ) -> list[dict[str, object]]:
     """Return the cache-key components that differ between two entries.
 
-    A component either entry does not record is reported as ``not_recorded`` rather
-    than as unchanged: nothing rules a change there out.
+    A component either entry does not record is reported as ``not_recorded``
+    rather than as unchanged: nothing rules a change there out.
     """
-    current_components = _key_components(current)
-    prior_components = _key_components(prior)
-    absent: tuple[str, object] = ("absent", None)
+    current_components = key_components(current)
+    prior_components = key_components(prior)
     names = set(current_components) | set(prior_components)
     if "inputs" in names:
-        # One entry records no input hashes at all, so no per-parameter
-        # comparison is possible: report the group once instead.
+        # One entry records no input hashes at all, so drop the per-parameter
+        # components the other has: the group is reported once instead.
         names = {name for name in names if not name.startswith("inputs.")}
+
     differences: list[dict[str, object]] = []
     for name in sorted(names):
-        current_state, current_value = current_components.get(name, absent)
-        prior_state, prior_value = prior_components.get(name, absent)
+        # A component absent from one side is a parameter that came or went;
+        # one recorded as UNRECORDED cannot be compared at all.
         unrecorded = [
             side
-            for side, state in (("current", current_state), ("prior", prior_state))
-            if state == "unrecorded"
+            for side, components in (("current", current_components), ("prior", prior_components))
+            if components.get(name) is UNRECORDED
         ]
         if unrecorded:
             differences.append(
@@ -524,24 +505,32 @@ def _diff_key_components(
                     ),
                 }
             )
-        elif current_state == "absent":
-            differences.append({"component": name, "status": "removed", "prior": prior_value})
-        elif prior_state == "absent":
-            differences.append({"component": name, "status": "added", "current": current_value})
-        elif current_value != prior_value:
+        elif name not in current_components:
+            differences.append(
+                {"component": name, "status": "removed", "prior": prior_components[name]}
+            )
+        elif name not in prior_components:
+            differences.append(
+                {"component": name, "status": "added", "current": current_components[name]}
+            )
+        elif current_components[name] != prior_components[name]:
             differences.append(
                 {
                     "component": name,
                     "status": "changed",
-                    "current": current_value,
-                    "prior": prior_value,
+                    "current": current_components[name],
+                    "prior": prior_components[name],
                 }
             )
     return differences
 
 
 def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
-    """Return the summary reason codes implied by a component diff."""
+    """Return the summary reason codes implied by a component diff.
+
+    A moved component no code covers falls back to ``cache_key_changed``; the
+    component list names it either way.
+    """
     moved = {
         str(component["component"])
         for component in components
