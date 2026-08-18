@@ -4,7 +4,8 @@ Script and notebook tasks forward their resolved arguments to a separate
 process as CLI options and parameter files, which carry text rather than
 Python objects. These tests pin what an ``AssetRef`` becomes at that
 boundary — a path for a ``file`` asset, a named refusal for every other
-kind — instead of falling through to ``json.dumps``.
+kind — instead of falling through to ``json.dumps``, and what a live Python
+payload becomes there: a refusal naming the parameter and the task kind.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from ginkgo.runtime.task_runners.shell import (
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
+from ginkgo.runtime.task_validation import TaskValidator
 
 
 def _ref(*, kind: str, artifact_path: str = "/blobs/abc123") -> AssetRef:
@@ -210,3 +212,102 @@ class TestScriptTaskAssetArguments:
 
         # Header plus one data row, read as text rather than as a Parquet blob.
         assert Path(produced).read_text(encoding="utf-8").strip() == "2"
+
+
+# ---------------------------------------------------------------------------
+# A live Python payload has no text form at this boundary (issue #233)
+# ---------------------------------------------------------------------------
+
+
+@task(kind="script")
+def eat_payload_via_script(scores: object, script_path: str, output_path: str) -> file:
+    """Follows the `object` advice in a task kind that cannot carry a payload."""
+    return script(script_path, output=output_path)
+
+
+class TestLivePythonPayloadArguments:
+    """A DataFrame reaching the serializer is refused by name, not by json."""
+
+    def test_payload_refusal_names_parameter_and_task_kind(self) -> None:
+        payload = pd.DataFrame({"site": ["north"], "count": [10]})
+
+        with pytest.raises(TypeError) as excinfo:
+            serialize_cli_argument_value(payload, label="eat_payload.scores", task_kind="script")
+
+        message = str(excinfo.value)
+        assert "eat_payload.scores" in message
+        assert "pandas.DataFrame" in message
+        assert "`script` task" in message
+        assert "JSON serializable" not in message
+
+    def test_nested_payload_names_its_position(self) -> None:
+        payload = pd.DataFrame({"count": [10]})
+
+        with pytest.raises(TypeError, match=r"eat_payload\.scores\[1\]"):
+            serialize_cli_argument_value(
+                ["ok", payload], label="eat_payload.scores", task_kind="script"
+            )
+
+        with pytest.raises(TypeError, match=r"eat_payload\.scores\['north'\]"):
+            serialize_cli_argument_value(
+                {"north": payload}, label="eat_payload.scores", task_kind="notebook"
+            )
+
+    def test_stringify_refuses_rather_than_reaching_json(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            stringify_cli_argument(
+                pd.DataFrame({"count": [10]}), label="eat_payload.scores", task_kind="script"
+            )
+
+        assert "JSON serializable" not in str(excinfo.value)
+
+    def test_unlabelled_refusal_still_names_the_type(self) -> None:
+        """The defensive path: no label, so it names the type and the boundary."""
+        with pytest.raises(TypeError, match="pandas.DataFrame"):
+            serialize_cli_argument_value(pd.DataFrame({"count": [10]}))
+
+    def test_validator_refuses_before_the_task_runs(self) -> None:
+        """`validate_task_contract` catches it, ahead of environment preparation."""
+        with pytest.raises(TypeError, match=r"eat_payload_via_script\.scores"):
+            TaskValidator().validate_driver_arguments(
+                task_def=eat_payload_via_script,
+                resolved_args={
+                    "scores": pd.DataFrame({"count": [10]}),
+                    "script_path": "s.py",
+                    "output_path": "out.txt",
+                },
+            )
+
+    def test_validator_leaves_a_shell_task_alone(self) -> None:
+        """A shell task's body runs Python, so a live payload is legitimate there."""
+        TaskValidator().validate_driver_arguments(
+            task_def=count_rows_via_shell,
+            resolved_args={
+                "scores": pd.DataFrame({"count": [10]}),
+                "csv_path": "work/scores.csv",
+                "output_path": "results/rows.txt",
+            },
+        )
+
+    def test_table_payload_into_a_script_task_is_refused_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        script_path = tmp_path / "copy_input.py"
+        script_path.write_text(_COPY_SCRIPT, encoding="utf-8")
+
+        with pytest.raises(TypeError) as excinfo:
+            ginkgo.evaluate(
+                eat_payload_via_script(
+                    scores=produce_table_asset(output_path="results/scores.csv"),
+                    script_path=str(script_path),
+                    output_path="results/copied.csv",
+                )
+            )
+
+        message = str(excinfo.value)
+        assert "eat_payload_via_script.scores" in message
+        assert "pandas.DataFrame" in message
+        assert "JSON serializable" not in message
+        # Refused before the script ran, so its declared output was never written.
+        assert not (tmp_path / "results" / "copied.csv").exists()

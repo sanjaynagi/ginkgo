@@ -155,6 +155,35 @@ Implemented script behavior includes:
 Script tasks, like notebook tasks, run on the driver-side execution path and
 preserve full scheduler semantics.
 
+## What a Script or Notebook Argument May Be
+
+Script and notebook tasks are the two kinds whose runners forward resolved
+arguments to another process — a script task as `--arg-name value` options, a
+notebook task through a parameter file. Both go through
+`serialize_cli_argument_value` in `task_runners/shell.py`, which is the single
+home for what that boundary accepts: `None`, booleans, numbers, strings, path
+types, an `AssetRef` whose artifact holds readable bytes (see
+[Assets](assets.md)), and lists, tuples, and dicts of those.
+
+A live Python payload has no text form there, so it is refused by name rather
+than reaching `json.dumps` or `yaml.safe_dump` and failing with only its type
+named. The refusal names the parameter, the type received, and the task kind,
+and points at writing the payload to a file in a Python task first. It is
+reachable by following the "annotate it `object`" advice for a consumer of a
+semantic asset in a task kind that cannot receive one.
+
+`TaskValidator.validate_driver_arguments`, called from
+`validate_task_contract`, runs the serializer over the node's
+`execution_args` before the task is dispatched, so the refusal lands ahead of
+environment preparation rather than mid-run; the serializer keeps the same
+refusal for callers that reach it directly. It runs at the execution-args
+stage rather than at prepare time because remote inputs are only resolved to
+local paths by then.
+
+Shell tasks are deliberately not covered: a shell task's body is Python and
+runs before the command is built, so taking a live payload and writing the
+format the command expects is the sanctioned route rather than an error.
+
 ## Special Types
 
 Ginkgo currently ships three path-oriented marker types:

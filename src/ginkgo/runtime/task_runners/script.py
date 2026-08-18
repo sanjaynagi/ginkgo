@@ -56,7 +56,12 @@ class ScriptRunner(DriverTaskRunner):
         cmd_parts = [interpreter_cmd, shlex.quote(str(directive.path))]
         for name, value in node.execution_args.items():
             option = f"--{name.replace('_', '-')}"
-            cmd_parts.extend([shlex.quote(option), shlex.quote(stringify_cli_argument(value))])
+            rendered = stringify_cli_argument(
+                value,
+                label=f"{node.task_def.name}.{name}",
+                task_kind=node.task_def.kind,
+            )
+            cmd_parts.extend([shlex.quote(option), shlex.quote(rendered)])
         cmd = " ".join(cmd_parts)
 
         completed = self.shell_runner.run_logged_command(
