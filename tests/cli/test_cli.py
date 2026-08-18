@@ -1277,6 +1277,14 @@ class TestCliInit:
             assert "does not contain a cell with tag" not in log_text
             assert "Passed unknown parameter" not in log_text
 
+    def test_init_into_the_current_directory_omits_the_cd_step(self) -> None:
+        """There is nowhere to cd to when the project root is already the cwd."""
+        result = _run_cli("init", ".", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Next steps: run ginkgo test --dry-run" in result.stdout
+        assert "Next steps: cd" not in result.stdout
+
     def test_init_can_skip_skills(self) -> None:
         result = _run_cli("init", "demo-project", "--no-skills", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
