@@ -208,7 +208,9 @@ def count_rows(scores: object, csv_path: str, output_path: str) -> file:
     return shell(cmd=f"wc -l < {csv_path} > {output_path}", output=output_path)
 ```
 
-A `script` or `notebook` task has no such body, so do the writing in a separate
+Writing the file inside a `script` or `notebook` task body does not help: those
+runners forward *every* resolved argument to the other process, so the payload
+still reaches the text boundary and is refused. Do the writing in a separate
 `python` task and pass that task's path — or, better, have the producer return a
 `file` asset with `asset(csv_path)` when the bytes on disk, rather than the typed
 payload, are what downstream tasks need.

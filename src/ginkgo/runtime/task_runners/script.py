@@ -59,7 +59,10 @@ class ScriptRunner(DriverTaskRunner):
             rendered = stringify_cli_argument(
                 value,
                 label=f"{node.task_def.name}.{name}",
-                task_kind=node.task_def.kind,
+                # This runner *is* the script boundary: a task declared
+                # ``kind="shell"`` whose body returns ``script(...)`` lands here
+                # too, and its arguments cross the same way.
+                task_kind="script",
             )
             cmd_parts.extend([shlex.quote(option), shlex.quote(rendered)])
         cmd = " ".join(cmd_parts)

@@ -190,37 +190,6 @@ class TaskValidator:
     ) -> None:
         """Validate that a task can run safely under its declared contract."""
         self.validate_task_preconditions(task_def=task_def, resolved_args=execution_args)
-        self.validate_driver_arguments(task_def=task_def, resolved_args=execution_args)
-
-    def validate_driver_arguments(
-        self,
-        *,
-        task_def: TaskDef,
-        resolved_args: dict[str, Any],
-    ) -> None:
-        """Require a script or notebook task's arguments to have a text form.
-
-        Those kinds forward their resolved arguments to another process as CLI
-        options and parameter-file entries, so a live Python payload — a
-        DataFrame bound to a parameter annotated ``object``, say — cannot be
-        carried at all. Running the serializer here rather than restating its
-        rule keeps one home for what that boundary accepts, and moves the
-        refusal ahead of environment preparation: the runner serializes the
-        same values for real, from the same ``execution_args``.
-        """
-        # Imported here because ``task_runners.shell`` imports this module.
-        from ginkgo.runtime.task_runners.shell import (
-            CLI_ARGUMENT_TASK_KINDS,
-            serialize_cli_arguments,
-        )
-
-        if task_def.kind not in CLI_ARGUMENT_TASK_KINDS:
-            return
-        serialize_cli_arguments(
-            resolved_args=resolved_args,
-            task_name=task_def.name,
-            task_kind=task_def.kind,
-        )
 
     def validate_task_preconditions(
         self,

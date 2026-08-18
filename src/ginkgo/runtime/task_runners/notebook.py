@@ -39,7 +39,7 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
-    serialize_cli_arguments,
+    serialize_cli_argument_value,
     stringify_cli_argument,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -469,15 +469,14 @@ class NotebookRunner(DriverTaskRunner):
         """Build the Papermill execution command for one Jupyter notebook."""
         if executed_path is None:
             raise RuntimeError("ipynb notebooks require an executed output path")
+        params = {
+            name: serialize_cli_argument_value(
+                value, label=f"{task_name}.{name}", task_kind="notebook"
+            )
+            for name, value in resolved_args.items()
+        }
         params_path.write_text(
-            yaml.safe_dump(
-                serialize_cli_arguments(
-                    resolved_args=resolved_args,
-                    task_name=task_name,
-                    task_kind="notebook",
-                ),
-                sort_keys=True,
-            ),
+            yaml.safe_dump(params, sort_keys=True),
             encoding="utf-8",
         )
         return " ".join(

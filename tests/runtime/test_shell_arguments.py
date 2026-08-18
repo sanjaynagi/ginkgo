@@ -10,6 +10,7 @@ payload becomes there: a refusal naming the parameter and the task kind.
 
 from __future__ import annotations
 
+import datetime
 import shlex
 from pathlib import Path
 
@@ -23,7 +24,6 @@ from ginkgo.runtime.task_runners.shell import (
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
-from ginkgo.runtime.task_validation import TaskValidator
 
 
 def _ref(*, kind: str, artifact_path: str = "/blobs/abc123") -> AssetRef:
@@ -262,32 +262,14 @@ class TestLivePythonPayloadArguments:
         assert "JSON serializable" not in str(excinfo.value)
 
     def test_unlabelled_refusal_still_names_the_type(self) -> None:
-        """The defensive path: no label, so it names the type and the boundary."""
+        """Called without a label, the refusal still names the type."""
         with pytest.raises(TypeError, match="pandas.DataFrame"):
             serialize_cli_argument_value(pd.DataFrame({"count": [10]}))
 
-    def test_validator_refuses_before_the_task_runs(self) -> None:
-        """`validate_task_contract` catches it, ahead of environment preparation."""
-        with pytest.raises(TypeError, match=r"eat_payload_via_script\.scores"):
-            TaskValidator().validate_driver_arguments(
-                task_def=eat_payload_via_script,
-                resolved_args={
-                    "scores": pd.DataFrame({"count": [10]}),
-                    "script_path": "s.py",
-                    "output_path": "out.txt",
-                },
-            )
-
-    def test_validator_leaves_a_shell_task_alone(self) -> None:
-        """A shell task's body runs Python, so a live payload is legitimate there."""
-        TaskValidator().validate_driver_arguments(
-            task_def=count_rows_via_shell,
-            resolved_args={
-                "scores": pd.DataFrame({"count": [10]}),
-                "csv_path": "work/scores.csv",
-                "output_path": "results/rows.txt",
-            },
-        )
+    def test_a_date_argument_crosses_as_iso_text(self) -> None:
+        """A date has a text form, so it crosses rather than being refused."""
+        assert serialize_cli_argument_value(datetime.date(2026, 1, 1)) == "2026-01-01"
+        assert stringify_cli_argument(datetime.date(2026, 1, 1)) == "2026-01-01"
 
     def test_table_payload_into_a_script_task_is_refused_end_to_end(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
