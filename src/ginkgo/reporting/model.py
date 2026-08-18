@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -858,6 +858,7 @@ def _build_assets(
 
     store = AssetStore(root=assets_root)
     seen_version_ids: set[str] = set()
+    taken_anchors: set[str] = set()
     cards_by_section: dict[str, list[AssetCard]] = {}
 
     references: list[tuple[str, str]] = []
@@ -880,6 +881,11 @@ def _build_assets(
             continue
         card = _build_asset_card(
             version=version,
+            anchor=_reserve_asset_anchor(
+                namespace=version.key.namespace,
+                name=version.key.name,
+                taken=taken_anchors,
+            ),
             artifact_store=artifact_store,
             policy=policy,
             artifact_copies=artifact_copies,
@@ -889,43 +895,42 @@ def _build_assets(
             cards_by_section.setdefault(section_title, []).append(card)
 
     sections: list[AssetSection] = []
-    taken_anchors: set[str] = set()
     for title, cards in cards_by_section.items():
         cards.sort(key=lambda card: (card.namespace, card.name))
-        anchored = tuple(_with_unique_anchor(card, taken=taken_anchors) for card in cards)
-        sections.append(AssetSection(title=title, cards=anchored))
+        sections.append(AssetSection(title=title, cards=tuple(cards)))
     return tuple(sections)
 
 
-def _asset_anchor(*, namespace: str, name: str) -> str:
-    """Return the candidate fragment id for an asset card.
+def _reserve_asset_anchor(*, namespace: str, name: str, taken: set[str]) -> str:
+    """Return the fragment id for one asset card, and record it in ``taken``.
 
-    Two asset keys can reduce to the same slug — ``pca plot`` and ``pca-plot``
-    both become ``pca-plot`` — so this is only a candidate;
-    :func:`_with_unique_anchor` settles collisions.
+    The id is ``asset-`` followed by the slug of ``<namespace> <name>`` with the
+    slug's underscores rewritten as hyphens, so ``table:sales/by-region``
+    deep-links as ``#asset-table-sales-by-region``. A key holding nothing
+    alphanumeric slugs to nothing and lands on the bare ``asset``.
+
+    Two keys can reduce to the same slug — ``pca plot`` and ``pca-plot`` both
+    become ``pca-plot`` — so a later claimant takes a ``--2``, ``--3`` suffix.
+    The doubled hyphen is what makes that safe: :func:`slug` collapses each run
+    of non-alphanumerics to a single separator, so no key slugs to an id ending
+    in ``--2``, and a suffixed id can never shadow the id another asset would
+    claim for itself.
     """
-    return f"asset-{slug(f'{namespace} {name}').replace('_', '-')}".rstrip("-")
-
-
-def _with_unique_anchor(card: AssetCard, *, taken: set[str]) -> AssetCard:
-    """Return ``card`` carrying an anchor no other card in the report holds.
-
-    Cards are visited in the report's own deterministic order — sections by
-    first reference, cards by ``(namespace, name)`` — so the numeric suffix a
-    collision earns is stable across re-renders of the same run.
-    """
-    candidate = card.anchor
+    body = slug(f"{namespace} {name}").replace("_", "-")
+    base = f"asset-{body}" if body else "asset"
+    anchor = base
     ordinal = 2
-    while candidate in taken:
-        candidate = f"{card.anchor}-{ordinal}"
+    while anchor in taken:
+        anchor = f"{base}--{ordinal}"
         ordinal += 1
-    taken.add(candidate)
-    return replace(card, anchor=candidate)
+    taken.add(anchor)
+    return anchor
 
 
 def _build_asset_card(
     *,
     version: AssetVersion,
+    anchor: str,
     artifact_store: LocalArtifactStore,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
@@ -954,7 +959,7 @@ def _build_asset_card(
 
     return AssetCard(
         asset_key=str(version.key),
-        anchor=_asset_anchor(namespace=namespace, name=version.key.name),
+        anchor=anchor,
         name=version.key.name,
         caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,

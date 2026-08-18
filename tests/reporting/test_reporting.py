@@ -388,9 +388,11 @@ class TestReportData:
 
     def test_assets_sharing_a_slug_get_distinct_stable_anchors(self, tmp_path: Path) -> None:
         # "pca plot" and "pca-plot" reduce to the same slug; the ids must still
-        # address one card each, and pick the same one on every re-render.
+        # address one card each, and pick the same one on every re-render. The
+        # suffix carries a doubled hyphen so it cannot take the id that
+        # "pca-plot-2" — a key no other key collides with — claims for itself.
         run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-        for name in ("demo/pca plot", "demo/pca-plot"):
+        for name in ("demo/pca plot", "demo/pca-plot", "demo/pca-plot-2"):
             _register_asset(
                 tmp_path=tmp_path,
                 run_id="run-assets",
@@ -409,7 +411,8 @@ class TestReportData:
         assert dict(anchors) == {
             "file:demo/output": "asset-file-demo-output",
             "file:demo/pca plot": "asset-file-demo-pca-plot",
-            "file:demo/pca-plot": "asset-file-demo-pca-plot-2",
+            "file:demo/pca-plot": "asset-file-demo-pca-plot--2",
+            "file:demo/pca-plot-2": "asset-file-demo-pca-plot-2",
         }
         rebuilt = [
             (card.asset_key, card.anchor)

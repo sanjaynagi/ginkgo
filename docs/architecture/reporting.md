@@ -110,12 +110,16 @@ Each card carries an `AssetCard.anchor`, the fragment id its `.asset` div
 renders as `id` and a `#` link beside the asset name points at. The id is
 `asset-<slug of "<namespace> <name>">` with underscores rewritten to hyphens,
 so `table:sales/by-region` deep-links as `#asset-table-sales-by-region`. The
-slug comes from `ginkgo.wildcards.slug`, the codebase's one slug rule. Two keys
-can reduce to the same slug (`pca plot` and `pca-plot`), so `_build_assets`
-walks the cards in the report's own deterministic order — sections by first
-reference, cards by `(namespace, name)` — and appends `-2`, `-3` … to later
-collisions. Ordering is what makes the suffix stable across re-renders, so the
-ids stay shareable.
+slug comes from `ginkgo.wildcards.slug`, the codebase's one slug rule.
+
+Two keys can reduce to the same slug (`pca plot` and `pca-plot`), so
+`_reserve_asset_anchor` hands a later claimant a `--2`, `--3` suffix. The
+doubled hyphen keeps the suffixed ids out of the space of plain ones: `slug`
+collapses each run of non-alphanumerics to a single separator, so no key slugs
+to an id ending in `--2`, and the card whose key really is `pca-plot-2` still
+gets `#asset-file-demo-pca-plot-2`. So an asset whose slug is unique in the
+report — the ordinary case — always renders at the same id, and only the
+losers of a collision depend on which sibling keys the run holds.
 
 Asset check outcomes are read from the reserved `ginkgo_checks` version-metadata
 field into typed `CheckOutcome` values on `AssetCard`. Each asset card renders
@@ -333,8 +337,8 @@ ginkgo report <run-id>
   layout, asset resolution, section numbering, running-run rejection. The
   all-cached run must yield the same asset cards and sections as the executed
   one; only the cache labels differ. Asset anchors are asserted both for the
-  plain case and for two keys that share a slug, which must take distinct ids
-  that a rebuild reproduces.
+  plain case and for three keys that share a slug, which must take distinct ids
+  that a rebuild reproduces and that leave `pca-plot-2` its own plain id.
 - `export_report` — bundle and single-file modes, presence of key
   strings, absence of external URLs, contiguous section numerals,
   `image/*` MIME types on inlined figures, conditional failure section,

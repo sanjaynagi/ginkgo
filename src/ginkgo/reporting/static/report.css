@@ -684,6 +684,13 @@ pre.log {
   opacity: 1;
 }
 
+/* Without a pointer that hovers there is no way to reveal the link, so show it. */
+@media (hover: none) {
+  .asset-head .asset-link {
+    opacity: 1;
+  }
+}
+
 .asset:target {
   border-color: var(--accent);
 }
