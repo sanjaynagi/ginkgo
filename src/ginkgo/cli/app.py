@@ -265,7 +265,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         metavar="NAME=VALUE",
         help="Budget for a user-defined resource dimension (repeatable), e.g. --resource api_calls=10",
     )
-    run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the plan -- waves, cache status, resources -- without executing tasks",
+    )
     run_parser.add_argument("--verbose", action="store_true")
     run_parser.add_argument(
         "--agent-output",
@@ -363,8 +367,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         description=(
             "Run every *.py file in tests/workflows/ -- or in a legacy .tests/ "
             "directory if tests/workflows/ does not exist -- as a workflow. Task "
-            "bodies execute unless --dry-run is passed, and the first failing "
-            "workflow stops the run."
+            "bodies execute unless --dry-run is passed. The first failing workflow "
+            "ends the run."
         ),
     )
     test_parser.add_argument(

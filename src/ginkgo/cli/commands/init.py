@@ -283,13 +283,10 @@ def command_init(args) -> int:
     )
     if root == Path.cwd().resolve():
         # Nowhere to cd to: the project root is already the working directory.
-        rich_console.print(
-            "[dim]Next steps:[/] run [bold]ginkgo run --dry-run[/] [dim]to preview the plan[/]"
-        )
+        rich_console.print("[dim]Next steps:[/] run [bold]ginkgo run --dry-run[/]")
     else:
         rich_console.print(
             "[dim]Next steps:[/] [bold]cd[/] "
-            f"[bold]{args.directory}[/] and run [bold]ginkgo run --dry-run[/] "
-            "[dim]to preview the plan[/]"
+            f"[bold]{args.directory}[/] and run [bold]ginkgo run --dry-run[/]"
         )
     return 0

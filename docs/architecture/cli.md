@@ -49,14 +49,13 @@ for each discovered workflow.
 `ginkgo test` discovers its workflows by convention rather than by argument
 (`discover_test_workflows` in `cli/workspace.py`): every `*.py` file in
 `tests/workflows/`, falling back to a legacy `.tests/` directory when the
-canonical one is absent, and an error when neither exists. Each file is run
-through `run_workflow` with `plan_preview=False`, so without `--dry-run` the task
-bodies execute for real and the first failing workflow ends the run; with
-`--dry-run` every workflow is validated and the non-zero exit status is carried to
-the end. The recommended wiring check in user-facing docs is
-`ginkgo run --dry-run` — it needs no test-workflow convention and previews
-the entrypoint that will actually run — with `ginkgo test` presented as the
-command for a project's own validation workflows.
+canonical one is absent, and a `FileNotFoundError` when neither yields a file.
+Each file is run through `run_workflow` with `plan_preview=False`, so without
+`--dry-run` the task bodies execute for real. A dry run computes no cache keys:
+`build_dry_run_plan` is what probes the cache, and only the plan-preview path
+calls it. User-facing docs recommend `ginkgo run --dry-run` as the wiring check
+— it needs no test-workflow convention and previews the entrypoint that will
+actually run — with `ginkgo test` for a project's own validation workflows.
 
 Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
 base name, with its fan-out values in brackets when the graph fixed them —

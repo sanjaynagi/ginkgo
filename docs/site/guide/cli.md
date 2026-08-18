@@ -17,8 +17,7 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo test`
 : Run the workflow files a project keeps under `tests/workflows/`. Task bodies
-  execute unless `--dry-run` is passed. See
-  [Validation and Diagnostics](#validation-and-diagnostics).
+  execute unless `--dry-run` is passed. See [ginkgo test](#ginkgo-test).
 
 `ginkgo inspect`
 : Inspect the resolved task graph (`inspect workflow`) or the structure of a
@@ -150,30 +149,27 @@ ginkgo doctor flow.py
 ginkgo debug <run_id>
 ```
 
-The two dry runs answer different questions. `ginkgo run --dry-run` previews the
-plan for the entrypoint you actually run, and is the quickest way to confirm a
-workflow you just wrote is wired correctly. `ginkgo test` runs the workflows a
-project keeps for validation, which is what you want in CI or when a project
-holds several of them.
+`ginkgo run --dry-run` previews the plan for the entrypoint you actually run,
+and is the quickest way to confirm a workflow you just wrote is wired correctly.
+It reports the waves tasks fall into, which would run and which would serve from
+cache, and the resources they declare.
 
 ### ginkgo test
 
-`ginkgo test` collects every `*.py` file in `tests/workflows/` &mdash; falling
-back to a legacy `.tests/` directory when `tests/workflows/` does not exist
-&mdash; and runs each one as a workflow. It is not a pytest wrapper: each file is
-expected to expose a flow, usually by re-exporting the project's own. If neither
-directory exists, the command reports that it found nothing to run.
+`ginkgo test` runs every `*.py` file in `tests/workflows/` as a workflow, falling
+back to a legacy `.tests/` directory when `tests/workflows/` is absent. It is not
+a pytest wrapper: each file must expose a flow, usually by re-exporting the
+project's own. It fails outright when it finds no such file, so it suits CI and a
+project that keeps validation workflows rather than a first check of new code.
 
-Without `--dry-run`, `ginkgo test` **executes the task bodies** of every
-discovered workflow and stops at the first one that fails. With `--dry-run` it
-validates each workflow instead, resolving the graph and computing cache keys
-without running any task body, and prints one line per workflow rather than a
-full plan.
+Without `--dry-run` the task bodies **execute for real**. With `--dry-run`
+nothing executes: each workflow is loaded and validated, and one line per
+workflow is printed rather than a full plan. Either way the first failure ends
+the run.
 
-The scaffold `ginkgo init` writes holds a single `tests/workflows/smoke.py`,
-which re-exports `main` from `workflow/flow.py`. So on a fresh project
-`ginkgo test` does cover your own flow &mdash; the output just names `smoke.py`
-rather than the file you wrote it in.
+`ginkgo init` scaffolds one `tests/workflows/smoke.py` that re-exports `main`
+from `workflow/flow.py`, so on a fresh project `ginkgo test` does cover your own
+flow &mdash; the output just names `smoke.py`.
 
 `ginkgo doctor` catches environment and configuration problems before a run.
 Pass `--json` for structured output suitable for programmatic use:
