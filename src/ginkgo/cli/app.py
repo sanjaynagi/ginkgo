@@ -26,7 +26,6 @@ from ginkgo.params import looks_like_flag
 from ginkgo.core.resources import parse_memory
 
 
-
 def _memory_arg(value: str) -> int:
     """Parse a --memory value, accepting a bare GiB integer or Kubernetes notation."""
     if value.isdigit():
