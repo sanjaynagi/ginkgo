@@ -32,7 +32,9 @@ at the nearest `ginkgo.toml`.
   unresolved secrets, malformed config.
 
 `ginkgo report`
-: Render a finished run as a self-contained HTML report. See
+: Render a finished run as an HTML report. By default this produces a
+  directory bundle (`index.html` plus an `assets/` folder); pass
+  `--single-file` for a single self-contained HTML file. See
   [Assets and Reports](assets.md).
 
 `ginkgo cache`

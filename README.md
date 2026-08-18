@@ -149,6 +149,10 @@ The docs and examples are centered on
 - a container-backed shell task
 - `.map()` fan-out across samples
 - a local Python aggregation task
+- typed assets (`asset()`, `table()`) with data-quality checks
+- downstream consumption via `file | AssetRef`
+
+See the [assets guide](docs/site/guide/assets.md) for more on the asset system.
 
 Run it with:
 
@@ -163,10 +167,20 @@ ginkgo run
 - `ginkgo test --dry-run`
 - `ginkgo doctor`
 - `ginkgo debug`
+- `ginkgo init`
+- `ginkgo inspect` (`inspect workflow`, `inspect run`)
+- `ginkgo asset` (`asset ls`, `asset versions`, `asset inspect`, `asset show`)
+- `ginkgo report`
+- `ginkgo models`
+- `ginkgo notebooks`
+- `ginkgo secrets` (`secrets list`, `secrets validate`)
 - `ginkgo cache ls`
 - `ginkgo cache clear`
 - `ginkgo cache prune`
+- `ginkgo cache explain`
 - `ginkgo env ls`
+
+For full details on every command, see the [CLI reference](docs/site/guide/cli.md).
 
 ## Repository Layout
 
