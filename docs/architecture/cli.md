@@ -11,6 +11,7 @@ The current CLI supports:
 - `ginkgo init`
 - `ginkgo asset ls`
 - `ginkgo asset versions`
+- `ginkgo asset show`
 - `ginkgo asset inspect`
 - `ginkgo models`
 - `ginkgo cache ls`
@@ -25,6 +26,14 @@ config overrides, human-readable run summaries, structured inspection and
 diagnostics, secret discovery and validation, cache inspection and eviction,
 failed-task debugging, and asset catalog inspection for local workspaces.
 
+`asset versions`, `asset show`, and `asset inspect` resolve their key argument
+against the catalog rather than parsing it in isolation
+(`resolve_asset_key` in `cli/commands/asset.py`). A `<kind>:<name>` key is
+looked up directly; a bare `<name>` is searched across kinds, resolving when
+exactly one kind holds it and reporting the candidate keys when several do. An
+unknown key reports near matches from the catalog, so no lookup ever invents a
+kind the user did not use.
+
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each
 annotated `[cached]`, `[will run]`, or `[unknown]`, with static `.map()`
@@ -36,6 +45,18 @@ runs, no environment is prepared, and no cached output is materialised. Large
 fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
 keeps its terse per-workflow validation line rather than printing a full plan
 for each discovered workflow.
+
+Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
+base name, with its fan-out values in brackets when the graph fixed them —
+which `.map()` and `.product_map()` do at graph-build time, `per_branch()`
+arguments excluded as values derived from a branch rather than naming it.
+`display_labels()` assigns those labels across a graph, giving an ordinal to
+repeats that nothing else tells apart. Both the dry-run plan and the live run
+table label from it (`cli/commands/run.py:planned_task_rows`), so a branch
+still waiting to be dispatched reads the same in both. A mapped task whose
+fan-out left no label parts is the one case the graph cannot label; the
+evaluator supplies a label from its resolved arguments when it prepares the
+node, and the renderer adopts it on the node's first event.
 
 Commands that import a workflow — `run`, `doctor`, `secrets`, and
 `inspect workflow` — accept flags for the parameters that workflow declares with
@@ -50,6 +71,32 @@ and `--max-entries <N>`. At least one of the three is required; multiple
 may be combined, and eviction always proceeds oldest-first with orphan
 artifact garbage collection at the end. `--dry-run` previews what would be
 removed without touching disk.
+
+## Error reporting
+
+Two kinds of failure reach the CLI's top-level handler, and they are reported
+differently (`cli/errors.py`, on the taxonomy in `ginkgo/errors.py`):
+
+- A `GinkgoError` — the base class of every named ginkgo exception, from
+  `ParamError` to `PixiEnvNotFoundError` — is a mistake ginkgo detected and can
+  explain. It prints as a single `✖ <message>` line. Any other failure raised
+  with no user code on the stack is reported the same way: nothing but ginkgo's
+  own frames were involved, so its message is the whole report.
+- Anything else is a bug in the workflow or in ginkgo. The message is followed
+  by the location of the innermost frame in code the user wrote —
+  `<Type> at <file>:<line> in <function>` — so a mistake in a flow body is
+  always locatable without re-running. `GINKGO_TRACEBACK=1` or `--verbose` adds
+  the full rich traceback beneath it.
+
+`GINKGO_TRACEBACK=1` prints a traceback for **every** failure, including the
+ones whose default report is a bare message — a `GinkgoError`, or an internal
+crash after the flow body returned with no user frame left on the stack. Only
+the hint that advertises the variable is withheld there, so that ginkgo's
+one-line messages stay one line; the escape hatch itself always works.
+
+`KeyboardInterrupt` prints `⨯ Interrupted` and exits 130; `SystemExit`
+propagates untouched, so argparse and `--version` keep the status they chose.
+`ginkgo doctor` reports the same user-code location under each diagnostic.
 
 Run-time failure diagnostics classify each task failure into one of a small
 set of categories — `env_mismatch`, `import_error`, `invalid_path`,

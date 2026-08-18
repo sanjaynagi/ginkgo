@@ -195,6 +195,16 @@ are passed into the notebook as parameters. The notebook file is source material
 for both execution and cache identity — when the notebook changes, the task's
 cache key changes.
 
+Give a `.ipynb` notebook a cell tagged `parameters` that assigns a default to
+each name in the task signature. Papermill replaces that cell's contents with
+the resolved arguments, so the defaults are what you get when you open the
+notebook by hand, and the task signature wins during a run. Without such a cell
+Papermill still injects the values — it prepends an `injected-parameters` cell —
+but it prints one `Passed unknown parameter: <name>` line per argument plus
+`Input notebook does not contain a cell with tag 'parameters'`. Those lines are
+benign, and the run succeeds, but they read like errors. Tagging the cell
+removes them.
+
 `notebook()` takes two optional arguments beyond the path:
 
 - `output` — a declared output path, or list of paths, validated after the
@@ -271,6 +281,47 @@ models = train().product_map(
 
 This runs `train` four times: each `sample_id` paired with each `lr`.
 
+Every list passed to `.product_map()` is an **axis** of the grid. An argument
+that is a *function* of the grid cell rather than an axis of it — an output path
+above all — belongs in `per_branch()`, described next.
+
+### Per-Cell Output Paths With `per_branch()`
+
+A grid sweep usually writes one file per cell, named after the cell's parameter
+values. Pass that argument as a `per_branch()` template whose placeholders name
+the call's own arguments; it is rendered once per cell, from that cell's values:
+
+```python
+from ginkgo import file, flow, per_branch, task
+
+
+@task()
+def simulate(temperature: float, defect_density: float, output_path: str) -> file:
+    ...
+
+
+@flow
+def main():
+    return simulate().product_map(
+        temperature=[300, 400],
+        defect_density=[0.01, 0.02],
+        output_path=per_branch("results/{temperature}_{defect_density}.json"),
+    )
+```
+
+This is four branches — one per cell — and each `output_path` is derived from
+the parameters of the branch that writes it, so a file's name can never
+contradict its contents.
+
+`per_branch()` works with `.map()` too, and its placeholders can also name
+arguments fixed on the task call. A template with no placeholders is an error:
+every branch would receive the same value.
+
+Do **not** pass an `expand()` list to `.product_map()`. `expand()` already
+returns one string per combination, so `.product_map()` would treat it as a
+further axis and cross it with the axes it was built from — Ginkgo rejects that
+call and points you at `per_branch()`.
+
 ### Building The Varying Lists With `expand()`
 
 The varying arguments are plain lists, so they can come from anywhere — a
@@ -311,10 +362,31 @@ zip_expand("results/{item}/{rep}.txt", item=["a", "b"], rep=[1, 2])
 ```
 
 Every placeholder in the template must be supplied as a keyword, and a keyword
-that does not appear in the template is an error. The pairing
-matches `.map()` (positional zip) and `.product_map()` (Cartesian product), so
-use `zip_expand()` with `.map()` and `expand()` with `.product_map()` when a
-template has more than one wildcard.
+that does not appear in the template is an error.
+
+Both helpers return a column that is **already aligned row-for-row** with the
+values it was built from, so both pair with `.map()`, which consumes columns row
+by row. Neither is an axis, so neither can be passed to `.product_map()`; use
+`per_branch()` there.
+
+For a multi-wildcard template, that means the parameter columns you `.map()`
+over must be flattened to match the expansion, one entry per row:
+
+```python
+temperatures = [300, 400]
+densities = [0.01, 0.02]
+
+simulate().map(
+    temperature=[t for t in temperatures for _ in densities],
+    defect_density=[d for _ in temperatures for d in densities],
+    output_path=expand("results/{t}_{d}.json", t=temperatures, d=densities),
+)
+```
+
+`per_branch()` with `.product_map()` expresses the same sweep without the
+flattening, and without depending on `expand()`'s ordering, so prefer it for
+grids.
+
 ### Chaining Fan-Out
 
 You can chain fan-out calls. Chaining always returns a flat `ExprList`, with
@@ -372,6 +444,14 @@ selection of element `i`, resolved once the upstream task has run. On an
 new `ExprList` selecting element `i` from every branch, so the two lists above
 stay aligned with the branches that produced them. Either result can be passed
 straight to another task call or `.map()`.
+
+`.output[i]` is the only way to select an output. Tuple unpacking —
+`a, b = normalize_seed_card(...)` — cannot work on a single call, because the
+call returns one deferred expression rather than the tuple the annotation
+describes, so ginkgo raises a `TypeError` naming the task and this idiom.
+Unpacking an `ExprList` does succeed, but it means something else entirely: it
+hands back one `Expr` per fan-out branch, not the elements of any branch's
+result.
 
 ## See Also
 

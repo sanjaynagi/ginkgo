@@ -19,6 +19,7 @@ from ginkgo.core.expr import Expr, ExprList, record_call, supersede_call
 from ginkgo.core.resources import Resources
 from ginkgo.core.source_hash import compute_source_hash
 from ginkgo.core.types import tmp_dir
+from ginkgo.wildcards import ExpandedTemplate, PerBranch
 
 _TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
 _FanOutMode = Literal["zip", "product"]
@@ -329,7 +330,8 @@ class PartialCall:
             should not run in parallel (e.g. model training).
         **varying
             Keyword arguments where each value is an iterable (list, Series,
-            or ``ExprList``) of per-element values.
+            or ``ExprList``) of per-element values, or a ``per_branch()``
+            template rendered from each row's own values.
 
         Returns
         -------
@@ -351,7 +353,15 @@ class PartialCall:
         )
 
     def product_map(self, *, max_concurrent: int | None = None, **varying: Any) -> ExprList:
-        """Fan-out: produce one ``Expr`` per Cartesian combination."""
+        """Fan-out: produce one ``Expr`` per Cartesian combination.
+
+        Every varying list is an axis of the grid. Arguments that are a
+        *function* of the grid cell — output paths above all — must be
+        passed as ``per_branch("...{arg}...")`` templates, which are
+        rendered from each cell's own values. ``expand()`` output is
+        rejected here: it is already one value per cell, so crossing it
+        with the axes it came from would mislabel every branch.
+        """
         return _fan_out_partial_call(
             partial_call=self,
             varying=varying,
@@ -390,11 +400,13 @@ def _fan_out_partial_call(
     """Build an ``ExprList`` from one partially-applied task."""
     function_name = _fan_out_function_name(mode=mode)
     _validate_max_concurrent(max_concurrent=max_concurrent, function_name=function_name)
-    columns = _materialize_varying_columns(
+    varying_args = _materialize_varying_columns(
         task_def=partial_call.task_def,
         varying=varying,
+        mode=mode,
         function_name=function_name,
     )
+    columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
     group_id = (
@@ -403,7 +415,13 @@ def _fan_out_partial_call(
     exprs = [
         Expr(
             task_def=partial_call.task_def,
-            args={**partial_call.fixed_args, **row},
+            args=_branch_args(
+                base_args=partial_call.fixed_args,
+                row=row,
+                derived=varying_args.derived,
+                task_def=partial_call.task_def,
+                function_name=function_name,
+            ),
             mapped=True,
             display_label_parts=_label_parts_for_row(
                 task_def=partial_call.task_def,
@@ -432,18 +450,26 @@ def _fan_out_expr_list(
     function_name = _fan_out_function_name(mode=mode)
     _validate_max_concurrent(max_concurrent=max_concurrent, function_name=function_name)
     task_def = _expr_list_task_def(expr_list=expr_list, function_name=function_name)
-    columns = _materialize_varying_columns(
+    varying_args = _materialize_varying_columns(
         task_def=task_def,
         varying=varying,
+        mode=mode,
         function_name=function_name,
     )
+    columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
     group_id = _next_concurrency_group_id(task_def) if max_concurrent is not None else None
     exprs = [
         Expr(
             task_def=task_def,
-            args={**base_expr.args, **row},
+            args=_branch_args(
+                base_args=base_expr.args,
+                row=row,
+                derived=varying_args.derived,
+                task_def=task_def,
+                function_name=function_name,
+            ),
             mapped=True,
             display_label_parts=(
                 *base_expr.display_label_parts,
@@ -490,12 +516,30 @@ def _expr_list_task_def(*, expr_list: ExprList, function_name: str) -> TaskDef:
     return task_def
 
 
+@dataclass(frozen=True)
+class _VaryingArgs:
+    """The two kinds of varying argument one fan-out call can receive.
+
+    Parameters
+    ----------
+    columns : dict[str, list[Any]]
+        Value columns that generate branches — zipped or crossed by mode.
+    derived : dict[str, PerBranch]
+        Templates rendered once per generated branch from that branch's
+        own values, so they never generate branches of their own.
+    """
+
+    columns: dict[str, list[Any]]
+    derived: dict[str, PerBranch]
+
+
 def _materialize_varying_columns(
     *,
     task_def: TaskDef,
     varying: dict[str, Any],
+    mode: _FanOutMode,
     function_name: str,
-) -> dict[str, list[Any]]:
+) -> _VaryingArgs:
     """Validate and materialize varying columns for fan-out."""
     if not varying:
         raise ValueError(f"{function_name}() requires at least one varying argument")
@@ -526,7 +570,143 @@ def _materialize_varying_columns(
             stacklevel=3,
         )
 
-    return {key: list(column) for key, column in varying.items()}
+    derived = {key: value for key, value in varying.items() if isinstance(value, PerBranch)}
+    axis_keys = [
+        key
+        for key, value in varying.items()
+        if not isinstance(value, PerBranch | ExpandedTemplate)
+    ]
+
+    columns: dict[str, list[Any]] = {}
+    for key, value in varying.items():
+        if key in derived:
+            continue
+        if isinstance(value, str | bytes):
+            raise TypeError(
+                f"{function_name}() argument {key!r} is a {type(value).__name__}, which would "
+                f"fan out over its individual characters. Pass a list of values, or pass "
+                f"{key}={value!r} as a fixed argument on the {task_def.fn.__name__}() call."
+            )
+        if mode == "product" and isinstance(value, ExpandedTemplate):
+            raise ValueError(
+                _expanded_template_in_product_message(key=key, column=value, axis_keys=axis_keys)
+            )
+        columns[key] = list(value)
+
+    if not columns:
+        raise ValueError(
+            f"{function_name}() received only per_branch() arguments "
+            f"({', '.join(sorted(derived))}), which derive from other varying arguments rather "
+            "than generating branches. Add at least one varying list."
+        )
+
+    _validate_per_branch_templates(
+        task_def=task_def,
+        derived=derived,
+        function_name=function_name,
+    )
+    return _VaryingArgs(columns=columns, derived=derived)
+
+
+def _expanded_template_in_product_message(
+    *,
+    key: str,
+    column: ExpandedTemplate,
+    axis_keys: list[str],
+) -> str:
+    """Explain why an expanded template cannot be a ``product_map()`` axis."""
+    unresolved = column.unresolved_placeholders(axis_keys)
+    varying = ", ".join(axis_keys) or "none"
+    if unresolved:
+        # Offering a template with placeholders that name no argument would
+        # hand over a fix that fails on the next run, so name the gap instead.
+        fix = (
+            f"Derive it per branch instead, as {key}=per_branch(...) spelled with this call's "
+            f"own varying argument names ({varying}): "
+            + "; ".join(
+                f"placeholder {name!r} names no varying argument of this call"
+                for name in unresolved
+            )
+            + ", so this template cannot be reused as written. "
+        )
+    else:
+        fix = f"Derive it per branch instead:\n    {key}=per_branch({column.template!r})\n"
+
+    return (
+        f"product_map() argument {key!r} was built by {column.function_name}"
+        f"({column.template!r}), which already returns one value per combination of its "
+        f"wildcards, not an axis to sweep. Crossing it with the grid would produce one branch "
+        f"per (grid cell, {key}) pair, so branches would carry {key} values that contradict "
+        f"their other arguments. " + fix + "per_branch() renders once per grid cell from that "
+        f"cell's values. {column.function_name}() output remains correct with .map(), where "
+        "every column is consumed row by row."
+    )
+
+
+def _validate_per_branch_templates(
+    *,
+    task_def: TaskDef,
+    derived: dict[str, PerBranch],
+    function_name: str,
+) -> None:
+    """Reject ``per_branch()`` templates that name arguments the task lacks."""
+    available = set(task_def.all_params.keys())
+    for key, template in derived.items():
+        unknown = [name for name in template.placeholder_names() if name not in available]
+        if unknown:
+            raise ValueError(
+                f"{function_name}() argument {key!r}: per_branch({template.template!r}) "
+                f"references {', '.join(sorted(unknown))}, which "
+                f"{task_def.fn.__name__}() does not take. Available: "
+                f"{', '.join(sorted(available))}."
+            )
+
+
+def _branch_args(
+    *,
+    base_args: dict[str, Any],
+    row: dict[str, Any],
+    derived: dict[str, PerBranch],
+    task_def: TaskDef,
+    function_name: str,
+) -> dict[str, Any]:
+    """Return one branch's arguments, rendering per-branch templates last."""
+    args: dict[str, Any] = {**base_args, **row}
+    for key, template in derived.items():
+        _require_renderable(
+            values=args,
+            key=key,
+            template=template,
+            task_def=task_def,
+            function_name=function_name,
+        )
+        args[key] = template.render(args)
+    return args
+
+
+def _require_renderable(
+    *,
+    values: dict[str, Any],
+    key: str,
+    template: PerBranch,
+    task_def: TaskDef,
+    function_name: str,
+) -> None:
+    """Check that one branch can supply every value a template asks for."""
+    for name in template.placeholder_names():
+        if name not in values:
+            raise ValueError(
+                f"{function_name}() argument {key!r}: per_branch({template.template!r}) "
+                f"references {name!r}, which this branch does not set. Pass it as a varying "
+                f"argument to {function_name}() or as a fixed argument on the "
+                f"{task_def.fn.__name__}() call."
+            )
+        if isinstance(values[name], Expr | ExprList):
+            raise ValueError(
+                f"{function_name}() argument {key!r}: per_branch({template.template!r}) "
+                f"references {name!r}, which is a task result with no value until the run "
+                "reaches it. Reference plain values only."
+            )
 
 
 def _build_varying_rows(

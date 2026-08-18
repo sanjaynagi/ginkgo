@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from importlib import resources
+from importlib import metadata, resources
 from importlib.resources.abc import Traversable
+import json
 import shutil
 import sys
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,23 @@ _TEMPLATE_PROJECT_NAME = "ginkgo-init-template"
 #: like-named package directory.
 PACKAGE_NAME = "workflow"
 
+#: Repository the scaffolded project installs ginkgo from.
+GINKGO_REPO_URL = "https://github.com/sanjaynagi/ginkgo.git"
+
+#: Commit the starter scaffold is validated against, used when the running
+#: install does not record one of its own.
+#:
+#: This constant exists only because no release currently carries what the
+#: templates use: they call ``ginkgo.param``, which landed after v0.2.0, so
+#: pinning either existing tag would scaffold a project that installs cleanly
+#: and then cannot run. Whoever cuts a release that carries everything the
+#: templates use should delete this and pin that tag instead.
+#:
+#: Until then, bump it when the templates start needing newer ginkgo.
+#: ``test_fallback_pin_can_still_run_the_scaffold_it_pins`` fails when this
+#: commit no longer carries every ginkgo name the templates reach for.
+FALLBACK_GINKGO_REV = "2471fcd00bc606f6ad6702151452fb0e6ea76396"  # pragma: allowlist secret
+
 
 @dataclass(frozen=True, kw_only=True)
 class TemplateContext:
@@ -32,6 +50,7 @@ class TemplateContext:
     notebooks_relpath: str
     scripts_relpath: str
     tests_relpath: str
+    ginkgo_rev: str
 
 
 def _template_root(*, group: str):
@@ -50,6 +69,7 @@ def _render_template_content(*, content: str, context: TemplateContext) -> str:
         "{{ notebooks_relpath }}": context.notebooks_relpath,
         "{{ scripts_relpath }}": context.scripts_relpath,
         "{{ tests_relpath }}": context.tests_relpath,
+        "{{ ginkgo_rev }}": context.ginkgo_rev,
     }
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
@@ -101,10 +121,50 @@ def _template_files(
     return files
 
 
+def _normalized_repo_url(url: str) -> str:
+    """Return a repository URL stripped of the variations that do not identify it."""
+    return url.removeprefix("git+").rstrip("/").removesuffix(".git").casefold()
+
+
+def _installed_ginkgo_rev() -> str | None:
+    """Return the ginkgo commit the running CLI was installed from, if recorded.
+
+    Installers write ``direct_url.json`` when a distribution comes from a URL,
+    including the commit a git requirement resolved to. Editable and local
+    installs record a directory instead of a commit, and a commit from some
+    other repository would not resolve for whoever installs the scaffold, so
+    both of those cases return ``None``.
+    """
+    try:
+        raw = metadata.distribution("ginkgo").read_text("direct_url.json")
+        direct_url = json.loads(raw) if raw else {}
+    except (metadata.PackageNotFoundError, OSError, ValueError):  # pragma: no cover
+        return None
+
+    if _normalized_repo_url(str(direct_url.get("url", ""))) != _normalized_repo_url(
+        GINKGO_REPO_URL
+    ):
+        return None
+    commit_id = (direct_url.get("vcs_info") or {}).get("commit_id")
+    return str(commit_id) if commit_id else None
+
+
+def _ginkgo_rev() -> str:
+    """Return the ginkgo commit a scaffolded project should pin itself to.
+
+    A scaffolded project runs its Python tasks in the interpreter its own
+    environment provides, so that environment installs ginkgo itself. Pinning
+    keeps the orchestrator reproducible, and preferring the running install's
+    own commit keeps a scaffold consistent with the CLI that wrote it.
+    """
+    return _installed_ginkgo_rev() or FALLBACK_GINKGO_REV
+
+
 def _template_context(*, root: Path) -> TemplateContext:
     """Return the scaffold render context for one project root."""
     package_dir = Path(PACKAGE_NAME)
     return TemplateContext(
+        ginkgo_rev=_ginkgo_rev(),
         project_name=root.name,
         workflow_relpath=str(package_dir / "flow.py"),
         modules_relpath=str(package_dir / "modules"),
@@ -136,23 +196,13 @@ def _selected_template_files(*, args) -> list[tuple[Traversable, Path]]:
     return files
 
 
-def command_init(args) -> int:
-    """Handle ``ginkgo init``."""
-    root = Path(args.directory).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    rich_console = console(sys.stdout)
-    context = _template_context(root=root)
-    files = _selected_template_files(args=args)
-
-    conflicts = [
-        root / relative_path for _, relative_path in files if (root / relative_path).exists()
-    ]
-    if conflicts and not args.force:
-        conflict_list = "\n".join(str(path.relative_to(root)) for path in conflicts)
-        raise FileExistsError(
-            f"Refusing to overwrite existing scaffold files without --force:\n{conflict_list}"
-        )
-
+def _write_template_files(
+    *,
+    root: Path,
+    files: list[tuple[Traversable, Path]],
+    context: TemplateContext,
+) -> list[Path]:
+    """Write rendered template files under ``root`` and return what was written."""
     written_paths: list[Path] = []
 
     # Copy the starter template file-by-file so path and content substitutions stay explicit.
@@ -173,18 +223,70 @@ def command_init(args) -> int:
                 encoding="utf-8",
             )
         written_paths.append(destination)
+    return written_paths
+
+
+def write_starter_project(*, root: Path) -> Path:
+    """Materialise the starter project ``ginkgo init`` scaffolds, without the skills.
+
+    The packaged templates are the only copy of the starter project, so anything
+    that needs a runnable starter — the example integration test, the example
+    benchmarks — asks for one here rather than keeping a checked-in duplicate
+    that can drift from what users are actually given.
+
+    Parameters
+    ----------
+    root : Path
+        Directory to scaffold into. Created if it does not exist.
+
+    Returns
+    -------
+    Path
+        The scaffolded project root.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    _write_template_files(
+        root=root,
+        files=_template_files(template_root=_template_root(group="base")),
+        context=_template_context(root=root),
+    )
+    return root
+
+
+def command_init(args) -> int:
+    """Handle ``ginkgo init``."""
+    root = Path(args.directory).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    rich_console = console(sys.stdout)
+    context = _template_context(root=root)
+    files = _selected_template_files(args=args)
+
+    conflicts = [
+        root / relative_path for _, relative_path in files if (root / relative_path).exists()
+    ]
+    if conflicts and not args.force:
+        conflict_list = "\n".join(str(path.relative_to(root)) for path in conflicts)
+        raise FileExistsError(
+            f"Refusing to overwrite existing scaffold files without --force:\n{conflict_list}"
+        )
+
+    written_paths = _write_template_files(root=root, files=files, context=context)
 
     rich_console.print(f"[bold green]🌿 ginkgo init[/] [bold]{root.name}[/]\n")
     rich_console.print(f"[green]✓[/] Initialized project scaffold at [bold]{root}[/]")
     rich_console.print("[cyan]Created:[/]")
     for path in written_paths:
-        rich_console.print(f"  [green]•[/] {path.relative_to(root)}")
+        rich_console.print(f"  [green]•[/] {path.relative_to(root).as_posix()}")
     rich_console.print(
         f"\n[dim]Your workflow lives in[/] [bold]{context.workflow_relpath}[/]"
         f"[dim]; tasks live in[/] [bold]{context.modules_relpath}/[/]"
     )
-    rich_console.print(
-        "[dim]Next steps:[/] [bold]cd[/] "
-        f"[bold]{root.name}[/] and run [bold]ginkgo test --dry-run[/]"
-    )
+    if root == Path.cwd().resolve():
+        # Nowhere to cd to: the project root is already the working directory.
+        rich_console.print("[dim]Next steps:[/] run [bold]ginkgo test --dry-run[/]")
+    else:
+        rich_console.print(
+            "[dim]Next steps:[/] [bold]cd[/] "
+            f"[bold]{args.directory}[/] and run [bold]ginkgo test --dry-run[/]"
+        )
     return 0

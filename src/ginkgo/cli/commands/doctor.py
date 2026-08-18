@@ -11,8 +11,8 @@ from rich.markup import escape
 
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
-from ginkgo.config import config_session
-from ginkgo.envs.container import ContainerBackend
+from ginkgo.config import load_runtime_config
+from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import collect_access_diagnostics
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
@@ -26,8 +26,15 @@ def command_doctor(args) -> int:
         project_root=Path.cwd(),
         workflow=args.workflow,
     ).path
-    with config_session(override_paths=[Path(path).resolve() for path in args.config]) as session:
-        config = session.merged_loaded_values()
+    # Read the runtime config the way ``run`` does. A config *session* only
+    # accumulates values as the workflow module calls ``config(path)`` during
+    # import, which happens later, inside collect_workflow_diagnostics -- so
+    # reading a session here yielded an empty mapping, and every setting below
+    # silently fell back to its default.
+    config = load_runtime_config(
+        project_root=Path.cwd(),
+        override_paths=[Path(path).resolve() for path in args.config],
+    )
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -43,7 +50,7 @@ def command_doctor(args) -> int:
                     workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
                 )
             ),
-            container=ContainerBackend(project_root=Path.cwd()),
+            container=container_backend_from_config(project_root=Path.cwd(), config=config),
         )
 
     diagnostics = collect_workflow_diagnostics(
@@ -101,6 +108,9 @@ def command_doctor(args) -> int:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]⚠[/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
         target.print(f"{marker} {item.code}: {escape(item.message)}")
+        if item.location:
+            # Printed whole: a wrapped path cannot be clicked or copied.
+            target.print(f"[dim]  at {escape(item.location)}[/]", soft_wrap=True)
         if item.suggestion:
             target.print(f"[dim]{escape(item.suggestion)}[/]")
 

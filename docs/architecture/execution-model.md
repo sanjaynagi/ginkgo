@@ -14,8 +14,40 @@ Ginkgo also exposes small workflow-authoring helpers:
 
 - `expand(template, **wildcards)` for Cartesian wildcard expansion in placeholder order
 - `zip_expand(template, **wildcards)` for positional wildcard expansion with equal-length iterables
+- `per_branch(template)` for values derived from a fan-out branch's own arguments
 - `flatten(items)` for flattening nested list/tuple structures into a single list
 - `slug(value)` for deterministic file-safe artifact names
+
+### Axes versus derived columns in fan-out
+
+A fan-out argument is one of two things, and the difference is carried by its
+type rather than by convention (issue #198):
+
+- A **column**: a list of values. `.map()` consumes columns row by row;
+  `.product_map()` treats each as an axis and crosses them.
+- A **derived value**: `per_branch("...{arg}...")`, rendered once per generated
+  branch from that branch's own arguments (fan-out row values first, then
+  arguments fixed on the task call). It generates no branches of its own, takes
+  no part in labels, and so cannot fall out of step with the values it names.
+
+`expand()`/`zip_expand()` return `ExpandedTemplate`, a `list[str]` subclass that
+remembers its template. Such a list is one value per wildcard combination —
+already aligned to the values it came from — so `.product_map()` rejects it,
+naming the argument. The error offers a concrete `per_branch()` template only
+when every wildcard already names one of the call's varying arguments;
+placeholders are resolved by name, never by position, so the assumption that
+caused the original mislabelling does not reappear in the error path. Where a
+placeholder resolves to nothing, the message names it instead of printing a
+template that would fail on the next run. Passed to
+`.product_map()` it would have become a further axis crossed with the axes it
+was derived from: an N×M grid with an N·M-element path list silently became
+N·M·N·M branches, several writing each path, last writer winning, with the
+surviving file's name contradicting its contents.
+
+`_materialize_varying_columns` in `ginkgo/core/task.py` performs the split into
+`_VaryingArgs(columns, derived)`; `_branch_args` renders the derived templates
+per branch. String and bytes fan-out arguments are also rejected there, since
+`list("path")` would fan out over characters.
 
 ### Reachability and dropped calls
 
@@ -188,6 +220,22 @@ responsible for env discovery, validation, lock hashing for cache invalidation,
 environment preparation before dispatch, and shell execution through Pixi.
 
 **ContainerBackend** (`envs/container.py`) supports Docker and Podman execution for shell, notebook, and script tasks. Container envs are declared via URI schemes: `env="docker://image:tag"` or `env="oci://image:tag"`. The project root is bind-mounted at its host-side absolute path so that paths in shell commands resolve without rewriting.
+
+Paths outside the project root are mounted too, derived from what the task declares rather than configured by hand. `ShellRunner.run_logged_command` passes `exec_argv` a `mounts` list built from the node's path-shaped arguments (read-only, with `tmp_dir` read-write), and each driver runner adds its directive's declared outputs (read-write); `envs/mounts.py` normalises the set. Symlinks resolve on the host side and mount at the path as given, so a command written against a symlink still resolves. Mounts the project-root mount already covers are dropped and nested same-mode mounts collapse.
+
+A `file` input mounts its *directory*, not the file: tools routinely read a sibling of the file they are handed (`ref.fa.fai`, `.bai`), and a mount of the file alone makes an index that exists on the host invisible. Read-only means a tool that wants to *write* an index fails and says so — declaring that index as an output is what makes it writable and keeps it, since anything written into the container's own layer is discarded with the container. A declared output mounts its parent, because the output does not exist yet and the runtime would create a directory at that path to satisfy the mount. A directive's `log` is not mounted: it is captured host-side from the client's pipes, so the container never opens it.
+
+Only *declared* paths are visible, so a path interpolated into a command from config is not — the same pressure to annotate that cache correctness already applies.
+
+Mounts carry their origin. A *declared* mount may be widened from read-only to read-write by another declared mount; a *configured* one from `extra_mounts` is the user's decision, so a derived read-write mount over it raises rather than silently widening it. The filesystem root, system directories (under both their literal and resolved names, since macOS reaches them through `/private`), and the home directory are refused: an output written straight into `$HOME` would otherwise hand the image `~/.ssh` and `~/.aws` along with it.
+
+`user = "auto"` picks whatever leaves outputs owned by the invoking user, which is runtime-specific. Docker runs as the image's user and needs an explicit `-u uid:gid` (with `HOME=/tmp`, since that uid has no passwd entry). Rootless Podman already maps the container's root to the invoking user, and passing `-u` there maps into the *subordinate* uid range instead — leaving files the user cannot chmod or delete — so nothing is passed.
+
+Ginkgo's own computed environment — `GINKGO_THREADS`, plus the BLAS/OpenMP variables under `export_thread_env` — is forwarded as bare `-e NAME`, which both runtimes resolve from the client process's environment, so the values are not spelled out in the argument vector. Nothing else from `os.environ` crosses the boundary.
+
+`[container]` in `ginkgo.toml` configures `runtime`, `pull_policy`, `user`, `shell`, `auto_mount`, and `extra_mounts`; `container_backend_from_config` builds the backend from it, rejecting unknown keys and mistyped values the way `[resources.overrides]` does rather than falling back to defaults a reader of the file would not expect.
+
+`exec_failure_hint` on the `ExecutionEnvironment` protocol lets a backend diagnose a failure the raw output does not name; every driver runner asks through `ShellRunner.failure_hint`, since each raises its own error type. `ContainerBackend` uses it to identify an image that ships no `bash`, matching only on markers the runtime itself emits and on the shell as a quoted token — a shell that started and then failed on a CRLF script says "no such file or directory" too, and diagnosing that as a missing shell would cost its author more time than saying nothing.
 
 **CompositeEnvironment** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalEnvironment`.
 

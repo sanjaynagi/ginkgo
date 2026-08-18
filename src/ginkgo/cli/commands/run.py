@@ -42,7 +42,7 @@ from ginkgo.config import (
     load_runtime_config_layers,
     merge_config_layers,
 )
-from ginkgo.core.expr import record_constructed_calls
+from ginkgo.core.expr import display_labels, record_constructed_calls
 from ginkgo.core.resources import (
     ResourceOverrides,
     parse_resource_budget_args,
@@ -50,7 +50,7 @@ from ginkgo.core.resources import (
 )
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
-from ginkgo.envs.container import ContainerBackend
+from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -87,7 +87,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         resource_args=tuple(getattr(args, "resource", ()) or ()),
         dry_run=args.dry_run,
         output_mode=output_mode,
-        trust_workspace=getattr(args, "trust_workspace", False),
+        trust_mtimes=getattr(args, "trust_mtimes", False),
         profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
@@ -142,6 +142,25 @@ def command_run_help(args, *, usage: str) -> int:
     return 0
 
 
+def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, str, str]]:
+    """Return the run table's seed rows for a validated graph.
+
+    Each row is ``(node_id, task_name, label, env_label)``. The label comes
+    from the graph, the same source ``--dry-run`` labels its plan from, so a
+    fan-out branch reads the same in both before it is dispatched.
+    """
+    labels = display_labels({node_id: node.expr for node_id, node in evaluator.task_nodes.items()})
+    return [
+        (
+            node.node_id,
+            node.task_def.name,
+            labels[node.node_id],
+            environment_label(node.task_def.env),
+        )
+        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
+    ]
+
+
 def run_workflow(
     *,
     workflow_path: Path,
@@ -153,7 +172,7 @@ def run_workflow(
     resource_args: Sequence[str] = (),
     dry_run: bool,
     output_mode: RunMode = "default",
-    trust_workspace: bool = False,
+    trust_mtimes: bool = False,
     profile: bool = False,
     executor: str = "local",
     plan_preview: bool = True,
@@ -231,7 +250,7 @@ def run_workflow(
     )
     backend = CompositeEnvironment(
         local=LocalEnvironment(pixi_registry=registry),
-        container=ContainerBackend(project_root=Path.cwd()),
+        container=container_backend_from_config(project_root=Path.cwd(), config=runtime_config),
     )
 
     # Named executors: --executor picks the run default, and tasks may pin
@@ -321,10 +340,7 @@ def run_workflow(
     env_count = len(
         {node.task_def.env for node in evaluator.task_nodes.values() if node.task_def.env}
     )
-    planned_tasks = [
-        (node.node_id, node.task_def.name, environment_label(node.task_def.env))
-        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
-    ]
+    planned_tasks = planned_task_rows(evaluator)
 
     if dry_run:
         if output_mode in {"agent", "agent_verbose"}:
@@ -452,7 +468,7 @@ def run_workflow(
             evaluator = ConcurrentEvaluator(
                 provenance=recorder,
                 event_bus=bus,
-                trust_workspace=trust_workspace,
+                trust_mtimes=trust_mtimes,
                 **evaluator_kwargs,
             )
             if renderer is not None:
@@ -621,8 +637,9 @@ def _render_notebooks(
 ) -> list[CliNotebookSummary]:
     """Build CLI-renderer notebook rows from a run summary.
 
-    Resolves rendered HTML paths against the run directory and substitutes
-    runtime task labels when the renderer has them.
+    Resolves rendered HTML paths against the run directory, substitutes
+    runtime task labels when the renderer has them, and marks rows whose
+    artifact an earlier run produced and this run only replayed from cache.
     """
     rows: list[CliNotebookSummary] = []
     for notebook in run_summary.notebooks:
@@ -643,6 +660,11 @@ def _render_notebooks(
                 html_path=html_path,
                 render_status=notebook.render_status,
                 render_error=notebook.render_error,
+                replayed_from_run_id=(
+                    notebook.notebook_artifact_run_id
+                    if notebook.notebook_artifact_run_id not in (None, run_summary.run_id)
+                    else None
+                ),
             )
         )
     return rows

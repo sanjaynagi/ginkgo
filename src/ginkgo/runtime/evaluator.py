@@ -28,6 +28,7 @@ from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
+from ginkgo.errors import GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
@@ -124,7 +125,7 @@ if _unregistered:
 del _unregistered
 
 
-class CycleError(RuntimeError):
+class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
 
     def __init__(self, cycle: list[str]) -> None:
@@ -347,7 +348,7 @@ class ConcurrentEvaluator:
     provenance: RunProvenanceRecorder | None = None
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
-    trust_workspace: bool = False
+    trust_mtimes: bool = False
     profiler: ProfileRecorder | None = None
     constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
@@ -418,7 +419,7 @@ class ConcurrentEvaluator:
             publisher=load_remote_publisher(),
             hash_memo=self._hash_memo,
             materialization_log=self._materialization_log,
-            trust_workspace=self.trust_workspace,
+            trust_mtimes=self.trust_mtimes,
         )
         self._asset_store = AssetStore(
             root=WorkspaceLayout.sibling_of(self._cache_store._root).assets
@@ -1172,7 +1173,7 @@ class ConcurrentEvaluator:
         # Propagate output digests so downstream tasks can skip re-hashing.
         self._digests.record_artifacts(artifact_ids)
 
-        # Record stat-index for future --trust-workspace runs.
+        # Record stat-index for future --trust-mtimes runs.
         self._cache_coordinator.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
         for path in tmp_paths:
@@ -1506,9 +1507,9 @@ class ConcurrentEvaluator:
         """Launch a task after its inputs have been staged locally."""
         assert node.resolved_args is not None
 
-        # Fast path: in --trust-workspace mode, try a stat-based index lookup
+        # Fast path: in --trust-mtimes mode, try a stat-based index lookup
         # before computing content-addressed cache keys.
-        if self.trust_workspace and self._try_stat_index_hit(node=node):
+        if self.trust_mtimes and self._try_stat_index_hit(node=node):
             return
 
         if self._try_content_cache_hit(node=node):
@@ -1952,7 +1953,7 @@ class ConcurrentEvaluator:
         if node.resolved_args is None or self._stager.cache_lookup_requires_staging(node=node):
             return False
 
-        if self.trust_workspace and self._try_stat_index_hit(node=node):
+        if self.trust_mtimes and self._try_stat_index_hit(node=node):
             return True
 
         return self._try_content_cache_hit(node=node)
@@ -1977,7 +1978,7 @@ class ConcurrentEvaluator:
         return True
 
     def _try_stat_index_hit(self, *, node: NodeRun) -> bool:
-        """Attempt a stat-index cache hit for ``--trust-workspace`` mode.
+        """Attempt a stat-index cache hit for ``--trust-mtimes`` mode.
 
         Returns ``True`` if the hit succeeded and the node was marked
         complete, ``False`` to fall through to the content-addressed path.
@@ -2048,7 +2049,7 @@ class ConcurrentEvaluator:
             )
         )
 
-        # Record stat-index entry so future --trust-workspace runs can
+        # Record stat-index entry so future --trust-mtimes runs can
         # find this cache key without content hashing.
         self._cache_coordinator.record_stat_index_entry(node=node, cache_key=cache_key)
 
@@ -2080,7 +2081,7 @@ class ConcurrentEvaluator:
             # Record backend type and container-specific metadata.
             if is_container_env(node.task_def.env):
                 extra: dict[str, Any] = {"backend": "container"}
-                digest = self.backend.env_identity(env=node.task_def.env)
+                digest = self.backend.materialized_digest(env=node.task_def.env)
                 if digest is not None:
                     extra["container_image_digest"] = digest
                 self.provenance.update_task_extra(
@@ -2163,8 +2164,7 @@ class ConcurrentEvaluator:
             return None
 
         if node.expr.display_label_parts:
-            base_name = node.task_def.name.rsplit(".", 1)[-1]
-            return f"{base_name}[{','.join(node.expr.display_label_parts)}]"
+            return node.expr.display_label
 
         label_key = first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:

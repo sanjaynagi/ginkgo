@@ -20,7 +20,8 @@ modules relatively (`from .modules.analysis import build_brief`) or absolutely
 Keep `flow.py` thin:
 
 - good: flow definitions, config lookups, task composition, `.map()`,
-  `.product_map()`, `expand(...)`
+  `.product_map()`, `expand(...)` for row-aligned columns, `per_branch(...)`
+  for per-branch output paths
 - move to `modules/`: task bodies, shell command construction, parsing, heavy
   transformation logic
 

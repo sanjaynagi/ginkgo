@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from ginkgo.envs.container import (
     is_container_env,
     parse_container_uri,
 )
+from ginkgo.envs.mounts import mount
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 
@@ -73,6 +75,7 @@ class TestContainerBackendExecArgv:
         backend = ContainerBackend(
             runtime="docker",
             project_root=tmp_path,
+            user="root",
         )
         argv = backend.exec_argv(
             env="docker://myorg/image:3.11",
@@ -96,6 +99,97 @@ class TestContainerBackendExecArgv:
         backend = ContainerBackend(runtime="podman", project_root=tmp_path)
         argv = backend.exec_argv(env="docker://img:1", cmd="ls")
         assert argv[0] == "podman"
+
+    def test_runs_as_invoking_user_by_default(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert "-u" in argv
+        assert argv[argv.index("-u") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+    def test_explicit_user_is_passed_through(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, user="1000:1000")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert argv[argv.index("-u") + 1] == "1000:1000"
+
+    def test_invalid_user_raises(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, user="nobody")
+        with pytest.raises(ValueError, match="Invalid \\[container\\] user"):
+            backend.exec_argv(env="docker://img:1", cmd="ls")
+
+    def test_configurable_shell(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, shell="sh")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert argv[-3:] == ["sh", "-c", "ls"]
+
+    def test_mounts_declared_input_outside_project(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        reads = tmp_path / "data" / "reads.fastq"
+        reads.parent.mkdir()
+        reads.write_text("@r\n")
+
+        backend = ContainerBackend(project_root=project, user="root")
+        argv = backend.exec_argv(
+            env="docker://img:1",
+            cmd=f"cat {reads}",
+            mounts=[mount(reads)],
+        )
+        assert f"{reads}:{reads}:ro" in argv
+
+    def test_input_inside_project_is_not_remounted(self, tmp_path: Path):
+        reads = tmp_path / "data" / "reads.fastq"
+        reads.parent.mkdir()
+        reads.write_text("@r\n")
+
+        backend = ContainerBackend(project_root=tmp_path, user="root")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
+        # The project mount is present and covers it; a second mount for the
+        # same path is what must be absent.
+        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        assert volumes == [f"{tmp_path}:{tmp_path}"]
+
+    def test_symlinked_input_mounts_real_path_at_declared_path(self, tmp_path: Path):
+        project = tmp_path / "project"
+        project.mkdir()
+        real = tmp_path / "store" / "reads.fastq"
+        real.parent.mkdir()
+        real.write_text("@r\n")
+        link = project / "reads.fastq"
+        link.symlink_to(real)
+
+        backend = ContainerBackend(project_root=project, user="root")
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(link)])
+        assert f"{real}:{link}:ro" in argv
+
+    def test_auto_mount_off_ignores_declared_inputs(self, tmp_path: Path):
+        reads = tmp_path / "reads.fastq"
+        reads.write_text("@r\n")
+
+        project = tmp_path / "project"
+        project.mkdir()
+        backend = ContainerBackend(
+            project_root=project,
+            user="root",
+            auto_mount=False,
+        )
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls", mounts=[mount(reads)])
+        volumes = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        assert volumes == [f"{project}:{project}"]
+
+    def test_extra_mounts_are_always_applied(self, tmp_path: Path):
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        project = tmp_path / "project"
+        project.mkdir()
+        backend = ContainerBackend(
+            project_root=project,
+            user="root",
+            auto_mount=False,
+            extra_mounts=(f"{scratch}:rw",),
+        )
+        argv = backend.exec_argv(env="docker://img:1", cmd="ls")
+        assert f"{scratch}:{scratch}:rw" in argv
 
 
 class TestContainerBackendValidateEnvs:
@@ -208,13 +302,49 @@ class TestContainerBackendPrepare:
 
 
 class TestContainerBackendEnvIdentity:
+    def test_returns_the_declared_image_reference(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        assert backend.env_identity(env="docker://myimg:latest") == "myimg:latest"
+
+    def test_identity_does_not_consult_the_runtime(self, tmp_path: Path):
+        """Identity is needed before the image is pulled, so it cannot shell out."""
+        backend = ContainerBackend(project_root=tmp_path)
+        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+            backend.env_identity(env="docker://myimg:latest")
+
+        mock_run.assert_not_called()
+
+    def test_identity_is_stable_across_the_absent_to_present_transition(self, tmp_path: Path):
+        """Regression for #194: pulling the image must not move the identity.
+
+        The image is pulled by ``prepare``, which runs after the cache key is
+        built. An identity taken from the local image store therefore read as
+        unknown on the run that pulled the image and as a digest on the next
+        one, re-running every container task once.
+        """
+        backend = ContainerBackend(project_root=tmp_path)
+        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="No such image"
+            )
+            before = backend.env_identity(env="docker://myimg:latest")
+
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="sha256:abc123def456\n", stderr=""
+            )
+            after = backend.env_identity(env="docker://myimg:latest")
+
+        assert before == after
+
+
+class TestContainerBackendMaterializedDigest:
     def test_returns_digest(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path)
         with patch("ginkgo.envs.container.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="sha256:abc123def456\n", stderr=""
             )
-            digest = backend.env_identity(env="docker://myimg:latest")
+            digest = backend.materialized_digest(env="docker://myimg:latest")
 
         assert digest == "sha256:abc123def456"
 
@@ -224,7 +354,7 @@ class TestContainerBackendEnvIdentity:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr="not found"
             )
-            digest = backend.env_identity(env="docker://myimg:latest")
+            digest = backend.materialized_digest(env="docker://myimg:latest")
 
         assert digest is None
 
@@ -234,8 +364,8 @@ class TestContainerBackendEnvIdentity:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="sha256:abc\n", stderr=""
             )
-            backend.env_identity(env="docker://myimg:latest")
-            backend.env_identity(env="docker://myimg:latest")
+            backend.materialized_digest(env="docker://myimg:latest")
+            backend.materialized_digest(env="docker://myimg:latest")
 
         mock_run.assert_called_once()
 
@@ -339,11 +469,15 @@ class TestCompositeEnvironment:
 
     def test_env_identity_delegates(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
+        assert composite.env_identity(env="docker://img:1") == "img:1"
+
+    def test_materialized_digest_delegates(self, tmp_path: Path):
+        composite = self._make_composite(tmp_path)
         with patch("ginkgo.envs.container.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="sha256:abc\n", stderr=""
             )
-            digest = composite.env_identity(env="docker://img:1")
+            digest = composite.materialized_digest(env="docker://img:1")
         assert digest == "sha256:abc"
 
 
@@ -460,12 +594,21 @@ class TestContainerShellE2E:
         assert task_entry["backend"] == "container"
         assert task_entry["container_image_digest"] == "sha256:deadbeef1234"
 
-    def test_container_cache_uses_image_digest(self, tmp_path: Path) -> None:
-        """The cache key changes when the container image digest changes."""
+    def test_container_cache_uses_the_declared_image_reference(self, tmp_path: Path) -> None:
+        """The cache key follows the declared image, not the local image store.
+
+        A key built from the pulled image's ID moved the first time the image
+        was pulled, because the key is built before ``prepare`` pulls it
+        (issue #194).
+        """
         from ginkgo.runtime.caching.cache import CacheStore
 
         @task(kind="shell", env="docker://myimg:latest")
         def shell_task(output_path: str) -> str:
+            return shell(cmd=f"echo ok > {output_path}", output=output_path)
+
+        @task(kind="shell", env="docker://myimg:other")
+        def other_image_task(output_path: str) -> str:
             return shell(cmd=f"echo ok > {output_path}", output=output_path)
 
         store = CacheStore(
@@ -476,11 +619,19 @@ class TestContainerShellE2E:
         )
         resolved_args = {"output_path": str(tmp_path / "out.txt")}
 
-        def key_for(digest: str) -> str:
-            with patch.object(ContainerBackend, "env_identity", return_value=digest):
-                key, _ = store.build_cache_key(task_def=shell_task, resolved_args=resolved_args)
+        def key_for(task_def: Any, *, image_present: bool) -> str:
+            with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0 if image_present else 1,
+                    stdout="sha256:abc123\n" if image_present else "",
+                    stderr="",
+                )
+                key, _ = store.build_cache_key(task_def=task_def, resolved_args=resolved_args)
             return key
 
-        # A changed image digest must invalidate the key; an unchanged one must not.
-        assert key_for("sha256:abc123") != key_for("sha256:def456")
-        assert key_for("sha256:abc123") == key_for("sha256:abc123")
+        # A different image invalidates the key; pulling the same image does not.
+        assert key_for(shell_task, image_present=False) != key_for(
+            other_image_task, image_present=False
+        )
+        assert key_for(shell_task, image_present=False) == key_for(shell_task, image_present=True)

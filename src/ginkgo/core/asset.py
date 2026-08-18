@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
-from ginkgo.core.types import file
+from ginkgo.core.types import file, path_binding_remedy
 
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
@@ -64,35 +64,35 @@ class AssetKey:
         return cls(namespace=str(data["namespace"]), name=str(data["name"]))
 
     @classmethod
-    def parse(cls, text: str, *, strict: bool = False) -> AssetKey:
-        """Parse a ``namespace:name`` (or bare ``name``) string.
+    def parse(cls, text: str) -> AssetKey:
+        """Parse a canonical ``<kind>:<name>`` key string.
+
+        A bare name is not a key: the kind is half of the identity, so
+        inferring one would silently address a different asset than the
+        caller wrote. Callers holding a bare name resolve it against the
+        catalog instead (see ``ginkgo.cli.commands.asset``).
 
         Parameters
         ----------
         text : str
-            Key text. ``namespace:name`` yields an explicit key; a bare
-            ``name`` (no separator) defaults to the ``file`` namespace.
-        strict : bool
-            When True, malformed input (empty text, or a ``:`` with an empty
-            namespace or name) raises :class:`ValueError`. When False, such
-            input falls back to ``file:<text>``.
+            Key text as rendered by :meth:`__str__`.
 
         Returns
         -------
         AssetKey
+
+        Raises
+        ------
+        ValueError
+            If *text* is not ``<kind>:<name>`` with both parts non-empty.
         """
         namespace, separator, name = text.partition(":")
-        if separator:
-            if namespace and name:
-                return cls(namespace=namespace, name=name)
-            if strict:
-                raise ValueError(f"Invalid asset key: {text!r}")
-            return cls(namespace="file", name=text)
-        if namespace:
-            return cls(namespace="file", name=namespace)
-        if strict:
-            raise ValueError(f"Invalid asset key: {text!r}")
-        return cls(namespace="file", name=text)
+        if not (separator and namespace and name):
+            raise ValueError(
+                f"Invalid asset key {text!r}: expected '<kind>:<name>', "
+                f"where kind is one of {', '.join(ASSET_KIND_NAMES)}"
+            )
+        return cls(namespace=namespace, name=name)
 
     def __str__(self) -> str:
         """Render the canonical ``namespace:name`` string."""
@@ -285,18 +285,40 @@ class AssetRef:
         """Return the asset name."""
         return self.key.name
 
-    def load(self) -> str:
-        """Return the stored artifact path.
+    def as_file(self, *, execution_mode: str | None = None) -> file:
+        """Return the artifact path as a ``ginkgo.file`` marker.
+
+        Available for the kinds whose artifact holds the payload's own bytes
+        (``file``, ``fig``, ``text``). A kind stored in Ginkgo's own encoding
+        (``table``, ``array``, ``model``) has no readable file path, so it
+        raises rather than wrapping a serialized blob in a `file` marker.
+
+        Parameters
+        ----------
+        execution_mode : str | None
+            ``TaskDef.execution_mode`` of the consuming task, when known, so
+            the error offers remedies that work for that kind of task.
 
         Returns
         -------
-        str
+        file
             Absolute path to the immutable artifact content.
-        """
-        return self.artifact_path
 
-    def as_file(self) -> file:
-        """Return the artifact path as a ``ginkgo.file`` marker."""
+        Raises
+        ------
+        TypeError
+            When the artifact holds an encoded payload rather than the bytes
+            its path implies.
+        """
+        from ginkgo.runtime.artifacts.asset_kinds import artifact_encoding_for
+
+        encoding = artifact_encoding_for(self.kind)
+        if encoding is not None:
+            remedy = path_binding_remedy(annotation_label="file", execution_mode=execution_mode)
+            raise TypeError(
+                f"asset {self.key} is a `{self.kind}` asset, so it has no readable file "
+                f"path: its artifact holds {encoding}. {remedy}"
+            )
         return file(self.artifact_path)
 
     def to_dict(self) -> dict[str, Any]:

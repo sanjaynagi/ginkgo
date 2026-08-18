@@ -166,6 +166,47 @@ class TestPixiRegistry:
         with pytest.raises(PixiEnvImportError, match="import failed"):
             registry.resolve(env=str(env_file))
 
+    def test_env_identity_returns_string(self) -> None:
+        registry = PixiRegistry(project_root=_TESTS_DIR)
+        digest = registry.env_identity(env=_TEST_ENV_NAME)
+        assert isinstance(digest, str)
+        assert len(digest) == 64  # BLAKE3 hex digest
+
+    def test_env_identity_is_stable_when_the_lock_file_appears(self, tmp_path: Path) -> None:
+        """Regression for #194: installing the environment must not move identity.
+
+        ``pixi install`` writes the neighbouring ``pixi.lock``, and it runs after
+        the cache key has been built. An identity taken from the lock file
+        therefore read as unknown on the run that installed the environment and
+        as a digest on the next one, re-running every Pixi-backed task once.
+        """
+        manifest = tmp_path / "pixi.toml"
+        manifest.write_text(
+            "[workspace]\nname = 'x'\nchannels = []\nplatforms = []\n", encoding="utf-8"
+        )
+
+        before = PixiRegistry(project_root=tmp_path).env_identity(env=str(manifest))
+        (tmp_path / "pixi.lock").write_text("version: 6\n", encoding="utf-8")
+        after = PixiRegistry(project_root=tmp_path).env_identity(env=str(manifest))
+
+        assert before == after
+
+    def test_env_identity_changes_when_the_manifest_changes(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "pixi.toml"
+        manifest.write_text(
+            "[workspace]\nname = 'x'\nchannels = []\nplatforms = []\n", encoding="utf-8"
+        )
+        before = PixiRegistry(project_root=tmp_path).env_identity(env=str(manifest))
+
+        manifest.write_text(
+            "[workspace]\nname = 'x'\nchannels = []\nplatforms = []\n\n"
+            "[dependencies]\npython = '>=3.11'\n",
+            encoding="utf-8",
+        )
+        after = PixiRegistry(project_root=tmp_path).env_identity(env=str(manifest))
+
+        assert before != after
+
     def test_lock_hash_returns_string(self) -> None:
         registry = PixiRegistry(project_root=_TESTS_DIR)
         digest = registry.lock_hash(env=_TEST_ENV_NAME)

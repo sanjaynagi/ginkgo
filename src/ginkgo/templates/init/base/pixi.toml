@@ -3,5 +3,21 @@ name = "ginkgo-init-template"
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
+# This is the environment the `ginkgo` CLI itself runs from, so every import
+# used inside a Python or notebook task body has to be installed here. Python
+# tasks cannot declare `env=` — only shell, script, and notebook tasks can —
+# so add your analysis libraries to this manifest, not to a task env.
 [dependencies]
 python = ">=3.11"
+numpy = ">=2.0"
+pandas = ">=2.0"
+
+# Pinned to the ginkgo `ginkgo init` ran from, so this project's orchestrator is
+# reproducible. Change `rev` to move to a different ginkgo.
+[pypi-dependencies]
+ginkgo = { git = "https://github.com/sanjaynagi/ginkgo.git", rev = "{{ ginkgo_rev }}", extras = ["notebooks"] }
+
+[tasks]
+run = "ginkgo run"
+check = "ginkgo test --dry-run"
+doctor = "ginkgo doctor"

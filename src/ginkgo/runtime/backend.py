@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
 from ginkgo.envs.container import ContainerBackend, is_container_env
+from ginkgo.envs.mounts import Mount
 from ginkgo.envs.pixi import PixiRegistry
 
 
@@ -33,26 +34,77 @@ class ExecutionEnvironment(Protocol):
         """Ensure the execution environment is ready for dispatch."""
         ...
 
-    def env_identity(self, *, env: str) -> str | None:
+    def env_identity(self, *, env: str) -> str:
         """Return a stable identity string for cache keying.
 
-        For Pixi environments this is the lock-file digest.  For container
-        environments it would be the image digest.
+        The identity is a function of the *declared* environment: the Pixi
+        manifest digest, or the container image reference. It must be resolvable
+        before :meth:`prepare` and must read the same afterwards, because the
+        cache key is built before the environment is materialised. An identity
+        that changed on materialisation re-ran every environment-backed task on
+        the run after the environment was first installed (issue #194).
+
+        Returns
+        -------
+        str
+            Identity of the declared environment. Never empty: the cache layer
+            refuses to build a key from an unresolved identity.
+        """
+        ...
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return a digest of the environment as materialised here, for provenance.
+
+        Unlike :meth:`env_identity`, this describes local state — the solved
+        lock file, the pulled image — so it is only available once
+        :meth:`prepare` has run. Never used for cache keys.
 
         Returns
         -------
         str | None
-            Hex digest or ``None`` when identity cannot be determined.
+            Digest, or ``None`` when the environment is not materialised.
         """
         ...
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
         """Build an argument vector to execute *cmd* inside the environment.
+
+        Parameters
+        ----------
+        env : str
+            Environment name, path, or container URI.
+        cmd : str
+            Shell command string.
+        mounts : Sequence[Mount]
+            Host paths the command needs, declared by the task. Only container
+            environments act on these; host-local environments ignore them.
+        env_vars : Sequence[str]
+            Names of environment variables Ginkgo computed for this task that
+            must reach the command. Host-local environments inherit them
+            already and ignore this.
 
         Returns
         -------
         list[str]
             Argument vector suitable for ``subprocess.run(..., shell=False)``.
+        """
+        ...
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Return a diagnosis to append to a failed command's error, if any.
+
+        Returns
+        -------
+        str | None
+            A message naming a cause the raw output does not, or ``None`` when
+            the environment has nothing to add.
         """
         ...
 
@@ -89,13 +141,33 @@ class LocalEnvironment:
         """Materialize the Pixi environment."""
         self.pixi_registry.prepare(env=env)
 
-    def env_identity(self, *, env: str) -> str | None:
-        """Return the Pixi lock-file BLAKE3 digest."""
+    def env_identity(self, *, env: str) -> str:
+        """Return the BLAKE3 digest of the Pixi manifest."""
+        return self.pixi_registry.env_identity(env=env)
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        """Return the BLAKE3 digest of the installed environment's lock file."""
         return self.pixi_registry.lock_hash(env=env)
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
-        """Build argv to run *cmd* through the Pixi environment."""
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
+        """Build argv to run *cmd* through the Pixi environment.
+
+        Pixi runs on the host, where every declared path is already reachable
+        and the subprocess environment is inherited, so *mounts* and *env_vars*
+        are accepted for protocol conformance and ignored.
+        """
         return self.pixi_registry.exec_argv(env=env, cmd=cmd)
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Pixi failures surface the tool's own error; nothing to add."""
+        return None
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Return the path to the Pixi lock file for provenance capture."""
@@ -152,13 +224,28 @@ class CompositeEnvironment:
         """Delegate to the correct environment."""
         self._route(env=env).prepare(env=env)
 
-    def env_identity(self, *, env: str) -> str | None:
+    def env_identity(self, *, env: str) -> str:
         """Delegate to the correct environment."""
         return self._route(env=env).env_identity(env=env)
 
-    def exec_argv(self, *, env: str, cmd: str) -> list[str]:
+    def materialized_digest(self, *, env: str) -> str | None:
         """Delegate to the correct environment."""
-        return self._route(env=env).exec_argv(env=env, cmd=cmd)
+        return self._route(env=env).materialized_digest(env=env)
+
+    def exec_argv(
+        self,
+        *,
+        env: str,
+        cmd: str,
+        mounts: Sequence[Mount] = (),
+        env_vars: Sequence[str] = (),
+    ) -> list[str]:
+        """Delegate to the correct environment."""
+        return self._route(env=env).exec_argv(env=env, cmd=cmd, mounts=mounts, env_vars=env_vars)
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        """Delegate to the correct environment."""
+        return self._route(env=env).exec_failure_hint(env=env, exit_code=exit_code, output=output)
 
     def env_lock_path(self, *, env: str) -> Path | None:
         """Delegate to the correct environment."""

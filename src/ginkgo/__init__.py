@@ -42,6 +42,7 @@ _EXPORTS = {
     "notebook": ("ginkgo.core.notebook", "notebook"),
     "optional": ("ginkgo.core.optional", "optional"),
     "param": ("ginkgo.params", "param"),
+    "per_branch": ("ginkgo.wildcards", "per_branch"),
     "remote_file": ("ginkgo.core.remote", "remote_file"),
     "remote_folder": ("ginkgo.core.remote", "remote_folder"),
     "script": ("ginkgo.core.script", "script"),

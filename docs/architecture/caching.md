@@ -6,7 +6,7 @@ The cache lives under `.ginkgo/cache/` and is keyed by:
 - task version
 - task source hash
 - resolved input hashes
-- environment lock hash when `env=` is used
+- environment identity when `env=` is used
 - source file hash for driver tasks (notebook and script) folded at evaluation time
 
 Implemented cache hashing includes:
@@ -15,11 +15,77 @@ Implemented cache hashing includes:
 - scalar hashing via stable value hashing
 - file-content hashing
 - recursive folder-content hashing
-- Pixi lock hashing for local environments
-- container image digest hashing for container environments
+- Pixi manifest hashing for local environments
+- declared image reference for container environments
 - codec-based hashing for arrays, DataFrames, and other supported Python values
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
+
+## Task source hash
+
+The task source hash covers the task body and the local helper modules it
+statically imports, so editing a helper invalidates the tasks that use it. The
+closure stops at the project's own source: modules under the interpreter's
+prefix or its installed-package directories are excluded, because dependencies
+are pinned by environment identity instead. Without that boundary a project
+that keeps its environment in its own tree (`.pixi/envs/`, `.venv/`) would walk
+the whole interpreter for every task.
+
+## Environment identity
+
+`ExecutionEnvironment.env_identity` returns the identity of the *declared*
+environment: the digest of the Pixi manifest, or the container image reference.
+`CacheStore._env_hash` folds it into the key, and refuses (`UnresolvedEnvIdentityError`)
+to build a key from a backend that returns nothing for a declared `env=`.
+
+The identity has to be knowable before the environment is materialised, because
+`_prepare_node` builds the cache key before `_prepare_task_environment` runs —
+deliberately, so that a task about to hit the cache does not pay for a
+`pixi install` or an image pull. Identity previously came from local
+materialisation state (the `pixi.lock` that `pixi install` writes, the image ID
+of a pulled image), which meant the key on the run that materialised an
+environment differed from the key on every run afterwards, and every env-backed
+task re-ran exactly once — issue #194, visible on the stock `ginkgo init`
+scaffold, which ships manifests and no locks.
+
+Hashing the declaration also makes keys portable, which lock-derived keys never
+were: a lock is solved per machine and per moment.
+
+### Drift is caught on the entry, not in the key
+
+Keying on the declaration leaves drift the declaration does not record —
+`pixi update` re-solving a lock while `pixi.toml` still says `numpy = ">=2.0"`,
+or a mutable tag repointed upstream. Those changes must not serve stale results,
+so they are caught where the evidence exists rather than in the key.
+
+`ExecutionEnvironment.materialized_digest` reports the environment as
+materialised on *this* machine — the lock file's digest, the pulled image's ID.
+`CacheStore.save` records it in the entry's `meta.json` as
+`env_materialized_digest`, and `CacheStore._env_materialization_matches` checks a
+candidate hit against it inside `load` and `has_entry`, so every lookup path —
+content-addressed, the `--trust-mtimes` stat index, and the `--dry-run` preview —
+gets the same answer:
+
+- materialised here and different: the entry was produced against other
+  dependencies, so it is a miss and the task re-runs;
+- materialised here and the same: a genuine hit;
+- not materialised here: no local evidence either way, and the entry stands.
+  Establishing evidence would mean installing or pulling an environment to serve
+  a cache hit, which is the cost the deferred materialisation exists to avoid.
+  This is the case a shared cache lands in on a machine that has never built the
+  environment.
+
+Neither read costs anything next to executing the task, both are memoised per
+environment per run, and neither happens on a miss. Because a lookup can ask for
+the digest before `prepare` has run, neither backend memoises a *negative*
+answer: an absent lock file or an unpulled image has to read as materialised once
+it is there.
+
+Entries written before the digest was recorded have nothing to compare and stand.
+
+The digest is also recorded for provenance, where it always has been: the lock
+file is copied into the run directory, and a container task's manifest entry
+carries `container_image_digest`.
 
 ## Untracked path boundaries
 

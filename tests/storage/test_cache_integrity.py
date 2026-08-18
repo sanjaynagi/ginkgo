@@ -8,6 +8,7 @@ import pytest
 
 from ginkgo import evaluate, file, folder, shell, task
 from ginkgo.cli.commands.cache import _safe_rmtree
+from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
 from tests.conftest import EventCollector
 
@@ -76,6 +77,58 @@ class TestSourceHash:
                 TaskDef(fn=tasks.compute)
         finally:
             sys.path.remove(str(tmp_path))
+            sys.modules.pop("pkg.helpers", None)
+            sys.modules.pop("pkg.tasks", None)
+            sys.modules.pop("pkg", None)
+
+    def test_environment_inside_project_stays_out_of_the_closure(self, tmp_path, monkeypatch):
+        """An env nested in the project root must not pull installed modules in."""
+        module_dir = tmp_path / "pkg"
+        module_dir.mkdir()
+        (module_dir / "__init__.py").write_text("")
+        (module_dir / "tasks.py").write_text(
+            textwrap.dedent("""\
+                import vendorlib
+
+                from . import helpers
+
+                def compute(x: int) -> int:
+                    return vendorlib.scale(helpers.compute(x))
+            """),
+            encoding="utf-8",
+        )
+        (module_dir / "helpers.py").write_text(
+            "def compute(x: int) -> int:\n    return x + 1\n", encoding="utf-8"
+        )
+        env_dir = tmp_path / ".venv"
+        site_dir = env_dir / "lib"
+        site_dir.mkdir(parents=True)
+        (site_dir / "vendorlib.py").write_text(
+            "def scale(x: int) -> int:\n    return x * 2\n", encoding="utf-8"
+        )
+
+        import importlib
+        import sys
+
+        sys.path.insert(0, str(site_dir))
+        sys.path.insert(0, str(tmp_path))
+        try:
+            tasks = importlib.import_module("pkg.tasks")
+
+            monkeypatch.setattr(source_hash, "_installed_roots", lambda: ())
+            unfiltered = source_hash._local_import_closure(tasks)
+            assert "vendorlib" in unfiltered
+
+            monkeypatch.setattr(source_hash, "_installed_roots", lambda: (env_dir,))
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "pkg",
+                "pkg.tasks",
+                "pkg.helpers",
+            }
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.path.remove(str(site_dir))
+            sys.modules.pop("vendorlib", None)
             sys.modules.pop("pkg.helpers", None)
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)

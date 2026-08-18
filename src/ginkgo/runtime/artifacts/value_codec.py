@@ -15,6 +15,7 @@ import pandas as pd
 
 from ginkgo.core.asset import AssetKind, AssetRef, AssetResult
 from ginkgo.core.types import file, folder, tmp_dir
+from ginkgo.errors import GinkgoError
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 INLINE_BYTES_LIMIT = 256 * 1024
 
 
-class CodecError(TypeError):
+class CodecError(GinkgoError, TypeError):
     """Raised when a value cannot be encoded by Ginkgo."""
 
 

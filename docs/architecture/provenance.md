@@ -20,6 +20,6 @@ The manifest records:
 - retries and attempts
 - outputs
 - asset versions and metadata for asset-producing tasks
-- notebook artifact metadata including rendered HTML paths, executed notebook paths where applicable, and render status
+- notebook artifact metadata including rendered HTML paths, executed notebook paths where applicable, render status, and `notebook_artifact_run_id` naming the run that rendered the artifacts (which is an earlier run when this run replayed them from cache)
 - exit codes and errors
 - run-level CPU and RSS summaries

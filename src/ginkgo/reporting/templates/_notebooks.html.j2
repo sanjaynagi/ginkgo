@@ -1,5 +1,5 @@
-{% if report.notebooks %}
-<h2 id="notebooks"><span class="num">07</span>Notebooks</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "notebooks") -}}
 {% for card in report.notebooks %}
 <div class="notebook-card">
   <div class="notebook-icon">nb</div>
@@ -10,4 +10,3 @@
   <a class="link" href="{{ card.link_relpath }}">open →</a>
 </div>
 {% endfor %}
-{% endif %}

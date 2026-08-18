@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import array, fig, file, model, table, task, text
-from ginkgo.core.asset import AssetRef, AssetResult
+from ginkgo import array, asset, fig, file, model, table, task, text
+from ginkgo.core.asset import AssetKey, AssetRef, AssetResult
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
     serialize_asset,
@@ -447,7 +447,7 @@ class TestEvaluatorIntegration:
         result = ginkgo.evaluate(make_table_task())
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "make_table_task.features"
+        assert result.key.name == "features"
         assert result.metadata["row_count"] == 2
 
     def test_grouped_asset_persists_group_metadata(
@@ -457,7 +457,7 @@ class TestEvaluatorIntegration:
         result = ginkgo.evaluate(make_grouped_table_task())
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "make_grouped_table_task.features"
+        assert result.key.name == "features"
         assert result.metadata["ginkgo_group"] == "QC metrics"
         assert result.metadata["ginkgo_caption"] == "Variant counts after QC filtering"
 
@@ -488,11 +488,11 @@ class TestEvaluatorIntegration:
         assert scalar == 42
 
         assert table_ref.key.namespace == "table"
-        assert table_ref.key.name == "make_mixed_task.features"
+        assert table_ref.key.name == "features"
         assert array_ref.key.namespace == "array"
         assert array_ref.key.name == "make_mixed_task.array[0]"
         assert text_ref.key.namespace == "text"
-        assert text_ref.key.name == "make_mixed_task.summary"
+        assert text_ref.key.name == "summary"
 
         # Each asset carries kind-specific metadata.
         assert table_ref.metadata["sub_kind"] == "pandas"
@@ -575,6 +575,188 @@ class TestEvaluatorIntegration:
         assert ginkgo.evaluate(expr) == 1
 
 
+# ---------------------------------------------------------------------------
+# Explicit names and key format
+# ---------------------------------------------------------------------------
+
+
+EXPLICIT_NAME = "sites/forest/observations"
+
+
+@task()
+def named_file_asset_task(output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text("bytes\n", encoding="utf-8")
+    return asset(out, name=EXPLICIT_NAME)
+
+
+@task()
+def named_table_asset_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name=EXPLICIT_NAME)
+
+
+@task()
+def named_array_asset_task() -> object:
+    return array(np.arange(3), name=EXPLICIT_NAME)
+
+
+@task()
+def named_fig_asset_task(output_path: str) -> object:
+    out = Path(output_path)
+    out.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    return fig(out, name=EXPLICIT_NAME)
+
+
+@task()
+def named_text_asset_task() -> object:
+    return text("one line\n", name=EXPLICIT_NAME)
+
+
+@task()
+def other_named_text_asset_task() -> object:
+    """A second task claiming the same explicit name, with other content."""
+    return text("another line\n", name=EXPLICIT_NAME)
+
+
+@task()
+def named_model_asset_task() -> object:
+    from sklearn.linear_model import LogisticRegression
+
+    clf = LogisticRegression()
+    clf.fit(np.array([[0.0], [1.0]]), np.array([0, 1]))
+    return model(clf, name=EXPLICIT_NAME)
+
+
+class TestExplicitAssetNames:
+    """An explicit ``name=`` is the asset name, for every kind (issue #203)."""
+
+    @pytest.mark.parametrize(
+        ("kind", "expression_factory", "required_modules"),
+        [
+            ("file", lambda: named_file_asset_task(output_path="note.txt"), ()),
+            ("table", named_table_asset_task, ("pyarrow",)),
+            ("array", named_array_asset_task, ()),
+            ("fig", lambda: named_fig_asset_task(output_path="plot.png"), ()),
+            ("text", named_text_asset_task, ()),
+            ("model", named_model_asset_task, ("sklearn.linear_model", "joblib")),
+        ],
+    )
+    def test_explicit_name_is_the_key_name_for_every_kind(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        expression_factory: Any,
+        required_modules: tuple[str, ...],
+    ) -> None:
+        for module in required_modules:
+            pytest.importorskip(module)
+        monkeypatch.chdir(tmp_path)
+
+        result = ginkgo.evaluate(expression_factory())
+
+        assert isinstance(result, AssetRef)
+        assert result.key.namespace == kind
+        # No task-name prefix: the key name is exactly what the task asked for.
+        assert result.key.name == EXPLICIT_NAME
+        # And the documented format is what gets rendered and parsed back.
+        assert str(result.key) == f"{kind}:{EXPLICIT_NAME}"
+        assert AssetKey.parse(str(result.key)) == result.key
+
+        catalogued = AssetStore(root=tmp_path / ".ginkgo" / "assets").list_asset_keys()
+        assert result.key in catalogued
+
+    @pytest.mark.parametrize(
+        ("kind", "expression_factory", "required_modules"),
+        [
+            ("file", lambda: named_file_asset_task(output_path="note.txt"), ()),
+            ("table", named_table_asset_task, ("pyarrow",)),
+            ("array", named_array_asset_task, ()),
+            ("fig", lambda: named_fig_asset_task(output_path="plot.png"), ()),
+            ("text", named_text_asset_task, ()),
+            ("model", named_model_asset_task, ("sklearn.linear_model", "joblib")),
+        ],
+    )
+    def test_explicit_name_round_trips_through_asset_show(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        kind: str,
+        expression_factory: Any,
+        required_modules: tuple[str, ...],
+    ) -> None:
+        for module in required_modules:
+            pytest.importorskip(module)
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(expression_factory())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        # The bare name the task passed resolves without naming the kind.
+        assert main(["asset", "show", EXPLICIT_NAME]) == 0
+        assert f"Asset Key: {kind}:{EXPLICIT_NAME}" in capsys.readouterr().out
+
+        # The qualified key from ``asset ls`` resolves too.
+        assert main(["asset", "show", f"{kind}:{EXPLICIT_NAME}"]) == 0
+        assert f"Asset Key: {kind}:{EXPLICIT_NAME}" in capsys.readouterr().out
+
+    def test_bare_name_shared_by_two_kinds_asks_for_qualification(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pytest.importorskip("pyarrow")
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(named_table_asset_task())
+        ginkgo.evaluate(named_text_asset_task())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        assert main(["asset", "show", EXPLICIT_NAME]) == 1
+        error = capsys.readouterr().err
+        assert "exists in several kinds" in error
+        assert f"table:{EXPLICIT_NAME}" in error
+        assert f"text:{EXPLICIT_NAME}" in error
+
+    def test_unknown_name_suggests_catalogued_keys(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        pytest.importorskip("pyarrow")
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(named_table_asset_task())
+        capsys.readouterr()
+
+        from ginkgo.cli.app import main
+
+        assert main(["asset", "show", "sites/forest/observation"]) == 1
+        error = capsys.readouterr().err
+        # No invented ``file:`` asset, and the real key is offered instead.
+        assert "file:" not in error
+        assert f"table:{EXPLICIT_NAME}" in error
+
+    def test_two_tasks_naming_one_key_share_the_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dropping the task prefix makes an explicit name shared, by design."""
+        monkeypatch.chdir(tmp_path)
+
+        first = ginkgo.evaluate(named_text_asset_task())
+        second = ginkgo.evaluate(other_named_text_asset_task())
+
+        assert isinstance(first, AssetRef)
+        assert isinstance(second, AssetRef)
+        assert first.key == second.key
+        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+        assert len(store.list_versions(key=first.key)) == 2
+
+
 class TestAssetCheckTransport:
     def test_asset_checks_round_trip_through_value_codec(self, tmp_path: Path) -> None:
         encoded = encode_value(
@@ -644,7 +826,7 @@ class TestAssetShow:
                 [
                     "asset",
                     "show",
-                    "table:make_table_task.features",
+                    "table:features",
                 ]
             )
         finally:
@@ -652,7 +834,7 @@ class TestAssetShow:
 
         assert rc == 0
         output = capsys.readouterr().out
-        assert "make_table_task.features" in output
+        assert "table:features" in output
         assert "Row count" in output
         assert "Column" in output  # schema table header
 
@@ -668,7 +850,7 @@ class TestAssetShow:
             [
                 "asset",
                 "show",
-                "table:make_grouped_table_task.features",
+                "features",
             ]
         )
 
@@ -689,7 +871,7 @@ class TestAssetShow:
             [
                 "asset",
                 "show",
-                "table:make_checked_table_task.checked",
+                "checked",
             ]
         )
 
@@ -806,6 +988,15 @@ def produce_text() -> object:
     return text("line one\nline two\n", name="notes")
 
 
+#: Longer than NAME_MAX, so probing it as a filesystem path raises ENAMETOOLONG.
+LONG_MARKDOWN = "# Summary\n\n" + "- a line of report prose\n" * 40
+
+
+@task()
+def produce_long_text() -> object:
+    return text(LONG_MARKDOWN, name="summary", format="markdown")
+
+
 @task()
 def consume_dataframe_sum(upstream: object) -> int:
     assert isinstance(upstream, pd.DataFrame)
@@ -855,6 +1046,29 @@ def produce_table_from_csv(output_path: str) -> object:
     return table(out, name="summary")
 
 
+def _ref_of_kind(kind: str) -> AssetRef:
+    """Build a resolved ref of one kind, without running a workflow."""
+    from ginkgo.core.asset import AssetKey
+
+    return AssetRef(
+        key=AssetKey(namespace=kind, name="producer.summary"),
+        version_id="v1",
+        kind=kind,
+        artifact_id="abc123",
+        content_hash="def456",
+        artifact_path="/tmp/blobs/abc123",
+    )
+
+
+@task()
+def produce_file_asset(output_path: str) -> file:
+    """Return a ``file`` asset — the only kind whose artifact is a real file."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("site,count\nnorth,10\n", encoding="utf-8")
+    return ginkgo.asset(out, name="summary")
+
+
 @task()
 def record_payload_type(upstream: object) -> str:
     return type(upstream).__name__
@@ -867,6 +1081,28 @@ def consume_file_or_ref(summary: file | AssetRef, output_path: str) -> file:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(f"{type(summary).__name__}\n", encoding="utf-8")
     return file(str(out))
+
+
+@task()
+def produce_text_asset() -> object:
+    """A text asset — stored as raw UTF-8, so its artifact is a readable file."""
+    return text("alpha\nbeta\n", name="notes")
+
+
+@task()
+def produce_fig_asset(output_path: str) -> object:
+    """A fig asset from a PNG path — stored as the native image bytes."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return fig(out, name="plot")
+
+
+@task()
+def read_ref_bytes(summary: file | AssetRef) -> str:
+    """Read the bound path's first bytes, as a downstream tool would."""
+    path = Path(summary.artifact_path) if isinstance(summary, AssetRef) else Path(str(summary))
+    return path.read_bytes()[:8].decode("utf-8", errors="replace")
 
 
 @task()
@@ -916,6 +1152,14 @@ class TestRehydration:
         monkeypatch.chdir(tmp_path)
         result = ginkgo.evaluate(consume_text_length(upstream=produce_text()))
         assert result == len("line one\nline two\n")
+
+    def test_long_text_ref_reaches_its_consumer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rehydrated contents are scanned as a possible path, and must not raise."""
+        monkeypatch.chdir(tmp_path)
+        result = ginkgo.evaluate(consume_text_length(upstream=produce_long_text()))
+        assert result == len(LONG_MARKDOWN)
 
     def test_live_payload_hit_skips_disk_loader(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1076,12 +1320,12 @@ class TestKindVersusPathAnnotation:
     def test_file_union_consumer_survives_rerun(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A ``file | AssetRef`` consumer of a table asset works cold and warm."""
+        """A ``file | AssetRef`` consumer of a file asset works cold and warm."""
         monkeypatch.chdir(tmp_path)
 
         def build() -> Any:
             return consume_file_or_ref(
-                summary=produce_table_from_csv(output_path="results/summary.csv"),
+                summary=produce_file_asset(output_path="results/summary.csv"),
                 output_path="results/report.txt",
             )
 
@@ -1090,6 +1334,48 @@ class TestKindVersusPathAnnotation:
 
         assert Path(cold).read_text(encoding="utf-8").strip() == "AssetRef"
         assert warm == cold
+
+    def test_file_union_consumer_rejects_table_asset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``file | AssetRef`` fed a table asset is refused, not silently bound.
+
+        The union arm is not an escape hatch from the kind rule: the artifact
+        behind a table ref is Parquet, so a task that treats the path as the
+        file it asked for reads a serialized blob and succeeds on garbage.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            ginkgo.evaluate(
+                consume_file_or_ref(
+                    summary=produce_table_from_csv(output_path="results/summary.csv"),
+                    output_path="results/report.txt",
+                )
+            )
+
+        message = str(excinfo.value)
+        assert "consume_file_or_ref.summary" in message
+        assert "annotated `file` but is a `table` asset" in message
+        assert not Path("results/report.txt").exists()
+
+    def test_text_and_fig_assets_bind_a_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Native-byte kinds keep the union binding: the path reads as the file.
+
+        ``serialize_text`` writes raw UTF-8 and ``serialize_fig`` writes native
+        image bytes, so refusing these would deny a real capability and would
+        have to claim an encoding that is not there.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        assert ginkgo.evaluate(read_ref_bytes(summary=produce_text_asset())) == "alpha\nbe"
+
+        observed = ginkgo.evaluate(
+            read_ref_bytes(summary=produce_fig_asset(output_path="results/plot.png"))
+        )
+        assert observed.startswith("�PNG")
 
     def test_nested_refs_survive_path_shaped_annotation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1100,12 +1386,89 @@ class TestKindVersusPathAnnotation:
         observed = ginkgo.evaluate(
             consume_file_ref_list(
                 summaries=[
-                    produce_table_from_csv(output_path="results/one.csv"),
-                    produce_table_from_csv(output_path="results/two.csv"),
+                    produce_file_asset(output_path="results/one.csv"),
+                    produce_file_asset(output_path="results/two.csv"),
                 ]
             )
         )
         assert observed == ["AssetRef", "AssetRef"]
+
+    def test_nested_table_ref_rejected_under_path_shaped_annotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The kind rule reaches nested elements, naming the offending index."""
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(TypeError, match=r"summaries\[1\] is annotated `file`"):
+            ginkgo.evaluate(
+                consume_file_ref_list(
+                    summaries=[
+                        produce_file_asset(output_path="results/one.csv"),
+                        produce_table_from_csv(output_path="results/two.csv"),
+                    ]
+                )
+            )
+
+    def test_encoding_flag_matches_the_serializers(self) -> None:
+        """Native-byte kinds are exactly the ones whose serialiser writes bytes as-is.
+
+        ``file`` is copied verbatim, ``serialize_fig`` writes native PNG / SVG /
+        HTML, and ``serialize_text`` writes raw UTF-8. The rest render a Python
+        object into Ginkgo's own encoding, and each names it.
+        """
+        from ginkgo.runtime.artifacts.asset_kinds import (
+            ASSET_KINDS,
+            NATIVE_ARTIFACT_KINDS,
+            artifact_encoding_for,
+        )
+
+        assert NATIVE_ARTIFACT_KINDS == {"file", "fig", "text"}
+        assert artifact_encoding_for("table") == "Parquet"
+        assert artifact_encoding_for("fig") is None
+        # An unregistered kind counts as encoded: nothing vouches for its bytes.
+        assert artifact_encoding_for("mystery") is not None
+        for kind, spec in ASSET_KINDS.items():
+            assert (spec.artifact_encoding is None) == (kind in NATIVE_ARTIFACT_KINDS)
+
+    def test_as_file_follows_the_per_kind_rule(self) -> None:
+        """``as_file()`` serves native-byte kinds and refuses encoded ones."""
+        assert _ref_of_kind("file").as_file() == "/tmp/blobs/abc123"
+        # A fig artifact is a real PNG and a text artifact is raw UTF-8.
+        assert _ref_of_kind("fig").as_file() == "/tmp/blobs/abc123"
+        assert _ref_of_kind("text").as_file() == "/tmp/blobs/abc123"
+
+        for kind, encoding in (("table", "Parquet"), ("array", "zarr"), ("model", "model")):
+            with pytest.raises(TypeError) as excinfo:
+                _ref_of_kind(kind).as_file()
+            message = str(excinfo.value)
+            assert f"is a `{kind}` asset, so it has no readable file path" in message
+            assert encoding in message
+
+    def test_refusal_offers_remedies_the_consuming_task_can_use(self) -> None:
+        """A driver task is not told to annotate ``object``; a Python task is."""
+        from ginkgo.core.types import require_path_value
+
+        with pytest.raises(TypeError) as driver:
+            require_path_value(
+                value=_ref_of_kind("table"),
+                annotation_label="file",
+                label="awk_the_table.scores",
+                execution_mode="driver",
+            )
+        driver_message = str(driver.value)
+        # `object` would hand a shell command a DataFrame repr.
+        assert "`object`" not in driver_message
+        assert "asset(path)" in driver_message
+        assert "the format the command expects" in driver_message
+
+        with pytest.raises(TypeError) as worker:
+            require_path_value(
+                value=_ref_of_kind("table"),
+                annotation_label="file",
+                label="summarise.scores",
+                execution_mode="worker",
+            )
+        assert "Annotate it `object`" in str(worker.value)
 
     def test_path_backed_payload_detection(self, tmp_path: Path) -> None:
         """Only genuine path payloads count as path-backed, per kind."""
@@ -1222,7 +1585,7 @@ class TestPathWrappedOutputs:
 
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "fig"
-        assert result.key.name == "shell_write_fig_task.plot"
+        assert result.key.name == "plot"
         assert output.is_file()
 
     def test_shell_table_path_produces_table_asset(
@@ -1235,7 +1598,7 @@ class TestPathWrappedOutputs:
 
         assert isinstance(result, AssetRef)
         assert result.key.namespace == "table"
-        assert result.key.name == "shell_write_table_task.data"
+        assert result.key.name == "data"
 
     def test_wrapper_with_in_memory_payload_in_outputs_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

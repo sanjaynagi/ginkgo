@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import sys
-from typing import Sequence
-
-from rich.text import Text
+from typing import NoReturn, Sequence
 
 from ginkgo.cli.commands.asset import command_asset
 from ginkgo.cli.commands.cache import command_cache
@@ -22,8 +20,37 @@ from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.test import command_test
-from ginkgo.cli.common import RunMode, console
+from ginkgo.cli.common import RunMode
+from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
+
+_MISSING_ARGS_PREFIX = "the following arguments are required: "
+
+
+class _GinkgoArgumentParser(argparse.ArgumentParser):
+    """Show help when a command group is invoked with no subcommand.
+
+    ``ginkgo cache`` names a group rather than an action, so argparse's bare
+    "the following arguments are required" is a worse answer than the group's
+    own help. Only a missing *subcommand* is treated that way; every other
+    missing argument keeps its precise error.
+
+    ``add_subparsers`` inherits ``parser_class`` from the parser it is called
+    on, so each group parser built in :func:`_build_parser` is one of these
+    too and answers for itself.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        if message.startswith(_MISSING_ARGS_PREFIX):
+            missing = {name.strip() for name in message[len(_MISSING_ARGS_PREFIX) :].split(",")}
+            for action in self._actions:
+                if not isinstance(action, argparse._SubParsersAction):
+                    continue
+                if action.required and (action.metavar or action.dest) in missing:
+                    self.print_help(sys.stderr)
+                    self.exit(2)
+
+        super().error(message)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -48,6 +75,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(extras)}")
     else:
         args.param_extras = ()
+
+    if args.command is None:
+        parser.print_help(sys.stderr)
+        return 2
 
     try:
         if args.command == "run":
@@ -78,10 +109,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_secrets(args)
         if args.command == "report":
             return command_report(args)
-    except BaseException as exc:
-        rich_console = console(sys.stderr)
-        rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
-        return 1
+    # SystemExit is deliberately not caught: argparse and ``--version`` use it
+    # to exit with a status they have already chosen.
+    except KeyboardInterrupt:
+        return report_interrupt(stream=sys.stderr)
+    except Exception as exc:
+        return report_failure(
+            exc=exc,
+            stream=sys.stderr,
+            show_traceback=traceback_requested(args),
+        )
 
     parser.error("missing command")
     return 2
@@ -195,7 +232,8 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         so ``ginkgo run <workflow> --help`` can render its own usage text
         alongside the workflow's declared parameters.
     """
-    parser = argparse.ArgumentParser(prog="ginkgo")
+
+    parser = _GinkgoArgumentParser(prog="ginkgo")
     parser.add_argument(
         "--version",
         action="version",
@@ -206,7 +244,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     # ``run`` handles help itself: argparse's own help action would fire during
     # the first parse and exit before the workflow could be imported, so the
     # declared parameters could never be listed.
-    run_parser = subparsers.add_parser("run", add_help=False)
+    run_parser = subparsers.add_parser("run", add_help=False, help="Execute a workflow graph")
     run_parser.add_argument(
         "-h",
         "--help",
@@ -229,9 +267,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--verbose", action="store_true")
-    run_parser.add_argument("--agent", action="store_true")
     run_parser.add_argument(
-        "--trust-workspace",
+        "--agent-output",
+        action="store_true",
+        help="Print newline-delimited JSON events instead of the live terminal UI",
+    )
+    run_parser.add_argument(
+        "--trust-mtimes",
         action="store_true",
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
@@ -252,12 +294,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         ),
     )
 
-    cache_parser = subparsers.add_parser("cache")
+    cache_parser = subparsers.add_parser("cache", help="Manage task execution cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
-    cache_subparsers.add_parser("ls")
-    clear_parser = cache_subparsers.add_parser("clear")
+    cache_subparsers.add_parser("ls", help="List cached task entries")
+    clear_parser = cache_subparsers.add_parser("clear", help="Clear cache entries")
     clear_parser.add_argument("cache_key")
-    explain_parser = cache_subparsers.add_parser("explain")
+    explain_parser = cache_subparsers.add_parser(
+        "explain", help="Explain why a task ran or was cached"
+    )
     explain_parser.add_argument("run_id", nargs="?")
     explain_parser.add_argument(
         "--run",
@@ -266,7 +310,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         default=None,
         help="Deprecated alias for the positional run id.",
     )
-    prune_parser = cache_subparsers.add_parser("prune")
+    prune_parser = cache_subparsers.add_parser(
+        "prune", help="Prune cached artifacts by age or size"
+    )
     prune_parser.add_argument("--older-than", default=None)
     prune_parser.add_argument(
         "--max-size",
@@ -281,61 +327,81 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     prune_parser.add_argument("--dry-run", action="store_true")
 
-    asset_parser = subparsers.add_parser("asset")
+    asset_parser = subparsers.add_parser("asset", help="Inspect and manage versioned assets")
     asset_subparsers = asset_parser.add_subparsers(dest="asset_command", required=True)
-    asset_subparsers.add_parser("ls")
-    asset_versions_parser = asset_subparsers.add_parser("versions")
-    asset_versions_parser.add_argument("key")
-    asset_inspect_parser = asset_subparsers.add_parser("inspect")
-    asset_inspect_parser.add_argument("ref")
-    asset_show_parser = asset_subparsers.add_parser("show")
-    asset_show_parser.add_argument("ref")
+    asset_subparsers.add_parser("ls", help="List assets")
+    asset_key_help = "Asset key: '<kind>:<name>' as printed by 'ginkgo asset ls', or a bare name."
+    asset_ref_help = f"{asset_key_help} Append '@<version-or-alias>' to pin a version."
+    asset_versions_parser = asset_subparsers.add_parser(
+        "versions", help="List versions of an asset"
+    )
+    asset_versions_parser.add_argument("key", help=asset_key_help)
+    asset_inspect_parser = asset_subparsers.add_parser("inspect", help="Inspect an asset record")
+    asset_inspect_parser.add_argument("ref", help=asset_ref_help)
+    asset_show_parser = asset_subparsers.add_parser(
+        "show", help="Display asset content or metadata"
+    )
+    asset_show_parser.add_argument("ref", help=asset_ref_help)
 
-    env_parser = subparsers.add_parser("env")
+    env_parser = subparsers.add_parser("env", help="Manage task execution environments")
     env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)
-    env_subparsers.add_parser("ls")
-    env_clear_parser = env_subparsers.add_parser("clear")
+    env_subparsers.add_parser("ls", help="List environments")
+    env_clear_parser = env_subparsers.add_parser("clear", help="Clear environment caches")
     env_clear_parser.add_argument("env", nargs="?")
     env_clear_parser.add_argument("--all", action="store_true")
     env_clear_parser.add_argument("--dry-run", action="store_true")
 
-    debug_parser = subparsers.add_parser("debug")
+    debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")
     debug_parser.add_argument("run_id", nargs="?")
     debug_parser.add_argument("--json", action="store_true")
 
-    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Validate environment and workflow configuration"
+    )
     doctor_parser.add_argument("workflow", nargs="?")
     doctor_parser.add_argument("--config", action="append", default=[])
     doctor_parser.add_argument("--json", action="store_true")
 
-    test_parser = subparsers.add_parser("test")
+    test_parser = subparsers.add_parser("test", help="Run workflow tests")
     test_parser.add_argument("--dry-run", action="store_true")
 
-    init_parser = subparsers.add_parser("init")
+    init_parser = subparsers.add_parser("init", help="Initialize a new ginkgo project scaffold")
     init_parser.add_argument("directory", nargs="?", default=".")
     init_parser.add_argument("--no-skills", action="store_true")
     init_parser.add_argument("--skills-only", action="store_true")
     init_parser.add_argument("--force", action="store_true")
 
-    inspect_parser = subparsers.add_parser("inspect")
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect workflows and run manifests")
     inspect_subparsers = inspect_parser.add_subparsers(dest="inspect_command", required=True)
-    inspect_workflow_parser = inspect_subparsers.add_parser("workflow")
+    inspect_workflow_parser = inspect_subparsers.add_parser(
+        "workflow", help="Inspect static workflow graph"
+    )
     inspect_workflow_parser.add_argument("workflow", nargs="?")
     inspect_workflow_parser.add_argument("--config", action="append", default=[])
-    inspect_run_parser = inspect_subparsers.add_parser("run")
+    inspect_run_parser = inspect_subparsers.add_parser(
+        "run", help="Inspect run execution manifest"
+    )
     inspect_run_parser.add_argument("run_id")
 
-    models_parser = subparsers.add_parser("models")
+    models_parser = subparsers.add_parser("models", help="Inspect tracked ML models")
     models_parser.add_argument("run_id", nargs="?")
 
-    subparsers.add_parser("notebooks")
+    subparsers.add_parser("notebooks", help="Manage notebook workflows")
 
-    report_parser = subparsers.add_parser("report")
+    report_parser = subparsers.add_parser("report", help="Generate HTML run reports")
     report_parser.add_argument("run_id", nargs="?")
     report_parser.add_argument(
         "--out",
         default=None,
         help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
+    )
+    report_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace the contents of an --out directory that holds files ginkgo "
+            "did not write. Without this, such a directory is left untouched."
+        ),
     )
     report_parser.add_argument(
         "--single-file",
@@ -356,12 +422,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     report_parser.add_argument("--open", dest="open", action="store_true", default=False)
     report_parser.add_argument("--no-open", dest="open", action="store_false")
 
-    secrets_parser = subparsers.add_parser("secrets")
+    secrets_parser = subparsers.add_parser("secrets", help="Manage and validate workflow secrets")
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)
-    list_parser = secrets_subparsers.add_parser("list")
+    list_parser = secrets_subparsers.add_parser("list", help="List declared secrets")
     list_parser.add_argument("workflow", nargs="?")
     list_parser.add_argument("--config", action="append", default=[])
-    validate_parser = secrets_subparsers.add_parser("validate")
+    validate_parser = secrets_subparsers.add_parser(
+        "validate", help="Validate secret availability"
+    )
     validate_parser.add_argument("workflow", nargs="?")
     validate_parser.add_argument("--config", action="append", default=[])
 
@@ -377,7 +445,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
 def _run_mode_from_args(args: argparse.Namespace) -> RunMode:
     """Return the run output mode implied by CLI flags."""
-    if getattr(args, "agent", False):
+    if getattr(args, "agent_output", False):
         if getattr(args, "verbose", False):
             return "agent_verbose"
         return "agent"

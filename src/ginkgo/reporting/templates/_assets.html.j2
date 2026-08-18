@@ -1,4 +1,5 @@
-<h2 id="assets"><span class="num">06</span>Assets</h2>
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "assets") -}}
 {% if report.assets %}
   {% for section in report.assets %}
 <section class="asset-section">

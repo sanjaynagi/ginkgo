@@ -15,6 +15,8 @@ class NotebookArtifactPair:
     """Display metadata for one executed notebook artifact pair."""
 
     run_id: str
+    """Run whose manifest listed this pair, which replayed it on a cache hit."""
+
     run_dir: Path
     task_key: str
     task_name: str
@@ -22,11 +24,23 @@ class NotebookArtifactPair:
     html_path: Path
     notebook_path: Path
     render_status: str | None
+    artifact_run_id: str | None = None
+    """Run that produced the artifacts, when the manifest records it."""
 
     @property
     def render_failed(self) -> bool:
         """Return True when the HTML export step failed for this notebook."""
         return self.render_status == "failed"
+
+    @property
+    def producing_run_id(self) -> str:
+        """Return the run that rendered these artifacts."""
+        return self.artifact_run_id or self.run_id
+
+    @property
+    def replayed(self) -> bool:
+        """Return True when ``run_id`` reused an earlier run's artifacts."""
+        return self.artifact_run_id is not None and self.artifact_run_id != self.run_id
 
 
 def command_notebooks(args) -> int:
@@ -45,7 +59,12 @@ def command_notebooks(args) -> int:
         if index > 0:
             rich_console.print()
 
-        label = f"[bold]{entry.task_name}[/]  [dim]run={entry.run_id} task={entry.task_key}[/]"
+        label = (
+            f"[bold]{entry.task_name}[/]  "
+            f"[dim]run={entry.producing_run_id} task={entry.task_key}[/]"
+        )
+        if entry.replayed:
+            label += f"  [#0f766e]↺ replayed in {entry.run_id}[/]"
         if entry.render_failed:
             label += "  [bold yellow]⚠ HTML export failed[/]"
         rich_console.print(label)
@@ -80,6 +99,7 @@ def list_notebook_artifact_pairs(*, runs_root: Path) -> list[NotebookArtifactPai
             notebook_path = (run_dir / executed_notebook).resolve()
             html_path = (run_dir / rendered_html).resolve()
             render_status = task.get("render_status")
+            artifact_run_id = task.get("notebook_artifact_run_id")
             entries.append(
                 NotebookArtifactPair(
                     run_id=run_dir.name,
@@ -90,6 +110,7 @@ def list_notebook_artifact_pairs(*, runs_root: Path) -> list[NotebookArtifactPai
                     html_path=html_path,
                     notebook_path=notebook_path,
                     render_status=render_status if isinstance(render_status, str) else None,
+                    artifact_run_id=artifact_run_id if isinstance(artifact_run_id, str) else None,
                 )
             )
 
