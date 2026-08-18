@@ -221,7 +221,8 @@ class NotebookRunner(DriverTaskRunner):
         Run provenance recorder. May be ``None`` in dry-run / validation
         contexts; manifest writes are then no-ops.
     notice_emitter : Callable
-        Callback used to surface kernel-installation notices.
+        Callback used to surface notices — kernel installation, and a failed
+        HTML export — as run events.
     runtime_root_factory : Callable[[], Path]
         Lazily resolves the on-disk runtime root for shared notebook files.
     """
@@ -241,6 +242,14 @@ class NotebookRunner(DriverTaskRunner):
         Determines the notebook backend from the file extension, runs
         execution, renders HTML, validates any declared outputs, and
         returns the appropriate result value.
+
+        A failed HTML export always writes a placeholder failure page,
+        records ``render_status="failed"`` in the manifest, and emits a
+        task notice so the outcome reaches machine-readable output. It
+        fails the task whenever that page would otherwise become the
+        task's result — see ``_html_is_task_result``. A task that declares
+        its own outputs keeps them and succeeds, with the notice carrying
+        the export failure.
         """
         assert node.execution_args is not None
         notebook_path = directive.path
@@ -343,6 +352,25 @@ class NotebookRunner(DriverTaskRunner):
                 render_error=render_error,
                 managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
+            self.notice_emitter(
+                node,
+                f"HTML export failed; {artifacts.html_path.name} holds the export error "
+                "instead of the rendered notebook.",
+            )
+            if self._html_is_task_result(directive=directive, html_path=artifacts.html_path):
+                raise NotebookTaskError(
+                    task_name=node.task_def.name,
+                    phase="render",
+                    cmd=render_command,
+                    exit_code=render_result.returncode or 1,
+                    output=render_error,
+                    hint=(
+                        "The notebook executed successfully; only the HTML export failed. "
+                        f"The executed notebook is at {artifacts.executed_path}."
+                        if artifacts.executed_path is not None
+                        else "The notebook executed successfully; only the HTML export failed."
+                    ),
+                )
         else:
             self._record_notebook_manifest(
                 node=node,
@@ -366,6 +394,20 @@ class NotebookRunner(DriverTaskRunner):
             task_def=node.task_def,
             output=directive.output,
         )
+
+    @staticmethod
+    def _html_is_task_result(*, directive: NotebookDirective, html_path: Path) -> bool:
+        """Report whether the rendered HTML is what this task hands downstream.
+
+        With no declared output the HTML path *is* the task's return value; a
+        declared output may also name it explicitly. Either way the export is
+        the deliverable, so a failed export leaves the task with nothing to
+        return but the placeholder failure page.
+        """
+        if directive.output is None:
+            return True
+        resolved = html_path.resolve()
+        return any(value.resolve() == resolved for value in iter_output_values(directive.output))
 
     # Cache replay -----------------------------------------------------------
 
