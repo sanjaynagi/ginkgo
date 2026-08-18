@@ -21,6 +21,16 @@ Implemented cache hashing includes:
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
+## Task source hash
+
+The task source hash covers the task body and the local helper modules it
+statically imports, so editing a helper invalidates the tasks that use it. The
+closure stops at the project's own source: modules under the interpreter's
+prefix or its installed-package directories are excluded, because dependencies
+are pinned by environment identity instead. Without that boundary a project
+that keeps its environment in its own tree (`.pixi/envs/`, `.venv/`) would walk
+the whole interpreter for every task.
+
 ## Environment identity
 
 `ExecutionEnvironment.env_identity` returns the identity of the *declared*
