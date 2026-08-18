@@ -125,15 +125,31 @@ def test_version_flag_reports_pyproject_version() -> None:
         ("secrets", "{list,validate}"),
     ],
 )
-def test_command_group_without_subcommand_shows_help(
-    command: str, subcommands: str
-) -> None:
+def test_command_group_without_subcommand_shows_help(command: str, subcommands: str) -> None:
     result = _run_cli(command, cwd=REPO_ROOT)
 
     assert result.returncode == 2
     assert f"usage: ginkgo {command}" in result.stderr
     assert subcommands in result.stderr
     assert "the following arguments are required" not in result.stderr
+
+
+def test_bare_ginkgo_shows_help() -> None:
+    """The root parser is a group too, so naming no command shows its help."""
+    result = _run_cli(cwd=REPO_ROOT)
+
+    assert result.returncode == 2
+    assert "usage: ginkgo" in result.stderr
+    assert "the following arguments are required" not in result.stderr
+
+
+def test_missing_positional_keeps_its_precise_error() -> None:
+    """Only a missing subcommand becomes help; other missing arguments do not."""
+    result = _run_cli("cache", "clear", cwd=REPO_ROOT)
+
+    assert result.returncode == 2
+    assert "the following arguments are required" in result.stderr
+
 
 class TestCliRunAndCache:
     def test_run_writes_manifest_params_and_cache_metadata(self) -> None:

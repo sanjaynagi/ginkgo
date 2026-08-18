@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import sys
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 from rich.text import Text
 
@@ -25,11 +25,29 @@ from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.common import RunMode, console
 from ginkgo.params import looks_like_flag
 
+_MISSING_ARGS_PREFIX = "the following arguments are required: "
+
+
 class _GinkgoArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
-        if message.startswith("the following arguments are required: "):
+    """Show help when a command group is invoked with no subcommand.
+
+    ``ginkgo cache`` names a group rather than an action, so argparse's bare
+    "the following arguments are required" is a worse answer than the group's
+    own help. Only a missing *subcommand* is treated that way; every other
+    missing argument keeps its precise error.
+
+    ``add_subparsers`` inherits ``parser_class`` from the parser it is called
+    on, so each group parser built in :func:`_build_parser` is one of these
+    too and answers for itself.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        if message.startswith(_MISSING_ARGS_PREFIX):
+            missing = {name.strip() for name in message[len(_MISSING_ARGS_PREFIX) :].split(",")}
             for action in self._actions:
-                if isinstance(action, argparse._SubParsersAction) and action.required:
+                if not isinstance(action, argparse._SubParsersAction):
+                    continue
+                if action.required and (action.metavar or action.dest) in missing:
                     self.print_help(sys.stderr)
                     self.exit(2)
 
