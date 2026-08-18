@@ -109,6 +109,11 @@ The rule is that a placeholder failure page never satisfies a task's output
 contract — `NotebookRunner._html_is_task_result` decides which case applies,
 rather than a configuration flag.
 
+The succeeding case does cache, failed export and all, so a later cache hit
+replays the earlier run's placeholder page as this run's notebook artifact.
+`replay_cached_extras` re-emits the notice on such a hit: a run whose report
+links a traceback page says so on every run, not only the first.
+
 Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
 run under `build_jupyter_env_prefix`. Every such subprocess walks
 `jupyter_core.paths.jupyter_path()`, which always ends with

@@ -354,22 +354,20 @@ class NotebookRunner(DriverTaskRunner):
             )
             self.notice_emitter(
                 node,
-                f"HTML export failed; {artifacts.html_path.name} holds the export error "
+                f"HTML export failed; {artifacts.html_path} holds the export error "
                 "instead of the rendered notebook.",
             )
             if self._html_is_task_result(directive=directive, html_path=artifacts.html_path):
+                hint = "The notebook executed successfully; only the HTML export failed."
+                if artifacts.executed_path is not None:
+                    hint = f"{hint} The executed notebook is at {artifacts.executed_path}."
                 raise NotebookTaskError(
                     task_name=node.task_def.name,
                     phase="render",
                     cmd=render_command,
                     exit_code=render_result.returncode or 1,
                     output=render_error,
-                    hint=(
-                        "The notebook executed successfully; only the HTML export failed. "
-                        f"The executed notebook is at {artifacts.executed_path}."
-                        if artifacts.executed_path is not None
-                        else "The notebook executed successfully; only the HTML export failed."
-                    ),
+                    hint=hint,
                 )
         else:
             self._record_notebook_manifest(
@@ -418,6 +416,12 @@ class NotebookRunner(DriverTaskRunner):
         cached return value. To keep cache hits visible in the run summary
         and downstream tooling, we persist the notebook manifest extras
         alongside the cache entry on save and re-apply them here on hit.
+
+        A replayed failed export emits its notice again: the replayed
+        pointer names the placeholder failure page of the run that produced
+        it, so this run's report links a traceback too, and a machine-readable
+        consumer of the event stream should hear about it on every run rather
+        than only the first.
         """
         if self.provenance is None or node.task_def.kind != "notebook":
             return
@@ -427,10 +431,16 @@ class NotebookRunner(DriverTaskRunner):
         notebook_extras = cached_extra.get("notebook_extras")
         if not isinstance(notebook_extras, dict):
             return
-        self.provenance.update_task_extra(
-            node_id=node.node_id,
-            **resolve_cached_artifact_pointers(extras=notebook_extras),
-        )
+        replayed = resolve_cached_artifact_pointers(extras=notebook_extras)
+        self.provenance.update_task_extra(node_id=node.node_id, **replayed)
+        rendered_html = replayed.get("rendered_html")
+        if replayed.get("render_status") == "failed" and isinstance(rendered_html, str):
+            self.notice_emitter(
+                node,
+                f"HTML export failed in run {replayed.get('notebook_artifact_run_id')}, whose "
+                f"notebook artifacts this task replayed; {rendered_html} holds the export error "
+                "instead of the rendered notebook.",
+            )
 
     # Private helpers --------------------------------------------------------
 

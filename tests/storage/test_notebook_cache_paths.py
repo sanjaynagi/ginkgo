@@ -39,6 +39,7 @@ class _StubNode:
 
     node_id: int = 14
     notebook_extras: dict[str, Any] | None = None
+    task_def: Any = None
 
 
 def _write_artifacts(*, run_dir: Path) -> tuple[Path, Path]:
@@ -178,3 +179,79 @@ class TestReplayedPointerResolves:
         }
 
         assert resolve_cached_artifact_pointers(extras=extras) == {"task_type": "notebook"}
+
+
+@dataclass(kw_only=True)
+class _StubTaskDef:
+    """Minimal task definition carrying the kind the runner checks."""
+
+    kind: str = "notebook"
+    name: str = "render_overview_notebook"
+
+
+@dataclass(kw_only=True)
+class _StubCacheStore:
+    """Cache store returning one canned extra-meta payload."""
+
+    extra: dict[str, Any] | None
+
+    def load_extra_meta(self, *, cache_key: str) -> dict[str, Any] | None:
+        return self.extra
+
+
+def _replay(*, cached_extras: dict[str, Any], run_dir: Path) -> list[str]:
+    """Replay ``cached_extras`` onto a fresh run and return emitted notices."""
+    notices: list[str] = []
+    runner = NotebookRunner.__new__(NotebookRunner)
+    runner.provenance = _StubProvenance(run_dir=run_dir, run_id="new_run")
+    runner.cache_store = _StubCacheStore(extra={"notebook_extras": cached_extras})
+    runner.notice_emitter = lambda node, message: notices.append(message)
+    runner.replay_cached_extras(node=_StubNode(task_def=_StubTaskDef()), cache_key="key")
+    return notices
+
+
+class TestReplayedExportFailureNotice:
+    """A replayed export failure reaches the event stream on every run.
+
+    Issue #218: the outcome was recorded in the manifest but not surfaced
+    where an automated consumer decides. A cache hit replays the earlier
+    run's placeholder failure page as this run's notebook artifact, so this
+    run's report links a traceback page too.
+    """
+
+    def test_replayed_failed_render_emits_a_notice(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.chdir(tmp_path)
+        html, _ = _write_artifacts(run_dir=Path(".ginkgo") / "runs" / "old_run")
+
+        notices = _replay(
+            cached_extras={
+                "task_type": "notebook",
+                "render_status": "failed",
+                "notebook_artifact_run_id": "old_run",
+                "rendered_html": str(html.resolve()),
+            },
+            run_dir=Path(".ginkgo") / "runs" / "new_run",
+        )
+
+        assert notices == [
+            "HTML export failed in run old_run, whose notebook artifacts this task replayed; "
+            f"{html.resolve()} holds the export error instead of the rendered notebook."
+        ]
+
+    def test_replayed_successful_render_emits_nothing(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        html, _ = _write_artifacts(run_dir=Path(".ginkgo") / "runs" / "old_run")
+
+        notices = _replay(
+            cached_extras={
+                "task_type": "notebook",
+                "render_status": "succeeded",
+                "notebook_artifact_run_id": "old_run",
+                "rendered_html": str(html.resolve()),
+            },
+            run_dir=Path(".ginkgo") / "runs" / "new_run",
+        )
+
+        assert notices == []

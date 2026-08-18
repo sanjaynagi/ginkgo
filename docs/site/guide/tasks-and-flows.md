@@ -226,7 +226,9 @@ What happens to the task depends on whether that page would be its result:
   deliverable, so the task fails. The placeholder page never becomes the value
   a downstream task consumes, and nothing is cached, so a rerun retries.
 - Some other declared `output` — the HTML is a side artifact. The task keeps its
-  declared output and succeeds, with the notice carrying the export failure.
+  declared output and succeeds, with the notice carrying the export failure. The
+  task caches as usual, so a later run that hits the cache reuses that
+  placeholder page — and emits the notice again to say so.
 
 ## Subworkflow Tasks
 

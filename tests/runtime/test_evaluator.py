@@ -911,7 +911,7 @@ class TestEvaluate:
         # And through the event stream, which is what --agent-output emits.
         notices = [event for event in collector.events if isinstance(event, TaskNotice)]
         assert [notice.message for notice in notices] == [
-            "HTML export failed; task_0000.html holds the export error "
+            f"HTML export failed; {html_path} holds the export error "
             "instead of the rendered notebook."
         ]
 
