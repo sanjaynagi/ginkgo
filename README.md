@@ -163,12 +163,11 @@ ginkgo run
 
 To confirm a workflow is wired correctly, run `ginkgo run --dry-run`: it previews
 the plan for the entrypoint you actually run without executing any task body.
-`ginkgo test` runs the workflow files a project keeps under `tests/workflows/`,
-executing their task bodies unless `--dry-run` is passed. See the
-[CLI guide](docs/site/guide/cli.md) for both.
+Validation workflows a project keeps under `tests/workflows/` are workflows too,
+so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
+[CLI guide](docs/site/guide/cli.md).
 
 - `ginkgo run`
-- `ginkgo test`
 - `ginkgo doctor`
 - `ginkgo debug`
 - `ginkgo init`

@@ -122,16 +122,3 @@ def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
         return discover_default_workflow(project_root=project_root).parent
     except (FileNotFoundError, RuntimeError):
         return None
-
-
-def discover_test_workflows(*, project_root: Path) -> list[Path]:
-    """Return the workflow validation files ``ginkgo test`` runs."""
-    canonical_dir = project_root / "tests" / "workflows"
-    if canonical_dir.is_dir():
-        return sorted(path.resolve() for path in canonical_dir.glob("*.py"))
-
-    legacy_dir = project_root / ".tests"
-    if legacy_dir.is_dir():
-        return sorted(path.resolve() for path in legacy_dir.glob("*.py"))
-
-    return []

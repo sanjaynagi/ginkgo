@@ -961,65 +961,13 @@ def main():
         assert "Detected cycle in workflow graph" in result.stderr
         assert "Run directory:" not in result.stdout
 
-    def test_test_dry_run_discovers_hidden_workflows_without_execution(self) -> None:
-        tests_dir = Path(".tests")
-        tests_dir.mkdir()
-        (tests_dir / "dry_run_flow.py").write_text(
-            """
-from pathlib import Path
-from ginkgo import flow, task
-
-@task()
-def write_marker(path: str) -> str:
-    Path(path).write_text("executed", encoding="utf-8")
-    return path
-
-@flow
-def main():
-    return write_marker(path="should-not-exist.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo test --dry-run" in result.stdout
-        assert "✓ dry_run_flow.py (dry-run) - 1 tasks validated" in result.stdout
-        assert "✓ Validated 1 test workflow" in result.stdout
-        assert not Path("should-not-exist.txt").exists()
-
-    def test_test_execution_prints_header_and_summary(self) -> None:
-        tests_dir = Path(".tests")
-        tests_dir.mkdir()
-        (tests_dir / "exec_flow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("test", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo test" in result.stdout
-        assert "🌿 ginkgo run exec_flow.py" in result.stdout
-        assert "✓ Completed 1 test workflow" in result.stdout
-
-    def test_test_resolves_envs_from_canonical_package_not_workflow_parent(self) -> None:
+    def test_envs_resolve_from_the_canonical_package_not_the_workflow_parent(self) -> None:
         """Regression test for issue #119.
 
         On a canonical ``ginkgo init`` layout, Pixi environments live under
         ``workflow/envs/``, a sibling of ``workflow/flow.py`` -- not of
-        ``tests/workflows/*.py``. ``ginkgo test`` must still resolve them.
+        ``tests/workflows/*.py``. Running a validation workflow by path must
+        still resolve them.
         """
         package_dir = Path("workflow")
         (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
@@ -1047,7 +995,8 @@ def main():
             encoding="utf-8",
         )
 
-        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
+        result = _run_cli("run", "tests/workflows/smoke.py", "--dry-run", cwd=Path.cwd())
+
         assert result.returncode == 0, result.stderr
         assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 

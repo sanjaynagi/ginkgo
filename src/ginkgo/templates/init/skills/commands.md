@@ -4,8 +4,8 @@ Start here:
 
 - `ginkgo run --dry-run`
   Previews the plan for `{{ workflow_relpath }}` without executing any task body.
-- `ginkgo test --dry-run`
-  Validates every workflow in `{{ tests_relpath }}` without executing tasks.
+- `ginkgo run {{ tests_relpath }}/smoke.py --dry-run`
+  Validates a workflow in `{{ tests_relpath }}` without executing tasks.
 - `ginkgo run --agent-output`
   Executes and emits machine-readable JSONL runtime events on stdout for programmatic
   consumers or agents.
@@ -28,5 +28,5 @@ When you already have a run id:
 Testing guidance:
 
 - put workflow validation files under `{{ tests_relpath }}`
-- use `ginkgo test --dry-run` for static validation
-- use `ginkgo test` when you want those test workflows to execute
+- use `ginkgo run --dry-run` for static validation of your own flow
+- run a validation workflow by path when you want it to execute

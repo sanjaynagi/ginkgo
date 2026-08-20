@@ -19,7 +19,6 @@ from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.secrets import command_secrets
-from ginkgo.cli.commands.test import command_test
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
@@ -95,8 +94,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_debug(args)
         if args.command == "doctor":
             return command_doctor(args)
-        if args.command == "test":
-            return command_test(args)
         if args.command == "init":
             return command_init(args)
         if args.command == "inspect":
@@ -365,22 +362,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     doctor_parser.add_argument("workflow", nargs="?")
     doctor_parser.add_argument("--config", action="append", default=[])
     doctor_parser.add_argument("--json", action="store_true")
-
-    test_parser = subparsers.add_parser(
-        "test",
-        help="Run the workflow files under tests/workflows/",
-        description=(
-            "Run every *.py file in tests/workflows/ -- or in a legacy .tests/ "
-            "directory if tests/workflows/ does not exist -- as a workflow. Task "
-            "bodies execute unless --dry-run is passed. The first failing workflow "
-            "ends the run."
-        ),
-    )
-    test_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate each test workflow without executing any task body.",
-    )
 
     init_parser = subparsers.add_parser("init", help="Initialize a new ginkgo project scaffold")
     init_parser.add_argument("directory", nargs="?", default=".")

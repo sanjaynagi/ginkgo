@@ -3,7 +3,6 @@
 The current CLI supports:
 
 - `ginkgo run`
-- `ginkgo test`
 - `ginkgo debug`
 - `ginkgo doctor`
 - `ginkgo inspect`
@@ -42,20 +41,14 @@ by a leaf-anchored cascade — a task is checkable only while every upstream
 dependency is a confirmed cache hit — so a fully warm rerun previews as all
 `[cached]`. The plan builder (`runtime/dry_run.py`) is read-only: no task
 runs, no environment is prepared, and no cached output is materialised. Large
-fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
-keeps its terse per-workflow validation line rather than printing a full plan
-for each discovered workflow.
+fan-out groups collapse unless `--verbose` is passed.
 
-`ginkgo test` discovers its workflows by convention rather than by argument
-(`discover_test_workflows` in `cli/workspace.py`): every `*.py` file in
-`tests/workflows/`, falling back to a legacy `.tests/` directory when the
-canonical one is absent, and a `FileNotFoundError` when neither yields a file.
-Each file is run through `run_workflow` with `plan_preview=False`, so without
-`--dry-run` the task bodies execute for real. A dry run computes no cache keys:
-`build_dry_run_plan` is what probes the cache, and only the plan-preview path
-calls it. User-facing docs recommend `ginkgo run --dry-run` as the wiring check
-— it needs no test-workflow convention and previews the entrypoint that will
-actually run — with `ginkgo test` for a project's own validation workflows.
+There is no separate command for a project's validation workflows. `ginkgo test`
+used to discover every `*.py` under `tests/workflows/` (or a legacy `.tests/`)
+and run each one, which duplicated `ginkgo run --dry-run` closely enough that
+user testing found the two read as interchangeable. A validation workflow is a
+workflow, so it is run by path, and `ginkgo run --dry-run` is the one wiring
+check — it previews the plan for the entrypoint that will actually run.
 
 Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
 base name, with its fan-out values in brackets when the graph fixed them —

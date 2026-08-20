@@ -19,5 +19,5 @@ ginkgo = { git = "https://github.com/sanjaynagi/ginkgo.git", rev = "{{ ginkgo_re
 
 [tasks]
 run = "ginkgo run"
-check = "ginkgo test --dry-run"
+check = "ginkgo run --dry-run"
 doctor = "ginkgo doctor"

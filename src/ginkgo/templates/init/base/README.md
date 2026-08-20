@@ -12,7 +12,7 @@ Ginkgo itself. Install it once, then use the declared tasks:
 
 ```bash
 pixi install
-pixi run check   # ginkgo test --dry-run
+pixi run check   # ginkgo run --dry-run
 pixi run run     # ginkgo run
 ```
 
@@ -66,9 +66,9 @@ patterns in one small workflow:
 - `workflow/envs/analysis_tools/` contains a task-local Pixi env.
 - `workflow/scripts/` contains the script used by the script task.
 - `workflow/notebooks/` contains the report notebook.
-- `tests/workflows/smoke.py` is the validation workflow used by `ginkgo test`.
-  It re-exports `main` from `workflow/flow.py`, so `ginkgo test` covers the
-  same flow `ginkgo run` executes.
+- `tests/workflows/smoke.py` is the validation workflow. It re-exports `main`
+  from `workflow/flow.py`, so running it covers the same flow `ginkgo run`
+  executes: `ginkgo run tests/workflows/smoke.py`.
 
 ## What The Workflow Produces
 
@@ -86,10 +86,9 @@ Outputs are written under `results/`.
 # The quickest way to confirm a workflow is wired correctly.
 ginkgo run --dry-run
 
-# Run the workflow files under tests/workflows/. Task bodies execute unless
-# --dry-run is passed.
-ginkgo test
-ginkgo test --dry-run
+# Run the validation workflow. Task bodies execute unless --dry-run is passed.
+ginkgo run tests/workflows/smoke.py
+ginkgo run tests/workflows/smoke.py --dry-run
 
 # Execute the default workflow with Rich terminal output.
 ginkgo run --cores 8
