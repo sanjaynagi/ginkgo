@@ -71,10 +71,34 @@ to explain than a result that depends on where the command was run.
 the default runtime config, so the set of names that marks a project is written
 down once.
 
-Note that `WorkspaceLayout.for_cwd()` still roots `.ginkgo/` at the working
-directory, not at the discovered project root — so running from a subdirectory
-uses a `.ginkgo/` there. Converging the two is a behaviour change at every
-`for_cwd()` call site and has not been made.
+## The working directory is the project root
+
+Around forty places in the runtime read `Path.cwd()` as the project root:
+`WorkspaceLayout.for_cwd()` puts `.ginkgo/` there, config layering and
+environment discovery look for their files there, and the CLI renders run paths
+relative to it. Run from a subdirectory, every one of those was wrong the same
+way.
+
+`_normalize_working_directory` in `cli/app.py` makes the assumption true
+instead of teaching each site to discover the root: after parsing arguments and
+before dispatching, the CLI resolves `project_root()` and changes directory to
+it. Everything downstream keeps reading `Path.cwd()`, and is now right to.
+
+Two consequences worth knowing:
+
+- **Path arguments are resolved before the move**, while they still mean what
+  the user typed — the workflow path, each `--config`, and `report --out`. So
+  `ginkgo run flow.py --config override.toml` works from inside `workflow/`.
+- **A task's relative output paths land at the project root**, wherever ginkgo
+  was invoked from. That is what makes the same command reproducible from two
+  different directories, and it is the behaviour change to be aware of.
+
+`ginkgo init` is exempt: it creates a project rather than running inside one, so
+its directory argument stays relative to where the user stands — including when
+the new project is nested inside an existing one.
+
+Driving ginkgo as a library skips the CLI and so skips the normalisation.
+Stores accept an explicit `root=` for that case.
 
 ## The `.ginkgo/` directory
 
