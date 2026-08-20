@@ -379,6 +379,48 @@ class TestReportData:
         asset_card = next(card for card in report.summary_cards if card.label == "Assets")
         assert asset_card.value == "3"
 
+    def test_asset_cards_carry_anchors_derived_from_their_key(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
+
+        report = build_report_data(run_dir=run_dir)
+
+        assert report.assets[0].cards[0].anchor == "asset-file-demo-output"
+
+    def test_assets_sharing_a_slug_get_distinct_stable_anchors(self, tmp_path: Path) -> None:
+        # "pca plot" and "pca-plot" reduce to the same slug; the ids must still
+        # address one card each, and pick the same one on every re-render. The
+        # suffix carries a doubled hyphen so it cannot take the id that
+        # "pca-plot-2" — a key no other key collides with — claims for itself.
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
+        for name in ("demo/pca plot", "demo/pca-plot", "demo/pca-plot-2"):
+            _register_asset(
+                tmp_path=tmp_path,
+                run_id="run-assets",
+                run_dir=run_dir,
+                name=name,
+                text=f"{name}\n",
+                append=True,
+            )
+
+        anchors = [
+            (card.asset_key, card.anchor)
+            for section in build_report_data(run_dir=run_dir).assets
+            for card in section.cards
+        ]
+
+        assert dict(anchors) == {
+            "file:demo/output": "asset-file-demo-output",
+            "file:demo/pca plot": "asset-file-demo-pca-plot",
+            "file:demo/pca-plot": "asset-file-demo-pca-plot--2",
+            "file:demo/pca-plot-2": "asset-file-demo-pca-plot-2",
+        }
+        rebuilt = [
+            (card.asset_key, card.anchor)
+            for section in build_report_data(run_dir=run_dir).assets
+            for card in section.cards
+        ]
+        assert rebuilt == anchors
+
     def test_cached_run_reports_the_same_assets_and_sections(self, tmp_path: Path) -> None:
         # A re-run that hits cache for every task must present exactly what the
         # executed run did; only the cache labels differ.
@@ -545,6 +587,23 @@ class TestExport:
         assert "<h3>Ungrouped assets</h3>" in html
         assert "<h3>QC metrics</h3>" in html
         assert "Variant counts after QC filtering" in html
+
+    def test_bundle_mode_renders_asset_anchor_ids_and_links(self, tmp_path: Path) -> None:
+        run_dir = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
+        _register_asset(
+            tmp_path=tmp_path,
+            run_id="run-assets",
+            run_dir=run_dir,
+            name="demo/pca plot",
+            text="pca\n",
+            append=True,
+        )
+        result = export_report(run_dir=run_dir, out_dir=tmp_path / "out")
+
+        html = result.index_path.read_text(encoding="utf-8")
+        assert '<div class="asset" id="asset-file-demo-output">' in html
+        assert '<div class="asset" id="asset-file-demo-pca-plot">' in html
+        assert 'href="#asset-file-demo-pca-plot"' in html
 
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

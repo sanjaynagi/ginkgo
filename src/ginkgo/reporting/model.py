@@ -26,6 +26,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.wildcards import slug
 from ginkgo.workspace_layout import WorkspaceLayout
 
 from .sizing import (
@@ -203,9 +204,15 @@ class CheckOutcome:
 
 @dataclass(frozen=True, kw_only=True)
 class AssetCard:
-    """One asset version produced by the run."""
+    """One asset version produced by the run.
+
+    ``anchor`` is the fragment id the card carries in the document, so a reader
+    can deep-link a single asset (``report.html#asset-fig-pca-plot``). It is
+    derived from the asset key and made unique across the whole report.
+    """
 
     asset_key: str
+    anchor: str
     name: str
     caption: str | None
     namespace: str
@@ -851,6 +858,7 @@ def _build_assets(
 
     store = AssetStore(root=assets_root)
     seen_version_ids: set[str] = set()
+    taken_anchors: set[str] = set()
     cards_by_section: dict[str, list[AssetCard]] = {}
 
     references: list[tuple[str, str]] = []
@@ -873,6 +881,11 @@ def _build_assets(
             continue
         card = _build_asset_card(
             version=version,
+            anchor=_reserve_asset_anchor(
+                namespace=version.key.namespace,
+                name=version.key.name,
+                taken=taken_anchors,
+            ),
             artifact_store=artifact_store,
             policy=policy,
             artifact_copies=artifact_copies,
@@ -888,9 +901,36 @@ def _build_assets(
     return tuple(sections)
 
 
+def _reserve_asset_anchor(*, namespace: str, name: str, taken: set[str]) -> str:
+    """Return the fragment id for one asset card, and record it in ``taken``.
+
+    The id is ``asset-`` followed by the slug of ``<namespace> <name>`` with the
+    slug's underscores rewritten as hyphens, so ``table:sales/by-region``
+    deep-links as ``#asset-table-sales-by-region``. A key holding nothing
+    alphanumeric slugs to nothing and lands on the bare ``asset``.
+
+    Two keys can reduce to the same slug — ``pca plot`` and ``pca-plot`` both
+    become ``pca-plot`` — so a later claimant takes a ``--2``, ``--3`` suffix.
+    The doubled hyphen is what makes that safe: :func:`slug` collapses each run
+    of non-alphanumerics to a single separator, so no key slugs to an id ending
+    in ``--2``, and a suffixed id can never shadow the id another asset would
+    claim for itself.
+    """
+    body = slug(f"{namespace} {name}").replace("_", "-")
+    base = f"asset-{body}" if body else "asset"
+    anchor = base
+    ordinal = 2
+    while anchor in taken:
+        anchor = f"{base}--{ordinal}"
+        ordinal += 1
+    taken.add(anchor)
+    return anchor
+
+
 def _build_asset_card(
     *,
     version: AssetVersion,
+    anchor: str,
     artifact_store: LocalArtifactStore,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
@@ -919,6 +959,7 @@ def _build_asset_card(
 
     return AssetCard(
         asset_key=str(version.key),
+        anchor=anchor,
         name=version.key.name,
         caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,

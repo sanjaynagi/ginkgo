@@ -248,6 +248,12 @@ timing, failure detail with log tails, asset previews (tables, figures, model
 metrics), and links to rendered notebooks. By default it is written to
 `.ginkgo/reports/<run-id>/`.
 
+Every asset card carries a fragment id built from its key, so a single figure
+or table can be linked directly: `table:sales/by-region` renders at
+`#asset-table-sales-by-region`. A `#` beside the asset name navigates to that
+fragment, leaving the URL to share in the address bar. It appears when you
+hover the card, or stays visible where there is no pointer to hover with.
+
 The task ledger's **Peak RSS** column shows each task's measured peak memory
 against what it declared (`3.2 GiB / 16 GiB`), or the measured figure alone
 when the task declared no `memory`. It reads an em dash for tasks that never
