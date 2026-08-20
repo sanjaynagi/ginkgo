@@ -186,7 +186,7 @@ navigating `.ginkgo/runs/`.
 
 ```bash
 ginkgo cache ls                          # list cached task results
-ginkgo cache explain --run <run_id>      # explain cache decisions for a run
+ginkgo cache explain <run_id>            # explain cache decisions for a run
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
@@ -195,6 +195,48 @@ ginkgo cache clear <cache_key>           # remove a specific cache entry
 
 `cache prune` requires at least one of `--older-than`, `--max-size`, or
 `--max-entries`. Add `--dry-run` to preview what would be removed.
+
+### Why Did This Task Run Again?
+
+`ginkgo cache explain <run_id>` prints JSON with one entry per task. For a task
+that re-ran, it names the components of the cache key that moved, so the answer
+is a specific fact rather than "the key changed":
+
+```json
+{
+  "task_name": "produce",
+  "cache_key": "fddb71a9…",
+  "compared_with": "4388619b…",
+  "reason": "input_changed",
+  "details": ["input_changed"],
+  "components": [
+    {
+      "component": "inputs.samples",
+      "status": "changed",
+      "current": {"type": "str", "sha256": "2f64dc9d…"},
+      "prior": {"type": "str", "sha256": "f7a9858a…"}
+    }
+  ]
+}
+```
+
+`reason` and `details` are the summary; `components` lists what actually
+differs. Component names follow the cache key: `task`, `version`, `source_hash`,
+`extra_source_hash` (the notebook or script a driver task runs), `env`,
+`env_hash.pixi_lock` (the identity of the declared environment), and one
+`inputs.<parameter>` per task argument. `compared_with` is the cache key of the
+newest earlier entry for the same task, which is what the current one was
+compared against.
+
+A component's `status` is `changed`, `added` or `removed` for a parameter that
+appeared or went away, or `not_recorded` — the compared entry was written by an
+older ginkgo that did not store that field, so a change there cannot be ruled
+out.
+
+Some tasks get a summary `reason` on its own, with no `components`: a task that
+did not re-run reports `all_inputs_match`, one with no earlier entry to compare
+against reports `no_prior_entry`, and one whose key has no cache entry at all —
+because it failed, or because the entry was pruned — reports `no_entry_for_key`.
 
 ## A Typical Loop
 

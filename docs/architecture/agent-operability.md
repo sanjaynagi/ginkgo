@@ -55,7 +55,9 @@ Ginkgo exposes machine-readable post-hoc inspection and diagnostics:
   summaries and log tails.
 - `ginkgo doctor --json` returns structured validation diagnostics.
 - `ginkgo cache explain <run_id>` provides best-effort rerun reasons from
-  cache metadata. `--run <run_id>` remains accepted as an alias.
+  cache metadata, naming the cache-key components that differ from the previous
+  entry (`inputs.<parameter>`, `source_hash`, `env_hash.pixi_lock`, …) under the
+  summary reason. `--run <run_id>` remains accepted as an alias.
 
 To support these surfaces, task provenance records structured failure
 summaries and a compact typed output index alongside the existing manifest

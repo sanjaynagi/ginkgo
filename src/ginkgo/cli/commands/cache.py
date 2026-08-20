@@ -19,6 +19,7 @@ from rich.text import Text
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+from ginkgo.runtime.caching.cache import UNRECORDED, key_components
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -418,46 +419,133 @@ def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[st
     """Return a best-effort cache explanation for one task."""
     cache_key = task.get("cache_key")
     task_name = str(task.get("task_name") or task.get("task") or "unknown")
+    identity: dict[str, object] = {
+        "task_id": task.get("task_id"),
+        "task_name": task_name,
+        "cache_key": cache_key,
+    }
     if task.get("status") == "cached":
-        return {
-            "task_id": task.get("task_id"),
-            "task_name": task_name,
-            "cache_key": cache_key,
-            "reason": "all_inputs_match",
-        }
+        return identity | {"reason": "all_inputs_match"}
 
     current_meta = _read_cache_meta(cache_root=cache_root, cache_key=cache_key)
+    if not current_meta:
+        return identity | {"reason": "no_entry_for_key"}
+
     sibling_entries = _entries_for_function(
         cache_root=cache_root, function=task_name, exclude=cache_key
     )
     if not sibling_entries:
-        return {
-            "task_id": task.get("task_id"),
-            "task_name": task_name,
-            "cache_key": cache_key,
-            "reason": "no_prior_entry",
-        }
+        return identity | {"reason": "no_prior_entry"}
 
-    prior_meta = sibling_entries[-1]
-    reasons = []
-    if current_meta.get("source_hash") != prior_meta.get("source_hash"):
-        reasons.append("source_hash_changed")
-    if current_meta.get("version") != prior_meta.get("version"):
-        reasons.append("version_bump")
-    if current_meta.get("env") != prior_meta.get("env"):
-        reasons.append("env_lock_changed")
-    if current_meta.get("input_hashes") != prior_meta.get("input_hashes"):
-        reasons.append("input_changed")
-    if not reasons:
-        reasons.append("cache_key_changed")
-
-    return {
-        "task_id": task.get("task_id"),
-        "task_name": task_name,
-        "cache_key": cache_key,
+    prior_meta = _prior_entry(sibling_entries, current=current_meta)
+    components = _diff_key_components(current=current_meta, prior=prior_meta)
+    reasons = _coarse_reasons(components)
+    return identity | {
+        "compared_with": prior_meta.get("cache_key"),
         "reason": reasons[0],
         "details": reasons,
+        "components": components,
     }
+
+
+def _written_at(meta: dict[str, object]) -> datetime:
+    """Return when a cache entry was written, oldest-possible if unrecorded."""
+    stamp = _parse_timestamp(str(meta.get("timestamp", "")))
+    return stamp or datetime.min.replace(tzinfo=UTC)
+
+
+def _prior_entry(
+    entries: list[dict[str, object]], *, current: dict[str, object]
+) -> dict[str, object]:
+    """Return the newest sibling entry written before the one being explained.
+
+    An entry written after the current one cannot be what the current one
+    superseded, so comparing against it would name components that moved
+    forwards. Where no sibling is older — neither entry records a timestamp, say
+    — the newest sibling is the best available answer.
+    """
+    written_at = _written_at(current)
+    earlier = [entry for entry in entries if _written_at(entry) < written_at]
+    return max(earlier or entries, key=_written_at)
+
+
+def _diff_key_components(
+    *, current: dict[str, object], prior: dict[str, object]
+) -> list[dict[str, object]]:
+    """Return the cache-key components that differ between two entries.
+
+    A component either entry does not record is reported as ``not_recorded``
+    rather than as unchanged: nothing rules a change there out.
+    """
+    current_components = key_components(current)
+    prior_components = key_components(prior)
+    names = set(current_components) | set(prior_components)
+    if "inputs" in names:
+        # One entry records no input hashes at all, so drop the per-parameter
+        # components the other has: the group is reported once instead.
+        names = {name for name in names if not name.startswith("inputs.")}
+
+    differences: list[dict[str, object]] = []
+    for name in sorted(names):
+        # A component absent from one side is a parameter that came or went;
+        # one recorded as UNRECORDED cannot be compared at all.
+        unrecorded = [
+            side
+            for side, components in (("current", current_components), ("prior", prior_components))
+            if components.get(name) is UNRECORDED
+        ]
+        if unrecorded:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "not_recorded",
+                    "detail": (
+                        f"not recorded in the {' and '.join(unrecorded)} entry's meta.json, "
+                        "so a change here cannot be ruled out"
+                    ),
+                }
+            )
+        elif name not in current_components:
+            differences.append(
+                {"component": name, "status": "removed", "prior": prior_components[name]}
+            )
+        elif name not in prior_components:
+            differences.append(
+                {"component": name, "status": "added", "current": current_components[name]}
+            )
+        elif current_components[name] != prior_components[name]:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "changed",
+                    "current": current_components[name],
+                    "prior": prior_components[name],
+                }
+            )
+    return differences
+
+
+def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
+    """Return the summary reason codes implied by a component diff.
+
+    A moved component no code covers falls back to ``cache_key_changed``; the
+    component list names it either way.
+    """
+    moved = {
+        str(component["component"])
+        for component in components
+        if component["status"] != "not_recorded"
+    }
+    reasons = []
+    if moved & {"source_hash", "extra_source_hash"}:
+        reasons.append("source_hash_changed")
+    if "version" in moved:
+        reasons.append("version_bump")
+    if moved & {"env", "env_hash.pixi_lock"}:
+        reasons.append("env_changed")
+    if any(name.startswith("inputs") for name in moved):
+        reasons.append("input_changed")
+    return reasons or ["cache_key_changed"]
 
 
 def _read_cache_meta(*, cache_root: Path, cache_key: object) -> dict[str, object]:
