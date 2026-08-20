@@ -9,7 +9,7 @@ Key files and directories:
 - `{{ envs_relpath }}`: task-local Pixi environments
 - `{{ notebooks_relpath }}`: notebooks executed by notebook tasks
 - `{{ scripts_relpath }}`: standalone scripts executed by script tasks
-- `{{ tests_relpath }}`: test workflows used by `ginkgo test`
+- `{{ tests_relpath }}`: validation workflows, each run by path with `ginkgo run`
 - `.ginkgo/`: runtime state for runs, cache, artifacts, and provenance
 
 The package directory is always named `workflow/`, whatever the project is

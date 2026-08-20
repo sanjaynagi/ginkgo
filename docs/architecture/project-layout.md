@@ -34,7 +34,8 @@ Within that layout:
 - Task-specific Pixi manifests may live under `workflow/envs/`.
 - Notebook-task and script-task sources live under `workflow/notebooks/` and
   `workflow/scripts/`.
-- `tests/workflows/` holds workflow validation files for `ginkgo test`.
+- `tests/workflows/` holds workflow validation files, each run by path like
+  any other workflow.
 
 The scaffold is produced by `cli/commands/init.py` from
 `src/ginkgo/templates/init/`, where `PACKAGE_NAME` pins the package directory to

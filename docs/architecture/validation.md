@@ -11,7 +11,7 @@ The current implementation is validated against the canonical workflow families 
 - `VW-7` core-aware resource contention
 - `VW-8` memory-aware scheduling
 
-These are exercised through the test suite and, from the CLI layer onward, through `ginkgo run` and `ginkgo test`.
+These are exercised through the test suite and, from the CLI layer onward, through `ginkgo run`.
 
 The repository-level validation corpus includes:
 
