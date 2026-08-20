@@ -36,7 +36,15 @@ class WorkspaceLayout:
 
     @classmethod
     def for_cwd(cls) -> WorkspaceLayout:
-        """Return the layout under the current working directory."""
+        """Return the layout under the current working directory.
+
+        The working directory is the project root: the CLI resolves the root
+        and changes directory to it before dispatching any command, so a run
+        launched from ``workflow/`` still finds the root's ``.ginkgo/``. See
+        ``cli/app.py``'s ``_normalize_working_directory``. Code driving ginkgo
+        as a library rather than through the CLI does not get that guarantee,
+        and should pass an explicit ``root=`` if it is not already at the root.
+        """
         return cls(root=Path.cwd() / DIRECTORY_NAME)
 
     @classmethod
