@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Iterator, Sequence
 
 import yaml
 
+from ginkgo.project import PROJECT_CONFIG_NAMES
+
 if TYPE_CHECKING:
     from ginkgo.params import ParamDecl, ParamResolution
 
@@ -300,7 +302,7 @@ def _merge_top_level_dicts(
 
 
 def _default_runtime_config_path(*, project_root: Path) -> Path | None:
-    for candidate_name in ("ginkgo.toml", "ginkgo.yaml", "ginkgo.yml"):
+    for candidate_name in PROJECT_CONFIG_NAMES:
         candidate = (project_root / candidate_name).resolve()
         if candidate.is_file():
             return candidate

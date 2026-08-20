@@ -47,6 +47,35 @@ than keeping a checked-in duplicate under `examples/`. A duplicate silently
 drifted from the templates once already (#217), and nothing in CI compared the
 two trees.
 
+## The project root
+
+`src/ginkgo/project.py` owns the answer to "where is the project root": the
+nearest ancestor directory holding a config file named in
+`PROJECT_CONFIG_NAMES` (`ginkgo.toml`, `ginkgo.yaml`, `ginkgo.yml`).
+
+- `find_project_root(start_dir)` walks upward from an explicit directory and
+  returns `None` when nothing above it is a project. `import_roots_for_path`
+  uses this to add the project root to `sys.path`.
+- `project_root()` is the authoring-facing form, exported as
+  `ginkgo.project_root()`. It walks up from the working directory, so a
+  workflow run from `workflow/` resolves the same root as one run from the
+  project directory. Because a config file is optional, it falls back to the
+  working directory when no marker is found.
+
+The start directory is the working directory rather than the calling module's
+`__file__` on purpose: inspecting the caller's frame would work from more
+places, but the result would then depend on which file asked, which is harder
+to explain than a result that depends on where the command was run.
+
+`config.py` reads `PROJECT_CONFIG_NAMES` for the same purpose when it looks for
+the default runtime config, so the set of names that marks a project is written
+down once.
+
+Note that `WorkspaceLayout.for_cwd()` still roots `.ginkgo/` at the working
+directory, not at the discovered project root — so running from a subdirectory
+uses a `.ginkgo/` there. Converging the two is a behaviour change at every
+`for_cwd()` call site and has not been made.
+
 ## The `.ginkgo/` directory
 
 Runtime state lives under `.ginkgo/`, one subdirectory per concern:
@@ -88,8 +117,8 @@ else; the layout supplies the default and the sibling relationships.
 `runtime/module_loader.py` loads the entry file **by path**, and
 `import_roots_for_path` derives `sys.path` roots adaptively: it adds the entry
 file's own directory, climbs the `__init__.py` chain and adds the parent of the
-topmost package, and adds the nearest `ginkgo.toml` project root. So all of the
-following run today:
+topmost package, and adds the nearest project root (see "The project root"
+above). So all of the following run today:
 
 - **`workflow/` package** (canonical) — `from workflow.modules… import …` and
   relative imports both resolve.
