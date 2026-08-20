@@ -1,51 +1,88 @@
 # Package Layout
 
-The current source tree is organized around the user-facing DSL, the execution engine, and environment backends:
+The source tree is organized around the user-facing DSL, the execution engine,
+and environment backends. Top-level modules hold what a workflow author touches
+directly, or what every layer needs: configuration, parameters, wildcards,
+project and workspace location, the error taxonomy.
 
 ```text
 ginkgo/
-├── __init__.py
-├── config.py
-├── wildcards.py
+├── __init__.py           # lazy re-exports; the authoring surface
+├── config.py             # TOML/YAML loading, layering, config sessions
+├── params.py             # ginkgo.param declarations and resolution
+├── wildcards.py          # expand / zip_expand / per_branch / slug
+├── project.py            # project-root discovery (ginkgo.project_root)
+├── workspace_layout.py   # the .ginkgo/ directory convention
+├── errors.py             # error taxonomy and user-code failure location
+├── formatting.py         # value formatters shared by read-only presenters
 ├── core/
+│   ├── asset.py          # asset identity, table/array/fig/text/model wrappers
+│   ├── directive.py      # ExecutionDirective base type
 │   ├── expr.py
 │   ├── flow.py
 │   ├── hashing.py        # BLAKE3 content-hash helpers (dependency-free)
 │   ├── notebook.py
+│   ├── optional.py       # optional() output declarations for driver tasks
+│   ├── remote.py         # remote_file / remote_folder input references
+│   ├── resources.py      # declarative per-task resource requirements
 │   ├── script.py
+│   ├── secret.py
 │   ├── shell.py
+│   ├── source_hash.py    # task-body hashing for cache keys
+│   ├── subworkflow.py    # subworkflow() invocation primitive
 │   ├── task.py
-│   └── types.py
+│   └── types.py          # file / folder / tmp_dir path-oriented types
 ├── runtime/
-│   ├── backend.py        # ExecutionEnvironment protocol, LocalEnvironment, CompositeEnvironment
+│   ├── backend.py        # ExecutionEnvironment protocol, Local, Composite
 │   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
-│   ├── module_loader.py
-│   ├── notebook_kernels.py
+│   ├── executors.py      # the evaluator's heterogeneous executor pool
 │   ├── scheduler.py
 │   ├── worker.py
+│   ├── module_loader.py
+│   ├── notebook_kernels.py
 │   ├── events.py
-│   ├── executor_registry.py # named executors: config, lookup, lazy build
-│   ├── remote_executor.py   # RemoteExecutor / RemoteJobHandle protocols
+│   ├── log_drain.py      # worker log chunks to TaskLog events
+│   ├── dry_run.py        # static execution-plan preview for --dry-run
+│   ├── profiling.py      # phase-timer aggregation for --profile
+│   ├── run_summary.py    # RunSummary loaded from a completed run directory
+│   ├── executor_registry.py    # named executors: config, lookup, lazy build
+│   ├── remote_executor.py      # RemoteExecutor / RemoteJobHandle protocols
+│   ├── remote_dispatch.py      # code bundles, job handles, polling
+│   ├── remote_input_resolver.py  # RemoteStager for the evaluator
 │   ├── diagnostics.py
-│   ├── task_validation.py     # TaskValidator: contracts, inputs, coercion
+│   ├── task_validation.py      # TaskValidator: contracts, inputs, coercion
 │   ├── task_runners/
-│   │   ├── shell.py           # ShellRunner: subprocess + shell driver tasks
-│   │   └── notebook.py        # NotebookRunner: notebook + script driver tasks
+│   │   ├── driver.py           # shared base for out-of-process runners
+│   │   ├── shell.py            # ShellRunner: subprocess + shell driver tasks
+│   │   ├── notebook.py         # NotebookRunner
+│   │   ├── script.py           # ScriptRunner
+│   │   └── subworkflow.py      # child `ginkgo run` subprocess
 │   ├── caching/
-│   │   ├── cache.py           # CacheStore (content-addressed)
-│   │   ├── provenance.py      # RunProvenanceRecorder
+│   │   ├── cache.py            # CacheStore (content-addressed)
+│   │   ├── coordinator.py      # cache lookups for the evaluator
+│   │   ├── provenance.py       # RunProvenanceRecorder
 │   │   ├── hash_memo.py
+│   │   ├── digest_registry.py  # known digests for workspace paths
 │   │   └── materialization_log.py
 │   ├── artifacts/
-│   │   ├── artifact_store.py  # content-addressed artifact storage
+│   │   ├── artifact_store.py   # content-addressed artifact storage
 │   │   ├── artifact_model.py
-│   │   ├── asset_store.py     # asset catalog metadata
-│   │   └── value_codec.py     # cross-process value serialization
+│   │   ├── remote_artifact_store.py
+│   │   ├── remote_arg_transfer.py  # argument staging for remote execution
+│   │   ├── fs_share.py         # filesystem-shared copies into the CAS
+│   │   ├── output_index.py     # compact typed index of task outputs
+│   │   ├── value_codec.py      # cross-process value serialization
+│   │   ├── asset_store.py      # asset catalog metadata
+│   │   ├── asset_kinds.py      # kind registry for the asset model
+│   │   ├── asset_loaders.py    # per-kind artifact loaders
+│   │   ├── asset_serialization.py
+│   │   ├── asset_registration.py   # cache-to-catalog glue
+│   │   └── live_payloads.py    # in-memory wrapped-asset payloads
 │   ├── notifications/
 │   │   ├── notifications.py
 │   │   └── slack.py
 │   └── environment/
-│       ├── secrets.py         # SecretResolver and redaction
+│       ├── secrets.py          # SecretResolver and redaction
 │       └── resources.py
 ├── remote/
 │   ├── backend.py           # ObjectStore protocol
@@ -53,6 +90,7 @@ ginkgo/
 │   ├── fsspec_backends.py   # S3, OCI, GCS backends
 │   ├── gcp_batch.py         # GCP Batch executor
 │   ├── kubernetes.py        # Kubernetes executor
+│   ├── _executor_common.py  # helpers shared by both remote executors
 │   ├── publisher.py         # remote output publishing
 │   ├── resolve.py           # backend factory
 │   ├── staging.py           # remote input staging
@@ -65,10 +103,25 @@ ginkgo/
 │       ├── staged.py        # staged (download) access path
 │       ├── worker_hydration.py  # worker-side input hydration
 │       └── drivers/         # per-provider FUSE drivers (s3, gcsfuse, rclone)
+├── reporting/
+│   ├── model.py             # ReportData built from provenance and the catalog
+│   ├── render.py            # Jinja renderer producing an HTML bundle
+│   └── sizing.py            # per-kind preview caps and size formatting
 ├── envs/
-│   ├── container.py      # ContainerBackend (Docker/Podman)
+│   ├── container.py         # ContainerBackend (Docker/Podman)
+│   ├── mounts.py            # bind-mount model for container execution
 │   └── pixi.py
-└── cli/
-    ├── app.py
-    └── commands/
+├── cli/
+│   ├── app.py               # parser tree and dispatch
+│   ├── common.py
+│   ├── errors.py            # how a top-level failure is reported
+│   ├── workspace.py         # canonical workflow discovery
+│   ├── workflow_params.py   # CLI side of ginkgo.param
+│   ├── commands/            # one module per command: run, inspect, cache,
+│   │                        # asset, debug, doctor, env, init, models,
+│   │                        # notebooks, report, secrets, test
+│   └── renderers/           # rich live output, JSONL agent output, dry-run
+│                            # and debug renderers, shared formatting
+└── templates/
+    └── init/                # the only copy of the starter project scaffold
 ```
