@@ -265,7 +265,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         metavar="NAME=VALUE",
         help="Budget for a user-defined resource dimension (repeatable), e.g. --resource api_calls=10",
     )
-    run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the plan -- waves, cache status, resources -- without executing tasks",
+    )
     run_parser.add_argument("--verbose", action="store_true")
     run_parser.add_argument(
         "--agent-output",
@@ -362,8 +366,21 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     doctor_parser.add_argument("--config", action="append", default=[])
     doctor_parser.add_argument("--json", action="store_true")
 
-    test_parser = subparsers.add_parser("test", help="Run workflow tests")
-    test_parser.add_argument("--dry-run", action="store_true")
+    test_parser = subparsers.add_parser(
+        "test",
+        help="Run the workflow files under tests/workflows/",
+        description=(
+            "Run every *.py file in tests/workflows/ -- or in a legacy .tests/ "
+            "directory if tests/workflows/ does not exist -- as a workflow. Task "
+            "bodies execute unless --dry-run is passed. The first failing workflow "
+            "ends the run."
+        ),
+    )
+    test_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate each test workflow without executing any task body.",
+    )
 
     init_parser = subparsers.add_parser("init", help="Initialize a new ginkgo project scaffold")
     init_parser.add_argument("directory", nargs="?", default=".")

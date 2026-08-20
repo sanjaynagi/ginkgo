@@ -161,8 +161,14 @@ ginkgo run
 
 ## Core CLI Commands
 
+To confirm a workflow is wired correctly, run `ginkgo run --dry-run`: it previews
+the plan for the entrypoint you actually run without executing any task body.
+`ginkgo test` runs the workflow files a project keeps under `tests/workflows/`,
+executing their task bodies unless `--dry-run` is passed. See the
+[CLI guide](docs/site/guide/cli.md) for both.
+
 - `ginkgo run`
-- `ginkgo test --dry-run`
+- `ginkgo test`
 - `ginkgo doctor`
 - `ginkgo debug`
 - `ginkgo init`

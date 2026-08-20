@@ -1125,7 +1125,7 @@ class TestCliInit:
         assert "Created:" in result.stdout
         assert "workflow/flow.py" in result.stdout
         assert "README.md" in result.stdout
-        assert "ginkgo test --dry-run" in result.stdout
+        assert "ginkgo run --dry-run" in result.stdout
 
         project_dir = Path("demo-project")
         assert (project_dir / "pixi.toml").is_file()
@@ -1282,7 +1282,7 @@ class TestCliInit:
         result = _run_cli("init", ".", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "Next steps: run ginkgo test --dry-run" in result.stdout
+        assert "Next steps: run ginkgo run --dry-run" in result.stdout
         assert "Next steps: cd" not in result.stdout
 
     def test_init_can_skip_skills(self) -> None:

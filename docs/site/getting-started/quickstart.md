@@ -39,6 +39,11 @@ the expression tree, checks environments and secrets, computes cache keys for
 every task, and reports which tasks would run, which would serve from cache,
 and which resources they declare.
 
+The other validation command, `ginkgo test`, does a different job: it runs the
+workflow files a project keeps under `tests/workflows/` &mdash; this example uses
+the legacy `.tests/` directory &mdash; executing their task bodies unless
+`--dry-run` is passed. See [ginkgo test](../guide/cli.md#ginkgo-test).
+
 ## 4. Run The Workflow
 
 ```bash
