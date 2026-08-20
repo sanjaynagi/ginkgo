@@ -33,6 +33,7 @@ from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalEnvironment
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
 from ginkgo.runtime.executors import Executors
+from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
@@ -48,6 +49,7 @@ def _notebook_subprocess_stub(
     run_dir: Path,
     calls: list[str] | None = None,
     declared_output: Path | None = None,
+    render_fails: bool = False,
 ):
     """Build a fake ``run_subprocess`` for a single-task ipynb notebook run.
 
@@ -65,6 +67,8 @@ def _notebook_subprocess_stub(
         When given, every issued command line is appended to it.
     declared_output : Path | None
         When given, the papermill branch also writes this declared output file.
+    render_fails : bool
+        When true, the nbconvert branch fails without writing any HTML.
     """
 
     def fake_run_subprocess(
@@ -93,6 +97,10 @@ def _notebook_subprocess_stub(
                 declared_output.write_text("declared output", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         if "nbconvert" in command:
+            if render_fails:
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=2, stdout="", stderr="nbconvert exploded"
+                )
             (run_dir / "notebooks" / "task_0000.html").write_text(
                 "<html>report</html>", encoding="utf-8"
             )
@@ -838,9 +846,15 @@ class TestEvaluate:
         assert len(result) == 2
         assert install_calls == 1
 
-    def test_marimo_notebook_render_failure_writes_fallback_html(
+    def test_marimo_notebook_render_failure_fails_the_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A failed export fails a task whose result is the rendered HTML.
+
+        The placeholder failure page must never become the task's return
+        value: downstream tasks would consume a traceback as the report and
+        the run would still report success — see issues #218 and #219.
+        """
         nb_path = tmp_path / "explore.py"
         nb_path.write_text("print('marimo')\n", encoding="utf-8")
         expr = notebook_marimo_task(notebook_path=str(nb_path), sample_id="s1")
@@ -868,14 +882,21 @@ class TestEvaluate:
                 )
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        collector = EventCollector()
+        evaluator = ConcurrentEvaluator(
+            provenance=recorder, jobs=1, cores=1, event_bus=collector.bus
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-        result = evaluator.evaluate(expr)
 
-        html_path = Path(result)
+        with pytest.raises(NotebookTaskError, match="failed during render"):
+            evaluator.evaluate(expr)
+
+        recorder.finalize(status="failed")
         manifest = load_manifest(recorder.run_dir)
+        html_path = recorder.run_dir / "notebooks" / "task_0000.html"
         assert html_path.is_file()
         assert "HTML export failed" in html_path.read_text(encoding="utf-8")
+        assert manifest["tasks"]["task_0000"]["status"] == "failed"
         assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
         assert manifest["tasks"]["task_0000"]["render_error"] == "render blew up"
 
@@ -886,6 +907,62 @@ class TestEvaluate:
         notebook_summary = run_summary.notebooks[0]
         assert notebook_summary.render_status == "failed"
         assert notebook_summary.render_error == "render blew up"
+
+        # And through the event stream, which is what --agent-output emits.
+        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
+        assert [notice.message for notice in notices] == [
+            f"HTML export failed; {html_path} holds the export error "
+            "instead of the rendered notebook."
+        ]
+
+    def test_notebook_render_failure_with_declared_output_succeeds_with_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A task with its own declared output survives a failed export.
+
+        The HTML is a side artifact there, so the task keeps its declared
+        output — but the export failure still reaches the event stream as a
+        ``task_notice`` rather than only the manifest.
+        """
+        nb_path = tmp_path / "report.ipynb"
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        output_path = tmp_path / "declared.txt"
+        expr = notebook_ipynb_with_output_task(
+            notebook_path=str(nb_path), output_path=str(output_path)
+        )
+
+        recorder = RunProvenanceRecorder(
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            workflow_path=tmp_path / "workflow.py",
+            root_dir=tmp_path / ".ginkgo" / "runs",
+            jobs=1,
+            cores=1,
+        )
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path,
+            run_dir=recorder.run_dir,
+            declared_output=output_path,
+            render_fails=True,
+        )
+
+        collector = EventCollector()
+        evaluator = ConcurrentEvaluator(
+            provenance=recorder, jobs=1, cores=1, event_bus=collector.bus
+        )
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
+
+        result = evaluator.evaluate(expr)
+
+        assert result == output_path
+        manifest = load_manifest(recorder.run_dir)
+        assert manifest["tasks"]["task_0000"]["status"] == "succeeded"
+        assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
+        assert manifest["tasks"]["task_0000"]["render_error"] == "nbconvert exploded"
+
+        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
+        assert any("HTML export failed" in notice.message for notice in notices)
 
     def test_script_task_runs_and_validates_outputs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -92,6 +92,29 @@ Implemented notebook behavior includes:
 - notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
 
+A failed HTML export is handled by whether the export is the task's result. In
+every case the runner writes the placeholder failure page, records
+`render_status="failed"` with the captured `render_error`, and emits a
+`TaskNotice` so the outcome reaches the event stream that `--agent-output`
+writes. From there:
+
+- when the task declares no `output`, or declares one naming the rendered HTML,
+  the page would become the task's return value; the runner raises
+  `NotebookTaskError(phase="render")` instead, so the task fails, the run status
+  reflects it, and no cache entry is written for a run that produced no report;
+- when the task declares its own outputs, the HTML is a side artifact; the
+  declared outputs are validated and returned as normal and the task succeeds,
+  with the notice carrying the export failure.
+
+The rule is that a placeholder failure page never satisfies a task's output
+contract — `NotebookRunner._html_is_task_result` decides which case applies,
+rather than a configuration flag.
+
+The succeeding case does cache, failed export and all, so a later cache hit
+replays the earlier run's placeholder page as this run's notebook artifact.
+`replay_cached_extras` re-emits the notice on such a hit: a run whose report
+links a traceback page says so on every run, not only the first.
+
 Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
 run under `build_jupyter_env_prefix`. Every such subprocess walks
 `jupyter_core.paths.jupyter_path()`, which always ends with
