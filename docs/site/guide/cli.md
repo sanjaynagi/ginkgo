@@ -70,6 +70,12 @@ and writes run history under `.ginkgo/runs/`. Run it from a project root with
 no path argument and Ginkgo discovers the canonical `workflow/flow.py`
 entrypoint.
 
+Commands may be run from any directory inside the project. Ginkgo locates the
+root — the nearest enclosing `ginkgo.toml` — and works from there, so
+`.ginkgo/`, config files, and task environments resolve identically wherever
+you invoke from. Paths you pass on the command line are relative to where you
+stand; a task's own relative output paths are relative to the project root.
+
 Repeated `--resource name=value` flags budget any custom resource dimensions
 tasks declare (e.g. `--resource api_calls=10`) — see
 [Custom Resource Dimensions](resources.md#custom-resource-dimensions).

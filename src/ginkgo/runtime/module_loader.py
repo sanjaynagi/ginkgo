@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from ginkgo.project import find_project_root
+
 
 def module_name_for_path(path: str | Path) -> str:
     """Return a stable synthetic module name for a source file."""
@@ -16,15 +18,6 @@ def module_name_for_path(path: str | Path) -> str:
     digest = hashlib.sha1(str(source_path).encode("utf-8")).hexdigest()[:10]
     stem = "".join(ch if ch.isalnum() else "_" for ch in source_path.stem) or "workflow"
     return f"ginkgo_user_{stem}_{digest}"
-
-
-def _find_project_root(start_dir: Path) -> Path | None:
-    """Walk upward from ``start_dir`` to find the nearest ``ginkgo.toml`` directory."""
-    for candidate in (start_dir, *start_dir.parents):
-        for config_name in ("ginkgo.toml", "ginkgo.yaml", "ginkgo.yml"):
-            if (candidate / config_name).is_file():
-                return candidate
-    return None
 
 
 def import_roots_for_path(path: str | Path) -> list[str]:
@@ -48,7 +41,7 @@ def import_roots_for_path(path: str | Path) -> list[str]:
     # package). Include the enclosing project root, identified by the
     # nearest ginkgo.toml/yaml/yml, so such imports resolve regardless of
     # where the file sits relative to that package.
-    project_root = _find_project_root(source_dir)
+    project_root = find_project_root(source_dir)
     if project_root is not None:
         candidate = str(project_root)
         if candidate not in roots:

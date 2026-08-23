@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import os
+from pathlib import Path
 import sys
 from typing import NoReturn, Sequence
 
@@ -22,6 +24,7 @@ from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
+from ginkgo.project import project_root
 
 _MISSING_ARGS_PREFIX = "the following arguments are required: "
 
@@ -52,6 +55,51 @@ class _GinkgoArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
+# Path-valued arguments, which must be resolved against the invocation
+# directory before the working directory moves out from under them.
+_PATH_ARGS = ("workflow", "out")
+_PATH_LIST_ARGS = ("config",)
+
+
+def _normalize_working_directory(args: argparse.Namespace) -> None:
+    """Move to the project root so every cwd-relative path agrees on where it is.
+
+    Ginkgo's runtime reads the working directory as the project root in about
+    forty places: ``WorkspaceLayout.for_cwd()`` puts ``.ginkgo/`` there, config
+    layering and environment discovery look for their files there, and the CLI
+    renders run paths relative to it. Run from a subdirectory, every one of
+    those was wrong in the same way.
+
+    Rather than teach each of them to discover the root, this makes the
+    assumption true once: resolve the root and change directory to it, so
+    ``Path.cwd()`` *is* the project root for everything downstream. A workflow's
+    relative output paths therefore land at the project root wherever ginkgo
+    was invoked from, which is what makes the same command reproducible from
+    two different directories.
+
+    ``ginkgo init`` is exempt: it creates a project rather than running inside
+    one, and its directory argument is relative to where the user stands.
+    """
+    if args.command == "init":
+        return
+
+    root = project_root()
+    if root == Path.cwd():
+        return
+
+    # Resolved before the chdir, while they still mean what the user typed.
+    for name in _PATH_ARGS:
+        value = getattr(args, name, None)
+        if value:
+            setattr(args, name, str(Path(value).resolve()))
+    for name in _PATH_LIST_ARGS:
+        values = getattr(args, name, None)
+        if values:
+            setattr(args, name, [str(Path(value).resolve()) for value in values])
+
+    os.chdir(root)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ``ginkgo`` CLI."""
     parser, run_parser = _build_parser()
@@ -80,6 +128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        _normalize_working_directory(args)
+
         if args.command == "run":
             if getattr(args, "show_help", False):
                 return command_run_help(args, usage=run_parser.format_help())
