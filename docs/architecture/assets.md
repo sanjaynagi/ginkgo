@@ -1,7 +1,7 @@
 # Assets
 
-Ginkgo includes a file-backed asset catalog layered over the cache and
-artifact store. Assets add stable logical identity and lineage to managed
+Ginkgo keeps an asset catalog in the provenance ledger, layered over the cache
+and artifact store. Assets add stable logical identity and lineage to managed
 outputs without changing the run-centric execution model.
 
 The asset layer is implemented by:
@@ -14,10 +14,12 @@ The asset layer is implemented by:
   byte encoders invoked at registration time
 - `ginkgo/runtime/artifacts/asset_loaders.py` for the per-kind
   rehydration path used by the CLI and the evaluator
-- `ginkgo/runtime/artifacts/asset_store.py` for the local catalog
-  metadata store
+- `ginkgo/runtime/artifacts/asset_store.py` for the catalog's rows in the
+  database — every read and write of asset metadata goes through it
 - `ginkgo/runtime/artifacts/asset_registration.py` for the evaluator
   integration that turns sentinels into resolved references
+- `ginkgo/query.py` for `lineage()` and `why()`, and
+  `ginkgo/cli/commands/lineage.py` for the `ginkgo lineage` verb
 
 The current asset model supports:
 
@@ -29,18 +31,66 @@ The current asset model supports:
   factories
 - immutable `AssetVersion` records keyed by logical `AssetKey`
 - resolved `AssetRef` values passed to downstream tasks
-- alias pointers and version history in `.ginkgo/assets/`
+- alias pointers and version history in `.ginkgo/ginkgo.db`
 - upstream lineage edges recorded from consumed `AssetRef` inputs
 - provenance records that include asset metadata alongside cache keys
   and artifact identifiers
 
-The catalog is metadata-only. Asset bytes are never stored in the asset
-store itself; every asset version points to an immutable `artifact_id`
-in the artifact store. This keeps three identities distinct:
+## The catalog
+
+The metadata store is the database. `asset_versions` holds one row per
+materialized version, `asset_aliases` holds the alias pointers, and lineage is
+`derived_from` rows in the one `edges` table every graph shares. There is no
+`asset_keys` summary table and no `assets/` directory: an asset key is the set
+of versions carrying it, so its latest version and its version count are
+questions about `asset_versions`, and a summary row could only disagree with
+them. A lost database means a catalog that has to be rebuilt by re-running the
+workflow, exactly as for the cache.
+
+`AssetStore` is the only reader and the only writer of those rows. Like
+`CacheIndex` it is a `DirectIndex` (`ginkgo/runtime/direct_index.py`) rather
+than a projection of the event ledger, and for the same reason: registering a
+version has to read the parents registered moments earlier — possibly by a
+sibling task on another thread in the same run — and the recorder's writer
+thread is asynchronous. Inside a run the catalog is attached to the cache
+index, so both sets of tables are written on one connection behind one lock.
+The ledger still records that a version was materialized, as an
+`AssetMaterialized` event carrying the key, the version, the artifact and the
+parents; it is the history, and `asset_versions` is the index.
+
+The catalog is metadata-only. Asset bytes are never stored in the catalog
+itself; every asset version points to an immutable `artifact_id` in the
+artifact store. This keeps three identities distinct, and none of them changed
+when the catalog moved into the database:
 
 - logical asset identity (`AssetKey`)
 - physical materialization (`artifact_id`)
 - cache entry identity (`cache_key`)
+
+### Code and data versions
+
+Each version records two further hashes, both written at registration and
+neither yet read:
+
+- `code_version` — the producing task's `TaskDef.cache_source_hash`, folded
+  together with the driver file's `extra_source_hash` for a notebook or script
+  task. The identity of the code that produced the version.
+- `data_version` — `blake3(code_version || sorted parent data versions)`, where
+  a parent whose own `data_version` was never recorded contributes its content
+  hash instead. Two versions agreeing here were built by the same code from the
+  same upstream data.
+
+These are groundwork for staleness detection, which is deliberately out of
+scope: ginkgo records what a staleness check would need and stops there.
+
+### Lineage
+
+`ginkgo lineage <asset-key[@version]>` walks the `derived_from` edges around
+one version — `--downstream` for what came of it, `--depth N` to stop the walk,
+`--json` for the graph as data. Given a file path or an artifact id instead of
+an asset key it answers `query.why` instead: which run and task produced those
+bytes, through which cache entry, and what that task consumed. Both are
+available in Python as `ginkgo.query.Query.lineage` and `.why`.
 
 `AssetRef` values participate directly in cache and transport semantics.
 The value codec can serialize and deserialize them, cache metadata
@@ -50,7 +100,7 @@ summarizes them recursively, and downstream cache invalidation follows
 The current implementation is intentionally narrow:
 
 - assets do not drive scheduling
-- the asset store is local and file-backed
+- the catalog is local to one workspace's database
 
 Staleness reporting and asset-aware lifecycle policy remain future work.
 

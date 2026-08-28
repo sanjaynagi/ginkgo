@@ -13,6 +13,7 @@ The current CLI supports:
 - `ginkgo asset show`
 - `ginkgo asset inspect`
 - `ginkgo models`
+- `ginkgo lineage`
 - `ginkgo cache ls`
 - `ginkgo cache stats`
 - `ginkgo cache explain`
@@ -33,6 +34,15 @@ looked up directly; a bare `<name>` is searched across kinds, resolving when
 exactly one kind holds it and reporting the candidate keys when several do. An
 unknown key reports near matches from the catalog, so no lookup ever invents a
 kind the user did not use.
+
+`ginkgo lineage <asset-key[@version]>` walks the lineage edges around one asset
+version and renders them as a tree — `--downstream` for what came of it,
+`--depth N` to stop the walk, `--json` for the graph as data. Given a
+materialized file path or an artifact id in place of an asset key, it answers a
+different question with the same verb: which run and task produced those bytes,
+through which cache entry, and what that task consumed. Both readings are
+`ginkgo.query.Query.lineage` and `.why` underneath, and both open the database
+read-only.
 
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each

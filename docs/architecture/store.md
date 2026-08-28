@@ -25,16 +25,31 @@ The store has two halves.
   a cache of the ledger, never a second source of truth: if the two disagree,
   the ledger wins.
 
-The cache and artifact tables — `cache_entries`, `cache_artifacts`, `artifacts`,
-`stat_index`, `materializations`, `digest_memo` — are neither. They are a
-**direct-write index**, owned entirely by `CacheIndex`
-(`runtime/caching/index.py`), which writes them synchronously on its own
-connection. That is deliberate: a cache save must be visible to the `load` that
-may follow it microseconds later, which an event queued for the writer thread
-cannot promise, and the facts they hold are not events that happened to a run —
-they are what the cache currently holds. Nothing else writes them, including the
-projector: `TaskCacheHit` updates the task's own row and leaves `hit_count` to
-the index, which counts the hit as it serves it.
+The cache and asset tables — `cache_entries`, `cache_artifacts`, `artifacts`,
+`stat_index`, `materializations`, `digest_memo`, `asset_versions`,
+`asset_aliases` — are neither. They are **direct-write indexes**
+(`runtime/direct_index.py`), each owned entirely by one class that writes it
+synchronously: `CacheIndex` (`runtime/caching/index.py`) for the cache half and
+`AssetStore` (`runtime/artifacts/asset_store.py`) for the catalog. That is
+deliberate on both sides. A cache save must be visible to the `load` that may
+follow it microseconds later, which an event queued for the writer thread
+cannot promise. Registering an asset version must read the parents registered
+moments earlier — possibly by a sibling task on another thread in the same run —
+to derive the child's `data_version`, and the projector is a pure function over
+one event that cannot query. In both cases the facts held are not events that
+happened to a run; they are what the cache and the catalog currently hold.
+
+Nothing else writes them, including the projector. `TaskCacheHit` updates the
+task's own row and leaves `hit_count` to the index, which counts the hit as it
+serves it. `AssetMaterialized` is appended to the ledger as the history of a
+version coming into being — and projected nowhere, because `AssetStore` has
+already written the row it would have written. `asset_versions` carries
+`code_version` and `data_version`; both are recorded and neither is yet read.
+See [Assets](assets.md).
+
+There is no `asset_keys` table. An asset key is the set of versions carrying
+it, so its latest version and its version count are questions about
+`asset_versions` and a summary row could only disagree with them.
 
 Content-addressed identifiers — `cache_key`, `artifact_id`, `version_id`,
 `source_hash`, `env_hash` — are the join columns throughout. Nothing is
@@ -138,17 +153,25 @@ writes the run's manifest when it completes. `store/projector.py` is the whole
 of the event-to-rows mapping, one pure function per event type. See
 [Provenance and Run State](provenance.md) for the shape of that path.
 
-The cache index (`runtime/caching/index.py`) is the other writer, and it holds
-its own connection. A cache save is synchronous — the `load` that follows it
-must see the row — while the writer's queue is asynchronous and its connection
-belongs to its thread; routing cache rows through it would mean either blocking
-on the queue or inventing a second protocol for it to carry. Two connections
-over one WAL database is what WAL is for, and every cache write is an
-`INSERT OR IGNORE` on a content-addressed key or an idempotent upsert, so the
-two writers cannot produce a row that disagrees with itself.
+The direct indexes are the other writer, and they hold their own connection. A
+cache save is synchronous — the `load` that follows it must see the row — while
+the writer's queue is asynchronous and its connection belongs to its thread;
+routing cache rows through it would mean either blocking on the queue or
+inventing a second protocol for it to carry. Two connections over one WAL
+database is what WAL is for, and every direct write is an `INSERT OR IGNORE` on
+a content-addressed key or an idempotent upsert, so the two writers cannot
+produce a row that disagrees with itself.
+
+The cache index and the asset catalog are two sets of tables, not two
+databases: inside a run the catalog is `AssetStore.attached_to(index)`, sharing
+the cache index's connection and its lock, so a save in one never waits on
+SQLite's write lock for a save in the other. Read paths open their own
+(`AssetStore.for_reading`), and a workspace with no database reads an empty
+in-memory one rather than creating a file.
 
 Readers go through `ginkgo.query`, which opens read-only — including the cache
-readers, `cache ls`, `cache explain` and `cache stats`. No read path ever
+readers `cache ls`, `cache explain` and `cache stats`, and the asset readers
+`asset ls/versions/show/inspect`, `models`, the report, and `lineage`. No read path ever
 opens a write connection, so listings work while a run is writing and can never
 migrate a database out from under one.
 
