@@ -1,16 +1,28 @@
-"""Tests for the per-component cache-key diff behind ``ginkgo cache explain``."""
+"""Tests for the per-component cache-key diff behind ``ginkgo cache explain``.
 
-import json
+Entries are planted as rows, because rows are the only cache index there is.
+Each case builds one run whose task wrote ``current`` and one or more earlier
+runs or entries to compare it against.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
 from ginkgo import task
 from ginkgo.cli.commands.cache import explain_run_cache
-from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.query import Query
+from ginkgo.runtime.caching.cache import CacheStore, key_components
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.store.protocol import ProjectionOp
+from ginkgo.workspace_layout import WorkspaceLayout
+
+WORKFLOW = "workflow.py"
 
 
-def _write_entry(cache_root: Path, cache_key: str, **fields: Any) -> None:
-    """Write a cache entry whose meta.json carries the given key components."""
+def _meta(cache_key: str, **fields: Any) -> dict[str, Any]:
+    """Return the facts one cache entry records."""
     meta: dict[str, Any] = {
         "cache_key": cache_key,
         "function": "produce",
@@ -20,33 +32,58 @@ def _write_entry(cache_root: Path, cache_key: str, **fields: Any) -> None:
         "env": None,
         "env_hash": None,
         "input_hashes": {"samples": "hash-a", "threads": "hash-t"},
-        "timestamp": "2026-08-18T10:00:00+00:00",
+        "created_at": "2026-08-18T10:00:00+00:00",
     }
     meta.update(fields)
-    entry = cache_root / cache_key
-    entry.mkdir(parents=True)
-    (entry / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return meta
 
 
-def _explain(
-    cache_root: Path, cache_key: str = "current", task_name: str = "produce"
-) -> dict[str, Any]:
-    """Explain a single ran task whose entry is ``cache_key``."""
-    payload = explain_run_cache(
-        cache_root=cache_root,
-        run_snapshot={
-            "run_id": "run-1",
-            "workflow": "workflow.py",
-            "tasks": [
-                {
-                    "task_id": "produce-1",
-                    "task_name": task_name,
-                    "cache_key": cache_key,
-                    "status": "succeeded",
-                }
-            ],
-        },
+def _write_entry(index: CacheIndex, cache_key: str, **fields: Any) -> None:
+    """Record one cache entry with the given key components."""
+    meta = _meta(cache_key, **fields)
+    index.record_entry(
+        cache_key=cache_key,
+        meta=meta,
+        components=key_components(meta),
+        artifact_ids={},
+        size_bytes=0,
+        run_id=None,
     )
+
+
+def _write_run(
+    index: CacheIndex,
+    *,
+    run_id: str,
+    started_at: str,
+    cache_key: str,
+    task_name: str = "produce",
+    display_label: str | None = None,
+    status: str = "succeeded",
+) -> None:
+    """Record one run with a single task that used *cache_key*."""
+    with index.store.transaction():
+        index.store.apply(
+            [
+                ProjectionOp(
+                    sql="INSERT INTO runs (run_id, workflow, status, started_at) "
+                    "VALUES (?, ?, 'succeeded', ?)",
+                    params=(run_id, WORKFLOW, started_at),
+                ),
+                ProjectionOp(
+                    sql="INSERT INTO tasks (run_id, task_id, node_id, name, display_label, "
+                    "kind, execution_mode, status, cache_key, attempts) "
+                    "VALUES (?, 'task_0000', 0, ?, ?, 'task', 'thread', ?, ?, 1)",
+                    params=(run_id, task_name, display_label, status, cache_key),
+                ),
+            ]
+        )
+
+
+def _explain(index: CacheIndex, run_id: str = "run-2") -> dict[str, Any]:
+    """Explain the run whose task wrote the entry under test."""
+    reader = Query(index.store, layout=WorkspaceLayout.relative())
+    payload = explain_run_cache(reader=reader, run_id=run_id)
     tasks = payload["tasks"]
     assert isinstance(tasks, list)
     return tasks[0]
@@ -60,15 +97,27 @@ def _component(explanation: dict[str, Any], name: str) -> dict[str, Any]:
     return matches[0]
 
 
+def _index(tmp_path: Path) -> CacheIndex:
+    """Return a cache index over a fresh database."""
+    return CacheIndex.open(path=tmp_path / "ginkgo.db")
+
+
+def _two_runs(index: CacheIndex, **current_fields: Any) -> None:
+    """Record a prior run and the current one, with an entry for each."""
+    _write_entry(index, "prior", created_at="2026-08-18T09:00:00+00:00")
+    _write_entry(index, "current", **current_fields)
+    _write_run(index, run_id="run-1", started_at="2026-08-18T09:00:00+00:00", cache_key="prior")
+    _write_run(index, run_id="run-2", started_at="2026-08-18T10:00:00+00:00", cache_key="current")
+
+
 class TestCacheExplainComponents:
     def test_source_hash_change_is_named(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current", source_hash="src-2")
-        _write_entry(tmp_path, "prior", source_hash="src-1")
-
-        explanation = _explain(tmp_path)
+        with _index(tmp_path) as index:
+            _two_runs(index, source_hash="src-2")
+            explanation = _explain(index)
 
         assert explanation["reason"] == "source_hash_changed"
-        assert explanation["compared_with"] == "prior"
+        assert explanation["compared_with"] == {"cache_key": "prior", "strategy": "same_node"}
         assert _component(explanation, "source_hash") == {
             "component": "source_hash",
             "status": "changed",
@@ -78,24 +127,21 @@ class TestCacheExplainComponents:
         assert [entry["component"] for entry in explanation["components"]] == ["source_hash"]
 
     def test_input_change_names_the_parameter(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current", input_hashes={"samples": "hash-b", "threads": "hash-t"})
-        _write_entry(tmp_path, "prior")
-
-        explanation = _explain(tmp_path)
+        with _index(tmp_path) as index:
+            _two_runs(index, input_hashes={"samples": "hash-b", "threads": "hash-t"})
+            explanation = _explain(index)
 
         assert explanation["reason"] == "input_changed"
         assert _component(explanation, "inputs.samples")["status"] == "changed"
         assert [entry["component"] for entry in explanation["components"]] == ["inputs.samples"]
 
     def test_added_input_parameter_is_named(self, tmp_path: Path) -> None:
-        _write_entry(
-            tmp_path,
-            "current",
-            input_hashes={"samples": "hash-a", "threads": "hash-t", "seed": "hash-s"},
-        )
-        _write_entry(tmp_path, "prior")
-
-        explanation = _explain(tmp_path)
+        with _index(tmp_path) as index:
+            _two_runs(
+                index,
+                input_hashes={"samples": "hash-a", "threads": "hash-t", "seed": "hash-s"},
+            )
+            explanation = _explain(index)
 
         assert explanation["reason"] == "input_changed"
         assert _component(explanation, "inputs.seed") == {
@@ -105,14 +151,24 @@ class TestCacheExplainComponents:
         }
 
     def test_environment_identity_change_is_named(self, tmp_path: Path) -> None:
-        _write_entry(
-            tmp_path, "current", env="bio", env_hash={"env": "bio", "pixi_lock": "manifest-2"}
-        )
-        _write_entry(
-            tmp_path, "prior", env="bio", env_hash={"env": "bio", "pixi_lock": "manifest-1"}
-        )
-
-        explanation = _explain(tmp_path)
+        with _index(tmp_path) as index:
+            _write_entry(
+                index,
+                "prior",
+                env="bio",
+                env_hash={"env": "bio", "pixi_lock": "manifest-1"},
+                created_at="2026-08-18T09:00:00+00:00",
+            )
+            _write_entry(
+                index, "current", env="bio", env_hash={"env": "bio", "pixi_lock": "manifest-2"}
+            )
+            _write_run(
+                index, run_id="run-1", started_at="2026-08-18T09:00:00+00:00", cache_key="prior"
+            )
+            _write_run(
+                index, run_id="run-2", started_at="2026-08-18T10:00:00+00:00", cache_key="current"
+            )
+            explanation = _explain(index)
 
         assert explanation["reason"] == "env_changed"
         assert _component(explanation, "env_hash.pixi_lock") == {
@@ -123,74 +179,98 @@ class TestCacheExplainComponents:
         }
 
     def test_version_bump_is_named(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current", version="v2")
-        _write_entry(tmp_path, "prior")
-
-        explanation = _explain(tmp_path)
+        with _index(tmp_path) as index:
+            _two_runs(index, version="v2")
+            explanation = _explain(index)
 
         assert explanation["reason"] == "version_bump"
         assert _component(explanation, "version")["status"] == "changed"
 
-    def test_unrecorded_component_is_reported_as_unknown(self, tmp_path: Path) -> None:
-        """An entry predating a recorded field must not read as unchanged."""
-        _write_entry(tmp_path, "current", env="bio", env_hash={"pixi_lock": "manifest-1"})
-        prior = {
-            "cache_key": "prior",
-            "function": "produce",
-            "version": "v1",
-            "source_hash": "src-1",
-            "env": "bio",
-            "input_hashes": {"samples": "hash-a", "threads": "hash-t"},
-            "timestamp": "2026-08-18T09:00:00+00:00",
-        }
-        (tmp_path / "prior").mkdir(parents=True)
-        (tmp_path / "prior" / "meta.json").write_text(json.dumps(prior), encoding="utf-8")
+    def test_the_same_node_beats_a_fan_out_sibling(self, tmp_path: Path) -> None:
+        """A sibling branch is not this node's history, however recent (issue #223)."""
+        with _index(tmp_path) as index:
+            _write_entry(index, "prior", created_at="2026-08-18T09:00:00+00:00")
+            _write_entry(
+                index, "sibling", source_hash="src-9", created_at="2026-08-18T09:30:00+00:00"
+            )
+            _write_entry(index, "current", source_hash="src-2")
+            _write_run(
+                index,
+                run_id="run-1",
+                started_at="2026-08-18T09:00:00+00:00",
+                cache_key="prior",
+                display_label="produce[a]",
+            )
+            _write_run(
+                index,
+                run_id="run-1b",
+                started_at="2026-08-18T09:30:00+00:00",
+                cache_key="sibling",
+                display_label="produce[b]",
+            )
+            _write_run(
+                index,
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+                display_label="produce[a]",
+            )
+            explanation = _explain(index)
 
-        explanation = _explain(tmp_path)
+        assert explanation["compared_with"] == {"cache_key": "prior", "strategy": "same_node"}
+        assert _component(explanation, "source_hash")["prior"] == "src-1"
 
-        assert explanation["reason"] == "cache_key_changed"
-        for name in ("env_hash.pixi_lock", "extra_source_hash"):
-            reported = _component(explanation, name)
-            assert reported["status"] == "not_recorded"
-            assert "prior entry's meta.json" in reported["detail"]
-
-    def test_missing_input_hashes_are_reported_as_unknown(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current")
-        _write_entry(tmp_path, "prior", input_hashes=None)
-
-        explanation = _explain(tmp_path)
-
-        assert _component(explanation, "inputs")["status"] == "not_recorded"
-        assert explanation["reason"] == "cache_key_changed"
-
-    def test_prior_entry_is_the_newest_sibling_written_before_the_current_one(
+    def test_a_new_node_falls_back_to_the_newest_entry_for_the_function(
         self, tmp_path: Path
     ) -> None:
-        """A sibling written after this entry cannot be what it superseded."""
-        _write_entry(
-            tmp_path, "current", source_hash="src-3", timestamp="2026-08-18T12:00:00+00:00"
-        )
-        _write_entry(
-            tmp_path, "aaa-newest", source_hash="src-2", timestamp="2026-08-18T11:00:00+00:00"
-        )
-        _write_entry(
-            tmp_path, "zzz-oldest", source_hash="src-1", timestamp="2026-08-17T11:00:00+00:00"
-        )
-        _write_entry(
-            tmp_path, "later-sibling", source_hash="src-4", timestamp="2026-08-18T13:00:00+00:00"
-        )
+        with _index(tmp_path) as index:
+            _write_entry(
+                index, "older", source_hash="src-0", created_at="2026-08-17T09:00:00+00:00"
+            )
+            _write_entry(
+                index, "newer", source_hash="src-1", created_at="2026-08-18T09:00:00+00:00"
+            )
+            _write_entry(index, "current", source_hash="src-2")
+            _write_run(
+                index,
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+                display_label="produce[new]",
+            )
+            explanation = _explain(index)
 
-        explanation = _explain(tmp_path)
-
-        assert explanation["compared_with"] == "aaa-newest"
-        assert _component(explanation, "source_hash")["prior"] == "src-2"
+        assert explanation["compared_with"] == {
+            "cache_key": "newer",
+            "strategy": "newest_by_function",
+        }
+        assert _component(explanation, "source_hash")["prior"] == "src-1"
 
     def test_a_differing_task_identity_is_named(self, tmp_path: Path) -> None:
         """Same base name, different module: the moved component is ``task``."""
-        _write_entry(tmp_path, "current", function="pipeline.produce")
-        _write_entry(tmp_path, "prior", function="analysis.produce")
-
-        explanation = _explain(tmp_path, task_name="pipeline.produce")
+        with _index(tmp_path) as index:
+            _write_entry(
+                index,
+                "prior",
+                function="analysis.produce",
+                created_at="2026-08-18T09:00:00+00:00",
+            )
+            _write_entry(index, "current", function="pipeline.produce")
+            _write_run(
+                index,
+                run_id="run-1",
+                started_at="2026-08-18T09:00:00+00:00",
+                cache_key="prior",
+                task_name="pipeline.produce",
+            )
+            _write_run(
+                index,
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+                task_name="pipeline.produce",
+            )
+            explanation = _explain(index)
 
         assert _component(explanation, "task") == {
             "component": "task",
@@ -201,26 +281,33 @@ class TestCacheExplainComponents:
         assert explanation["reason"] == "cache_key_changed"
 
     def test_cached_task_and_first_run_keep_their_summaries(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "current")
-        assert _explain(tmp_path)["reason"] == "no_prior_entry"
+        with _index(tmp_path) as index:
+            _write_entry(index, "current")
+            _write_run(
+                index, run_id="run-2", started_at="2026-08-18T10:00:00+00:00", cache_key="current"
+            )
+            assert _explain(index)["reason"] == "no_prior_entry"
 
-        payload = explain_run_cache(
-            cache_root=tmp_path,
-            run_snapshot={
-                "tasks": [{"task_name": "produce", "cache_key": "current", "status": "cached"}]
-            },
-        )
-        tasks = payload["tasks"]
-        assert isinstance(tasks, list)
-        assert tasks[0]["reason"] == "all_inputs_match"
+            _write_run(
+                index,
+                run_id="run-3",
+                started_at="2026-08-18T11:00:00+00:00",
+                cache_key="current",
+                status="cached",
+            )
+            assert _explain(index, run_id="run-3")["reason"] == "all_inputs_match"
 
     def test_task_without_an_entry_says_so(self, tmp_path: Path) -> None:
-        _write_entry(tmp_path, "prior")
-        assert _explain(tmp_path, cache_key="missing")["reason"] == "no_entry_for_key"
+        with _index(tmp_path) as index:
+            _write_entry(index, "prior", created_at="2026-08-18T09:00:00+00:00")
+            _write_run(
+                index, run_id="run-2", started_at="2026-08-18T10:00:00+00:00", cache_key="missing"
+            )
+            assert _explain(index)["reason"] == "no_entry_for_key"
 
 
 class TestSavedKeyComponents:
-    def test_meta_records_the_driver_source_hash_and_env_identity(self, tmp_path: Path) -> None:
+    def test_a_saved_entry_records_the_components_explain_diffs(self, tmp_path: Path) -> None:
         """The components explain needs must be recoverable from a new entry."""
 
         @task()
@@ -242,8 +329,12 @@ class TestSavedKeyComponents:
             extra_source_hash="notebook-1",
         )
 
-        meta = json.loads(
-            (tmp_path / "cache" / cache_key / "meta.json").read_text(encoding="utf-8")
-        )
-        assert meta["extra_source_hash"] == "notebook-1"
-        assert meta["env_hash"] is None
+        with CacheIndex.open(path=tmp_path / "ginkgo.db") as index:
+            components = index.key_components(cache_key)
+            entry = index.entry(cache_key)
+
+        assert components["extra_source_hash"] == "notebook-1"
+        assert components["env_hash.pixi_lock"] is None
+        assert components["inputs.value"] == input_hashes["value"]
+        assert entry is not None
+        assert entry["function"] == produce.name

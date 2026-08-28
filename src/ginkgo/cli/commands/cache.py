@@ -1,4 +1,11 @@
-"""Cache command handlers."""
+"""Cache command handlers.
+
+``ls``, ``explain`` and ``stats`` read the ledger and nothing else, through a
+read-only connection, so they answer while a run is writing. ``prune`` and
+``clear`` remove bytes and the rows that point at them, in that order: a row
+without bytes is a miss the next run pays for once, while bytes without a row
+are an orphan nothing ever collects.
+"""
 
 from __future__ import annotations
 
@@ -7,19 +14,22 @@ import json
 import shutil
 import sys
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
 from rich import box
 from rich.table import Table
 from rich.text import Text
 
+from ginkgo import query
 from ginkgo.cli.common import CACHE_ROOT, console
 from ginkgo.cli.renderers.common import task_base_name
+from ginkgo.formatting import format_bytes, format_int, parse_timestamp
+from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
-from ginkgo.runtime.caching.cache import UNRECORDED, key_components
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -29,7 +39,10 @@ def command_cache(args) -> int:
     rich_console = console(sys.stdout, width=None if is_tty else 160)
     if args.cache_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
-        entries = list_cache_entries(CACHE_ROOT)
+        entries: list[CacheEntryDisplay] = []
+        if _database_exists():
+            with _reader() as reader:
+                entries = list_cache_entries(reader)
         if not entries:
             rich_console.print("[dim]No cache entries found.[/]")
             return 0
@@ -56,6 +69,9 @@ def command_cache(args) -> int:
         rich_console.print(table)
         return 0
 
+    if args.cache_command == "stats":
+        return _render_stats(rich_console, as_json=args.json)
+
     if args.cache_command == "prune":
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]prune[/]\n")
         if args.older_than is None and args.max_size is None and args.max_entries is None:
@@ -70,41 +86,45 @@ def command_cache(args) -> int:
             rich_console.print("[red]Error:[/] --max-entries must be at least 0.")
             return 2
 
-        all_entries = list_cache_entries(CACHE_ROOT)
-        entries = select_prune_entries(
-            entries=all_entries,
-            older_than=args.older_than,
-            max_size_bytes=max_size_bytes,
-            max_entries=args.max_entries,
-        )
-        total_bytes = sum(entry.size_bytes for entry in entries)
-
-        if args.dry_run:
-            reason = _describe_prune_policy(
+        with _index() as index:
+            all_entries = list_cache_entries(Query(index.store, layout=WorkspaceLayout.relative()))
+            entries = select_prune_entries(
+                entries=all_entries,
                 older_than=args.older_than,
-                max_size=args.max_size,
+                max_size_bytes=max_size_bytes,
                 max_entries=args.max_entries,
+                least_recently_hit=args.least_recently_hit,
             )
-            rich_console.print(
-                f"[cyan]Preview:[/] {len(entries)} entries {reason} "
-                f"([bold]{_format_size(total_bytes)}[/]) would be removed."
-            )
-            for entry in entries:
-                rich_console.print(
-                    f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.created})"
+            total_bytes = sum(entry.size_bytes for entry in entries)
+
+            if args.dry_run:
+                reason = _describe_prune_policy(
+                    older_than=args.older_than,
+                    max_size=args.max_size,
+                    max_entries=args.max_entries,
+                    least_recently_hit=args.least_recently_hit,
                 )
-            return 0
+                rich_console.print(
+                    f"[cyan]Preview:[/] {len(entries)} entries {reason} "
+                    f"([bold]{format_bytes(total_bytes)}[/]) would be removed."
+                )
+                for entry in entries:
+                    rich_console.print(
+                        f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.created})"
+                    )
+                return 0
 
-        for entry in entries:
-            _safe_rmtree(entry.path)
+            for entry in entries:
+                _safe_rmtree(entry.path)
+            index.forget_entries([entry.cache_key for entry in entries])
 
-        # Clean up orphaned artifacts after pruning.
-        _gc_orphan_artifacts(CACHE_ROOT)
+            # Clean up orphaned artifacts after pruning.
+            _gc_orphan_artifacts(CACHE_ROOT, index=index)
 
         rich_console.print(
             f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
             f"{'entry' if len(entries) == 1 else 'entries'} "
-            f"([bold]{_format_size(total_bytes)}[/])."
+            f"([bold]{format_bytes(total_bytes)}[/])."
         )
         return 0
 
@@ -126,19 +146,42 @@ def command_cache(args) -> int:
             return 2
 
         with open_run(run_id) as (reader, resolved):
-            run_snapshot = reader.run(resolved).to_payload()
-        payload = explain_run_cache(cache_root=CACHE_ROOT, run_snapshot=run_snapshot)
+            payload = explain_run_cache(reader=reader, run_id=resolved)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    cache_dir = CACHE_ROOT / args.cache_key
-    if not cache_dir.is_dir():
-        raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
-    _safe_rmtree(cache_dir)
+    return _clear(args, rich_console)
 
-    # Clean up orphaned artifacts after clearing.
-    _gc_orphan_artifacts(CACHE_ROOT)
+
+def _clear(args, rich_console) -> int:
+    """Remove one cache entry, or every entry directory with no row."""
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
+    with _index() as index:
+        if args.orphans:
+            orphans = _orphan_entry_dirs(cache_root=CACHE_ROOT, index=index)
+            for entry_dir in orphans:
+                _safe_rmtree(entry_dir)
+            _gc_orphan_artifacts(CACHE_ROOT, index=index)
+            rich_console.print(
+                f"[green]✓[/] Removed [bold]{len(orphans)}[/] orphaned cache "
+                f"{'directory' if len(orphans) == 1 else 'directories'}."
+            )
+            return 0
+
+        if args.cache_key is None:
+            rich_console.print(
+                "[red]Error:[/] provide a cache key, or --orphans to remove entry "
+                "directories the database has no row for."
+            )
+            return 2
+
+        cache_dir = CACHE_ROOT / args.cache_key
+        if not cache_dir.is_dir():
+            raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
+        _safe_rmtree(cache_dir)
+        index.forget_entries([args.cache_key])
+        _gc_orphan_artifacts(CACHE_ROOT, index=index)
+
     message = Text()
     message.append("✓ ", style="green")
     message.append("Removed cache entry ")
@@ -148,9 +191,87 @@ def command_cache(args) -> int:
     return 0
 
 
+def _render_stats(rich_console, *, as_json: bool) -> int:
+    """Print what the cache holds, in aggregate."""
+    if not _database_exists():
+        stats = CacheStats(
+            entries=0,
+            total_bytes=0,
+            never_hit=0,
+            never_hit_bytes=0,
+            hit_histogram={},
+            top_functions=[],
+        )
+    else:
+        with _reader() as reader:
+            stats = reader.cache_stats()
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "entries": stats.entries,
+                    "total_bytes": stats.total_bytes,
+                    "never_hit": stats.never_hit,
+                    "never_hit_bytes": stats.never_hit_bytes,
+                    "hit_histogram": {str(k): v for k, v in stats.hit_histogram.items()},
+                    "top_functions": [
+                        {"function": name, "entries": count, "bytes": size}
+                        for name, count, size in stats.top_functions
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]stats[/]\n")
+    rich_console.print(f"Entries: [bold]{format_int(stats.entries)}[/]")
+    rich_console.print(f"Total size: [bold]{format_bytes(stats.total_bytes)}[/]")
+    rich_console.print(
+        f"Never hit: [bold]{format_int(stats.never_hit)}[/] "
+        f"([bold]{format_bytes(stats.never_hit_bytes)}[/])"
+    )
+    if stats.hit_histogram:
+        histogram = Table(box=box.SQUARE, border_style="#0f766e", header_style="bold #134e4a")
+        histogram.add_column("Hits", justify="right")
+        histogram.add_column("Entries", justify="right")
+        for hits, count in sorted(stats.hit_histogram.items()):
+            histogram.add_row(str(hits), format_int(count))
+        rich_console.print(histogram)
+    if stats.top_functions:
+        functions = Table(box=box.SQUARE, border_style="#0f766e", header_style="bold #134e4a")
+        functions.add_column("Task", no_wrap=True)
+        functions.add_column("Entries", justify="right")
+        functions.add_column("Size", justify="right")
+        for name, count, size in stats.top_functions:
+            functions.add_row(task_base_name(name), format_int(count), format_bytes(size))
+        rich_console.print(functions)
+    return 0
+
+
+def _reader() -> Query:
+    """Open the ledger read-only, so a running workflow is not disturbed."""
+    return query.open()
+
+
+def _database_exists() -> bool:
+    """Return whether this workspace has a ledger yet.
+
+    A workspace nobody has run anything in has no database and an empty cache,
+    which is an answer rather than an error.
+    """
+    return Path(WorkspaceLayout.relative().db).is_file()
+
+
+def _index() -> CacheIndex:
+    """Open the cache index for writing, for the commands that remove things."""
+    return CacheIndex.open(path=WorkspaceLayout.relative().db)
+
+
 @dataclass(frozen=True)
-class CacheEntryRow:
-    """Display and pruning metadata for a cache entry."""
+class CacheEntryDisplay:
+    """Display and pruning metadata for one cache entry."""
 
     path: Path
     cache_key: str
@@ -160,77 +281,43 @@ class CacheEntryRow:
     age: str
     created: str
     created_at: datetime | None
+    last_hit_at: datetime | None
     function: str
 
 
-def list_cache_entries(root: Path) -> list[CacheEntryRow]:
-    """Return cache entries as structured rows."""
-    if not root.exists():
-        return []
-    return [
-        _cache_entry_row(entry)
-        for entry in sorted(path for path in root.iterdir() if path.is_dir())
-    ]
+def list_cache_entries(reader: Query) -> list[CacheEntryDisplay]:
+    """Return cache entries as display rows, oldest key first.
 
+    Parameters
+    ----------
+    reader : Query
+        An open view of the ledger.
 
-def _cache_entry_row(entry: Path) -> CacheEntryRow:
-    """Return the display row for a cache entry."""
-    meta_path = entry / "meta.json"
-    if meta_path.is_file():
-        try:
-            meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            meta = {}
-    else:
-        meta = {}
-
-    function = str(meta.get("function") or "unknown")
-    timestamp = str(meta.get("timestamp") or "")
-    created_at = _parse_timestamp(timestamp)
-    size_bytes = _dir_size(entry)
-    return CacheEntryRow(
-        path=entry,
-        cache_key=entry.name,
-        task=task_base_name(function),
-        size=_format_size(size_bytes),
-        size_bytes=size_bytes,
-        age=_format_age(created_at),
-        created=timestamp or "-",
-        created_at=created_at,
-        function=function,
+    Returns
+    -------
+    list[CacheEntryDisplay]
+    """
+    return sorted(
+        (_cache_entry_row(row) for row in reader.cache_entries()),
+        key=lambda entry: entry.cache_key,
     )
 
 
-def _dir_size(path: Path) -> int:
-    """Return the total size of files beneath a cache entry directory."""
-    total = 0
-    for file_path in path.rglob("*"):
-        if file_path.is_file():
-            total += file_path.stat().st_size
-    return total
-
-
-def _format_size(size_bytes: int) -> str:
-    """Return a human-readable file size."""
-    value = float(size_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{size_bytes} B"
-
-
-def _parse_timestamp(timestamp: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp if present."""
-    if not timestamp:
-        return None
-    try:
-        parsed = datetime.fromisoformat(timestamp)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:
+    """Return the display row for one indexed cache entry."""
+    created_at = parse_timestamp(row.created_at)
+    return CacheEntryDisplay(
+        path=CACHE_ROOT / row.cache_key,
+        cache_key=row.cache_key,
+        task=task_base_name(row.function),
+        size=format_bytes(row.size_bytes),
+        size_bytes=row.size_bytes,
+        age=_format_age(created_at),
+        created=row.created_at or "-",
+        created_at=created_at,
+        last_hit_at=parse_timestamp(row.last_hit_at),
+        function=row.function,
+    )
 
 
 def _format_age(created_at: datetime | None) -> str:
@@ -256,47 +343,58 @@ def _prune_cutoff(older_than: str) -> datetime:
 
 def select_prune_entries(
     *,
-    entries: list[CacheEntryRow],
+    entries: list[CacheEntryDisplay],
     older_than: str | None,
     max_size_bytes: int | None,
     max_entries: int | None,
-) -> list[CacheEntryRow]:
+    least_recently_hit: bool = False,
+) -> list[CacheEntryDisplay]:
     """Return the cache entries that satisfy the combined prune policy.
 
     Parameters
     ----------
-    entries : list[CacheEntryRow]
+    entries : list[CacheEntryDisplay]
         Existing cache entries; may be unordered.
     older_than : str | None
         Optional duration string. Entries with ``created_at`` older than the
         cutoff are always selected.
     max_size_bytes : int | None
-        When set, additional oldest entries are selected until total cache
-        size drops to or below this target.
+        When set, additional entries are selected until total cache size drops
+        to or below this target.
     max_entries : int | None
-        When set, additional oldest entries are selected until the remaining
-        entry count drops to or below this target.
+        When set, additional entries are selected until the remaining entry
+        count drops to or below this target.
+    least_recently_hit : bool
+        Give up the entries nobody has used lately first, rather than the
+        oldest. An entry never hit sorts as never used; ties break on age.
 
     Returns
     -------
-    list[CacheEntryRow]
+    list[CacheEntryDisplay]
         Entries to remove. Order follows the original iteration order for
         display stability.
     """
-    by_age_oldest_first = sorted(
-        entries,
-        key=lambda entry: entry.created_at or datetime.min.replace(tzinfo=UTC),
-    )
-    selected: set[Path] = set()
+    oldest = datetime.min.replace(tzinfo=UTC)
+    if least_recently_hit:
+
+        def sort_key(entry: CacheEntryDisplay) -> tuple[datetime, datetime]:
+            return (entry.last_hit_at or oldest, entry.created_at or oldest)
+    else:
+
+        def sort_key(entry: CacheEntryDisplay) -> tuple[datetime, datetime]:
+            return (entry.created_at or oldest, entry.created_at or oldest)
+
+    give_up_first = sorted(entries, key=sort_key)
+    selected: set[str] = set()
 
     if older_than is not None:
         cutoff = _prune_cutoff(older_than)
-        for entry in by_age_oldest_first:
+        for entry in give_up_first:
             if entry.created_at is not None and entry.created_at < cutoff:
-                selected.add(entry.path)
+                selected.add(entry.cache_key)
 
     if max_size_bytes is not None or max_entries is not None:
-        remaining = [entry for entry in by_age_oldest_first if entry.path not in selected]
+        remaining = [entry for entry in give_up_first if entry.cache_key not in selected]
         remaining_size = sum(entry.size_bytes for entry in remaining)
         remaining_count = len(remaining)
         for entry in remaining:
@@ -304,11 +402,11 @@ def select_prune_entries(
             count_ok = max_entries is None or remaining_count <= max_entries
             if size_ok and count_ok:
                 break
-            selected.add(entry.path)
+            selected.add(entry.cache_key)
             remaining_size -= entry.size_bytes
             remaining_count -= 1
 
-    return [entry for entry in entries if entry.path in selected]
+    return [entry for entry in entries if entry.cache_key in selected]
 
 
 def _describe_prune_policy(
@@ -316,6 +414,7 @@ def _describe_prune_policy(
     older_than: str | None,
     max_size: str | None,
     max_entries: int | None,
+    least_recently_hit: bool = False,
 ) -> str:
     """Describe the active prune policy for dry-run output."""
     parts = []
@@ -325,6 +424,8 @@ def _describe_prune_policy(
         parts.append(f"over {max_size} cache size")
     if max_entries is not None:
         parts.append(f"over {max_entries} entries")
+    if least_recently_hit:
+        parts.append("least recently hit first")
     return f"matching policy ({'; '.join(parts)})"
 
 
@@ -368,52 +469,69 @@ def _safe_rmtree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _gc_orphan_artifacts(cache_root: Path) -> None:
-    """Remove artifacts not referenced by any cache entry or catalogued asset.
+def _orphan_entry_dirs(*, cache_root: Path, index: CacheIndex) -> list[Path]:
+    """Return entry directories the database has no row for.
 
-    The cache and the asset catalog share one artifact store. Scanning only
-    the cache would treat asset-only artifacts as orphans and delete data
-    the asset catalog still points to, so each store reports its own live
-    artifact IDs and anything the artifact store holds beyond their union
-    is deleted.
+    A lost database leaves the bytes behind, and nothing else will ever look
+    at them: the key that would find them is only in the row that is gone.
     """
-    artifacts_root = WorkspaceLayout.sibling_of(cache_root).artifacts
-    if not artifacts_root.exists():
+    if not cache_root.exists():
+        return []
+    known = {
+        row.cache_key
+        for row in Query(index.store, layout=WorkspaceLayout.relative()).cache_entries()
+    }
+    return sorted(
+        entry for entry in cache_root.iterdir() if entry.is_dir() and entry.name not in known
+    )
+
+
+def _gc_orphan_artifacts(cache_root: Path, *, index: CacheIndex | None = None) -> None:
+    """Remove artifacts no cache entry or catalogued asset points at.
+
+    The cache and the asset catalog share one artifact store, so each reports
+    the artifact IDs it still references and anything beyond their union is
+    deleted. The asset half still comes from the YAML catalog; it joins the
+    same query when the catalog moves into the store.
+    """
+    layout = WorkspaceLayout.sibling_of(cache_root)
+    if not layout.artifacts.exists():
         return
 
-    # Each store owns its on-disk format and reports the artifact IDs it
-    # still references.
     from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
     from ginkgo.runtime.artifacts.asset_store import AssetStore
-    from ginkgo.runtime.caching.cache import CacheStore
 
-    referenced = CacheStore(root=cache_root).referenced_artifact_ids()
-    referenced |= AssetStore(
-        root=WorkspaceLayout.sibling_of(cache_root).assets
-    ).referenced_artifact_ids()
+    with ExitStack() as stack:
+        if index is None:
+            index = stack.enter_context(CacheIndex.open(path=layout.db))
+        referenced = index.referenced_artifact_ids()
+        referenced |= AssetStore(root=layout.assets).referenced_artifact_ids()
 
-    store = LocalArtifactStore(root=artifacts_root)
-    for artifact_id in store.list_artifact_ids():
-        if artifact_id not in referenced:
-            store.delete(artifact_id=artifact_id)
+        store = LocalArtifactStore(root=layout.artifacts, index=index)
+        for artifact_id in store.list_artifact_ids():
+            if artifact_id not in referenced:
+                store.delete(artifact_id=artifact_id)
 
 
-def explain_run_cache(*, cache_root: Path, run_snapshot: dict[str, object]) -> dict[str, object]:
-    """Return cache explanations for each task in a run snapshot."""
-    explanations = []
-    tasks = run_snapshot.get("tasks", [])
-    if isinstance(tasks, list):
-        for task in tasks:
-            if isinstance(task, dict):
-                explanations.append(_explain_task_cache(cache_root=cache_root, task=task))
+def explain_run_cache(*, reader: Query, run_id: str) -> dict[str, object]:
+    """Return cache explanations for each task in a run."""
+    summary = reader.run(run_id).to_payload()
+    tasks = summary.get("tasks", [])
+    explanations = [
+        _explain_task_cache(reader=reader, run_id=run_id, task=task)
+        for task in tasks
+        if isinstance(task, dict)
+    ]
     return {
-        "run_id": run_snapshot.get("run_id"),
-        "workflow": run_snapshot.get("workflow"),
+        "run_id": summary.get("run_id"),
+        "workflow": summary.get("workflow"),
         "tasks": explanations,
     }
 
 
-def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[str, object]:
+def _explain_task_cache(
+    *, reader: Query, run_id: str, task: dict[str, object]
+) -> dict[str, object]:
     """Return a best-effort cache explanation for one task."""
     cache_key = task.get("cache_key")
     task_name = str(task.get("task_name") or task.get("task") or "unknown")
@@ -425,99 +543,52 @@ def _explain_task_cache(*, cache_root: Path, task: dict[str, object]) -> dict[st
     if task.get("status") == "cached":
         return identity | {"reason": "all_inputs_match"}
 
-    current_meta = _read_cache_meta(cache_root=cache_root, cache_key=cache_key)
-    if not current_meta:
+    if not isinstance(cache_key, str):
+        return identity | {"reason": "no_entry_for_key"}
+    current = reader.cache_key_components(cache_key)
+    if not current:
         return identity | {"reason": "no_entry_for_key"}
 
-    sibling_entries = _entries_for_function(
-        cache_root=cache_root, function=task_name, exclude=cache_key
+    task_id = task.get("task_id")
+    prior = (
+        reader.previous_cache_key(run_id=run_id, task_id=str(task_id))
+        if isinstance(task_id, str)
+        else None
     )
-    if not sibling_entries:
+    if prior is None:
         return identity | {"reason": "no_prior_entry"}
 
-    prior_meta = _prior_entry(sibling_entries, current=current_meta)
-    components = _diff_key_components(current=current_meta, prior=prior_meta)
+    prior_key, strategy = prior
+    components = _diff_key_components(
+        current=current, prior=reader.cache_key_components(prior_key)
+    )
     reasons = _coarse_reasons(components)
     return identity | {
-        "compared_with": prior_meta.get("cache_key"),
+        "compared_with": {"cache_key": prior_key, "strategy": strategy},
         "reason": reasons[0],
         "details": reasons,
         "components": components,
     }
 
 
-def _written_at(meta: dict[str, object]) -> datetime:
-    """Return when a cache entry was written, oldest-possible if unrecorded."""
-    stamp = _parse_timestamp(str(meta.get("timestamp", "")))
-    return stamp or datetime.min.replace(tzinfo=UTC)
-
-
-def _prior_entry(
-    entries: list[dict[str, object]], *, current: dict[str, object]
-) -> dict[str, object]:
-    """Return the newest sibling entry written before the one being explained.
-
-    An entry written after the current one cannot be what the current one
-    superseded, so comparing against it would name components that moved
-    forwards. Where no sibling is older — neither entry records a timestamp, say
-    — the newest sibling is the best available answer.
-    """
-    written_at = _written_at(current)
-    earlier = [entry for entry in entries if _written_at(entry) < written_at]
-    return max(earlier or entries, key=_written_at)
-
-
 def _diff_key_components(
     *, current: dict[str, object], prior: dict[str, object]
 ) -> list[dict[str, object]]:
-    """Return the cache-key components that differ between two entries.
-
-    A component either entry does not record is reported as ``not_recorded``
-    rather than as unchanged: nothing rules a change there out.
-    """
-    current_components = key_components(current)
-    prior_components = key_components(prior)
-    names = set(current_components) | set(prior_components)
-    if "inputs" in names:
-        # One entry records no input hashes at all, so drop the per-parameter
-        # components the other has: the group is reported once instead.
-        names = {name for name in names if not name.startswith("inputs.")}
-
+    """Return the cache-key components that differ between two entries."""
     differences: list[dict[str, object]] = []
-    for name in sorted(names):
-        # A component absent from one side is a parameter that came or went;
-        # one recorded as UNRECORDED cannot be compared at all.
-        unrecorded = [
-            side
-            for side, components in (("current", current_components), ("prior", prior_components))
-            if components.get(name) is UNRECORDED
-        ]
-        if unrecorded:
-            differences.append(
-                {
-                    "component": name,
-                    "status": "not_recorded",
-                    "detail": (
-                        f"not recorded in the {' and '.join(unrecorded)} entry's meta.json, "
-                        "so a change here cannot be ruled out"
-                    ),
-                }
-            )
-        elif name not in current_components:
-            differences.append(
-                {"component": name, "status": "removed", "prior": prior_components[name]}
-            )
-        elif name not in prior_components:
-            differences.append(
-                {"component": name, "status": "added", "current": current_components[name]}
-            )
-        elif current_components[name] != prior_components[name]:
+    for name in sorted(set(current) | set(prior)):
+        # A component absent from one side is a parameter that came or went.
+        if name not in current:
+            differences.append({"component": name, "status": "removed", "prior": prior[name]})
+        elif name not in prior:
+            differences.append({"component": name, "status": "added", "current": current[name]})
+        elif current[name] != prior[name]:
             differences.append(
                 {
                     "component": name,
                     "status": "changed",
-                    "current": current_components[name],
-                    "prior": prior_components[name],
+                    "current": current[name],
+                    "prior": prior[name],
                 }
             )
     return differences
@@ -529,11 +600,7 @@ def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
     A moved component no code covers falls back to ``cache_key_changed``; the
     component list names it either way.
     """
-    moved = {
-        str(component["component"])
-        for component in components
-        if component["status"] != "not_recorded"
-    }
+    moved = {str(component["component"]) for component in components}
     reasons = []
     if moved & {"source_hash", "extra_source_hash"}:
         reasons.append("source_hash_changed")
@@ -544,36 +611,3 @@ def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
     if any(name.startswith("inputs") for name in moved):
         reasons.append("input_changed")
     return reasons or ["cache_key_changed"]
-
-
-def _read_cache_meta(*, cache_root: Path, cache_key: object) -> dict[str, object]:
-    """Return cache metadata for one key."""
-    if not isinstance(cache_key, str):
-        return {}
-    meta_path = cache_root / cache_key / "meta.json"
-    if not meta_path.is_file():
-        return {}
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _entries_for_function(
-    *,
-    cache_root: Path,
-    function: str,
-    exclude: object,
-) -> list[dict[str, object]]:
-    """Return cache metadata entries for the same function."""
-    entries: list[dict[str, object]] = []
-    if not cache_root.exists():
-        return entries
-    for entry in sorted(path for path in cache_root.iterdir() if path.is_dir()):
-        if exclude == entry.name:
-            continue
-        meta = _read_cache_meta(cache_root=cache_root, cache_key=entry.name)
-        if task_base_name(str(meta.get("function", "unknown"))) == task_base_name(function):
-            entries.append(meta)
-    return entries
