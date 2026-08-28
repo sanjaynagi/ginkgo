@@ -60,6 +60,7 @@ class TestDirectories:
         assert layout.fuse.name == "fuse"
         assert layout.notebooks.name == "notebooks"
         assert layout.reports.name == "reports"
+        assert layout.db.name == "ginkgo.db"
         assert layout.staging_cache_file.name == "remote-staged.json"
 
     def test_no_two_concerns_share_a_directory(self, tmp_path):
@@ -74,10 +75,11 @@ class TestDirectories:
             layout.fuse,
             layout.notebooks,
             layout.reports,
+            layout.db,
             layout.staging_cache_file,
         }
 
-        assert len(paths) == 9
+        assert len(paths) == 10
         assert all(path.parent == layout.root for path in paths)
 
     def test_creates_no_directories(self, tmp_path):
@@ -86,6 +88,29 @@ class TestDirectories:
         _ = (layout.runs, layout.cache, layout.artifacts)
 
         assert not layout.root.exists()
+
+
+class TestDatabaseLocation:
+    """``GINKGO_DB`` is read here and nowhere else."""
+
+    def test_the_database_sits_in_the_workspace_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GINKGO_DB", raising=False)
+        layout = WorkspaceLayout(root=tmp_path / DIRECTORY_NAME)
+
+        assert layout.db == tmp_path / DIRECTORY_NAME / "ginkgo.db"
+
+    def test_the_environment_override_relocates_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GINKGO_DB", str(tmp_path / "local" / "ledger.db"))
+        layout = WorkspaceLayout(root=tmp_path / DIRECTORY_NAME)
+
+        assert layout.db == tmp_path / "local" / "ledger.db"
+
+    def test_an_empty_override_is_ignored(self, tmp_path, monkeypatch):
+        """An unset-looking variable must not resolve the database to the cwd."""
+        monkeypatch.setenv("GINKGO_DB", "")
+        layout = WorkspaceLayout(root=tmp_path / DIRECTORY_NAME)
+
+        assert layout.db == tmp_path / DIRECTORY_NAME / "ginkgo.db"
 
 
 class TestValueSemantics:

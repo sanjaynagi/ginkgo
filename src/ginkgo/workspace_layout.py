@@ -4,6 +4,7 @@ Ginkgo keeps its runtime state in a ``.ginkgo/`` directory at the workspace
 root, with one subdirectory per concern::
 
     .ginkgo/
+      ginkgo.db
       runs/  cache/  assets/  artifacts/  staging/  fuse/  notebooks/  reports/
       remote-staged.json
 
@@ -15,10 +16,13 @@ across six subpackages.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 DIRECTORY_NAME = ".ginkgo"
+GINKGO_DB_ENV_VAR = "GINKGO_DB"
+"""Environment variable relocating the provenance ledger away from ``.ginkgo/``."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -111,6 +115,19 @@ class WorkspaceLayout:
     def reports(self) -> Path:
         """Exported HTML report bundles."""
         return self.root / "reports"
+
+    @property
+    def db(self) -> Path:
+        """The provenance ledger.
+
+        ``GINKGO_DB`` relocates it, and is read here and nowhere else. That
+        matters on a shared filesystem, where SQLite's locking is unreliable
+        and the fix is to put the database somewhere local.
+        """
+        override = os.environ.get(GINKGO_DB_ENV_VAR)
+        if override:
+            return Path(override)
+        return self.root / "ginkgo.db"
 
     @property
     def staging_cache_file(self) -> Path:
