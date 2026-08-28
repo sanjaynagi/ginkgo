@@ -37,6 +37,7 @@ from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import EventBus, TaskNotice
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.caching.provenance import make_run_id
 
 from tests.conftest import Ledger
@@ -1729,12 +1730,14 @@ class TestSecrets:
         first_summary = recorder.finish()
         first_task = first_summary.tasks[0]
         cache_key = first_task.cache_key
-        meta_path = tmp_path / ".ginkgo" / "cache" / cache_key / "meta.json"
+        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+            entry = index.entry(cache_key)
+        assert entry is not None
 
         assert Path(first_result).read_text(encoding="utf-8") == "first-token"
         assert first_task.inputs["secret_value"]["redacted"] is True
         assert "first-token" not in recorder.run_dir.manifest_path.read_text(encoding="utf-8")
-        assert "first-token" not in meta_path.read_text(encoding="utf-8")
+        assert "first-token" not in str(entry["inputs"])
 
         second_recorder = Ledger.start(
             root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
@@ -1946,12 +1949,14 @@ class TestAssets:
             for task in tasks.values()
             if str(task["name"]).endswith(".nested_asset_inputs_task")
         )
-        meta_path = tmp_path / ".ginkgo" / "cache" / consumer_task["cache_key"] / "meta.json"
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+            entry = index.entry(consumer_task["cache_key"])
+        assert entry is not None
+        inputs = json.loads(entry["inputs"])
 
         assert result
-        assert meta["inputs"]["sources"]["type"] == "list"
-        first_item = meta["inputs"]["sources"]["items"][0]
+        assert inputs["sources"]["type"] == "list"
+        first_item = inputs["sources"]["items"][0]
         assert first_item["type"] == "asset_ref"
         assert first_item["asset"] == "file:prepared_data"
 

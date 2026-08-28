@@ -48,7 +48,9 @@ class SqliteStore:
         self._closed = False
 
     @classmethod
-    def open(cls, path: Path, *, readonly: bool = False) -> SqliteStore:
+    def open(
+        cls, path: Path, *, readonly: bool = False, thread_shared: bool = False
+    ) -> SqliteStore:
         """Open the database at *path*.
 
         A write-mode open creates the parent directory and the file if they are
@@ -62,6 +64,10 @@ class SqliteStore:
             The database file.
         readonly : bool, optional
             Open through a ``mode=ro`` URI, for CLI read paths.
+        thread_shared : bool, optional
+            Let threads other than the opener use the connection. The caller
+            must then serialise every use of the store itself; SQLite's own
+            check is what this turns off, not the reason for it.
 
         Returns
         -------
@@ -76,7 +82,9 @@ class SqliteStore:
             If a read-only open finds a schema older than this ginkgo's.
         """
         if readonly:
-            connection = cls._connect(_uri(path, readonly=True), path=path)
+            connection = cls._connect(
+                _uri(path, readonly=True), path=path, thread_shared=thread_shared
+            )
             _apply_pragmas(connection, writable=False)
             store = cls(path=path, connection=connection, readonly=True)
             found = schema_version(connection)
@@ -90,7 +98,9 @@ class SqliteStore:
             warn_if_network_filesystem(path)
         except OSError as exc:
             raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
-        connection = cls._connect(_uri(path, readonly=False), path=path)
+        connection = cls._connect(
+            _uri(path, readonly=False), path=path, thread_shared=thread_shared
+        )
         store = cls(path=path, connection=connection, readonly=False)
         try:
             _apply_pragmas(connection, writable=True)
@@ -104,10 +114,15 @@ class SqliteStore:
         return store
 
     @staticmethod
-    def _connect(uri: str, *, path: Path) -> sqlite3.Connection:
+    def _connect(uri: str, *, path: Path, thread_shared: bool = False) -> sqlite3.Connection:
         """Connect to *uri*, reporting failure as a :class:`StoreError`."""
         try:
-            connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000)
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=BUSY_TIMEOUT_MS / 1000,
+                check_same_thread=not thread_shared,
+            )
         except sqlite3.Error as exc:
             raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
         connection.row_factory = sqlite3.Row
@@ -236,7 +251,7 @@ class SqliteStore:
         return StoreError(f"Provenance store write failed at {self._path}: {exc}")
 
 
-def open_store(path: Path, *, readonly: bool = False) -> SqliteStore:
+def open_store(path: Path, *, readonly: bool = False, thread_shared: bool = False) -> SqliteStore:
     """Open the provenance store at *path*.
 
     The one entry point the rest of ginkgo uses, so that swapping the backend
@@ -248,13 +263,16 @@ def open_store(path: Path, *, readonly: bool = False) -> SqliteStore:
         The database file, normally ``WorkspaceLayout.db``.
     readonly : bool, optional
         Open a reader that never migrates and never takes a write lock.
+    thread_shared : bool, optional
+        Let threads other than the opener use the connection, on the promise
+        that the caller serialises them.
 
     Returns
     -------
     SqliteStore
         An open store.
     """
-    return SqliteStore.open(path, readonly=readonly)
+    return SqliteStore.open(path, readonly=readonly, thread_shared=thread_shared)
 
 
 def _uri(path: Path, *, readonly: bool) -> str:

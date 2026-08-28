@@ -325,7 +325,18 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
 
 
 def _task_cache_hit(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
-    return [_set_cached(event, payload, cached=1)]
+    ops = [_set_cached(event, payload, cached=1)]
+    if event.cache_key:
+        # Hit accounting belongs to whoever sees the hit, which is the ledger:
+        # the cache itself never learns that the value it handed out was used.
+        ops.append(
+            ProjectionOp(
+                sql="UPDATE cache_entries SET hit_count = hit_count + 1, last_hit_at = ? "
+                "WHERE cache_key = ?",
+                params=(event.ts, event.cache_key),
+            )
+        )
+    return ops
 
 
 def _task_cache_miss(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:

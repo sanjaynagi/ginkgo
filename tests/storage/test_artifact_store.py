@@ -340,20 +340,20 @@ class TestStorageLayout:
         tree_path = store._trees_dir / f"{record.digest_hex}.json"
         assert tree_path.exists()
 
-    def test_ref_stored_under_refs_dir(self, store, tmp_path):
+    def test_record_is_a_row_not_a_file(self, store, tmp_path):
         src = tmp_path / "file.txt"
         src.write_text("content")
 
         record = store.store(src_path=src)
-        ref_path = store._refs_dir / f"{record.artifact_id}.json"
-        assert ref_path.exists()
+
+        assert not (store._root / "refs").exists()
+        assert store.load_record(artifact_id=record.artifact_id) == record
 
     def test_subdirs_created_on_init(self, tmp_path):
         root = tmp_path / "new_store"
         LocalArtifactStore(root=root)
         assert (root / "blobs").is_dir()
         assert (root / "trees").is_dir()
-        assert (root / "refs").is_dir()
 
 
 class TestRecordAccess:

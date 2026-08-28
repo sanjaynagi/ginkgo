@@ -77,12 +77,12 @@ class CacheCoordinator:
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        cached_result = self.cache_store.try_stat_index(stat_key=stat_key, task_def=node.task_def)
-        if cached_result is MISSING:
+        content_key = self.cache_store.stat_index_lookup(stat_key)
+        if content_key is None:
             return None
 
-        content_key = self.cache_store._stat_index.get(stat_key)
-        if content_key is None:
+        cached_result = self.cache_store.load(cache_key=content_key, task_def=node.task_def)
+        if cached_result is MISSING:
             return None
 
         node.cache_key = content_key

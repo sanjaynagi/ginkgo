@@ -50,7 +50,7 @@ from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.coordinator import CacheCoordinator
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
@@ -417,16 +417,16 @@ class ConcurrentEvaluator:
         if self.gpus < 0:
             raise ValueError("gpus must be at least 0")
 
-        self._hash_memo = HashMemo()
-        artifacts_root = WorkspaceLayout.for_cwd().artifacts
-        self._materialization_log = MaterializationLog(
-            path=artifacts_root / "materializations.json"
-        )
+        # The cache index writes on the scheduler's threads, so it holds its
+        # own connection rather than the recorder's, which belongs to the
+        # writer thread.
+        self._cache_index = CacheIndex.open(path=WorkspaceLayout.for_cwd().db)
+        self._hash_memo = HashMemo(index=self._cache_index)
         self._cache_store = CacheStore(
             backend=self.backend,
             publisher=load_remote_publisher(),
             hash_memo=self._hash_memo,
-            materialization_log=self._materialization_log,
+            index=self._cache_index,
             trust_mtimes=self.trust_mtimes,
         )
         self._asset_store = AssetStore(
@@ -607,9 +607,8 @@ class ConcurrentEvaluator:
             finally:
                 self._log_drain.stop()
                 self._executors = None
-                self._materialization_log.save()
-                self._cache_store.save_stat_index()
                 self._remote_dispatch.save_staging_cache()
+                self._cache_index.close()
 
         assert self._failure is not None
         raise self._failure
@@ -1175,6 +1174,7 @@ class ConcurrentEvaluator:
             input_hashes=node.input_hashes,
             extra_source_hash=node.extra_source_hash,
             extra_meta=extra_meta,
+            run_id=self._run_id,
         )
 
         # Propagate output digests so downstream tasks can skip re-hashing.

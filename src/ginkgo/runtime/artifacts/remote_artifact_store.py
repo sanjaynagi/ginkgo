@@ -119,7 +119,9 @@ class RemoteArtifactStore:
         else:
             self._upload_tree(record.digest_hex)
 
-        # Upload ref JSON last (visibility marker).
+        # Upload the record JSON last: it is the marker that says the bytes
+        # are all there, and the only way a machine without this workspace's
+        # database can learn the artifact's shape.
         updated = ArtifactRecord(
             artifact_id=record.artifact_id,
             kind=record.kind,
@@ -131,13 +133,18 @@ class RemoteArtifactStore:
             storage_backend=record.storage_backend,
             remote_uri=f"{self.scheme}://{self.bucket}/{self.prefix}refs/{record.artifact_id}.json",
         )
-        ref_path = self.local._refs_dir / f"{record.artifact_id}.json"
-        ref_path.write_text(updated.to_json(), encoding="utf-8")
-        self.backend.upload(
-            src_path=ref_path,
-            bucket=self.bucket,
-            key=f"{self.prefix}refs/{record.artifact_id}.json",
-        )
+        self.local.put_record(updated)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as ref_file:
+            ref_file.write(updated.to_json())
+            ref_path = Path(ref_file.name)
+        try:
+            self.backend.upload(
+                src_path=ref_path,
+                bucket=self.bucket,
+                key=f"{self.prefix}refs/{record.artifact_id}.json",
+            )
+        finally:
+            ref_path.unlink(missing_ok=True)
         return updated
 
     def _upload_blob(self, digest_hex: str) -> None:
@@ -217,10 +224,8 @@ class RemoteArtifactStore:
         else:
             self._download_tree(record.digest_hex)
 
-        # Write the local ref file so LocalArtifactStore can find it.
-        local_ref_path = self.local._refs_dir / f"{artifact_id}.json"
-        local_ref_path.parent.mkdir(parents=True, exist_ok=True)
-        local_ref_path.write_text(record.to_json(), encoding="utf-8")
+        # Record it locally so LocalArtifactStore can find it.
+        self.local.put_record(record)
 
     def _download_blob(self, digest_hex: str) -> None:
         """Download a single blob from remote into local store."""

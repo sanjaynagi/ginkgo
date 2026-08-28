@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -39,8 +38,7 @@ def _make_record(
 def _make_publisher(tmp_path: Path) -> tuple[RemotePublisher, MagicMock]:
     blobs_dir = tmp_path / "blobs"
     trees_dir = tmp_path / "trees"
-    refs_dir = tmp_path / "refs"
-    for d in (blobs_dir, trees_dir, refs_dir):
+    for d in (blobs_dir, trees_dir):
         d.mkdir()
 
     backend = MagicMock()
@@ -53,7 +51,6 @@ def _make_publisher(tmp_path: Path) -> tuple[RemotePublisher, MagicMock]:
         scheme="s3",
         local_blobs_dir=blobs_dir,
         local_trees_dir=trees_dir,
-        local_refs_dir=refs_dir,
     )
     return publisher, backend
 
@@ -72,21 +69,17 @@ class TestPublishBlob:
             src_path=blob_path, bucket="test-bucket", key="artifacts/blobs/abc123"
         )
 
-    def test_updates_ref_file(self, tmp_path) -> None:
+    def test_returns_the_record_to_be_indexed(self, tmp_path) -> None:
+        """The publisher moves bytes and hands the record back; the caller records it."""
         publisher, _ = _make_publisher(tmp_path)
         blob_path = tmp_path / "blobs" / "abc123"
         blob_path.write_bytes(b"data")
 
-        # Create a ref file.
-        ref_path = tmp_path / "refs" / "abc123.json"
         record = _make_record()
-        ref_path.write_text(record.to_json(), encoding="utf-8")
-
         result = publisher.publish(record=record)
 
-        # Ref file should now contain remote_uri.
-        updated_ref = json.loads(ref_path.read_text(encoding="utf-8"))
-        assert updated_ref["remote_uri"] == result.remote_uri
+        assert result.artifact_id == record.artifact_id
+        assert result.remote_uri == "s3://test-bucket/artifacts/blobs/abc123"
 
     def test_skips_already_published(self, tmp_path) -> None:
         publisher, backend = _make_publisher(tmp_path)
@@ -123,7 +116,7 @@ class TestPublishTree:
         # Two blob uploads + one manifest upload.
         assert backend.upload.call_count == 3
 
-    def test_updates_ref_file_for_tree(self, tmp_path) -> None:
+    def test_returns_the_tree_record_to_be_indexed(self, tmp_path) -> None:
         publisher, _ = _make_publisher(tmp_path)
 
         tree_ref = TreeRef(
@@ -134,14 +127,11 @@ class TestPublishTree:
         manifest_path = tmp_path / "trees" / "tree_digest.json"
         manifest_path.write_text(serialize_tree_manifest(tree_ref), encoding="utf-8")
 
-        ref_path = tmp_path / "refs" / "tree_id.json"
         record = _make_record(kind="tree", digest_hex="tree_digest", artifact_id="tree_id")
-        ref_path.write_text(record.to_json(), encoding="utf-8")
-
         result = publisher.publish(record=record)
 
-        updated_ref = json.loads(ref_path.read_text(encoding="utf-8"))
-        assert updated_ref["remote_uri"] == result.remote_uri
+        assert result.artifact_id == "tree_id"
+        assert result.remote_uri == "s3://test-bucket/artifacts/trees/tree_digest.json"
 
     def test_skips_missing_blobs(self, tmp_path) -> None:
         """Missing local blobs are silently skipped during tree publish."""
