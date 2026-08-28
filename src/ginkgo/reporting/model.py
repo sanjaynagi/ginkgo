@@ -18,6 +18,7 @@ from typing import Any
 from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
@@ -486,7 +487,13 @@ def build_report_data(
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
-    artifact_store = LocalArtifactStore(root=artifacts_root) if artifacts_root.exists() else None
+    # A report is a read: it opens the index read-only, and where a workspace
+    # has no database it reads an empty one rather than creating it.
+    artifact_store = (
+        LocalArtifactStore(root=artifacts_root, index=CacheIndex.for_reading(layout.db))
+        if artifacts_root.exists()
+        else None
+    )
 
     # Sections — each returns its typed pieces plus any copy instructions.
     artifact_copies: list[ArtifactCopy] = []

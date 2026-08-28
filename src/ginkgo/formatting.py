@@ -13,6 +13,38 @@ one; only the value-to-string formatting is shared.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
+
+
+def now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string.
+
+    The one clock ginkgo stamps rows with, so two rows written in the same
+    breath carry the same shape of timestamp.
+    """
+    return datetime.now(UTC).isoformat()
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse a stored ISO-8601 timestamp, returning a UTC-aware datetime.
+
+    Parameters
+    ----------
+    value : Any
+        An ISO-8601 string; anything else reads as no timestamp.
+
+    Returns
+    -------
+    datetime | None
+        The timestamp, or ``None`` when there is nothing parseable.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def format_duration(seconds: float | None) -> str:

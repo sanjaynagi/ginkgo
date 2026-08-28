@@ -190,15 +190,19 @@ navigating `.ginkgo/runs/`.
 
 ```bash
 ginkgo cache ls                          # list cached task results
+ginkgo cache stats                       # size, hit counts, biggest tasks
 ginkgo cache explain <run_id>            # explain cache decisions for a run
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
 ginkgo cache clear <cache_key>           # remove a specific cache entry
+ginkgo cache clear --orphans             # remove entries the database has lost
 ```
 
 `cache prune` requires at least one of `--older-than`, `--max-size`, or
-`--max-entries`. Add `--dry-run` to preview what would be removed.
+`--max-entries`. Add `--least-recently-hit` to give up unused entries before old
+ones, and `--dry-run` to preview what would be removed. `cache stats` takes
+`--json`.
 
 ### Why Did This Task Run Again?
 
@@ -210,7 +214,7 @@ is a specific fact rather than "the key changed":
 {
   "task_name": "produce",
   "cache_key": "fddb71a9…",
-  "compared_with": "4388619b…",
+  "compared_with": {"cache_key": "4388619b…", "strategy": "same_node"},
   "reason": "input_changed",
   "details": ["input_changed"],
   "components": [
@@ -228,14 +232,18 @@ is a specific fact rather than "the key changed":
 differs. Component names follow the cache key: `task`, `version`, `source_hash`,
 `extra_source_hash` (the notebook or script a driver task runs), `env`,
 `env_hash.pixi_lock` (the identity of the declared environment), and one
-`inputs.<parameter>` per task argument. `compared_with` is the cache key of the
-newest earlier entry for the same task, which is what the current one was
-compared against.
+`inputs.<parameter>` per task argument.
 
-A component's `status` is `changed`, `added` or `removed` for a parameter that
-appeared or went away, or `not_recorded` — the compared entry was written by an
-older ginkgo that did not store that field, so a change there cannot be ruled
-out.
+`compared_with` says what the entry was compared against, and how it was found.
+`"strategy": "same_node"` means the key this same node used in the most recent
+earlier run of the workflow — the entry this run superseded, which is the
+comparison you want. `"strategy": "newest_by_function"` is the fallback used
+when the node is new or its label changed: the newest earlier entry written by
+the same task, which may be a different branch of a fan-out. Read those
+components more sceptically.
+
+A component's `status` is `changed`, or `added` / `removed` for a parameter that
+appeared or went away.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`, one with no earlier entry to compare

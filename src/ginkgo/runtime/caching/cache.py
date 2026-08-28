@@ -8,7 +8,6 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
@@ -30,7 +29,8 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
-from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.formatting import now_iso
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
@@ -42,41 +42,29 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 MISSING = object()
 
-UNRECORDED = object()
-"""A cache-key component an entry's ``meta.json`` does not carry.
-
-Entries written before a field was recorded cannot be compared on it, which is
-not the same as comparing equal.
-"""
-
 
 def key_components(meta: dict[str, Any]) -> dict[str, Any]:
-    """Split an entry's ``meta.json`` into the labelled components of its cache key.
+    """Split an entry's recorded facts into the labelled components of its key.
 
     The names mirror the payload :meth:`CacheStore.build_cache_key` hashes, one
     per independent fact, with an ``inputs.<parameter>`` component per input, so
-    a diff of two entries can name the component that moved (issue #223). A
-    component the entry does not record is :data:`UNRECORDED`.
+    a diff of two entries can name the component that moved (issue #223). This
+    is the one place those labels are written down: ``save`` stores the rows
+    ``cache explain`` diffs, so the two cannot drift apart.
     """
-    # The payload calls the task's name "task"; meta.json calls it "function".
-    components: dict[str, Any] = {"task": meta.get("function", UNRECORDED)}
+    # The payload calls the task's name "task"; the entry calls it "function".
+    components: dict[str, Any] = {"task": meta.get("function")}
     for name in ("version", "source_hash", "extra_source_hash", "env"):
-        components[name] = meta.get(name, UNRECORDED)
+        components[name] = meta.get(name)
 
-    env_hash = meta.get("env_hash", UNRECORDED)
-    if env_hash is UNRECORDED:
-        components["env_hash.pixi_lock"] = UNRECORDED
-    else:
-        components["env_hash.pixi_lock"] = (
-            env_hash.get("pixi_lock") if isinstance(env_hash, dict) else None
-        )
+    env_hash = meta.get("env_hash")
+    components["env_hash.pixi_lock"] = (
+        env_hash.get("pixi_lock") if isinstance(env_hash, dict) else None
+    )
 
     input_hashes = meta.get("input_hashes")
     if isinstance(input_hashes, dict):
         components.update({f"inputs.{name}": value for name, value in input_hashes.items()})
-    else:
-        # No per-parameter comparison is possible, so name the group instead.
-        components["inputs"] = UNRECORDED
     return components
 
 
@@ -112,18 +100,21 @@ class CacheStore:
     publisher : RemotePublisher | None
         Optional remote publisher for uploading artifacts after local storage.
         When set, artifacts are published to the remote store automatically.
+    index : CacheIndex
+        The database rows that index the entries. Required, and never opened
+        here: which database this is, and whether it may be written, is the
+        caller's decision — constructing a cache must not create one.
     """
 
+    index: CacheIndex
     root: Path | None = None
     backend: Any | None = None  # ExecutionEnvironment; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None
-    materialization_log: MaterializationLog | None = None
     trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
-    _stat_index: dict[str, str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else WorkspaceLayout.for_cwd().cache
@@ -134,18 +125,15 @@ class CacheStore:
             object.__setattr__(self, "_artifact_store", self.artifact_store)
         else:
             # Default: sibling directory to the cache root.
-            artifacts_root = WorkspaceLayout.sibling_of(self._root).artifacts
             object.__setattr__(
                 self,
                 "_artifact_store",
                 LocalArtifactStore(
-                    root=artifacts_root,
+                    root=WorkspaceLayout.sibling_of(self._root).artifacts,
                     hash_memo=self.hash_memo,
-                    materialization_log=self.materialization_log,
+                    index=self.index,
                 ),
             )
-
-        object.__setattr__(self, "_stat_index", _load_stat_index(self._root))
 
     def build_cache_key(
         self,
@@ -253,8 +241,9 @@ class CacheStore:
         input_hashes: dict[str, Any],
         extra_source_hash: str | None = None,
         extra_meta: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> dict[str, str]:
-        """Atomically persist a task result and metadata.
+        """Atomically persist a task result and index it.
 
         File and folder outputs are copied into the artifact store, while the
         working-tree materialization is left in place as writable content.
@@ -267,8 +256,10 @@ class CacheStore:
             the component that moved.
         extra_meta : dict[str, Any] | None
             Optional task-kind-specific metadata to persist alongside the
-            cache entry. Stored under the top-level ``"extra"`` field of
-            ``meta.json`` and retrievable via :meth:`load_extra_meta`.
+            cache entry. Stored in the entry's ``extra`` column and
+            retrievable via :meth:`load_extra_meta`.
+        run_id : str | None
+            The run saving the entry, recorded on the row.
 
         Returns
         -------
@@ -276,47 +267,24 @@ class CacheStore:
             Mapping from output path strings to artifact IDs.
         """
         # Always store output artifacts, even if the cache entry already exists.
-        artifact_ids = self._store_output_artifacts(result=result, task_def=task_def)
+        records = self._store_output_artifacts(result=result, task_def=task_def)
 
         # Publish artifacts to remote store if a publisher is configured.
         if self.publisher is not None:
-            self._publish_artifacts(artifact_ids)
+            records = self._publish_artifacts(records)
+        artifact_ids = {path: record.artifact_id for path, record in records.items()}
 
         entry_dir = self._entry_dir(cache_key)
         if not entry_dir.exists():
             temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
             try:
-                output_path = temp_dir / "output.json"
-                output_path.write_text(
+                (temp_dir / "output.json").write_text(
                     json.dumps(
                         encode_value(
                             result, base_dir=temp_dir, artifact_store=self._artifact_store
                         ),
                         sort_keys=True,
                     ),
-                    encoding="utf-8",
-                )
-
-                meta = {
-                    "artifact_ids": artifact_ids,
-                    "cache_key": cache_key,
-                    "env": task_def.env,
-                    "env_hash": self._env_hash(task_def=task_def),
-                    "env_materialized_digest": self._materialized_digest(task_def=task_def),
-                    "extra_source_hash": extra_source_hash,
-                    "function": task_def.name,
-                    "inputs": self._serialise_inputs(
-                        task_def=task_def, resolved_args=resolved_args
-                    ),
-                    "input_hashes": input_hashes,
-                    "source_hash": task_def.cache_source_hash,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "version": task_def.version,
-                }
-                if extra_meta is not None:
-                    meta["extra"] = extra_meta
-                (temp_dir / "meta.json").write_text(
-                    json.dumps(meta, indent=2, sort_keys=True),
                     encoding="utf-8",
                 )
 
@@ -328,6 +296,32 @@ class CacheStore:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
 
+        # Measured from disk rather than from what was just written, so a
+        # re-save over bytes another run wrote records their size, not zero.
+        output_path = entry_dir / "output.json"
+        size_bytes = output_path.stat().st_size if output_path.is_file() else 0
+
+        meta = {
+            "cache_key": cache_key,
+            "env": task_def.env,
+            "env_hash": self._env_hash(task_def=task_def),
+            "env_materialized_digest": self._materialized_digest(task_def=task_def),
+            "extra": extra_meta,
+            "extra_source_hash": extra_source_hash,
+            "function": task_def.name,
+            "inputs": self._serialise_inputs(task_def=task_def, resolved_args=resolved_args),
+            "input_hashes": input_hashes,
+            "source_hash": task_def.cache_source_hash,
+            "created_at": now_iso(),
+            "version": task_def.version,
+        }
+        self.index.record_entry(
+            cache_key=cache_key,
+            meta=meta,
+            artifact_ids=artifact_ids,
+            size_bytes=size_bytes,
+            run_id=run_id,
+        )
         return artifact_ids
 
     def validate_cached_outputs(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
@@ -436,11 +430,8 @@ class CacheStore:
             The dict previously passed as ``extra_meta`` to :meth:`save`,
             or ``None`` when the entry is missing or recorded no extras.
         """
-        meta = self._load_meta(cache_key=cache_key)
-        if meta is None:
-            return None
-        extra = meta.get("extra")
-        return extra if isinstance(extra, dict) else None
+        entry = self.index.entry(cache_key)
+        return entry.extra if entry is not None else None
 
     def load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
         """Return output-path to artifact-ID mappings for one cache entry.
@@ -454,99 +445,66 @@ class CacheStore:
         -------
         dict[str, str] | None
             Mapping of output path to artifact ID, or ``None`` when the
-            entry is missing or recorded no artifact mappings.
+            index has no row for the key.
         """
-        meta = self._load_meta(cache_key=cache_key)
-        if meta is None:
-            return None
-        artifact_ids = meta.get("artifact_ids")
-        if not isinstance(artifact_ids, dict):
-            return None
-        return {
-            str(path): str(artifact_id)
-            for path, artifact_id in artifact_ids.items()
-            if isinstance(path, str) and isinstance(artifact_id, str)
-        }
-
-    def referenced_artifact_ids(self) -> set[str]:
-        """Return artifact IDs referenced by any surviving cache entry.
-
-        Entries with missing or unreadable metadata contribute nothing;
-        garbage collectors treat every returned ID as live.
-
-        Returns
-        -------
-        set[str]
-            Artifact IDs referenced by all cache entries under the root.
-        """
-        referenced: set[str] = set()
-        for entry_dir in self._root.iterdir():
-            if not entry_dir.is_dir():
-                continue
-            artifact_ids = self.load_artifact_ids(cache_key=entry_dir.name)
-            if artifact_ids:
-                referenced.update(artifact_ids.values())
-        return referenced
-
-    def _load_meta(self, *, cache_key: str) -> dict[str, Any] | None:
-        """Load the parsed meta.json for one cache entry."""
-        meta_path = self._entry_dir(cache_key) / "meta.json"
-        if not meta_path.exists():
-            return None
-        try:
-            return json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
+        entry = self.index.entry(cache_key)
+        return entry.artifact_ids if entry is not None else None
 
     def _store_output_artifacts(
         self,
         *,
         result: Any,
         task_def: TaskDef,
-    ) -> dict[str, str]:
+    ) -> dict[str, ArtifactRecord]:
         """Store file/folder outputs in the artifact store.
 
         Returns
         -------
-        dict[str, str]
-            Mapping from output path strings to artifact IDs.
+        dict[str, ArtifactRecord]
+            Mapping from output path strings to the records stored for them.
         """
-        artifact_ids: dict[str, str] = {}
+        records: dict[str, ArtifactRecord] = {}
         return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
         self._collect_output_artifacts(
             annotation=return_annotation,
             value=result,
-            artifact_ids=artifact_ids,
+            records=records,
         )
-        return artifact_ids
+        return records
 
-    def _publish_artifacts(self, artifact_ids: dict[str, str]) -> None:
+    def _publish_artifacts(self, records: dict[str, ArtifactRecord]) -> dict[str, ArtifactRecord]:
         """Publish stored artifacts to the remote store.
 
-        Loads each artifact record from the refs directory and publishes it
-        via the configured publisher.
+        The publisher returns the record with its ``remote_uri`` filled in,
+        which is recorded so a later reader knows where the bytes went.
 
         Parameters
         ----------
-        artifact_ids : dict[str, str]
-            Mapping from output path strings to artifact IDs.
+        records : dict[str, ArtifactRecord]
+            Mapping from output path strings to stored artifact records.
+
+        Returns
+        -------
+        dict[str, ArtifactRecord]
+            The same mapping, with published records replaced.
         """
         publisher = self.publisher
         if publisher is None:
-            return
-        refs_dir = self._artifact_store._refs_dir
-        for artifact_id in artifact_ids.values():
-            ref_path = refs_dir / f"{artifact_id}.json"
-            if ref_path.exists():
-                record = ArtifactRecord.from_path(ref_path)
-                publisher.publish(record=record)
+            return records
+        published: dict[str, ArtifactRecord] = {}
+        for path, record in records.items():
+            updated = publisher.publish(record=record)
+            if updated.remote_uri != record.remote_uri:
+                self.index.record_artifact(updated)
+            published[path] = updated
+        return published
 
     def _collect_output_artifacts(
         self,
         *,
         annotation: Any,
         value: Any,
-        artifact_ids: dict[str, str],
+        records: dict[str, ArtifactRecord],
     ) -> None:
         """Recursively walk a result value and store file/folder outputs."""
         # An absent optional output has nothing to store.
@@ -562,7 +520,7 @@ class CacheStore:
                 self._collect_output_artifacts(
                     annotation=item_annotation,
                     value=item,
-                    artifact_ids=artifact_ids,
+                    records=records,
                 )
             return
 
@@ -571,7 +529,7 @@ class CacheStore:
                 self._collect_output_artifacts(
                     annotation=annotation,
                     value=item,
-                    artifact_ids=artifact_ids,
+                    records=records,
                 )
             return
 
@@ -584,8 +542,7 @@ class CacheStore:
                 # Already a symlink (e.g. from a previous run) — skip.
                 return
             if path.is_file():
-                record = self._artifact_store.store(src_path=path)
-                artifact_ids[str(path)] = record.artifact_id
+                records[str(path)] = self._artifact_store.store(src_path=path)
             return
 
         if annotation is folder or isinstance(value, folder):
@@ -593,13 +550,82 @@ class CacheStore:
             if path.is_symlink():
                 return
             if path.is_dir():
-                record = self._artifact_store.store(src_path=path)
-                artifact_ids[str(path)] = record.artifact_id
+                records[str(path)] = self._artifact_store.store(src_path=path)
             return
 
     def _entry_dir(self, cache_key: str) -> Path:
         """Return the cache directory for a given key."""
         return self._root / cache_key
+
+    @property
+    def artifact_store_view(self) -> LocalArtifactStore:
+        """The artifact store these entries' outputs live in.
+
+        Named a view because it is the store the cache was handed or built,
+        not a second one: a garbage collector must delete from the same store
+        the entries point at.
+        """
+        return self._artifact_store
+
+    def output_path(self, cache_key: str) -> Path:
+        """Return where an entry's bytes live.
+
+        The one statement of that convention: ``db check`` asks the cache
+        whether an entry's bytes are there rather than rebuilding the path.
+        """
+        return self._entry_dir(cache_key) / "output.json"
+
+    def orphan_entry_dirs(self) -> list[Path]:
+        """Return entry directories the index has no row for.
+
+        A lost database leaves the bytes behind, and nothing else will ever
+        look at them: the key that would find them is only in the row that is
+        gone. ``ginkgo db check`` reports these and ``cache clear --orphans``
+        removes them, from this one definition of what an orphan is.
+
+        A save in flight is not an orphan. It writes into a temporary directory
+        beside the entries and renames it into place, so a concurrent
+        ``--orphans`` would otherwise delete the bytes out from under it.
+        """
+        if not self._root.exists():
+            return []
+        known = set(self.index.cache_keys())
+        return sorted(
+            entry
+            for entry in self._root.iterdir()
+            if entry.is_dir() and entry.name not in known and ".tmp-" not in entry.name
+        )
+
+    def integrity_problems(self) -> list[str]:
+        """Return the ways the index and the bytes on disk disagree.
+
+        The database is the only cache index, so the two can only drift by
+        losing one side: an entry row whose ``output.json`` is gone is a row
+        that will never hit, a directory with no row is bytes nothing can find,
+        and an artifact a cache entry names but the store does not hold is a
+        restore that will fail. Each is reported rather than repaired.
+
+        Returns
+        -------
+        list[str]
+            One sentence per problem, in the order they were checked.
+        """
+        problems = [
+            f"cache entry {key} has a row but no output.json"
+            for key in self.index.cache_keys()
+            if not self.output_path(key).is_file()
+        ]
+        problems += [
+            f"cache directory {entry.name} has no row (orphan)"
+            for entry in self.orphan_entry_dirs()
+        ]
+        problems += [
+            f"cache artifact {artifact_id} is missing from the artifact store"
+            for artifact_id in self.index.cache_artifact_ids()
+            if not self._artifact_store.exists(artifact_id=artifact_id)
+            or not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+        ]
+        return problems
 
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:
         """Return environment identity information for cache-keying.
@@ -656,8 +682,8 @@ class CacheStore:
         if task_def.env is None or self.backend is None:
             return True
 
-        meta = self._load_meta(cache_key=cache_key)
-        recorded = (meta or {}).get("env_materialized_digest")
+        entry = self.index.entry(cache_key)
+        recorded = entry.env_materialized_digest if entry is not None else None
         if recorded is None:
             return True
 
@@ -926,27 +952,6 @@ class CacheStore:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded)
 
-    def try_stat_index(self, *, stat_key: str, task_def: TaskDef) -> Any:
-        """Look up a stat-based fingerprint in the persistent index.
-
-        Returns
-        -------
-        Any
-            Cached result if found, or ``MISSING``.
-        """
-        content_key = self._stat_index.get(stat_key)
-        if content_key is None:
-            return MISSING
-        return self.load(cache_key=content_key, task_def=task_def)
-
-    def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
-        """Record a mapping from stat fingerprint to content cache key."""
-        self._stat_index[stat_key] = cache_key
-
-    def save_stat_index(self) -> None:
-        """Persist the stat index to disk."""
-        _save_stat_index(root=self._root, index=self._stat_index)
-
     def _stat_value(self, *, annotation: Any, value: Any, label: str = "value") -> Any:
         """Build a stat-based representation for a value (no content reading)."""
         if annotation is tmp_dir:
@@ -1026,39 +1031,3 @@ class CacheStore:
         if len(args) == 2:
             return args[0], args[1]
         return Any, Any
-
-
-# -- stat index helpers --------------------------------------------------------
-
-
-def _stat_index_path(root: Path) -> Path:
-    """Return the path for the persistent stat-to-content key index."""
-    return root / "stat_index.json"
-
-
-def _load_stat_index(root: Path) -> dict[str, str]:
-    """Load the stat index from disk."""
-    path = _stat_index_path(root)
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k): str(v) for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
-
-
-def _save_stat_index(*, root: Path, index: dict[str, str]) -> None:
-    """Persist the stat index atomically."""
-    path = _stat_index_path(root)
-    fd, tmp = tempfile.mkstemp(dir=str(root), suffix=".tmp", prefix="stat-idx-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(index, f, separators=(",", ":"))
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise

@@ -660,8 +660,9 @@ class TestCacheKeyStability:
 
     def test_marker_hashes_same_as_ref(self, tmp_path: Path) -> None:
         from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
 
-        store = CacheStore(root=tmp_path)
+        store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = remote_file("s3://bucket/key.bam", version_id="v42")
         marker = encode_fuse_ref(
             ref=remote_file("s3://bucket/key.bam", version_id="v42", access="fuse"),
@@ -673,8 +674,9 @@ class TestCacheKeyStability:
 
     def test_marker_stat_value_same_as_ref(self, tmp_path: Path) -> None:
         from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
 
-        store = CacheStore(root=tmp_path)
+        store = CacheStore(root=tmp_path, index=CacheIndex.in_memory())
         ref = remote_file("s3://bucket/key.bam", version_id="v42")
         marker = encode_fuse_ref(
             ref=remote_file("s3://bucket/key.bam", version_id="v42", access="fuse"),

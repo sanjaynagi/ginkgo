@@ -590,6 +590,7 @@ class TestContainerShellE2E:
         (issue #194).
         """
         from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
 
         @task(kind="shell", env="docker://myimg:latest")
         def shell_task(output_path: str) -> str:
@@ -600,10 +601,11 @@ class TestContainerShellE2E:
             return shell(cmd=f"echo ok > {output_path}", output=output_path)
 
         store = CacheStore(
+            index=CacheIndex.in_memory(),
             backend=CompositeEnvironment(
                 local=LocalEnvironment(pixi_registry=PixiRegistry(project_root=tmp_path)),
                 container=ContainerBackend(project_root=tmp_path, pull_policy="never"),
-            )
+            ),
         )
         resolved_args = {"output_path": str(tmp_path / "out.txt")}
 

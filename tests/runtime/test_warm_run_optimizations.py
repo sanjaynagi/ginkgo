@@ -2,7 +2,7 @@
 
 Layer 1: Per-run hash memoization (HashMemo)
 Layer 2: Artifact identity propagation
-Layer 3: Stat-gated output validation (MaterializationLog)
+Layer 3: Stat-gated output validation (the ``materializations`` table)
 Layer 4: --trust-mtimes stat-index fast path
 """
 
@@ -16,8 +16,13 @@ from ginkgo import evaluate, file, task
 from ginkgo.core.remote import remote_file
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_file
-from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.index import CacheIndex
 from tests.conftest import EventCollector
+
+
+def _index(tmp_path: Path) -> CacheIndex:
+    """Return a cache index over a database in a temporary workspace."""
+    return CacheIndex.open(path=tmp_path / "ginkgo.db")
 
 
 # ---------------------------------------------------------------------------
@@ -82,69 +87,111 @@ class TestHashMemo:
         assert digest1 != digest2
 
 
+class TestPersistedDigests:
+    """A second run starts warm: digests survive the process (issue #245)."""
+
+    def _folder(self, tmp_path: Path) -> Path:
+        folder = tmp_path / "reads"
+        folder.mkdir()
+        for index in range(64):
+            (folder / f"part-{index:03d}.bin").write_bytes(b"x" * 4096)
+        return folder
+
+    def test_a_second_run_reads_no_file_under_the_folder(self, tmp_path: Path) -> None:
+        folder = self._folder(tmp_path)
+
+        with _index(tmp_path) as index:
+            cold = HashMemo(index=index)
+            digest = cold.hash_directory(folder)
+            assert cold.reads == 1
+
+        with _index(tmp_path) as index:
+            warm = HashMemo(index=index)
+            assert warm.hash_directory(folder) == digest
+            assert warm.reads == 0, "a warm run re-read content it had already hashed"
+
+    def test_a_second_run_re_reads_content_that_moved(self, tmp_path: Path) -> None:
+        folder = self._folder(tmp_path)
+
+        with _index(tmp_path) as index:
+            cold = HashMemo(index=index)
+            digest = cold.hash_directory(folder)
+
+        time.sleep(0.05)
+        (folder / "part-000.bin").write_bytes(b"y" * 4096)
+
+        with _index(tmp_path) as index:
+            warm = HashMemo(index=index)
+            assert warm.hash_directory(folder) != digest
+            assert warm.reads == 1
+
+    def test_files_are_remembered_too(self, tmp_path: Path) -> None:
+        target = tmp_path / "big.bin"
+        target.write_bytes(b"z" * 65536)
+
+        with _index(tmp_path) as index:
+            digest = HashMemo(index=index).hash_file(target)
+
+        with _index(tmp_path) as index:
+            warm = HashMemo(index=index)
+            assert warm.hash_file(target) == digest
+            assert warm.reads == 0
+
+
 # ---------------------------------------------------------------------------
-# Layer 3: MaterializationLog
+# Layer 3: the materializations table
 # ---------------------------------------------------------------------------
 
 
-class TestMaterializationLog:
+class TestMaterializations:
     """Stat-gated output validation."""
 
     def test_record_and_check(self, tmp_path: Path) -> None:
-        log_path = tmp_path / "mat.json"
         f = tmp_path / "output.txt"
         f.write_text("data")
 
-        log = MaterializationLog(path=log_path)
-        log.record(path=f, artifact_id="abc123")
-        assert log.check(path=f, artifact_id="abc123") is True
+        with _index(tmp_path) as index:
+            index.record_materialization(path=f, artifact_id="abc123")
+            assert index.materialization_matches(path=f, artifact_id="abc123") is True
 
     def test_check_fails_on_wrong_artifact_id(self, tmp_path: Path) -> None:
-        log_path = tmp_path / "mat.json"
         f = tmp_path / "output.txt"
         f.write_text("data")
 
-        log = MaterializationLog(path=log_path)
-        log.record(path=f, artifact_id="abc123")
-        assert log.check(path=f, artifact_id="wrong_id") is False
+        with _index(tmp_path) as index:
+            index.record_materialization(path=f, artifact_id="abc123")
+            assert index.materialization_matches(path=f, artifact_id="wrong_id") is False
 
     def test_check_fails_after_file_modification(self, tmp_path: Path) -> None:
-        log_path = tmp_path / "mat.json"
         f = tmp_path / "output.txt"
         f.write_text("original")
 
-        log = MaterializationLog(path=log_path)
-        log.record(path=f, artifact_id="abc123")
+        with _index(tmp_path) as index:
+            index.record_materialization(path=f, artifact_id="abc123")
 
-        time.sleep(0.05)
-        f.write_text("tampered")
-        assert log.check(path=f, artifact_id="abc123") is False
+            time.sleep(0.05)
+            f.write_text("tampered")
+            assert index.materialization_matches(path=f, artifact_id="abc123") is False
 
     def test_persistence_across_instances(self, tmp_path: Path) -> None:
-        log_path = tmp_path / "mat.json"
         f = tmp_path / "output.txt"
         f.write_text("data")
 
-        log1 = MaterializationLog(path=log_path)
-        log1.record(path=f, artifact_id="abc123")
-        log1.save()
+        with _index(tmp_path) as first:
+            first.record_materialization(path=f, artifact_id="abc123")
+        with _index(tmp_path) as second:
+            assert second.materialization_matches(path=f, artifact_id="abc123") is True
 
-        log2 = MaterializationLog(path=log_path)
-        assert log2.check(path=f, artifact_id="abc123") is True
-
-    def test_stale_entries_pruned_on_load(self, tmp_path: Path) -> None:
-        log_path = tmp_path / "mat.json"
+    def test_a_deleted_path_no_longer_matches(self, tmp_path: Path) -> None:
         f = tmp_path / "output.txt"
         f.write_text("data")
 
-        log1 = MaterializationLog(path=log_path)
-        log1.record(path=f, artifact_id="abc123")
-        log1.save()
+        with _index(tmp_path) as first:
+            first.record_materialization(path=f, artifact_id="abc123")
 
-        # Remove the file; the entry should be pruned on next load.
         f.unlink()
-        log2 = MaterializationLog(path=log_path)
-        assert log2.check(path=f, artifact_id="abc123") is False
+        with _index(tmp_path) as second:
+            assert second.materialization_matches(path=f, artifact_id="abc123") is False
 
 
 # ---------------------------------------------------------------------------
@@ -285,16 +332,12 @@ class TestTrustMtimes:
     """Stat-index fast path for --trust-mtimes mode."""
 
     def test_stat_index_round_trip(self, tmp_path: Path) -> None:
-        """Stat index can be saved and loaded."""
-        from ginkgo.runtime.caching.cache import CacheStore
+        """A stat fingerprint recorded by one run is found by the next."""
+        with _index(tmp_path) as index:
+            index.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
 
-        store = CacheStore(root=tmp_path / "cache")
-        store.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
-        store.save_stat_index()
-
-        # Reload.
-        store2 = CacheStore(root=tmp_path / "cache")
-        assert store2._stat_index.get("stat_abc") == "content_xyz"
+        with _index(tmp_path) as reopened:
+            assert reopened.stat_index_lookup("stat_abc") == "content_xyz"
 
     def test_trust_mtimes_warm_run(self, tmp_path: Path) -> None:
         """A --trust-mtimes warm run should hit cache via stat index."""

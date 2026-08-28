@@ -167,7 +167,6 @@ def load_remote_publisher() -> Any | None:
         scheme=parsed["scheme"],
         local_blobs_dir=artifacts_root / "blobs",
         local_trees_dir=artifacts_root / "trees",
-        local_refs_dir=artifacts_root / "refs",
     )
 
 

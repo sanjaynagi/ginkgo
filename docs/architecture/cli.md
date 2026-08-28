@@ -14,6 +14,7 @@ The current CLI supports:
 - `ginkgo asset inspect`
 - `ginkgo models`
 - `ginkgo cache ls`
+- `ginkgo cache stats`
 - `ginkgo cache explain`
 - `ginkgo cache clear`
 - `ginkgo cache prune`
@@ -72,9 +73,15 @@ is reported together with the parameters the workflow does declare. See
 
 `ginkgo cache prune` accepts `--older-than <duration>`, `--max-size <size>`,
 and `--max-entries <N>`. At least one of the three is required; multiple
-may be combined, and eviction always proceeds oldest-first with orphan
-artifact garbage collection at the end. `--dry-run` previews what would be
-removed without touching disk.
+may be combined, and eviction proceeds oldest-first — or least-recently-hit
+first under `--least-recently-hit` — with orphan artifact garbage collection at
+the end. `--dry-run` previews what would be removed without touching disk.
+
+`ginkgo cache clear <key>` removes one entry. `ginkgo cache clear --orphans`
+removes every entry directory the database has no row for, which is what a lost
+database leaves behind; `ginkgo db check` lists them first. `ginkgo cache stats`
+summarises the index — entries, bytes, hit histogram, never-hit bytes, and the
+functions holding the most — as a table or `--json`.
 
 ## Error reporting
 

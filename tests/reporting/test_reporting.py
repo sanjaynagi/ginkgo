@@ -19,6 +19,7 @@ from ginkgo.reporting import SizingPolicy, build_report_data, export_report
 from ginkgo.reporting.render import _MARKER_NAME
 from ginkgo.reporting.sizing import build_log_tail, build_table_preview
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
@@ -276,7 +277,10 @@ def _register_asset(
     """
     tmp_path = run.tmp_path
     asset_store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-    artifact_store = LocalArtifactStore(root=tmp_path / ".ginkgo" / "artifacts")
+    artifact_store = LocalArtifactStore(
+        root=tmp_path / ".ginkgo" / "artifacts",
+        index=CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db"),
+    )
     source = tmp_path / f"{name.replace('/', '_')}{suffix}"
     source.write_text(text, encoding="utf-8")
     record = artifact_store.store(src_path=source)

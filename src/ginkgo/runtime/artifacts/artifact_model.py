@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -113,6 +112,10 @@ class ArtifactRecord:
     def to_json(self) -> str:
         """Serialize to a JSON string.
 
+        This is the wire format between machines: a remote worker cannot read
+        the workspace's database, so a published artifact carries its record
+        beside its bytes in the object store. Locally the record is a row.
+
         Returns
         -------
         str
@@ -122,7 +125,7 @@ class ArtifactRecord:
 
     @classmethod
     def from_json(cls, data: str) -> ArtifactRecord:
-        """Deserialize from a JSON string.
+        """Deserialize from a JSON string published by another machine.
 
         Parameters
         ----------
@@ -134,21 +137,6 @@ class ArtifactRecord:
         ArtifactRecord
         """
         return cls(**json.loads(data))
-
-    @classmethod
-    def from_path(cls, path: Path) -> ArtifactRecord:
-        """Load from a JSON file on disk.
-
-        Parameters
-        ----------
-        path : Path
-            Path to the JSON file.
-
-        Returns
-        -------
-        ArtifactRecord
-        """
-        return cls.from_json(path.read_text(encoding="utf-8"))
 
 
 def serialize_tree_manifest(ref: TreeRef) -> str:

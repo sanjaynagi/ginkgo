@@ -9,13 +9,14 @@ notebook artifacts.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ginkgo.formatting import parse_timestamp
+from ginkgo.store.jsonio import loads
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -24,17 +25,6 @@ from ginkgo.workspace_layout import WorkspaceLayout
 # needs to decide terminality (see TaskSummary.is_terminal and the CLI
 # renderers).
 TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed"})
-
-
-def _parse_timestamp(value: Any) -> datetime | None:
-    """Parse a stored ISO timestamp, returning UTC-aware datetimes."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _duration_seconds(
@@ -288,8 +278,8 @@ class RunSummary:
         root = runs_root if runs_root is not None else WorkspaceLayout.relative().runs
 
         tasks = _load_tasks(store=store, run_id=run_id)
-        started_at = _parse_timestamp(run.get("started_at"))
-        finished_at = _parse_timestamp(run.get("finished_at"))
+        started_at = parse_timestamp(run.get("started_at"))
+        finished_at = parse_timestamp(run.get("finished_at"))
         workflow = run.get("workflow") if isinstance(run.get("workflow"), str) else None
 
         return cls(
@@ -436,7 +426,7 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         "ORDER BY task_id, param, position",
         (run_id,),
     ):
-        inputs.setdefault(row["task_id"], {})[row["param"]] = _loads(row["value_summary"])
+        inputs.setdefault(row["task_id"], {})[row["param"]] = loads(row["value_summary"])
 
     tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     node_ids = {row["task_id"]: row["node_id"] for row in tasks}
@@ -479,8 +469,8 @@ def _build_task_summary(
     dynamic_dependency_ids: list[int],
 ) -> TaskSummary:
     """Build one ``TaskSummary`` from a ``tasks`` row and its related rows."""
-    started = _parse_timestamp(row.get("started_at"))
-    finished = _parse_timestamp(row.get("finished_at"))
+    started = parse_timestamp(row.get("started_at"))
+    finished = parse_timestamp(row.get("finished_at"))
     extra = _mapping(row.get("extra"))
     failure = _mapping(row.get("failure")) or None
     outputs = _sequence(row.get("output_summary"))
@@ -580,23 +570,13 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _loads(value: Any) -> Any:
-    """Parse a stored JSON column, tolerating one that is not JSON."""
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
-
-
 def _mapping(value: Any) -> dict[str, Any]:
     """Return a stored JSON column as a mapping, or an empty one."""
-    parsed = _loads(value)
+    parsed = loads(value)
     return parsed if isinstance(parsed, dict) else {}
 
 
 def _sequence(value: Any) -> list[Any]:
     """Return a stored JSON column as a list, or an empty one."""
-    parsed = _loads(value)
+    parsed = loads(value)
     return parsed if isinstance(parsed, list) else []

@@ -351,8 +351,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     cache_parser = subparsers.add_parser("cache", help="Manage task execution cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
     cache_subparsers.add_parser("ls", help="List cached task entries")
+    stats_parser = cache_subparsers.add_parser(
+        "stats", help="Summarise cache size and hit statistics"
+    )
+    stats_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     clear_parser = cache_subparsers.add_parser("clear", help="Clear cache entries")
-    clear_parser.add_argument("cache_key")
+    clear_parser.add_argument("cache_key", nargs="?")
+    clear_parser.add_argument(
+        "--orphans",
+        action="store_true",
+        help="Remove cache directories the database has no entry for.",
+    )
     explain_parser = cache_subparsers.add_parser(
         "explain", help="Explain why a task ran or was cached"
     )
@@ -378,6 +387,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         type=int,
         default=None,
         help="Prune oldest entries until entry count is at or below this number.",
+    )
+    prune_parser.add_argument(
+        "--least-recently-hit",
+        action="store_true",
+        help="Give up the entries nobody has used lately before the oldest ones.",
     )
     prune_parser.add_argument("--dry-run", action="store_true")
 

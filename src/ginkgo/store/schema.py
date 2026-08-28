@@ -101,7 +101,7 @@ CREATE INDEX edges_dst ON edges(dst_kind, dst_id);
 CREATE TABLE cache_entries (
   cache_key TEXT PRIMARY KEY, function TEXT NOT NULL, version INTEGER, source_hash TEXT,
   extra_source_hash TEXT, env TEXT, env_hash TEXT, env_materialized_digest TEXT,
-  inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON, as meta.json today
+  inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON
   output_codec TEXT, size_bytes INTEGER,
   created_run_id TEXT, created_at TEXT NOT NULL,
   hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT
@@ -148,7 +148,25 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1)]
+_V2 = """
+-- An artifact's content digest is not always its id: a record published to a
+-- remote store keeps the digest of the bytes, and #231 will give blobs an
+-- extension. Recovering it by assuming id == digest was a guess.
+ALTER TABLE artifacts ADD COLUMN digest_hex TEXT NOT NULL DEFAULT '';
+
+-- cache_key_components held what cache_entries already holds as columns and
+-- input_hashes JSON. One fact, one home: key_components() derives the labels
+-- from the entry row instead.
+DROP TABLE cache_key_components;
+
+-- Only the digest is ever read back out of the memo; the rest was written and
+-- never looked at.
+ALTER TABLE digest_memo DROP COLUMN path;
+ALTER TABLE digest_memo DROP COLUMN size;
+ALTER TABLE digest_memo DROP COLUMN mtime_ns;
+"""
+
+MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1), (2, _V2)]
 """Every schema step, in the order they are applied, keyed by resulting version."""
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

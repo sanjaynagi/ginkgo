@@ -16,6 +16,7 @@ from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CHECKS_METADATA_KEY,
 )
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -79,7 +80,10 @@ def command_asset(args) -> int:
 
     asset_ref = resolve_asset_selector(store=store, value=args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
-    artifact_store = LocalArtifactStore(root=WorkspaceLayout.sibling_of(ASSETS_ROOT).artifacts)
+    layout = WorkspaceLayout.sibling_of(ASSETS_ROOT)
+    artifact_store = LocalArtifactStore(
+        root=layout.artifacts, index=CacheIndex.for_reading(layout.db)
+    )
     artifact_path = (
         artifact_store.artifact_path(artifact_id=version.artifact_id)
         if artifact_store.exists(artifact_id=version.artifact_id)

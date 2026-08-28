@@ -21,6 +21,69 @@ Implemented cache hashing includes:
 
 Cache entries are written atomically and reused across reruns when inputs are unchanged.
 
+## The cache index
+
+The database at `.ginkgo/ginkgo.db` is the only cache index. An entry is a
+`cache_entries` row plus the bytes at `cache/<key>/output.json`; its outputs are
+`cache_artifacts` rows, and the artifact store's own contents are `artifacts`
+rows. There is no `meta.json`, no `refs/<id>.json`, no `stat_index.json` and no
+`materializations.json` — each was a file index of the same facts, and each is
+gone.
+
+Three classes divide the work, and the split is worth knowing before reading
+them:
+
+- **`CacheStore`** (`runtime/caching/cache.py`) is the cache as the evaluator
+  sees it: it builds keys, decides whether a hit is usable, writes the bytes,
+  and knows where they live.
+- **`CacheIndex`** (`runtime/caching/index.py`) is the rows those decisions are
+  recorded in, and the only thing that writes them.
+- **`CacheCoordinator`** (`runtime/caching/coordinator.py`) is the lookup order
+  the evaluator follows — content first, or the stat index under
+  `--trust-mtimes` — and nothing else.
+
+`CacheIndex` (`runtime/caching/index.py`) is the only reader and writer of those
+rows. It holds its own write connection rather than sharing the recorder's: the
+recorder's belongs to its writer thread and carries events, while a cache save
+has to be visible to the `load` that may follow it immediately. Its own lock
+serialises the evaluator's threads over that one connection. Every write is an
+`INSERT OR IGNORE` on a content-addressed key or an idempotent upsert, which is
+what makes two runs saving the same entry at once agree rather than conflict.
+
+Losing the database means a cold cache, and by a specific mechanism:
+`validate_cached_outputs` asks `load_artifact_ids` which artifacts an entry
+owns, that returns `None` when there is no row, and a candidate hit with no
+recorded outputs is refused. The bytes survive, but nothing can find them — the
+key that would is only in the row that is gone. `ginkgo db check` reports those
+directories and `ginkgo cache clear --orphans` removes them; prune never does so
+implicitly. Back the database up as you would `.git`.
+
+`ginkgo cache stats` reports what the index holds: entry count, total bytes, the
+hit-count histogram, how much is taken by entries nobody has ever used, and the
+ten functions holding the most bytes. Hit counting happens in the projector, on
+`TaskCacheHit`, because the cache itself never learns that a value it handed out
+was used.
+
+## Remembering digests between runs
+
+`HashMemo` caches content digests by stat fingerprint — device, inode, size,
+mtime for a file; the same over the children for a directory. Since #245 the
+memo is two tiers: a dict for this process, and the `digest_memo` table behind
+it. A second run over the same inputs therefore reads no bytes at all, which is
+the difference between a warm run that stats a folder and one that re-hashes
+it. A file whose size or mtime moved misses in both tiers and is re-read.
+
+The table records only the fingerprint and the digest it stands for. `last_seen`
+is stamped once when the index closes, from the hits collected in memory, rather
+than on every hit: a write transaction per hashed file would put the cost back
+on the warm run the memo exists to make cheap. It is there for a future
+`db prune --digest-memo-older-than` and nothing reads it yet.
+
+`DigestRegistry` stays in memory: it maps this run's output paths to the digests
+this run computed, so a downstream task skips re-hashing what an upstream task
+just produced. Those paths are being written as the run goes, so nothing about
+them is true past the end of it.
+
 ## Task source hash
 
 The task source hash covers the task body and the local helper modules it
@@ -60,7 +123,7 @@ so they are caught where the evidence exists rather than in the key.
 
 `ExecutionEnvironment.materialized_digest` reports the environment as
 materialised on *this* machine — the lock file's digest, the pulled image's ID.
-`CacheStore.save` records it in the entry's `meta.json` as
+`CacheStore.save` records it on the entry's row as
 `env_materialized_digest`, and `CacheStore._env_materialization_matches` checks a
 candidate hit against it inside `load` and `has_entry`, so every lookup path —
 content-addressed, the `--trust-mtimes` stat index, and the `--dry-run` preview —
@@ -81,7 +144,7 @@ the digest before `prepare` has run, neither backend memoises a *negative*
 answer: an absent lock file or an unpulled image has to read as materialised once
 it is there.
 
-Entries written before the digest was recorded have nothing to compare and stand.
+An entry that recorded no digest has nothing to compare and stands.
 
 The digest is also recorded for provenance, where it always has been: the lock
 file is copied into the run directory, and a container task's manifest entry
@@ -91,24 +154,24 @@ carries `container_image_digest`.
 
 `ginkgo cache explain <run_id>` answers "why did this task run again?" by
 naming the component of the key that moved, not the fact that the key did
-(issue #223). `explain_run_cache` (`cli/commands/cache.py`) reads the
-`meta.json` of the entry the run wrote and the `meta.json` of the newest other
-entry for the same task, splits both into the labelled components of the key
-payload with `key_components` (`runtime/caching/cache.py`, next to the
-`build_cache_key` payload it mirrors, so the two cannot drift), and reports the
-ones that differ:
+(issue #223). `Query.explain_rerun(run_id, task_id)` is where that happens; the
+CLI walks the run's tasks and renders what it returns, and each explanation
+carries the task's `display_label` so two branches of a fan-out are told apart.
+
+The components are derived from the entry's own row by `key_components`
+(`runtime/caching/cache.py`, next to the `build_cache_key` payload it mirrors,
+so the two cannot drift), on both sides of the diff. Deriving beats storing: a
+second table of labelled components would hold what `cache_entries` already
+holds and could fall out of step with it.
 
 - `task`, `version`, `source_hash`, `extra_source_hash` (the notebook or script
   hash folded in for driver tasks), `env`, `env_hash.pixi_lock`;
 - one component per input parameter, `inputs.<parameter>`, so a moved input is
   named rather than lumped into "the inputs changed".
 
-Each reported component carries a `status` — `changed` with both values,
-`added` / `removed` for a parameter that appeared or went away, or
-`not_recorded`. The last is the honest answer for a component the compared
-entry never stored: entries written before a field existed cannot be diffed on
-it, and saying "not recorded, so a change here cannot be ruled out" is better
-than reporting no difference. The coarse codes (`source_hash_changed`,
+Each reported component carries a `status` — `changed` with both values, or
+`added` / `removed` for a parameter that appeared or went away. The coarse codes
+(`source_hash_changed`,
 `version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
 component is conclusive or the one that moved has no code of its own) stay as
 the summary `reason` / `details`, with the components listed beneath them. A
@@ -116,29 +179,26 @@ task whose key has no entry in the cache at all — a task that failed, or whose
 entry has been pruned — reports `no_entry_for_key` and no components, and one
 with no sibling to compare against reports `no_prior_entry`.
 
-For the diff to name components, the entry has to record them, so `meta.json`
-carries every field the key payload holds: `CacheStore.save` records
-`env_hash` (the declared environment identity that `_env_hash` folds in) and
-`extra_source_hash` alongside the `version`, `source_hash`, `env`, and
-`input_hashes` it already stored. Comparison is against the newest sibling
-entry written *before* the one being explained, by `timestamp`, rather than
-whichever key sorted last: an entry written afterwards cannot be what this one
-superseded, and comparing against it would name components that moved forwards.
-The entry compared against is named in `compared_with`.
+What to compare against is the whole of the question. `Query.previous_cache_key`
+looks for the *same node* — the same `display_label`, or the task name where a
+node has none — in the most recent earlier run of the same workflow, and that
+entry is what this run superseded. Only when no such node exists (the node is
+new, or its label changed) does it fall back to the newest earlier entry for the
+same function. `compared_with` names both the key and which of the two
+strategies found it, so a `strategy` of `newest_by_function` is the signal to
+read the components sceptically.
 
-Siblings are matched on task name alone, so for a task fanned out over many
-inputs the nearest earlier sibling may be a different element of the fan-out
-rather than the same element from the previous run. The components it names are
-then real differences between two real entries, but not necessarily the ones
-that caused this element to re-run — read `compared_with` before trusting a
-lone `inputs.<parameter>` on a fanned-out task.
+That join is what fixed the fan-out mis-pairing: matching on function alone,
+the nearest earlier entry for a task fanned out over many inputs was usually a
+different element of the fan-out rather than the same element from the previous
+run, and the components it named were real differences between two real entries
+that had nothing to do with why this element re-ran.
 
 The re-run reason is deliberately not carried on the run report's task rows.
-It is computable only from the cache directory, which the report is meant to
+It is computable only from the cache index, which the report is meant to
 outlive — a report exported after a `cache prune` would show reasons for some
-rows and nothing for others — and answering it costs a scan of every sibling
-entry per task. `cache explain` asks the cache at the moment the question is
-asked, which is when the answer is trustworthy.
+rows and nothing for others. `cache explain` asks the cache at the moment the
+question is asked, which is when the answer is trustworthy.
 
 ## Untracked path boundaries
 
@@ -184,7 +244,7 @@ resolved value, so `ginkgo doctor` does not report it.
 The runtime hashes the top-level task function source and the statically
 imported closure of already-loaded local Python modules during task
 registration. The resulting `source_hash` is stored in both the cache key
-payload and `meta.json`, so task-body and local-helper changes invalidate prior
+payload and on the entry's row, so task-body and local-helper changes invalidate prior
 cache entries without requiring a manual `version=` bump. This is deliberately
 conservative: an edit anywhere in a reachable local module invalidates tasks
 that import it. Dynamic imports and external runtime dependencies are outside
@@ -196,9 +256,11 @@ silently weakening cache correctness.
 File and folder outputs flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
 `ginkgo/runtime/artifacts/artifact_store.py`. Artifact identity is content-addressed:
-files use the blob digest and directories use a manifest digest. That identity
-is recorded in cache metadata as `artifact_ids`, which gives later roadmap
-phases a stable contract for remote storage and lineage features.
+files use the blob digest and directories use a manifest digest. The store keeps
+bytes — `blobs/`, `trees/` — and records what it holds in the `artifacts` table;
+which entry owns which output is a `cache_artifacts` row. A remote artifact
+still carries a JSON record beside its bytes in the object store, because a
+machine that downloads it cannot read this workspace's database.
 
 The artifact store is the canonical immutable source of truth for managed path
 outputs, while the working tree is a writable materialized view. When a task
@@ -225,5 +287,10 @@ combined:
 
 At least one policy is required. When multiple are given, they are applied
 together: `--older-than` selects unconditionally, and `--max-size` /
-`--max-entries` then pick additional oldest-first entries until their
-budgets are met. Orphan artifacts are garbage-collected once at the end.
+`--max-entries` then pick additional entries until their budgets are met.
+`--least-recently-hit` changes which entries those are: least recently used
+first rather than oldest first, with a never-hit entry counting as never used
+and age breaking ties. Age is not use — an old entry that hits on every run is
+worth more than a young one nothing has touched. Orphan artifacts are
+garbage-collected once at the end, against the union of what the cache and the
+asset catalog still reference.

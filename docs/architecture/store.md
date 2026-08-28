@@ -20,10 +20,21 @@ The store has two halves.
   order things happened. Because the payload is JSON, a new event type needs no
   migration.
 - **The projections.** `runs`, `tasks`, `attempts`, `task_inputs`,
-  `task_outputs`, `edges`, the cache index, the artifact and asset tables.
-  Every one of them is derived from the ledger and updated in the same
-  transaction as the event that caused it. A projection is a cache of the
-  ledger, never a second source of truth: if the two disagree, the ledger wins.
+  `task_outputs`, `edges`. Every one of them is derived from the ledger and
+  updated in the same transaction as the event that caused it. A projection is
+  a cache of the ledger, never a second source of truth: if the two disagree,
+  the ledger wins.
+
+The cache and artifact tables — `cache_entries`, `cache_artifacts`, `artifacts`,
+`stat_index`, `materializations`, `digest_memo` — are neither. They are a
+**direct-write index**, owned entirely by `CacheIndex`
+(`runtime/caching/index.py`), which writes them synchronously on its own
+connection. That is deliberate: a cache save must be visible to the `load` that
+may follow it microseconds later, which an event queued for the writer thread
+cannot promise, and the facts they hold are not events that happened to a run —
+they are what the cache currently holds. Nothing else writes them, including the
+projector: `TaskCacheHit` updates the task's own row and leaves `hit_count` to
+the index, which counts the hit as it serves it.
 
 Content-addressed identifiers — `cache_key`, `artifact_id`, `version_id`,
 `source_hash`, `env_hash` — are the join columns throughout. Nothing is
@@ -72,10 +83,15 @@ None]]]` and `migrate(conn)`, which applies the missing steps inside one
 transaction and records each in `schema_version`. Version 1 creates every
 table, including the ones later phases populate: one migration is easier to
 reason about than eight, and an empty table costs nothing. A shipped step is
-never edited — a schema change is another step.
+never edited — a schema change is another step. Version 2 is the first of
+those: it gives `artifacts` the `digest_hex` its records carry, and removes
+`cache_key_components` and the write-only columns of `digest_memo`, which held
+facts their own tables already had.
 
-`tests/store/fixtures/schema_v1.txt` is a snapshot of `sqlite_master` after
-version 1. It is regenerated deliberately, as part of adding a migration.
+`tests/store/fixtures/schema_v2.txt` is a snapshot of `sqlite_master` after the
+last migration. It is regenerated deliberately, as part of adding one, and a
+test migrates a version 1 database forward so the steps are exercised on a
+database that already exists rather than only on a fresh one.
 
 ## Errors
 
@@ -87,12 +103,18 @@ provenance never degrades silently.
 ## `ginkgo db`
 
 - `ginkgo db migrate` — create or upgrade the database.
-- `ginkgo db check` — schema version and `PRAGMA integrity_check`.
+- `ginkgo db check` — schema version, `PRAGMA integrity_check`, and the ways
+  the cache index and the bytes on disk can disagree: an entry row whose
+  `output.json` is gone, an entry directory with no row, and a
+  `cache_artifacts` row whose blob the artifact store has lost.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
+
 There is no `db rebuild`. The database is the record, not a cache of the run
 directories: back it up as you would `.git`. Losing it loses the run history —
-the `events` ledger has no on-disk counterpart at all — and does not touch the
-cache, whose entries are found by key on disk. Each run directory keeps a
+the `events` ledger has no on-disk counterpart at all — and colds the cache,
+because since the cache index moved into the database the key that finds an
+entry exists nowhere else. The bytes stay behind as orphans; `db check` lists
+them and `ginkgo cache clear --orphans` removes them. Each run directory keeps a
 `manifest.yaml` of what that run did, to be read rather than re-imported.
 
 ## Layering
@@ -109,14 +131,24 @@ the translation, the rendering of user values — lives in `runtime/`.
 
 ## Writing and reading
 
-One process writes, through `store/writer.py`'s `StoreWriter`: a queue and one
-background thread owning the only write-mode connection, batching rows into
+The ledger is written through `store/writer.py`'s `StoreWriter`: a queue and one
+background thread owning its write-mode connection, batching rows into
 transactions. `runtime/store_recorder.py` subscribes it to the event bus and
 writes the run's manifest when it completes. `store/projector.py` is the whole
 of the event-to-rows mapping, one pure function per event type. See
 [Provenance and Run State](provenance.md) for the shape of that path.
 
-Readers go through `ginkgo.query`, which opens read-only. No read path ever
+The cache index (`runtime/caching/index.py`) is the other writer, and it holds
+its own connection. A cache save is synchronous — the `load` that follows it
+must see the row — while the writer's queue is asynchronous and its connection
+belongs to its thread; routing cache rows through it would mean either blocking
+on the queue or inventing a second protocol for it to carry. Two connections
+over one WAL database is what WAL is for, and every cache write is an
+`INSERT OR IGNORE` on a content-addressed key or an idempotent upsert, so the
+two writers cannot produce a row that disagrees with itself.
+
+Readers go through `ginkgo.query`, which opens read-only — including the cache
+readers, `cache ls`, `cache explain` and `cache stats`. No read path ever
 opens a write connection, so listings work while a run is writing and can never
 migrate a database out from under one.
 

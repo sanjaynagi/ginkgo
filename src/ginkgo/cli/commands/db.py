@@ -4,6 +4,10 @@
 ``.ginkgo/ginkgo.db``: create or upgrade it, check that it is intact, and say
 where it is. Later phases add ``vacuum`` and ``prune`` beside these.
 
+``check`` reports rather than repairs, and it asks each owner about its own
+half: SQLite for the file's integrity, the cache for whether its rows and its
+bytes still agree.
+
 Every subcommand but ``path`` opens the database in write mode, so each needs
 write access to the workspace: ``check`` reports on the database a run would
 use, which means creating it if it is not there yet.
@@ -14,6 +18,8 @@ from __future__ import annotations
 import sys
 
 from ginkgo.cli.common import console
+from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -40,6 +46,12 @@ def command_db(args) -> int:
         rich_console.print(f"Database: {path}")
         rich_console.print(f"Schema version: {store.schema_version}")
         problems = [row[0] for row in store.query("PRAGMA integrity_check") if row[0] != "ok"]
+
+    # The cache knows where its own bytes are, so it is what reports on them.
+    with CacheIndex.open(path=path) as index:
+        problems += CacheStore(
+            index=index, root=WorkspaceLayout.relative().cache
+        ).integrity_problems()
 
     if problems:
         for problem in problems:

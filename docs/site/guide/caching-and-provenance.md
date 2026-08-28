@@ -105,10 +105,11 @@ ginkgo db check               # schema version and integrity
 ginkgo db migrate             # create or upgrade it
 ```
 
-`ginkgo.db` is the record of your runs; back it up as you would `.git`. If it
-is lost, the run history goes with it and you re-run the workflow. Cached task
-results are not affected — they live in `.ginkgo/cache/` and are found the same
-way whether or not the database is there.
+`ginkgo.db` is the record of your runs and of your cache; back it up as you
+would `.git`. If it is lost, the run history goes with it and the cache goes
+cold: the cached bytes are still under `.ginkgo/cache/`, but the keys that find
+them were rows in the database. `ginkgo db check` lists those stranded
+directories and `ginkgo cache clear --orphans` removes them.
 
 Each run directory still holds a `manifest.yaml` of what that run did, which is
 there to be read rather than re-imported: ginkgo does not load it back.
@@ -125,12 +126,16 @@ Use the cache subcommands to inspect or clean cache state:
 
 ```bash
 ginkgo cache ls
+ginkgo cache stats
 ginkgo cache clear <cache-key>
 ginkgo cache prune --older-than 30d --dry-run
 ```
 
 These commands report reuse behavior without navigating the hidden cache
-directory by hand.
+directory by hand. `ginkgo cache stats` adds the aggregate picture: how many
+entries there are, how much they take, how often they are hit, and how much is
+held by entries nothing has ever reused. They read the database read-only, so
+they answer while a run is in progress.
 
 ## Bounding Cache Size
 
@@ -149,10 +154,16 @@ ginkgo cache prune --max-entries 500
 
 # Combined: also remove anything older than 90 days
 ginkgo cache prune --older-than 90d --max-size 5GB
+
+# Give up what nobody has used lately, rather than what is oldest
+ginkgo cache prune --max-size 5GB --least-recently-hit
 ```
 
-Eviction is oldest-first, and orphaned artifacts are garbage-collected at the
-end of the operation. Use `--dry-run` to preview what would be removed.
+Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
+the entries with the oldest last hit first — an old entry that hits on every run
+is worth more than a young one nothing has touched. Orphaned artifacts are
+garbage-collected at the end of the operation. Use `--dry-run` to preview what
+would be removed.
 
 ## Partial Resume
 

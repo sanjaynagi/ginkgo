@@ -29,6 +29,8 @@ from ginkgo.cli import (
 )
 from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -121,7 +123,10 @@ def _extract_run_dir(output: str) -> Path:
 
 def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
     asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
-    artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
+    artifact_store = LocalArtifactStore(
+        root=cwd / ".ginkgo" / "artifacts",
+        index=CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db"),
+    )
     source = cwd / f"{name}.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
@@ -147,15 +152,25 @@ def _seed_cache_entry(
     age_days: int,
     function: str = "demo.x",
     payload: str = "{}",
+    last_hit_days: int | None = None,
 ) -> Path:
-    """Create a cache-entry directory aged ``age_days`` days, for prune tests."""
+    """Create a cache entry aged ``age_days`` days — bytes and row — for prune tests."""
     entry = cache_root / name
     entry.mkdir(parents=True)
-    ts = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
-    (entry / "meta.json").write_text(
-        json.dumps({"function": function, "timestamp": ts}), encoding="utf-8"
-    )
     (entry / "output.json").write_text(payload, encoding="utf-8")
+
+    created_at = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+    with CacheIndex.open(path=WorkspaceLayout.sibling_of(cache_root).db) as index:
+        index.record_entry(
+            cache_key=name,
+            meta={"function": function, "created_at": created_at},
+            artifact_ids={},
+            size_bytes=len(payload.encode("utf-8")),
+            run_id=None,
+        )
+        if last_hit_days is not None:
+            hit_at = (datetime.now(timezone.utc) - timedelta(days=last_hit_days)).isoformat()
+            index.record_hit(name, at=hit_at)
     return entry
 
 
@@ -191,7 +206,7 @@ def test_version_flag_reports_pyproject_version() -> None:
 @pytest.mark.parametrize(
     ("command", "subcommands"),
     [
-        ("cache", "{ls,clear,explain,prune}"),
+        ("cache", "{ls,stats,clear,explain,prune}"),
         ("asset", "{ls,versions,inspect,show}"),
         ("env", "{ls,clear}"),
         ("inspect", "{workflow,run}"),
@@ -218,7 +233,7 @@ def test_bare_ginkgo_shows_help() -> None:
 
 def test_missing_positional_keeps_its_precise_error() -> None:
     """Only a missing subcommand becomes help; other missing arguments do not."""
-    result = _run_cli("cache", "clear", cwd=REPO_ROOT)
+    result = _run_cli("asset", "versions", cwd=REPO_ROOT)
 
     assert result.returncode == 2
     assert "the following arguments are required" in result.stderr
@@ -418,6 +433,54 @@ def main():
         else:
             assert "Removed" in result.stdout
 
+    def test_cache_prune_least_recently_hit_gives_up_the_unused_first(self) -> None:
+        """Age is not use: an old entry that keeps hitting outlives a young idle one."""
+        cache_root = Path(".ginkgo") / "cache"
+        old_but_used = _seed_cache_entry(
+            cache_root=cache_root, name="used", age_days=100, last_hit_days=1
+        )
+        young_but_idle = _seed_cache_entry(cache_root=cache_root, name="idle", age_days=5)
+
+        result = _run_cli(
+            "cache", "prune", "--max-entries", "1", "--least-recently-hit", cwd=Path.cwd()
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert old_but_used.exists()
+        assert not young_but_idle.exists()
+
+    def test_cache_stats_counts_entries_and_bytes(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        _seed_cache_entry(cache_root=cache_root, name="a", age_days=1, payload="x" * 100)
+        _seed_cache_entry(
+            cache_root=cache_root, name="b", age_days=2, payload="y" * 50, last_hit_days=1
+        )
+
+        result = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        stats = json.loads(result.stdout)
+        assert stats["entries"] == 2
+        assert stats["total_bytes"] == 150
+        assert stats["never_hit"] == 1
+        assert stats["never_hit_bytes"] == 100
+        assert stats["hit_histogram"] == {"0": 1, "1": 1}
+        assert stats["top_functions"][0]["entries"] == 2
+
+    def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "output.json").write_text("{}", encoding="utf-8")
+
+        result = _run_cli("cache", "clear", "--orphans", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 orphaned cache director" in result.stdout
+        assert known.exists()
+        assert not orphan.exists()
+
     def test_cache_prune_rejects_invalid_duration(self) -> None:
         result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
         assert result.returncode == 1
@@ -453,8 +516,8 @@ def main():
             for index, age_days in enumerate([100, 60, 5])
         ]
 
-        # Cap total at 3KB so only the oldest must drop.
-        result = _run_cli("cache", "prune", "--max-size", "3KB", cwd=Path.cwd())
+        # Cap total at 2KB so only the oldest must drop.
+        result = _run_cli("cache", "prune", "--max-size", "2KB", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert not entries[0].exists()
         assert entries[1].exists()
