@@ -9,6 +9,7 @@ lock or racing the writer's migration.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -90,9 +91,17 @@ class SqliteStore:
         except OSError as exc:
             raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
         connection = cls._connect(_uri(path, readonly=False), path=path)
-        _apply_pragmas(connection, writable=True)
-        migrate(connection)
-        return cls(path=path, connection=connection, readonly=False)
+        store = cls(path=path, connection=connection, readonly=False)
+        try:
+            _apply_pragmas(connection, writable=True)
+            migrate(connection)
+        except sqlite3.OperationalError as exc:
+            # A second ginkgo process may be creating the same database right
+            # now. Reported as a lock rather than as a raw driver message, so
+            # the user is told which database and what to do about it.
+            store.close()
+            raise store._locked_or(exc) from exc
+        return store
 
     @staticmethod
     def _connect(uri: str, *, path: Path) -> sqlite3.Connection:
@@ -262,13 +271,44 @@ def _uri(path: Path, *, readonly: bool) -> str:
 def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:
     """Configure *connection*.
 
+    ``busy_timeout`` goes first so every pragma after it waits for a
+    concurrent writer instead of failing on one.
+
     ``journal_mode`` is a property of the database file rather than of the
     connection, so a read-only connection cannot set it — the writer that
-    created the file already did.
+    created the file already did. Switching it also takes a lock no busy
+    handler covers, so it is set only when the file is not already in WAL,
+    which is every open after the first.
     """
-    if writable:
-        connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    if writable and _journal_mode(connection) != "wal":
+        _enable_wal(connection)
+    connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA temp_store=MEMORY")
+
+
+def _journal_mode(connection: sqlite3.Connection) -> str:
+    """Return the journal mode the database file is in."""
+    row = connection.execute("PRAGMA journal_mode").fetchone()
+    return str(row[0]).lower() if row is not None else ""
+
+
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    """Switch the database into WAL, waiting out a concurrent first open.
+
+    The switch needs a brief exclusive lock, and SQLite does not run the busy
+    handler while it waits for one — so two ginkgo processes starting against
+    the same empty workspace would otherwise race, and the loser would fail
+    with "database is locked" before either had written anything. The retry
+    loop is that busy handler, spelled out.
+    """
+    deadline = time.monotonic() + BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)

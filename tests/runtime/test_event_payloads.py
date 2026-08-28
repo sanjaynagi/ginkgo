@@ -67,6 +67,8 @@ def _events() -> list[GinkgoEvent]:
             env="analysis",
             retries=2,
             dependency_ids=["task_0001"],
+            stdout_log="logs/task_0007_analysis_fit.stdout.log",
+            stderr_log="logs/task_0007_analysis_fit.stderr.log",
         ),
         GraphExpanded(**RUN, parent_task_id="task_0007", new_node_ids=["task_0008"]),
         TaskPlanned(

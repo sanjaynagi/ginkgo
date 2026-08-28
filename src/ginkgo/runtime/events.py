@@ -36,7 +36,7 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
-    v: int = 2
+    v: int = 3
     task_id: str = ""
     task_name: str = ""
     kind: str = "python"
@@ -44,6 +44,10 @@ class GraphNodeRegistered(RunEvent):
     env: str | None = None
     retries: int = 0
     dependency_ids: list[str] = field(default_factory=list)
+    stdout_log: str | None = None
+    """Where the task's stdout will be written, relative to the run directory."""
+    stderr_log: str | None = None
+    """Where the task's stderr will be written, relative to the run directory."""
 
 
 @dataclass(kw_only=True, frozen=True)

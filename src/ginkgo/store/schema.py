@@ -194,6 +194,11 @@ def migrate(conn: Connection) -> int:
     steps share a single transaction, so an interrupted migration leaves the
     database at the version it started from rather than part-way through.
 
+    Two processes can reach an unmigrated workspace at the same moment, so the
+    version is read again under the write lock: whichever loses the race sees
+    the other's work and applies nothing, rather than re-running the DDL and
+    failing on a table that now exists.
+
     Parameters
     ----------
     conn : Connection
@@ -205,15 +210,19 @@ def migrate(conn: Connection) -> int:
         The schema version after migrating.
     """
     current = schema_version(conn)
-    pending = [(version, step) for version, step in MIGRATIONS if version > current]
-    if not pending:
+    if not [version for version, _ in MIGRATIONS if version > current]:
         return current
 
     # Statements are executed one at a time rather than through
     # ``executescript``, which commits any open transaction before it runs and
     # so would break a partly applied migration into separately durable pieces.
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE")
     try:
+        current = schema_version(conn)
+        pending = [(version, step) for version, step in MIGRATIONS if version > current]
+        if not pending:
+            conn.execute("COMMIT")
+            return current
         for version, step in pending:
             if isinstance(step, str):
                 for statement in _statements(step):
