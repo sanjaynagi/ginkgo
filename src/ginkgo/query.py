@@ -61,6 +61,18 @@ class CacheStats:
     hit_histogram: dict[int, int]
     top_functions: list[tuple[str, int, int]]
 
+    @classmethod
+    def empty(cls) -> CacheStats:
+        """Return the stats of a workspace with no cache — and no database."""
+        return cls(
+            entries=0,
+            total_bytes=0,
+            never_hit=0,
+            never_hit_bytes=0,
+            hit_histogram={},
+            top_functions=[],
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class EventRow:

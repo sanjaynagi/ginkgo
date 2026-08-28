@@ -198,16 +198,8 @@ def _clear(args, rich_console) -> int:
 
 def _render_stats(rich_console, *, as_json: bool) -> int:
     """Print what the cache holds, in aggregate."""
-    if not _database_exists():
-        stats = CacheStats(
-            entries=0,
-            total_bytes=0,
-            never_hit=0,
-            never_hit_bytes=0,
-            hit_histogram={},
-            top_functions=[],
-        )
-    else:
+    stats = CacheStats.empty()
+    if _database_exists():
         with _reader() as reader:
             stats = reader.cache_stats()
     if as_json:
