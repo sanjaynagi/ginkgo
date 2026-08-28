@@ -43,9 +43,9 @@ Implementations:
 
 `AccessStats` carries the per-mount counters (bytes read, range
 requests, cache hits, mount / unmount seconds). The worker folds these
-into the result envelope as `remote_input_access`; the evaluator folds
-them into provenance via
-`RunProvenanceRecorder.update_task_extra(remote_input_access=...)`.
+into the result envelope as `remote_input_access`; the evaluator records
+them against the task as `TaskAnnotated(fields={"remote_input_access": …})`,
+which lands in the ledger's `tasks.extra`.
 
 ## Per-input policy resolution
 

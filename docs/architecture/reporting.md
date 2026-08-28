@@ -332,8 +332,8 @@ ginkgo report <run-id>
 - Formatters (`format_duration`, `format_bytes`) across s/m/h ranges.
 - Sizing helpers (`build_log_tail`, `build_table_preview`) on synthetic
   inputs with explicit truncation assertions.
-- `build_report_data` against fixture runs produced via
-  `RunProvenanceRecorder` — success, failure, and all-cached paths, graph
+- `build_report_data` against fixture runs recorded through the event bus —
+  success, failure, and all-cached paths, graph
   layout, asset resolution, section numbering, running-run rejection. The
   all-cached run must yield the same asset cards and sections as the executed
   one; only the cache labels differ. Asset anchors are asserted both for the
