@@ -558,14 +558,17 @@ def build_worker_remote_store(
     """Construct a :class:`RemoteArtifactStore` inside a remote worker.
 
     The local CAS component is rooted in an ephemeral pod directory, since
-    the worker has no pre-existing local store.
+    the worker has no pre-existing local store. Its index is in-memory: the
+    worker has no workspace database, the pod's disk goes away with the pod,
+    and a file there would be rows nothing will ever read.
     """
     from ginkgo.remote.resolve import resolve_backend
     from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+    from ginkgo.runtime.caching.index import CacheIndex
 
     backend = resolve_backend(scheme)
     local_root.mkdir(parents=True, exist_ok=True)
-    local = LocalArtifactStore(root=local_root)
+    local = LocalArtifactStore(root=local_root, index=CacheIndex.in_memory())
     return RemoteArtifactStore(
         local=local,
         backend=backend,

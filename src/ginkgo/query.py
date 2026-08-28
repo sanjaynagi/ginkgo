@@ -14,16 +14,26 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from ginkgo.runtime.caching.cache import key_components
+from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
-__all__ = ["CacheEntryRow", "CacheStats", "EventRow", "Query", "RunRow", "open"]
+__all__ = [
+    "CacheEntryRow",
+    "CacheStats",
+    "EventRow",
+    "Query",
+    "RerunExplanation",
+    "RunRow",
+    "open",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -72,6 +82,52 @@ class CacheStats:
             hit_histogram={},
             top_functions=[],
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RerunExplanation:
+    """Why one task ran again — or did not.
+
+    Attributes
+    ----------
+    reason : str
+        The summary code: ``all_inputs_match``, ``no_entry_for_key``,
+        ``no_prior_entry``, or the first of *details*.
+    details : list[str]
+        Every summary code the component diff implies.
+    compared_with : dict[str, str] | None
+        The entry compared against and how it was found — ``cache_key`` and a
+        ``strategy`` of ``same_node`` or ``newest_by_function`` — or ``None``
+        when there was nothing to compare with.
+    components : list[dict[str, Any]]
+        One entry per cache-key component that differs.
+    """
+
+    task_id: str | None
+    task_name: str
+    display_label: str | None
+    cache_key: str | None
+    reason: str
+    details: list[str]
+    compared_with: dict[str, str] | None = None
+    components: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the JSON shape ``ginkgo cache explain`` prints."""
+        payload: dict[str, Any] = {
+            "task_id": self.task_id,
+            "task_name": self.task_name,
+            "display_label": self.display_label,
+            "cache_key": self.cache_key,
+            "reason": self.reason,
+        }
+        if self.compared_with is None and not self.components:
+            return payload
+        return payload | {
+            "compared_with": self.compared_with,
+            "details": self.details,
+            "components": self.components,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -241,15 +297,19 @@ class Query:
         ]
 
     def cache_key_components(self, cache_key: str) -> dict[str, Any]:
-        """Return the labelled components of one entry's cache key."""
+        """Return the labelled components of one entry's cache key.
+
+        Derived from the entry's own row by the same function that labels the
+        payload the key is hashed from, so the two cannot drift and no second
+        table has to be kept in step.
+        """
         rows = self._store.query(
-            "SELECT component, value FROM cache_key_components WHERE cache_key = ?",
+            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
             (cache_key,),
         )
-        return {
-            str(row["component"]): json.loads(row["value"]) if row["value"] is not None else None
-            for row in rows
-        }
+        if not rows:
+            return {}
+        return key_components(CacheEntry.from_row(rows[0]).as_meta())
 
     def cache_stats(self) -> CacheStats:
         """Return entry counts, bytes and hit statistics for the whole cache."""
@@ -336,6 +396,66 @@ class Query:
             return str(sibling[0]["cache_key"]), "newest_by_function"
         return None
 
+    def explain_rerun(self, run_id: str, task_id: str) -> RerunExplanation:
+        """Explain why one task of a run executed rather than serving from cache.
+
+        Parameters
+        ----------
+        run_id : str
+            The run being explained.
+        task_id : str
+            The task within it.
+
+        Returns
+        -------
+        RerunExplanation
+            The moved cache-key components, with the entry they were compared
+            against; or a bare reason where no comparison was possible.
+
+        Raises
+        ------
+        KeyError
+            If the run has no such task.
+        """
+        rows = self._store.query(
+            "SELECT name, display_label, cache_key, status FROM tasks "
+            "WHERE run_id = ? AND task_id = ?",
+            (run_id, task_id),
+        )
+        if not rows:
+            raise KeyError(f"{run_id} has no task {task_id}")
+        task = rows[0]
+        cache_key = task["cache_key"]
+        identity: dict[str, Any] = {
+            "task_id": task_id,
+            "task_name": str(task["name"]),
+            "display_label": task["display_label"],
+            "cache_key": cache_key,
+        }
+        if task["status"] == "cached":
+            return RerunExplanation(**identity, reason="all_inputs_match", details=[])
+
+        current = self.cache_key_components(cache_key) if isinstance(cache_key, str) else {}
+        if not current:
+            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+
+        prior = self.previous_cache_key(run_id=run_id, task_id=task_id)
+        if prior is None:
+            return RerunExplanation(**identity, reason="no_prior_entry", details=[])
+
+        prior_key, strategy = prior
+        components = _diff_key_components(
+            current=current, prior=self.cache_key_components(prior_key)
+        )
+        details = _coarse_reasons(components)
+        return RerunExplanation(
+            **identity,
+            reason=details[0],
+            details=details,
+            compared_with={"cache_key": prior_key, "strategy": strategy},
+            components=components,
+        )
+
     def close(self) -> None:
         """Release the connection."""
         self._store.close()
@@ -377,3 +497,45 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     if readonly and not path.is_file():
         raise FileNotFoundError(f"No runs found: there is no provenance database at {path}")
     return Query(open_store(path, readonly=readonly), layout=layout)
+
+
+def _diff_key_components(
+    *, current: dict[str, Any], prior: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Return the cache-key components that differ between two entries."""
+    differences: list[dict[str, Any]] = []
+    for name in sorted(set(current) | set(prior)):
+        # A component absent from one side is a parameter that came or went.
+        if name not in current:
+            differences.append({"component": name, "status": "removed", "prior": prior[name]})
+        elif name not in prior:
+            differences.append({"component": name, "status": "added", "current": current[name]})
+        elif current[name] != prior[name]:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "changed",
+                    "current": current[name],
+                    "prior": prior[name],
+                }
+            )
+    return differences
+
+
+def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
+    """Return the summary reason codes implied by a component diff.
+
+    A moved component no code covers falls back to ``cache_key_changed``; the
+    component list names it either way.
+    """
+    moved = {str(component["component"]) for component in components}
+    reasons = []
+    if moved & {"source_hash", "extra_source_hash"}:
+        reasons.append("source_hash_changed")
+    if "version" in moved:
+        reasons.append("version_bump")
+    if moved & {"env", "env_hash.pixi_lock"}:
+        reasons.append("env_changed")
+    if any(name.startswith("inputs") for name in moved):
+        reasons.append("input_changed")
+    return reasons or ["cache_key_changed"]

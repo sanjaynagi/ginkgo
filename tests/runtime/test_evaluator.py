@@ -1042,7 +1042,7 @@ class TestEvaluate:
         # two source hashes, and the resulting cache keys, must differ.
         assert directive_v1.source_hash != directive_v2.source_hash
 
-        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache")
+        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache", index=CacheIndex.in_memory())
         resolved_args = {"notebook_path": str(nb_path), "value": 1}
         key_v1, _ = cache.build_cache_key(
             task_def=notebook_ipynb_task,

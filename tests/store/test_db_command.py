@@ -6,6 +6,8 @@ from ginkgo.cli.app import main
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.protocol import ProjectionOp
+from ginkgo.store.schema import SCHEMA_VERSION
+from ginkgo.store.sqlite import open_store
 
 
 def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
@@ -18,7 +20,6 @@ def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
         index.record_entry(
             cache_key=cache_key,
             meta={"function": "pkg.produce", "created_at": "2026-08-28T10:00:00+00:00"},
-            components={"task": "pkg.produce"},
             artifact_ids={},
             size_bytes=2,
             run_id=None,
@@ -65,8 +66,9 @@ class TestDbCheckCache:
                     storage_backend="local",
                 )
             )
-            with index.store.transaction():
-                index.store.apply(
+        with open_store(tmp_path / ".ginkgo" / "ginkgo.db") as store:
+            with store.transaction():
+                store.apply(
                     [
                         ProjectionOp(
                             sql="INSERT INTO cache_artifacts (cache_key, path, artifact_id) "
@@ -85,6 +87,17 @@ class TestDbCheckCache:
         assert main(["db", "check"]) == 0
         assert "integrity check passed" in capsys.readouterr().out
 
+    def test_a_save_in_flight_is_not_an_orphan(self, tmp_path, monkeypatch, capsys):
+        """A concurrent save's temporary directory is about to be renamed."""
+        monkeypatch.chdir(tmp_path)
+        _entry(tmp_path, "key-1")
+        in_flight = tmp_path / ".ginkgo" / "cache" / "key-2.tmp-abc123"
+        in_flight.mkdir(parents=True)
+        (in_flight / "output.json").write_text("{}", encoding="utf-8")
+
+        assert main(["db", "check"]) == 0
+        assert "orphan" not in capsys.readouterr().out
+
 
 class TestDbCommands:
     """Each subcommand, run against a workspace that starts out empty."""
@@ -94,7 +107,7 @@ class TestDbCommands:
 
         assert main(["db", "migrate"]) == 0
         assert (tmp_path / ".ginkgo" / "ginkgo.db").exists()
-        assert "schema version 1" in capsys.readouterr().out
+        assert f"schema version {SCHEMA_VERSION}" in capsys.readouterr().out
 
     def test_check_reports_the_version_and_the_integrity_result(
         self, tmp_path, monkeypatch, capsys
@@ -104,7 +117,7 @@ class TestDbCommands:
         assert main(["db", "check"]) == 0
 
         output = capsys.readouterr().out
-        assert "Schema version: 1" in output
+        assert f"Schema version: {SCHEMA_VERSION}" in output
         assert "integrity check passed" in output
 
     def test_path_prints_where_the_database_lives(self, tmp_path, monkeypatch, capsys):

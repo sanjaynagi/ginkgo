@@ -7,6 +7,7 @@ import pytest
 
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 
 
@@ -15,7 +16,7 @@ def local_store(tmp_path: Path) -> LocalArtifactStore:
     """Create a LocalArtifactStore in a temp directory."""
     root = tmp_path / ".ginkgo" / "artifacts"
     root.mkdir(parents=True)
-    return LocalArtifactStore(root=root)
+    return LocalArtifactStore(root=root, index=CacheIndex.in_memory())
 
 
 @pytest.fixture

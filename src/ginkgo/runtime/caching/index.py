@@ -1,41 +1,46 @@
 """The cache's rows in the provenance ledger.
 
 Everything ginkgo knows about a cache entry — which function wrote it, the
-components of its key, the artifacts it owns, whether the environment it was
-written against still matches — lives in the database, and this is the module
-that reads and writes those rows. The bytes stay on disk: ``output.json`` under
-``cache/<key>/`` and the CAS blobs under ``artifacts/``.
+hashes its key was built from, the artifacts it owns, whether the environment
+it was written against still matches — lives in the database, and this is the
+module that reads and writes those rows. The bytes stay on disk: ``output.json``
+under ``cache/<key>/`` and the CAS blobs under ``artifacts/``.
 
 The index sits in ``runtime/`` because the shape of a cache entry is a runtime
 concept; ``store/`` below it knows only tables and transactions.
 
-One process holds one index, and it opens its own write connection rather than
-sharing the recorder's. The recorder's connection belongs to its writer thread
-and its queue carries events, while a cache save has to be visible to the
-``load`` that may follow it microseconds later. Two connections over one WAL
-database is what SQLite is for, and every write here is either an
+Unlike the run tables, the cache tables are **not** projections of the event
+ledger. They are a direct-write index: `CacheIndex` is the only thing that
+writes them, synchronously, on its own connection, because a cache save has to
+be visible to the `load` that may follow it microseconds later and the
+recorder's connection belongs to its writer thread. Two connections over one
+WAL database is what WAL is for, and every write here is either an
 ``INSERT OR IGNORE`` on a content-addressed key or an idempotent upsert, so two
 runs saving the same entry at once agree by construction.
+
+Nothing constructs an index as a side effect. Opening one is a decision — to
+write (`open`), to read (`for_reading`), or to keep the rows to this process
+(`in_memory`) — because the first of those creates and migrates a database.
 """
 
 from __future__ import annotations
 
-import json
+import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ginkgo.formatting import now_iso
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.store.jsonio import dumps_or_none, loads
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
-from ginkgo.store.sqlite import open_store
-from ginkgo.workspace_layout import WorkspaceLayout
+from ginkgo.store.sqlite import MEMORY, open_store
 
-__all__ = ["CacheEntry", "CacheIndex", "now_iso"]
+__all__ = ["ENTRY_COLUMNS", "CacheEntry", "CacheIndex"]
 
 
-_ENTRY_COLUMNS = (
+ENTRY_COLUMNS = (
     "cache_key",
     "function",
     "version",
@@ -51,6 +56,7 @@ _ENTRY_COLUMNS = (
     "created_run_id",
     "created_at",
 )
+"""What a reader selects to describe one entry, in row order."""
 
 _JSON_COLUMNS = frozenset({"env_hash", "inputs", "input_hashes", "extra"})
 """Entry columns whose text is JSON, decoded on the way out."""
@@ -65,23 +71,20 @@ INSERT OR IGNORE INTO cache_entries (
 
 _INSERT_ARTIFACT = """
 INSERT INTO artifacts (
-  artifact_id, kind, digest_algorithm, extension, size,
+  artifact_id, kind, digest_algorithm, digest_hex, extension, size,
   created_at, storage_backend, remote_uri
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (artifact_id) DO UPDATE SET
   kind=excluded.kind, digest_algorithm=excluded.digest_algorithm,
-  extension=excluded.extension, size=excluded.size,
-  storage_backend=excluded.storage_backend,
+  digest_hex=excluded.digest_hex, extension=excluded.extension,
+  size=excluded.size, storage_backend=excluded.storage_backend,
   remote_uri=coalesce(excluded.remote_uri, artifacts.remote_uri)
 """
 
-_INSERT_DIGEST = """
-INSERT INTO digest_memo (kind, fingerprint, digest, path, size, mtime_ns, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (kind, fingerprint) DO UPDATE SET
-  digest=excluded.digest, path=excluded.path, size=excluded.size,
-  mtime_ns=excluded.mtime_ns, last_seen=excluded.last_seen
-"""
+_ARTIFACT_COLUMNS = (
+    "artifact_id, kind, digest_algorithm, digest_hex, extension, size, "
+    "created_at, storage_backend, remote_uri"
+)
 
 
 class CacheEntry:
@@ -97,9 +100,19 @@ class CacheEntry:
     def __init__(self, row: Mapping[str, Any]) -> None:
         self._row = row
 
+    @classmethod
+    def from_row(cls, row: sqlite3.Row | Mapping[str, Any]) -> CacheEntry:
+        """Return the entry a ``cache_entries`` row describes.
+
+        For a reader that selected :data:`ENTRY_COLUMNS` and did not join the
+        entry's artifacts — asking what an entry was keyed on does not need
+        them.
+        """
+        return cls(dict(row) | {"artifact_ids": {}})
+
     def __getitem__(self, column: str) -> Any:
         value = self._row[column]
-        return _loads(value) if column in _JSON_COLUMNS else value
+        return loads(value) if column in _JSON_COLUMNS else value
 
     @property
     def artifact_ids(self) -> dict[str, str]:
@@ -117,6 +130,15 @@ class CacheEntry:
         """The environment digest measured where the entry was written."""
         value = self._row["env_materialized_digest"]
         return str(value) if value is not None else None
+
+    def as_meta(self) -> dict[str, Any]:
+        """Return the entry as the flat mapping the cache records it from.
+
+        The inverse of what :meth:`~ginkgo.runtime.caching.cache.CacheStore.save`
+        passes in, so :func:`~ginkgo.runtime.caching.cache.key_components` can
+        label an entry read back out exactly as it labelled the one saved.
+        """
+        return {column: self[column] for column in ENTRY_COLUMNS}
 
 
 class CacheIndex:
@@ -136,35 +158,55 @@ class CacheIndex:
     def __init__(self, *, store: ProvenanceStore) -> None:
         self._store = store
         self._lock = threading.RLock()
+        self._seen_digests: set[tuple[str, str]] = set()
 
     @classmethod
-    def open(cls, *, path: Path | None = None, readonly: bool = False) -> CacheIndex:
-        """Open the index over one workspace's database.
+    def open(cls, *, path: Path, readonly: bool = False) -> CacheIndex:
+        """Open the index for writing, creating and migrating the database.
 
         Parameters
         ----------
-        path : Path | None, optional
-            The database file. Defaults to the current workspace's.
+        path : Path
+            The database file, normally ``WorkspaceLayout.db``.
         readonly : bool, optional
-            Open a reader that never migrates and never takes a write lock.
+            Open a reader instead: it never creates the file and never
+            migrates it, and fails if there is nothing there to read.
 
         Returns
         -------
         CacheIndex
         """
-        db_path = path if path is not None else WorkspaceLayout.for_cwd().db
-        # Cache writes happen on whichever thread finished a task, and the
-        # index's own lock is what keeps them apart.
-        return cls(store=open_store(Path(db_path), readonly=readonly, thread_shared=True))
+        return cls(store=open_store(Path(path), readonly=readonly, thread_shared=True))
 
-    @property
-    def store(self) -> ProvenanceStore:
-        """The underlying store, for callers issuing their own SQL."""
-        return self._store
+    @classmethod
+    def in_memory(cls) -> CacheIndex:
+        """Return an index over a private database that touches no filesystem.
+
+        What a remote worker gets: it has the artifacts it staged but not the
+        workspace that indexes them, and creating a database in a pod's scratch
+        directory would record rows nothing will ever read.
+        """
+        return cls(store=open_store(MEMORY, thread_shared=True))
+
+    @classmethod
+    def for_reading(cls, path: Path) -> CacheIndex:
+        """Return a read-only index over *path*, or an empty one if it is absent.
+
+        A workspace nobody has run anything in has no database and no cache,
+        which is an answer rather than an error — and a read path must never be
+        the thing that creates one.
+        """
+        if not Path(path).is_file():
+            return cls.in_memory()
+        return cls.open(path=path, readonly=True)
 
     def close(self) -> None:
-        """Release the connection. Safe to call more than once."""
+        """Flush what was deferred and release the connection.
+
+        Safe to call more than once.
+        """
         with self._lock:
+            self._flush_seen_digests()
             self._store.close()
 
     def __enter__(self) -> CacheIndex:
@@ -180,16 +222,14 @@ class CacheIndex:
         *,
         cache_key: str,
         meta: Mapping[str, Any],
-        components: Mapping[str, Any],
         artifact_ids: Mapping[str, str],
         size_bytes: int,
         run_id: str | None,
     ) -> None:
-        """Record one cache entry, its key components and its artifacts.
+        """Record one cache entry and the artifacts it owns.
 
-        All three land in one transaction: an entry whose components were lost
-        could not be explained, and one whose artifacts were lost would have
-        its blobs collected as orphans.
+        Both land in one transaction: an entry whose artifacts were lost would
+        have its blobs collected as orphans.
 
         Parameters
         ----------
@@ -198,13 +238,10 @@ class CacheIndex:
         meta : Mapping[str, Any]
             The entry's facts, in the flat shape
             :func:`~ginkgo.runtime.caching.cache.key_components` reads.
-        components : Mapping[str, Any]
-            Labelled cache-key components, from
-            :func:`~ginkgo.runtime.caching.cache.key_components`.
         artifact_ids : Mapping[str, str]
             Output path to artifact id.
         size_bytes : int
-            Bytes the entry directory occupies.
+            Size of the entry's ``output.json``.
         run_id : str | None
             The run that wrote it.
         """
@@ -218,24 +255,16 @@ class CacheIndex:
                     meta.get("source_hash"),
                     meta.get("extra_source_hash"),
                     meta.get("env"),
-                    _dumps(meta.get("env_hash")),
+                    dumps_or_none(meta.get("env_hash")),
                     meta.get("env_materialized_digest"),
-                    _dumps(meta.get("inputs")),
-                    _dumps(meta.get("input_hashes")),
-                    _dumps(meta.get("extra")),
+                    dumps_or_none(meta.get("inputs")),
+                    dumps_or_none(meta.get("input_hashes")),
+                    dumps_or_none(meta.get("extra")),
                     size_bytes,
                     run_id,
                     meta.get("created_at") or now_iso(),
                 ),
             )
-        ]
-        ops += [
-            ProjectionOp(
-                sql="INSERT OR IGNORE INTO cache_key_components (cache_key, component, value) "
-                "VALUES (?, ?, ?)",
-                params=(cache_key, component, _dumps(value)),
-            )
-            for component, value in components.items()
         ]
         ops += [
             ProjectionOp(
@@ -251,7 +280,7 @@ class CacheIndex:
         """Return one cache entry, or ``None`` when the index has no such row."""
         with self._lock:
             rows = self._store.query(
-                f"SELECT {', '.join(_ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
+                f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
                 (cache_key,),
             )
             if not rows:
@@ -263,6 +292,20 @@ class CacheIndex:
         row = dict(rows[0])
         row["artifact_ids"] = {str(a["path"]): str(a["artifact_id"]) for a in artifacts}
         return CacheEntry(row)
+
+    def cache_keys(self) -> list[str]:
+        """Return every cache key the index holds, sorted."""
+        with self._lock:
+            rows = self._store.query("SELECT cache_key FROM cache_entries ORDER BY cache_key")
+        return [str(row["cache_key"]) for row in rows]
+
+    def cache_artifact_ids(self) -> list[str]:
+        """Return every artifact id a cache entry names, sorted."""
+        with self._lock:
+            rows = self._store.query(
+                "SELECT DISTINCT artifact_id FROM cache_artifacts ORDER BY artifact_id"
+            )
+        return [str(row["artifact_id"]) for row in rows]
 
     def referenced_artifact_ids(self) -> set[str]:
         """Return every artifact id a cache entry or asset version still points at.
@@ -277,6 +320,22 @@ class CacheIndex:
             )
         return {str(row["artifact_id"]) for row in rows}
 
+    def record_hit(self, cache_key: str, *, at: str | None = None) -> None:
+        """Count one hit against an entry.
+
+        Written here rather than projected from ``TaskCacheHit`` so that every
+        ``cache_entries`` column has one writer on one connection: a hit landing
+        through the ledger's writer while another process held the write lock
+        for a save would have updated no rows at all.
+        """
+        self._write(
+            ProjectionOp(
+                sql="UPDATE cache_entries SET hit_count = hit_count + 1, last_hit_at = ? "
+                "WHERE cache_key = ?",
+                params=(at or now_iso(), cache_key),
+            )
+        )
+
     def forget_entries(self, cache_keys: Sequence[str]) -> None:
         """Drop the rows for entries whose bytes have been removed."""
         if not cache_keys:
@@ -288,12 +347,7 @@ class CacheIndex:
                     sql=f"DELETE FROM {table} WHERE cache_key IN ({placeholders})",  # noqa: S608
                     params=tuple(cache_keys),
                 )
-                for table in (
-                    "cache_entries",
-                    "cache_key_components",
-                    "cache_artifacts",
-                    "stat_index",
-                )
+                for table in ("cache_entries", "cache_artifacts", "stat_index")
             )
         )
 
@@ -313,6 +367,7 @@ class CacheIndex:
                     record.artifact_id,
                     record.kind,
                     record.digest_algorithm,
+                    record.digest_hex,
                     record.extension,
                     record.size,
                     record.created_at,
@@ -326,8 +381,7 @@ class CacheIndex:
         """Return one artifact record, or ``None`` when the index has no such row."""
         with self._lock:
             rows = self._store.query(
-                "SELECT artifact_id, kind, digest_algorithm, extension, size, "
-                "created_at, storage_backend, remote_uri FROM artifacts WHERE artifact_id = ?",
+                f"SELECT {_ARTIFACT_COLUMNS} FROM artifacts WHERE artifact_id = ?",  # noqa: S608
                 (artifact_id,),
             )
         if not rows:
@@ -337,9 +391,7 @@ class CacheIndex:
             artifact_id=str(row["artifact_id"]),
             kind=str(row["kind"]),
             digest_algorithm=str(row["digest_algorithm"]),
-            # Managed artifacts are named by their content digest, so the id
-            # is the digest; the column would only ever repeat it.
-            digest_hex=str(row["artifact_id"]),
+            digest_hex=str(row["digest_hex"]),
             extension=str(row["extension"] or ""),
             size=int(row["size"] or 0),
             created_at=str(row["created_at"]),
@@ -364,7 +416,7 @@ class CacheIndex:
 
     # -- stat index ----------------------------------------------------------
 
-    def stat_lookup(self, stat_key: str) -> str | None:
+    def stat_index_lookup(self, stat_key: str) -> str | None:
         """Return the content key a stat fingerprint last resolved to."""
         with self._lock:
             rows = self._store.query(
@@ -372,7 +424,7 @@ class CacheIndex:
             )
         return str(rows[0]["cache_key"]) if rows else None
 
-    def record_stat(self, *, stat_key: str, cache_key: str) -> None:
+    def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
         """Point a stat fingerprint at the content key it resolved to."""
         self._write(
             ProjectionOp(
@@ -428,7 +480,11 @@ class CacheIndex:
     # -- digest memo ---------------------------------------------------------
 
     def digest(self, *, kind: str, fingerprint: str) -> str | None:
-        """Return a remembered content digest, marking it as seen again.
+        """Return a remembered content digest, if this content has been hashed.
+
+        A hit is noted in memory and written to ``last_seen`` once, at
+        :meth:`close`. A write transaction per hashed file would put the memo's
+        cost back on the warm run it exists to make cheap.
 
         Parameters
         ----------
@@ -450,65 +506,40 @@ class CacheIndex:
             )
             if not rows:
                 return None
-            self._write(
-                ProjectionOp(
-                    sql="UPDATE digest_memo SET last_seen = ? WHERE kind = ? AND fingerprint = ?",
-                    params=(now_iso(), kind, fingerprint),
-                )
-            )
+            self._seen_digests.add((kind, fingerprint))
         return str(rows[0]["digest"])
 
-    def record_digest(
-        self,
-        *,
-        kind: str,
-        fingerprint: str,
-        digest: str,
-        path: Path | None = None,
-        size: int | None = None,
-        mtime_ns: int | None = None,
-    ) -> None:
+    def record_digest(self, *, kind: str, fingerprint: str, digest: str) -> None:
         """Remember the digest of content with this stat identity."""
         self._write(
             ProjectionOp(
-                sql=_INSERT_DIGEST,
-                params=(
-                    kind,
-                    fingerprint,
-                    digest,
-                    str(path) if path is not None else None,
-                    size,
-                    mtime_ns,
-                    now_iso(),
-                ),
+                sql="INSERT INTO digest_memo (kind, fingerprint, digest, last_seen) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (kind, fingerprint) DO UPDATE SET "
+                "digest=excluded.digest, last_seen=excluded.last_seen",
+                params=(kind, fingerprint, digest, now_iso()),
             )
         )
 
     # -- internals -----------------------------------------------------------
 
+    def _flush_seen_digests(self) -> None:
+        """Stamp every memo entry this process used, in one transaction."""
+        if not self._seen_digests or self._store.readonly:
+            return
+        seen = sorted(self._seen_digests)
+        self._seen_digests.clear()
+        stamp = now_iso()
+        self._write(
+            *(
+                ProjectionOp(
+                    sql="UPDATE digest_memo SET last_seen = ? WHERE kind = ? AND fingerprint = ?",
+                    params=(stamp, kind, fingerprint),
+                )
+                for kind, fingerprint in seen
+            )
+        )
+
     def _write(self, *ops: ProjectionOp) -> None:
         """Run *ops* in one transaction, holding the index's lock."""
         with self._lock, self._store.transaction():
             self._store.apply(ops)
-
-
-def now_iso() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(UTC).isoformat()
-
-
-def _dumps(value: Any) -> str | None:
-    """Return *value* as JSON text, or ``None`` when there is nothing to store."""
-    if value is None:
-        return None
-    return json.dumps(value, sort_keys=True, default=str)
-
-
-def _loads(value: Any) -> Any:
-    """Return the object stored in a JSON column, or ``None``."""
-    if value is None:
-        return None
-    try:
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return None

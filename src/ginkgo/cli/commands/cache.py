@@ -14,8 +14,8 @@ import json
 import shutil
 import sys
 import re
-from collections.abc import Iterable
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +30,7 @@ from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import format_bytes, format_int, parse_timestamp
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
+from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -87,40 +88,42 @@ def command_cache(args) -> int:
             rich_console.print("[red]Error:[/] --max-entries must be at least 0.")
             return 2
 
-        with _index() as index:
-            all_entries = list_cache_entries(Query(index.store, layout=WorkspaceLayout.relative()))
-            entries = select_prune_entries(
-                entries=all_entries,
+        all_entries: list[CacheEntryDisplay] = []
+        if _database_exists():
+            with _reader() as reader:
+                all_entries = list_cache_entries(reader)
+        entries = select_prune_entries(
+            entries=all_entries,
+            older_than=args.older_than,
+            max_size_bytes=max_size_bytes,
+            max_entries=args.max_entries,
+            least_recently_hit=args.least_recently_hit,
+        )
+        total_bytes = sum(entry.size_bytes for entry in entries)
+
+        if args.dry_run:
+            reason = _describe_prune_policy(
                 older_than=args.older_than,
-                max_size_bytes=max_size_bytes,
+                max_size=args.max_size,
                 max_entries=args.max_entries,
                 least_recently_hit=args.least_recently_hit,
             )
-            total_bytes = sum(entry.size_bytes for entry in entries)
-
-            if args.dry_run:
-                reason = _describe_prune_policy(
-                    older_than=args.older_than,
-                    max_size=args.max_size,
-                    max_entries=args.max_entries,
-                    least_recently_hit=args.least_recently_hit,
-                )
-                rich_console.print(
-                    f"[cyan]Preview:[/] {len(entries)} entries {reason} "
-                    f"([bold]{format_bytes(total_bytes)}[/]) would be removed."
-                )
-                for entry in entries:
-                    rich_console.print(
-                        f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.created})"
-                    )
-                return 0
-
+            rich_console.print(
+                f"[cyan]Preview:[/] {len(entries)} entries {reason} "
+                f"([bold]{format_bytes(total_bytes)}[/]) would be removed."
+            )
             for entry in entries:
-                _safe_rmtree(entry.path)
-            index.forget_entries([entry.cache_key for entry in entries])
+                rich_console.print(
+                    f"[dim]-[/] {entry.cache_key} ({entry.task}, {entry.age}, {entry.created})"
+                )
+            return 0
 
-            # Clean up orphaned artifacts after pruning.
-            _gc_orphan_artifacts(CACHE_ROOT, index=index)
+        if entries or _database_exists():
+            with _cache_store() as cache_store:
+                for entry in entries:
+                    _remove_entry(cache_store, entry.cache_key)
+                # Clean up orphaned artifacts after pruning.
+                _gc_orphan_artifacts(cache_store)
 
         rich_console.print(
             f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
@@ -157,35 +160,35 @@ def command_cache(args) -> int:
 def _clear(args, rich_console) -> int:
     """Remove one cache entry, or every entry directory with no row."""
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
-    with _index() as index:
-        if args.orphans:
-            reader = Query(index.store, layout=WorkspaceLayout.relative())
-            orphans = orphan_cache_dirs(
-                cache_root=CACHE_ROOT,
-                known_keys=[row.cache_key for row in reader.cache_entries()],
-            )
+    if args.orphans:
+        if not _database_exists():
+            # Nothing has been cached here, and removing nothing is not a
+            # reason to create the database that would record it.
+            rich_console.print("[dim]No cache entries found.[/]")
+            return 0
+        with _cache_store() as cache_store:
+            orphans = cache_store.orphan_entry_dirs()
             for entry_dir in orphans:
                 _safe_rmtree(entry_dir)
-            _gc_orphan_artifacts(CACHE_ROOT, index=index)
-            rich_console.print(
-                f"[green]✓[/] Removed [bold]{len(orphans)}[/] orphaned cache "
-                f"{'directory' if len(orphans) == 1 else 'directories'}."
-            )
-            return 0
+            _gc_orphan_artifacts(cache_store)
+        rich_console.print(
+            f"[green]✓[/] Removed [bold]{len(orphans)}[/] orphaned cache "
+            f"{'directory' if len(orphans) == 1 else 'directories'}."
+        )
+        return 0
 
-        if args.cache_key is None:
-            rich_console.print(
-                "[red]Error:[/] provide a cache key, or --orphans to remove entry "
-                "directories the database has no row for."
-            )
-            return 2
+    if args.cache_key is None:
+        rich_console.print(
+            "[red]Error:[/] provide a cache key, or --orphans to remove entry "
+            "directories the database has no row for."
+        )
+        return 2
 
-        cache_dir = CACHE_ROOT / args.cache_key
-        if not cache_dir.is_dir():
-            raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
-        _safe_rmtree(cache_dir)
-        index.forget_entries([args.cache_key])
-        _gc_orphan_artifacts(CACHE_ROOT, index=index)
+    if not (CACHE_ROOT / args.cache_key).is_dir():
+        raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
+    with _cache_store() as cache_store:
+        _remove_entry(cache_store, args.cache_key)
+        _gc_orphan_artifacts(cache_store)
 
     message = Text()
     message.append("✓ ", style="green")
@@ -252,6 +255,31 @@ def _reader() -> Query:
     return query.open()
 
 
+@contextmanager
+def _cache_store() -> Iterator[CacheStore]:
+    """Open the cache for writing, for the commands that remove things.
+
+    Yields
+    ------
+    CacheStore
+        Backed by a write-mode index, closed when the block ends.
+    """
+    layout = WorkspaceLayout.relative()
+    with CacheIndex.open(path=layout.db) as index:
+        yield CacheStore(index=index, root=layout.cache)
+
+
+def _remove_entry(cache_store: CacheStore, cache_key: str) -> None:
+    """Remove one entry's bytes, then its rows — in that order.
+
+    A row without bytes is a miss the next run pays for once; bytes without a
+    row are an orphan nothing collects. Doing it the other way round leaves the
+    worse of the two behind if the process dies between the halves.
+    """
+    _safe_rmtree(cache_store.output_path(cache_key).parent)
+    cache_store.index.forget_entries([cache_key])
+
+
 def _database_exists() -> bool:
     """Return whether this workspace has a ledger yet.
 
@@ -259,11 +287,6 @@ def _database_exists() -> bool:
     which is an answer rather than an error.
     """
     return Path(WorkspaceLayout.relative().db).is_file()
-
-
-def _index() -> CacheIndex:
-    """Open the cache index for writing, for the commands that remove things."""
-    return CacheIndex.open(path=WorkspaceLayout.relative().db)
 
 
 @dataclass(frozen=True)
@@ -462,35 +485,7 @@ def _safe_rmtree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def orphan_cache_dirs(*, cache_root: Path, known_keys: Iterable[str]) -> list[Path]:
-    """Return entry directories the database has no row for.
-
-    A lost database leaves the bytes behind, and nothing else will ever look
-    at them: the key that would find them is only in the row that is gone.
-    ``ginkgo db check`` reports these and ``cache clear --orphans`` removes
-    them, from this one definition of what an orphan is.
-
-    Parameters
-    ----------
-    cache_root : Path
-        The ``.ginkgo/cache`` directory.
-    known_keys : Iterable[str]
-        Every cache key the index holds.
-
-    Returns
-    -------
-    list[Path]
-        The orphaned directories, sorted.
-    """
-    if not cache_root.exists():
-        return []
-    known = set(known_keys)
-    return sorted(
-        entry for entry in cache_root.iterdir() if entry.is_dir() and entry.name not in known
-    )
-
-
-def _gc_orphan_artifacts(cache_root: Path, *, index: CacheIndex | None = None) -> None:
+def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
     """Remove artifacts no cache entry or catalogued asset points at.
 
     The cache and the asset catalog share one artifact store, so each reports
@@ -498,120 +493,36 @@ def _gc_orphan_artifacts(cache_root: Path, *, index: CacheIndex | None = None) -
     deleted. The asset half still comes from the YAML catalog; it joins the
     same query when the catalog moves into the store.
     """
-    layout = WorkspaceLayout.sibling_of(cache_root)
+    layout = WorkspaceLayout.relative()
     if not layout.artifacts.exists():
         return
 
-    from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
     from ginkgo.runtime.artifacts.asset_store import AssetStore
 
-    with ExitStack() as stack:
-        if index is None:
-            index = stack.enter_context(CacheIndex.open(path=layout.db))
-        referenced = index.referenced_artifact_ids()
-        referenced |= AssetStore(root=layout.assets).referenced_artifact_ids()
+    referenced = cache_store.index.referenced_artifact_ids()
+    referenced |= AssetStore(root=layout.assets).referenced_artifact_ids()
 
-        store = LocalArtifactStore(root=layout.artifacts, index=index)
-        for artifact_id in store.list_artifact_ids():
-            if artifact_id not in referenced:
-                store.delete(artifact_id=artifact_id)
+    store = cache_store.artifact_store_view
+    for artifact_id in store.list_artifact_ids():
+        if artifact_id not in referenced:
+            store.delete(artifact_id=artifact_id)
 
 
 def explain_run_cache(*, reader: Query, run_id: str) -> dict[str, object]:
-    """Return cache explanations for each task in a run."""
+    """Return the cache explanation for every task in a run.
+
+    The explaining is :meth:`~ginkgo.query.Query.explain_rerun`'s; this walks
+    the run's tasks and renders what it returns.
+    """
     summary = reader.run(run_id).to_payload()
     tasks = summary.get("tasks", [])
     explanations = [
-        _explain_task_cache(reader=reader, run_id=run_id, task=task)
+        reader.explain_rerun(run_id, str(task["task_id"])).to_payload()
         for task in tasks
-        if isinstance(task, dict)
+        if isinstance(task, dict) and task.get("task_id")
     ]
     return {
         "run_id": summary.get("run_id"),
         "workflow": summary.get("workflow"),
         "tasks": explanations,
     }
-
-
-def _explain_task_cache(
-    *, reader: Query, run_id: str, task: dict[str, object]
-) -> dict[str, object]:
-    """Return a best-effort cache explanation for one task."""
-    cache_key = task.get("cache_key")
-    task_name = str(task.get("task_name") or task.get("task") or "unknown")
-    identity: dict[str, object] = {
-        "task_id": task.get("task_id"),
-        "task_name": task_name,
-        "cache_key": cache_key,
-    }
-    if task.get("status") == "cached":
-        return identity | {"reason": "all_inputs_match"}
-
-    if not isinstance(cache_key, str):
-        return identity | {"reason": "no_entry_for_key"}
-    current = reader.cache_key_components(cache_key)
-    if not current:
-        return identity | {"reason": "no_entry_for_key"}
-
-    task_id = task.get("task_id")
-    prior = (
-        reader.previous_cache_key(run_id=run_id, task_id=str(task_id))
-        if isinstance(task_id, str)
-        else None
-    )
-    if prior is None:
-        return identity | {"reason": "no_prior_entry"}
-
-    prior_key, strategy = prior
-    components = _diff_key_components(
-        current=current, prior=reader.cache_key_components(prior_key)
-    )
-    reasons = _coarse_reasons(components)
-    return identity | {
-        "compared_with": {"cache_key": prior_key, "strategy": strategy},
-        "reason": reasons[0],
-        "details": reasons,
-        "components": components,
-    }
-
-
-def _diff_key_components(
-    *, current: dict[str, object], prior: dict[str, object]
-) -> list[dict[str, object]]:
-    """Return the cache-key components that differ between two entries."""
-    differences: list[dict[str, object]] = []
-    for name in sorted(set(current) | set(prior)):
-        # A component absent from one side is a parameter that came or went.
-        if name not in current:
-            differences.append({"component": name, "status": "removed", "prior": prior[name]})
-        elif name not in prior:
-            differences.append({"component": name, "status": "added", "current": current[name]})
-        elif current[name] != prior[name]:
-            differences.append(
-                {
-                    "component": name,
-                    "status": "changed",
-                    "current": current[name],
-                    "prior": prior[name],
-                }
-            )
-    return differences
-
-
-def _coarse_reasons(components: list[dict[str, object]]) -> list[str]:
-    """Return the summary reason codes implied by a component diff.
-
-    A moved component no code covers falls back to ``cache_key_changed``; the
-    component list names it either way.
-    """
-    moved = {str(component["component"]) for component in components}
-    reasons = []
-    if moved & {"source_hash", "extra_source_hash"}:
-        reasons.append("source_hash_changed")
-    if "version" in moved:
-        reasons.append("version_bump")
-    if moved & {"env", "env_hash.pixi_lock"}:
-        reasons.append("env_changed")
-    if any(name.startswith("inputs") for name in moved):
-        reasons.append("input_changed")
-    return reasons or ["cache_key_changed"]

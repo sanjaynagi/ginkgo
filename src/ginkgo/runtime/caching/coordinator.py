@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from ginkgo.core.task import TaskDef
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.task_validation import TaskValidator
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ class CacheCoordinator:
     cache_store: CacheStore
     validator: TaskValidator
     digests: DigestRegistry
+    index: CacheIndex
 
     def content_lookup(self, *, node: NodeRun) -> CacheHit | None:
         """Return a valid content-addressed cached result for a prepared node.
@@ -64,7 +66,7 @@ class CacheCoordinator:
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
 
-    def stat_lookup(self, *, node: NodeRun) -> CacheHit | None:
+    def lookup_by_stat(self, *, node: NodeRun) -> CacheHit | None:
         """Return a stat-index cached result for ``--trust-mtimes`` mode.
 
         On a hit the node's cache key is set to the indexed content key and
@@ -72,12 +74,16 @@ class CacheCoordinator:
         output files exist, not that their content matches the artifact
         store.
         """
+        if node.resolved_args is None:
+            # Nothing has been resolved yet, so there is no fingerprint to
+            # take — the same guard the recording side has always had.
+            return None
         stat_key = self.cache_store.stat_fingerprint(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        content_key = self.cache_store.stat_index_lookup(stat_key)
+        content_key = self.index.stat_index_lookup(stat_key)
         if content_key is None:
             return None
 
@@ -98,7 +104,7 @@ class CacheCoordinator:
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        self.cache_store.record_stat_index(stat_key=stat_key, cache_key=cache_key)
+        self.index.record_stat_index(stat_key=stat_key, cache_key=cache_key)
 
     def propagate_known_digests(self, *, cache_key: str) -> None:
         """Populate the digest registry from a cache entry's artifact IDs.

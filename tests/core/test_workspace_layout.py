@@ -12,6 +12,7 @@ from pathlib import Path
 from ginkgo.cli.commands.report import _resolve_output_dir
 from ginkgo.runtime.artifacts.remote_arg_transfer import _is_managed_cas_blob
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import DIRECTORY_NAME, WorkspaceLayout
 
 
@@ -132,7 +133,7 @@ class TestCallSitesUnchanged:
 
     def test_cache_store_puts_artifacts_beside_its_cache_root(self, tmp_path):
         cache_root = tmp_path / DIRECTORY_NAME / "cache"
-        store = CacheStore(root=cache_root)
+        store = CacheStore(root=cache_root, index=CacheIndex.in_memory())
 
         # The sibling derivation the layout now owns.
         assert store._artifact_store._root == tmp_path / DIRECTORY_NAME / "artifacts"
@@ -140,7 +141,7 @@ class TestCallSitesUnchanged:
     def test_cache_store_default_root_is_under_the_working_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
-        store = CacheStore()
+        store = CacheStore(index=CacheIndex.in_memory())
 
         assert store._root.resolve() == (tmp_path / DIRECTORY_NAME / "cache").resolve()
 

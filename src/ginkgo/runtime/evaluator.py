@@ -423,10 +423,10 @@ class ConcurrentEvaluator:
         self._cache_index = CacheIndex.open(path=WorkspaceLayout.for_cwd().db)
         self._hash_memo = HashMemo(index=self._cache_index)
         self._cache_store = CacheStore(
+            index=self._cache_index,
             backend=self.backend,
             publisher=load_remote_publisher(),
             hash_memo=self._hash_memo,
-            index=self._cache_index,
             trust_mtimes=self.trust_mtimes,
         )
         self._asset_store = AssetStore(
@@ -453,6 +453,7 @@ class ConcurrentEvaluator:
             cache_store=self._cache_store,
             validator=self._validator,
             digests=self._digests,
+            index=self._cache_index,
         )
         self._log_drain = LogDrain(
             event_bus=self.event_bus,
@@ -1963,7 +1964,7 @@ class ConcurrentEvaluator:
         complete, ``False`` to fall through to the content-addressed path.
         """
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.stat_lookup(node=node)
+        hit = self._cache_coordinator.lookup_by_stat(node=node)
         if hit is None:
             self._record_task_timing(
                 node_id=node.node_id,
@@ -1989,6 +1990,11 @@ class ConcurrentEvaluator:
         if node.attempt == 0:
             node.attempt = 1
 
+        # Counted here rather than projected from the event: every other
+        # cache_entries column is written by the index on its own connection,
+        # and a hit routed through the ledger's writer could land while
+        # another process held the write lock for a save.
+        self._cache_index.record_hit(cache_key)
         self._cache_coordinator.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"

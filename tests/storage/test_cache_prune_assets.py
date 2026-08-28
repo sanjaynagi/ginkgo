@@ -12,26 +12,29 @@ from ginkgo.cli.commands.cache import _gc_orphan_artifacts
 from ginkgo.core.asset import AssetKey, make_asset_version
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
-def _ginkgo_dirs(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Return (cache_root, artifacts_root, assets_root) under a fresh tree."""
-    base = tmp_path / ".ginkgo"
-    cache_root = base / "cache"
-    cache_root.mkdir(parents=True)
-    return cache_root, base / "artifacts", base / "assets"
+def _cache(tmp_path: Path) -> tuple[CacheStore, LocalArtifactStore]:
+    """Return a cache and the artifact store its entries point at."""
+    layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
+    index = CacheIndex.open(path=layout.db)
+    cache_store = CacheStore(index=index, root=layout.cache)
+    return cache_store, cache_store.artifact_store_view
 
 
-def test_gc_keeps_artifact_referenced_only_by_an_asset(tmp_path):
+def test_gc_keeps_artifact_referenced_only_by_an_asset(tmp_path, monkeypatch):
     """An artifact reachable only from the asset catalog must survive GC."""
-    cache_root, artifacts_root, assets_root = _ginkgo_dirs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cache_store, store = _cache(tmp_path)
 
     # Store a blob and register an asset version pointing at it. No cache
     # entry references the blob.
-    store = LocalArtifactStore(root=artifacts_root)
     record = store.store_bytes(data=b"asset payload", extension="parquet")
 
-    asset_store = AssetStore(root=assets_root)
+    asset_store = AssetStore(root=WorkspaceLayout(root=tmp_path / ".ginkgo").assets)
     asset_store.register_version(
         version=make_asset_version(
             key=AssetKey(namespace="default", name="demo_table"),
@@ -44,21 +47,21 @@ def test_gc_keeps_artifact_referenced_only_by_an_asset(tmp_path):
         )
     )
 
-    _gc_orphan_artifacts(cache_root)
+    _gc_orphan_artifacts(cache_store)
 
     assert store.exists(artifact_id=record.artifact_id), (
         "GC deleted an artifact still referenced by a catalogued asset"
     )
 
 
-def test_gc_deletes_artifact_referenced_by_neither_cache_nor_asset(tmp_path):
+def test_gc_deletes_artifact_referenced_by_neither_cache_nor_asset(tmp_path, monkeypatch):
     """A genuinely orphaned artifact is still collected — GC stays effective."""
-    cache_root, artifacts_root, _ = _ginkgo_dirs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cache_store, store = _cache(tmp_path)
 
-    store = LocalArtifactStore(root=artifacts_root)
     record = store.store_bytes(data=b"truly orphaned", extension="bin")
 
-    _gc_orphan_artifacts(cache_root)
+    _gc_orphan_artifacts(cache_store)
 
     assert not store.exists(artifact_id=record.artifact_id), (
         "GC failed to delete a genuinely orphaned artifact"

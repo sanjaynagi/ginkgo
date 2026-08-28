@@ -34,7 +34,8 @@ from ginkgo.runtime.artifacts.artifact_model import (
 from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_file
-from ginkgo.runtime.caching.index import CacheIndex, now_iso
+from ginkgo.formatting import now_iso
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -189,27 +190,25 @@ class LocalArtifactStore:
     hash_memo : HashMemo | None
         Shared content-hash memo, so a file hashed elsewhere in the run is
         not read again here.
-    index : CacheIndex | None
-        The database rows recording what the store holds. Opened against the
-        workspace beside *root* when ``None``.
+    index : CacheIndex
+        The database rows recording what the store holds. Required, and never
+        opened here: a read path passes a reader, a remote worker passes an
+        in-memory index, and neither should have a database created for it as
+        the side effect of constructing a store.
     """
 
     def __init__(
         self,
         *,
+        index: CacheIndex,
         root: Path | None = None,
         hash_memo: HashMemo | None = None,
-        index: CacheIndex | None = None,
     ) -> None:
         self._root = root if root is not None else WorkspaceLayout.for_cwd().artifacts
         self._blobs_dir = self._root / "blobs"
         self._trees_dir = self._root / "trees"
         self._hash_memo = hash_memo
-        self._index = (
-            index
-            if index is not None
-            else CacheIndex.open(path=WorkspaceLayout.sibling_of(self._root).db)
-        )
+        self._index = index
         for directory in (self._blobs_dir, self._trees_dir):
             directory.mkdir(parents=True, exist_ok=True)
 

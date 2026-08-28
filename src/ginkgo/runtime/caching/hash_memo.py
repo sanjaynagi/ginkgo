@@ -38,8 +38,7 @@ class HashMemo:
     ----------
     index : CacheIndex | None
         Where digests are remembered between runs. Without one the memo is
-        in-process only, which is what a library caller or a test that never
-        opens a workspace wants.
+        in-process only, which is what a caller with no workspace wants.
 
     Attributes
     ----------
@@ -93,14 +92,7 @@ class HashMemo:
         digest = hash_file(path)
         with self._lock:
             self._file_cache[key] = digest
-        self._remember(
-            "file",
-            fingerprint,
-            digest,
-            path=resolved,
-            size=key.size,
-            mtime_ns=key.mtime_ns,
-        )
+        self._remember("file", fingerprint, digest)
         return digest
 
     def hash_directory(self, path: Path) -> str:
@@ -132,7 +124,7 @@ class HashMemo:
         digest = hash_directory(path)
         with self._lock:
             self._dir_cache[fingerprint] = digest
-        self._remember("directory", fingerprint, digest, path=path.resolve())
+        self._remember("directory", fingerprint, digest)
         return digest
 
     def put_file(self, path: Path, digest: str) -> None:
@@ -158,27 +150,10 @@ class HashMemo:
             return None
         return self._index.digest(kind=kind, fingerprint=fingerprint)
 
-    def _remember(
-        self,
-        kind: str,
-        fingerprint: str,
-        digest: str,
-        *,
-        path: Path,
-        size: int | None = None,
-        mtime_ns: int | None = None,
-    ) -> None:
+    def _remember(self, kind: str, fingerprint: str, digest: str) -> None:
         """Persist a digest so the next run does not have to read the bytes."""
-        if self._index is None:
-            return
-        self._index.record_digest(
-            kind=kind,
-            fingerprint=fingerprint,
-            digest=digest,
-            path=path,
-            size=size,
-            mtime_ns=mtime_ns,
-        )
+        if self._index is not None:
+            self._index.record_digest(kind=kind, fingerprint=fingerprint, digest=digest)
 
     def _dir_fingerprint(self, path: Path) -> str:
         """Build a stat-based fingerprint for a directory's contents."""

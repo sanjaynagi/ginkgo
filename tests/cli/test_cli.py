@@ -30,7 +30,6 @@ from ginkgo.cli import (
 from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
 from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.store.protocol import ProjectionOp
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -124,7 +123,10 @@ def _extract_run_dir(output: str) -> Path:
 
 def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
     asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
-    artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
+    artifact_store = LocalArtifactStore(
+        root=cwd / ".ginkgo" / "artifacts",
+        index=CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db"),
+    )
     source = cwd / f"{name}.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
@@ -162,23 +164,13 @@ def _seed_cache_entry(
         index.record_entry(
             cache_key=name,
             meta={"function": function, "created_at": created_at},
-            components={"task": function},
             artifact_ids={},
             size_bytes=len(payload.encode("utf-8")),
             run_id=None,
         )
         if last_hit_days is not None:
             hit_at = (datetime.now(timezone.utc) - timedelta(days=last_hit_days)).isoformat()
-            with index.store.transaction():
-                index.store.apply(
-                    [
-                        ProjectionOp(
-                            sql="UPDATE cache_entries SET hit_count = 1, last_hit_at = ? "
-                            "WHERE cache_key = ?",
-                            params=(hit_at, name),
-                        )
-                    ]
-                )
+            index.record_hit(name, at=hit_at)
     return entry
 
 

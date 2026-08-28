@@ -6,13 +6,15 @@ from pathlib import Path
 import pytest
 
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.core.hashing import hash_directory
 
 
 @pytest.fixture()
 def store(tmp_path):
     """Return a LocalArtifactStore rooted in a temporary directory."""
-    return LocalArtifactStore(root=tmp_path / "artifacts")
+    with CacheIndex.in_memory() as index:
+        yield LocalArtifactStore(root=tmp_path / "artifacts", index=index)
 
 
 class TestStoreFile:
@@ -351,7 +353,7 @@ class TestStorageLayout:
 
     def test_subdirs_created_on_init(self, tmp_path):
         root = tmp_path / "new_store"
-        LocalArtifactStore(root=root)
+        LocalArtifactStore(root=root, index=CacheIndex.in_memory())
         assert (root / "blobs").is_dir()
         assert (root / "trees").is_dir()
 

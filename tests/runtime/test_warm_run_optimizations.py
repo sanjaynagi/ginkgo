@@ -333,13 +333,11 @@ class TestTrustMtimes:
 
     def test_stat_index_round_trip(self, tmp_path: Path) -> None:
         """A stat fingerprint recorded by one run is found by the next."""
-        from ginkgo.runtime.caching.cache import CacheStore
+        with _index(tmp_path) as index:
+            index.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
 
-        store = CacheStore(root=tmp_path / "cache")
-        store.record_stat_index(stat_key="stat_abc", cache_key="content_xyz")
-
-        reopened = CacheStore(root=tmp_path / "cache")
-        assert reopened.stat_index_lookup("stat_abc") == "content_xyz"
+        with _index(tmp_path) as reopened:
+            assert reopened.stat_index_lookup("stat_abc") == "content_xyz"
 
     def test_trust_mtimes_warm_run(self, tmp_path: Path) -> None:
         """A --trust-mtimes warm run should hit cache via stat index."""

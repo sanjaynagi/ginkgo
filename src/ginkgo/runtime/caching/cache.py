@@ -29,7 +29,8 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
-from ginkgo.runtime.caching.index import CacheIndex, now_iso
+from ginkgo.formatting import now_iso
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
@@ -99,30 +100,26 @@ class CacheStore:
     publisher : RemotePublisher | None
         Optional remote publisher for uploading artifacts after local storage.
         When set, artifacts are published to the remote store automatically.
-    index : CacheIndex | None
-        The database rows that index the entries. Opened against the
-        workspace beside ``root`` when ``None``.
+    index : CacheIndex
+        The database rows that index the entries. Required, and never opened
+        here: which database this is, and whether it may be written, is the
+        caller's decision — constructing a cache must not create one.
     """
 
+    index: CacheIndex
     root: Path | None = None
     backend: Any | None = None  # ExecutionEnvironment; typed as Any to avoid circular import
     artifact_store: LocalArtifactStore | None = None
     publisher: Any | None = None  # RemotePublisher; typed as Any to avoid circular import
     hash_memo: HashMemo | None = None
-    index: CacheIndex | None = None
     trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
-    _index: CacheIndex = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else WorkspaceLayout.for_cwd().cache
         object.__setattr__(self, "_root", Path(root))
         self._root.mkdir(parents=True, exist_ok=True)
-
-        layout = WorkspaceLayout.sibling_of(self._root)
-        index = self.index if self.index is not None else CacheIndex.open(path=layout.db)
-        object.__setattr__(self, "_index", index)
 
         if self.artifact_store is not None:
             object.__setattr__(self, "_artifact_store", self.artifact_store)
@@ -132,9 +129,9 @@ class CacheStore:
                 self,
                 "_artifact_store",
                 LocalArtifactStore(
-                    root=layout.artifacts,
+                    root=WorkspaceLayout.sibling_of(self._root).artifacts,
                     hash_memo=self.hash_memo,
-                    index=index,
+                    index=self.index,
                 ),
             )
 
@@ -318,10 +315,9 @@ class CacheStore:
             "created_at": now_iso(),
             "version": task_def.version,
         }
-        self._index.record_entry(
+        self.index.record_entry(
             cache_key=cache_key,
             meta=meta,
-            components=key_components(meta),
             artifact_ids=artifact_ids,
             size_bytes=size_bytes,
             run_id=run_id,
@@ -434,7 +430,7 @@ class CacheStore:
             The dict previously passed as ``extra_meta`` to :meth:`save`,
             or ``None`` when the entry is missing or recorded no extras.
         """
-        entry = self._index.entry(cache_key)
+        entry = self.index.entry(cache_key)
         return entry.extra if entry is not None else None
 
     def load_artifact_ids(self, *, cache_key: str) -> dict[str, str] | None:
@@ -451,7 +447,7 @@ class CacheStore:
             Mapping of output path to artifact ID, or ``None`` when the
             index has no row for the key.
         """
-        entry = self._index.entry(cache_key)
+        entry = self.index.entry(cache_key)
         return entry.artifact_ids if entry is not None else None
 
     def _store_output_artifacts(
@@ -499,7 +495,7 @@ class CacheStore:
         for path, record in records.items():
             updated = publisher.publish(record=record)
             if updated.remote_uri != record.remote_uri:
-                self._index.record_artifact(updated)
+                self.index.record_artifact(updated)
             published[path] = updated
         return published
 
@@ -561,6 +557,76 @@ class CacheStore:
         """Return the cache directory for a given key."""
         return self._root / cache_key
 
+    @property
+    def artifact_store_view(self) -> LocalArtifactStore:
+        """The artifact store these entries' outputs live in.
+
+        Named a view because it is the store the cache was handed or built,
+        not a second one: a garbage collector must delete from the same store
+        the entries point at.
+        """
+        return self._artifact_store
+
+    def output_path(self, cache_key: str) -> Path:
+        """Return where an entry's bytes live.
+
+        The one statement of that convention: ``db check`` asks the cache
+        whether an entry's bytes are there rather than rebuilding the path.
+        """
+        return self._entry_dir(cache_key) / "output.json"
+
+    def orphan_entry_dirs(self) -> list[Path]:
+        """Return entry directories the index has no row for.
+
+        A lost database leaves the bytes behind, and nothing else will ever
+        look at them: the key that would find them is only in the row that is
+        gone. ``ginkgo db check`` reports these and ``cache clear --orphans``
+        removes them, from this one definition of what an orphan is.
+
+        A save in flight is not an orphan. It writes into a temporary directory
+        beside the entries and renames it into place, so a concurrent
+        ``--orphans`` would otherwise delete the bytes out from under it.
+        """
+        if not self._root.exists():
+            return []
+        known = set(self.index.cache_keys())
+        return sorted(
+            entry
+            for entry in self._root.iterdir()
+            if entry.is_dir() and entry.name not in known and ".tmp-" not in entry.name
+        )
+
+    def integrity_problems(self) -> list[str]:
+        """Return the ways the index and the bytes on disk disagree.
+
+        The database is the only cache index, so the two can only drift by
+        losing one side: an entry row whose ``output.json`` is gone is a row
+        that will never hit, a directory with no row is bytes nothing can find,
+        and an artifact a cache entry names but the store does not hold is a
+        restore that will fail. Each is reported rather than repaired.
+
+        Returns
+        -------
+        list[str]
+            One sentence per problem, in the order they were checked.
+        """
+        problems = [
+            f"cache entry {key} has a row but no output.json"
+            for key in self.index.cache_keys()
+            if not self.output_path(key).is_file()
+        ]
+        problems += [
+            f"cache directory {entry.name} has no row (orphan)"
+            for entry in self.orphan_entry_dirs()
+        ]
+        problems += [
+            f"cache artifact {artifact_id} is missing from the artifact store"
+            for artifact_id in self.index.cache_artifact_ids()
+            if not self._artifact_store.exists(artifact_id=artifact_id)
+            or not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+        ]
+        return problems
+
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:
         """Return environment identity information for cache-keying.
 
@@ -616,7 +682,7 @@ class CacheStore:
         if task_def.env is None or self.backend is None:
             return True
 
-        entry = self._index.entry(cache_key)
+        entry = self.index.entry(cache_key)
         recorded = entry.env_materialized_digest if entry is not None else None
         if recorded is None:
             return True
@@ -885,20 +951,6 @@ class CacheStore:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded)
-
-    def stat_index_lookup(self, stat_key: str) -> str | None:
-        """Return the content cache key a stat fingerprint resolved to before.
-
-        Returns
-        -------
-        str | None
-            The content key, or ``None`` when this fingerprint is unknown.
-        """
-        return self._index.stat_lookup(stat_key)
-
-    def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
-        """Record a mapping from stat fingerprint to content cache key."""
-        self._index.record_stat(stat_key=stat_key, cache_key=cache_key)
 
     def _stat_value(self, *, annotation: Any, value: Any, label: str = "value") -> Any:
         """Build a stat-based representation for a value (no content reading)."""
