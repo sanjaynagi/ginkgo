@@ -20,10 +20,21 @@ The store has two halves.
   order things happened. Because the payload is JSON, a new event type needs no
   migration.
 - **The projections.** `runs`, `tasks`, `attempts`, `task_inputs`,
-  `task_outputs`, `edges`, the cache index, the artifact and asset tables.
-  Every one of them is derived from the ledger and updated in the same
-  transaction as the event that caused it. A projection is a cache of the
-  ledger, never a second source of truth: if the two disagree, the ledger wins.
+  `task_outputs`, `edges`. Every one of them is derived from the ledger and
+  updated in the same transaction as the event that caused it. A projection is
+  a cache of the ledger, never a second source of truth: if the two disagree,
+  the ledger wins.
+
+The cache and artifact tables — `cache_entries`, `cache_artifacts`, `artifacts`,
+`stat_index`, `materializations`, `digest_memo` — are neither. They are a
+**direct-write index**, owned entirely by `CacheIndex`
+(`runtime/caching/index.py`), which writes them synchronously on its own
+connection. That is deliberate: a cache save must be visible to the `load` that
+may follow it microseconds later, which an event queued for the writer thread
+cannot promise, and the facts they hold are not events that happened to a run —
+they are what the cache currently holds. Nothing else writes them, including the
+projector: `TaskCacheHit` updates the task's own row and leaves `hit_count` to
+the index, which counts the hit as it serves it.
 
 Content-addressed identifiers — `cache_key`, `artifact_id`, `version_id`,
 `source_hash`, `env_hash` — are the join columns throughout. Nothing is
@@ -72,10 +83,15 @@ None]]]` and `migrate(conn)`, which applies the missing steps inside one
 transaction and records each in `schema_version`. Version 1 creates every
 table, including the ones later phases populate: one migration is easier to
 reason about than eight, and an empty table costs nothing. A shipped step is
-never edited — a schema change is another step.
+never edited — a schema change is another step. Version 2 is the first of
+those: it gives `artifacts` the `digest_hex` its records carry, and removes
+`cache_key_components` and the write-only columns of `digest_memo`, which held
+facts their own tables already had.
 
-`tests/store/fixtures/schema_v1.txt` is a snapshot of `sqlite_master` after
-version 1. It is regenerated deliberately, as part of adding a migration.
+`tests/store/fixtures/schema_v2.txt` is a snapshot of `sqlite_master` after the
+last migration. It is regenerated deliberately, as part of adding one, and a
+test migrates a version 1 database forward so the steps are exercised on a
+database that already exists rather than only on a fresh one.
 
 ## Errors
 

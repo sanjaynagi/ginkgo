@@ -24,12 +24,23 @@ Cache entries are written atomically and reused across reruns when inputs are un
 ## The cache index
 
 The database at `.ginkgo/ginkgo.db` is the only cache index. An entry is a
-`cache_entries` row plus the bytes at `cache/<key>/output.json`; its key
-components are `cache_key_components` rows, its outputs are `cache_artifacts`
-rows, and the artifact store's own contents are `artifacts` rows. There is no
-`meta.json`, no `refs/<id>.json`, no `stat_index.json` and no
+`cache_entries` row plus the bytes at `cache/<key>/output.json`; its outputs are
+`cache_artifacts` rows, and the artifact store's own contents are `artifacts`
+rows. There is no `meta.json`, no `refs/<id>.json`, no `stat_index.json` and no
 `materializations.json` — each was a file index of the same facts, and each is
 gone.
+
+Three classes divide the work, and the split is worth knowing before reading
+them:
+
+- **`CacheStore`** (`runtime/caching/cache.py`) is the cache as the evaluator
+  sees it: it builds keys, decides whether a hit is usable, writes the bytes,
+  and knows where they live.
+- **`CacheIndex`** (`runtime/caching/index.py`) is the rows those decisions are
+  recorded in, and the only thing that writes them.
+- **`CacheCoordinator`** (`runtime/caching/coordinator.py`) is the lookup order
+  the evaluator follows — content first, or the stat index under
+  `--trust-mtimes` — and nothing else.
 
 `CacheIndex` (`runtime/caching/index.py`) is the only reader and writer of those
 rows. It holds its own write connection rather than sharing the recorder's: the
@@ -39,10 +50,13 @@ serialises the evaluator's threads over that one connection. Every write is an
 `INSERT OR IGNORE` on a content-addressed key or an idempotent upsert, which is
 what makes two runs saving the same entry at once agree rather than conflict.
 
-Losing the database means a cold cache. The bytes survive, but nothing can find
-them: the key that would is only in the row that is gone. `ginkgo db check`
-reports those directories and `ginkgo cache clear --orphans` removes them; prune
-never does so implicitly. Back the database up as you would `.git`.
+Losing the database means a cold cache, and by a specific mechanism:
+`validate_cached_outputs` asks `load_artifact_ids` which artifacts an entry
+owns, that returns `None` when there is no row, and a candidate hit with no
+recorded outputs is refused. The bytes survive, but nothing can find them — the
+key that would is only in the row that is gone. `ginkgo db check` reports those
+directories and `ginkgo cache clear --orphans` removes them; prune never does so
+implicitly. Back the database up as you would `.git`.
 
 `ginkgo cache stats` reports what the index holds: entry count, total bytes, the
 hit-count histogram, how much is taken by entries nobody has ever used, and the
@@ -58,6 +72,12 @@ memo is two tiers: a dict for this process, and the `digest_memo` table behind
 it. A second run over the same inputs therefore reads no bytes at all, which is
 the difference between a warm run that stats a folder and one that re-hashes
 it. A file whose size or mtime moved misses in both tiers and is re-read.
+
+The table records only the fingerprint and the digest it stands for. `last_seen`
+is stamped once when the index closes, from the hits collected in memory, rather
+than on every hit: a write transaction per hashed file would put the cost back
+on the warm run the memo exists to make cheap. It is there for a future
+`db prune --digest-memo-older-than` and nothing reads it yet.
 
 `DigestRegistry` stays in memory: it maps this run's output paths to the digests
 this run computed, so a downstream task skips re-hashing what an upstream task
@@ -134,11 +154,15 @@ carries `container_image_digest`.
 
 `ginkgo cache explain <run_id>` answers "why did this task run again?" by
 naming the component of the key that moved, not the fact that the key did
-(issue #223). `explain_run_cache` (`cli/commands/cache.py`) diffs two sets of
-`cache_key_components` rows: the entry the run wrote, and the entry this node
-used before. `key_components` (`runtime/caching/cache.py`, next to the
-`build_cache_key` payload it mirrors, so the two cannot drift) is what wrote
-both sets, so the labels are the same on either side by construction:
+(issue #223). `Query.explain_rerun(run_id, task_id)` is where that happens; the
+CLI walks the run's tasks and renders what it returns, and each explanation
+carries the task's `display_label` so two branches of a fan-out are told apart.
+
+The components are derived from the entry's own row by `key_components`
+(`runtime/caching/cache.py`, next to the `build_cache_key` payload it mirrors,
+so the two cannot drift), on both sides of the diff. Deriving beats storing: a
+second table of labelled components would hold what `cache_entries` already
+holds and could fall out of step with it.
 
 - `task`, `version`, `source_hash`, `extra_source_hash` (the notebook or script
   hash folded in for driver tasks), `env`, `env_hash.pixi_lock`;
