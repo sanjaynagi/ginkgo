@@ -8,25 +8,20 @@ table asset_aliases
 CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
   PRIMARY KEY (asset_key, alias))
 
-table asset_keys
-CREATE TABLE asset_keys (
-  asset_key TEXT PRIMARY KEY, namespace TEXT NOT NULL, name TEXT NOT NULL,
-  latest_version_id TEXT, version_count INTEGER NOT NULL DEFAULT 0, last_materialized_at TEXT,
-  group_name TEXT, caption TEXT
-)
-
 table asset_versions
 CREATE TABLE asset_versions (
-  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL, sub_kind TEXT,
-  artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
   run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
   code_version TEXT, data_version TEXT,
-  metadata TEXT, metrics TEXT, checks TEXT,
+  metadata TEXT,
   PRIMARY KEY (asset_key, version_id)
 )
 
 index asset_versions_created
 CREATE INDEX asset_versions_created ON asset_versions(asset_key, created_at)
+
+index asset_versions_version
+CREATE INDEX asset_versions_version ON asset_versions(version_id)
 
 table attempts
 CREATE TABLE attempts (

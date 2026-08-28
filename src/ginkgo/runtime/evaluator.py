@@ -429,9 +429,9 @@ class ConcurrentEvaluator:
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )
-        self._asset_store = AssetStore(
-            root=WorkspaceLayout.sibling_of(self._cache_store._root).assets
-        )
+        # The catalog shares the cache index's connection and lock: two sets of
+        # tables in one database, not two databases.
+        self._asset_store = AssetStore.attached_to(self._cache_index)
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
@@ -491,6 +491,7 @@ class ConcurrentEvaluator:
             asset_store=self._asset_store,
             run_id_provider=lambda: self._run_id,
             live_payloads=self._live_payloads,
+            emit_event=self._emit_event,
         )
 
     @property

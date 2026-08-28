@@ -276,10 +276,11 @@ def _register_asset(
     extension — ``namespace="fig", suffix=".svg"`` registers a figure.
     """
     tmp_path = run.tmp_path
-    asset_store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+    index = CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db")
+    asset_store = AssetStore.attached_to(index)
     artifact_store = LocalArtifactStore(
         root=tmp_path / ".ginkgo" / "artifacts",
-        index=CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db"),
+        index=index,
     )
     source = tmp_path / f"{name.replace('/', '_')}{suffix}"
     source.write_text(text, encoding="utf-8")

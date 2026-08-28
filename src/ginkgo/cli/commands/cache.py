@@ -488,19 +488,15 @@ def _safe_rmtree(path: Path) -> None:
 def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
     """Remove artifacts no cache entry or catalogued asset points at.
 
-    The cache and the asset catalog share one artifact store, so each reports
-    the artifact IDs it still references and anything beyond their union is
-    deleted. The asset half still comes from the YAML catalog; it joins the
-    same query when the catalog moves into the store.
+    The cache and the asset catalog share one artifact store, and both halves
+    of what is still referenced come back from one query, so a collector cannot
+    see a half-updated picture and delete bytes the other half still wants.
     """
     layout = WorkspaceLayout.relative()
     if not layout.artifacts.exists():
         return
 
-    from ginkgo.runtime.artifacts.asset_store import AssetStore
-
     referenced = cache_store.index.referenced_artifact_ids()
-    referenced |= AssetStore(root=layout.assets).referenced_artifact_ids()
 
     store = cache_store.artifact_store_view
     for artifact_id in store.list_artifact_ids():

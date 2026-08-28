@@ -17,6 +17,7 @@ from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
+from ginkgo.cli.commands.lineage import command_lineage
 from ginkgo.cli.commands.models import command_models
 from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.report import command_report
@@ -153,6 +154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_inspect(args)
         if args.command == "models":
             return command_models(args)
+        if args.command == "lineage":
+            return command_lineage(args)
         if args.command == "notebooks":
             return command_notebooks(args)
         if args.command == "secrets":
@@ -455,6 +458,26 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "run", help="Inspect run execution manifest"
     )
     inspect_run_parser.add_argument("run_id")
+
+    lineage_parser = subparsers.add_parser(
+        "lineage", help="Trace what an asset was built from, or what came of it"
+    )
+    lineage_parser.add_argument(
+        "target",
+        help=(
+            "Asset key '<kind>:<name>' (optionally '@<version-or-alias>'), "
+            "or a materialized file path or artifact id."
+        ),
+    )
+    lineage_parser.add_argument(
+        "--downstream",
+        action="store_true",
+        help="Walk forwards to the assets derived from this one",
+    )
+    lineage_parser.add_argument(
+        "--depth", type=int, default=None, help="Stop after this many hops"
+    )
+    lineage_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     models_parser = subparsers.add_parser("models", help="Inspect tracked ML models")
     models_parser.add_argument("run_id", nargs="?")

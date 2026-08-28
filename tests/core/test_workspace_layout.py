@@ -39,7 +39,7 @@ class TestConstruction:
     def test_sibling_of_round_trips_every_directory(self, tmp_path):
         layout = WorkspaceLayout(root=tmp_path / DIRECTORY_NAME)
 
-        for path in (layout.runs, layout.cache, layout.assets, layout.artifacts):
+        for path in (layout.runs, layout.cache, layout.artifacts):
             assert WorkspaceLayout.sibling_of(path) == layout
 
     def test_sibling_of_accepts_a_root_outside_a_ginkgo_directory(self, tmp_path):
@@ -56,7 +56,6 @@ class TestDirectories:
 
         assert layout.runs.name == "runs"
         assert layout.cache.name == "cache"
-        assert layout.assets.name == "assets"
         assert layout.artifacts.name == "artifacts"
         assert layout.staging.name == "staging"
         assert layout.fuse.name == "fuse"
@@ -74,7 +73,6 @@ class TestDirectories:
         paths = {
             layout.runs,
             layout.cache,
-            layout.assets,
             layout.artifacts,
             layout.staging,
             layout.fuse,

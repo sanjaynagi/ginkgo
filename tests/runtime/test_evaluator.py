@@ -1833,11 +1833,12 @@ class TestAssets:
         }
         assert registered == {"file:prepared_data", "file:transformed_data"}
 
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        lineage = store.lineage_for(key=result.key, version_id=result.version_id)
-        assert lineage is not None
-        assert len(lineage.parents) == 1
-        assert lineage.parents[0].name == "prepared_data"
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            parents = catalog.parents_of(result.version_id)
+            assert len(parents) == 1
+            parent = catalog.version_by_id(parents[0])
+            assert parent is not None
+            assert parent.key.name == "prepared_data"
 
     def test_asset_ref_cache_identity_drives_downstream_cache(
         self,

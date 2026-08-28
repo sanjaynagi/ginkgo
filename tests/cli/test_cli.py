@@ -122,10 +122,11 @@ def _extract_run_dir(output: str) -> Path:
 
 
 def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
-    asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
+    index = CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db")
+    asset_store = AssetStore.attached_to(index)
     artifact_store = LocalArtifactStore(
         root=cwd / ".ginkgo" / "artifacts",
-        index=CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db"),
+        index=index,
     )
     source = cwd / f"{name}.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -142,6 +143,7 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
     asset_store.register_version(version=version)
     if alias is not None:
         asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
+    index.close()
     return version.version_id
 
 

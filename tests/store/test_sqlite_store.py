@@ -162,7 +162,7 @@ class TestMigrations:
 
     def test_every_object_in_the_schema_is_created(self, tmp_path):
         """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
-        expected = (Path(__file__).parent / "fixtures" / "schema_v2.txt").read_text(
+        expected = (Path(__file__).parent / "fixtures" / "schema_v3.txt").read_text(
             encoding="utf-8"
         )
 

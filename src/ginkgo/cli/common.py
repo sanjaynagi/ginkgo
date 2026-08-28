@@ -15,7 +15,6 @@ from ginkgo.workspace_layout import WorkspaceLayout
 _LAYOUT = WorkspaceLayout.relative()
 RUNS_ROOT = _LAYOUT.runs
 CACHE_ROOT = _LAYOUT.cache
-ASSETS_ROOT = _LAYOUT.assets
 RunMode = Literal["default", "verbose", "agent", "agent_verbose"]
 
 

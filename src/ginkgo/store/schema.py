@@ -166,7 +166,25 @@ ALTER TABLE digest_memo DROP COLUMN size;
 ALTER TABLE digest_memo DROP COLUMN mtime_ns;
 """
 
-MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1), (2, _V2)]
+_V3 = """
+-- An asset key is the set of versions carrying it. asset_keys held a latest
+-- pointer, a version count and presentation labels that asset_versions and its
+-- metadata already answer; a summary row could only drift from them.
+DROP TABLE asset_keys;
+
+-- Asset metrics and checks are metadata the version carries, written once by
+-- whoever produced the asset and read back whole; columns for them were a
+-- second home for the same JSON.
+ALTER TABLE asset_versions DROP COLUMN metrics;
+ALTER TABLE asset_versions DROP COLUMN checks;
+ALTER TABLE asset_versions DROP COLUMN sub_kind;
+
+-- Lineage edges name a version and not the asset it belongs to, so resolving
+-- one back to its row is a lookup by version id alone.
+CREATE INDEX asset_versions_version ON asset_versions(version_id);
+"""
+
+MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1), (2, _V2), (3, _V3)]
 """Every schema step, in the order they are applied, keyed by resulting version."""
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

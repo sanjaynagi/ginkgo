@@ -17,24 +17,23 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
-def _cache(tmp_path: Path) -> tuple[CacheStore, LocalArtifactStore]:
-    """Return a cache and the artifact store its entries point at."""
+def _cache(tmp_path: Path) -> tuple[CacheStore, LocalArtifactStore, AssetStore]:
+    """Return a cache, the artifact store its entries point at, and the catalog."""
     layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
     index = CacheIndex.open(path=layout.db)
     cache_store = CacheStore(index=index, root=layout.cache)
-    return cache_store, cache_store.artifact_store_view
+    return cache_store, cache_store.artifact_store_view, AssetStore.attached_to(index)
 
 
 def test_gc_keeps_artifact_referenced_only_by_an_asset(tmp_path, monkeypatch):
     """An artifact reachable only from the asset catalog must survive GC."""
     monkeypatch.chdir(tmp_path)
-    cache_store, store = _cache(tmp_path)
+    cache_store, store, asset_store = _cache(tmp_path)
 
     # Store a blob and register an asset version pointing at it. No cache
     # entry references the blob.
     record = store.store_bytes(data=b"asset payload", extension="parquet")
 
-    asset_store = AssetStore(root=WorkspaceLayout(root=tmp_path / ".ginkgo").assets)
     asset_store.register_version(
         version=make_asset_version(
             key=AssetKey(namespace="default", name="demo_table"),
@@ -57,7 +56,7 @@ def test_gc_keeps_artifact_referenced_only_by_an_asset(tmp_path, monkeypatch):
 def test_gc_deletes_artifact_referenced_by_neither_cache_nor_asset(tmp_path, monkeypatch):
     """A genuinely orphaned artifact is still collected — GC stays effective."""
     monkeypatch.chdir(tmp_path)
-    cache_store, store = _cache(tmp_path)
+    cache_store, store, _ = _cache(tmp_path)
 
     record = store.store_bytes(data=b"truly orphaned", extension="bin")
 

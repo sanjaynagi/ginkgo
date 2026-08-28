@@ -5,9 +5,9 @@ through here, so there is one place that knows the schema and one place to
 change when it moves. Readers open the database read-only, which means they
 work while a run is writing and can never migrate it out from under one.
 
-Phase 1 shipped the run surface and Phase 2 the cache surface. ``task_history``,
-``lineage``, ``why`` and ``sql`` arrive with the phases that give them a
-caller.
+Phase 1 shipped the run surface, Phase 2 the cache surface and Phase 3 the
+asset and lineage surface. ``task_history`` and ``sql`` arrive with the phase
+that gives them a caller.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from ginkgo.core.asset import AssetKey, AssetVersion
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
@@ -29,6 +31,8 @@ __all__ = [
     "CacheEntryRow",
     "CacheStats",
     "EventRow",
+    "LineageGraph",
+    "Provenance",
     "Query",
     "RerunExplanation",
     "RunRow",
@@ -140,6 +144,96 @@ class EventRow:
     type: str
     task_id: str | None
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class LineageGraph:
+    """One asset version and the versions it reaches, in one direction.
+
+    Nodes are :class:`~ginkgo.core.asset.AssetVersion` — the catalog's model of
+    a version, not a second one — keyed by version id. Every edge points from a
+    parent to the child derived from it, whichever direction the walk went.
+
+    Parameters
+    ----------
+    root : AssetVersion
+        The version the walk started from.
+    direction : str
+        ``"upstream"`` for what the root was built from, ``"downstream"`` for
+        what was built from it.
+    versions : dict[str, AssetVersion]
+        Every version reached, including the root, by version id.
+    edges : tuple[tuple[str, str], ...]
+        ``(parent_version_id, child_version_id)`` pairs, sorted.
+    """
+
+    root: AssetVersion
+    direction: str
+    versions: dict[str, AssetVersion]
+    edges: tuple[tuple[str, str], ...]
+
+    def neighbours(self, version_id: str) -> list[str]:
+        """Return the versions one step from *version_id*, in the walk's direction."""
+        if self.direction == "downstream":
+            return [child for parent, child in self.edges if parent == version_id]
+        return [parent for parent, child in self.edges if child == version_id]
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the graph as JSON-ready data."""
+        return {
+            "root": self.root.to_dict(),
+            "direction": self.direction,
+            "versions": {
+                version_id: version.to_dict()
+                for version_id, version in sorted(self.versions.items())
+            },
+            "edges": [{"parent": parent, "child": child} for parent, child in self.edges],
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class Provenance:
+    """Where one artifact came from.
+
+    Parameters
+    ----------
+    artifact_id : str
+        The artifact asked about.
+    path : str | None
+        The materialized path it was found through, when the question was a path.
+    run_id, task_id, task_name : str | None
+        The task that produced it.
+    cache_key : str | None
+        The cache entry holding it, if it came out of the cache.
+    asset_key, version_id : str | None
+        The asset version it backs, if it is a catalogued asset.
+    inputs : tuple[dict[str, Any], ...]
+        The producing task's recorded inputs, one mapping per parameter.
+    """
+
+    artifact_id: str
+    path: str | None = None
+    run_id: str | None = None
+    task_id: str | None = None
+    task_name: str | None = None
+    cache_key: str | None = None
+    asset_key: str | None = None
+    version_id: str | None = None
+    inputs: tuple[dict[str, Any], ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the provenance as JSON-ready data."""
+        return {
+            "artifact_id": self.artifact_id,
+            "path": self.path,
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "task_name": self.task_name,
+            "cache_key": self.cache_key,
+            "asset_key": self.asset_key,
+            "version_id": self.version_id,
+            "inputs": [dict(entry) for entry in self.inputs],
+        }
 
 
 class Query:
@@ -456,6 +550,183 @@ class Query:
             components=components,
         )
 
+    # -- assets and lineage --------------------------------------------------
+
+    @property
+    def catalog(self) -> AssetStore:
+        """The asset catalog over this reader's connection."""
+        return AssetStore(store=self._store, owns_store=False)
+
+    def lineage(
+        self,
+        asset_key: str,
+        version_id: str | None = None,
+        *,
+        direction: str = "upstream",
+        depth: int | None = None,
+    ) -> LineageGraph:
+        """Walk the ``derived_from`` edges around one asset version.
+
+        Parameters
+        ----------
+        asset_key : str
+            ``'<kind>:<name>'``, as ``ginkgo asset ls`` prints it.
+        version_id : str | None
+            A version id or alias. The latest version when omitted.
+        direction : str
+            ``"upstream"`` for what this version was built from,
+            ``"downstream"`` for what was built from it.
+        depth : int | None
+            Stop after this many hops. Unlimited when omitted.
+
+        Returns
+        -------
+        LineageGraph
+
+        Raises
+        ------
+        FileNotFoundError
+            If the asset or version is unknown.
+        ValueError
+            If *direction* is neither ``"upstream"`` nor ``"downstream"``.
+        """
+        if direction not in {"upstream", "downstream"}:
+            raise ValueError(f"direction must be 'upstream' or 'downstream', got {direction!r}")
+        catalog = self.catalog
+        root = catalog.resolve_version(key=AssetKey.parse(asset_key), selector=version_id)
+
+        versions: dict[str, AssetVersion] = {root.version_id: root}
+        edges: set[tuple[str, str]] = set()
+        frontier = [root.version_id]
+        hops = 0
+        while frontier and (depth is None or hops < depth):
+            next_frontier: list[str] = []
+            for current in frontier:
+                step = (
+                    catalog.children_of(current)
+                    if direction == "downstream"
+                    else catalog.parents_of(current)
+                )
+                for other in step:
+                    edges.add((current, other) if direction == "downstream" else (other, current))
+                    if other in versions:
+                        continue
+                    version = catalog.version_by_id(other)
+                    if version is None:
+                        continue
+                    versions[other] = version
+                    next_frontier.append(other)
+            frontier = next_frontier
+            hops += 1
+        return LineageGraph(
+            root=root,
+            direction=direction,
+            versions=versions,
+            edges=tuple(sorted(edges)),
+        )
+
+    def why(self, path_or_artifact_id: str) -> Provenance:
+        """Return what produced an artifact, named by path or by id.
+
+        A path is resolved through ``materializations`` — the stat log of every
+        artifact ginkgo has written to a working directory — and then answered
+        exactly as an artifact id is.
+
+        Parameters
+        ----------
+        path_or_artifact_id : str
+            A file path ginkgo materialized, or an artifact id.
+
+        Returns
+        -------
+        Provenance
+
+        Raises
+        ------
+        FileNotFoundError
+            If nothing in the ledger matches.
+        """
+        artifact_id, path = self._resolve_artifact(path_or_artifact_id)
+        output = self._store.query(
+            "SELECT run_id, task_id, asset_key, asset_version_id FROM task_outputs "
+            "WHERE artifact_id = ? ORDER BY run_id DESC LIMIT 1",
+            (artifact_id,),
+        )
+        asset = self._store.query(
+            "SELECT asset_key, version_id, run_id, task_id, cache_key FROM asset_versions "
+            "WHERE artifact_id = ? ORDER BY created_at DESC LIMIT 1",
+            (artifact_id,),
+        )
+        cached = self._store.query(
+            "SELECT cache_key FROM cache_artifacts WHERE artifact_id = ? LIMIT 1",
+            (artifact_id,),
+        )
+        run_id = _first(output, "run_id") or _first(asset, "run_id")
+        task_id = _first(output, "task_id") or _first(asset, "task_id")
+        cache_key = _first(cached, "cache_key") or _first(asset, "cache_key")
+        if run_id is None and cache_key is not None:
+            produced_by = self._store.query(
+                "SELECT run_id, task_id FROM tasks WHERE cache_key = ? "
+                "ORDER BY started_at LIMIT 1",
+                (cache_key,),
+            )
+            run_id = _first(produced_by, "run_id")
+            task_id = _first(produced_by, "task_id")
+        return Provenance(
+            artifact_id=artifact_id,
+            path=path,
+            run_id=run_id,
+            task_id=task_id,
+            task_name=self._task_name(run_id=run_id, task_id=task_id),
+            cache_key=cache_key,
+            asset_key=_first(asset, "asset_key") or _first(output, "asset_key"),
+            version_id=_first(asset, "version_id") or _first(output, "asset_version_id"),
+            inputs=self._task_inputs(run_id=run_id, task_id=task_id),
+        )
+
+    def _resolve_artifact(self, path_or_artifact_id: str) -> tuple[str, str | None]:
+        """Return the artifact id *path_or_artifact_id* names, and the path used."""
+        resolved = str(Path(path_or_artifact_id).expanduser().resolve())
+        rows = self._store.query(
+            "SELECT artifact_id FROM materializations WHERE path = ?", (resolved,)
+        )
+        if rows:
+            return str(rows[0]["artifact_id"]), resolved
+        known = self._store.query(
+            "SELECT artifact_id FROM artifacts WHERE artifact_id = ?", (path_or_artifact_id,)
+        )
+        if known:
+            return path_or_artifact_id, None
+        raise FileNotFoundError(
+            f"Nothing in the ledger produced {path_or_artifact_id!r}: it is neither an "
+            "artifact id nor a path ginkgo has materialized."
+        )
+
+    def _task_name(self, *, run_id: str | None, task_id: str | None) -> str | None:
+        """Return the display label or name of one task."""
+        if run_id is None or task_id is None:
+            return None
+        rows = self._store.query(
+            "SELECT coalesce(display_label, name) AS label FROM tasks "
+            "WHERE run_id = ? AND task_id = ?",
+            (run_id, task_id),
+        )
+        return str(rows[0]["label"]) if rows else None
+
+    def _task_inputs(
+        self, *, run_id: str | None, task_id: str | None
+    ) -> tuple[dict[str, Any], ...]:
+        """Return the recorded inputs of one task, one mapping per parameter."""
+        if run_id is None or task_id is None:
+            return ()
+        rows = self._store.query(
+            "SELECT param, value_type, value_summary, digest, artifact_id, asset_key, "
+            "asset_version_id, remote_uri FROM task_inputs WHERE run_id = ? AND task_id = ? "
+            "ORDER BY param, position",
+            (run_id, task_id),
+        )
+        return tuple(dict(row) for row in rows)
+
     def close(self) -> None:
         """Release the connection."""
         self._store.close()
@@ -539,3 +810,11 @@ def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
     if any(name.startswith("inputs") for name in moved):
         reasons.append("input_changed")
     return reasons or ["cache_key_changed"]
+
+
+def _first(rows: list[Any], column: str) -> str | None:
+    """Return one column of the first row, or ``None`` when there is none."""
+    if not rows:
+        return None
+    value = rows[0][column]
+    return str(value) if value is not None else None

@@ -1,8 +1,10 @@
-"""Unit tests for the asset metadata store."""
+"""Unit tests for the asset catalog's rows in the ledger."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from ginkgo.core.asset import AssetKey, AssetRef, make_asset_version
 from ginkgo.runtime.artifacts.asset_store import AssetStore
@@ -33,9 +35,14 @@ def _make_version(*, name: str, suffix: str, run_id: str, producer: str):
     return key, version
 
 
+@pytest.fixture
+def store() -> AssetStore:
+    with AssetStore.in_memory() as catalog:
+        yield catalog
+
+
 class TestAssetStore:
-    def test_register_and_resolve_alias(self, tmp_path: Path) -> None:
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+    def test_register_and_resolve_alias(self, store: AssetStore) -> None:
         key, version = _make_version(
             name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
@@ -51,8 +58,23 @@ class TestAssetStore:
         assert latest.version_id == version.version_id
         assert store.list_asset_keys() == [key]
 
-    def test_list_aliases(self, tmp_path: Path) -> None:
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+    def test_round_trips_a_version(self, store: AssetStore) -> None:
+        key, version = _make_version(
+            name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
+        )
+        registered = store.register_version(version=version)
+
+        assert registered is version
+        assert store.get_version(key=key, version_id=version.version_id) == version
+
+    def test_unknown_version_is_not_found(self, store: AssetStore) -> None:
+        key = AssetKey(namespace="file", name="absent")
+        with pytest.raises(FileNotFoundError):
+            store.get_version(key=key, version_id="nope")
+        with pytest.raises(FileNotFoundError):
+            store.resolve_version(key=key)
+
+    def test_list_aliases(self, store: AssetStore) -> None:
         key, version = _make_version(
             name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
@@ -63,8 +85,7 @@ class TestAssetStore:
         store.set_alias(key=key, alias="latest", version_id=version.version_id)
         assert store.list_aliases(key=key) == {"latest": version.version_id}
 
-    def test_referenced_artifact_ids(self, tmp_path: Path) -> None:
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
+    def test_referenced_artifact_ids(self, store: AssetStore) -> None:
         _, first = _make_version(
             name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
@@ -76,22 +97,64 @@ class TestAssetStore:
 
         assert store.referenced_artifact_ids() == {"artifact-1", "artifact-2"}
 
-    def test_record_lineage(self, tmp_path: Path) -> None:
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        parent_key, parent_version = _make_version(
+    def test_registers_lineage_with_the_version(self, store: AssetStore) -> None:
+        parent_key, parent = _make_version(
             name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
         )
-        child_key, child_version = _make_version(
+        _, child = _make_version(
             name="transformed_data", suffix="2", run_id="run-2", producer="tests.transformer"
         )
-        store.register_version(version=parent_version)
-        store.register_version(version=child_version)
-
-        store.record_lineage(
-            child=_asset_ref(key=child_key, version_id=child_version.version_id),
-            parents=[_asset_ref(key=parent_key, version_id=parent_version.version_id)],
+        store.register_version(version=parent)
+        store.register_version(
+            version=child,
+            parents=[_asset_ref(key=parent_key, version_id=parent.version_id)],
         )
 
-        lineage = store.lineage_for(key=child_key, version_id=child_version.version_id)
-        assert lineage is not None
-        assert [parent.version_id for parent in lineage.parents] == [parent_version.version_id]
+        assert store.parents_of(child.version_id) == [parent.version_id]
+        assert store.children_of(parent.version_id) == [child.version_id]
+        assert store.version_by_id(parent.version_id) == parent
+
+    def test_data_version_follows_code_and_parents(self, store: AssetStore) -> None:
+        """Same code and same upstream data agree; either changing does not."""
+        parent_key, parent = _make_version(
+            name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
+        )
+        store.register_version(version=parent, code_version="source-a")
+        parent_ref = _asset_ref(key=parent_key, version_id=parent.version_id)
+
+        _, child = _make_version(
+            name="transformed_data", suffix="2", run_id="run-2", producer="tests.transformer"
+        )
+        store.register_version(version=child, parents=[parent_ref], code_version="source-b")
+
+        _, twin = _make_version(
+            name="twin", suffix="3", run_id="run-3", producer="tests.transformer"
+        )
+        store.register_version(version=twin, parents=[parent_ref], code_version="source-b")
+
+        _, other_code = _make_version(
+            name="other", suffix="4", run_id="run-4", producer="tests.transformer"
+        )
+        store.register_version(version=other_code, parents=[parent_ref], code_version="source-c")
+
+        versions = {
+            row["version_id"]: row["data_version"]
+            for row in store.store.query("SELECT version_id, data_version FROM asset_versions")
+        }
+        assert versions[child.version_id] == versions[twin.version_id]
+        assert versions[child.version_id] != versions[other_code.version_id]
+        assert versions[parent.version_id] is not None
+
+    def test_a_version_without_a_code_version_has_no_data_version(self, store: AssetStore) -> None:
+        _, version = _make_version(
+            name="prepared_data", suffix="1", run_id="run-1", producer="tests.writer"
+        )
+        store.register_version(version=version)
+
+        rows = store.store.query("SELECT data_version FROM asset_versions")
+        assert rows[0]["data_version"] is None
+
+    def test_for_reading_an_absent_workspace_is_empty(self, tmp_path: Path) -> None:
+        with AssetStore.for_reading(tmp_path / "ginkgo.db") as catalog:
+            assert catalog.list_asset_keys() == []
+        assert not (tmp_path / "ginkgo.db").exists()

@@ -27,6 +27,7 @@ from ginkgo.core.asset import (
     collect_asset_refs,
     make_asset_version,
 )
+from ginkgo.core.hashing import hash_str
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.artifacts.asset_kinds import (
     WRAPPER_KINDS,
@@ -41,6 +42,7 @@ from ginkgo.runtime.artifacts.asset_serialization import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.events import AssetMaterialized, GinkgoEvent, task_id_for_node
 
 
 ASSET_GROUP_METADATA_KEY = "ginkgo_group"
@@ -144,12 +146,17 @@ class AssetRegistrar:
     live_payloads : LivePayloadRegistry | None
         Optional in-process cache that lets downstream tasks consume
         wrapped outputs without a disk round-trip.
+    emit_event : Callable[[GinkgoEvent], None] | None
+        Where ``AssetMaterialized`` is announced. The catalog row is written
+        directly by :class:`AssetStore`; the event is the ledger's record that
+        the version came into being, and what a live reader watches.
     """
 
     cache_store: CacheStore
     asset_store: AssetStore
     run_id_provider: Callable[[], str]
     live_payloads: LivePayloadRegistry | None = None
+    emit_event: Callable[[GinkgoEvent], None] | None = None
 
     def materialize_results(self, *, node: Any, value: Any) -> Any:
         """Register nested asset sentinels and replace them with asset refs.
@@ -294,15 +301,20 @@ class AssetRegistrar:
             producer_task=node.task_def.name,
             metadata=version_metadata,
         )
-        self.asset_store.register_version(version=version)
+        self.asset_store.register_version(
+            version=version,
+            parents=parent_refs,
+            code_version=_code_version(node=node),
+            task_id=task_id_for_node(node.node_id),
+            cache_key=getattr(node, "cache_key", None),
+        )
         asset_ref = asset_ref_from_version(
             version=version,
             artifact_path=self.cache_store._artifact_store.artifact_path(
                 artifact_id=record.artifact_id
             ),
         )
-        if parent_refs:
-            self.asset_store.record_lineage(child=asset_ref, parents=parent_refs)
+        self._announce(node=node, version=version, parents=parent_refs)
 
         # 4. Cache live payloads for in-process downstream consumers.
         # File assets don't benefit (consumers get a path either way); fig
@@ -328,6 +340,32 @@ class AssetRegistrar:
             )
 
         return asset_ref, version
+
+    def _announce(
+        self,
+        *,
+        node: Any,
+        version: AssetVersion,
+        parents: list[AssetRef],
+    ) -> None:
+        """Record in the ledger that one asset version was materialized."""
+        if self.emit_event is None:
+            return
+        self.emit_event(
+            AssetMaterialized(
+                run_id=self.run_id_provider(),
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                asset_key=str(version.key),
+                version_id=version.version_id,
+                kind=version.kind,
+                artifact_id=version.artifact_id,
+                content_hash=version.content_hash,
+                cache_key=getattr(node, "cache_key", None),
+                metadata=dict(version.metadata),
+                parents=[render_asset_ref(asset_ref=parent) for parent in parents],
+            )
+        )
 
     def _store_file_content(self, *, node: Any, result: AssetResult) -> Any:
         """Copy the file-kind asset's source bytes into the artifact store."""
@@ -362,6 +400,20 @@ def _current_index_for(
     if result.name is not None:
         return -1
     return max(0, state.kind_counters.get(result.kind, 1) - 1)
+
+
+def _code_version(*, node: Any) -> str | None:
+    """Return the identity of the code that produced a task's assets.
+
+    The task's own source hash, folded together with the driver file's for a
+    notebook or script task, so that two versions built by the same code agree
+    and a change to either half of it shows.
+    """
+    source_hash = node.task_def.cache_source_hash
+    extra = getattr(node, "extra_source_hash", None)
+    if source_hash is None:
+        return None
+    return hash_str(f"{source_hash}\n{extra}") if extra else str(source_hash)
 
 
 def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
