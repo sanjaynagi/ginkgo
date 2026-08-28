@@ -132,6 +132,66 @@ def test_scalar_columns_are_stored_as_the_scalars_they_are(started: SqliteStore)
         assert task[column] == expected, column
 
 
+def test_an_asset_input_is_indexed_and_gets_a_consumed_edge(started: SqliteStore) -> None:
+    """The hash entry names the asset, so the row and the edge follow from it."""
+    _apply(
+        started,
+        _fixture(
+            "task_planned",
+            inputs={"frame": {"type": "asset_ref", "asset": "table:rows", "version_id": "v1"}},
+            input_hashes=[
+                {
+                    "param": "frame",
+                    "type": "asset_ref",
+                    "asset": "table:rows",
+                    "version_id": "v1",
+                }
+            ],
+        ),
+    )
+
+    row = _row(started, "SELECT * FROM task_inputs")
+    assert (row["asset_key"], row["asset_version_id"]) == ("table:rows", "v1")
+    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
+    assert (edge["src_kind"], edge["src_id"], edge["dst_id"]) == ("asset_version", "v1", TASK_ID)
+
+
+def test_an_asset_passed_to_a_file_parameter_is_still_indexed_as_an_asset(
+    started: SqliteStore,
+) -> None:
+    """An `AssetRef` bound to a `file:` parameter hashes as the file it is.
+
+    The cache keys on content there and that payload cannot change without
+    invalidating every entry, so the asset's identity comes from the rendered
+    argument instead. Without that the ledger loses the `consumed` edge and
+    `why` reports the input as an anonymous digest.
+    """
+    _apply(
+        started,
+        _fixture(
+            "task_planned",
+            inputs={
+                "frame": {
+                    "type": "asset_ref",
+                    "asset": "table:rows",
+                    "version_id": "v1",
+                    "artifact_id": "artifact_abcdef",
+                }
+            },
+            input_hashes=[
+                {"param": "frame", "type": "file", "digest": "b3:abcdef"},
+            ],
+        ),
+    )
+
+    row = _row(started, "SELECT * FROM task_inputs")
+    assert row["digest"] == "b3:abcdef"
+    assert (row["asset_key"], row["asset_version_id"]) == ("table:rows", "v1")
+    assert row["artifact_id"] == "artifact_abcdef"
+    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
+    assert (edge["src_id"], edge["dst_id"]) == ("v1", TASK_ID)
+
+
 def test_a_hashed_input_with_no_rendered_value_still_gets_a_row(
     started: SqliteStore,
 ) -> None:
