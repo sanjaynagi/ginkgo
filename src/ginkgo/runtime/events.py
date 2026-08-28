@@ -300,10 +300,13 @@ class RunValidated(RunEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class PhaseTimed(RunEvent):
-    """How long one named phase of a run or a task took."""
+    """How long one named phase took.
+
+    ``task_id`` is what makes it a task's phase rather than the run's; there is
+    no separate scope field, because two fields that must agree drift.
+    """
 
     event: str = "phase_timed"
-    scope: Literal["run", "task"] = "run"
     task_id: str | None = None
     phase: str = ""
     seconds: float = 0.0

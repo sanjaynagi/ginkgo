@@ -163,7 +163,7 @@ def _events() -> list[GinkgoEvent]:
             parent_task_id="task_0002",
         ),
         RunValidated(**RUN, task_count=4, edge_count=3, env_count=1),
-        PhaseTimed(**RUN, scope="task", task_id="task_0007", phase="cache_lookup", seconds=0.125),
+        PhaseTimed(**RUN, task_id="task_0007", phase="cache_lookup", seconds=0.125),
         RunResourcesSampled(**RUN, resources={"cpu_percent": 42.0, "rss_bytes": 1048576}),
         RunCompleted(
             **RUN,
@@ -207,4 +207,6 @@ def test_payload_matches_the_golden_fixture(name: str) -> None:
 @pytest.mark.parametrize("name", sorted(EVENTS))
 def test_payload_is_json_serialisable(name: str) -> None:
     """The JSONL renderer's path: every field has to survive ``json.dumps``."""
-    assert json.loads(json.dumps(EVENTS[name].to_payload(), sort_keys=True))
+    payload = EVENTS[name].to_payload()
+
+    assert json.loads(json.dumps(payload, sort_keys=True)) == payload

@@ -141,7 +141,7 @@ def test_ledger_only_events_are_ignored_silently() -> None:
         adapter(TaskPlanned(**task_scope))
         adapter(TaskAnnotated(**task_scope, fields={"env_lock": "envs/analysis.lock"}))
         adapter(AssetMaterialized(**task_scope, asset_key="table:rows", version_id="v1"))
-        adapter(PhaseTimed(run_id="r1", scope="run", phase="validate", seconds=0.5))
+        adapter(PhaseTimed(run_id="r1", phase="validate", seconds=0.5))
         adapter(RunResourcesSampled(run_id="r1", resources={"cpu_percent": 1.0}))
 
     assert sink.lines == []

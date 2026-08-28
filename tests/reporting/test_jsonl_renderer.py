@@ -44,7 +44,7 @@ def test_jsonl_renderer_emits_the_ledger_event_types() -> None:
             inputs={"rows": 3},
         )
     )
-    renderer(PhaseTimed(run_id="run_123", scope="run", phase="validate", seconds=0.5))
+    renderer(PhaseTimed(run_id="run_123", phase="validate", seconds=0.5))
 
     payloads = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert [payload["event"] for payload in payloads] == ["task_planned", "phase_timed"]
