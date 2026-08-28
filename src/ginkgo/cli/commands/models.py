@@ -9,7 +9,7 @@ from typing import Any
 from rich import box
 from rich.table import Table
 
-from ginkgo.cli.common import console, resolve_run_dir
+from ginkgo.cli.common import console, open_run
 from ginkgo.runtime.run_summary import RunSummary
 
 
@@ -29,14 +29,13 @@ def command_models(args) -> int:
     is_tty = getattr(sys.stdout, "isatty", lambda: False)()
     rich_console = console(sys.stdout, width=None if is_tty else 160)
 
-    run_id = getattr(args, "run_id", None)
     try:
-        run_dir = resolve_run_dir(run_id)
+        with open_run(getattr(args, "run_id", None)) as (store, run_id):
+            summary = store.run(run_id)
     except FileNotFoundError as exc:
         rich_console.print(f"[red]{exc}[/]")
         return 1
 
-    summary = RunSummary.load(run_dir)
     rows = collect_model_rows(run_summary=summary)
 
     rich_console.print(f"[bold green]🌿 ginkgo models[/] [dim]run={summary.run_id}[/]\n")

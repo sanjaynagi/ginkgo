@@ -18,8 +18,10 @@ from ginkgo.runtime.notifications.slack import (
     build_run_succeeded_payload,
     post_slack_message,
 )
-from ginkgo.runtime.caching.provenance import combined_log_tail, load_manifest
+from ginkgo.runtime.caching.provenance import combined_log_tail
 from ginkgo.runtime.environment.secrets import SecretResolutionError, SecretResolver
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.store.protocol import ProvenanceStore
 
 
 VALID_NOTIFICATION_EVENTS = frozenset(
@@ -52,6 +54,8 @@ class NotificationService:
 
     config: NotificationConfig
     webhook_url: str
+    store: ProvenanceStore
+    run_id: str
     run_dir: Path
     workflow_path: Path
     logger: Callable[[str], None]
@@ -143,50 +147,39 @@ class NotificationService:
         )
         self._futures.append(future)
 
-    def _failed_tasks(self) -> list[SlackTaskFailure]:
-        manifest = load_manifest(self.run_dir)
-        tasks = manifest.get("tasks", {})
-        if not isinstance(tasks, dict):
-            return []
+    def _summary(self) -> RunSummary:
+        """Reload the run from the ledger, which the recorder has committed."""
+        return RunSummary.load(self.store, self.run_id, runs_root=self.run_dir.parent)
 
-        failed_tasks = sorted(
-            (
-                task
-                for task in tasks.values()
-                if isinstance(task, dict) and task.get("status") == "failed"
-            ),
-            key=lambda item: int(item.get("node_id", -1)),
-        )
-        return [
-            _task_failure_from_manifest(
-                run_dir=self.run_dir,
-                task=task,
-                log_tail_lines=self.config.slack.log_tail_lines,
-            )
-            for task in failed_tasks[: self.config.slack.max_failed_tasks]
-        ]
+    def _failed_tasks(self) -> list[SlackTaskFailure]:
+        failed = self._summary().failed_tasks
+        return [self._failure(task=task) for task in failed[: self.config.slack.max_failed_tasks]]
 
     def _retry_exhausted_failure(self, *, task_id: str) -> SlackTaskFailure | None:
-        manifest = load_manifest(self.run_dir)
-        tasks = manifest.get("tasks", {})
-        if not isinstance(tasks, dict):
+        task = next(
+            (item for item in self._summary().tasks if item.task_key == task_id),
+            None,
+        )
+        if task is None or task.max_attempts is None or task.max_attempts < 2:
             return None
+        if task.attempts < task.max_attempts:
+            return None
+        return self._failure(task=task)
 
-        task = tasks.get(task_id)
-        if not isinstance(task, dict):
-            return None
-
-        attempts = _int_or_none(task.get("attempt"))
-        max_attempts = _int_or_none(task.get("max_attempts"))
-        retries = _int_or_none(task.get("retries")) or 0
-        if retries < 1:
-            return None
-        if attempts is None or max_attempts is None or attempts < max_attempts:
-            return None
-        return _task_failure_from_manifest(
-            run_dir=self.run_dir,
-            task=task,
-            log_tail_lines=self.config.slack.log_tail_lines,
+    def _failure(self, *, task: TaskSummary) -> SlackTaskFailure:
+        return SlackTaskFailure(
+            task_name=task.name,
+            exit_code=task.exit_code,
+            attempt=task.attempts,
+            max_attempts=task.max_attempts,
+            log_tail=tuple(
+                combined_log_tail(
+                    run_dir=self.run_dir,
+                    stdout_log=task.stdout_log,
+                    stderr_log=task.stderr_log,
+                    lines=self.config.slack.log_tail_lines,
+                )
+            ),
         )
 
     @property
@@ -201,6 +194,8 @@ def build_notification_service(
     *,
     config: Mapping[str, Any] | None,
     resolver: SecretResolver | None,
+    store: ProvenanceStore,
+    run_id: str,
     run_dir: Path,
     workflow_path: Path,
     logger: Callable[[str], None],
@@ -228,6 +223,8 @@ def build_notification_service(
     return NotificationService(
         config=notification_config,
         webhook_url=webhook_url,
+        store=store,
+        run_id=run_id,
         run_dir=run_dir,
         workflow_path=workflow_path,
         logger=logger,
@@ -293,33 +290,7 @@ def _parse_secret_ref(value: Any) -> SecretRef | None:
     return None
 
 
-def _task_failure_from_manifest(
-    *,
-    run_dir: Path,
-    task: Mapping[str, Any],
-    log_tail_lines: int,
-) -> SlackTaskFailure:
-    return SlackTaskFailure(
-        task_name=str(task.get("task", "unknown")),
-        exit_code=_int_or_none(task.get("exit_code")),
-        attempt=_int_or_none(task.get("attempt")),
-        max_attempts=_int_or_none(task.get("max_attempts")),
-        log_tail=tuple(
-            combined_log_tail(
-                run_dir=run_dir,
-                stdout_log=task.get("stdout_log"),
-                stderr_log=task.get("stderr_log"),
-                lines=log_tail_lines,
-            )
-        ),
-    )
-
-
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     if not isinstance(value, int):
         return default
     return max(minimum, min(maximum, value))
-
-
-def _int_or_none(value: Any) -> int | None:
-    return value if isinstance(value, int) else None
