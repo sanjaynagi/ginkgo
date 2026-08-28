@@ -101,7 +101,7 @@ CREATE INDEX edges_dst ON edges(dst_kind, dst_id);
 CREATE TABLE cache_entries (
   cache_key TEXT PRIMARY KEY, function TEXT NOT NULL, version INTEGER, source_hash TEXT,
   extra_source_hash TEXT, env TEXT, env_hash TEXT, env_materialized_digest TEXT,
-  inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON, as meta.json today
+  inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON
   output_codec TEXT, size_bytes INTEGER,
   created_run_id TEXT, created_at TEXT NOT NULL,
   hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT

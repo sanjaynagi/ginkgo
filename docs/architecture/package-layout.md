@@ -62,11 +62,11 @@ ginkgo/
 │   │   └── subworkflow.py      # child `ginkgo run` subprocess
 │   ├── caching/
 │   │   ├── cache.py            # CacheStore (content-addressed)
+│   │   ├── index.py            # CacheIndex: the cache's rows in the ledger
 │   │   ├── coordinator.py      # cache lookups for the evaluator
 │   │   ├── provenance.py       # run ids and log tails
-│   │   ├── hash_memo.py
-│   │   ├── digest_registry.py  # known digests for workspace paths
-│   │   └── materialization_log.py
+│   │   ├── hash_memo.py        # content digests, memoised in digest_memo
+│   │   └── digest_registry.py  # known digests for this run's outputs
 │   ├── artifacts/
 │   │   ├── artifact_store.py   # content-addressed artifact storage
 │   │   ├── artifact_model.py
