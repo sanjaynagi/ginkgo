@@ -11,6 +11,7 @@ from typing import NoReturn, Sequence
 
 from ginkgo.cli.commands.asset import command_asset
 from ginkgo.cli.commands.cache import command_cache
+from ginkgo.cli.commands.db import command_db
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
@@ -140,6 +141,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_asset(args)
         if args.command == "env":
             return command_env(args)
+        if args.command == "db":
+            return command_db(args)
         if args.command == "debug":
             return command_debug(args)
         if args.command == "doctor":
@@ -401,6 +404,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     env_clear_parser.add_argument("env", nargs="?")
     env_clear_parser.add_argument("--all", action="store_true")
     env_clear_parser.add_argument("--dry-run", action="store_true")
+
+    # Registered as a group from the outset: rebuild, vacuum and prune join
+    # these three in later phases, and the help text should not move when they do.
+    db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
+    db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
+    db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
+    db_subparsers.add_parser("check", help="Check database integrity and schema version")
+    db_subparsers.add_parser("path", help="Print the provenance database path")
 
     debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")
     debug_parser.add_argument("run_id", nargs="?")
