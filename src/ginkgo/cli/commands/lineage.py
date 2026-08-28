@@ -22,24 +22,19 @@ def command_lineage(args) -> int:
     direction = "downstream" if getattr(args, "downstream", False) else "upstream"
     as_json = bool(getattr(args, "json", False))
 
-    try:
-        with query.open() as reader:
-            if ":" in args.target:
-                key_text, separator, selector = args.target.partition("@")
-                graph = reader.lineage(
-                    key_text,
-                    selector if separator else None,
-                    direction=direction,
-                    depth=getattr(args, "depth", None),
-                )
-                return _render_graph(rich_console, graph=graph, as_json=as_json)
-            return _render_why(rich_console, provenance=reader.why(args.target), as_json=as_json)
-    except (FileNotFoundError, ValueError) as exc:
-        if as_json:
-            print(json.dumps({"error": str(exc)}, indent=2))
-        else:
-            rich_console.print(f"[red]{exc}[/]")
-        return 1
+    # An unknown asset or path raises, and the CLI's own error handler reports
+    # it — the same path `ginkgo asset` takes for the same mistake.
+    with query.open() as reader:
+        if ":" in args.target:
+            key_text, separator, selector = args.target.partition("@")
+            graph = reader.lineage(
+                key_text,
+                selector if separator else None,
+                direction=direction,
+                depth=getattr(args, "depth", None),
+            )
+            return _render_graph(rich_console, graph=graph, as_json=as_json)
+        return _render_why(rich_console, provenance=reader.why(args.target), as_json=as_json)
 
 
 def _render_graph(rich_console, *, graph: LineageGraph, as_json: bool) -> int:
