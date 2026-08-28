@@ -68,6 +68,9 @@ CREATE TABLE edges (
 index edges_dst
 CREATE INDEX edges_dst ON edges(dst_kind, dst_id)
 
+index edges_src
+CREATE INDEX edges_src ON edges(src_kind, src_id)
+
 table env_materializations
 CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
   materialized_digest TEXT, seen_at TEXT NOT NULL, PRIMARY KEY (env_hash, host))

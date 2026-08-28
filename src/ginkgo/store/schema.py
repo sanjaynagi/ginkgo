@@ -184,7 +184,19 @@ ALTER TABLE asset_versions DROP COLUMN sub_kind;
 CREATE INDEX asset_versions_version ON asset_versions(version_id);
 """
 
-MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1), (2, _V2), (3, _V3)]
+_V4 = """
+-- edges was indexed for arrivals only (edges_dst). Walking lineage forwards —
+-- `lineage --downstream` asking what was derived from a version — reads the
+-- other end of the same rows, and scanned the table to do it.
+CREATE INDEX edges_src ON edges(src_kind, src_id);
+"""
+
+MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
+    (1, _V1),
+    (2, _V2),
+    (3, _V3),
+    (4, _V4),
+]
 """Every schema step, in the order they are applied, keyed by resulting version."""
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
