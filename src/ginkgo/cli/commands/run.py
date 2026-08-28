@@ -15,6 +15,7 @@ from typing import Any, Sequence
 
 from rich.markup import escape
 
+from ginkgo import query
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
@@ -57,18 +58,35 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.caching.provenance import (
-    RunProvenanceRecorder,
-    combined_log_tail,
-    make_run_id,
-)
+from ginkgo.runtime.caching.provenance import combined_log_tail, make_run_id
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
-from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
+from ginkgo.runtime.events import (
+    EventBus,
+    PhaseTimed,
+    RunCompleted,
+    RunResourcesSampled,
+    RunStarted,
+    RunValidated,
+)
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
+from ginkgo.store.recorder import StoreRecorder
+from ginkgo.workspace_layout import WorkspaceLayout
+
+
+def _ginkgo_version() -> str | None:
+    """Return the installed ginkgo version, recorded on every run."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("ginkgo")
+    except PackageNotFoundError:  # pragma: no cover - editable installs always resolve
+        return None
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -191,12 +209,6 @@ def run_workflow(
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
-
-    # Machine-readable marker for sub-workflow parent runs to capture the
-    # child run id without parsing Rich-formatted output.
-    if os.environ.get("GINKGO_CALLED_FROM_PARENT_RUN"):
-        sys.stdout.write(f"GINKGO_CHILD_RUN_ID={run_id}\n")
-        sys.stdout.flush()
 
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
 
@@ -398,45 +410,33 @@ def run_workflow(
             rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
         rich_console.print("")
 
-    recorder = RunProvenanceRecorder(
-        run_id=run_id,
-        workflow_path=workflow_path,
-        root_dir=RUNS_ROOT,
-        jobs=jobs,
-        cores=cores,
-        memory=memory,
-        # Declared parameters layer over the loaded config so the record shows
-        # the values the run actually used, including any given on the CLI. The
-        # raw [params] table is dropped: recording it alongside would show a
-        # config value next to the resolved value that superseded it.
-        params={
-            **{key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY},
-            **declared_params,
-        },
-        param_sources=param_sources,
-    )
-    recorder.add_run_timing(phase="workflow_load_seconds", seconds=load_elapsed)
-    recorder.add_run_timing(phase="workflow_validate_seconds", seconds=validate_elapsed)
+    run_dir = RunDir.create(run_id=run_id, root=RUNS_ROOT)
+    bus = EventBus()
+    # Opening the ledger is the first thing that can fail for workspace
+    # reasons, and it fails the run: provenance nobody records is provenance
+    # nobody can reconstruct.
+    recorder = StoreRecorder(path=WorkspaceLayout.relative().db, run_dir=run_dir).start()
+    bus.subscribe(recorder)
     resource_monitor = RunResourceMonitor(
         root_pid=os.getpid(),
-        sink=recorder.update_resources,
+        sink=lambda resources: bus.emit(RunResourcesSampled(run_id=run_id, resources=resources)),
     )
-    with profiler.timed("resource_monitor_startup"):
-        resource_monitor.start()
     warning_console = console(sys.stderr)
-    notification_service = build_notification_service(
-        config=runtime_params,
-        resolver=secret_resolver,
-        run_dir=recorder.run_dir,
-        workflow_path=workflow_path,
-        logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
-    )
     try:
         with ExitStack() as stack:
-            events_stream = stack.enter_context(recorder.events_path.open("a", encoding="utf-8"))
-            bus = EventBus()
-            bus.subscribe(JsonlEventRenderer(stream=events_stream, include_task_logs=True))
+            stack.callback(recorder.close)
+            reader = stack.enter_context(query.open())
+            notification_service = build_notification_service(
+                config=runtime_params,
+                resolver=secret_resolver,
+                store=reader.store,
+                run_id=run_id,
+                run_dir=run_dir.path,
+                workflow_path=workflow_path,
+                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+            )
             if notification_service is not None:
+                stack.callback(notification_service.close)
                 bus.subscribe(notification_service.handle)
             renderer = None
             if output_mode in {"agent", "agent_verbose"}:
@@ -452,7 +452,7 @@ def run_workflow(
                     summary=CliRunSummary(
                         run_id=run_id,
                         mode=output_mode,
-                        run_dir=recorder.run_dir,
+                        run_dir=run_dir.path,
                         cores=evaluator.cores,
                         memory=memory,
                         executor_label=(
@@ -466,14 +466,47 @@ def run_workflow(
                 )
                 bus.subscribe(RichEventRenderer(renderer=renderer))
             evaluator = ConcurrentEvaluator(
-                provenance=recorder,
+                run_dir=run_dir,
                 event_bus=bus,
                 trust_mtimes=trust_mtimes,
                 **evaluator_kwargs,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)
-            bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
+            bus.emit(
+                RunStarted(
+                    run_id=run_id,
+                    workflow=str(workflow_path),
+                    jobs=jobs,
+                    cores=cores,
+                    memory=memory,
+                    # Declared parameters layer over the loaded config so the
+                    # record shows the values the run actually used, including
+                    # any given on the CLI. The raw [params] table is dropped:
+                    # recording it alongside would show a config value next to
+                    # the resolved value that superseded it.
+                    params={
+                        **{
+                            key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY
+                        },
+                        **declared_params,
+                    },
+                    param_sources=param_sources,
+                    ginkgo_version=_ginkgo_version(),
+                    parent_run_id=os.environ.get(PARENT_RUN_ID_ENV) or None,
+                    parent_task_id=os.environ.get(PARENT_TASK_ID_ENV) or None,
+                )
+            )
+            bus.emit(
+                PhaseTimed(run_id=run_id, phase="workflow_load_seconds", seconds=load_elapsed)
+            )
+            bus.emit(
+                PhaseTimed(
+                    run_id=run_id,
+                    phase="workflow_validate_seconds",
+                    seconds=validate_elapsed,
+                )
+            )
             bus.emit(
                 RunValidated(
                     run_id=run_id,
@@ -482,31 +515,42 @@ def run_workflow(
                     env_count=env_count,
                 )
             )
+            with profiler.timed("resource_monitor_startup"):
+                resource_monitor.start()
             run_started = time.perf_counter()
+            failure: BaseException | None = None
             try:
                 evaluator.evaluate(expr)
             except BaseException as exc:
-                recorder.add_run_timing(
+                failure = exc
+
+            with profiler.timed("resource_monitor_shutdown"):
+                resource_summary = resource_monitor.stop()
+            bus.emit(
+                PhaseTimed(
+                    run_id=run_id,
                     phase="workflow_execute_seconds",
                     seconds=time.perf_counter() - run_started,
                 )
-                with profiler.timed("resource_monitor_shutdown"):
-                    resource_summary = resource_monitor.stop()
-                with profiler.timed("provenance_finalize"):
-                    recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
-                with profiler.timed("manifest_load"):
-                    run_summary = RunSummary.load(recorder.run_dir)
-                bus.emit(
-                    RunCompleted(
-                        run_id=run_id,
-                        status="failed",
-                        task_counts=dict(run_summary.task_counts()),
-                        error=str(exc),
-                    )
+            )
+            # The counts describe the tasks, which are already in the ledger;
+            # flushing is what makes them readable rather than merely queued.
+            recorder.flush()
+            bus.emit(
+                RunCompleted(
+                    run_id=run_id,
+                    status="failed" if failure is not None else "success",
+                    task_counts=reader.task_status_counts(run_id),
+                    resources=resource_summary,
+                    error=str(failure) if failure is not None else None,
                 )
+            )
+            with profiler.timed("run_summary_load"):
+                run_summary = reader.run(run_id)
+
+            if failure is not None:
                 if renderer is not None:
                     failure_details = _load_failure_details(
-                        run_dir=recorder.run_dir,
                         run_summary=run_summary,
                         renderer=renderer,
                         verbose=output_mode == "verbose",
@@ -519,29 +563,11 @@ def run_workflow(
                             failure_details=failure_details,
                             remote_summary=evaluator.remote_stats.summary(),
                         )
-                    print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
-                    recorder.set_profile(profile=profiler.snapshot())
                     _print_profile_table(console=rich_console, profile=profiler.snapshot())
-                raise
+                raise failure
 
-            with profiler.timed("resource_monitor_shutdown"):
-                resource_summary = resource_monitor.stop()
-            recorder.add_run_timing(
-                phase="workflow_execute_seconds",
-                seconds=time.perf_counter() - run_started,
-            )
-            with profiler.timed("provenance_finalize"):
-                recorder.finalize(status="succeeded", resources=resource_summary)
-            with profiler.timed("manifest_load"):
-                run_summary = RunSummary.load(recorder.run_dir)
-            bus.emit(
-                RunCompleted(
-                    run_id=run_id,
-                    status="success",
-                    task_counts=dict(run_summary.task_counts()),
-                )
-            )
             if renderer is not None:
                 with profiler.timed("renderer_finish"):
                     renderer.finish(
@@ -556,50 +582,41 @@ def run_workflow(
                         remote_summary=evaluator.remote_stats.summary(),
                     )
             if profiler.enabled:
-                recorder.set_profile(profile=profiler.snapshot())
                 _print_profile_table(console=rich_console, profile=profiler.snapshot())
     finally:
-        if notification_service is not None:
-            notification_service.close()
+        resource_monitor.stop()
     return 0
 
 
 def _load_failure_details(
     *,
-    run_dir: Path,
     run_summary: RunSummary,
     renderer: CliRunRenderer,
     verbose: bool,
 ) -> list[FailureDetails]:
     """Load failed-task diagnostics from a finished run."""
-    details: list[FailureDetails] = []
+    run_dir = run_summary.run_dir
     tail_lines = 20 if verbose else 10
-    for task in run_summary.failed_tasks:
-        node_id = task.node_id if task.node_id is not None else -1
-        log_tail = combined_log_tail(
-            run_dir=run_dir,
-            stdout_log=task.stdout_log,
-            stderr_log=task.stderr_log,
-            lines=tail_lines,
+    return [
+        FailureDetails(
+            task_label=(
+                renderer.label_for_node(task.node_id if task.node_id is not None else -1)
+                or task.name
+            ),
+            exit_code=task.exit_code,
+            log_path=run_dir / task.stderr_log if task.stderr_log is not None else None,
+            log_tail=combined_log_tail(
+                run_dir=run_dir,
+                stdout_log=task.stdout_log,
+                stderr_log=task.stderr_log,
+                lines=tail_lines,
+            ),
+            error=task.error,
+            failure_kind=task.failure_kind,
+            inputs=task.inputs if verbose else None,
         )
-        stderr_path = run_dir / task.stderr_log if isinstance(task.stderr_log, str) else None
-        failure_kind = (
-            task.failure.get("kind")
-            if isinstance(task.failure, dict) and isinstance(task.failure.get("kind"), str)
-            else None
-        )
-        details.append(
-            FailureDetails(
-                task_label=renderer.label_for_node(node_id) or task.name,
-                exit_code=task.exit_code,
-                log_path=stderr_path,
-                log_tail=log_tail,
-                error=task.error,
-                failure_kind=failure_kind,
-                inputs=task.inputs if verbose else None,
-            )
-        )
-    return details
+        for task in run_summary.failed_tasks
+    ]
 
 
 def _print_profile_table(

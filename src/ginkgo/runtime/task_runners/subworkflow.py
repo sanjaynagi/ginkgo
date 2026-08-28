@@ -5,17 +5,17 @@ The ``SubworkflowRunner`` dispatches a ``SubWorkflowDirective`` by invoking
 subprocess lifecycle, log plumbing, and termination-on-interrupt
 guarantees.
 
-The child run writes its own ``.ginkgo/runs/<child_id>/`` directory and
-emits a machine-readable ``GINKGO_CHILD_RUN_ID=<id>`` line on stdout when
-``GINKGO_CALLED_FROM_PARENT_RUN`` is set in its environment. The runner
-parses that line to stitch the child ``run_id`` into the parent's
-provenance.
+The child is told who called it through ``GINKGO_PARENT_RUN_ID`` and
+``GINKGO_PARENT_TASK_ID``; it records both on its own ``RunStarted``, which
+puts the link in the ledger. The parent then reads the child's run id back out
+of the store rather than scraping it from the child's output — a run id that
+only ever existed as a line of stdout was one interleaved log line away from
+being lost.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import sys
 import tempfile
@@ -30,14 +30,16 @@ from ginkgo.config import PARAMS_CONFIG_KEY
 from ginkgo.core.subworkflow import SubWorkflowDirective, SubWorkflowResult
 from ginkgo.envs.mounts import mount
 from ginkgo.errors import GinkgoError
+from ginkgo.runtime.events import task_id_for_node
 from ginkgo.runtime.task_runners.shell import ShellRunner
+from ginkgo.store.errors import StoreError
+from ginkgo.store.sqlite import open_store
 
 
-CHILD_RUN_ID_PREFIX = "GINKGO_CHILD_RUN_ID="
 DEPTH_ENV = "GINKGO_CALL_DEPTH"
-PARENT_RUN_ENV = "GINKGO_CALLED_FROM_PARENT_RUN"
+PARENT_RUN_ID_ENV = "GINKGO_PARENT_RUN_ID"
+PARENT_TASK_ID_ENV = "GINKGO_PARENT_TASK_ID"
 DEFAULT_MAX_CALL_DEPTH = 8
-_CHILD_RUN_ID_RE = re.compile(r"^GINKGO_CHILD_RUN_ID=(\S+)\s*$", re.MULTILINE)
 
 
 class SubWorkflowError(GinkgoError, RuntimeError):
@@ -72,14 +74,6 @@ def _parent_depth() -> int:
         return 0
 
 
-def _extract_child_run_id(text: str) -> str | None:
-    """Return the last ``GINKGO_CHILD_RUN_ID=<id>`` line from subprocess output."""
-    matches = _CHILD_RUN_ID_RE.findall(text)
-    if not matches:
-        return None
-    return matches[-1]
-
-
 @dataclass(kw_only=True)
 class SubworkflowRunner:
     """Run ``SubWorkflowDirective`` descriptors via ``ginkgo run`` subprocesses.
@@ -91,9 +85,11 @@ class SubworkflowRunner:
         so interrupts terminate child ``ginkgo run`` processes.
     run_id_provider : Callable[[], str]
         Returns the current parent run id; forwarded to the child via
-        ``GINKGO_CALLED_FROM_PARENT_RUN`` and used in recursion diagnostics.
+        ``GINKGO_PARENT_RUN_ID`` and used in recursion diagnostics.
     runs_root : Path
         Root directory under which child run manifests are written.
+    db_path : Path
+        The provenance database, read to resolve which run the child was.
     python_executable : str
         Interpreter to use for the child subprocess.
     max_depth : int
@@ -103,6 +99,7 @@ class SubworkflowRunner:
     shell_runner: ShellRunner
     run_id_provider: Callable[[], str]
     runs_root: Path
+    db_path: Path
     python_executable: str = field(default_factory=lambda: sys.executable)
     max_depth: int = DEFAULT_MAX_CALL_DEPTH
 
@@ -158,8 +155,10 @@ class SubworkflowRunner:
                 parts.extend(["--config", shlex.quote(path)])
             cmd = " ".join(parts)
 
+            parent_task_id = task_id_for_node(node.node_id)
             extra_env = {
-                PARENT_RUN_ENV: self.run_id_provider() or "",
+                PARENT_RUN_ID_ENV: self.run_id_provider() or "",
+                PARENT_TASK_ID_ENV: parent_task_id,
                 DEPTH_ENV: str(next_depth),
             }
 
@@ -173,8 +172,7 @@ class SubworkflowRunner:
                 mounts=[mount(tmp_dir, mode="ro")] if tmp_params_path is not None else [],
             )
 
-            combined = (completed.stdout or "") + (completed.stderr or "")
-            child_run_id = _extract_child_run_id(combined)
+            child_run_id = self._child_run_id(parent_task_id=parent_task_id)
 
             if completed.returncode != 0:
                 raise SubWorkflowError(
@@ -187,7 +185,7 @@ class SubworkflowRunner:
             if child_run_id is None:
                 raise RuntimeError(
                     f"Sub-workflow {node.task_def.name} ({workflow_path!r}) exited "
-                    "successfully but did not emit a GINKGO_CHILD_RUN_ID line."
+                    f"successfully but recorded no run in {self.db_path}."
                 )
 
             manifest_path = self.runs_root / child_run_id / "manifest.yaml"
@@ -202,3 +200,20 @@ class SubworkflowRunner:
                     tmp_params_path.unlink()
             with suppress(FileNotFoundError, OSError):
                 tmp_dir.rmdir()
+
+    def _child_run_id(self, *, parent_task_id: str) -> str | None:
+        """Return the run the child process recorded for this task, if any.
+
+        The newest wins: a retried sub-workflow task starts a fresh child run
+        each attempt, and the one that just exited is the one being reported.
+        """
+        try:
+            with open_store(self.db_path, readonly=True) as store:
+                rows = store.query(
+                    "SELECT run_id FROM runs WHERE parent_run_id = ? AND parent_task_id = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (self.run_id_provider() or "", parent_task_id),
+                )
+        except StoreError:
+            return None
+        return str(rows[0][0]) if rows else None

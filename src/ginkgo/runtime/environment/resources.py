@@ -53,6 +53,7 @@ class RunResourceMonitor:
         self._sample_interval_seconds = sample_interval_seconds
         self._sink = sink
         self._stop_event = Event()
+        self._stopped = False
         self._lock = Lock()
         self._thread: Thread | None = None
         self._status = "pending"
@@ -89,8 +90,14 @@ class RunResourceMonitor:
         Returns
         -------
         dict[str, Any]
-            A JSON/YAML-serializable resource summary.
+            A JSON/YAML-serializable resource summary. Stopping twice returns
+            the same summary and notifies the sink once: callers stop the
+            monitor on the happy path and again from a ``finally``, and a
+            second final sample is neither new information nor always
+            deliverable — the run it belonged to may already be closed.
         """
+        already_stopped = self._stopped
+        self._stopped = True
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=max(1.0, self._sample_interval_seconds * 2))
@@ -102,7 +109,8 @@ class RunResourceMonitor:
                 self._updated_at = _timestamp()
             snapshot = self._snapshot_locked()
 
-        self._emit(snapshot)
+        if not already_stopped:
+            self._emit(snapshot)
         return snapshot
 
     def current_summary(self) -> dict[str, Any]:
