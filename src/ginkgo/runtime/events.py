@@ -356,3 +356,9 @@ class EventBus:
 def task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a scheduler node."""
     return f"task_{node_id:04d}"
+
+
+def node_id_for_task(task_id: str) -> int:
+    """Return the scheduler node a task identifier names, or ``-1``."""
+    _, _, digits = str(task_id).rpartition("_")
+    return int(digits) if digits.isdigit() else -1

@@ -113,11 +113,6 @@ def _decode_ginkgo_value(value: Any) -> Any:
     return value
 
 
-def _parse_iso(ts: str) -> float:
-    """Parse a Ginkgo event ISO timestamp into a float POSIX time."""
-    return datetime.fromisoformat(ts).timestamp()
-
-
 def _parse_run(*, summary: Any) -> dict[str, Any]:
     """Extract per-task benchmark measurements from one run.
 

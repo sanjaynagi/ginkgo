@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ginkgo.runtime.events import node_id_for_task
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -352,7 +353,9 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         "AND edge IN ('depends_on', 'dynamic_depends_on')",
         (run_id,),
     ):
-        dependencies.setdefault((row["dst_id"], row["edge"]), []).append(_node_id(row["src_id"]))
+        dependencies.setdefault((row["dst_id"], row["edge"]), []).append(
+            node_id_for_task(row["src_id"])
+        )
 
     tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     return tuple(
@@ -466,12 +469,6 @@ def _load_assets(*, tasks: tuple[TaskSummary, ...]) -> tuple[AssetSummary, ...]:
             name = asset.get("name") or key
             out.append(AssetSummary(asset_key=key, name=str(name)))
     return tuple(out)
-
-
-def _node_id(task_id: str) -> int:
-    """Return the scheduler node id encoded in ``task_0007``."""
-    _, _, digits = str(task_id).rpartition("_")
-    return int(digits) if digits.isdigit() else -1
 
 
 def _text(value: Any) -> str | None:

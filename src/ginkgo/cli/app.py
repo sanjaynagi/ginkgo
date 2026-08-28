@@ -416,11 +416,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "rebuild", help="Rebuild projections from the run snapshots on disk"
     )
     db_rebuild.add_argument(
-        "--runs",
-        action="store_true",
-        help="Rebuild run projections (the default, and all Phase 1 can rebuild)",
-    )
-    db_rebuild.add_argument(
         "--dry-run", action="store_true", help="Report what would be rebuilt without writing"
     )
 

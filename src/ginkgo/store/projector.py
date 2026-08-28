@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from ginkgo.runtime.events import node_id_for_task
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
 
-__all__ = ["TERMINAL_EVENTS", "projection_ops"]
+__all__ = ["TERMINAL_EVENTS", "accumulate_seconds", "projection_ops"]
 
 
 TERMINAL_EVENTS = frozenset({"task_completed", "task_failed", "run_completed"})
@@ -134,15 +135,24 @@ def _phase_timed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
     if not phase or seconds <= 0:
         return []
     if event.task_id is None:
-        return [_accumulate("runs", "timings", "run_id = ?", (event.run_id,), phase, seconds)]
+        return [
+            accumulate_seconds(
+                table="runs",
+                column="timings",
+                where="run_id = ?",
+                where_params=(event.run_id,),
+                key=phase,
+                seconds=seconds,
+            )
+        ]
     return [
-        _accumulate(
-            "tasks",
-            "timings",
-            "run_id = ? AND task_id = ?",
-            (event.run_id, event.task_id),
-            phase,
-            seconds,
+        accumulate_seconds(
+            table="tasks",
+            column="timings",
+            where="run_id = ? AND task_id = ?",
+            where_params=(event.run_id, event.task_id),
+            key=phase,
+            seconds=seconds,
         )
     ]
 
@@ -166,7 +176,7 @@ def _graph_node_registered(event: StoredEvent, payload: dict[str, Any]) -> list[
             params=(
                 event.run_id,
                 task_id,
-                _node_id(task_id),
+                node_id_for_task(task_id),
                 payload.get("task_name") or "unknown",
                 payload.get("kind") or "python",
                 payload.get("execution_mode") or "worker",
@@ -579,16 +589,6 @@ def _task_annotated(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                 ),
             )
         )
-    sub_run_id = remaining.get("sub_run_id")
-    if sub_run_id:
-        ops.append(
-            _edge(
-                run_id=event.run_id,
-                src=("run", str(sub_run_id)),
-                dst=("task", str(event.task_id)),
-                edge="child_of",
-            )
-        )
     if remaining:
         # RFC 7386 merge semantics: a field set to null is a field removed,
         # which is exactly what "this run has no render error" means.
@@ -628,7 +628,8 @@ def _edge(*, run_id: str, src: tuple[str, str], dst: tuple[str, str], edge: str)
     )
 
 
-def _accumulate(
+def accumulate_seconds(
+    *,
     table: str,
     column: str,
     where: str,
@@ -636,7 +637,11 @@ def _accumulate(
     key: str,
     seconds: float,
 ) -> ProjectionOp:
-    """Add *seconds* to ``column -> key``, creating the bucket if it is absent."""
+    """Add *seconds* to ``column -> key``, creating the bucket if it is absent.
+
+    The one place a timing bucket is accumulated, so the writer's record of its
+    own cost lands in the same shape as every phase the run reports.
+    """
     path = '$."' + key.replace('"', "") + '"'
     return ProjectionOp(
         sql=f"""
@@ -661,12 +666,6 @@ def _remote_uri(entry: dict[str, Any]) -> str | None:
     if not (scheme and bucket and key):
         return None
     return f"{scheme}://{bucket}/{key}"
-
-
-def _node_id(task_id: str) -> int:
-    """Return the scheduler node id encoded in ``task_0007``."""
-    _, _, digits = task_id.rpartition("_")
-    return int(digits) if digits.isdigit() else -1
 
 
 def _dumps(value: Any) -> str:

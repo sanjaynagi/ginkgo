@@ -153,7 +153,11 @@ def test_a_write_failure_fails_the_run_and_names_the_database(tmp_path: Path) ->
     with pytest.raises(StoreError, match=str(path)):
         writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
         writer.flush()
-    writer.close()
+    # The failure is kept, not consumed: events reach put() from the resource
+    # sampler's own thread, where a raise would die with the thread, so the
+    # main thread's close() has to fail the run too.
+    with pytest.raises(StoreError, match=str(path)):
+        writer.close()
 
 
 def test_close_is_idempotent(tmp_path: Path) -> None:

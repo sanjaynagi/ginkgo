@@ -32,7 +32,6 @@ from ginkgo.envs.mounts import mount
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.runtime.task_runners.shell import ShellRunner
-from ginkgo.store.errors import StoreError
 from ginkgo.store.sqlite import open_store
 
 
@@ -207,13 +206,10 @@ class SubworkflowRunner:
         The newest wins: a retried sub-workflow task starts a fresh child run
         each attempt, and the one that just exited is the one being reported.
         """
-        try:
-            with open_store(self.db_path, readonly=True) as store:
-                rows = store.query(
-                    "SELECT run_id FROM runs WHERE parent_run_id = ? AND parent_task_id = ? "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (self.run_id_provider() or "", parent_task_id),
-                )
-        except StoreError:
-            return None
+        with open_store(self.db_path, readonly=True) as store:
+            rows = store.query(
+                "SELECT run_id FROM runs WHERE parent_run_id = ? AND parent_task_id = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (self.run_id_provider() or "", parent_task_id),
+            )
         return str(rows[0][0]) if rows else None

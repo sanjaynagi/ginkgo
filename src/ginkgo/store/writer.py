@@ -29,7 +29,7 @@ from typing import Any
 
 from ginkgo.runtime.events import GinkgoEvent
 from ginkgo.store.errors import StoreError
-from ginkgo.store.projector import TERMINAL_EVENTS, projection_ops
+from ginkgo.store.projector import TERMINAL_EVENTS, accumulate_seconds, projection_ops
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
 from ginkgo.store.sqlite import open_store
 
@@ -156,17 +156,15 @@ class StoreWriter:
     # ------------------------------------------------------------- internals
 
     def _raise_pending(self) -> None:
-        """Re-raise the writer thread's failure, once.
+        """Re-raise the writer thread's failure.
 
-        Once is enough: the first raise fails the run. Raising again from the
-        ``close()`` in the caller's ``finally`` would replace that failure with
-        a copy of itself and lose the traceback that matters.
+        Every time, not once: events reach ``put`` from the resource sampler's
+        own thread, where a raised error would die with the thread. Keeping it
+        means the ``flush()`` or ``close()`` on the main thread still fails the
+        run rather than letting it report success over an incomplete ledger.
         """
-        error = self._error
-        if error is None:
-            return
-        self._error = None
-        raise error
+        if self._error is not None:
+            raise self._error
 
     def _run(self) -> None:
         """Own the connection and apply batches until asked to stop."""
@@ -235,19 +233,17 @@ class StoreWriter:
         """Record what writing the ledger cost this run, for the benchmarks."""
         if self._write_seconds <= 0:
             return
-        path = '$."provenance_write_seconds"'
         try:
             with store.transaction():
                 store.apply(
                     [
-                        ProjectionOp(
-                            sql=(
-                                "UPDATE runs SET timings = json_set("
-                                "  coalesce(timings, '{}'), ?,"
-                                "  round(coalesce(json_extract(timings, ?), 0) + ?, 6)"
-                                ") WHERE run_id = ?"
-                            ),
-                            params=(path, path, round(self._write_seconds, 6), self._run_id),
+                        accumulate_seconds(
+                            table="runs",
+                            column="timings",
+                            where="run_id = ?",
+                            where_params=(self._run_id,),
+                            key="provenance_write_seconds",
+                            seconds=round(self._write_seconds, 6),
                         )
                     ]
                 )
