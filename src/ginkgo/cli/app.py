@@ -412,6 +412,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
     db_subparsers.add_parser("check", help="Check database integrity and schema version")
     db_subparsers.add_parser("path", help="Print the provenance database path")
+    db_rebuild = db_subparsers.add_parser(
+        "rebuild", help="Rebuild projections from the run snapshots on disk"
+    )
+    db_rebuild.add_argument(
+        "--runs",
+        action="store_true",
+        help="Rebuild run projections (the default, and all Phase 1 can rebuild)",
+    )
+    db_rebuild.add_argument(
+        "--dry-run", action="store_true", help="Report what would be rebuilt without writing"
+    )
 
     debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")
     debug_parser.add_argument("run_id", nargs="?")
