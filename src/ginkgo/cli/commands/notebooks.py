@@ -55,13 +55,10 @@ def command_notebooks(args) -> int:
     rich_console = console(sys.stdout, width=None if is_tty else 240)
     rich_console.print("[bold green]🌿 ginkgo[/] [bold]notebooks[/]\n")
 
-    try:
-        with query.open() as reader:
-            entries = list_notebook_artifact_pairs(reader=reader)
-    except FileNotFoundError:
-        # A workspace with no ledger has no notebooks, which is an empty
-        # listing rather than a failure.
-        entries = []
+    # A workspace with no ledger has no notebooks, which is an empty listing
+    # rather than a failure.
+    with query.open(missing_ok=True) as reader:
+        entries = list_notebook_artifact_pairs(reader=reader)
     if not entries:
         rich_console.print("[dim]No executed notebooks found.[/]")
         return 0

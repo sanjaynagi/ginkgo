@@ -1,6 +1,7 @@
 """Unit tests for the evaluator runtime."""
 
 from concurrent.futures import Future, ProcessPoolExecutor
+import json
 from pathlib import Path
 import re
 import shutil
@@ -35,6 +36,7 @@ from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.caching.provenance import make_run_id
@@ -1839,6 +1841,22 @@ class TestAssets:
             parent = catalog.version_by_id(parents[0])
             assert parent is not None
             assert parent.key.name == "prepared_data"
+
+        # The catalog row is the index; the ledger still records that each
+        # version came into being, with the parents it was built from.
+        recorder.recorder.flush()
+        with open_store(recorder.db, readonly=True) as store:
+            rows = store.query(
+                "SELECT asset_key, payload FROM events WHERE type = 'asset_materialized' "
+                "ORDER BY seq"
+            )
+        assert [row["asset_key"] for row in rows] == [
+            "file:prepared_data",
+            "file:transformed_data",
+        ]
+        downstream = json.loads(rows[1]["payload"])
+        assert downstream["version_id"] == result.version_id
+        assert [parent["asset_key"] for parent in downstream["parents"]] == ["file:prepared_data"]
 
     def test_asset_ref_cache_identity_drives_downstream_cache(
         self,

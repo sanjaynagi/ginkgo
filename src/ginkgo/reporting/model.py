@@ -18,13 +18,15 @@ from typing import Any
 from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo import query
+from ginkgo.query import Query
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
     ASSET_GROUP_METADATA_KEY,
 )
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.wildcards import slug
@@ -483,11 +485,38 @@ def build_report_data(
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
-    # A report is a read: it opens the index read-only, and where a workspace
-    # has no database it reads an empty one rather than creating it.
-    index = CacheIndex.for_reading(layout.db)
+    # A report is a read: it opens the ledger read-only through the same
+    # reader every other read path uses, and where a workspace has no database
+    # it reads an empty one rather than creating it.
+    with query.open(layout, missing_ok=True) as reader:
+        return _build(
+            summary=summary,
+            reader=reader,
+            run_dir=run_dir,
+            artifacts_root=artifacts_root,
+            workspace_label=workspace_label,
+            ginkgo_version=ginkgo_version,
+            generated_at=generated_at,
+            policy=policy,
+        )
+
+
+def _build(
+    *,
+    summary: RunSummary,
+    reader: Query,
+    run_dir: Path,
+    artifacts_root: Path,
+    workspace_label: str,
+    ginkgo_version: str,
+    generated_at: datetime | None,
+    policy: SizingPolicy,
+) -> ReportData:
+    """Assemble the report's sections against one open reader."""
     artifact_store = (
-        LocalArtifactStore(root=artifacts_root, index=index) if artifacts_root.exists() else None
+        LocalArtifactStore(root=artifacts_root, index=CacheIndex.attached_to(reader.catalog))
+        if artifacts_root.exists()
+        else None
     )
 
     # Sections — each returns its typed pieces plus any copy instructions.
@@ -503,7 +532,7 @@ def build_report_data(
     graph = _build_graph(summary=summary, failures=failures)
     assets = _build_assets(
         summary=summary,
-        catalog=AssetStore.attached_to(index),
+        catalog=reader.catalog,
         artifact_store=artifact_store,
         policy=policy,
         artifact_copies=artifact_copies,

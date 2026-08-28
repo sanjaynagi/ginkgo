@@ -24,7 +24,7 @@ from ginkgo.runtime.caching.cache import key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.store.protocol import ProvenanceStore
-from ginkgo.store.sqlite import open_store
+from ginkgo.store.sqlite import MEMORY, open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = [
@@ -246,6 +246,10 @@ class Query:
     def __init__(self, store: ProvenanceStore, *, layout: WorkspaceLayout) -> None:
         self._store = store
         self._layout = layout
+        # One catalog over this reader's connection, sharing its lifetime: a
+        # fresh one per access would mean a fresh lock per access, which
+        # guards nothing.
+        self._catalog = AssetStore(store=store, owns_store=False)
 
     @property
     def store(self) -> ProvenanceStore:
@@ -555,7 +559,7 @@ class Query:
     @property
     def catalog(self) -> AssetStore:
         """The asset catalog over this reader's connection."""
-        return AssetStore(store=self._store, owns_store=False)
+        return self._catalog
 
     def lineage(
         self,
@@ -742,6 +746,7 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     layout: WorkspaceLayout | None = None,
     *,
     readonly: bool = True,
+    missing_ok: bool = False,
 ) -> Query:
     """Open a workspace's ledger for reading.
 
@@ -751,6 +756,11 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
         The workspace. Defaults to the current directory's.
     readonly : bool, optional
         Keep this ``True`` unless you are the run that owns the write lock.
+    missing_ok : bool, optional
+        Read an empty ledger instead of raising when the workspace has none.
+        What a listing wants: a workspace nobody has run anything in holds no
+        assets and no runs, and that is an answer rather than a failure. The
+        empty ledger is in memory, so a read path still never creates a file.
 
     Returns
     -------
@@ -759,14 +769,17 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     Raises
     ------
     FileNotFoundError
-        If the workspace has no ledger yet, which is to say no runs.
+        If the workspace has no ledger yet — which is to say no runs — and
+        *missing_ok* is False.
     StoreError
         If the database exists but cannot be read.
     """
     layout = layout if layout is not None else WorkspaceLayout.relative()
     path = Path(layout.db)
     if readonly and not path.is_file():
-        raise FileNotFoundError(f"No runs found: there is no provenance database at {path}")
+        if not missing_ok:
+            raise FileNotFoundError(f"No runs found: there is no provenance database at {path}")
+        return Query(open_store(MEMORY), layout=layout)
     return Query(open_store(path, readonly=readonly), layout=layout)
 
 

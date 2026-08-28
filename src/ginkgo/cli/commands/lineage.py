@@ -14,6 +14,12 @@ from ginkgo.query import LineageGraph, Provenance
 
 __all__ = ["command_lineage", "render_lineage_tree"]
 
+_EMPTY_WALK = {
+    "upstream": "No upstream assets: no catalogued version was consumed to build this one.",
+    "downstream": "No downstream assets: no catalogued version was derived from this one.",
+}
+"""What to say when the walk found nothing but the version it started at."""
+
 
 def command_lineage(args) -> int:
     """Handle ``ginkgo lineage`` — trace one asset, path, or artifact."""
@@ -24,7 +30,7 @@ def command_lineage(args) -> int:
 
     # An unknown asset or path raises, and the CLI's own error handler reports
     # it — the same path `ginkgo asset` takes for the same mistake.
-    with query.open() as reader:
+    with query.open(missing_ok=True) as reader:
         if ":" in args.target:
             key_text, separator, selector = args.target.partition("@")
             graph = reader.lineage(
@@ -47,8 +53,7 @@ def _render_graph(rich_console, *, graph: LineageGraph, as_json: bool) -> int:
     )
     rich_console.print(render_lineage_tree(graph))
     if len(graph.versions) == 1:
-        word = "produced from" if graph.direction == "upstream" else "consumed by"
-        rich_console.print(f"\n[dim]No assets recorded as {word} this version.[/]")
+        rich_console.print(f"\n[dim]{_EMPTY_WALK[graph.direction]}[/]")
     return 0
 
 

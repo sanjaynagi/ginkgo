@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from rich import box
 from rich.table import Table
 
+from ginkgo import query
 from ginkgo.cli.common import console
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
@@ -27,8 +28,13 @@ def command_asset(args) -> int:
     is_tty = getattr(sys.stdout, "isatty", lambda: False)()
     rich_console = console(sys.stdout, width=None if is_tty else 160)
     layout = WorkspaceLayout.relative()
-    with AssetStore.for_reading(layout.db) as store:
-        return _run_asset_command(args=args, rich_console=rich_console, store=store, layout=layout)
+    # A workspace nobody has run anything in has an empty catalog, not a
+    # missing one — the same answer `ginkgo lineage` and `ginkgo notebooks`
+    # give, so that every read of an empty workspace reads alike.
+    with query.open(missing_ok=True) as reader:
+        return _run_asset_command(
+            args=args, rich_console=rich_console, store=reader.catalog, layout=layout
+        )
 
 
 def _run_asset_command(*, args, rich_console, store: AssetStore, layout: WorkspaceLayout) -> int:

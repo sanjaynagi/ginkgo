@@ -738,7 +738,7 @@ class TestCliLineage:
         result = _run_cli("lineage", "file:absent", cwd=Path.cwd())
 
         assert result.returncode == 1
-        assert "No versions registered" in result.stderr or "absent" in result.stderr
+        assert "No versions registered for asset file:absent" in result.stderr
 
 
 class TestCliEnv:

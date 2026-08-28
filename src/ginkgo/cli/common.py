@@ -82,11 +82,5 @@ def open_run(run_id: str | None) -> Iterator[tuple[Query, str]]:
         workspace lacks the ledger — from where the user stands those are the
         same thing.
     """
-    try:
-        reader = query.open()
-    except FileNotFoundError:
-        if run_id is not None:
-            raise FileNotFoundError(f"Run not found: {run_id}") from None
-        raise
-    with reader:
+    with query.open(missing_ok=True) as reader:
         yield reader, resolve_run_id(reader, run_id)
