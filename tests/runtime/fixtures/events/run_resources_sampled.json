@@ -1,0 +1,10 @@
+{
+  "event": "run_resources_sampled",
+  "resources": {
+    "cpu_percent": 42.0,
+    "rss_bytes": 1048576
+  },
+  "run_id": "run_20260828_090000",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

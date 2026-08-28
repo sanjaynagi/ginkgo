@@ -103,6 +103,13 @@ ginkgo/
 │       ├── staged.py        # staged (download) access path
 │       ├── worker_hydration.py  # worker-side input hydration
 │       └── drivers/         # per-provider FUSE drivers (s3, gcsfuse, rclone)
+├── store/
+│   ├── __init__.py          # open_store, ProvenanceStore
+│   ├── protocol.py          # ProvenanceStore: the ledger's write and read surface
+│   ├── sqlite.py            # SqliteStore: connection, pragmas, transactions
+│   ├── schema.py            # versioned DDL steps and migrate()
+│   ├── fs.py                # network-filesystem detection for the SQLite warning
+│   └── errors.py            # StoreError, SchemaVersionError, StoreLockedError
 ├── reporting/
 │   ├── model.py             # ReportData built from provenance and the catalog
 │   ├── render.py            # Jinja renderer producing an HTML bundle
@@ -118,8 +125,8 @@ ginkgo/
 │   ├── workspace.py         # canonical workflow discovery
 │   ├── workflow_params.py   # CLI side of ginkgo.param
 │   ├── commands/            # one module per command: run, inspect, cache,
-│   │                        # asset, debug, doctor, env, init, models,
-│   │                        # notebooks, report, secrets, test
+│   │                        # asset, db, debug, doctor, env, init, models,
+│   │                        # notebooks, report, secrets
 │   └── renderers/           # rich live output, JSONL agent output, dry-run
 │                            # and debug renderers, shared formatting
 └── templates/
