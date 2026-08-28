@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import shutil
 import stat
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -35,7 +34,7 @@ from ginkgo.runtime.artifacts.artifact_model import (
 from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_file
-from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.runtime.caching.index import CacheIndex, now_iso
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -431,7 +430,7 @@ class LocalArtifactStore:
             digest_hex=digest,
             extension=ext,
             size=len(data),
-            created_at=_now_iso(),
+            created_at=now_iso(),
             storage_backend="local",
         )
         self.put_record(record)
@@ -490,7 +489,7 @@ class LocalArtifactStore:
             digest_hex=digest,
             extension=ext,
             size=size,
-            created_at=_now_iso(),
+            created_at=now_iso(),
             storage_backend="local",
         )
         self.put_record(record)
@@ -527,7 +526,7 @@ class LocalArtifactStore:
             digest_hex=tree_ref.digest_hex,
             extension="",
             size=total_size,
-            created_at=_now_iso(),
+            created_at=now_iso(),
             storage_backend="local",
         )
         self.put_record(record)
@@ -644,11 +643,6 @@ class LocalArtifactStore:
 # -- module-level helpers --------------------------------------------------
 
 _READ_ONLY_FILE = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH  # 0o444
-
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _remove_dest(dest_path: Path) -> None:

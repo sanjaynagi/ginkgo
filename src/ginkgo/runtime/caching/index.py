@@ -109,19 +109,6 @@ class CacheEntry:
         value = self._row["env_materialized_digest"]
         return str(value) if value is not None else None
 
-    def as_meta(self) -> dict[str, Any]:
-        """Return the entry as the flat mapping :func:`key_components` reads."""
-        return {
-            "cache_key": self._row["cache_key"],
-            "function": self._row["function"],
-            "version": self._row["version"],
-            "source_hash": self._row["source_hash"],
-            "extra_source_hash": self._row["extra_source_hash"],
-            "env": self._row["env"],
-            "env_hash": _loads(self._row["env_hash"]),
-            "input_hashes": _loads(self._row["input_hashes"]),
-        }
-
 
 class CacheIndex:
     """The cache's view of the provenance database.
@@ -200,8 +187,8 @@ class CacheIndex:
         cache_key : str
             The content-addressed key.
         meta : Mapping[str, Any]
-            The entry's facts: what :meth:`CacheEntry.as_meta` returns, plus
-            ``env_materialized_digest``, ``inputs`` and ``extra``.
+            The entry's facts, in the flat shape
+            :func:`~ginkgo.runtime.caching.cache.key_components` reads.
         components : Mapping[str, Any]
             Labelled cache-key components, from
             :func:`~ginkgo.runtime.caching.cache.key_components`.

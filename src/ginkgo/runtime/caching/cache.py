@@ -278,16 +278,18 @@ class CacheStore:
         artifact_ids = {path: record.artifact_id for path, record in records.items()}
 
         entry_dir = self._entry_dir(cache_key)
-        size_bytes = 0
         if not entry_dir.exists():
             temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
             try:
-                encoded = json.dumps(
-                    encode_value(result, base_dir=temp_dir, artifact_store=self._artifact_store),
-                    sort_keys=True,
+                (temp_dir / "output.json").write_text(
+                    json.dumps(
+                        encode_value(
+                            result, base_dir=temp_dir, artifact_store=self._artifact_store
+                        ),
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
                 )
-                (temp_dir / "output.json").write_text(encoded, encoding="utf-8")
-                size_bytes = len(encoded.encode("utf-8"))
 
                 try:
                     os.replace(temp_dir, entry_dir)
@@ -296,6 +298,11 @@ class CacheStore:
             finally:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
+
+        # Measured from disk rather than from what was just written, so a
+        # re-save over bytes another run wrote records their size, not zero.
+        output_path = entry_dir / "output.json"
+        size_bytes = output_path.stat().st_size if output_path.is_file() else 0
 
         meta = {
             "cache_key": cache_key,
