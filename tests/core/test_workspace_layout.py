@@ -82,7 +82,7 @@ class TestDirectories:
             layout.staging_cache_file,
         }
 
-        assert len(paths) == 10
+        assert len(paths) == 9
         assert all(path.parent == layout.root for path in paths)
 
     def test_creates_no_directories(self, tmp_path):
