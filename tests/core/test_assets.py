@@ -898,7 +898,9 @@ class TestModelsCommand:
         rc = main(["models"])
         assert rc == 1
         output = capsys.readouterr().out
-        assert "No runs found" in output
+        # The run domain's own answer, not a missing-database error: an empty
+        # workspace reads the same here as it does for inspect and notebooks.
+        assert "No runs recorded in" in output
 
     def test_lists_models_from_latest_run(
         self,
