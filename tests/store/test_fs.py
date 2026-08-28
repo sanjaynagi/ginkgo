@@ -66,10 +66,20 @@ class TestWarning:
         monkeypatch.setattr(fs, "_warned", False)
         monkeypatch.setattr(fs, "is_network_filesystem", lambda path: "lustre")
 
-        fs.warn_if_network_filesystem(Path("/scratch/.ginkgo/ginkgo.db"))
-        fs.warn_if_network_filesystem(Path("/scratch/.ginkgo/ginkgo.db"))
+        fs.warn_if_network_filesystem(Path("/scratch/ledger/ginkgo.db"))
+        fs.warn_if_network_filesystem(Path("/scratch/ledger/ginkgo.db"))
 
-        assert capsys.readouterr().err == (
-            "⚠ .ginkgo is on lustre; SQLite locking may be unreliable. "
-            "Set GINKGO_DB to a local path.\n"
+        # Rich wraps the line to the console width; the warning is one message.
+        assert " ".join(capsys.readouterr().err.split()) == (
+            "⚠ /scratch/ledger/ginkgo.db is on lustre; SQLite locking may be "
+            "unreliable. Set GINKGO_DB to a local path."
         )
+
+    def test_the_warning_names_the_relocated_database(self, tmp_path, capsys, monkeypatch):
+        """GINKGO_DB is exactly the case where naming ``.ginkgo`` would mislead."""
+        monkeypatch.setattr(fs, "_warned", False)
+        monkeypatch.setattr(fs, "is_network_filesystem", lambda path: "nfs4")
+
+        fs.warn_if_network_filesystem(Path("/mnt/shared/ledger.db"))
+
+        assert "/mnt/shared/ledger.db is on nfs4" in " ".join(capsys.readouterr().err.split())

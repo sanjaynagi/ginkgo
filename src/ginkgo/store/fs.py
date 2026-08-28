@@ -53,6 +53,10 @@ def is_network_filesystem(path: Path) -> str | None:
 def warn_if_network_filesystem(path: Path) -> None:
     """Warn on stderr, at most once per process, if *path* is on a network mount.
 
+    The warning names *path* rather than ``.ginkgo``, because the case it most
+    needs to be clear about is the one where ``GINKGO_DB`` already moved the
+    database somewhere else.
+
     Parameters
     ----------
     path : Path
@@ -65,10 +69,14 @@ def warn_if_network_filesystem(path: Path) -> None:
     _warned = True
     if fstype is None:
         return
-    print(
-        f"⚠ .ginkgo is on {fstype}; SQLite locking may be unreliable. "
-        "Set GINKGO_DB to a local path.",
-        file=sys.stderr,
+
+    # Imported here rather than at module scope so the store does not depend on
+    # the CLI package to be importable; this is the one presenter it needs.
+    from ginkgo.cli.common import console
+
+    console(sys.stderr).print(
+        f"[yellow]⚠[/] {path} is on {fstype}; SQLite locking may be unreliable. "
+        "Set GINKGO_DB to a local path."
     )
 
 
