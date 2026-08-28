@@ -4,8 +4,11 @@ The ``events`` table is the record of what happened; every other run table is
 a view of it maintained forward. This module is the whole of that maintenance:
 one pure function per event type, each returning the
 :class:`~ginkgo.store.protocol.ProjectionOp` list that event causes. Nothing
-here touches a connection, so a projector can be tested by comparing SQL, and
-the same functions serve both the live write path and ``db rebuild``.
+here touches a connection, so a projector can be tested by comparing SQL.
+
+Events reach this module as :class:`~ginkgo.store.protocol.StoredEvent` rows,
+never as ``GinkgoEvent`` objects: ``store/`` sits below ``runtime/`` and must
+not import from it.
 
 Facts that the ledger records but no reader filters or joins on stay inside the
 JSON columns (``tasks.extra``, ``tasks.output_summary``). The narrow columns
@@ -18,7 +21,6 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from ginkgo.runtime.events import node_id_for_task
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
 
 __all__ = ["TERMINAL_EVENTS", "accumulate_seconds", "projection_ops"]
@@ -26,6 +28,9 @@ __all__ = ["TERMINAL_EVENTS", "accumulate_seconds", "projection_ops"]
 
 TERMINAL_EVENTS = frozenset({"task_completed", "task_failed", "run_completed"})
 """Events after which the writer commits, so a reader can see them at once."""
+
+_ABSENT = object()
+"""A parameter that was hashed but has no rendered value to summarise."""
 
 
 def projection_ops(event: StoredEvent) -> list[ProjectionOp]:
@@ -132,7 +137,9 @@ def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Projecti
 def _phase_timed(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
     phase = str(payload.get("phase") or "")
     seconds = float(payload.get("seconds") or 0.0)
-    if not phase or seconds <= 0:
+    # A cached task's execute phase rounds to zero and is still a phase that
+    # ran; only a negative reading is nonsense.
+    if not phase or seconds < 0:
         return []
     if event.task_id is None:
         return [
@@ -176,7 +183,7 @@ def _graph_node_registered(event: StoredEvent, payload: dict[str, Any]) -> list[
             params=(
                 event.run_id,
                 task_id,
-                node_id_for_task(task_id),
+                int(payload.get("node_id", -1)),
                 payload.get("task_name") or "unknown",
                 payload.get("kind") or "python",
                 payload.get("execution_mode") or "worker",
@@ -233,7 +240,7 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                 payload.get("cache_key"),
                 payload.get("source_hash"),
                 payload.get("version"),
-                _dumps_or_none(payload.get("env_hash")),
+                payload.get("env_hash"),
                 payload.get("extra_source_hash"),
                 payload.get("display_label"),
                 event.run_id,
@@ -253,7 +260,12 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
         for entry in payload.get("input_hashes") or []
         if isinstance(entry, dict)
     }
-    for param, value in (payload.get("inputs") or {}).items():
+    inputs = payload.get("inputs") or {}
+    # Every parameter that was hashed gets a row, including one the rendered
+    # arguments do not name (a tmp_dir, say): the digest is the fact worth
+    # keeping, and a missing summary is not a reason to drop it.
+    parameters = {str(param): inputs.get(param, _ABSENT) for param in {**inputs, **hashes}}
+    for param, value in parameters.items():
         entry = hashes.get(str(param), {})
         ops.append(
             ProjectionOp(
@@ -272,7 +284,7 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                     task_id,
                     str(param),
                     entry.get("type"),
-                    _dumps(value),
+                    None if value is _ABSENT else _dumps(value),
                     _digest_of(entry),
                     entry.get("asset"),
                     entry.get("version_id") if entry.get("asset") else None,

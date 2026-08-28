@@ -8,16 +8,23 @@ from pathlib import Path
 import pytest
 
 from ginkgo.runtime.events import (
+    GinkgoEvent,
     GraphNodeRegistered,
     RunCompleted,
     RunStarted,
     TaskCompleted,
     TaskNotice,
 )
+from ginkgo.runtime.store_recorder import stored_event
 from ginkgo.store.errors import StoreError
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.sqlite import open_store
-from ginkgo.store.writer import MAX_BATCH_EVENTS, StoreWriter, stored_event
+from ginkgo.store.writer import MAX_BATCH_EVENTS, StoreWriter
+
+
+def _put(writer: StoreWriter, event: GinkgoEvent) -> None:
+    """Queue one event, translating it the way the recorder does."""
+    writer.put(stored_event(event))
 
 
 def _writer(tmp_path: Path, *, run_id: str = "run-1") -> StoreWriter:
@@ -54,15 +61,16 @@ def test_stored_event_lifts_the_filtered_columns_out_of_the_payload() -> None:
 
 def test_events_are_stored_in_the_order_they_were_emitted(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     for index in range(20):
-        writer.put(
+        _put(
+            writer,
             TaskNotice(
                 run_id="run-1",
                 task_id=f"task_{index:04d}",
                 task_name="demo",
                 message=str(index),
-            )
+            ),
         )
     writer.close()
 
@@ -74,9 +82,9 @@ def test_events_are_stored_in_the_order_they_were_emitted(tmp_path: Path) -> Non
 
 def test_a_terminal_event_is_readable_before_the_writer_closes(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
-    writer.put(GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
-    writer.put(TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
+    _put(writer, TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
 
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -92,7 +100,7 @@ def test_a_terminal_event_is_readable_before_the_writer_closes(tmp_path: Path) -
 
 def test_flush_makes_everything_queued_so_far_visible(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     writer.flush()
 
     with open_store(tmp_path / "ginkgo.db", readonly=True) as store:
@@ -102,11 +110,12 @@ def test_flush_makes_everything_queued_so_far_visible(tmp_path: Path) -> None:
 
 def test_a_batch_larger_than_the_cap_still_lands_whole(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     total = MAX_BATCH_EVENTS * 2 + 7
     for index in range(total):
-        writer.put(
-            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index))
+        _put(
+            writer,
+            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index)),
         )
     writer.close()
 
@@ -117,8 +126,9 @@ def test_ten_thousand_events_land_quickly(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
     started = time.perf_counter()
     for index in range(10_000):
-        writer.put(
-            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index))
+        _put(
+            writer,
+            TaskNotice(run_id="run-1", task_id="task_0000", task_name="demo", message=str(index)),
         )
     writer.close()
     elapsed = time.perf_counter() - started
@@ -129,8 +139,8 @@ def test_ten_thousand_events_land_quickly(tmp_path: Path) -> None:
 
 def test_the_run_records_what_writing_its_ledger_cost(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
-    writer.put(RunCompleted(run_id="run-1", status="success"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunCompleted(run_id="run-1", status="success"))
     writer.close()
 
     with open_store(tmp_path / "ginkgo.db", readonly=True) as store:
@@ -143,7 +153,7 @@ def test_the_run_records_what_writing_its_ledger_cost(tmp_path: Path) -> None:
 def test_a_write_failure_fails_the_run_and_names_the_database(tmp_path: Path) -> None:
     path = tmp_path / "ginkgo.db"
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     writer.flush()
     # Take the projection table out from under the writer: the next batch's
     # insert then has nowhere to land.
@@ -151,7 +161,7 @@ def test_a_write_failure_fails_the_run_and_names_the_database(tmp_path: Path) ->
         store.apply([ProjectionOp(sql="DROP TABLE runs", params=())])
 
     with pytest.raises(StoreError, match=str(path)):
-        writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+        _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
         writer.flush()
     # The failure is kept, not consumed: events reach put() from the resource
     # sampler's own thread, where a raise would die with the thread, so the
@@ -162,7 +172,7 @@ def test_a_write_failure_fails_the_run_and_names_the_database(tmp_path: Path) ->
 
 def test_close_is_idempotent(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
-    writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+    _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
     writer.close()
     writer.close()
 
@@ -174,4 +184,4 @@ def test_putting_after_close_is_refused(tmp_path: Path) -> None:
     writer.close()
 
     with pytest.raises(StoreError, match="already closed"):
-        writer.put(RunStarted(run_id="run-1", workflow="flow.py"))
+        _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))

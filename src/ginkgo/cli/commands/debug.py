@@ -21,8 +21,8 @@ from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 def command_debug(args) -> int:
     """Handle ``ginkgo debug``."""
     rich_console = console(sys.stdout)
-    with open_run(args.run_id) as (store, run_id):
-        summary = store.run(run_id)
+    with open_run(args.run_id) as (reader, run_id):
+        summary = reader.run(run_id)
 
     failed_tasks = list(summary.failed_tasks)
     run_failed = summary.status == "failed"

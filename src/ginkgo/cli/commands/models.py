@@ -30,8 +30,8 @@ def command_models(args) -> int:
     rich_console = console(sys.stdout, width=None if is_tty else 160)
 
     try:
-        with open_run(getattr(args, "run_id", None)) as (store, run_id):
-            summary = store.run(run_id)
+        with open_run(getattr(args, "run_id", None)) as (reader, run_id):
+            summary = reader.run(run_id)
     except FileNotFoundError as exc:
         rich_console.print(f"[red]{exc}[/]")
         return 1

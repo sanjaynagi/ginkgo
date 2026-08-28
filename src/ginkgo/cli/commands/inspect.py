@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -16,7 +15,6 @@ from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.runtime.run_summary import RunSummary
 
 
 def command_inspect(args) -> int:
@@ -31,8 +29,8 @@ def command_inspect(args) -> int:
             param_extras=getattr(args, "param_extras", ()),
         )
     else:
-        with open_run(args.run_id) as (store, run_id):
-            payload = inspect_run(summary=store.run(run_id))
+        with open_run(args.run_id) as (reader, run_id):
+            payload = reader.run(run_id).to_payload()
 
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -112,66 +110,3 @@ def inspect_workflow(
         "params": params,
         "tasks": nodes,
     }
-
-
-def inspect_run(*, summary: RunSummary) -> dict[str, Any]:
-    """Return a normalized run snapshot from the ledger."""
-    task_rows = []
-    dynamic_expansions = []
-    for task in summary.tasks:
-        dynamic_dependencies = [f"task_{dep:04d}" for dep in task.dynamic_dependency_ids]
-        if dynamic_dependencies:
-            dynamic_expansions.append(
-                {
-                    "parent_task_id": task.task_key,
-                    "dynamic_dependency_ids": dynamic_dependencies,
-                }
-            )
-        row: dict[str, Any] = {
-            "task_id": task.task_key,
-            "task_name": task_base_name(task.name),
-            "status": task.status,
-            "attempts": task.attempts,
-            "cache_key": task.cache_key,
-            "cached": task.cached,
-            "exit_code": task.exit_code,
-            "env": task.env,
-            "kind": task.kind,
-            "dependency_ids": [f"task_{dep:04d}" for dep in task.dependency_ids],
-            "dynamic_dependency_ids": dynamic_dependencies,
-            "failure": task.failure,
-            "outputs": list(task.outputs),
-            "stdout_log": task.stdout_log,
-            "stderr_log": task.stderr_log,
-            "started_at": _iso(task.started_at),
-            "finished_at": _iso(task.finished_at),
-            "timings": task.timings,
-        }
-        # Remote execution metadata (present only for remote tasks).
-        if task.remote_job_id is not None:
-            row["remote_job_id"] = task.remote_job_id
-        if task.execution_backend is not None:
-            row["execution_backend"] = task.execution_backend
-        if task.resource_usage is not None:
-            row["resource_usage"] = task.resource_usage
-        if task.sub_run_id is not None:
-            row["sub_run_id"] = task.sub_run_id
-        task_rows.append(row)
-
-    return {
-        "run_id": summary.run_id,
-        "workflow": summary.workflow,
-        "status": summary.status,
-        "started_at": _iso(summary.started_at),
-        "finished_at": _iso(summary.finished_at),
-        "error": summary.error,
-        "resources": summary.resources,
-        "timings": summary.timings,
-        "tasks": task_rows,
-        "dynamic_expansions": dynamic_expansions,
-    }
-
-
-def _iso(value: datetime | None) -> str | None:
-    """Return an ISO timestamp string, or ``None``."""
-    return value.isoformat() if value is not None else None

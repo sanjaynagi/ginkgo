@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ginkgo.runtime.events import node_id_for_task
+from ginkgo.runtime.events import task_id_for_node
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -208,6 +208,12 @@ class RunSummary:
         The run's directory, which holds its logs, notebooks and snapshot.
     error : str | None
         The failure that ended the run, when one did.
+    jobs, cores, memory : int | None
+        The budgets the run was given.
+    ginkgo_version : str | None
+        The ginkgo that ran it.
+    parent_run_id, parent_task_id : str | None
+        The run and task that called this one, when it is a sub-workflow.
     resources : dict[str, Any]
         Resource summary sampled during the run.
     params : dict[str, Any]
@@ -233,6 +239,12 @@ class RunSummary:
     duration_s: float | None
     run_dir: Path
     error: str | None
+    jobs: int | None
+    cores: int | None
+    memory: int | None
+    ginkgo_version: str | None
+    parent_run_id: str | None
+    parent_task_id: str | None
     resources: dict[str, Any]
     params: dict[str, Any]
     param_sources: dict[str, str]
@@ -289,7 +301,13 @@ class RunSummary:
             finished_at=finished_at,
             duration_s=_duration_seconds(started_at, finished_at),
             run_dir=root / run_id,
-            error=run.get("error") if isinstance(run.get("error"), str) else None,
+            error=_text(run.get("error")),
+            jobs=run.get("jobs"),
+            cores=run.get("cores"),
+            memory=run.get("memory"),
+            ginkgo_version=_text(run.get("ginkgo_version")),
+            parent_run_id=_text(run.get("parent_run_id")),
+            parent_task_id=_text(run.get("parent_task_id")),
             resources=_mapping(run.get("resources")),
             params=_mapping(run.get("params")),
             param_sources=_mapping(run.get("param_sources")),
@@ -298,6 +316,80 @@ class RunSummary:
             notebooks=_load_notebooks(tasks=tasks),
             assets=_load_assets(tasks=tasks),
         )
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the run as a JSON-serialisable mapping.
+
+        The one home for the run's serialised form: ``ginkgo inspect run``
+        prints this as JSON and the run directory keeps it as YAML, so the file
+        and the command cannot disagree about what a run was.
+
+        Returns
+        -------
+        dict[str, Any]
+        """
+        tasks: list[dict[str, Any]] = []
+        expansions: list[dict[str, Any]] = []
+        for task in self.tasks:
+            dynamic = [task_id_for_node(node) for node in task.dynamic_dependency_ids]
+            if dynamic:
+                expansions.append(
+                    {"parent_task_id": task.task_key, "dynamic_dependency_ids": dynamic}
+                )
+            row: dict[str, Any] = {
+                "task_id": task.task_key,
+                "task_name": task.base_name,
+                "status": task.status,
+                "attempts": task.attempts,
+                "max_attempts": task.max_attempts,
+                "cache_key": task.cache_key,
+                "cached": task.cached,
+                "exit_code": task.exit_code,
+                "env": task.env,
+                "kind": task.kind,
+                "dependency_ids": [task_id_for_node(node) for node in task.dependency_ids],
+                "dynamic_dependency_ids": dynamic,
+                "inputs": task.inputs,
+                "failure": task.failure,
+                "outputs": list(task.outputs),
+                "stdout_log": task.stdout_log,
+                "stderr_log": task.stderr_log,
+                "started_at": _iso(task.started_at),
+                "finished_at": _iso(task.finished_at),
+                "timings": task.timings,
+            }
+            # Present only where they mean something, so a local run's record
+            # is not padded with nulls about remote execution it never did.
+            for key, value in (
+                ("remote_job_id", task.remote_job_id),
+                ("execution_backend", task.execution_backend),
+                ("resource_usage", task.resource_usage),
+                ("sub_run_id", task.sub_run_id),
+            ):
+                if value is not None:
+                    row[key] = value
+            tasks.append(row)
+
+        return {
+            "run_id": self.run_id,
+            "workflow": self.workflow,
+            "status": self.status,
+            "started_at": _iso(self.started_at),
+            "finished_at": _iso(self.finished_at),
+            "error": self.error,
+            "ginkgo_version": self.ginkgo_version,
+            "jobs": self.jobs,
+            "cores": self.cores,
+            "memory": self.memory,
+            "parent_run_id": self.parent_run_id,
+            "parent_task_id": self.parent_task_id,
+            "params": self.params,
+            "param_sources": self.param_sources,
+            "resources": self.resources,
+            "timings": self.timings,
+            "tasks": tasks,
+            "dynamic_expansions": expansions,
+        }
 
     # ----- Aggregations -----------------------------------------------------
 
@@ -346,6 +438,9 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
     ):
         inputs.setdefault(row["task_id"], {})[row["param"]] = _loads(row["value_summary"])
 
+    tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
+    node_ids = {row["task_id"]: row["node_id"] for row in tasks}
+
     dependencies: dict[tuple[str, str], list[int]] = {}
     for row in store.query(
         "SELECT dst_id, src_id, edge FROM edges "
@@ -354,10 +449,9 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         (run_id,),
     ):
         dependencies.setdefault((row["dst_id"], row["edge"]), []).append(
-            node_id_for_task(row["src_id"])
+            node_ids.get(row["src_id"], -1)
         )
 
-    tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     return tuple(
         _build_task_summary(
             row=dict(row),
@@ -469,6 +563,11 @@ def _load_assets(*, tasks: tuple[TaskSummary, ...]) -> tuple[AssetSummary, ...]:
             name = asset.get("name") or key
             out.append(AssetSummary(asset_key=key, name=str(name)))
     return tuple(out)
+
+
+def _iso(value: datetime | None) -> str | None:
+    """Return an ISO timestamp string, or ``None``."""
+    return value.isoformat() if value is not None else None
 
 
 def _text(value: Any) -> str | None:

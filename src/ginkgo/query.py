@@ -5,9 +5,9 @@ through here, so there is one place that knows the schema and one place to
 change when it moves. Readers open the database read-only, which means they
 work while a run is writing and can never migrate it out from under one.
 
-Phase 1 ships the run surface the CLI needs; ``explain_rerun``, ``cache_stats``,
-``lineage``, ``why`` and ``sql`` arrive with the phases that fill the tables
-they read.
+Phase 1 ships the run surface the CLI needs. ``task_history``, ``explain_rerun``,
+``cache_stats``, ``lineage``, ``why`` and ``sql`` arrive with the phases that
+give them a caller.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
-__all__ = ["EventRow", "RunRow", "TaskRow", "Query", "open"]
+__all__ = ["EventRow", "Query", "RunRow", "open"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -36,22 +36,6 @@ class RunRow:
     started_at: str | None
     finished_at: str | None
     parent_run_id: str | None
-
-
-@dataclass(frozen=True, kw_only=True)
-class TaskRow:
-    """One task, across runs, as ``task_history`` reports it."""
-
-    run_id: str
-    task_id: str
-    name: str
-    display_label: str | None
-    status: str
-    cached: bool
-    cache_key: str | None
-    started_at: str | None
-    finished_at: str | None
-    attempts: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -186,30 +170,6 @@ class Query:
                 task_id=row["task_id"],
                 payload=json.loads(row["payload"]),
             )
-
-    def task_history(self, name: str, *, limit: int = 50) -> list[TaskRow]:
-        """Return every run of one task, newest first."""
-        rows = self._store.query(
-            "SELECT run_id, task_id, name, display_label, status, cached, cache_key, "
-            "started_at, finished_at, attempts FROM tasks WHERE name = ? "
-            "ORDER BY started_at DESC LIMIT ?",
-            (name, limit),
-        )
-        return [
-            TaskRow(
-                run_id=row["run_id"],
-                task_id=row["task_id"],
-                name=row["name"],
-                display_label=row["display_label"],
-                status=row["status"],
-                cached=bool(row["cached"]),
-                cache_key=row["cache_key"],
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-                attempts=int(row["attempts"] or 0),
-            )
-            for row in rows
-        ]
 
     def close(self) -> None:
         """Release the connection."""

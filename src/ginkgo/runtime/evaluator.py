@@ -34,7 +34,7 @@ from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
+from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
@@ -75,13 +75,13 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
+from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.environment.secrets import (
     SecretResolver,
     collect_resolved_secret_values,
-    redact_value,
     resolve_secret_refs,
 )
 from ginkgo.runtime.remote_input_resolver import (
@@ -108,7 +108,7 @@ from ginkgo.runtime.task_validation import (
     contains_dynamic_expression,
     is_untracked_path_value,
 )
-from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value, summarise_value
+from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -481,9 +481,6 @@ class ConcurrentEvaluator:
         self._subworkflow_runner = SubworkflowRunner(
             shell_runner=self._shell_runner,
             run_id_provider=lambda: self._run_id or "",
-            runs_root=(
-                self.run_dir.root if self.run_dir is not None else WorkspaceLayout.for_cwd().runs
-            ),
             db_path=WorkspaceLayout.for_cwd().db,
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
@@ -730,6 +727,7 @@ class ConcurrentEvaluator:
             GraphNodeRegistered(
                 run_id=self._run_id,
                 task_id=task_id_for_node(node_id),
+                node_id=node_id,
                 task_name=expr.task_def.name,
                 kind=expr.task_def.kind,
                 execution_mode=expr.task_def.execution_mode,
@@ -2043,7 +2041,7 @@ class ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                inputs=_render_value(node.resolved_args or {}),
+                inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
                 cache_key=node.cache_key,
                 source_hash=node.task_def.cache_source_hash,
@@ -2111,7 +2109,7 @@ class ConcurrentEvaluator:
     def _record_task_timing(self, *, node_id: int, phase: str, started: float) -> None:
         """Record how long one task phase took."""
         seconds = time.perf_counter() - started
-        if seconds <= 0:
+        if seconds < 0:
             return
         self._emit_event(
             PhaseTimed(
@@ -2297,32 +2295,6 @@ class ConcurrentEvaluator:
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
             f"{_expected.get(kind, 'an execution directive')} or dynamic task expressions."
         )
-
-
-def _render_value(value: Any) -> Any:
-    """Return *value* in a form the ledger can carry: JSON-safe and redacted.
-
-    Secrets are removed, path-like values become their string, and anything
-    with no JSON form is replaced by :func:`summarise_value`'s description of
-    it. The result is what ``inspect run`` and ``debug`` show as a task input.
-    """
-    value = redact_value(value)
-    if isinstance(value, (file, folder, tmp_dir, Path)):
-        return str(value)
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, SubWorkflowResult):
-        return {
-            "type": "subworkflow_result",
-            "run_id": value.run_id,
-            "status": value.status,
-            "manifest_path": value.manifest_path,
-        }
-    if isinstance(value, (list, tuple)):
-        return [_render_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(_render_value(key)): _render_value(item) for key, item in value.items()}
-    return summarise_value(value)
 
 
 def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:

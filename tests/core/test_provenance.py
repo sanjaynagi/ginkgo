@@ -7,10 +7,9 @@ from pathlib import Path
 import pytest
 
 from ginkgo import secret
-from ginkgo.cli.commands.inspect import inspect_run
 import ginkgo.runtime.caching.provenance as provenance_module
 from ginkgo.runtime.caching.provenance import make_run_id
-from ginkgo.runtime.evaluator import _render_value
+from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
     PhaseTimed,
@@ -95,7 +94,7 @@ def test_resources_and_memory_budget_are_recorded(tmp_path: Path) -> None:
 
     assert summary.resources["status"] == "completed"
     assert summary.resources["peak"]["rss_bytes"] == 4096
-    payload = inspect_run(summary=summary)
+    payload = summary.to_payload()
     assert payload["resources"]["peak"]["rss_bytes"] == 4096
 
 
@@ -106,7 +105,7 @@ def test_secret_inputs_are_redacted(ledger: Ledger) -> None:
             run_id=ledger.run_id,
             task_id="task_0000",
             task_name="demo.task",
-            inputs=_render_value({"token": secret("API_TOKEN")}),
+            inputs=render_value({"token": secret("API_TOKEN")}),
         )
     )
     summary = ledger.summary()
@@ -140,7 +139,7 @@ def test_timings_are_recorded_and_exposed_via_inspect(ledger: Ledger) -> None:
     assert summary.timings["workflow_load_seconds"] == 1.25
     assert summary.tasks[0].timings["cache_lookup_seconds"] == 0.5
 
-    payload = inspect_run(summary=summary)
+    payload = summary.to_payload()
     assert payload["timings"]["workflow_load_seconds"] == 1.25
     assert payload["tasks"][0]["timings"]["cache_lookup_seconds"] == 0.5
 
@@ -165,6 +164,31 @@ def test_the_snapshot_is_written_when_the_run_completes(ledger: Ledger) -> None:
     assert summary.status == "succeeded"
     assert summary.tasks[0].status == "cached"
     assert ledger.run_dir.manifest_path.is_file()
+
+
+def test_secret_parameters_are_redacted_in_the_run_record(tmp_path: Path) -> None:
+    """A run's parameters get the same rendering a task's arguments get."""
+    ledger = Ledger.start(
+        root=tmp_path,
+        params=render_value({"token": secret("API_TOKEN"), "label": "base"}),
+    )
+    summary = ledger.finish()
+    ledger.close()
+
+    assert summary.params["token"]["redacted"] is True
+    assert summary.params["token"]["secret"]["name"] == "API_TOKEN"
+    assert summary.params["label"] == "base"
+    recorded = ledger.run_dir.manifest_path.read_text(encoding="utf-8")
+    assert "SecretRef" not in recorded
+
+
+def test_a_task_with_no_environment_records_no_environment(ledger: Ledger) -> None:
+    """``null`` rather than ``"local"``: no env is no env, and a label is the
+    renderer's job, not the record's."""
+    _register(ledger)
+    payload = ledger.finish().to_payload()
+
+    assert payload["tasks"][0]["env"] is None
 
 
 def test_param_sources_are_recorded(tmp_path: Path) -> None:

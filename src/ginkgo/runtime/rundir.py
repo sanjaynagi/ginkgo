@@ -7,13 +7,14 @@ directory those bytes go in, so neither concern has to know the other's shape.
 The layout after a run is::
 
     runs/<run_id>/
-      manifest.yaml   the snapshot exported from the projections at finalize
+      manifest.yaml   what the run recorded, exported once when it finished
       logs/           per-task stdout and stderr
       envs/           a copy of each Pixi lockfile the run resolved
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,7 +70,7 @@ class RunDir:
 
     @property
     def manifest_path(self) -> Path:
-        """Where :meth:`write_snapshot` writes."""
+        """Where :meth:`write_manifest` writes. The one home for this filename."""
         return self.path / "manifest.yaml"
 
     def log_paths_for(self, *, node_id: int, task_name: str) -> tuple[Path, Path]:
@@ -102,13 +103,20 @@ class RunDir:
         shutil.copy2(lock_path, destination)
         return self.relative(destination)
 
-    def write_snapshot(self, manifest: dict[str, Any]) -> Path:
-        """Write the exported snapshot and return where it went."""
+    def write_manifest(self, manifest: dict[str, Any]) -> Path:
+        """Write the run's exported manifest and return where it went.
+
+        Written beside its destination and renamed over it, so a reader never
+        sees half a manifest and an interrupted export leaves the previous one
+        intact.
+        """
         self.path.mkdir(parents=True, exist_ok=True)
-        self.manifest_path.write_text(
+        pending = self.manifest_path.with_suffix(".yaml.tmp")
+        pending.write_text(
             yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False),
             encoding="utf-8",
         )
+        os.replace(pending, self.manifest_path)
         return self.manifest_path
 
 

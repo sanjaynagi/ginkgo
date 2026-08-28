@@ -85,8 +85,6 @@ class SubworkflowRunner:
     run_id_provider : Callable[[], str]
         Returns the current parent run id; forwarded to the child via
         ``GINKGO_PARENT_RUN_ID`` and used in recursion diagnostics.
-    runs_root : Path
-        Root directory under which child run manifests are written.
     db_path : Path
         The provenance database, read to resolve which run the child was.
     python_executable : str
@@ -97,7 +95,6 @@ class SubworkflowRunner:
 
     shell_runner: ShellRunner
     run_id_provider: Callable[[], str]
-    runs_root: Path
     db_path: Path
     python_executable: str = field(default_factory=lambda: sys.executable)
     max_depth: int = DEFAULT_MAX_CALL_DEPTH
@@ -187,12 +184,7 @@ class SubworkflowRunner:
                     f"successfully but recorded no run in {self.db_path}."
                 )
 
-            manifest_path = self.runs_root / child_run_id / "manifest.yaml"
-            return SubWorkflowResult(
-                run_id=child_run_id,
-                status="success",
-                manifest_path=str(manifest_path),
-            )
+            return SubWorkflowResult(run_id=child_run_id, status="success")
         finally:
             if tmp_params_path is not None:
                 with suppress(FileNotFoundError, OSError):

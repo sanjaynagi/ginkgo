@@ -48,13 +48,10 @@ class SubWorkflowResult:
         ``"success"`` on a clean exit. Failures raise ``SubWorkflowError``
         before a result is returned, so this is always ``"success"`` when
         a result object is observed.
-    manifest_path : str
-        Path to the child run's ``manifest.yaml``.
     """
 
     run_id: str
     status: str
-    manifest_path: str
 
 
 def subworkflow(
@@ -67,8 +64,8 @@ def subworkflow(
 
     Called from inside a ``@task(kind="subworkflow")`` body with fully
     resolved argument values. The child workflow runs as a self-contained
-    ``ginkgo run`` subprocess; its ``run_id`` and manifest path are
-    returned to the parent task.
+    ``ginkgo run`` subprocess; its ``run_id`` is returned to the parent
+    task, and ``ginkgo inspect run <run_id>`` reads what it did.
 
     Parameters
     ----------

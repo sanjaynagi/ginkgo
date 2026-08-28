@@ -61,6 +61,7 @@ def _events() -> list[GinkgoEvent]:
         GraphNodeRegistered(
             **RUN,
             task_id="task_0007",
+            node_id=7,
             task_name="analysis.fit",
             kind="python",
             execution_mode="python",

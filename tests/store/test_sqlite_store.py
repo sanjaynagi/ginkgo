@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import re
 import sqlite3
 from pathlib import Path
@@ -283,3 +284,55 @@ def _schema_snapshot(store: SqliteStore) -> str:
     )
     objects = (f"{row['type']} {row['name']}\n{row['sql'].strip()}" for row in rows)
     return "\n\n".join(objects) + "\n"
+
+
+def _open_and_report(path: str, barrier: Any, results: Any) -> None:
+    """Open the store the instant every other process is ready to as well."""
+    from ginkgo.store.sqlite import open_store as _open_store
+
+    barrier.wait(timeout=30)
+    try:
+        with _open_store(Path(path)) as store:
+            results.append(("ok", store.schema_version))
+    except BaseException as exc:  # noqa: BLE001 - reported through the assertion
+        results.append(("error", f"{type(exc).__name__}: {exc}"))
+
+
+class TestConcurrentFirstOpen:
+    """Two ginkgo processes may reach an empty workspace at the same moment.
+
+    Three things race on a fresh database: creating the file, switching it into
+    WAL, and running the migration. Threads do not reproduce it — one finishes
+    the migration before the next is off the barrier — so this uses processes,
+    which is also what the race is really between.
+
+    It is a race, so it detects rather than proves: with the WAL retry and the
+    re-read under the write lock removed it fails about four runs in five, and
+    with them it has never failed. It does not replace the subprocess test in
+    ``test_concurrent_runs.py``; it makes the same failure cheap to reproduce.
+    """
+
+    def test_processes_opening_one_fresh_database_all_succeed(self, tmp_path: Path) -> None:
+        context = multiprocessing.get_context("spawn")
+        path = tmp_path / "ginkgo.db"
+        workers = 8
+        barrier = context.Barrier(workers)
+        with context.Manager() as manager:
+            results = manager.list()
+            processes = [
+                context.Process(target=_open_and_report, args=(str(path), barrier, results))
+                for _ in range(workers)
+            ]
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(timeout=60)
+            outcomes = list(results)
+
+        assert [outcome for outcome, _ in outcomes] == ["ok"] * workers, outcomes
+        assert {detail for _, detail in outcomes} == {SCHEMA_VERSION}
+
+        with open_store(path, readonly=True) as store:
+            applied = store.query("SELECT version FROM schema_version")
+        # Migrated once, not once per racing opener.
+        assert [row["version"] for row in applied] == [SCHEMA_VERSION]

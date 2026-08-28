@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from ginkgo.cli.commands.inspect import inspect_run
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
     TaskCompleted,
@@ -118,7 +117,7 @@ class TestTaskProjection:
 
 
 class TestInspectRunRemoteFields:
-    """Tests for remote fields in inspect_run output."""
+    """Tests for remote fields in the run's serialised form."""
 
     def _run(self, ledger, **started) -> dict[str, Any]:
         ledger.bus.emit(
@@ -142,7 +141,7 @@ class TestInspectRunRemoteFields:
                 remote_job_id=started.get("remote_job_id"),
             )
         )
-        return inspect_run(summary=ledger.finish())["tasks"][0]
+        return ledger.finish().to_payload()["tasks"][0]
 
     def test_inspect_run_includes_remote_fields(self, ledger) -> None:
         task = self._run(

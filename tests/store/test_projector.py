@@ -117,14 +117,61 @@ def test_task_planned_records_the_cache_identity_and_inputs(started: SqliteStore
     assert json.loads(row["value_summary"]) == 10
 
 
+def test_scalar_columns_are_stored_as_the_scalars_they_are(started: SqliteStore) -> None:
+    """A join column holding a JSON-quoted string joins to nothing."""
+    _apply(started, _fixture("task_planned", env_hash="env_deadbeef"))
+
+    task = _row(started, "SELECT * FROM tasks")
+    for column, expected in (
+        ("env_hash", "env_deadbeef"),
+        ("cache_key", "cache_abcdef"),
+        ("source_hash", "src_abcdef"),
+        ("extra_source_hash", "extra_abcdef"),
+        ("display_label", "fit[a]"),
+    ):
+        assert task[column] == expected, column
+
+
+def test_a_hashed_input_with_no_rendered_value_still_gets_a_row(
+    started: SqliteStore,
+) -> None:
+    _apply(
+        started,
+        _fixture(
+            "task_planned",
+            inputs={},
+            input_hashes=[{"param": "scratch", "digest": None, "type": "tmp_dir"}],
+        ),
+    )
+
+    row = _row(started, "SELECT * FROM task_inputs")
+    assert (row["param"], row["value_summary"], row["value_type"]) == ("scratch", None, "tmp_dir")
+
+
+def test_a_phase_that_took_no_measurable_time_is_still_recorded(
+    started: SqliteStore,
+) -> None:
+    _apply(started, _fixture("phase_timed", task_id=TASK_ID, phase="execute_seconds", seconds=0.0))
+
+    assert json.loads(_row(started, "SELECT * FROM tasks")["timings"]) == {"execute_seconds": 0.0}
+
+
+def test_a_negative_phase_reading_is_ignored(started: SqliteStore) -> None:
+    _apply(started, _fixture("phase_timed", task_id=TASK_ID, phase="execute_seconds", seconds=-1))
+
+    assert json.loads(_row(started, "SELECT * FROM tasks")["timings"]) == {}
+
+
 def test_replanning_replaces_the_inputs_rather_than_adding_to_them(
     started: SqliteStore,
 ) -> None:
     _apply(started, _fixture("task_planned"))
     _apply(started, _fixture("task_planned", inputs={"columns": 4}))
 
-    rows = started.query("SELECT param FROM task_inputs")
-    assert [row["param"] for row in rows] == ["columns"]
+    rows = started.query("SELECT param FROM task_inputs ORDER BY param")
+    # "rows" came from the first plan and is gone; "table" is the hashed input
+    # the fixture carries either way.
+    assert [row["param"] for row in rows] == ["columns", "table"]
 
 
 def test_task_started_opens_an_attempt(started: SqliteStore) -> None:

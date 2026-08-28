@@ -18,8 +18,8 @@ def command_report(args) -> int:
     rich_console = console(sys.stdout)
 
     try:
-        with open_run(args.run_id) as (store, run_id):
-            summary = store.run(run_id)
+        with open_run(args.run_id) as (reader, run_id):
+            summary = reader.run(run_id)
     except FileNotFoundError as exc:
         rich_console.print(f"[red]✖[/] {exc}")
         return 1

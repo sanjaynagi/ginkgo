@@ -56,8 +56,8 @@ def command_notebooks(args) -> int:
     rich_console.print("[bold green]🌿 ginkgo[/] [bold]notebooks[/]\n")
 
     try:
-        with query.open() as store:
-            entries = list_notebook_artifact_pairs(store=store)
+        with query.open() as reader:
+            entries = list_notebook_artifact_pairs(reader=reader)
     except FileNotFoundError:
         # A workspace with no ledger has no notebooks, which is an empty
         # listing rather than a failure.
@@ -84,11 +84,11 @@ def command_notebooks(args) -> int:
     return 0
 
 
-def list_notebook_artifact_pairs(*, store: Query) -> list[NotebookArtifactPair]:
+def list_notebook_artifact_pairs(*, reader: Query) -> list[NotebookArtifactPair]:
     """Return executed notebook artifact pairs ordered by most recent run first."""
     entries: list[NotebookArtifactPair] = []
-    for run in store.runs(limit=_RUN_LIMIT):
-        summary = store.run(run.run_id)
+    for run in reader.runs(limit=_RUN_LIMIT):
+        summary = reader.run(run.run_id)
         for task in summary.tasks:
             if task.executed_notebook is None or task.rendered_html is None:
                 continue

@@ -19,7 +19,6 @@ next :meth:`StoreWriter.put`, :meth:`StoreWriter.flush` or
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
 import time
@@ -27,13 +26,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ginkgo.runtime.events import GinkgoEvent
 from ginkgo.store.errors import StoreError
 from ginkgo.store.projector import TERMINAL_EVENTS, accumulate_seconds, projection_ops
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
 from ginkgo.store.sqlite import open_store
 
-__all__ = ["MAX_BATCH_EVENTS", "MAX_BATCH_SECONDS", "StoreWriter", "stored_event"]
+__all__ = ["MAX_BATCH_EVENTS", "MAX_BATCH_SECONDS", "StoreWriter"]
 
 
 MAX_BATCH_EVENTS = 256
@@ -51,33 +49,6 @@ class _Flush:
 
 
 _STOP = object()
-
-
-def stored_event(event: GinkgoEvent) -> StoredEvent:
-    """Return the ledger row for one runtime event.
-
-    Parameters
-    ----------
-    event : GinkgoEvent
-        Any event on the bus.
-
-    Returns
-    -------
-    StoredEvent
-        The row, with the filtered columns lifted out of the payload.
-    """
-    payload = event.to_payload()
-    return StoredEvent(
-        run_id=payload.get("run_id") or "",
-        ts=payload.get("ts") or "",
-        type=payload.get("event") or "",
-        v=int(payload.get("v") or 1),
-        task_id=_column(payload, "task_id"),
-        attempt=payload.get("attempt") if isinstance(payload.get("attempt"), int) else None,
-        cache_key=_column(payload, "cache_key"),
-        asset_key=_column(payload, "asset_key"),
-        payload=json.dumps(payload, sort_keys=True, default=str),
-    )
 
 
 class StoreWriter:
@@ -98,6 +69,7 @@ class StoreWriter:
         self._thread = threading.Thread(target=self._run, name="ginkgo-store-writer", daemon=True)
         self._ready = threading.Event()
         self._error: BaseException | None = None
+        self._inflight: _Flush | None = None
         self._failed = False
         self._closed = False
         self._write_seconds = 0.0
@@ -119,8 +91,8 @@ class StoreWriter:
         self._ready.wait()
         self._raise_pending()
 
-    def put(self, event: GinkgoEvent) -> None:
-        """Queue one event.
+    def put(self, event: StoredEvent) -> None:
+        """Queue one ledger row.
 
         Raises
         ------
@@ -130,7 +102,7 @@ class StoreWriter:
         self._raise_pending()
         if self._closed:
             raise StoreError(f"The provenance store at {self._path} is already closed.")
-        self._queue.put(stored_event(event))
+        self._queue.put(event)
 
     def flush(self) -> None:
         """Block until everything queued so far is committed."""
@@ -181,8 +153,13 @@ class StoreWriter:
             self._loop(store)
             if not self._failed:
                 self._record_write_cost(store)
+        except BaseException as exc:  # noqa: BLE001 - reported to the run
+            self._error = _write_failure(path=self._path, exc=exc)
+            self._failed = True
         finally:
             store.close()
+            # Whatever went wrong, nobody waits on a thread that has stopped.
+            self._release_waiters()
 
     def _loop(self, store: ProvenanceStore) -> None:
         pending: list[StoredEvent] = []
@@ -207,7 +184,11 @@ class StoreWriter:
                 self._commit(store, pending)
                 pending, deadline = [], None
             if isinstance(item, _Flush):
+                # Held while it is being served, so a thread that dies here
+                # still releases the caller waiting on it.
+                self._inflight = item
                 item.done.set()
+                self._inflight = None
             elif item is _STOP:
                 return
 
@@ -251,8 +232,21 @@ class StoreWriter:
             self._error = _write_failure(path=self._path, exc=exc)
             self._failed = True
 
+    def _release_waiters(self) -> None:
+        """Wake every flush already queued, so no caller blocks on a dead thread."""
+        if self._inflight is not None:
+            self._inflight.done.set()
+            self._inflight = None
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            if isinstance(item, _Flush):
+                item.done.set()
+
     def _drain_after_failure(self) -> None:
-        """Release anyone waiting on a flush once the writer cannot run."""
+        """Release anyone waiting on a flush once the writer cannot start."""
         while True:
             item = self._queue.get()
             if isinstance(item, _Flush):
@@ -266,8 +260,3 @@ def _write_failure(*, path: Path, exc: BaseException) -> BaseException:
     if isinstance(exc, StoreError):
         return exc
     return StoreError(f"Could not write the provenance ledger at {path}: {exc}")
-
-
-def _column(payload: dict[str, Any], key: str) -> str | None:
-    value = payload.get(key)
-    return value if isinstance(value, str) and value else None

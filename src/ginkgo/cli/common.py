@@ -30,12 +30,12 @@ def console(output_stream, *, width: int | None = None) -> Console:
     )
 
 
-def resolve_run_id(query: Query, run_id: str | None) -> str:
+def resolve_run_id(reader: Query, run_id: str | None) -> str:
     """Return the run to act on: the one named, or the most recent.
 
     Parameters
     ----------
-    query : Query
+    reader : Query
         An open read-only view of the ledger.
     run_id : str | None
         The run the user named, or ``None`` for the latest.
@@ -51,11 +51,11 @@ def resolve_run_id(query: Query, run_id: str | None) -> str:
         If the named run is unknown, or the workspace has no runs at all.
     """
     if run_id is not None:
-        if not query.store.query("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)):
+        if not reader.store.query("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)):
             raise FileNotFoundError(f"Run not found: {run_id}")
         return run_id
 
-    latest = query.latest_run_id()
+    latest = reader.latest_run_id()
     if latest is None:
         raise FileNotFoundError(f"No runs recorded in {_LAYOUT.db}")
     return latest
@@ -84,10 +84,10 @@ def open_run(run_id: str | None) -> Iterator[tuple[Query, str]]:
         same thing.
     """
     try:
-        store = query.open()
+        reader = query.open()
     except FileNotFoundError:
         if run_id is not None:
             raise FileNotFoundError(f"Run not found: {run_id}") from None
         raise
-    with store:
-        yield store, resolve_run_id(store, run_id)
+    with reader:
+        yield reader, resolve_run_id(reader, run_id)

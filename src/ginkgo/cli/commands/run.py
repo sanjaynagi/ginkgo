@@ -63,6 +63,7 @@ from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
+from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.events import (
     EventBus,
     PhaseTimed,
@@ -74,8 +75,8 @@ from ginkgo.runtime.events import (
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
-from ginkgo.store.recorder import StoreRecorder
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -437,7 +438,10 @@ def run_workflow(
             )
             if notification_service is not None:
                 stack.callback(notification_service.close)
-                bus.subscribe(notification_service.handle)
+                # Registered on the recorder, not the bus: the service asks the
+                # store which tasks failed, so it must not run until the events
+                # it is reacting to are committed.
+                recorder.on_committed(notification_service.handle)
             renderer = None
             if output_mode in {"agent", "agent_verbose"}:
                 bus.subscribe(
@@ -485,18 +489,26 @@ def run_workflow(
                     # any given on the CLI. The raw [params] table is dropped:
                     # recording it alongside would show a config value next to
                     # the resolved value that superseded it.
-                    params={
-                        **{
-                            key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY
-                        },
-                        **declared_params,
-                    },
+                    params=render_value(
+                        {
+                            **{
+                                key: value
+                                for key, value in params.items()
+                                if key != PARAMS_CONFIG_KEY
+                            },
+                            **declared_params,
+                        }
+                    ),
                     param_sources=param_sources,
                     ginkgo_version=_ginkgo_version(),
                     parent_run_id=os.environ.get(PARENT_RUN_ID_ENV) or None,
                     parent_task_id=os.environ.get(PARENT_TASK_ID_ENV) or None,
                 )
             )
+            # A run that dies before RunCompleted — a graph that will not
+            # build, an environment that will not prepare — would otherwise sit
+            # in the ledger as 'running' forever, with no manifest.
+            stack.callback(_close_unfinished_run, bus=bus, recorder=recorder, run_id=run_id)
             bus.emit(
                 PhaseTimed(run_id=run_id, phase="workflow_load_seconds", seconds=load_elapsed)
             )
@@ -586,6 +598,25 @@ def run_workflow(
     finally:
         resource_monitor.stop()
     return 0
+
+
+def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:
+    """Fail the run in the ledger if it is unwinding without having completed.
+
+    Registered on the exit stack rather than written into one exception
+    handler, so it covers every way out of the run — including the ones nobody
+    has thought of yet.
+    """
+    if recorder.completed:
+        return
+    exc = sys.exception()
+    bus.emit(
+        RunCompleted(
+            run_id=run_id,
+            status="failed",
+            error=str(exc) if exc is not None else "The run ended before it completed.",
+        )
+    )
 
 
 def _load_failure_details(

@@ -36,8 +36,10 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
-    v: int = 3
+    v: int = 4
     task_id: str = ""
+    node_id: int = -1
+    """The scheduler node this task is, recorded rather than parsed back out."""
     task_name: str = ""
     kind: str = "python"
     execution_mode: str = "python"
@@ -356,9 +358,3 @@ class EventBus:
 def task_id_for_node(node_id: int) -> str:
     """Return the stable task identifier for a scheduler node."""
     return f"task_{node_id:04d}"
-
-
-def node_id_for_task(task_id: str) -> int:
-    """Return the scheduler node a task identifier names, or ``-1``."""
-    _, _, digits = str(task_id).rpartition("_")
-    return int(digits) if digits.isdigit() else -1

@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from ginkgo import expand, flatten, per_branch, slug, zip_expand
-from ginkgo.runtime.evaluator import _render_value
+from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.task_runners.shell import serialize_cli_argument_value
 from ginkgo.wildcards import ExpandedTemplate
 
@@ -119,7 +119,7 @@ class TestExpandedTemplateSerialization:
         assert yaml.safe_load(yaml.safe_dump(serialized)) == ["results/a.txt", "results/b.txt"]
 
     def test_provenance_rendering_yields_a_dumpable_plain_list(self) -> None:
-        rendered = _render_value({"paths": expand("results/{sample}.txt", sample=["a"])})
+        rendered = render_value({"paths": expand("results/{sample}.txt", sample=["a"])})
         assert type(rendered["paths"]) is list
         assert yaml.safe_load(yaml.safe_dump(rendered)) == {"paths": ["results/a.txt"]}
 

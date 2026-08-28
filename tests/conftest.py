@@ -12,7 +12,7 @@ from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.caching.provenance import make_run_id
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
-from ginkgo.store.recorder import StoreRecorder
+from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 from ginkgo.runtime.events import (

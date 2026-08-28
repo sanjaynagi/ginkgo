@@ -405,19 +405,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     env_clear_parser.add_argument("--all", action="store_true")
     env_clear_parser.add_argument("--dry-run", action="store_true")
 
-    # Registered as a group from the outset: rebuild, vacuum and prune join
-    # these three in later phases, and the help text should not move when they do.
+    # Registered as a group from the outset: vacuum and prune join these three
+    # in later phases, and the help text should not move when they do.
     db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
     db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
     db_subparsers.add_parser("check", help="Check database integrity and schema version")
     db_subparsers.add_parser("path", help="Print the provenance database path")
-    db_rebuild = db_subparsers.add_parser(
-        "rebuild", help="Rebuild projections from the run snapshots on disk"
-    )
-    db_rebuild.add_argument(
-        "--dry-run", action="store_true", help="Report what would be rebuilt without writing"
-    )
 
     debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")
     debug_parser.add_argument("run_id", nargs="?")

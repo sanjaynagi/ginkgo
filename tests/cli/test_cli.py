@@ -45,22 +45,15 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _snapshot(run_dir: Path) -> dict[str, Any]:
-    """Read a run's exported snapshot as one mapping per run and per task.
+def _manifest(run_dir: Path) -> dict[str, Any]:
+    """Read a run's exported manifest, keying its tasks by task id.
 
-    The snapshot is the projection tables serialised; this stitches the run row
-    back together with its tasks, their annotations and their inputs, which is
-    the shape these tests ask questions in.
+    The manifest is what ``ginkgo inspect run`` prints, written as YAML; the
+    only reshaping here is the list of tasks into a mapping, which is how these
+    tests ask about one of them.
     """
     data = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-    tasks: dict[str, Any] = {}
-    for task in data["tasks"]:
-        merged = {**task, **(task.get("extra") or {}), "inputs": {}}
-        merged["cached"] = bool(task["cached"])
-        tasks[task["task_id"]] = merged
-    for row in data["task_inputs"]:
-        tasks[row["task_id"]]["inputs"][row["param"]] = json.loads(row["value_summary"])
-    return {**data["runs"][0], "tasks": tasks}
+    return {**data, "tasks": {task["task_id"]: task for task in data["tasks"]}}
 
 
 def _record_notebook_run(
@@ -176,7 +169,7 @@ def _run_trivial_workflow_cache_key(cwd: Path) -> str:
     result = _run_cli("run", "workflow.py", cwd=cwd)
     assert result.returncode == 0, result.stderr
     run_dir = _extract_run_dir(result.stdout)
-    manifest = _snapshot(run_dir)
+    manifest = _manifest(run_dir)
     return next(iter(manifest["tasks"].values()))["cache_key"]
 
 
@@ -275,7 +268,7 @@ def main():
         assert '{"status":' not in first.stdout
 
         first_run_dir = _extract_run_dir(first.stdout)
-        first_manifest = _snapshot(first_run_dir)
+        first_manifest = _manifest(first_run_dir)
         first_task = next(iter(first_manifest["tasks"].values()))
 
         assert Path("result.txt").read_text(encoding="utf-8") == "second"
@@ -297,7 +290,7 @@ def main():
         assert second.returncode == 0, second.stderr
 
         second_run_dir = _extract_run_dir(second.stdout)
-        second_manifest = _snapshot(second_run_dir)
+        second_manifest = _manifest(second_run_dir)
         second_task = next(iter(second_manifest["tasks"].values()))
 
         assert "cached" in second.stdout
@@ -382,16 +375,12 @@ def main():
         assert result.returncode == 0, result.stderr
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = _snapshot(run_dir)
+        manifest = _manifest(run_dir)
         task = next(iter(manifest["tasks"].values()))
 
         assert task["status"] == "succeeded"
         assert task["max_attempts"] == 3
         assert task["attempts"] == 2
-        attempts = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))[
-            "attempts"
-        ]
-        assert [entry["status"] for entry in attempts] == ["failed", "succeeded"]
 
     @pytest.mark.parametrize(
         ("dry_run", "old_survives"),
@@ -693,7 +682,7 @@ def main():
         assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
         run_dir = _extract_run_dir(failed.stderr)
-        manifest = _snapshot(run_dir)
+        manifest = _manifest(run_dir)
         task = next(iter(manifest["tasks"].values()))
         assert manifest["status"] == "failed"
         assert task["status"] == "failed"
@@ -1424,7 +1413,7 @@ def main():
         assert "RSS avg " in result.stdout
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = _snapshot(run_dir)
+        manifest = _manifest(run_dir)
         assert manifest["memory"] == 32
         assert manifest["resources"]["status"] == "completed"
         assert manifest["resources"]["sample_count"] >= 1
@@ -2073,7 +2062,7 @@ class TestCliWorkflowParams:
         result = _run_cli("run", "workflow.py", "--n-reps", "7", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        manifest = _snapshot(_extract_run_dir(result.stdout))
+        manifest = _manifest(_extract_run_dir(result.stdout))
         assert manifest["params"]["n_reps"] == 7
         assert manifest["params"]["label"] == "cfg"
         assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
@@ -2303,7 +2292,7 @@ def main():
         result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        params = _snapshot(_extract_run_dir(result.stdout))["params"]
+        params = _manifest(_extract_run_dir(result.stdout))["params"]
         assert params["label"] == "effective"
         assert params["other"] == "kept"
         assert "params" not in params
