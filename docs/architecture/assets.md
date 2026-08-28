@@ -83,6 +83,18 @@ neither yet read:
 These are groundwork for staleness detection, which is deliberately out of
 scope: ginkgo records what a staleness check would need and stops there.
 
+What `data_version` captures today is the code and the *catalogued assets* an
+output was built from. It does not fold in a task's ordinary parameters, so a
+mapped task produces one `data_version` across its whole fan-out: four
+`evaluate_candidate[...]` models built by the same code from the same training
+table agree, though each was fitted with different hyper-parameters. That is
+harmless while nothing reads the column, and it is the first thing staleness
+work has to fix — by folding the task's non-asset input hashes (which
+`task_inputs.digest` already records, per parameter) into the same digest. The
+cache key already distinguishes those branches; `data_version` is a coarser,
+asset-centric identity, and until it includes the parameters it cannot stand in
+for the cache key.
+
 ### Lineage
 
 `ginkgo lineage <asset-key[@version]>` walks the `derived_from` edges around

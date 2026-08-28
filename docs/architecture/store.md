@@ -165,9 +165,13 @@ produce a row that disagrees with itself.
 The cache index and the asset catalog are two sets of tables, not two
 databases: inside a run the catalog is `AssetStore.attached_to(index)`, sharing
 the cache index's connection and its lock, so a save in one never waits on
-SQLite's write lock for a save in the other. Read paths open their own
-(`AssetStore.for_reading`), and a workspace with no database reads an empty
-in-memory one rather than creating a file.
+SQLite's write lock for a save in the other. Read paths do not construct either
+one: they open a `Query` and take `reader.catalog`, which is one catalog over
+the reader's own connection. A workspace with no database is opened with
+`query.open(missing_ok=True)` and reads an empty in-memory ledger rather than
+creating a file, so `asset ls`, `lineage`, `notebooks` and a report all answer
+an empty workspace with their own empty result instead of a missing-file
+error.
 
 Readers go through `ginkgo.query`, which opens read-only — including the cache
 readers `cache ls`, `cache explain` and `cache stats`, and the asset readers
