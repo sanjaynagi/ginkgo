@@ -19,7 +19,7 @@ from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 __all__ = ["ProjectionOp", "ProvenanceStore", "StoredEvent"]
 
@@ -79,7 +79,6 @@ class ProjectionOp:
     params: Sequence[Any] = ()
 
 
-@runtime_checkable
 class ProvenanceStore(Protocol):
     """A ledger of runtime events and the projections built from it."""
 
