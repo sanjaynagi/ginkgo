@@ -52,6 +52,9 @@ _ENTRY_COLUMNS = (
     "created_at",
 )
 
+_JSON_COLUMNS = frozenset({"env_hash", "inputs", "input_hashes", "extra"})
+"""Entry columns whose text is JSON, decoded on the way out."""
+
 _INSERT_ENTRY = """
 INSERT OR IGNORE INTO cache_entries (
   cache_key, function, version, source_hash, extra_source_hash,
@@ -82,7 +85,12 @@ ON CONFLICT (kind, fingerprint) DO UPDATE SET
 
 
 class CacheEntry:
-    """One ``cache_entries`` row, with its JSON columns already parsed."""
+    """One ``cache_entries`` row.
+
+    Columns are read by name — ``entry["source_hash"]`` — and the ones holding
+    JSON come back as the objects they encode, so every column is reached the
+    same way whatever its storage type.
+    """
 
     __slots__ = ("_row",)
 
@@ -90,7 +98,8 @@ class CacheEntry:
         self._row = row
 
     def __getitem__(self, column: str) -> Any:
-        return self._row[column]
+        value = self._row[column]
+        return _loads(value) if column in _JSON_COLUMNS else value
 
     @property
     def artifact_ids(self) -> dict[str, str]:
@@ -100,7 +109,7 @@ class CacheEntry:
     @property
     def extra(self) -> dict[str, Any] | None:
         """Task-kind-specific metadata, or ``None`` when the entry recorded none."""
-        parsed = _loads(self._row["extra"])
+        parsed = self["extra"]
         return parsed if isinstance(parsed, dict) else None
 
     @property
@@ -254,15 +263,6 @@ class CacheIndex:
         row = dict(rows[0])
         row["artifact_ids"] = {str(a["path"]): str(a["artifact_id"]) for a in artifacts}
         return CacheEntry(row)
-
-    def key_components(self, cache_key: str) -> dict[str, Any]:
-        """Return one entry's labelled cache-key components."""
-        with self._lock:
-            rows = self._store.query(
-                "SELECT component, value FROM cache_key_components WHERE cache_key = ?",
-                (cache_key,),
-            )
-        return {str(row["component"]): _loads(row["value"]) for row in rows}
 
     def referenced_artifact_ids(self) -> set[str]:
         """Return every artifact id a cache entry or asset version still points at.

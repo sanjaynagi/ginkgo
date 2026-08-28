@@ -10,15 +10,22 @@ from pathlib import Path
 import pytest
 
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.query import Query
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.projector import projection_ops
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 @pytest.fixture
 def index(tmp_path: Path):
     with CacheIndex.open(path=tmp_path / "ginkgo.db") as opened:
         yield opened
+
+
+def _components(index: CacheIndex, cache_key: str) -> dict:
+    """Read one entry's key components the way `cache explain` does."""
+    return Query(index.store, layout=WorkspaceLayout.relative()).cache_key_components(cache_key)
 
 
 def _record(index: CacheIndex, cache_key: str, **overrides) -> None:
@@ -56,12 +63,12 @@ class TestEntries:
         assert entry["function"] == "pkg.produce"
         assert entry.env_materialized_digest == "sha-1"
         assert entry.artifact_ids == {"/out/a.txt": "artifact-1"}
-        assert json.loads(entry["input_hashes"]) == {"n": {"sha256": "h", "type": "int"}}
-        assert index.key_components("key-1")["source_hash"] == "src-1"
+        assert entry["input_hashes"] == {"n": {"sha256": "h", "type": "int"}}
+        assert _components(index, "key-1")["source_hash"] == "src-1"
 
     def test_a_missing_entry_is_none(self, index: CacheIndex) -> None:
         assert index.entry("nothing") is None
-        assert index.key_components("nothing") == {}
+        assert _components(index, "nothing") == {}
 
     def test_extra_metadata_is_returned_when_recorded(self, index: CacheIndex) -> None:
         _record(index, "key-1", extra={"notebook_extras": {"html": "a.html"}})
@@ -94,7 +101,7 @@ class TestEntries:
         index.forget_entries(["key-1"])
 
         assert index.entry("key-1") is None
-        assert index.key_components("key-1") == {}
+        assert _components(index, "key-1") == {}
         assert index.stat_lookup("stat-1") is None
         assert index.referenced_artifact_ids() == set()
 

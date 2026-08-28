@@ -14,6 +14,7 @@ import json
 import shutil
 import sys
 import re
+from collections.abc import Iterable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -158,7 +159,11 @@ def _clear(args, rich_console) -> int:
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
     with _index() as index:
         if args.orphans:
-            orphans = _orphan_entry_dirs(cache_root=CACHE_ROOT, index=index)
+            reader = Query(index.store, layout=WorkspaceLayout.relative())
+            orphans = orphan_cache_dirs(
+                cache_root=CACHE_ROOT,
+                known_keys=[row.cache_key for row in reader.cache_entries()],
+            )
             for entry_dir in orphans:
                 _safe_rmtree(entry_dir)
             _gc_orphan_artifacts(CACHE_ROOT, index=index)
@@ -375,16 +380,12 @@ def select_prune_entries(
         display stability.
     """
     oldest = datetime.min.replace(tzinfo=UTC)
-    if least_recently_hit:
 
-        def sort_key(entry: CacheEntryDisplay) -> tuple[datetime, datetime]:
-            return (entry.last_hit_at or oldest, entry.created_at or oldest)
-    else:
+    def give_up_order(entry: CacheEntryDisplay) -> tuple[datetime, datetime]:
+        last_used = entry.last_hit_at if least_recently_hit else entry.created_at
+        return (last_used or oldest, entry.created_at or oldest)
 
-        def sort_key(entry: CacheEntryDisplay) -> tuple[datetime, datetime]:
-            return (entry.created_at or oldest, entry.created_at or oldest)
-
-    give_up_first = sorted(entries, key=sort_key)
+    give_up_first = sorted(entries, key=give_up_order)
     selected: set[str] = set()
 
     if older_than is not None:
@@ -469,18 +470,29 @@ def _safe_rmtree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _orphan_entry_dirs(*, cache_root: Path, index: CacheIndex) -> list[Path]:
+def orphan_cache_dirs(*, cache_root: Path, known_keys: Iterable[str]) -> list[Path]:
     """Return entry directories the database has no row for.
 
     A lost database leaves the bytes behind, and nothing else will ever look
     at them: the key that would find them is only in the row that is gone.
+    ``ginkgo db check`` reports these and ``cache clear --orphans`` removes
+    them, from this one definition of what an orphan is.
+
+    Parameters
+    ----------
+    cache_root : Path
+        The ``.ginkgo/cache`` directory.
+    known_keys : Iterable[str]
+        Every cache key the index holds.
+
+    Returns
+    -------
+    list[Path]
+        The orphaned directories, sorted.
     """
     if not cache_root.exists():
         return []
-    known = {
-        row.cache_key
-        for row in Query(index.store, layout=WorkspaceLayout.relative()).cache_entries()
-    }
+    known = set(known_keys)
     return sorted(
         entry for entry in cache_root.iterdir() if entry.is_dir() and entry.name not in known
     )

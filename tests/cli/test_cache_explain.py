@@ -330,7 +330,9 @@ class TestSavedKeyComponents:
         )
 
         with CacheIndex.open(path=tmp_path / "ginkgo.db") as index:
-            components = index.key_components(cache_key)
+            components = Query(
+                index.store, layout=WorkspaceLayout.relative()
+            ).cache_key_components(cache_key)
             entry = index.entry(cache_key)
 
         assert components["extra_source_hash"] == "notebook-1"

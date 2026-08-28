@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 
+from ginkgo.cli.commands.cache import orphan_cache_dirs
 from ginkgo.cli.common import console
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -72,11 +73,8 @@ def _cache_problems(store) -> list[str]:
     for key in sorted(missing_bytes):
         problems.append(f"cache entry {key} has a row but no output.json")
 
-    if cache_root.exists():
-        known = set(keys)
-        for entry in sorted(cache_root.iterdir()):
-            if entry.is_dir() and entry.name not in known:
-                problems.append(f"cache directory {entry.name} has no row (orphan)")
+    for entry in orphan_cache_dirs(cache_root=cache_root, known_keys=keys):
+        problems.append(f"cache directory {entry.name} has no row (orphan)")
 
     for row in store.query(
         "SELECT DISTINCT a.artifact_id, a.kind FROM artifacts a "

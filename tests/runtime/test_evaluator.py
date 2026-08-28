@@ -1,7 +1,6 @@
 """Unit tests for the evaluator runtime."""
 
 from concurrent.futures import Future, ProcessPoolExecutor
-import json
 from pathlib import Path
 import re
 import shutil
@@ -1952,7 +1951,7 @@ class TestAssets:
         with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
             entry = index.entry(consumer_task["cache_key"])
         assert entry is not None
-        inputs = json.loads(entry["inputs"])
+        inputs = entry["inputs"]
 
         assert result
         assert inputs["sources"]["type"] == "list"
