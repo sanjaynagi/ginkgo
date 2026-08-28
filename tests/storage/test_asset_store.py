@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,60 @@ class TestAssetStore:
 
         rows = store.store.query("SELECT data_version FROM asset_versions")
         assert rows[0]["data_version"] is None
+
+    def test_metadata_keeps_the_order_it_was_written_in(self, store: AssetStore) -> None:
+        """A model's metrics render in the order the author listed them."""
+        key = AssetKey(namespace="model", name="classifier")
+        metrics = {"accuracy": 0.9, "precision": 0.8, "recall": 0.7, "f1": 0.75}
+        version = make_asset_version(
+            key=key,
+            kind="model",
+            artifact_id="artifact-m",
+            content_hash="hash-m",
+            run_id="run-1",
+            producer_task="tests.fit",
+            metadata={"framework": "sklearn", "metrics": metrics},
+        )
+        store.register_version(version=version)
+
+        read_back = store.get_version(key=key, version_id=version.version_id)
+
+        assert list(read_back.metadata) == ["framework", "metrics"]
+        assert list(read_back.metadata["metrics"]) == list(metrics)
+
+    def test_registering_a_version_is_one_critical_section(self, store: AssetStore) -> None:
+        """Read-parents-then-write must not be interruptible by another thread.
+
+        Registering concurrently from several threads, each deriving its
+        `data_version` from the same parent, must produce one row per version
+        and agreeing digests — which it cannot if the read and the write are
+        two separate holds of the lock.
+        """
+        parent_key, parent = _make_version(
+            name="prepared_data", suffix="0", run_id="run-0", producer="tests.writer"
+        )
+        store.register_version(version=parent, code_version="source-parent")
+        parent_ref = _asset_ref(key=parent_key, version_id=parent.version_id)
+
+        def register(index: int) -> None:
+            _, version = _make_version(
+                name=f"child_{index}",
+                suffix=f"c{index}",
+                run_id=f"run-{index}",
+                producer="tests.transformer",
+            )
+            store.register_version(
+                version=version, parents=[parent_ref], code_version="source-child"
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(register, range(8)))
+
+        rows = store.store.query(
+            "SELECT data_version FROM asset_versions WHERE asset_key LIKE 'file:child_%'"
+        )
+        assert len(rows) == 8
+        assert len({row["data_version"] for row in rows}) == 1
 
     def test_for_reading_an_absent_workspace_is_empty(self, tmp_path: Path) -> None:
         with AssetStore.for_reading(tmp_path / "ginkgo.db") as catalog:

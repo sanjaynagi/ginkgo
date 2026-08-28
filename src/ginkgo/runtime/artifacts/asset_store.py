@@ -108,6 +108,30 @@ class AssetStore(DirectIndex):
         AssetVersion
             The version as given, so callers can register and use in one line.
         """
+        # One critical section: the child's data_version is derived from parent
+        # rows, and a parent registered by another thread between the read and
+        # the write would leave a version whose data_version cannot be
+        # explained by the edges beside it. The lock is reentrant, so the reads
+        # inside `_data_version` take it again and cost nothing.
+        with self._lock:
+            return self._register(
+                version=version,
+                parents=tuple(parents),
+                code_version=code_version,
+                task_id=task_id,
+                cache_key=cache_key,
+            )
+
+    def _register(
+        self,
+        *,
+        version: AssetVersion,
+        parents: tuple[AssetRef, ...],
+        code_version: str | None,
+        task_id: str | None,
+        cache_key: str | None,
+    ) -> AssetVersion:
+        """Write one version and its lineage, with the index's lock already held."""
         parent_ids = [parent.version_id for parent in parents]
         data_version = self._data_version(code_version=code_version, parents=parents)
         ops = [
@@ -154,14 +178,16 @@ class AssetStore(DirectIndex):
         version_id : str
             Target version identifier, which must already be registered.
         """
-        self.get_version(key=key, version_id=version_id)
-        self._write(
-            ProjectionOp(
-                sql="INSERT INTO asset_aliases (asset_key, alias, version_id) VALUES (?, ?, ?) "
-                "ON CONFLICT (asset_key, alias) DO UPDATE SET version_id=excluded.version_id",
-                params=(str(key), alias, version_id),
+        with self._lock:
+            self.get_version(key=key, version_id=version_id)
+            self._write(
+                ProjectionOp(
+                    sql="INSERT INTO asset_aliases (asset_key, alias, version_id) "
+                    "VALUES (?, ?, ?) ON CONFLICT (asset_key, alias) DO UPDATE SET "
+                    "version_id=excluded.version_id",
+                    params=(str(key), alias, version_id),
+                )
             )
-        )
 
     # -- reading -------------------------------------------------------------
 
