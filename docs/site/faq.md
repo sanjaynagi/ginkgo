@@ -816,19 +816,31 @@ rclone. Any other scheme raises an "unsupported remote scheme" error.
 
 ### What does Ginkgo record for each run, and where does it live?
 
-Each run gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC timestamp
-plus a discriminator). Inside it:
+What happened goes into one SQLite database per workspace, at
+`.ginkgo/ginkgo.db`. It holds an append-only event log — task started, running,
+completed, failed, retrying, cache hits and misses — and the tables the CLI
+reads: runs, tasks, attempts, inputs, outputs, and the dependency graph. Ask it
+questions with `ginkgo inspect run`, `ginkgo debug` and `ginkgo report`, all of
+which work on a run that is still going.
 
-- `manifest.yaml` — run id, workflow path, jobs/cores/memory, status, start/finish
-  times, aggregate resources and timings, and a `tasks` map. Each task entry holds
-  status, attempt/attempts, cache key, `cached`, exit code, env, kind, dependency
-  ids, the `failure` record, outputs, log paths, per-task timings, and (for remote
-  tasks) the job id and execution backend.
-- `events.jsonl` — an append-only event stream (task started/running/
-  completed/failed/retrying, cache hits/misses, etc.).
-- `params.yaml` — the workflow parameters.
+Set `GINKGO_DB=<path>` to put the database somewhere else. Do that if `.ginkgo`
+is on a network filesystem: SQLite locking is unreliable over NFS, Lustre, SMB
+and FUSE, and ginkgo warns once when it notices.
+
+Each run also gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC
+timestamp plus a discriminator) holding the bytes:
+
+- `manifest.yaml` — a snapshot of everything the database recorded for the run,
+  exported once when it finishes. Ginkgo reads it only through
+  `ginkgo db rebuild`, which reconstructs the database from these snapshots if
+  you lose it.
 - `envs/` — copies of the environment lock files used by the run.
 - `logs/` — per-task stdout/stderr.
+- `notebooks/` — executed notebooks and their rendered HTML.
+
+Runs recorded by a version of ginkgo older than the database are not migrated
+and are not visible. Delete `.ginkgo/`, or keep it and accept that the older
+runs no longer show up.
 
 ## Configuration And Secrets
 
@@ -890,11 +902,12 @@ exceeded.
 
 ### How is a child run stitched into the parent's provenance?
 
-The child run gets its own full run directory and `manifest.yaml` under
+The child is a run in its own right, with its own directory under
 `.ginkgo/runs/<child_run_id>/`; the parent stores a reference to it rather than
-inlining the child's tasks. The child process prints a machine-readable
-`GINKGO_CHILD_RUN_ID=<run_id>` line, which the parent captures and returns to the
-calling task as a `SubWorkflowResult` (with `run_id`, `status`, and
-`manifest_path`). In the parent's manifest, the calling task records `sub_run_id`
-(the child's run id) on success, and on failure the child's run id is still
-recorded via the raised error, so you can trace into the child run either way.
+inlining the child's tasks. The parent tells the child who called it through
+`GINKGO_PARENT_RUN_ID` and `GINKGO_PARENT_TASK_ID`; the child records both, and
+the parent reads the child's run id back out of the database once the subprocess
+exits. The calling task gets a `SubWorkflowResult` (with `run_id`, `status`, and
+`manifest_path`) and records `sub_run_id`; on failure the child's run id is
+still attached to the raised error, so you can trace into the child run either
+way.

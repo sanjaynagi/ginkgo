@@ -89,3 +89,26 @@ provenance never degrades silently.
 - `ginkgo db migrate` — create or upgrade the database.
 - `ginkgo db check` — schema version and `PRAGMA integrity_check`.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
+- `ginkgo db rebuild [--runs] [--dry-run]` — re-insert the run projections from
+  the `manifest.yaml` snapshots in `.ginkgo/runs/`. Idempotent. A run directory
+  holding anything else is reported and left alone; no older format is read.
+
+## Writing and reading
+
+One process writes, through `store/writer.py`'s `StoreWriter`: a queue and one
+background thread owning the only write-mode connection, batching events into
+transactions. `store/recorder.py` subscribes it to the event bus, and
+`store/export.py` writes the run's snapshot when it completes. `store/projector.py`
+is the whole of the event-to-rows mapping — one pure function per event type,
+shared by the live write path and `db rebuild`. See
+[Provenance and Run State](provenance.md) for the shape of that path.
+
+Readers go through `ginkgo.query`, which opens read-only. No read path ever
+opens a write connection, so listings work while a run is writing and can never
+migrate a database out from under one.
+
+Two `ginkgo run` processes in one workspace are supported and tested
+(`tests/store/test_concurrent_runs.py`). WAL keeps readers off the writer's
+back; `busy_timeout` covers lock contention; and the very first open of an empty
+workspace retries the switch into WAL, which is the one lock SQLite's own busy
+handler does not cover.

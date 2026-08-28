@@ -21,9 +21,10 @@ The repository currently implements:
 - Reproducible environment dispatch through Pixi for local shell execution and
   container-backed execution for shell tasks
 - Provenance capture, logs, machine-readable runtime events, and structured
-  inspection and diagnostics through the CLI, with append-only hot-path
-  provenance updates in `events.jsonl` and a reconstructed/finalized
-  `manifest.yaml`
+  inspection and diagnostics through the CLI, all reading one event-sourced
+  SQLite ledger at `.ginkgo/ginkgo.db`; each run directory keeps a
+  `manifest.yaml` snapshot exported from it, which `ginkgo db rebuild` reads
+  back
 - Remote task execution via Kubernetes (GKE, EKS, OKE) and GCP Batch, with
   per-task GPU/memory/CPU resource declarations, code-sync packaging, and
   full provenance integration
@@ -44,8 +45,8 @@ The repository currently implements:
   `ginkgo inspect workflow`, and per-parameter source recorded in provenance
 - Sub-workflow composition via `@task(kind="subworkflow")` returning a
   `subworkflow(path, params=..., config=...)` descriptor, running the
-  child workflow as an opaque `ginkgo run` subprocess with child run-id
-  stitched into the parent manifest
+  child workflow as an opaque `ginkgo run` subprocess, with the child
+  recording its parent in the ledger so the parent can find it
 
 ## Topic Map
 
@@ -60,7 +61,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Reporting](reporting.md) — static HTML report export, typed report data, asset previews, and bundle layout.
 - [Value Transport](value-transport.md) — codec layer for cross-process task inputs/outputs.
 - [Configuration, Parameters, and Secrets](config-secrets.md) — config layering, `ginkgo.param` declarations and resolution, secret references, resolvers, and redaction.
-- [Provenance and Run State](provenance.md) — on-disk run layout and manifest contents.
+- [Provenance and Run State](provenance.md) — how a run is recorded, the read model, and the on-disk run layout.
 - [Provenance Store](store.md) — the SQLite ledger and its projections: schema, pragmas, migrations, `ginkgo db`.
 - [CLI](cli.md) — available commands and capabilities.
 - [Remote Execution](remote-execution.md) — `RemoteExecutor` protocol, Kubernetes and GCP Batch executors, remote worker, code sync, GCS backend, infrastructure scripts.

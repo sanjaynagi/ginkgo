@@ -54,6 +54,12 @@ at the nearest `ginkgo.toml`.
 `ginkgo secrets`
 : List and validate the secret references a workflow resolves at run time.
 
+`ginkgo db`
+: Maintain the provenance database. `db path` prints where it is, `db migrate`
+  creates or upgrades it, `db check` verifies its integrity, and `db rebuild`
+  reconstructs it from the run snapshots on disk. See
+  [Caching and Provenance](caching-and-provenance.md).
+
 Run `ginkgo <command> --help` for the full flag set of any command.
 
 ## Running Workflows
@@ -125,8 +131,8 @@ required parameter that is not supplied fails the same way.
 ginkgo run flow.py --item alpha --item beta --verbose
 ```
 
-Resolved values are recorded in the run's `params.yaml`, and where each came
-from &mdash; the CLI, config, or the default &mdash; in `manifest.yaml`.
+Resolved values are recorded with the run, along with where each came from
+&mdash; the CLI, config, or the default. `ginkgo inspect run` shows both.
 
 The `[params]` table layers across config files, so `--config extra.toml` setting
 one parameter leaves the others in `ginkgo.toml` alone.
