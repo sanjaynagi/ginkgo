@@ -1,255 +1,189 @@
-"""Regression tests for provenance serialization."""
+"""Regression tests for what a run records in the ledger."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-import yaml
 
-from ginkgo import file, secret, task
+from ginkgo import secret
 from ginkgo.cli.commands.inspect import inspect_run
 import ginkgo.runtime.caching.provenance as provenance_module
-from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
+from ginkgo.runtime.caching.provenance import make_run_id
+from ginkgo.runtime.evaluator import _render_value
+from ginkgo.runtime.events import (
+    GraphNodeRegistered,
+    PhaseTimed,
+    RunResourcesSampled,
+    TaskCompleted,
+    TaskPlanned,
+)
+
+from tests.conftest import Ledger
 
 
-@task()
-def fake_output_task(output_path: str) -> file:
-    Path(output_path).write_text("ok", encoding="utf-8")
-    return file(output_path)
+def test_make_run_id_remains_unique_under_fixed_clock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Freeze the clock so both ids share a timestamp. Uniqueness must then
+    # come from the real random discriminator, not from the clock — so
+    # token_hex is deliberately left unpatched.
+    real_datetime = provenance_module.datetime
+
+    class _FixedDatetime:
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return real_datetime(2026, 4, 1, 12, 0, 0, 123456, tzinfo=tz)
+
+    monkeypatch.setattr(provenance_module, "datetime", _FixedDatetime)
+
+    workflow_path = tmp_path / "workflow.py"
+    first = make_run_id(workflow_path=workflow_path)
+    second = make_run_id(workflow_path=workflow_path)
+
+    assert first != second
+    assert first.startswith("20260401_120000_123456_")
+    assert second.startswith("20260401_120000_123456_")
 
 
-class TestRunProvenanceRecorder:
-    def test_make_run_id_remains_unique_under_fixed_clock(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # Freeze the clock so both ids share a timestamp. Uniqueness must then
-        # come from the real random discriminator, not from the clock — so
-        # token_hex is deliberately left unpatched.
-        real_datetime = provenance_module.datetime
-
-        class _FixedDatetime:
-            @classmethod
-            def now(cls, tz=None):  # noqa: ANN001, ANN206
-                return real_datetime(2026, 4, 1, 12, 0, 0, 123456, tzinfo=tz)
-
-        monkeypatch.setattr(provenance_module, "datetime", _FixedDatetime)
-
-        workflow_path = tmp_path / "workflow.py"
-        first = make_run_id(workflow_path=workflow_path)
-        second = make_run_id(workflow_path=workflow_path)
-
-        assert first != second
-        assert first.startswith("20260401_120000_123456_")
-        assert second.startswith("20260401_120000_123456_")
-
-    def test_marker_type_outputs_are_serialized_as_plain_strings(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=None,
-            cores=None,
-            memory=None,
-            params={},
-        )
-
-        output = file("results/out.txt")
-        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
-        recorder.mark_succeeded(
-            node_id=0,
+def _register(ledger: Ledger, *, kind: str = "python") -> None:
+    ledger.bus.emit(
+        GraphNodeRegistered(
+            run_id=ledger.run_id,
+            task_id="task_0000",
             task_name="demo.task",
-            env=None,
-            value=output,
+            kind=kind,
+            execution_mode="worker",
         )
-        recorder.finalize(status="succeeded")
+    )
 
-        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-        assert manifest["tasks"]["task_0000"]["output"] == "results/out.txt"
-        assert manifest["tasks"]["task_0000"]["kind"] == "python"
-        assert manifest["tasks"]["task_0000"]["execution_mode"] == "worker"
 
-    def test_resources_and_memory_budget_are_serialized(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=4,
-            cores=2,
-            memory=32,
-            params={},
+def test_marker_type_outputs_are_serialized_as_plain_strings(ledger: Ledger) -> None:
+    _register(ledger)
+    ledger.bus.emit(
+        TaskCompleted(
+            run_id=ledger.run_id,
+            task_id="task_0000",
+            task_name="demo.task",
+            attempt=1,
+            outputs=[{"name": "return", "type": "file", "path": "results/out.txt"}],
         )
+    )
+    summary = ledger.finish()
 
-        recorder.update_resources(
-            {
+    task = summary.tasks[0]
+    assert task.outputs[0]["path"] == "results/out.txt"
+    assert task.kind == "python"
+    assert task.status == "succeeded"
+
+
+def test_resources_and_memory_budget_are_recorded(tmp_path: Path) -> None:
+    ledger = Ledger.start(root=tmp_path, jobs=4, cores=2, memory=32)
+    ledger.bus.emit(
+        RunResourcesSampled(
+            run_id=ledger.run_id,
+            resources={
                 "status": "completed",
                 "scope": "process_tree",
                 "sample_count": 3,
-                "current": {"cpu_percent": 10.0, "rss_bytes": 1024, "process_count": 1},
                 "peak": {"cpu_percent": 120.0, "rss_bytes": 4096, "process_count": 2},
-                "average": {"cpu_percent": 55.0, "rss_bytes": 2048, "process_count": 1.5},
-                "updated_at": "2026-03-13T00:00:00+00:00",
-            }
+            },
         )
-        recorder.finalize(status="succeeded")
+    )
+    summary = ledger.finish()
+    ledger.close()
 
-        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-        assert manifest["memory"] == 32
-        assert manifest["resources"]["status"] == "completed"
-        assert manifest["resources"]["peak"]["rss_bytes"] == 4096
+    assert summary.resources["status"] == "completed"
+    assert summary.resources["peak"]["rss_bytes"] == 4096
+    payload = inspect_run(summary=summary)
+    assert payload["resources"]["peak"]["rss_bytes"] == 4096
 
-    def test_secret_inputs_are_redacted_in_manifest(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=None,
-            cores=None,
-            memory=None,
-            params={},
-        )
 
-        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
-        recorder.update_task_inputs(
-            node_id=0,
+def test_secret_inputs_are_redacted(ledger: Ledger) -> None:
+    _register(ledger)
+    ledger.bus.emit(
+        TaskPlanned(
+            run_id=ledger.run_id,
+            task_id="task_0000",
             task_name="demo.task",
-            env=None,
-            resolved_args={"token": secret("API_TOKEN")},
-            input_hashes=None,
-            cache_key=None,
+            inputs=_render_value({"token": secret("API_TOKEN")}),
         )
+    )
+    summary = ledger.summary()
 
-        manifest = load_manifest(recorder.run_dir)
-        assert manifest["tasks"]["task_0000"]["inputs"]["token"]["redacted"] is True
-        assert manifest["tasks"]["task_0000"]["inputs"]["token"]["secret"]["name"] == "API_TOKEN"
+    token = summary.tasks[0].inputs["token"]
+    assert token["redacted"] is True
+    assert token["secret"]["name"] == "API_TOKEN"
 
-    def test_timings_are_serialized_and_exposed_via_inspect(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=2,
-            cores=2,
-            memory=None,
-            params={},
+
+def test_timings_are_recorded_and_exposed_via_inspect(ledger: Ledger) -> None:
+    _register(ledger)
+    ledger.bus.emit(PhaseTimed(run_id=ledger.run_id, phase="workflow_load_seconds", seconds=1.25))
+    ledger.bus.emit(
+        PhaseTimed(
+            run_id=ledger.run_id,
+            task_id="task_0000",
+            phase="cache_lookup_seconds",
+            seconds=0.5,
         )
-
-        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
-        recorder.add_run_timing(phase="workflow_load_seconds", seconds=1.25)
-        recorder.add_task_timing(node_id=0, phase="cache_lookup_seconds", seconds=0.5)
-        recorder.mark_cached(
-            node_id=0,
+    )
+    ledger.bus.emit(
+        TaskCompleted(
+            run_id=ledger.run_id,
+            task_id="task_0000",
             task_name="demo.task",
-            env=None,
-            value="ok",
+            status="cached",
         )
-        recorder.finalize(status="succeeded")
+    )
+    summary = ledger.finish()
 
-        manifest = yaml.safe_load((recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-        assert manifest["timings"]["run"]["workflow_load_seconds"] == 1.25
-        assert manifest["timings"]["task_phase_totals"]["cache_lookup_seconds"] == 0.5
-        assert manifest["tasks"]["task_0000"]["timings"]["cache_lookup_seconds"] == 0.5
+    assert summary.timings["workflow_load_seconds"] == 1.25
+    assert summary.tasks[0].timings["cache_lookup_seconds"] == 0.5
 
-        payload = inspect_run(run_dir=recorder.run_dir)
-        assert payload["timings"]["run"]["workflow_load_seconds"] == 1.25
-        assert payload["tasks"][0]["timings"]["cache_lookup_seconds"] == 0.5
+    payload = inspect_run(summary=summary)
+    assert payload["timings"]["workflow_load_seconds"] == 1.25
+    assert payload["tasks"][0]["timings"]["cache_lookup_seconds"] == 0.5
 
-    def test_load_manifest_replays_task_updates_before_finalize(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
-        )
 
-        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
-        recorder.mark_running(
-            node_id=0,
+def test_a_running_task_is_visible_before_the_run_finishes(ledger: Ledger) -> None:
+    _register(ledger)
+    assert ledger.summary().tasks[0].status == "pending"
+
+
+def test_the_snapshot_is_written_when_the_run_completes(ledger: Ledger) -> None:
+    _register(ledger)
+    ledger.bus.emit(
+        TaskCompleted(
+            run_id=ledger.run_id,
+            task_id="task_0000",
             task_name="demo.task",
-            env=None,
-            attempt=1,
-            retries=0,
+            status="cached",
         )
+    )
+    summary = ledger.finish()
 
-        raw_manifest = yaml.safe_load(
-            (recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
-        assert raw_manifest["tasks"] == {}
-
-        manifest = load_manifest(recorder.run_dir)
-        assert manifest["tasks"]["task_0000"]["status"] == "running"
-        assert manifest["tasks"]["task_0000"]["attempt"] == 1
-
-    def test_manifest_is_flushed_with_latest_state_on_finalize(self, tmp_path: Path) -> None:
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id="20260312_000000_deadbeef",
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
-        )
-
-        recorder.ensure_task(node_id=0, task_name="demo.task", env=None)
-        recorder.mark_cached(
-            node_id=0,
-            task_name="demo.task",
-            env=None,
-            value="ok",
-        )
-        recorder.finalize(status="succeeded")
-
-        raw_manifest = yaml.safe_load(
-            (recorder.run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
-        assert raw_manifest["status"] == "succeeded"
-        assert raw_manifest["tasks"]["task_0000"]["status"] == "cached"
+    assert summary.status == "succeeded"
+    assert summary.tasks[0].status == "cached"
+    assert ledger.run_dir.manifest_path.is_file()
 
 
-def test_manifest_records_param_sources(tmp_path: Path) -> None:
-    recorder = RunProvenanceRecorder(
-        run_id="run-params",
-        workflow_path=tmp_path / "workflow.py",
-        root_dir=tmp_path / "runs",
-        jobs=1,
-        cores=1,
+def test_param_sources_are_recorded(tmp_path: Path) -> None:
+    ledger = Ledger.start(
+        root=tmp_path,
         params={"n_reps": 7, "label": "cfg"},
         param_sources={"n_reps": "cli", "label": "config"},
     )
-    recorder.finalize(status="succeeded")
+    summary = ledger.finish()
+    ledger.close()
 
-    manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
-
-    params = yaml.safe_load(recorder.params_path.read_text(encoding="utf-8"))
-    assert params == {"n_reps": 7, "label": "cfg"}
+    assert summary.param_sources == {"n_reps": "cli", "label": "config"}
+    assert summary.params == {"n_reps": 7, "label": "cfg"}
 
 
-def test_manifest_param_sources_defaults_to_empty(tmp_path: Path) -> None:
-    recorder = RunProvenanceRecorder(
-        run_id="run-no-params",
-        workflow_path=tmp_path / "workflow.py",
-        root_dir=tmp_path / "runs",
-        jobs=1,
-        cores=1,
-    )
-    recorder.finalize(status="succeeded")
+def test_param_sources_default_to_empty(tmp_path: Path) -> None:
+    ledger = Ledger.start(root=tmp_path)
+    summary = ledger.finish()
+    ledger.close()
 
-    manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["param_sources"] == {}
+    assert summary.param_sources == {}
+    assert summary.params == {}

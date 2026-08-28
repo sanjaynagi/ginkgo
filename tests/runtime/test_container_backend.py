@@ -536,23 +536,10 @@ class TestContainerShellE2E:
     def test_provenance_records_container_metadata(self, tmp_path: Path):
         """Provenance manifest includes backend type and image digest."""
         from ginkgo import evaluate
-        from ginkgo.runtime.caching.provenance import (
-            RunProvenanceRecorder,
-            load_manifest,
-            make_run_id,
-        )
+        from tests.conftest import Ledger
 
         output_file = tmp_path / "result.txt"
-        runs_dir = tmp_path / ".ginkgo" / "runs"
-
-        run_id = make_run_id()
-        provenance = RunProvenanceRecorder(
-            run_id=run_id,
-            workflow_path=Path("test.py"),
-            root_dir=runs_dir,
-            jobs=1,
-            cores=1,
-        )
+        ledger = Ledger.start(root=tmp_path)
 
         container_backend = ContainerBackend(
             project_root=tmp_path,
@@ -584,11 +571,12 @@ class TestContainerShellE2E:
                     ),
                     container=container_backend,
                 ),
-                provenance=provenance,
+                run_dir=ledger.run_dir,
+                event_bus=ledger.bus,
             )
 
-        manifest = load_manifest(runs_dir / run_id)
-        tasks = manifest["tasks"]
+        tasks = ledger.tasks()
+        ledger.close()
         assert len(tasks) == 1
         task_entry = next(iter(tasks.values()))
         assert task_entry["backend"] == "container"

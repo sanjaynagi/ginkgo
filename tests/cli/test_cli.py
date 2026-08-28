@@ -12,6 +12,7 @@ import tomllib
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -42,6 +43,73 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
     )
+
+
+def _snapshot(run_dir: Path) -> dict[str, Any]:
+    """Read a run's exported snapshot as one mapping per run and per task.
+
+    The snapshot is the projection tables serialised; this stitches the run row
+    back together with its tasks, their annotations and their inputs, which is
+    the shape these tests ask questions in.
+    """
+    data = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    tasks: dict[str, Any] = {}
+    for task in data["tasks"]:
+        merged = {**task, **(task.get("extra") or {}), "inputs": {}}
+        merged["cached"] = bool(task["cached"])
+        tasks[task["task_id"]] = merged
+    for row in data["task_inputs"]:
+        tasks[row["task_id"]]["inputs"][row["param"]] = json.loads(row["value_summary"])
+    return {**data["runs"][0], "tasks": tasks}
+
+
+def _record_notebook_run(
+    *,
+    run_id: str,
+    started_at: str,
+    task_id: str,
+    task_name: str,
+    render_status: str | None = None,
+    artifact_run_id: str | None = None,
+    pointers: dict[str, str] | None = None,
+) -> Path:
+    """Record a run whose one task rendered a notebook, and write the artifacts.
+
+    Returns the run directory, so a caller can name the files it produced.
+    """
+    from ginkgo.runtime.events import GraphNodeRegistered, TaskAnnotated, TaskCompleted
+
+    from tests.conftest import Ledger
+
+    ledger = Ledger.start(root=Path.cwd(), run_id=run_id, workflow="workflow.py", ts=started_at)
+    notebooks = ledger.path / "notebooks"
+    notebooks.mkdir(parents=True, exist_ok=True)
+    (notebooks / f"{task_id}.ipynb").write_text("{}", encoding="utf-8")
+    (notebooks / f"{task_id}.html").write_text("<html></html>", encoding="utf-8")
+    ledger.bus.emit(GraphNodeRegistered(run_id=run_id, task_id=task_id, task_name=task_name))
+    ledger.bus.emit(
+        TaskAnnotated(
+            run_id=run_id,
+            task_id=task_id,
+            task_name=task_name,
+            fields={
+                "task_type": "notebook",
+                "render_status": render_status,
+                "notebook_artifact_run_id": artifact_run_id,
+                **(
+                    pointers
+                    or {
+                        "executed_notebook": f"notebooks/{task_id}.ipynb",
+                        "rendered_html": f"notebooks/{task_id}.html",
+                    }
+                ),
+            },
+        )
+    )
+    ledger.bus.emit(TaskCompleted(run_id=run_id, task_id=task_id, task_name=task_name, attempt=1))
+    ledger.finish()
+    ledger.close()
+    return ledger.path
 
 
 def _extract_run_dir(output: str) -> Path:
@@ -108,7 +176,7 @@ def _run_trivial_workflow_cache_key(cwd: Path) -> str:
     result = _run_cli("run", "workflow.py", cwd=cwd)
     assert result.returncode == 0, result.stderr
     run_dir = _extract_run_dir(result.stdout)
-    manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    manifest = _snapshot(run_dir)
     return next(iter(manifest["tasks"].values()))["cache_key"]
 
 
@@ -207,10 +275,7 @@ def main():
         assert '{"status":' not in first.stdout
 
         first_run_dir = _extract_run_dir(first.stdout)
-        first_manifest = yaml.safe_load(
-            (first_run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
-        first_params = yaml.safe_load((first_run_dir / "params.yaml").read_text(encoding="utf-8"))
+        first_manifest = _snapshot(first_run_dir)
         first_task = next(iter(first_manifest["tasks"].values()))
 
         assert Path("result.txt").read_text(encoding="utf-8") == "second"
@@ -218,7 +283,7 @@ def main():
         assert first_task["status"] == "succeeded"
         assert first_task["cached"] is False
         assert first_task["inputs"]["message"] == "second"
-        assert first_params == {"extra": "override", "message": "second"}
+        assert first_manifest["params"] == {"extra": "override", "message": "second"}
 
         second = _run_cli(
             "run",
@@ -232,9 +297,7 @@ def main():
         assert second.returncode == 0, second.stderr
 
         second_run_dir = _extract_run_dir(second.stdout)
-        second_manifest = yaml.safe_load(
-            (second_run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
+        second_manifest = _snapshot(second_run_dir)
         second_task = next(iter(second_manifest["tasks"].values()))
 
         assert "cached" in second.stdout
@@ -319,14 +382,16 @@ def main():
         assert result.returncode == 0, result.stderr
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _snapshot(run_dir)
         task = next(iter(manifest["tasks"].values()))
 
         assert task["status"] == "succeeded"
-        assert task["retries"] == 2
         assert task["max_attempts"] == 3
-        assert task["attempt"] == 2
         assert task["attempts"] == 2
+        attempts = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))[
+            "attempts"
+        ]
+        assert [entry["status"] for entry in attempts] == ["failed", "succeeded"]
 
     @pytest.mark.parametrize(
         ("dry_run", "old_survives"),
@@ -400,60 +465,20 @@ def main():
         assert entries[2].exists()
 
     def test_notebooks_lists_pairs_in_most_recent_run_order(self) -> None:
-        older_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
-        newer_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
-        older_run.mkdir(parents=True)
-        newer_run.mkdir(parents=True)
-
-        older_notebook = older_run / "notebooks" / "task_0000.ipynb"
-        older_html = older_run / "notebooks" / "task_0000.html"
-        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
+        older_run = _record_notebook_run(
+            run_id="20260301_090000_000000_aaaaaaaa",
+            started_at="2026-03-01T09:00:00+00:00",
+            task_id="task_0000",
+            task_name="demo.render_old",
+        )
+        newer_run = _record_notebook_run(
+            run_id="20260302_090000_000000_bbbbbbbb",
+            started_at="2026-03-02T09:00:00+00:00",
+            task_id="task_0001",
+            task_name="demo.render_new",
+        )
         newer_html = newer_run / "notebooks" / "task_0001.html"
-        older_notebook.parent.mkdir(parents=True)
-        newer_notebook.parent.mkdir(parents=True)
-        older_notebook.write_text("{}", encoding="utf-8")
-        older_html.write_text("<html></html>", encoding="utf-8")
-        newer_notebook.write_text("{}", encoding="utf-8")
-        newer_html.write_text("<html></html>", encoding="utf-8")
-
-        older_manifest = {
-            "run_id": older_run.name,
-            "workflow": "workflow.py",
-            "status": "succeeded",
-            "started_at": "2026-03-01T09:00:00+00:00",
-            "finished_at": "2026-03-01T09:01:00+00:00",
-            "tasks": {
-                "task_0000": {
-                    "task": "demo.render_old",
-                    "task_type": "notebook",
-                    "executed_notebook": "notebooks/task_0000.ipynb",
-                    "rendered_html": "notebooks/task_0000.html",
-                }
-            },
-        }
-        newer_manifest = {
-            "run_id": newer_run.name,
-            "workflow": "workflow.py",
-            "status": "succeeded",
-            "started_at": "2026-03-02T09:00:00+00:00",
-            "finished_at": "2026-03-02T09:01:00+00:00",
-            "tasks": {
-                "task_0001": {
-                    "task": "demo.render_new",
-                    "task_type": "notebook",
-                    "executed_notebook": "notebooks/task_0001.ipynb",
-                    "rendered_html": "notebooks/task_0001.html",
-                }
-            },
-        }
-        (older_run / "manifest.yaml").write_text(
-            yaml.safe_dump(older_manifest, sort_keys=False),
-            encoding="utf-8",
-        )
-        (newer_run / "manifest.yaml").write_text(
-            yaml.safe_dump(newer_manifest, sort_keys=False),
-            encoding="utf-8",
-        )
+        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
 
         result = _run_cli("notebooks", cwd=Path.cwd())
 
@@ -464,52 +489,33 @@ def main():
         assert result.stdout.index("render_new") < result.stdout.index("render_old")
         assert str(newer_html.resolve()) in result.stdout
         assert str(newer_notebook.resolve()) in result.stdout
+        assert older_run.name in result.stdout
 
     def test_notebooks_attributes_a_replayed_artifact_to_the_producing_run(self) -> None:
         """A cached rerun must not claim the earlier run's artifact (#202)."""
-        producing_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
-        replaying_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
-        notebooks = producing_run / "notebooks"
-        notebooks.mkdir(parents=True)
-        replaying_run.mkdir(parents=True)
-        executed = notebooks / "task_0014.ipynb"
-        html = notebooks / "task_0014.html"
-        executed.write_text("{}", encoding="utf-8")
-        html.write_text("<html></html>", encoding="utf-8")
-
-        task_entry = {
-            "task": "demo.render_overview_notebook",
-            "task_type": "notebook",
-            "render_status": "failed",
-            "notebook_artifact_run_id": producing_run.name,
-        }
-        for run_dir, pointers in (
-            (
-                producing_run,
-                {
-                    "executed_notebook": "notebooks/task_0014.ipynb",
-                    "rendered_html": "notebooks/task_0014.html",
-                },
-            ),
-            (
-                # A cache hit replays absolute pointers into the new manifest.
-                replaying_run,
-                {
-                    "executed_notebook": str(executed.resolve()),
-                    "rendered_html": str(html.resolve()),
-                },
-            ),
-        ):
-            manifest = {
-                "run_id": run_dir.name,
-                "workflow": "workflow.py",
-                "status": "succeeded",
-                "started_at": f"2026-03-0{1 if run_dir is producing_run else 2}T09:00:00+00:00",
-                "tasks": {"task_0014": {**task_entry, **pointers}},
-            }
-            (run_dir / "manifest.yaml").write_text(
-                yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-            )
+        producing_run = _record_notebook_run(
+            run_id="20260301_090000_000000_aaaaaaaa",
+            started_at="2026-03-01T09:00:00+00:00",
+            task_id="task_0014",
+            task_name="demo.render_overview_notebook",
+            render_status="failed",
+            artifact_run_id="20260301_090000_000000_aaaaaaaa",
+        )
+        executed = producing_run / "notebooks" / "task_0014.ipynb"
+        html = producing_run / "notebooks" / "task_0014.html"
+        # A cache hit replays the producing run's absolute pointers.
+        replaying_run = _record_notebook_run(
+            run_id="20260302_090000_000000_bbbbbbbb",
+            started_at="2026-03-02T09:00:00+00:00",
+            task_id="task_0014",
+            task_name="demo.render_overview_notebook",
+            render_status="failed",
+            artifact_run_id=producing_run.name,
+            pointers={
+                "executed_notebook": str(executed.resolve()),
+                "rendered_html": str(html.resolve()),
+            },
+        )
 
         result = _run_cli("notebooks", cwd=Path.cwd())
 
@@ -687,7 +693,7 @@ def main():
         assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
         run_dir = _extract_run_dir(failed.stderr)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _snapshot(run_dir)
         task = next(iter(manifest["tasks"].values()))
         assert manifest["status"] == "failed"
         assert task["status"] == "failed"
@@ -1418,7 +1424,7 @@ def main():
         assert "RSS avg " in result.stdout
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _snapshot(run_dir)
         assert manifest["memory"] == 32
         assert manifest["resources"]["status"] == "completed"
         assert manifest["resources"]["sample_count"] >= 1
@@ -1907,9 +1913,7 @@ def main():
 
 
 class TestCliRunProfile:
-    def test_run_profile_emits_table_and_persists_snapshot(self) -> None:
-        from ginkgo.runtime.caching.provenance import load_manifest
-
+    def test_run_profile_emits_the_table(self) -> None:
         Path("workflow.py").write_text(
             """
 from ginkgo import flow, task
@@ -1932,21 +1936,16 @@ def main():
         assert "scheduler_dispatch" in result.stdout
         assert "evaluator_validate" in result.stdout
 
+        # The run's own phases are recorded; the profiler's breakdown is a
+        # console report, not part of the run's provenance.
         run_dir = _extract_run_dir(result.stdout)
-        manifest = load_manifest(run_dir)
-        profile = manifest["timings"]["profile"]
-        assert "scheduler_dispatch" in profile
-        assert profile["scheduler_dispatch"]["seconds"] > 0
-        assert profile["scheduler_dispatch"]["count"] >= 1
-
         inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
         assert inspect.returncode == 0, inspect.stderr
-        inspect_payload = json.loads(inspect.stdout)
-        assert "scheduler_dispatch" in inspect_payload["timings"]["profile"]
+        timings = json.loads(inspect.stdout)["timings"]
+        assert timings["workflow_execute_seconds"] > 0
+        assert "scheduler_dispatch" not in timings
 
-    def test_run_without_profile_does_not_emit_table_or_snapshot(self) -> None:
-        from ginkgo.runtime.caching.provenance import load_manifest
-
+    def test_run_without_profile_does_not_emit_the_table(self) -> None:
         Path("workflow.py").write_text(
             """
 from ginkgo import flow, task
@@ -1966,10 +1965,6 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert "Runtime Profile" not in result.stdout
-
-        run_dir = _extract_run_dir(result.stdout)
-        manifest = load_manifest(run_dir)
-        assert manifest["timings"]["profile"] == {}
 
 
 _PARAM_WORKFLOW = (
@@ -2078,12 +2073,9 @@ class TestCliWorkflowParams:
         result = _run_cli("run", "workflow.py", "--n-reps", "7", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        run_dir = _extract_run_dir(result.stdout)
-        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
-        assert params["n_reps"] == 7
-        assert params["label"] == "cfg"
-
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _snapshot(_extract_run_dir(result.stdout))
+        assert manifest["params"]["n_reps"] == 7
+        assert manifest["params"]["label"] == "cfg"
         assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
 
     def test_unknown_flag_is_rejected_and_lists_declared_parameters(self) -> None:
@@ -2281,7 +2273,7 @@ def main():
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"
 
-    def test_params_yaml_records_effective_values_only(self) -> None:
+    def test_recorded_params_are_the_effective_values_only(self) -> None:
         """The raw [params] table must not sit beside the values that superseded it."""
         Path("workflow.py").write_text(
             """
@@ -2311,8 +2303,7 @@ def main():
         result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        run_dir = _extract_run_dir(result.stdout)
-        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
+        params = _snapshot(_extract_run_dir(result.stdout))["params"]
         assert params["label"] == "effective"
         assert params["other"] == "kept"
         assert "params" not in params

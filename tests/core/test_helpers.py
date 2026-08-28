@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from ginkgo import expand, flatten, per_branch, slug, zip_expand
-from ginkgo.runtime.caching.provenance import _render_value
+from ginkgo.runtime.evaluator import _render_value
 from ginkgo.runtime.task_runners.shell import serialize_cli_argument_value
 from ginkgo.wildcards import ExpandedTemplate
 

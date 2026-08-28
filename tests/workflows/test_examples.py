@@ -18,7 +18,7 @@ from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.envs.container import ContainerBackend
-from ginkgo.runtime.caching.provenance import latest_run_dir, load_manifest
+from tests.conftest import latest_run_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +53,7 @@ def _materialize_example(*, name: str, destination_root: Path) -> Path:
 
 
 def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
-    """Execute an example workflow and load its newest run manifest."""
+    """Execute an example workflow and return its newest run's projections."""
     exit_code = run_workflow(
         workflow_path=discover_default_workflow(project_root=example_dir),
         config_paths=[],
@@ -64,10 +64,7 @@ def _run_example(*, example_dir: Path) -> tuple[Path, dict[str, object]]:
     )
     assert exit_code == 0
 
-    runs_root = example_dir / ".ginkgo" / "runs"
-    run_dir = latest_run_dir(runs_root)
-    assert run_dir is not None
-    return run_dir, load_manifest(run_dir)
+    return latest_run_view(root=example_dir)
 
 
 @contextmanager
@@ -204,7 +201,7 @@ class TestExamples:
         notebook_task = next(
             task
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".render_overview_notebook")
+            if str(task["name"]).endswith(".render_overview_notebook")
         )
         notebook_html = first_run_dir / str(notebook_task["rendered_html"])
 
@@ -218,7 +215,7 @@ class TestExamples:
         seed_card_assets = [
             asset
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".write_seed_card")
+            if str(task["name"]).endswith(".write_seed_card")
             for asset in task.get("assets", [])
         ]
         assert seed_card_assets
@@ -270,7 +267,7 @@ class TestExamples:
         assert any(
             task.get("assets")
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".filter_fastq")
+            if str(task["name"]).endswith(".filter_fastq")
         )
 
         with _mock_docker():
@@ -294,7 +291,7 @@ class TestExamples:
         packet_planner = next(
             task
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".plan_series_packets")
+            if str(task["name"]).endswith(".plan_series_packets")
         )
         register = pd.read_csv(example_dir / "results" / "candidate_register.csv")
 
@@ -328,7 +325,7 @@ class TestExamples:
         notebook_task = next(
             task
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".render_channel_performance_notebook")
+            if str(task["name"]).endswith(".render_channel_performance_notebook")
         )
         notebook_html = first_run_dir / str(notebook_task["rendered_html"])
 
@@ -364,7 +361,7 @@ class TestExamples:
         packet_planner = next(
             task
             for task in first_manifest["tasks"].values()
-            if str(task["task"]).endswith(".plan_desk_packets")
+            if str(task["name"]).endswith(".plan_desk_packets")
         )
 
         assert len(packet_outputs) == 5
