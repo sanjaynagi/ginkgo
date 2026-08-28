@@ -1,0 +1,32 @@
+{
+  "assets": [
+    {
+      "asset_key": "table:rows",
+      "version_id": "v1"
+    }
+  ],
+  "attempt": 1,
+  "cache_key": "cache_abcdef",
+  "display_label": null,
+  "event": "task_completed",
+  "output_summary": {
+    "kind": "table",
+    "rows": 10
+  },
+  "outputs": [
+    {
+      "name": "table",
+      "type": "table"
+    }
+  ],
+  "remote_job_id": "job-1",
+  "resource_usage": {
+    "max_rss_bytes": 1048576
+  },
+  "run_id": "run_20260828_090000",
+  "status": "success",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 2
+}

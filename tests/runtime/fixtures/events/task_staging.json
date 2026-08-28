@@ -1,0 +1,13 @@
+{
+  "access_method": "fuse",
+  "attempt": 0,
+  "display_label": null,
+  "event": "task_staging",
+  "remote_input_count": 2,
+  "run_id": "run_20260828_090000",
+  "status": "staging",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

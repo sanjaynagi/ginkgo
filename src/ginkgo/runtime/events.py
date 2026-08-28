@@ -36,10 +36,13 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
+    v: int = 2
     task_id: str = ""
     task_name: str = ""
     kind: str = "python"
+    execution_mode: str = "python"
     env: str | None = None
+    retries: int = 0
     dependency_ids: list[str] = field(default_factory=list)
 
 
@@ -171,10 +174,66 @@ class TaskCompleted(TaskEvent):
     """Task completion event."""
 
     event: str = "task_completed"
+    v: int = 2
     status: Literal["success", "cached"] = "success"
     cache_key: str | None = None
     outputs: list[dict[str, Any]] = field(default_factory=list)
+    assets: list[dict[str, Any]] = field(default_factory=list)
+    output_summary: dict[str, Any] = field(default_factory=dict)
+    resource_usage: dict[str, Any] = field(default_factory=dict)
     remote_job_id: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskPlanned(TaskEvent):
+    """Arguments resolved and cache key built, before any cache probe.
+
+    Everything the cache key was computed from is on this event, so the ledger
+    can answer "why did this re-run" without the cache index being intact.
+    """
+
+    event: str = "task_planned"
+    inputs: dict[str, Any] = field(default_factory=dict)
+    input_hashes: list[dict[str, Any]] = field(default_factory=list)
+    cache_key: str | None = None
+    source_hash: str | None = None
+    version: int | None = None
+    env_hash: str | None = None
+    extra_source_hash: str | None = None
+    dependency_ids: list[str] = field(default_factory=list)
+    dynamic_dependency_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(kw_only=True, frozen=True)
+class AssetMaterialized(TaskEvent):
+    """One asset version was written to the catalog by this task."""
+
+    event: str = "asset_materialized"
+    asset_key: str = ""
+    version_id: str = ""
+    kind: str = ""
+    sub_kind: str | None = None
+    artifact_id: str = ""
+    content_hash: str = ""
+    cache_key: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    parents: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskAnnotated(TaskEvent):
+    """Facts about a task that have no lifecycle of their own.
+
+    An environment lock file copied, a container image digest, remote access
+    statistics, notebook artefact paths, a sub-run id: each is a field the
+    projector merges into the task's ``extra``, and none of them deserves an
+    event type.
+    """
+
+    event: str = "task_annotated"
+    fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -217,7 +276,16 @@ class RunStarted(RunEvent):
     """Run start event."""
 
     event: str = "run_started"
+    v: int = 2
     workflow: str = ""
+    jobs: int | None = None
+    cores: int | None = None
+    memory: int | None = None
+    params: dict[str, Any] = field(default_factory=dict)
+    param_sources: dict[str, str] = field(default_factory=dict)
+    ginkgo_version: str | None = None
+    parent_run_id: str | None = None
+    parent_task_id: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -231,12 +299,34 @@ class RunValidated(RunEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class PhaseTimed(RunEvent):
+    """How long one named phase of a run or a task took."""
+
+    event: str = "phase_timed"
+    scope: Literal["run", "task"] = "run"
+    task_id: str | None = None
+    phase: str = ""
+    seconds: float = 0.0
+
+
+@dataclass(kw_only=True, frozen=True)
+class RunResourcesSampled(RunEvent):
+    """A snapshot of the run's CPU and memory usage; the latest one wins."""
+
+    event: str = "run_resources_sampled"
+    resources: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True, frozen=True)
 class RunCompleted(RunEvent):
     """Run completion event."""
 
     event: str = "run_completed"
+    v: int = 2
     status: Literal["success", "failed"] = "success"
     task_counts: dict[str, int] = field(default_factory=dict)
+    finished_at: str | None = None
+    resources: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
 

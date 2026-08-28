@@ -1,0 +1,19 @@
+{
+  "cores": 8,
+  "event": "run_started",
+  "ginkgo_version": "0.1.0",
+  "jobs": 4,
+  "memory": 16,
+  "param_sources": {
+    "seed": "cli"
+  },
+  "params": {
+    "seed": 1
+  },
+  "parent_run_id": "run_20260828_085900",
+  "parent_task_id": "task_0002",
+  "run_id": "run_20260828_090000",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 2,
+  "workflow": "workflow/flow.py"
+}

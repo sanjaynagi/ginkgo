@@ -1,0 +1,10 @@
+{
+  "event": "graph_expanded",
+  "new_node_ids": [
+    "task_0008"
+  ],
+  "parent_task_id": "task_0007",
+  "run_id": "run_20260828_090000",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

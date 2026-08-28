@@ -1,0 +1,15 @@
+{
+  "dependency_ids": [
+    "task_0001"
+  ],
+  "env": "analysis",
+  "event": "graph_node_registered",
+  "execution_mode": "python",
+  "kind": "python",
+  "retries": 2,
+  "run_id": "run_20260828_090000",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 2
+}
