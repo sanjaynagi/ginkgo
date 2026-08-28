@@ -16,6 +16,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 
+def now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string.
+
+    The one clock ginkgo stamps rows with, so two rows written in the same
+    breath carry the same shape of timestamp.
+    """
+    return datetime.now(UTC).isoformat()
+
+
 def parse_timestamp(value: Any) -> datetime | None:
     """Parse a stored ISO-8601 timestamp, returning a UTC-aware datetime.
 

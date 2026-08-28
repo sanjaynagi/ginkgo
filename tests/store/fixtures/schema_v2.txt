@@ -2,7 +2,7 @@ table artifacts
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY, kind TEXT NOT NULL, digest_algorithm TEXT NOT NULL,
   extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
-)
+, digest_hex TEXT NOT NULL DEFAULT '')
 
 table asset_aliases
 CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
@@ -56,14 +56,10 @@ CREATE TABLE cache_entries (
 index cache_function
 CREATE INDEX cache_function ON cache_entries(function, created_at)
 
-table cache_key_components
-CREATE TABLE cache_key_components (cache_key TEXT NOT NULL, component TEXT NOT NULL, value TEXT,
-  PRIMARY KEY (cache_key, component))
-
 table digest_memo
 CREATE TABLE digest_memo (
   kind TEXT NOT NULL, fingerprint TEXT NOT NULL, digest TEXT NOT NULL,
-  path TEXT, size INTEGER, mtime_ns INTEGER, last_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
   PRIMARY KEY (kind, fingerprint)
 )
 

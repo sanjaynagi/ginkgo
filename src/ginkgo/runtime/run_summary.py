@@ -9,7 +9,6 @@ notebook artifacts.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.formatting import parse_timestamp
+from ginkgo.store.jsonio import loads
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -426,7 +426,7 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         "ORDER BY task_id, param, position",
         (run_id,),
     ):
-        inputs.setdefault(row["task_id"], {})[row["param"]] = _loads(row["value_summary"])
+        inputs.setdefault(row["task_id"], {})[row["param"]] = loads(row["value_summary"])
 
     tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     node_ids = {row["task_id"]: row["node_id"] for row in tasks}
@@ -570,23 +570,13 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _loads(value: Any) -> Any:
-    """Parse a stored JSON column, tolerating one that is not JSON."""
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
-
-
 def _mapping(value: Any) -> dict[str, Any]:
     """Return a stored JSON column as a mapping, or an empty one."""
-    parsed = _loads(value)
+    parsed = loads(value)
     return parsed if isinstance(parsed, dict) else {}
 
 
 def _sequence(value: Any) -> list[Any]:
     """Return a stored JSON column as a list, or an empty one."""
-    parsed = _loads(value)
+    parsed = loads(value)
     return parsed if isinstance(parsed, list) else []

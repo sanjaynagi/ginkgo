@@ -14,7 +14,13 @@ from ginkgo.store import open_store
 from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.errors import SchemaVersionError, StoreError, StoreLockedError
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
-from ginkgo.store.schema import SCHEMA_VERSION, migrate, schema_version
+from ginkgo.store.schema import (
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    _statements,
+    migrate,
+    schema_version,
+)
 from ginkgo.store.sqlite import SqliteStore
 
 
@@ -42,7 +48,7 @@ class TestOpening:
 
     def test_a_fresh_database_is_migrated_to_the_current_version(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
-            assert store.schema_version == SCHEMA_VERSION == 1
+            assert store.schema_version == SCHEMA_VERSION
 
     def test_a_path_with_a_uri_delimiter_opens_that_file(self, tmp_path):
         """An f-string URI would read ``?name`` as a query and open ``weird``."""
@@ -77,7 +83,7 @@ class TestOpening:
         with open_store(path) as store:
             applied = store.query("SELECT version FROM schema_version")
 
-        assert [row["version"] for row in applied] == [1]
+        assert [row["version"] for row in applied] == [version for version, _ in MIGRATIONS]
 
     def test_pragmas_are_applied(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
@@ -156,12 +162,42 @@ class TestMigrations:
 
     def test_every_object_in_the_schema_is_created(self, tmp_path):
         """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
-        expected = (Path(__file__).parent / "fixtures" / "schema_v1.txt").read_text(
+        expected = (Path(__file__).parent / "fixtures" / "schema_v2.txt").read_text(
             encoding="utf-8"
         )
 
         with open_store(tmp_path / "ginkgo.db") as store:
             assert _schema_snapshot(store) == expected
+
+    def test_a_version_1_database_migrates_forward(self, tmp_path):
+        """The step runs on an existing database, not only on a fresh one."""
+        connection = sqlite3.connect(tmp_path / "ginkgo.db")
+        connection.isolation_level = None
+        first_version, first_step = MIGRATIONS[0]
+        assert isinstance(first_step, str)
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in _statements(first_step):
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?, '2026-08-28')",
+            (first_version,),
+        )
+        connection.execute("COMMIT")
+        connection.execute(
+            "INSERT INTO artifacts (artifact_id, kind, digest_algorithm, created_at) "
+            "VALUES ('a1', 'blob', 'blake3', '2026-08-28')"
+        )
+
+        assert migrate(connection) == SCHEMA_VERSION
+
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts)")}
+        assert "digest_hex" in columns
+        assert connection.execute("SELECT digest_hex FROM artifacts").fetchone()[0] == ""
+        assert not connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'cache_key_components'"
+        ).fetchall()
+        memo_columns = {row[1] for row in connection.execute("PRAGMA table_info(digest_memo)")}
+        assert memo_columns == {"kind", "fingerprint", "digest", "last_seen"}
 
 
 class TestWriting:
@@ -335,4 +371,4 @@ class TestConcurrentFirstOpen:
         with open_store(path, readonly=True) as store:
             applied = store.query("SELECT version FROM schema_version")
         # Migrated once, not once per racing opener.
-        assert [row["version"] for row in applied] == [SCHEMA_VERSION]
+        assert [row["version"] for row in applied] == [version for version, _ in MIGRATIONS]

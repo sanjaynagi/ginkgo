@@ -20,7 +20,17 @@ from ginkgo.store.fs import warn_if_network_filesystem
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
 from ginkgo.store.schema import SCHEMA_VERSION, migrate, schema_version
 
-__all__ = ["BUSY_TIMEOUT_MS", "SqliteStore", "open_store"]
+__all__ = ["BUSY_TIMEOUT_MS", "MEMORY", "SqliteStore", "open_store"]
+
+
+MEMORY = Path(":memory:")
+"""A database that exists only for this process, and touches no filesystem.
+
+A remote worker has a workspace's artifacts but not its database, and a reader
+of a workspace that has never been run has no database to read. Both want a
+store that answers "nothing" and records what it is told without leaving a file
+behind.
+"""
 
 
 BUSY_TIMEOUT_MS = 5000
@@ -55,8 +65,10 @@ class SqliteStore:
 
         A write-mode open creates the parent directory and the file if they are
         missing and brings the schema up to date. A read-only open requires
-        both to exist already and refuses a database the current ginkgo would
-        have to migrate, rather than reading rows it may misinterpret.
+        both to exist already, never creates or migrates anything, and refuses
+        a database the current ginkgo would have to migrate rather than reading
+        rows it may misinterpret. :data:`MEMORY` opens a private in-process
+        database instead, leaving the filesystem alone.
 
         Parameters
         ----------
@@ -93,11 +105,12 @@ class SqliteStore:
                 raise SchemaVersionError(path=path, found=found, expected=SCHEMA_VERSION)
             return store
 
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            warn_if_network_filesystem(path)
-        except OSError as exc:
-            raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
+        if path != MEMORY:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                warn_if_network_filesystem(path)
+            except OSError as exc:
+                raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
         connection = cls._connect(
             _uri(path, readonly=False), path=path, thread_shared=thread_shared
         )
@@ -282,6 +295,8 @@ def _uri(path: Path, *, readonly: bool) -> str:
     workspace under a directory named ``report?draft`` opens that database
     instead of silently opening ``report`` with a query string.
     """
+    if Path(path) == MEMORY:
+        return "file::memory:"
     uri = Path(path).absolute().as_uri()
     return f"{uri}?mode=ro" if readonly else uri
 

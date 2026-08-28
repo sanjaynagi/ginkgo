@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from ginkgo.store.jsonio import dumps, dumps_or_none
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
 
 __all__ = ["TERMINAL_EVENTS", "accumulate_seconds", "projection_ops"]
@@ -80,8 +81,8 @@ def _run_started(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
                 payload.get("jobs"),
                 payload.get("cores"),
                 payload.get("memory"),
-                _dumps(payload.get("params") or {}),
-                _dumps(payload.get("param_sources") or {}),
+                dumps(payload.get("params") or {}),
+                dumps(payload.get("param_sources") or {}),
                 payload.get("parent_run_id"),
                 payload.get("parent_task_id"),
                 payload.get("ginkgo_version"),
@@ -108,7 +109,7 @@ def _run_resources_sampled(event: StoredEvent, payload: dict[str, Any]) -> list[
     return [
         ProjectionOp(
             sql="UPDATE runs SET resources = ? WHERE run_id = ?",
-            params=(_dumps(payload.get("resources") or {}), event.run_id),
+            params=(dumps(payload.get("resources") or {}), event.run_id),
         )
     ]
 
@@ -127,7 +128,7 @@ def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Projecti
                 "succeeded" if payload.get("status") == "success" else "failed",
                 payload.get("finished_at") or event.ts,
                 payload.get("error"),
-                _dumps(resources) if resources else None,
+                dumps(resources) if resources else None,
                 event.run_id,
             ),
         )
@@ -284,7 +285,7 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                     task_id,
                     str(param),
                     entry.get("type"),
-                    None if value is _ABSENT else _dumps(value),
+                    None if value is _ABSENT else dumps(value),
                     _digest_of(entry),
                     entry.get("asset"),
                     entry.get("version_id") if entry.get("asset") else None,
@@ -325,18 +326,9 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
 
 
 def _task_cache_hit(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
-    ops = [_set_cached(event, payload, cached=1)]
-    if event.cache_key:
-        # Hit accounting belongs to whoever sees the hit, which is the ledger:
-        # the cache itself never learns that the value it handed out was used.
-        ops.append(
-            ProjectionOp(
-                sql="UPDATE cache_entries SET hit_count = hit_count + 1, last_hit_at = ? "
-                "WHERE cache_key = ?",
-                params=(event.ts, event.cache_key),
-            )
-        )
-    return ops
+    # Only the task's own row. The cache tables are not projections: they are a
+    # direct-write index owned by CacheIndex, which counts the hit itself.
+    return [_set_cached(event, payload, cached=1)]
 
 
 def _task_cache_miss(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
@@ -414,7 +406,7 @@ def _task_running(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
 
 def _task_retrying(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
     attempt = int(payload.get("attempt") or 0)
-    failure = _dumps_or_none(payload.get("failure"))
+    failure = dumps_or_none(payload.get("failure"))
     return [
         ProjectionOp(
             sql="""
@@ -472,9 +464,9 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                 int(payload.get("attempt") or 0),
                 payload.get("cache_key"),
                 payload.get("remote_job_id"),
-                _dumps(outputs),
-                _dumps_or_none(resource_usage),
-                _dumps({"assets": assets} if assets else {}),
+                dumps(outputs),
+                dumps_or_none(resource_usage),
+                dumps({"assets": assets} if assets else {}),
                 event.run_id,
                 task_id,
             ),
@@ -556,7 +548,7 @@ def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
             params=(
                 event.ts,
                 payload.get("exit_code"),
-                _dumps(failure),
+                dumps(failure),
                 attempt,
                 event.run_id,
                 event.task_id,
@@ -577,7 +569,7 @@ def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
                 attempt,
                 event.ts,
                 payload.get("exit_code"),
-                _dumps(failure),
+                dumps(failure),
             ),
         ),
     ]
@@ -606,7 +598,7 @@ def _task_annotated(event: StoredEvent, payload: dict[str, Any]) -> list[Project
             ProjectionOp(
                 sql=f"UPDATE tasks SET {column} = ? WHERE run_id = ? AND task_id = ?",
                 params=(
-                    _dumps(value) if isinstance(value, (dict, list)) else value,
+                    dumps(value) if isinstance(value, (dict, list)) else value,
                     event.run_id,
                     event.task_id,
                 ),
@@ -621,7 +613,7 @@ def _task_annotated(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                     "UPDATE tasks SET extra = json_patch(coalesce(extra, '{}'), ?) "
                     "WHERE run_id = ? AND task_id = ?"
                 ),
-                params=(_dumps(remaining), event.run_id, event.task_id),
+                params=(dumps(remaining), event.run_id, event.task_id),
             )
         )
     return ops
@@ -689,14 +681,6 @@ def _remote_uri(entry: dict[str, Any]) -> str | None:
     if not (scheme and bucket and key):
         return None
     return f"{scheme}://{bucket}/{key}"
-
-
-def _dumps(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, default=str)
-
-
-def _dumps_or_none(value: Any) -> str | None:
-    return None if value is None else _dumps(value)
 
 
 _HANDLERS: dict[str, Callable[[StoredEvent, dict[str, Any]], list[ProjectionOp]]] = {

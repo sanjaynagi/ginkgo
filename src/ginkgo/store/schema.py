@@ -148,7 +148,25 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1)]
+_V2 = """
+-- An artifact's content digest is not always its id: a record published to a
+-- remote store keeps the digest of the bytes, and #231 will give blobs an
+-- extension. Recovering it by assuming id == digest was a guess.
+ALTER TABLE artifacts ADD COLUMN digest_hex TEXT NOT NULL DEFAULT '';
+
+-- cache_key_components held what cache_entries already holds as columns and
+-- input_hashes JSON. One fact, one home: key_components() derives the labels
+-- from the entry row instead.
+DROP TABLE cache_key_components;
+
+-- Only the digest is ever read back out of the memo; the rest was written and
+-- never looked at.
+ALTER TABLE digest_memo DROP COLUMN path;
+ALTER TABLE digest_memo DROP COLUMN size;
+ALTER TABLE digest_memo DROP COLUMN mtime_ns;
+"""
+
+MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [(1, _V1), (2, _V2)]
 """Every schema step, in the order they are applied, keyed by resulting version."""
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
