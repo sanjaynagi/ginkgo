@@ -830,10 +830,10 @@ and FUSE, and ginkgo warns once when it notices.
 Each run also gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC
 timestamp plus a discriminator) holding the bytes:
 
-- `manifest.yaml` — a snapshot of everything the database recorded for the run,
-  exported once when it finishes. Ginkgo reads it only through
-  `ginkgo db rebuild`, which reconstructs the database from these snapshots if
-  you lose it.
+- `manifest.yaml` — everything `ginkgo inspect run` shows for that run, written
+  as YAML once it finishes. It is there for you to read; ginkgo never reads it
+  back. Back up `ginkgo.db` as you would `.git`: if it is lost, so is the run
+  history.
 - `envs/` — copies of the environment lock files used by the run.
 - `logs/` — per-task stdout/stderr.
 - `notebooks/` — executed notebooks and their rendered HTML.
@@ -907,7 +907,8 @@ The child is a run in its own right, with its own directory under
 inlining the child's tasks. The parent tells the child who called it through
 `GINKGO_PARENT_RUN_ID` and `GINKGO_PARENT_TASK_ID`; the child records both, and
 the parent reads the child's run id back out of the database once the subprocess
-exits. The calling task gets a `SubWorkflowResult` (with `run_id`, `status`, and
-`manifest_path`) and records `sub_run_id`; on failure the child's run id is
-still attached to the raised error, so you can trace into the child run either
-way.
+exits. The calling task gets a `SubWorkflowResult` (`run_id` and `status`) and
+records `sub_run_id`; on failure the child's run id is still attached to the
+raised error. Either way, `ginkgo inspect run <child_run_id>` is how you read
+what the child did — the run id is the handle, and there is no second path to
+the same facts.

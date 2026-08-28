@@ -23,8 +23,7 @@ The repository currently implements:
 - Provenance capture, logs, machine-readable runtime events, and structured
   inspection and diagnostics through the CLI, all reading one event-sourced
   SQLite ledger at `.ginkgo/ginkgo.db`; each run directory keeps a
-  `manifest.yaml` snapshot exported from it, which `ginkgo db rebuild` reads
-  back
+  `manifest.yaml` export of what that run did, for a person to read
 - Remote task execution via Kubernetes (GKE, EKS, OKE) and GCP Batch, with
   per-task GPU/memory/CPU resource declarations, code-sync packaging, and
   full provenance integration

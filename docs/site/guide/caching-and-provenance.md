@@ -102,14 +102,16 @@ Together, the cache and the ledger answer different questions:
 ```bash
 ginkgo db path                # where the database is
 ginkgo db check               # schema version and integrity
-ginkgo db rebuild             # reconstruct it from the run snapshots on disk
+ginkgo db migrate             # create or upgrade it
 ```
 
-`ginkgo db rebuild` is the recovery path: delete `.ginkgo/ginkgo.db` and it
-re-reads every `manifest.yaml` under `.ginkgo/runs/` to put the runs back. It
-is idempotent, and it never touches a directory that does not hold a snapshot
-this version of ginkgo wrote. Note that the cache is not rebuilt this way — a
-lost database means a cold cache.
+`ginkgo.db` is the record of your runs; back it up as you would `.git`. If it
+is lost, the run history goes with it and you re-run the workflow. Cached task
+results are not affected — they live in `.ginkgo/cache/` and are found the same
+way whether or not the database is there.
+
+Each run directory still holds a `manifest.yaml` of what that run did, which is
+there to be read rather than re-imported: ginkgo does not load it back.
 
 `GINKGO_DB=<path>` relocates the database. Do that if `.ginkgo` is on a network
 filesystem: SQLite locking is unreliable over NFS, Lustre, SMB and FUSE, and

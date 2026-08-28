@@ -56,8 +56,7 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo db`
 : Maintain the provenance database. `db path` prints where it is, `db migrate`
-  creates or upgrades it, `db check` verifies its integrity, and `db rebuild`
-  reconstructs it from the run snapshots on disk. See
+  creates or upgrades it, and `db check` verifies its integrity. See
   [Caching and Provenance](caching-and-provenance.md).
 
 Run `ginkgo <command> --help` for the full flag set of any command.
