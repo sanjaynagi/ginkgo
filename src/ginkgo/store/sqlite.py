@@ -75,7 +75,7 @@ class SqliteStore:
             If a read-only open finds a schema older than this ginkgo's.
         """
         if readonly:
-            connection = cls._connect(f"file:{path}?mode=ro", path=path)
+            connection = cls._connect(_uri(path, readonly=True), path=path)
             _apply_pragmas(connection, writable=False)
             store = cls(path=path, connection=connection, readonly=True)
             found = schema_version(connection)
@@ -84,9 +84,12 @@ class SqliteStore:
                 raise SchemaVersionError(path=path, found=found, expected=SCHEMA_VERSION)
             return store
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        warn_if_network_filesystem(path)
-        connection = cls._connect(f"file:{path}", path=path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            warn_if_network_filesystem(path)
+        except OSError as exc:
+            raise StoreError(f"Cannot open the provenance store at {path}: {exc}") from exc
+        connection = cls._connect(_uri(path, readonly=False), path=path)
         _apply_pragmas(connection, writable=True)
         migrate(connection)
         return cls(path=path, connection=connection, readonly=False)
@@ -116,11 +119,6 @@ class SqliteStore:
         return self._readonly
 
     @property
-    def connection(self) -> sqlite3.Connection:
-        """The underlying connection, for callers writing their own SQL."""
-        return self._connection
-
-    @property
     def schema_version(self) -> int:
         """The schema version the database is at."""
         return schema_version(self._connection)
@@ -133,15 +131,24 @@ class SqliteStore:
         writer is reported as a :class:`StoreLockedError` at the start of the
         transaction rather than part-way through it.
 
+        Transactions do not nest: SQLite has no nested commit, so an inner
+        block that "committed" would leave the outer one able to roll its work
+        back. That is refused rather than approximated.
+
         Raises
         ------
         StoreError
-            If the store is read-only.
+            If the store is read-only, or a transaction is already open.
         StoreLockedError
             If another process held the write lock past the busy timeout.
         """
         if self._readonly:
             raise StoreError(f"The provenance store at {self._path} is open read-only.")
+        if self._connection.in_transaction:
+            raise StoreError(
+                f"A transaction is already open on the provenance store at {self._path}; "
+                "transactions do not nest."
+            )
         try:
             self._connection.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as exc:
@@ -149,11 +156,14 @@ class SqliteStore:
         try:
             yield
         except BaseException:
-            self._connection.execute("ROLLBACK")
+            self._rollback()
             raise
         try:
             self._connection.execute("COMMIT")
         except sqlite3.OperationalError as exc:
+            # Without this the connection stays inside the failed transaction,
+            # and every later transaction() on it fails as a nested one.
+            self._rollback()
             raise self._locked_or(exc) from exc
 
     def append(self, events: Iterable[StoredEvent]) -> None:
@@ -205,9 +215,14 @@ class SqliteStore:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    def _rollback(self) -> None:
+        """Abandon the open transaction, if the connection still has one."""
+        if self._connection.in_transaction:
+            self._connection.execute("ROLLBACK")
+
     def _locked_or(self, exc: sqlite3.OperationalError) -> Exception:
         """Return the error to raise for *exc*, naming the lock when that is it."""
-        if "locked" in str(exc) or "busy" in str(exc):
+        if exc.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
             return StoreLockedError(path=self._path, timeout_ms=BUSY_TIMEOUT_MS)
         return StoreError(f"Provenance store write failed at {self._path}: {exc}")
 
@@ -231,6 +246,17 @@ def open_store(path: Path, *, readonly: bool = False) -> SqliteStore:
         An open store.
     """
     return SqliteStore.open(path, readonly=readonly)
+
+
+def _uri(path: Path, *, readonly: bool) -> str:
+    """Return the ``file:`` URI for *path*.
+
+    Built through :meth:`~pathlib.Path.as_uri` rather than by formatting, so a
+    workspace under a directory named ``report?draft`` opens that database
+    instead of silently opening ``report`` with a query string.
+    """
+    uri = Path(path).absolute().as_uri()
+    return f"{uri}?mode=ro" if readonly else uri
 
 
 def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:

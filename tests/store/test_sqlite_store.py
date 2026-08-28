@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ginkgo.store import open_store
-from ginkgo.store.errors import SchemaVersionError, StoreError
+from ginkgo.store import sqlite as sqlite_module
+from ginkgo.store.errors import SchemaVersionError, StoreError, StoreLockedError
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
 from ginkgo.store.schema import SCHEMA_VERSION, migrate, schema_version
 from ginkgo.store.sqlite import SqliteStore
 
 
-def _event(**overrides) -> StoredEvent:
-    fields = {
+def _conformance(store: SqliteStore) -> ProvenanceStore:
+    """``SqliteStore`` satisfies the protocol — checked by ``ty``, not at runtime.
+
+    ``isinstance`` against a protocol compares attribute names and would pass
+    for a class whose signatures had drifted; this does not.
+    """
+    return store
+
+
+def _event(**overrides: Any) -> StoredEvent:
+    fields: dict[str, Any] = {
         "run_id": "run_1",
         "ts": "2026-08-28T09:00:00+00:00",
         "type": "run_started",
@@ -30,6 +42,25 @@ class TestOpening:
     def test_a_fresh_database_is_migrated_to_the_current_version(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
             assert store.schema_version == SCHEMA_VERSION == 1
+
+    def test_a_path_with_a_uri_delimiter_opens_that_file(self, tmp_path):
+        """An f-string URI would read ``?name`` as a query and open ``weird``."""
+        directory = tmp_path / "weird?name#1"
+        directory.mkdir()
+
+        with open_store(directory / "ginkgo.db") as store:
+            assert store.schema_version == SCHEMA_VERSION
+
+        assert (directory / "ginkgo.db").exists()
+        assert not (tmp_path / "weird").exists()
+
+    def test_an_unwritable_workspace_names_the_database(self, tmp_path):
+        workspace = tmp_path / "readonly"
+        workspace.mkdir(mode=0o500)
+        path = workspace / ".ginkgo" / "ginkgo.db"
+
+        with pytest.raises(StoreError, match=re.escape(str(path))):
+            open_store(path)
 
     def test_the_parent_directory_is_created(self, tmp_path):
         path = tmp_path / ".ginkgo" / "ginkgo.db"
@@ -52,10 +83,6 @@ class TestOpening:
             assert store.query("PRAGMA journal_mode")[0][0] == "wal"
             assert store.query("PRAGMA busy_timeout")[0][0] == 5000
             assert store.query("PRAGMA foreign_keys")[0][0] == 1
-
-    def test_a_sqlite_store_is_a_provenance_store(self, tmp_path):
-        with open_store(tmp_path / "ginkgo.db") as store:
-            assert isinstance(store, ProvenanceStore)
 
     def test_closing_twice_is_harmless(self, tmp_path):
         store = open_store(tmp_path / "ginkgo.db")
@@ -180,6 +207,39 @@ class TestWriting:
 
             assert len(store.query("SELECT run_id FROM runs")) == 1
 
+    def test_transactions_do_not_nest(self, tmp_path):
+        with open_store(tmp_path / "ginkgo.db") as store:
+            with store.transaction():
+                with pytest.raises(StoreError, match="do not nest"):
+                    with store.transaction():
+                        pass
+
+    def test_a_failed_commit_leaves_the_connection_usable(self, tmp_path, monkeypatch):
+        """A commit that fails must not strand the connection mid-transaction."""
+        with open_store(tmp_path / "ginkgo.db") as store:
+            monkeypatch.setattr(store, "_connection", _CommitFails(store._connection))
+            with pytest.raises(StoreError):
+                with store.transaction():
+                    store.append([_event()])
+            monkeypatch.undo()
+
+            with store.transaction():
+                store.append([_event()])
+
+            assert len(store.query("SELECT seq FROM events")) == 1
+
+    def test_a_second_writer_is_told_which_database_is_locked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sqlite_module, "BUSY_TIMEOUT_MS", 50)
+        path = tmp_path / "ginkgo.db"
+
+        with open_store(path) as holder, open_store(path) as contender:
+            with holder.transaction():
+                holder.append([_event()])
+
+                with pytest.raises(StoreLockedError, match=re.escape(str(path))):
+                    with contender.transaction():
+                        pass
+
     def test_a_failed_transaction_leaves_no_trace(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
             with pytest.raises(RuntimeError):
@@ -190,6 +250,23 @@ class TestWriting:
 
             assert store.query("SELECT seq FROM events") == []
             assert store.query("SELECT run_id FROM runs") == []
+
+
+class _CommitFails:
+    """A connection whose ``COMMIT`` fails the way a full disk would."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def execute(self, sql: str, *args):
+        if sql == "COMMIT":
+            error = sqlite3.OperationalError("disk I/O error")
+            error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+            raise error
+        return self._connection.execute(sql, *args)
 
 
 def _insert_run(run_id: str) -> ProjectionOp:
