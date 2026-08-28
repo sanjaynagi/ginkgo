@@ -2,8 +2,11 @@
 
 Ginkgo records what a run did as an append-only sequence of runtime events in
 ``.ginkgo/ginkgo.db``, alongside projection tables — runs, tasks, cache
-entries, assets — that are derived from those events and rebuildable from
-them. Bytes stay on disk; only the index lives in SQL.
+entries, assets — derived from those events as they arrive. Bytes stay on
+disk; only the index lives in SQL.
+
+This package deals in rows and SQL. It must not import from ``runtime/``,
+which is what makes it safe for ``runtime/`` and ``cli/`` to import it.
 
 ``open_store(path)`` is the way in. ``ProvenanceStore`` is what it returns,
 seen as a contract.

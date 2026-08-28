@@ -377,7 +377,7 @@ denied) the worker falls back to staged download and the CLI shows a
 ```
 
 The fallback reason is also recorded in
-`manifest.yaml → tasks[*].remote_input_access.fallback_reason`, so silent
+the task's `remote_input_access.fallback_reason`, so silent
 downgrades can't hide.
 
 ### Diagnostics

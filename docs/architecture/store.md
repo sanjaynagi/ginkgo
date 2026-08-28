@@ -89,3 +89,39 @@ provenance never degrades silently.
 - `ginkgo db migrate` — create or upgrade the database.
 - `ginkgo db check` — schema version and `PRAGMA integrity_check`.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
+There is no `db rebuild`. The database is the record, not a cache of the run
+directories: back it up as you would `.git`. Losing it loses the run history —
+the `events` ledger has no on-disk counterpart at all — and does not touch the
+cache, whose entries are found by key on disk. Each run directory keeps a
+`manifest.yaml` of what that run did, to be read rather than re-imported.
+
+## Layering
+
+`core/` must not import `store/`. `runtime/` and `cli/` may — which means
+`store/` must not import either of them, and it does not:
+`grep -rn "from ginkgo.runtime" src/ginkgo/store` is empty, and a test would be
+the better guard if this ever drifts.
+
+The consequence worth knowing is that `store/` deals in rows, not in events. A
+`GinkgoEvent` becomes a `StoredEvent` in `runtime/store_recorder.py`, and the
+projector is handed the row. Anything that has to know the shape of an event —
+the translation, the rendering of user values — lives in `runtime/`.
+
+## Writing and reading
+
+One process writes, through `store/writer.py`'s `StoreWriter`: a queue and one
+background thread owning the only write-mode connection, batching rows into
+transactions. `runtime/store_recorder.py` subscribes it to the event bus and
+writes the run's manifest when it completes. `store/projector.py` is the whole
+of the event-to-rows mapping, one pure function per event type. See
+[Provenance and Run State](provenance.md) for the shape of that path.
+
+Readers go through `ginkgo.query`, which opens read-only. No read path ever
+opens a write connection, so listings work while a run is writing and can never
+migrate a database out from under one.
+
+Two `ginkgo run` processes in one workspace are supported and tested
+(`tests/store/test_concurrent_runs.py`). WAL keeps readers off the writer's
+back; `busy_timeout` covers lock contention; and the very first open of an empty
+workspace retries the switch into WAL, which is the one lock SQLite's own busy
+handler does not cover.

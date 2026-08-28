@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import yaml
 from rich import box
 from rich.console import Group
@@ -12,20 +10,21 @@ from rich.table import Table
 from rich.text import Text
 
 from ginkgo.cli.renderers.models import FailureDetails
+from ginkgo.runtime.run_summary import RunSummary
 
 
-def render_debug_header(*, run_dir: Path, manifest: dict[str, object], failures: int) -> Panel:
+def render_debug_header(*, summary: RunSummary, failures: int) -> Panel:
     """Render the top-level ``ginkgo debug`` report header."""
-    summary = Table.grid(padding=(0, 1))
-    summary.add_column(style="bold #134e4a", no_wrap=True)
-    summary.add_column()
-    summary.add_row("Run ID", str(manifest.get("run_id", run_dir.name)))
-    summary.add_row("Workflow", str(manifest.get("workflow", "unknown")))
-    summary.add_row("Status", str(manifest.get("status", "unknown")))
-    summary.add_row("Failures", str(failures))
-    summary.add_row("Run directory", str(run_dir))
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style="bold #134e4a", no_wrap=True)
+    grid.add_column()
+    grid.add_row("Run ID", summary.run_id)
+    grid.add_row("Workflow", summary.workflow or "unknown")
+    grid.add_row("Status", summary.status)
+    grid.add_row("Failures", str(failures))
+    grid.add_row("Run directory", str(summary.run_dir))
     return Panel(
-        summary,
+        grid,
         title="[bold #0f766e]Debug Report[/]",
         border_style="#0f766e",
         box=box.SQUARE,

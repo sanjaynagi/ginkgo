@@ -44,7 +44,10 @@ ginkgo/
 │   ├── log_drain.py      # worker log chunks to TaskLog events
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
 │   ├── profiling.py      # phase-timer aggregation for --profile
-│   ├── run_summary.py    # RunSummary loaded from a completed run directory
+│   ├── run_summary.py    # RunSummary, the one read model, loaded from the ledger
+│   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk
+│   ├── store_recorder.py # bus subscriber: events -> ledger rows, and the manifest
+│   ├── event_values.py   # rendering user values into a form an event can carry
 │   ├── executor_registry.py    # named executors: config, lookup, lazy build
 │   ├── remote_executor.py      # RemoteExecutor / RemoteJobHandle protocols
 │   ├── remote_dispatch.py      # code bundles, job handles, polling
@@ -60,7 +63,7 @@ ginkgo/
 │   ├── caching/
 │   │   ├── cache.py            # CacheStore (content-addressed)
 │   │   ├── coordinator.py      # cache lookups for the evaluator
-│   │   ├── provenance.py       # RunProvenanceRecorder
+│   │   ├── provenance.py       # run ids and log tails
 │   │   ├── hash_memo.py
 │   │   ├── digest_registry.py  # known digests for workspace paths
 │   │   └── materialization_log.py
@@ -103,11 +106,14 @@ ginkgo/
 │       ├── staged.py        # staged (download) access path
 │       ├── worker_hydration.py  # worker-side input hydration
 │       └── drivers/         # per-provider FUSE drivers (s3, gcsfuse, rclone)
-├── store/
+├── query.py                 # ginkgo.query: the public read API over the ledger
+├── store/                   # rows and SQL; imports nothing from runtime/
 │   ├── __init__.py          # open_store, ProvenanceStore
 │   ├── protocol.py          # ProvenanceStore: the ledger's write and read surface
 │   ├── sqlite.py            # SqliteStore: connection, pragmas, transactions
 │   ├── schema.py            # versioned DDL steps and migrate()
+│   ├── writer.py            # StoreWriter: queued, batched appends of stored rows
+│   ├── projector.py         # stored row -> projection rows, one function per type
 │   ├── fs.py                # network-filesystem detection for the SQLite warning
 │   └── errors.py            # StoreError, SchemaVersionError, StoreLockedError
 ├── reporting/

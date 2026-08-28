@@ -284,11 +284,12 @@ Key properties:
 - **Parameters via `--config`.** `params={...}` is serialised to a
   temporary YAML file and forwarded to the child as an extra `--config`
   overlay. Additional config paths can be passed via `config=...`.
-- **Run-id stitching.** The child emits a machine-readable
-  `GINKGO_CHILD_RUN_ID=<id>` line on stdout when
-  `GINKGO_CALLED_FROM_PARENT_RUN` is set in its environment. The parent
-  runner captures this line and records the child id on the parent task's
-  manifest entry, making it discoverable via `ginkgo inspect run`.
+- **Run-id stitching.** The parent passes `GINKGO_PARENT_RUN_ID` and
+  `GINKGO_PARENT_TASK_ID`; the child records both on its own `RunStarted`,
+  which becomes `runs.parent_run_id` / `runs.parent_task_id` and a `child_of`
+  edge. The parent reads the child's run id back out of the ledger once the
+  subprocess exits and records it as the task's `sub_run_id`, making it
+  discoverable via `ginkgo inspect run`.
 - **Failure propagation.** Non-zero child exit raises `SubWorkflowError`
   in the parent task, which triggers normal retry / fail-fast behaviour.
   The child run directory remains for debugging.

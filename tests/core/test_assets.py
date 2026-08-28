@@ -941,28 +941,24 @@ class TestModelsCommand:
 
 
 def _run_with_provenance(tmp_path: Path, expr: object) -> None:
-    """Evaluate an expression under a real provenance recorder.
+    """Evaluate an expression against a real ledger.
 
-    Writes a manifest under ``.ginkgo/runs/<run_id>/`` so the ``ginkgo
-    models`` command path can discover the run and its asset entries.
+    Records the run in ``.ginkgo/ginkgo.db`` so the ``ginkgo models`` command
+    path can discover it and its asset entries.
     """
-    from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, make_run_id
+    from tests.conftest import Ledger
 
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# placeholder\n", encoding="utf-8")
-    recorder = RunProvenanceRecorder(
-        run_id=make_run_id(workflow_path=workflow_path),
-        workflow_path=workflow_path,
-        root_dir=tmp_path / ".ginkgo" / "runs",
-        jobs=1,
-        cores=1,
-    )
+    ledger = Ledger.start(root=tmp_path, workflow=str(workflow_path))
     try:
-        ginkgo.evaluate(expr, provenance=recorder, jobs=1, cores=1)
-        recorder.finalize(status="succeeded")
+        ginkgo.evaluate(expr, run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1)
+        ledger.finish()
     except Exception:
-        recorder.finalize(status="failed")
+        ledger.finish(status="failed")
         raise
+    finally:
+        ledger.close()
 
 
 # ---------------------------------------------------------------------------

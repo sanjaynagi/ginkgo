@@ -24,8 +24,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = REPO_ROOT / "benchmarks" / "fuse_vs_stage" / "workspace"
@@ -44,7 +42,6 @@ def run_once(*, access: str, bucket: str, prefix: str, executor: str) -> dict[st
       access_policy, stage_bytes, mount_ok}
     """
     from ginkgo.cli.commands.run import run_workflow
-    from ginkgo.cli.common import RUNS_ROOT
 
     env_backup = {
         k: os.environ.get(k)
@@ -83,24 +80,26 @@ def run_once(*, access: str, bucket: str, prefix: str, executor: str) -> dict[st
             else:
                 os.environ[k] = v
 
-    run_dir = _latest_run_dir(WORKSPACE / RUNS_ROOT)
+    summary = _latest_run()
     return {
         "access": access,
         "wall_time_seconds": wall,
         "exit_code": rc,
-        "run_dir": str(run_dir),
-        **_parse_run(run_dir=run_dir),
+        "run_dir": str(summary.run_dir),
+        **_parse_run(summary=summary),
     }
 
 
-def _latest_run_dir(runs_root: Path) -> Path:
-    """Return the most-recently-modified run directory under ``runs_root``."""
-    if not runs_root.is_dir():
-        raise FileNotFoundError(f"no runs at {runs_root}")
-    entries = [p for p in runs_root.iterdir() if p.is_dir()]
-    if not entries:
-        raise FileNotFoundError(f"no runs in {runs_root}")
-    return max(entries, key=lambda p: p.stat().st_mtime)
+def _latest_run():
+    """Return the newest run in the benchmark workspace, from the ledger."""
+    import ginkgo.query as ginkgo_query
+    from ginkgo.workspace_layout import WorkspaceLayout
+
+    with ginkgo_query.open(WorkspaceLayout(root=WORKSPACE / ".ginkgo")) as store:
+        run_id = store.latest_run_id()
+        if run_id is None:
+            raise FileNotFoundError(f"no runs recorded in {WORKSPACE}")
+        return store.run(run_id)
 
 
 def _decode_ginkgo_value(value: Any) -> Any:
@@ -114,77 +113,59 @@ def _decode_ginkgo_value(value: Any) -> Any:
     return value
 
 
-def _parse_iso(ts: str) -> float:
-    """Parse a Ginkgo event ISO timestamp into a float POSIX time."""
-    return datetime.fromisoformat(ts).timestamp()
+def _parse_run(*, summary: Any) -> dict[str, Any]:
+    """Extract per-task benchmark measurements from one run.
 
+    Combines two sources:
 
-def _parse_run(*, run_dir: Path) -> dict[str, Any]:
-    """Extract per-task benchmark measurements from a run directory.
-
-    Combines three sources:
-
-    - ``manifest.yaml`` for the top-line run status and ``remote_input_access``
-      policy recorded via :py:meth:`update_task_extra`.
-    - ``events.jsonl`` for per-task ``task_started`` / ``task_completed``
-      timestamps, which enclose the full remote lifecycle on the worker
-      (staging or mount, image pull, body, teardown).
+    - the ledger, for run status, cache keys, the ``task_started`` to
+      ``task_completed`` span (which encloses the full remote lifecycle on the
+      worker: staging or mount, image pull, body, teardown), and the recorded
+      ``remote_input_access`` policy.
     - ``.ginkgo/cache/<cache_key>/output.json`` for the benchmark payload
       (``elapsed_seconds`` covers only the Python read loop).
     """
-    manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text())
-    status = manifest.get("status", "unknown")
-    task_entries = manifest.get("tasks", {}) or {}
-
-    events = [
-        json.loads(line)
-        for line in (run_dir / "events.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    cache_keys = {
-        e["task_id"]: e["cache_key"]
-        for e in events
-        if e.get("event") in {"task_cache_miss", "task_cache_hit"} and e.get("cache_key")
-    }
-    started_at: dict[str, float] = {}
-    completed_at: dict[str, float] = {}
-    for e in events:
-        ev = e.get("event")
-        ts = e.get("ts")
-        if not ts:
-            continue
-        if ev == "task_started":
-            started_at[e["task_id"]] = _parse_iso(ts)
-        elif ev == "task_completed":
-            completed_at[e["task_id"]] = _parse_iso(ts)
-
     cache_root = WORKSPACE / ".ginkgo" / "cache"
     tasks: dict[str, dict[str, Any]] = {}
-    for task_id, info in task_entries.items():
-        task_name = info.get("task", task_id)
-        short_name = task_name.rsplit(".", 1)[-1]
-        key = cache_keys.get(task_id)
+    for task in summary.tasks:
         payload: Any = None
-        if key:
-            output_path = cache_root / key / "output.json"
+        if task.cache_key:
+            output_path = cache_root / task.cache_key / "output.json"
             if output_path.is_file():
                 payload = _decode_ginkgo_value(json.loads(output_path.read_text()))
 
-        task_wall = None
-        if task_id in started_at and task_id in completed_at:
-            task_wall = completed_at[task_id] - started_at[task_id]
-
-        remote_access = info.get("remote_input_access") or {}
-        tasks[short_name] = {
-            "task_id": task_id,
-            "cache_key": key,
-            "status": info.get("status"),
-            "task_wall_seconds": task_wall,
+        tasks[task.base_name] = {
+            "task_id": task.task_key,
+            "cache_key": task.cache_key,
+            "status": task.status,
+            "task_wall_seconds": task.duration_s,
             "payload": payload,
-            "remote_input_access": remote_access,
+            "remote_input_access": _remote_access(summary=summary, task_id=task.task_key),
         }
 
-    return {"status": status, "tasks": tasks}
+    return {"status": summary.status, "tasks": tasks}
+
+
+def _remote_access(*, summary: Any, task_id: str) -> dict[str, Any]:
+    """Return one task's recorded remote-input access statistics."""
+    for event in summary_events(summary=summary, task_id=task_id):
+        fields = event.payload.get("fields") or {}
+        if "remote_input_access" in fields:
+            return fields["remote_input_access"] or {}
+    return {}
+
+
+def summary_events(*, summary: Any, task_id: str) -> Any:
+    """Yield the annotations recorded against one task."""
+    import ginkgo.query as ginkgo_query
+    from ginkgo.workspace_layout import WorkspaceLayout
+
+    with ginkgo_query.open(WorkspaceLayout(root=WORKSPACE / ".ginkgo")) as store:
+        return [
+            event
+            for event in store.events(summary.run_id, types=["task_annotated"])
+            if event.task_id == task_id
+        ]
 
 
 def main() -> int:

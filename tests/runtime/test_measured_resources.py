@@ -9,10 +9,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 
 from ginkgo import file, shell, task
-from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
+from tests.conftest import Ledger
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler, _parse_cputime
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
@@ -92,28 +91,23 @@ def _failing_work() -> int:
     raise RuntimeError("boom")
 
 
-def _run_with_provenance(expr: Any, tmp_path: Path) -> dict[str, Any]:
-    recorder = RunProvenanceRecorder(
-        run_id="run-measured",
-        workflow_path=tmp_path / "workflow.py",
-        root_dir=tmp_path / "runs",
-        jobs=2,
-        cores=2,
-    )
-    evaluator = ConcurrentEvaluator(jobs=2, provenance=recorder)
-    evaluator.evaluate(expr)
-    recorder.finalize(status="succeeded")
-    return yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
+def _run_with_ledger(expr: Any, tmp_path: Path) -> dict[str, Any]:
+    ledger = Ledger.start(root=tmp_path, run_id="run-measured")
+    try:
+        ConcurrentEvaluator(jobs=2, run_dir=ledger.run_dir, event_bus=ledger.bus).evaluate(expr)
+        return _single_task_usage(ledger.finish())
+    finally:
+        ledger.close()
 
 
-def _single_task_usage(manifest: dict[str, Any]) -> dict[str, Any]:
-    (entry,) = manifest["tasks"].values()
-    return entry["resource_usage"]
+def _single_task_usage(summary: Any) -> dict[str, Any]:
+    (task,) = summary.tasks
+    return task.resource_usage
 
 
 class TestManifestRecording:
     def test_python_task_records_rusage(self, tmp_path: Path) -> None:
-        usage = _single_task_usage(_run_with_provenance(_python_work(), tmp_path))
+        usage = _run_with_ledger(_python_work(), tmp_path)
         assert usage["measured"]["source"] == "rusage"
         assert usage["measured"]["peak_rss_bytes"] > 0
         assert usage["measured"]["cpu_seconds"] >= 0.0
@@ -121,25 +115,18 @@ class TestManifestRecording:
 
     def test_shell_task_records_sampled_usage(self, tmp_path: Path) -> None:
         out = tmp_path / "shell-out.txt"
-        usage = _single_task_usage(_run_with_provenance(_shell_work(out=str(out)), tmp_path))
+        usage = _run_with_ledger(_shell_work(out=str(out)), tmp_path)
         assert usage["measured"]["source"] == "sampled"
         assert usage["measured"]["peak_rss_bytes"] > 0
         assert usage["declared"]["threads"] == 1
 
     def test_failed_task_records_usage(self, tmp_path: Path) -> None:
-        recorder = RunProvenanceRecorder(
-            run_id="run-failed",
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / "runs",
-            jobs=1,
-            cores=1,
-        )
-        evaluator = ConcurrentEvaluator(jobs=1, provenance=recorder)
+        ledger = Ledger.start(root=tmp_path, run_id="run-failed")
+        evaluator = ConcurrentEvaluator(jobs=1, run_dir=ledger.run_dir, event_bus=ledger.bus)
         with pytest.raises(RuntimeError, match="boom"):
             evaluator.evaluate(_failing_work())
-        recorder.finalize(status="failed")
-        manifest = yaml.safe_load(recorder.manifest_path.read_text(encoding="utf-8"))
-        usage = _single_task_usage(manifest)
+        usage = _single_task_usage(ledger.finish(status="failed"))
+        ledger.close()
         assert usage["measured"]["source"] == "rusage"
         assert usage["measured"]["peak_rss_bytes"] > 0
 

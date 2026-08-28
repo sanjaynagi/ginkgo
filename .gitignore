@@ -42,3 +42,11 @@ docs/_build/
 # changes its env identity between runs and silently breaks cache reuse.
 !tests/**/pixi.lock
 !examples/**/pixi.lock
+
+# Maintainer working documents (CLAUDE.md: plans are not committed)
+docs/*-plan.md
+docs/user-testing-*.md
+docs/oke-validation.md
+docs/*.pptx
+scratchpad/
+.vscode/

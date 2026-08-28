@@ -28,6 +28,7 @@ from ginkgo.core.types import tmp_dir
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.notebook_kernels import (
     ExecutionCommand,
     NotebookCommandBuilder,
@@ -217,9 +218,12 @@ class NotebookRunner(DriverTaskRunner):
     cache_store : CacheStore
         Cache backing store; consulted to replay notebook manifest extras
         on a cache hit.
-    provenance : Any | None
-        Run provenance recorder. May be ``None`` in dry-run / validation
-        contexts; manifest writes are then no-ops.
+    run_dir : RunDir | None
+        The run's directory, which holds the notebook artifacts. ``None`` in
+        dry-run / validation contexts; the notebook bookkeeping is then skipped.
+    annotate : Callable
+        Records notebook metadata against the task node, as a ``TaskAnnotated``
+        event.
     notice_emitter : Callable
         Callback used to surface notices — kernel installation, and a failed
         HTML export — as run events.
@@ -229,7 +233,8 @@ class NotebookRunner(DriverTaskRunner):
 
     backend: ExecutionEnvironment | None
     cache_store: CacheStore
-    provenance: Any | None
+    run_dir: RunDir | None
+    annotate: Callable[..., None]
     notice_emitter: Callable[[Any, str], None]
     runtime_root_factory: Callable[[], Path]
     _kernel_lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -423,7 +428,7 @@ class NotebookRunner(DriverTaskRunner):
         consumer of the event stream should hear about it on every run rather
         than only the first.
         """
-        if self.provenance is None or node.task_def.kind != "notebook":
+        if self.run_dir is None or node.task_def.kind != "notebook":
             return
         cached_extra = self.cache_store.load_extra_meta(cache_key=cache_key)
         if cached_extra is None:
@@ -432,7 +437,7 @@ class NotebookRunner(DriverTaskRunner):
         if not isinstance(notebook_extras, dict):
             return
         replayed = resolve_cached_artifact_pointers(extras=notebook_extras)
-        self.provenance.update_task_extra(node_id=node.node_id, **replayed)
+        self.annotate(node=node, fields=replayed)
         rendered_html = replayed.get("rendered_html")
         if replayed.get("render_status") == "failed" and isinstance(rendered_html, str):
             self.notice_emitter(
@@ -448,8 +453,8 @@ class NotebookRunner(DriverTaskRunner):
         """Return deterministic artifact paths for one notebook task."""
         task_key = f"task_{node.node_id:04d}"
         root_dir = (
-            self.provenance.run_dir / "notebooks"
-            if self.provenance is not None
+            self.run_dir.path / "notebooks"
+            if self.run_dir is not None
             else WorkspaceLayout.for_cwd().notebooks
         )
         root_dir.mkdir(parents=True, exist_ok=True)
@@ -614,8 +619,8 @@ class NotebookRunner(DriverTaskRunner):
         render_error: str | None,
         managed_kernel_name: str | None = None,
     ) -> None:
-        """Persist notebook-specific metadata to the task manifest."""
-        if self.provenance is None:
+        """Record notebook-specific metadata against the task."""
+        if self.run_dir is None:
             return
         extra: dict[str, Any] = {
             "task_type": "notebook",
@@ -627,15 +632,15 @@ class NotebookRunner(DriverTaskRunner):
             # into the cache entry with them, so a later run that replays the
             # pointers replays this too and can tell a reused artifact (and its
             # recorded render status) from one it produced itself.
-            "notebook_artifact_run_id": self.provenance.run_id,
+            "notebook_artifact_run_id": self.run_dir.run_id,
             "rendered_html": relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
+                run_dir=self.run_dir.path,
                 path=rendered_html,
             ),
         }
         if executed_path is not None:
             extra["executed_notebook"] = relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
+                run_dir=self.run_dir.path,
                 path=executed_path,
             )
         if render_error is not None:
@@ -644,7 +649,7 @@ class NotebookRunner(DriverTaskRunner):
             extra["render_error"] = None
         if managed_kernel_name is not None:
             extra["managed_kernel_name"] = managed_kernel_name
-        self.provenance.update_task_extra(node_id=node.node_id, **extra)
+        self.annotate(node=node, fields=extra)
 
         # Stash an absolute-path version of the extras on the node so that
         # _complete_node can persist them in the cache entry. Replaying these

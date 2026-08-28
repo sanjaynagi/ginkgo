@@ -6,10 +6,13 @@
   "event": "graph_node_registered",
   "execution_mode": "python",
   "kind": "python",
+  "node_id": 7,
   "retries": 2,
   "run_id": "run_20260828_090000",
+  "stderr_log": "logs/task_0007_analysis_fit.stderr.log",
+  "stdout_log": "logs/task_0007_analysis_fit.stdout.log",
   "task_id": "task_0007",
   "task_name": "analysis.fit",
   "ts": "2026-08-28T09:00:00+00:00",
-  "v": 2
+  "v": 4
 }

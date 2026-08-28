@@ -109,8 +109,7 @@ def command_cache(args) -> int:
         return 0
 
     if args.cache_command == "explain":
-        from ginkgo.cli.commands.inspect import inspect_run
-        from ginkgo.cli.common import resolve_run_dir
+        from ginkgo.cli.common import open_run
 
         if args.run_id is not None and args.run_flag is not None and args.run_id != args.run_flag:
             rich_console.print(
@@ -126,10 +125,9 @@ def command_cache(args) -> int:
             )
             return 2
 
-        payload = explain_run_cache(
-            cache_root=CACHE_ROOT,
-            run_snapshot=inspect_run(run_dir=resolve_run_dir(run_id)),
-        )
+        with open_run(run_id) as (reader, resolved):
+            run_snapshot = reader.run(resolved).to_payload()
+        payload = explain_run_cache(cache_root=CACHE_ROOT, run_snapshot=run_snapshot)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 

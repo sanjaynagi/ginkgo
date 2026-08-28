@@ -22,15 +22,21 @@ from ginkgo.runtime.task_runners.notebook import (
 
 
 @dataclass(kw_only=True)
-class _StubProvenance:
-    """Minimal provenance recorder capturing manifest extras."""
+class _StubRunDir:
+    """Minimal run directory: the two things the notebook runner asks it for."""
 
-    run_dir: Path
+    path: Path
     run_id: str = "old_run"
-    extras: dict[str, Any] = field(default_factory=dict)
 
-    def update_task_extra(self, *, node_id: int, **extra: Any) -> None:
-        self.extras.update(extra)
+
+@dataclass(kw_only=True)
+class _Annotations:
+    """Collects the fields the runner records against the task."""
+
+    fields: dict[str, Any] = field(default_factory=dict)
+
+    def __call__(self, *, node: Any, fields: dict[str, Any]) -> None:
+        self.fields.update(fields)
 
 
 @dataclass(kw_only=True)
@@ -76,14 +82,15 @@ class TestStoredPointerForm:
         run_dir = Path(".ginkgo") / "runs" / "old_run"
         html, executed = _write_artifacts(run_dir=run_dir)
 
-        provenance = _StubProvenance(run_dir=run_dir)
+        annotations = _Annotations()
         runner = NotebookRunner.__new__(NotebookRunner)
-        runner.provenance = provenance
+        runner.run_dir = _StubRunDir(path=run_dir)
+        runner.annotate = annotations
         node = _StubNode()
         _record(runner=runner, node=node, html=html, executed=executed)
 
-        assert provenance.extras["rendered_html"] == "notebooks/task_0014.html"
-        assert provenance.extras["executed_notebook"] == "notebooks/task_0014.ipynb"
+        assert annotations.fields["rendered_html"] == "notebooks/task_0014.html"
+        assert annotations.fields["executed_notebook"] == "notebooks/task_0014.ipynb"
 
         cache_extras = node.notebook_extras
         assert cache_extras is not None
@@ -151,14 +158,15 @@ class TestReplayedPointerResolves:
         old_run = Path(".ginkgo") / "runs" / "old_run"
         html, executed = _write_artifacts(run_dir=old_run)
 
-        provenance = _StubProvenance(run_dir=old_run, run_id="old_run")
+        annotations = _Annotations()
         runner = NotebookRunner.__new__(NotebookRunner)
-        runner.provenance = provenance
+        runner.run_dir = _StubRunDir(path=old_run, run_id="old_run")
+        runner.annotate = annotations
         node = _StubNode()
         _record(runner=runner, node=node, html=html, executed=executed)
 
-        # The producing run names itself in its own manifest.
-        assert provenance.extras["notebook_artifact_run_id"] == "old_run"
+        # The producing run names itself against its own task.
+        assert annotations.fields["notebook_artifact_run_id"] == "old_run"
 
         cache_extras = node.notebook_extras
         assert cache_extras is not None
@@ -203,7 +211,8 @@ def _replay(*, cached_extras: dict[str, Any], run_dir: Path) -> list[str]:
     """Replay ``cached_extras`` onto a fresh run and return emitted notices."""
     notices: list[str] = []
     runner = NotebookRunner.__new__(NotebookRunner)
-    runner.provenance = _StubProvenance(run_dir=run_dir, run_id="new_run")
+    runner.run_dir = _StubRunDir(path=run_dir, run_id="new_run")
+    runner.annotate = _Annotations()
     runner.cache_store = _StubCacheStore(extra={"notebook_extras": cached_extras})
     runner.notice_emitter = lambda node, message: notices.append(message)
     runner.replay_cached_extras(node=_StubNode(task_def=_StubTaskDef()), cache_key="key")

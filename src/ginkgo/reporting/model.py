@@ -434,7 +434,7 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 
 def build_report_data(
     *,
-    run_dir: Path,
+    summary: RunSummary,
     workspace_label: str | None = None,
     assets_root: Path | None = None,
     artifacts_root: Path | None = None,
@@ -442,12 +442,12 @@ def build_report_data(
     ginkgo_version: str | None = None,
     generated_at: datetime | None = None,
 ) -> ReportData:
-    """Build a :class:`ReportData` from a completed run directory.
+    """Build a :class:`ReportData` from a completed run.
 
     Parameters
     ----------
-    run_dir : Path
-        Directory containing ``manifest.yaml`` and friends.
+    summary : RunSummary
+        The run to report on, loaded from the ledger.
     workspace_label : str | None
         Display label for the enclosing workspace. Inferred from the run
         directory's grandparent when omitted.
@@ -469,8 +469,7 @@ def build_report_data(
     -------
     ReportData
     """
-    run_dir = Path(run_dir).resolve()
-    summary = RunSummary.load(run_dir)
+    run_dir = summary.run_dir.resolve()
 
     # Terminal runs only — fail fast if the run is still live.
     if summary.status not in {"succeeded", "failed"}:
@@ -1442,13 +1441,9 @@ def _build_environment_kv(*, summary: RunSummary, ginkgo_version: str) -> tuple[
         sample_count = resources.get("sample_count")
         if isinstance(sample_count, int):
             entries.append(KVEntry(key="samples", value=format_int(sample_count)))
-    timings = summary.raw_manifest.get("timings") if summary.raw_manifest else None
-    if isinstance(timings, dict):
-        run_timings = timings.get("run")
-        if isinstance(run_timings, dict):
-            execute = run_timings.get("workflow_execute_seconds")
-            if isinstance(execute, (int, float)):
-                entries.append(KVEntry(key="execute", value=format_duration(float(execute))))
+    execute = summary.timings.get("workflow_execute_seconds")
+    if isinstance(execute, (int, float)):
+        entries.append(KVEntry(key="execute", value=format_duration(float(execute))))
     return tuple(entries)
 
 

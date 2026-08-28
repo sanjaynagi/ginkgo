@@ -81,20 +81,43 @@ outputs.
 A task's declared output path is not the source of truth — the artifact store
 is.
 
-## What Lives In A Run Directory
+## Where Provenance Lives
 
-Each run gets a directory under `.ginkgo/runs/<run_id>/`. This is where Ginkgo
-records runtime metadata such as:
+What happened goes into one SQLite database per workspace, at
+`.ginkgo/ginkgo.db`: an append-only event log, plus the tables `ginkgo inspect
+run`, `ginkgo debug` and `ginkgo report` read. All three work on a run that is
+still going.
 
-- task-level status and timing information
-- logs
-- notebook artifacts
-- run manifests and provenance payloads
+Each run also gets a directory under `.ginkgo/runs/<run_id>/` holding the bytes
+— per-task logs, notebook artifacts, copies of the environment lock files, and
+a `manifest.yaml` snapshot of everything the database recorded for the run.
 
-Together, the cache and the run directory answer different questions:
+Together, the cache and the ledger answer different questions:
 
 - cache: can this work be reused safely?
 - provenance: what happened in this specific run?
+
+## Maintaining The Provenance Database
+
+```bash
+ginkgo db path                # where the database is
+ginkgo db check               # schema version and integrity
+ginkgo db migrate             # create or upgrade it
+```
+
+`ginkgo.db` is the record of your runs; back it up as you would `.git`. If it
+is lost, the run history goes with it and you re-run the workflow. Cached task
+results are not affected — they live in `.ginkgo/cache/` and are found the same
+way whether or not the database is there.
+
+Each run directory still holds a `manifest.yaml` of what that run did, which is
+there to be read rather than re-imported: ginkgo does not load it back.
+
+`GINKGO_DB=<path>` relocates the database. Do that if `.ginkgo` is on a network
+filesystem: SQLite locking is unreliable over NFS, Lustre, SMB and FUSE, and
+ginkgo prints one warning when it notices.
+
+Two `ginkgo run` processes can share a workspace; the ledger is built for it.
 
 ## Inspecting Cache State
 

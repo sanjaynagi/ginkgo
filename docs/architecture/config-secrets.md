@@ -61,9 +61,10 @@ parameters, and `ginkgo inspect workflow` reports them as structured JSON —
 name, flag, type, default, whether required, help, and choices — so a consumer
 can enumerate a workflow's inputs without running it.
 
-Resolved values are written to `params.yaml` alongside the loaded config, and
-each parameter's source (`cli`, `config`, or `default`) is recorded under
-`param_sources` in `manifest.yaml`.
+Resolved values are recorded on the run as `runs.params`, with each
+parameter's source (`cli`, `config`, or `default`) beside them in
+`runs.param_sources`. Both are in `ginkgo inspect run` and the run's exported
+snapshot.
 
 The `[params]` table layers key by key across config sources, unlike top-level
 keys which replace wholesale. An override that sets one parameter therefore
