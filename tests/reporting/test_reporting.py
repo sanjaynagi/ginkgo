@@ -114,6 +114,7 @@ def _make_run(
             GraphNodeRegistered(
                 run_id=run_id,
                 task_id=task_id,
+                node_id=node_id,
                 task_name=name,
                 env="local",
                 dependency_ids=dependencies,
@@ -214,7 +215,11 @@ def _make_notebook_run(
     )
     ledger.bus.emit(
         GraphNodeRegistered(
-            run_id=run_id, task_id="task_0000", task_name="demo.report", env="local"
+            run_id=run_id,
+            task_id="task_0000",
+            node_id=0,
+            task_name="demo.report",
+            env="local",
         )
     )
     ledger.bus.emit(
@@ -370,7 +375,9 @@ class TestReportData:
     def test_rejects_running_run(self, tmp_path: Path) -> None:
         ledger = Ledger.start(root=tmp_path, run_id="run-live")
         ledger.bus.emit(
-            GraphNodeRegistered(run_id="run-live", task_id="task_0000", task_name="demo.t")
+            GraphNodeRegistered(
+                run_id="run-live", task_id="task_0000", node_id=0, task_name="demo.t"
+            )
         )
         # No RunCompleted — the run is still "running".
         with pytest.raises(ValueError, match="not terminal"):

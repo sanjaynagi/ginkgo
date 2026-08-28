@@ -83,7 +83,10 @@ def test_events_are_stored_in_the_order_they_were_emitted(tmp_path: Path) -> Non
 def test_a_terminal_event_is_readable_before_the_writer_closes(tmp_path: Path) -> None:
     writer = _writer(tmp_path)
     _put(writer, RunStarted(run_id="run-1", workflow="flow.py"))
-    _put(writer, GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
+    _put(
+        writer,
+        GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="demo"),
+    )
     _put(writer, TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
 
     deadline = time.monotonic() + 5

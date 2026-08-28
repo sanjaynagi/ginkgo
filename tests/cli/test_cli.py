@@ -79,7 +79,14 @@ def _record_notebook_run(
     notebooks.mkdir(parents=True, exist_ok=True)
     (notebooks / f"{task_id}.ipynb").write_text("{}", encoding="utf-8")
     (notebooks / f"{task_id}.html").write_text("<html></html>", encoding="utf-8")
-    ledger.bus.emit(GraphNodeRegistered(run_id=run_id, task_id=task_id, task_name=task_name))
+    ledger.bus.emit(
+        GraphNodeRegistered(
+            run_id=run_id,
+            task_id=task_id,
+            node_id=int(task_id.rsplit("_", 1)[1]),
+            task_name=task_name,
+        )
+    )
     ledger.bus.emit(
         TaskAnnotated(
             run_id=run_id,

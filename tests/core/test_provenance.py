@@ -50,6 +50,7 @@ def _register(ledger: Ledger, *, kind: str = "python") -> None:
         GraphNodeRegistered(
             run_id=ledger.run_id,
             task_id="task_0000",
+            node_id=0,
             task_name="demo.task",
             kind=kind,
             execution_mode="worker",

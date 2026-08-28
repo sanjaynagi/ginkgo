@@ -29,7 +29,9 @@ def _record_run(
     ledger = Ledger.start(root=cwd, run_id=RUN_ID, workflow="wf.py")
     if failed_task or succeeded_task:
         name = "explode" if failed_task else "ok"
-        ledger.bus.emit(GraphNodeRegistered(run_id=RUN_ID, task_id="task_0000", task_name=name))
+        ledger.bus.emit(
+            GraphNodeRegistered(run_id=RUN_ID, task_id="task_0000", node_id=0, task_name=name)
+        )
     if failed_task:
         ledger.bus.emit(
             TaskFailed(

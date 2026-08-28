@@ -79,7 +79,9 @@ class TestTaskProjection:
 
     def _register(self, ledger) -> None:
         ledger.bus.emit(
-            GraphNodeRegistered(run_id=ledger.run_id, task_id="task_0000", task_name="my_task")
+            GraphNodeRegistered(
+                run_id=ledger.run_id, task_id="task_0000", node_id=0, task_name="my_task"
+            )
         )
 
     def test_task_started_records_execution_backend(self, ledger) -> None:
@@ -121,7 +123,9 @@ class TestInspectRunRemoteFields:
 
     def _run(self, ledger, **started) -> dict[str, Any]:
         ledger.bus.emit(
-            GraphNodeRegistered(run_id=ledger.run_id, task_id="task_0000", task_name="my_task")
+            GraphNodeRegistered(
+                run_id=ledger.run_id, task_id="task_0000", node_id=0, task_name="my_task"
+            )
         )
         ledger.bus.emit(
             TaskStarted(

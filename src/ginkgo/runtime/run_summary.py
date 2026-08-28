@@ -448,6 +448,11 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         "AND edge IN ('depends_on', 'dynamic_depends_on')",
         (run_id,),
     ):
+        # A task is not its own dependency. Saying so here keeps a run whose
+        # node ids did not resolve down to a graph with no edges, rather than a
+        # self-loop that the report's layering would follow forever.
+        if row["src_id"] == row["dst_id"]:
+            continue
         dependencies.setdefault((row["dst_id"], row["edge"]), []).append(
             node_ids.get(row["src_id"], -1)
         )

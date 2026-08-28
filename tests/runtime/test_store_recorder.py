@@ -37,7 +37,7 @@ def _recorder(tmp_path: Path, *, run_id: str = "run-1") -> tuple[StoreRecorder, 
 def test_the_manifest_is_exported_when_the_run_completes(tmp_path: Path) -> None:
     recorder, bus, db = _recorder(tmp_path)
     bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
-    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
+    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="demo"))
     bus.emit(TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
     bus.emit(RunCompleted(run_id="run-1", status="success"))
     recorder.close()
@@ -57,7 +57,7 @@ def test_the_manifest_is_what_inspect_run_prints(tmp_path: Path) -> None:
     """One home for the run's serialised form: the file cannot drift from the CLI."""
     recorder, bus, db = _recorder(tmp_path)
     bus.emit(RunStarted(run_id="run-1", workflow="flow.py", params={"seed": 7}))
-    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
+    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="demo"))
     bus.emit(TaskCompleted(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1))
     bus.emit(RunCompleted(run_id="run-1", status="success"))
     recorder.close()
@@ -87,11 +87,13 @@ def test_a_committed_handler_can_read_what_it_is_reacting_to(tmp_path: Path) -> 
 
     recorder.on_committed(handler)
     bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
-    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", task_name="demo"))
+    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="demo"))
     bus.emit(
         TaskFailed(run_id="run-1", task_id="task_0000", task_name="demo", attempt=1, exit_code=1)
     )
-    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0001", task_name="other"))
+    bus.emit(
+        GraphNodeRegistered(run_id="run-1", task_id="task_0001", node_id=1, task_name="other")
+    )
     bus.emit(TaskCompleted(run_id="run-1", task_id="task_0001", task_name="other", attempt=1))
     bus.emit(RunCompleted(run_id="run-1", status="failed"))
     recorder.close()
