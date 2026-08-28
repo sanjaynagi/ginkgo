@@ -4,6 +4,11 @@
 ``.ginkgo/ginkgo.db``: create or upgrade it, check that it is intact, and say
 where it is. Later phases add ``rebuild``, ``vacuum`` and ``prune`` beside
 these three.
+
+``migrate`` and ``check`` both open the database in write mode, so both need
+write access to the workspace: ``check`` reports on the database a run would
+use, which means creating it if it is not there yet. Only ``path`` touches
+nothing.
 """
 
 from __future__ import annotations

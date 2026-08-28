@@ -55,12 +55,15 @@ workflow.
 Transaction control is explicit: the driver's implicit `BEGIN` is turned off,
 and `store.transaction()` wraps a `BEGIN IMMEDIATE` … `COMMIT`, taking the
 write lock up front so a competing writer is reported at the start of the
-transaction rather than half-way through it.
+transaction rather than half-way through it. Transactions do not nest —
+SQLite has no nested commit, so an inner block that "committed" could still be
+rolled back by the outer one — and a failed commit rolls back rather than
+leaving the connection inside a transaction it can never finish.
 
 Network filesystems are detected at the first write-mode open of a process
 (`store/fs.py`, reading `/proc/self/mounts` or `mount`). NFS, Lustre, SMB,
-FUSE, 9p, AFS and GPFS mounts get one warning on stderr pointing at
-`GINKGO_DB`. Ginkgo never refuses to run there.
+FUSE, 9p, AFS and GPFS mounts get one warning on stderr, naming the database
+path and `GINKGO_DB`. Ginkgo never refuses to run there.
 
 ## Migrations
 

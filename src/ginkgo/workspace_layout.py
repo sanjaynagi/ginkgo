@@ -124,7 +124,7 @@ class WorkspaceLayout:
         matters on a shared filesystem, where SQLite's locking is unreliable
         and the fix is to put the database somewhere local.
         """
-        override = os.environ.get(GINKGO_DB_ENV_VAR)
+        override = os.environ.get(GINKGO_DB_ENV_VAR, "").strip()
         if override:
             return Path(override)
         return self.root / "ginkgo.db"

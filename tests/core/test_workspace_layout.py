@@ -49,7 +49,8 @@ class TestConstruction:
 class TestDirectories:
     """Every path the layout owns hangs off its root."""
 
-    def test_directory_names_are_stable(self, tmp_path):
+    def test_directory_names_are_stable(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GINKGO_DB", raising=False)
         layout = WorkspaceLayout(root=tmp_path)
 
         assert layout.runs.name == "runs"
@@ -63,7 +64,10 @@ class TestDirectories:
         assert layout.db.name == "ginkgo.db"
         assert layout.staging_cache_file.name == "remote-staged.json"
 
-    def test_no_two_concerns_share_a_directory(self, tmp_path):
+    def test_no_two_concerns_share_a_directory(self, tmp_path, monkeypatch):
+        # GINKGO_DB would move the database out of the layout and collapse the
+        # count, so this asks the question of the default layout.
+        monkeypatch.delenv("GINKGO_DB", raising=False)
         layout = WorkspaceLayout(root=tmp_path)
 
         paths = {
