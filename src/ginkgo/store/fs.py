@@ -72,10 +72,12 @@ def warn_if_network_filesystem(path: Path) -> None:
 
     # Imported here rather than at module scope so the store does not depend on
     # the CLI package to be importable; this is the one presenter it needs.
+    from rich.markup import escape
+
     from ginkgo.cli.common import console
 
     console(sys.stderr).print(
-        f"[yellow]⚠[/] {path} is on {fstype}; SQLite locking may be unreliable. "
+        f"[yellow]⚠[/] {escape(str(path))} is on {fstype}; SQLite locking may be unreliable. "
         "Set GINKGO_DB to a local path."
     )
 
