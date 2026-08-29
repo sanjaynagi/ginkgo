@@ -715,11 +715,21 @@ def _build_graph(*, summary: RunSummary, failures: tuple[FailureCard, ...]) -> G
     # Layer assignment: longest-path level from roots.
     level: dict[int, int] = {}
 
-    def _level(node_id: int) -> int:
+    def _level(node_id: int, visiting: frozenset[int] = frozenset()) -> int:
+        """Return the longest path from a root to *node_id*.
+
+        A task graph is a DAG, so a cycle here means something upstream is
+        wrong. The report is not the place to find out: the recursion would
+        run until the stack gave out. An edge that closes a cycle is ignored
+        instead, which draws the graph as if the back-edge were not there.
+        """
         if node_id in level:
             return level[node_id]
+        if node_id in visiting:
+            return 0
         parents = predecessors.get(node_id, [])
-        value = 0 if not parents else 1 + max(_level(parent) for parent in parents)
+        reachable = [_level(parent, visiting | {node_id}) for parent in parents]
+        value = 1 + max(reachable) if reachable else 0
         level[node_id] = value
         return value
 

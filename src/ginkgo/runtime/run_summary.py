@@ -9,6 +9,7 @@ notebook artifacts.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +21,8 @@ from ginkgo.store.jsonio import loads
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.workspace_layout import WorkspaceLayout
+
+logger = logging.getLogger(__name__)
 
 # Statuses that mark a task as finished; shared by every consumer that
 # needs to decide terminality (see TaskSummary.is_terminal and the CLI
@@ -428,14 +431,21 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         "AND edge IN ('depends_on', 'dynamic_depends_on')",
         (run_id,),
     ):
-        # A task is not its own dependency. Saying so here keeps a run whose
-        # node ids did not resolve down to a graph with no edges, rather than a
-        # self-loop that the report's layering would follow forever.
-        if row["src_id"] == row["dst_id"]:
+        # An edge naming a task the run never registered is dropped rather
+        # than collapsed onto a placeholder node: two unresolved sources
+        # collapsed to one id become each other's dependency, and the report's
+        # layering would follow that cycle forever. A dependency ginkgo cannot
+        # resolve is a projector bug, and a missing edge is where it shows.
+        source = node_ids.get(row["src_id"])
+        if source is None:
+            logger.warning(
+                "Run %s: task %s depends on %s, which the run has no task row for",
+                run_id,
+                row["dst_id"],
+                row["src_id"],
+            )
             continue
-        dependencies.setdefault((row["dst_id"], row["edge"]), []).append(
-            node_ids.get(row["src_id"], -1)
-        )
+        dependencies.setdefault((row["dst_id"], row["edge"]), []).append(source)
 
     return tuple(
         _build_task_summary(

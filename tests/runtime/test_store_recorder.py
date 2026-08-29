@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,29 @@ def test_the_guard_leaves_a_completed_run_alone(tmp_path: Path) -> None:
 
     with open_store(db, readonly=True) as store:
         assert store.query("SELECT status FROM runs")[0]["status"] == "succeeded"
+
+
+def test_a_dependency_on_an_unregistered_task_is_dropped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Collapsing unresolved ids onto one placeholder makes tasks each other's parent."""
+    recorder, bus, db = _recorder(tmp_path)
+    bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
+    for node_id in (0, 1):
+        bus.emit(
+            GraphNodeRegistered(
+                run_id="run-1",
+                task_id=f"task_{node_id:04d}",
+                node_id=node_id,
+                task_name="demo",
+                dependency_ids=[99],
+            )
+        )
+    bus.emit(RunCompleted(run_id="run-1", status="success"))
+    recorder.close()
+
+    with open_store(db, readonly=True) as store, caplog.at_level(logging.WARNING):
+        summary = RunSummary.load(store, "run-1", runs_root=tmp_path / ".ginkgo" / "runs")
+
+    assert [task.dependency_ids for task in summary.tasks] == [(), ()]
+    assert "which the run has no task row for" in caplog.text
