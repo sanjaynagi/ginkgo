@@ -377,12 +377,37 @@ class AssetRegistrar:
         return self.cache_store._artifact_store.store(src_path=source_path)
 
     def _parent_asset_refs(self, *, node: Any) -> list[AssetRef]:
-        """Collect unique upstream asset references consumed by one task."""
+        """Collect unique upstream asset references consumed by one task.
+
+        The resolved arguments still hold a ref wherever the parameter binds a
+        path. Where it binds the payload instead, the evaluator rehydrated the
+        ref into a DataFrame before the task ever saw it, and the identity
+        survives only on ``node.asset_inputs`` — recorded at resolution time
+        for exactly this reason (issue #253). Both are read, so lineage does
+        not depend on how a consumer chose to annotate its parameter.
+        """
         if node.resolved_args is None:
             return []
         unique: dict[tuple[str, str, str], AssetRef] = {}
         for asset_ref in collect_asset_refs(node.resolved_args):
             unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
+        for declared in getattr(node, "asset_inputs", {}).values():
+            version_id = declared.get("version_id")
+            if version_id is None:
+                continue
+            version = self.asset_store.version_by_id(version_id)
+            if version is None:
+                continue
+            key = (version.key.namespace, version.key.name, version.version_id)
+            unique.setdefault(
+                key,
+                asset_ref_from_version(
+                    version=version,
+                    artifact_path=self.cache_store.artifact_store_view.artifact_path(
+                        artifact_id=version.artifact_id
+                    ),
+                ),
+            )
         return list(unique.values())
 
 

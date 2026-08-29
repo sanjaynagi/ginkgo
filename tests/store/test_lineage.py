@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from ginkgo import query, table, task
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
 from ginkgo.query import Query
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
+
+from tests.conftest import Ledger
 
 
 @pytest.fixture
@@ -215,3 +220,71 @@ class TestWhy:
 
         with _reader(db_path) as reader, pytest.raises(FileNotFoundError, match="Nothing"):
             reader.why("not-an-artifact")
+
+
+# ---------------------------------------------------------------------------
+# Consumption through a semantically typed parameter (#253)
+# ---------------------------------------------------------------------------
+
+
+@task()
+def _produce_table_a() -> object:
+    return table(pd.DataFrame({"a": [1, 2]}), name="a")
+
+
+@task()
+def _consume_dataframe(upstream: pd.DataFrame) -> object:
+    """Consume an asset as its payload, the way a user normally would."""
+    assert isinstance(upstream, pd.DataFrame)
+    return table(pd.DataFrame({"b": [len(upstream)]}), name="b")
+
+
+class TestPlainValueConsumption:
+    """An asset consumed as its payload is still an asset the ledger can see.
+
+    The evaluator rehydrates the ref into a DataFrame before the cache key is
+    built, so neither the hash entry nor the rendered argument remembers where
+    the value came from. The identity has to be captured at resolution time.
+    """
+
+    @pytest.fixture
+    def consumed_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(tmp_path)
+        ledger = Ledger.start(root=tmp_path)
+        evaluator = ConcurrentEvaluator(
+            run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1
+        )
+        evaluator.evaluate(_consume_dataframe(upstream=_produce_table_a()))
+        ledger.finish()
+        return ledger.db
+
+    def test_the_input_row_carries_the_asset_identity(self, consumed_run: Path) -> None:
+        with open_store(consumed_run, readonly=True) as store:
+            rows = store.query(
+                "SELECT asset_key, asset_version_id, artifact_id FROM task_inputs "
+                "WHERE param = 'upstream'"
+            )
+
+        assert [row["asset_key"] for row in rows] == ["table:a"]
+        assert all(row["asset_version_id"] and row["artifact_id"] for row in rows)
+
+    def test_a_consumed_edge_is_written(self, consumed_run: Path) -> None:
+        with open_store(consumed_run, readonly=True) as store:
+            edges = store.query("SELECT src_kind, dst_kind FROM edges WHERE edge = 'consumed'")
+
+        assert [(row["src_kind"], row["dst_kind"]) for row in edges] == [("asset_version", "task")]
+
+    def test_why_names_the_asset_the_consumer_read(self, consumed_run: Path) -> None:
+        with query.open(WorkspaceLayout(root=consumed_run.parent)) as reader:
+            produced = reader.store.query(
+                "SELECT artifact_id FROM task_outputs WHERE asset_key = 'table:b'"
+            )
+            provenance = reader.why(str(produced[0]["artifact_id"]))
+
+        assert "table:a" in str(provenance.inputs)
+
+    def test_lineage_downstream_reaches_the_consumer(self, consumed_run: Path) -> None:
+        with query.open(WorkspaceLayout(root=consumed_run.parent)) as reader:
+            graph = reader.lineage("table:a", direction="downstream")
+
+        assert "table:b" in {str(version.key) for version in graph.versions.values()}

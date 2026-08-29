@@ -262,13 +262,14 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
         if isinstance(entry, dict)
     }
     inputs = payload.get("inputs") or {}
+    declared_assets = payload.get("asset_inputs") or {}
     # Every parameter that was hashed gets a row, including one the rendered
     # arguments do not name (a tmp_dir, say): the digest is the fact worth
     # keeping, and a missing summary is not a reason to drop it.
     parameters = {str(param): inputs.get(param, _ABSENT) for param in {**inputs, **hashes}}
     for param, value in parameters.items():
         entry = hashes.get(str(param), {})
-        asset = _asset_identity(entry=entry, value=value)
+        asset = _asset_identity(declared=declared_assets.get(str(param)), entry=entry, value=value)
         ops.append(
             ProjectionOp(
                 sql="""
@@ -671,16 +672,29 @@ def accumulate_seconds(
     )
 
 
-def _asset_identity(*, entry: dict[str, Any], value: Any) -> dict[str, Any]:
-    """Return the asset an input names, from either half of what was recorded.
+def _asset_identity(
+    *, declared: dict[str, Any] | None, entry: dict[str, Any], value: Any
+) -> dict[str, Any]:
+    """Return the asset an input names, from whichever half recorded it.
 
-    A task that declares a parameter as ``file`` and is handed an ``AssetRef``
-    is hashed as the file it resolves to, because the cache keys on content and
-    changing that payload would invalidate every entry. The identity is not
-    lost, though: the *rendered* argument still describes the ref. So the hash
-    entry is asked first, and the rendered value second — which is why an asset
-    consumed through a ``file`` parameter still gets its ``consumed`` edge.
+    The evaluator knows the answer at resolution time and puts it on the event
+    as ``asset_inputs``; that is the authority, and the only source for a
+    parameter typed as the payload rather than as a file — by the time such an
+    argument reaches the task the ref has become a DataFrame, and neither the
+    hash entry nor the rendered value can say where it came from.
+
+    The other two remain because the event predates them. A task that declares
+    a parameter as ``file`` and is handed an ``AssetRef`` is hashed as the file
+    it resolves to, because the cache keys on content and changing that payload
+    would invalidate every entry; the hash entry names the artifact, and the
+    rendered argument still describes the ref.
     """
+    if declared and declared.get("asset_key"):
+        return {
+            "asset": declared["asset_key"],
+            "version_id": declared.get("version_id"),
+            "artifact_id": declared.get("artifact_id"),
+        }
     if entry.get("asset"):
         return {
             "asset": entry["asset"],

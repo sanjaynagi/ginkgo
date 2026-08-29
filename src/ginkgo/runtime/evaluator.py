@@ -22,7 +22,7 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Literal
 
-from ginkgo.core.asset import AssetRef, AssetVersion
+from ginkgo.core.asset import AssetRef, AssetVersion, collect_asset_refs
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.subworkflow import SubWorkflowResult
@@ -305,6 +305,7 @@ class NodeRun:
     driver_directive: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
+    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
@@ -763,6 +764,7 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
+            asset_inputs=node.asset_inputs,
         )
         self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
@@ -1140,6 +1142,7 @@ class ConcurrentEvaluator:
         node.secret_values = ()
         node.extra_source_hash = None
         node.asset_versions = []
+        node.asset_inputs = {}
         # measured_resources is deliberately NOT reset: a retried attempt's
         # peak (an OOM kill under memory_retry_multiplier, say) is exactly
         # the number needed to right-size the task, so measurements span
@@ -1226,8 +1229,15 @@ class ConcurrentEvaluator:
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
+        asset_inputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Resolve concrete arguments for a task call."""
+        """Resolve concrete arguments for a task call.
+
+        *asset_inputs* is filled in as arguments resolve, with the identity of
+        the asset each parameter was handed. This is the only moment it is
+        knowable for a semantically typed parameter: the next line rehydrates
+        the ref into the payload the task asked for, and the identity is gone.
+        """
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
 
@@ -1246,6 +1256,16 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
+                if asset_inputs is not None:
+                    refs = collect_asset_refs(materialised)
+                    if refs:
+                        # One row per parameter is what task_inputs holds, so
+                        # the first ref is the one recorded.
+                        asset_inputs[name] = {
+                            "asset_key": str(refs[0].key),
+                            "version_id": refs[0].version_id,
+                            "artifact_id": refs[0].artifact_id,
+                        }
                 # A path-shaped annotation binds a filesystem path at every
                 # depth, so the whole value — including any nested containers
                 # — keeps its ``AssetRef`` entries rather than becoming live
@@ -2048,6 +2068,7 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
+                asset_inputs=dict(node.asset_inputs),
                 cache_key=node.cache_key,
                 source_hash=node.task_def.cache_source_hash,
                 version=node.task_def.version,

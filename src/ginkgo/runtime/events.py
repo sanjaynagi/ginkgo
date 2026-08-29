@@ -196,11 +196,18 @@ class TaskPlanned(TaskEvent):
 
     Everything the cache key was computed from is on this event, so the ledger
     can answer "why did this re-run" without the cache index being intact.
+
+    ``asset_inputs`` carries the identity of an asset a parameter was handed,
+    captured where the argument was resolved. The cache key hashes the asset's
+    *content*, and by the time a semantically typed parameter reaches the task
+    the ref has already become a DataFrame — so identity has to travel beside
+    the hashes rather than be recovered from them.
     """
 
     event: str = "task_planned"
     inputs: dict[str, Any] = field(default_factory=dict)
     input_hashes: list[dict[str, Any]] = field(default_factory=list)
+    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     cache_key: str | None = None
     source_hash: str | None = None
     version: int | None = None
