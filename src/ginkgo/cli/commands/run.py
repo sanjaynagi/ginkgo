@@ -58,8 +58,7 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.caching.provenance import combined_log_tail, make_run_id
-from ginkgo.runtime.rundir import RunDir
+from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver

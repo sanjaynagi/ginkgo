@@ -39,7 +39,7 @@ from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import EventBus, TaskNotice
 from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.caching.provenance import make_run_id
+from ginkgo.runtime.rundir import make_run_id
 
 from tests.conftest import Ledger
 from ginkgo.runtime.environment.secrets import build_secret_resolver

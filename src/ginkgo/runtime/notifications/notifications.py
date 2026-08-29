@@ -18,7 +18,7 @@ from ginkgo.runtime.notifications.slack import (
     build_run_succeeded_payload,
     post_slack_message,
 )
-from ginkgo.runtime.caching.provenance import combined_log_tail
+from ginkgo.runtime.rundir import combined_log_tail
 from ginkgo.runtime.environment.secrets import SecretResolutionError, SecretResolver
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.store.protocol import ProvenanceStore

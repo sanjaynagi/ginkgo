@@ -4,6 +4,9 @@ Everything a run writes that is *bytes* lives here. What happened during the
 run is the ledger's business (:mod:`ginkgo.store`); this module owns only the
 directory those bytes go in, so neither concern has to know the other's shape.
 
+It also names a run (:func:`make_run_id`) and reads back the logs it wrote
+(:func:`tail_text`, :func:`combined_log_tail`).
+
 The layout after a run is::
 
     runs/<run_id>/
@@ -15,15 +18,65 @@ The layout after a run is::
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 import yaml
 
-__all__ = ["RunDir", "manifest_text", "write_atomic", "write_manifest"]
+__all__ = [
+    "RunDir",
+    "combined_log_tail",
+    "make_run_id",
+    "manifest_text",
+    "tail_text",
+    "write_atomic",
+    "write_manifest",
+]
+
+
+def make_run_id(*, workflow_path: str | Path | None = None) -> str:
+    """Return a timestamped run identifier."""
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+    token_source = str(Path(workflow_path).resolve()) if workflow_path is not None else timestamp
+    discriminator = secrets.token_hex(4)
+    suffix = abs(hash((token_source, timestamp, discriminator))) % (16**8)
+    return f"{timestamp}_{suffix:08x}"
+
+
+def tail_text(path: Path, *, lines: int = 50) -> list[str]:
+    """Return the last *lines* lines from a text file."""
+    if not path.is_file():
+        return []
+    content = path.read_text(encoding="utf-8").splitlines()
+    return content[-lines:]
+
+
+def combined_log_tail(
+    *,
+    run_dir: Path,
+    stdout_log: object,
+    stderr_log: object,
+    lines: int,
+) -> list[str]:
+    """Combine stdout and stderr tails for failure display.
+
+    Each log argument is the relative path stored on a task record; it
+    may be a string path, ``None``, or any other value depending on the
+    caller's task representation. Non-string values are ignored, so
+    callers can pass either mapping ``.get(...)`` results or dataclass
+    attributes without an extra ``isinstance`` check.
+    """
+    combined: list[str] = []
+    if isinstance(stdout_log, str):
+        combined.extend(tail_text(run_dir / stdout_log, lines=lines))
+    if isinstance(stderr_log, str):
+        combined.extend(tail_text(run_dir / stderr_log, lines=lines))
+    return combined[-lines:]
 
 
 @dataclass(kw_only=True)
