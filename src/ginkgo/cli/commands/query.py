@@ -38,10 +38,17 @@ def command_query(args) -> int:
 
 
 def _write_csv(result: SqlResult) -> None:
-    """Write the result to stdout as CSV, header first."""
+    """Write the result to stdout as CSV, header first.
+
+    A truncation notice goes to stderr rather than into the stream: stdout has
+    to stay CSV a spreadsheet can open, and a warning that redirects away with
+    the data is a warning nobody reads.
+    """
     writer = csv.writer(sys.stdout)
     writer.writerow(result.columns)
     writer.writerows(tuple(row) for row in result.rows)
+    if result.truncated:
+        console(sys.stderr).print(_truncation_notice(result))
 
 
 def _render_table(rich_console, *, result: SqlResult) -> int:
@@ -63,5 +70,10 @@ def _render_table(rich_console, *, result: SqlResult) -> int:
         table.add_row(*("" if value is None else str(value) for value in tuple(row)))
     rich_console.print(table)
     if result.truncated:
-        rich_console.print(f"\n[dim]Stopped at {len(result.rows)} rows. Pass --limit for more.[/]")
+        rich_console.print(f"\n[dim]{_truncation_notice(result)}[/]")
     return 0
+
+
+def _truncation_notice(result: SqlResult) -> str:
+    """Return the one line every output mode uses to report a cut-short result."""
+    return f"Stopped at {result.limit} rows. Pass --limit for more."

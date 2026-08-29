@@ -235,6 +235,18 @@ class SqliteStore:
         for op in projection_ops:
             self._connection.execute(op.sql, tuple(op.params))
 
+    def restrict_to_reads(self) -> None:
+        """Refuse every further write on this connection.
+
+        For the in-memory ledger a reader opens when a workspace has none: the
+        schema has to be created, so the open is write-mode, but nothing after
+        that may write — least of all the user SQL :meth:`select` carries. A
+        read-only open has ``query_only`` from its pragmas already; this is how
+        a store that had to be created earns the same guarantee.
+        """
+        self._connection.execute("PRAGMA query_only=ON")
+        self._readonly = True
+
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
         """Return every row *sql* selects."""
         return self._connection.execute(sql, tuple(params)).fetchall()

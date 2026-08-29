@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.core.asset import AssetKey, AssetVersion
-from ginkgo.formatting import parse_timestamp
+from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
@@ -56,6 +56,9 @@ SQL_ROW_LIMIT = 1000
 
 _READ_VERBS = frozenset({"SELECT", "WITH", "VALUES", "EXPLAIN"})
 """The statements :meth:`Query.sql` will run. Everything else is refused."""
+
+_BODY_VERBS = frozenset({"SELECT", "VALUES", "INSERT", "UPDATE", "DELETE", "REPLACE"})
+"""The verbs that can follow a ``WITH`` clause's common table expressions."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -174,15 +177,30 @@ class SqlResult:
         The rows, addressable by index or by column name.
     truncated : bool
         Whether the row limit cut the result short.
+    limit : int
+        The cap that was applied, so a truncated result says what to raise.
     """
 
     columns: tuple[str, ...]
     rows: list[sqlite3.Row]
     truncated: bool
+    limit: int
 
-    def to_payload(self) -> list[dict[str, Any]]:
-        """Return the rows as a list of column-keyed mappings."""
-        return [dict(zip(self.columns, tuple(row), strict=True)) for row in self.rows]
+    def to_payload(self) -> dict[str, Any]:
+        """Return the whole result as JSON-ready data.
+
+        An envelope rather than a bare list of rows: a caller that reads only
+        the rows cannot tell a complete answer from a truncated one, and that
+        is the difference that matters. Repeated column names are suffixed by
+        :func:`_unique_columns`, because a mapping cannot hold two of them.
+        """
+        keys = _unique_columns(self.columns)
+        return {
+            "columns": list(keys),
+            "rows": [dict(zip(keys, tuple(row), strict=True)) for row in self.rows],
+            "truncated": self.truncated,
+            "limit": self.limit,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -455,19 +473,32 @@ class Query:
         status : str | None, optional
             Match one run status.
         since : str | None, optional
-            Only runs started at or after this ISO timestamp.
+            Only runs started at or after this ISO-8601 timestamp. Compared as
+            text against the stored timestamps, so a date alone is a valid
+            bound; anything ISO-8601 cannot parse is refused rather than
+            silently matching nothing.
         limit : int, optional
             Most rows to return.
 
         Returns
         -------
         list[RunRow]
+
+        Raises
+        ------
+        ValueError
+            If *since* is not an ISO-8601 timestamp.
         """
+        if since is not None and parse_timestamp(since) is None:
+            raise ValueError(
+                f"{since!r} is not an ISO-8601 timestamp. Give a date (2026-08-01) or a "
+                "date and time (2026-08-01T09:30)."
+            )
         clauses: list[str] = []
         params: list[Any] = []
         if workflow is not None:
-            clauses.append("workflow LIKE ?")
-            params.append(f"%{workflow}")
+            clauses.append("workflow LIKE ? ESCAPE '\\'")
+            params.append(_like_suffix(workflow))
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
@@ -487,7 +518,7 @@ class Query:
                 status=row["status"],
                 started_at=row["started_at"],
                 finished_at=row["finished_at"],
-                duration_s=_duration_seconds(row["started_at"], row["finished_at"]),
+                duration_s=duration_seconds(row["started_at"], row["finished_at"]),
                 parent_run_id=row["parent_run_id"],
             )
             for row in rows
@@ -542,9 +573,9 @@ class Query:
             "SELECT t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
             "t.cache_key, t.started_at, t.finished_at, t.attempts "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            "WHERE t.name = ? OR t.display_label = ? OR t.name LIKE ? "
+            "WHERE t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\' "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
-            (name, name, f"%.{name}", limit),
+            (name, name, _like_suffix(f".{name}"), limit),
         )
         return [
             TaskRow(
@@ -557,7 +588,7 @@ class Query:
                 cache_key=row["cache_key"],
                 started_at=row["started_at"],
                 finished_at=row["finished_at"],
-                duration_s=_duration_seconds(row["started_at"], row["finished_at"]),
+                duration_s=duration_seconds(row["started_at"], row["finished_at"]),
                 attempts=int(row["attempts"] or 0),
             )
             for row in rows
@@ -624,7 +655,7 @@ class Query:
             for row in rows
         ]
 
-    def cache_key_components(self, cache_key: str) -> dict[str, Any]:
+    def _cache_key_components(self, cache_key: str) -> dict[str, Any]:
         """Return the labelled components of one entry's cache key.
 
         Derived from the entry's own row by the same function that labels the
@@ -763,7 +794,7 @@ class Query:
         if task["status"] == "cached":
             return RerunExplanation(**identity, reason="all_inputs_match", details=[])
 
-        current = self.cache_key_components(cache_key) if isinstance(cache_key, str) else {}
+        current = self._cache_key_components(cache_key) if isinstance(cache_key, str) else {}
         if not current:
             return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
 
@@ -773,7 +804,7 @@ class Query:
 
         prior_key, strategy = prior
         components = _diff_key_components(
-            current=current, prior=self.cache_key_components(prior_key)
+            current=current, prior=self._cache_key_components(prior_key)
         )
         details = _coarse_reasons(components)
         return RerunExplanation(
@@ -825,14 +856,9 @@ class Query:
             rejects it — an unknown table or column, or a syntax error.
         """
         statement = query.strip().rstrip(";").strip()
-        if not statement:
-            raise StoreError("No SQL to run.")
-        verb = statement.split(None, 1)[0].upper()
-        if verb not in _READ_VERBS:
-            raise StoreError(
-                f"{verb} is not a read. `ginkgo query` runs one SELECT (or WITH, VALUES, "
-                "EXPLAIN) against a read-only connection; nothing may change the ledger."
-            )
+        refusal = _refusal(statement)
+        if refusal is not None:
+            raise StoreError(refusal)
         try:
             columns, rows = self._store.select(statement, params, limit=limit)
         except sqlite3.ProgrammingError as exc:
@@ -845,7 +871,12 @@ class Query:
                 f"SQLite rejected the query: {exc}. The table and column names are "
                 "listed in the provenance store documentation."
             ) from exc
-        return SqlResult(columns=columns, rows=rows[:limit], truncated=len(rows) > limit)
+        return SqlResult(
+            columns=columns,
+            rows=rows[:limit],
+            truncated=len(rows) > limit,
+            limit=limit,
+        )
 
     # -- assets and lineage --------------------------------------------------
 
@@ -1072,7 +1103,12 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     if readonly and not path.is_file():
         if not missing_ok:
             raise FileNotFoundError(f"No runs found: there is no provenance database at {path}")
-        return Query(open_store(MEMORY), layout=layout)
+        # Write-mode, because the schema has to exist before anything can be
+        # selected from it — then closed to writes, so an empty workspace
+        # refuses the same statements a populated one does.
+        empty = open_store(MEMORY)
+        empty.restrict_to_reads()
+        return Query(empty, layout=layout)
     return Query(open_store(path, readonly=readonly), layout=layout)
 
 
@@ -1118,13 +1154,100 @@ def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
     return reasons or ["cache_key_changed"]
 
 
-def _duration_seconds(started_at: Any, finished_at: Any) -> float | None:
-    """Return the seconds between two stored timestamps, when both parse."""
-    started = parse_timestamp(started_at)
-    finished = parse_timestamp(finished_at)
-    if started is None or finished is None:
+def _top_level_words(statement: str) -> Iterator[str]:
+    """Yield the upper-cased bare words of *statement* outside parentheses.
+
+    Enough of a scanner to tell a statement's verbs from its data: string
+    literals, quoted identifiers and comments are skipped whole, so a row whose
+    value is ``'delete'`` is never mistaken for a verb, and anything nested in
+    parentheses is skipped because a common table expression's own ``SELECT``
+    is not the statement's verb.
+    """
+    closing = {"'": "'", '"': '"', "`": "`", "[": "]"}
+    index = 0
+    depth = 0
+    while index < len(statement):
+        char = statement[index]
+        if char in closing:
+            end = statement.find(closing[char], index + 1)
+            index = len(statement) if end == -1 else end + 1
+            continue
+        if statement.startswith("--", index):
+            end = statement.find("\n", index)
+            index = len(statement) if end == -1 else end + 1
+            continue
+        if statement.startswith("/*", index):
+            end = statement.find("*/", index + 2)
+            index = len(statement) if end == -1 else end + 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char.isalpha() or char == "_":
+            end = index
+            while end < len(statement) and (statement[end].isalnum() or statement[end] == "_"):
+                end += 1
+            if depth == 0:
+                yield statement[index:end].upper()
+            index = end
+            continue
+        index += 1
+
+
+def _refusal(statement: str) -> str | None:
+    """Return why :meth:`Query.sql` will not run *statement*, or ``None``.
+
+    The message is the whole report, so it names the verb the user wrote rather
+    than describing the rule in the abstract.
+    """
+    words = list(_top_level_words(statement))
+    if not words:
+        return "No SQL to run."
+    verb = words[0]
+    if verb not in _READ_VERBS:
+        return (
+            f"{verb} is not a read. `ginkgo query` runs one SELECT (or WITH, VALUES, "
+            "EXPLAIN) against a read-only connection; nothing may change the ledger."
+        )
+    if verb != "WITH":
         return None
-    return max(0.0, (finished - started).total_seconds())
+    # A WITH clause is only as read-only as the statement it introduces:
+    # `WITH t AS (SELECT 1) DELETE FROM runs` leads with a verb this allows.
+    body = next((word for word in words[1:] if word in _BODY_VERBS), None)
+    if body is None or body in {"SELECT", "VALUES"}:
+        return None
+    return (
+        f"That WITH clause ends in {body}, which is not a read. `ginkgo query` runs "
+        "one SELECT against a read-only connection; nothing may change the ledger."
+    )
+
+
+def _unique_columns(columns: Sequence[str]) -> tuple[str, ...]:
+    """Return *columns* with repeats suffixed, so each names one value.
+
+    ``SELECT r.run_id, t.run_id`` selects two columns of the same name. A
+    mapping keyed on them would keep only the last, so the second becomes
+    ``run_id_2`` — the position is what tells them apart, and the position is
+    what the suffix carries.
+    """
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for column in columns:
+        seen[column] = seen.get(column, 0) + 1
+        unique.append(column if seen[column] == 1 else f"{column}_{seen[column]}")
+    return tuple(unique)
+
+
+def _like_suffix(value: str) -> str:
+    """Return the LIKE pattern matching anything ending in *value*.
+
+    ``%`` and ``_`` are escaped, so a user asking for a task literally named
+    ``%`` is answered with that task rather than with every row in the table.
+    The caller must pair this with ``ESCAPE '\\'``.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}"
 
 
 def _first(rows: list[Any], column: str) -> str | None:

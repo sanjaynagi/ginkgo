@@ -378,7 +378,7 @@ class TestSavedKeyComponents:
         with Query(
             open_store(_db(tmp_path), readonly=True), layout=WorkspaceLayout.relative()
         ) as reader:
-            components = reader.cache_key_components(cache_key)
+            components = reader._cache_key_components(cache_key)
         with CacheIndex.for_reading(_db(tmp_path)) as reopened:
             entry = reopened.entry(cache_key)
 
