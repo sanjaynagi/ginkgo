@@ -237,7 +237,9 @@ def test_version_flag_reports_pyproject_version() -> None:
         ("cache", "{ls,stats,clear,explain,prune}"),
         ("asset", "{ls,versions,inspect,show}"),
         ("env", "{ls,clear}"),
-        ("inspect", "{workflow,run}"),
+        ("inspect", "{workflow}"),
+        ("runs", "{ls,show}"),
+        ("export", "{events,manifest}"),
         ("secrets", "{list,validate}"),
     ],
 )
