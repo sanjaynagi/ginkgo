@@ -39,7 +39,9 @@ evaluator ─emit─▶ EventBus ─▶ StoreRecorder ─▶ StoreWriter ─▶ 
 
 The evaluator itself holds no recorder. It emits events, and asks
 `runtime/rundir.py`'s `RunDir` for the two filesystem things it needs: where a
-task's logs go, and a copy of each environment lockfile.
+task's logs go, and a copy of each environment lockfile. `rundir.py` also names
+runs (`make_run_id`) and reads their logs back (`tail_text`,
+`combined_log_tail`), which is everything about a run directory in one module.
 
 ## The read path
 
@@ -89,6 +91,12 @@ Notes on the fields:
 - Input digests are spelled `digest`. They are BLAKE3; only the cache key's own
   payload still says `sha256`, and renaming it there would invalidate every
   entry on disk for no gain.
+- `task_inputs.asset_key` / `asset_version_id` / `artifact_id` name the asset a
+  parameter was handed, and the same fact writes the `consumed` edge. It comes
+  from `TaskPlanned.asset_inputs`, captured where the argument was resolved: a
+  parameter annotated as the payload (`enriched: pd.DataFrame`) has had its
+  `AssetRef` rehydrated by the time the task sees it, so neither the digest nor
+  the rendered value could say where it came from (issue #253).
 
 ## Sub-workflows
 
@@ -102,8 +110,8 @@ once the subprocess exits. The child's run id is the whole of the handle:
 
 ## What is not here
 
-There is no `events.jsonl` and no `params.yaml`. The ledger is the event log —
-`ginkgo export events` (Phase 4) writes it back out in the `--agent-output`
-shape — and resolved parameters are `runs.params`, with `runs.param_sources`
+There is no `events.jsonl`, no `params.yaml` and no `remote-staged.json`. The
+ledger is the event log — `ginkgo export events` writes it back out in the
+`--agent-output` shape — and resolved parameters are `runs.params`, with `runs.param_sources`
 beside them. `--agent-output` continues to render the bus directly and does not
 read the database.

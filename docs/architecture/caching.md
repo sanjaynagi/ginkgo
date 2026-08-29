@@ -26,21 +26,22 @@ Cache entries are written atomically and reused across reruns when inputs are un
 The database at `.ginkgo/ginkgo.db` is the only cache index. An entry is a
 `cache_entries` row plus the bytes at `cache/<key>/output.json`; its outputs are
 `cache_artifacts` rows, and the artifact store's own contents are `artifacts`
-rows. There is no `meta.json`, no `refs/<id>.json`, no `stat_index.json` and no
-`materializations.json` — each was a file index of the same facts, and each is
-gone.
+rows. There is no `meta.json`, no `refs/<id>.json`, no `stat_index.json`, no
+`materializations.json` and no `remote-staged.json` — each was a file index of
+facts the database now holds, and each is gone.
 
 Three classes divide the work, and the split is worth knowing before reading
 them:
 
-- **`CacheStore`** (`runtime/caching/cache.py`) is the cache as the evaluator
-  sees it: it builds keys, decides whether a hit is usable, writes the bytes,
-  and knows where they live.
-- **`CacheIndex`** (`runtime/caching/index.py`) is the rows those decisions are
-  recorded in, and the only thing that writes them.
-- **`CacheCoordinator`** (`runtime/caching/coordinator.py`) is the lookup order
-  the evaluator follows — content first, or the stat index under
-  `--trust-mtimes` — and nothing else.
+- **`CacheStore`** (`runtime/caching/cache.py`) owns the keys and the bytes: it
+  builds a cache key from a task and its arguments, decides whether a hit is
+  usable, writes `cache/<key>/output.json`, and knows where it lives.
+- **`CacheIndex`** (`runtime/caching/index.py`) owns the rows those decisions
+  are recorded in, and is the only thing that writes them.
+- **`NodeCache`** (`runtime/caching/node_cache.py`) answers the question the
+  evaluator actually asks — *is there a result for this node?* — in the lookup
+  order it follows: content first, or the stat index under `--trust-mtimes`.
+  Every method takes a node.
 
 `CacheIndex` (`runtime/caching/index.py`) is the only reader and writer of those
 rows. It holds its own write connection rather than sharing the recorder's: the
@@ -137,6 +138,12 @@ gets the same answer:
   a cache hit, which is the cost the deferred materialisation exists to avoid.
   This is the case a shared cache lands in on a machine that has never built the
   environment.
+
+Every digest observed is also written to `env_materializations`, keyed by
+`(env_hash, socket.gethostname())`, so what a declaration installed as is
+history rather than a comparison made once and thrown away. Nothing in the read
+path above consults it; `ginkgo db check` does, to report a declaration that
+materialized two different ways across two machines.
 
 Neither read costs anything next to executing the task, both are memoised per
 environment per run, and neither happens on a miss. Because a lookup can ask for

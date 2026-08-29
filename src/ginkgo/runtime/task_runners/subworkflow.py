@@ -125,7 +125,7 @@ class SubworkflowRunner:
         try:
             config_paths: list[str] = []
             if directive.params:
-                tmp_params_path = tmp_dir / "params.yaml"
+                tmp_params_path = tmp_dir / "child-parameters.yaml"
                 # Written as a [params] table so the child resolves them through
                 # ginkgo.param() like any other parameter source. The table layers
                 # over the child's own, so a parameter the parent does not pass

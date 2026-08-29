@@ -25,19 +25,21 @@ The store has two halves.
   a cache of the ledger, never a second source of truth: if the two disagree,
   the ledger wins.
 
-The cache and asset tables — `cache_entries`, `cache_artifacts`, `artifacts`,
-`stat_index`, `materializations`, `digest_memo`, `asset_versions`,
-`asset_aliases` — are neither. They are **direct-write indexes**
-(`store/direct_index.py`), each owned entirely by one class that writes it
-synchronously: `CacheIndex` (`runtime/caching/index.py`) for the cache half and
-`AssetStore` (`runtime/artifacts/asset_store.py`) for the catalog. That is
-deliberate on both sides. A cache save must be visible to the `load` that may
-follow it microseconds later, which an event queued for the writer thread
-cannot promise. Registering an asset version must read the parents registered
+The cache, asset and staging tables — `cache_entries`, `cache_artifacts`,
+`artifacts`, `stat_index`, `materializations`, `digest_memo`,
+`env_materializations`, `asset_versions`, `asset_aliases`, `staging_entries` —
+are neither. They are **direct-write indexes** (`store/direct_index.py`), each
+owned entirely by one class that writes it synchronously: `CacheIndex`
+(`runtime/caching/index.py`) for the cache half, `AssetStore`
+(`runtime/artifacts/asset_store.py`) for the catalog, and `StagingIndex`
+(`remote/staging.py`) for downloaded remote inputs. That is deliberate. A cache
+save must be visible to the `load` that may follow it microseconds later, which
+an event queued for the writer thread cannot promise. Registering an asset version must read the parents registered
 moments earlier — possibly by a sibling task on another thread in the same run —
 to derive the child's `data_version`, and the projector is a pure function over
-one event that cannot query. In both cases the facts held are not events that
-happened to a run; they are what the cache and the catalog currently hold.
+one event that cannot query. In every case the facts held are not events that
+happened to a run; they are what the cache, the catalog and the staging cache
+currently hold.
 
 Nothing else writes them, including the projector. `TaskCacheHit` updates the
 task's own row and leaves `hit_count` to the index, which counts the hit as it
@@ -50,6 +52,21 @@ See [Assets](assets.md).
 There is no `asset_keys` table. An asset key is the set of versions carrying
 it, so its latest version and its version count are questions about
 `asset_versions` and a summary row could only disagree with them.
+
+`env_materializations` records, per `(env_hash, host)`, the digest a *declared*
+environment actually installed as, whenever `CacheStore` observes one. A cache
+key names the declaration, so drift the declaration does not record — `pixi
+update` re-solving a lock, a mutable image tag repointed upstream — leaves the
+key unchanged; the row is how `db check` can say that one declaration
+materialized two different ways across two machines. The read path that decides
+whether a candidate hit is genuine is unchanged: it compares the entry's own
+`env_materialized_digest` against the local environment.
+
+`staging_entries` holds one row per staged remote URI — its digest, the
+provider ETag and version id at download time, and where under
+`.ginkgo/staging/` the bytes went. The bytes are content-addressed and carry no
+identity of their own, so without the row a second run could not tell a stale
+download from a fresh one.
 
 Content-addressed identifiers — `cache_key`, `artifact_id`, `version_id`,
 `source_hash`, `env_hash` — are the join columns throughout. Nothing is
@@ -104,6 +121,10 @@ those: it gives `artifacts` the `digest_hex` its records carry, and removes
 `cache_key_components` and the write-only columns of `digest_memo`, which held
 facts their own tables already had.
 
+Nothing in the phase that retired the file indexes needed a step: version 1
+already created `staging_entries` and `env_materializations`, so filling them
+was a matter of writing rows, not of changing the schema.
+
 `tests/store/fixtures/schema_v2.txt` is a snapshot of `sqlite_master` after the
 last migration. It is regenerated deliberately, as part of adding one, and a
 test migrates a version 1 database forward so the steps are exercised on a
@@ -119,10 +140,27 @@ provenance never degrades silently.
 ## `ginkgo db`
 
 - `ginkgo db migrate` — create or upgrade the database.
-- `ginkgo db check` — schema version, `PRAGMA integrity_check`, and the ways
-  the cache index and the bytes on disk can disagree: an entry row whose
-  `output.json` is gone, an entry directory with no row, and a
-  `cache_artifacts` row whose blob the artifact store has lost.
+- `ginkgo db check` — schema version, `PRAGMA integrity_check`, and every way
+  an index and the bytes it names can disagree. Each owner answers for its own
+  half, in both directions:
+  - the cache — an entry row whose `output.json` is gone, an entry directory
+    with no row, a `cache_artifacts` row whose blob the artifact store lost;
+  - the artifact store — a row whose blob or tree manifest is missing, and a
+    file in `blobs/` or `trees/` that no row (and no tree manifest) names;
+  - runs — a `runs` row with no run directory, and a run directory with no row;
+  - the staging cache — a staged URI whose bytes are gone;
+  - environments — a declared environment recorded as materializing two
+    different ways across hosts.
+
+  It reports; it never repairs. Exit status is 1 if anything was reported.
+- `ginkgo db prune --events-older-than <30d|12h|45m> [--dry-run]` — delete the
+  raw `events` of runs that *finished* before the cutoff. Projections are never
+  touched, so `runs show` and the report are unchanged; what is lost is the
+  per-event detail `ginkgo export events` reads. A run still in flight keeps its
+  events whatever its start time. `--digest-memo-older-than` prunes
+  `digest_memo` on `last_seen`, where losing a row costs one re-hash.
+- `ginkgo db vacuum` — rebuild the file, returning the pages a prune freed to
+  the filesystem, and report the size either side.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
 
 There is no `db rebuild`. The database is the record, not a cache of the run
@@ -182,7 +220,7 @@ opens a write connection, so listings work while a run is writing and can never
 migrate a database out from under one.
 
 `SqliteStore.query` serves ginkgo's own SQL, which knows its columns and its
-row count. `SqliteStore.select` serves SQL ginkgo did not write — `Query.sql`,
+row count. `SqliteStore.select_with_columns` serves SQL ginkgo did not write — `Query.sql`,
 behind `ginkgo query` — and answers the two further questions that raises: an
 empty result still has to name its columns, so a CSV export has a header, and a
 statement nobody reviewed has to be stopped at a row limit. The limit is applied
@@ -200,3 +238,21 @@ Two `ginkgo run` processes in one workspace are supported and tested
 back; `busy_timeout` covers lock contention; and the very first open of an empty
 workspace retries the switch into WAL, which is the one lock SQLite's own busy
 handler does not cover.
+
+## What is still a file, and why
+
+Everything ginkgo *knows* is a row. What is left on disk is bytes, a log, or
+something a third-party tool opens for itself:
+
+| File | Why it is not a table |
+|---|---|
+| `cache/<key>/output.json` | The cached value itself. Bytes. |
+| `artifacts/blobs/*`, `artifacts/trees/<digest>.json` | The content-addressed store and its tree manifests. Bytes, named by their own digest. |
+| `staging/blobs/*`, `staging/folders/*` | Downloaded remote inputs. Bytes; `staging_entries` is their index. |
+| `runs/<id>/logs/*` | Task stdout and stderr, appended while a task runs and read as text. A log. |
+| `runs/<id>/envs/*.lock` | A copy of the lockfile a run resolved, kept so the environment can be rebuilt from the run directory alone. Bytes. |
+| `runs/<id>/manifest.yaml` | The `RunSummary` the ledger already holds, exported once at finalize for a person to read. Derived, and stated as such. |
+| `<task>.params.yaml` beside an executed notebook | Papermill's parameter file. Written for a third-party tool to read. |
+| `kernel.json` under the notebook runtime root | A Jupyter kernelspec. Jupyter discovers it on disk; there is no other way to hand it over. |
+| `refs/<artifact_id>.json` in a remote object store | The cross-machine wire format. A worker with no access to this workspace's database learns an artifact's shape from it. |
+| `.ginkgo-report.json` at the root of an exported report | The marker that says a directory is a ginkgo report, and so may have its contents replaced. It guards *deleting the user's files*, and an exported bundle is portable — copied to a webserver, moved, shared — so the evidence has to travel with the bytes it guards rather than living in a workspace database the bundle may no longer be anywhere near. A row keyed by path would go stale in the dangerous direction. |

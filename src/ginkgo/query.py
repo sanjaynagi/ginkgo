@@ -860,7 +860,7 @@ class Query:
         if refusal is not None:
             raise StoreError(refusal)
         try:
-            columns, rows = self._store.select(statement, params, limit=limit)
+            columns, rows = self._store.select_with_columns(statement, params, limit=limit)
         except sqlite3.ProgrammingError as exc:
             raise StoreError(
                 "That is more than one statement. `ginkgo query` runs one; give it "

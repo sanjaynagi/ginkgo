@@ -27,6 +27,13 @@ The current CLI supports:
 - `ginkgo cache prune`
 - `ginkgo env ls`
 - `ginkgo env clear`
+- `ginkgo db migrate`
+- `ginkgo db check`
+- `ginkgo db prune`
+- `ginkgo db vacuum`
+- `ginkgo db path`
+- `ginkgo report`
+- `ginkgo notebooks`
 
 Implemented CLI features include the dry-run execution-plan preview, merged
 config overrides, human-readable run summaries, structured inspection and
@@ -146,6 +153,21 @@ removes every entry directory the database has no row for, which is what a lost
 database leaves behind; `ginkgo db check` lists them first. `ginkgo cache stats`
 summarises the index — entries, bytes, hit histogram, never-hit bytes, and the
 functions holding the most — as a table or `--json`.
+
+`ginkgo db` maintains the ledger itself. `db check` reports every way an index
+and the bytes it names disagree — the cache, the artifact store in both
+directions, runs against run directories, the staging cache, and an environment
+recorded as materializing two different ways across hosts — and exits 1 if it
+found anything. `db prune --events-older-than <duration>` deletes the raw events
+of runs that finished before the cutoff, leaving every projection intact, and
+`--digest-memo-older-than` prunes the digest memo on `last_seen`; `--dry-run`
+counts without deleting. `db vacuum` then returns the freed pages to the
+filesystem. Durations are the same `30d` / `12h` / `45m` shape `cache prune
+--older-than` takes, parsed by `formatting.parse_duration`.
+
+Every command that prints a table builds it through `cli/common.py`'s
+`stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
+width rule are written down once rather than in each command module.
 
 ## Error reporting
 

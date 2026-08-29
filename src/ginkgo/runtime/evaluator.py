@@ -47,7 +47,7 @@ from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
 from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
-from ginkgo.runtime.caching.coordinator import CacheCoordinator
+from ginkgo.runtime.caching.node_cache import NodeCache
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.index import CacheIndex
@@ -379,7 +379,7 @@ class ConcurrentEvaluator:
     param_context: ParamContext | None = None
     _digests: DigestRegistry = field(init=False, repr=False)
     _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
-    _cache_coordinator: CacheCoordinator = field(init=False, repr=False)
+    _node_cache: NodeCache = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
@@ -449,7 +449,7 @@ class ConcurrentEvaluator:
             backend=self.backend,
             secret_resolver=self.secret_resolver,
         )
-        self._cache_coordinator = CacheCoordinator(
+        self._node_cache = NodeCache(
             cache_store=self._cache_store,
             validator=self._validator,
             digests=self._digests,
@@ -1184,7 +1184,7 @@ class ConcurrentEvaluator:
         self._digests.record_artifacts(artifact_ids)
 
         # Record stat-index for future --trust-mtimes runs.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=node.cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
         for path in tmp_paths:
             shutil.rmtree(path)
@@ -1961,7 +1961,7 @@ class ConcurrentEvaluator:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.content_lookup(node=node)
+        hit = self._node_cache.content_lookup(node=node)
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
@@ -1983,7 +1983,7 @@ class ConcurrentEvaluator:
         complete, ``False`` to fall through to the content-addressed path.
         """
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.lookup_by_stat(node=node)
+        hit = self._node_cache.lookup_by_stat(node=node)
         if hit is None:
             self._record_task_timing(
                 node_id=node.node_id,
@@ -2014,7 +2014,7 @@ class ConcurrentEvaluator:
         # and a hit routed through the ledger's writer could land while
         # another process held the write lock for a save.
         self._cache_index.record_hit(cache_key)
-        self._cache_coordinator.propagate_known_digests(cache_key=cache_key)
+        self._node_cache.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
@@ -2048,7 +2048,7 @@ class ConcurrentEvaluator:
 
         # Record stat-index entry so future --trust-mtimes runs can
         # find this cache key without content hashing.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=cache_key)
 
     def _record_task_metadata(
         self,

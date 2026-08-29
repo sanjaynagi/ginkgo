@@ -251,15 +251,17 @@ class SqliteStore:
         """Return every row *sql* selects."""
         return self._connection.execute(sql, tuple(params)).fetchall()
 
-    def select(
+    def select_with_columns(
         self, sql: str, params: Sequence[Any] = (), *, limit: int | None = None
     ) -> tuple[tuple[str, ...], list[sqlite3.Row]]:
         """Return the columns *sql* names and at most *limit* of its rows.
 
-        What :meth:`query` cannot answer for SQL the store did not write: an
-        empty result still has to say which columns it has, and a statement
-        nobody reviewed has to be stopped before it materialises a million
-        rows. Ginkgo's own queries know both already and use :meth:`query`.
+        The entry point for SQL the store did not write — today, ``ginkgo
+        query``. Such a statement has to say which columns it has even when it
+        matched nothing, because the result is rendered as a table, and it has
+        to be stopped before it materialises a million rows. Ginkgo's own
+        queries know their columns and their size already, and use
+        :meth:`query`.
 
         Parameters
         ----------

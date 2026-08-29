@@ -1,4 +1,19 @@
-"""Cache lookups for the evaluator: content-addressed and stat-index paths."""
+"""The cache as the evaluator sees it: asked about one node at a time.
+
+Three objects share the word *cache*, and each owns a different thing:
+
+``CacheIndex`` (``index.py``)
+    The rows. Every fact about an entry that lives in the database.
+``CacheStore`` (``cache.py``)
+    The bytes and the keys. Builds a cache key from a task and its arguments,
+    writes and reads ``cache/<key>/output.json``, and owns the artifacts an
+    entry names.
+``NodeCache`` (here)
+    The question the evaluator actually asks: *is there a result for this
+    node?* It carries the two lookup paths — the content-addressed key and the
+    stat-index fast path for ``--trust-mtimes`` runs — and the bookkeeping both
+    share with task completion. Every method takes a node.
+"""
 
 from __future__ import annotations
 
@@ -24,8 +39,8 @@ class CacheHit:
 
 
 @dataclass(kw_only=True)
-class CacheCoordinator:
-    """Cache lookups and cache-side bookkeeping for the evaluator.
+class NodeCache:
+    """Whether one node has a cached result, and what follows from the answer.
 
     Owns the two lookup paths — content-addressed keys and the stat-index
     fast path for ``--trust-mtimes`` runs — plus the bookkeeping both
