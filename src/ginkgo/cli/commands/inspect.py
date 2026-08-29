@@ -1,4 +1,4 @@
-"""Structured inspection command handlers."""
+"""``ginkgo inspect workflow`` — the static task graph, without running it."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from ginkgo.cli.common import open_run
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
@@ -18,20 +17,19 @@ from ginkgo.runtime.module_loader import load_module_from_path
 
 
 def command_inspect(args) -> int:
-    """Handle ``ginkgo inspect``."""
-    if args.inspect_command == "workflow":
-        payload = inspect_workflow(
-            workflow_path=resolve_workflow_path(
-                project_root=Path.cwd(),
-                workflow=args.workflow,
-            ).path,
-            config_paths=[Path(path).resolve() for path in args.config],
-            param_extras=getattr(args, "param_extras", ()),
-        )
-    else:
-        with open_run(args.run_id) as (reader, run_id):
-            payload = reader.run(run_id).to_payload()
+    """Handle ``ginkgo inspect``.
 
+    A recorded run is ``ginkgo runs show <run_id> --json``: one command per
+    concept, and a run is the ``runs`` group's concept rather than this one's.
+    """
+    payload = inspect_workflow(
+        workflow_path=resolve_workflow_path(
+            project_root=Path.cwd(),
+            workflow=args.workflow,
+        ).path,
+        config_paths=[Path(path).resolve() for path in args.config],
+        param_extras=getattr(args, "param_extras", ()),
+    )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

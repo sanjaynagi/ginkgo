@@ -15,17 +15,22 @@ from ginkgo.cli.commands.db import command_db
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
 from ginkgo.cli.commands.env import command_env
+from ginkgo.cli.commands.export import command_export
+from ginkgo.cli.commands.history import command_history
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
 from ginkgo.cli.commands.lineage import command_lineage
 from ginkgo.cli.commands.models import command_models
 from ginkgo.cli.commands.notebooks import command_notebooks
+from ginkgo.cli.commands.query import command_query
 from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
+from ginkgo.cli.commands.runs import command_runs
 from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
+from ginkgo.query import SQL_ROW_LIMIT
 from ginkgo.project import project_root
 
 _MISSING_ARGS_PREFIX = "the following arguments are required: "
@@ -158,6 +163,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_lineage(args)
         if args.command == "notebooks":
             return command_notebooks(args)
+        if args.command == "runs":
+            return command_runs(args)
+        if args.command == "history":
+            return command_history(args)
+        if args.command == "query":
+            return command_query(args)
+        if args.command == "export":
+            return command_export(args)
         if args.command == "secrets":
             return command_secrets(args)
         if args.command == "report":
@@ -447,17 +460,66 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     init_parser.add_argument("--skills-only", action="store_true")
     init_parser.add_argument("--force", action="store_true")
 
-    inspect_parser = subparsers.add_parser("inspect", help="Inspect workflows and run manifests")
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect workflow structure")
     inspect_subparsers = inspect_parser.add_subparsers(dest="inspect_command", required=True)
     inspect_workflow_parser = inspect_subparsers.add_parser(
         "workflow", help="Inspect static workflow graph"
     )
     inspect_workflow_parser.add_argument("workflow", nargs="?")
     inspect_workflow_parser.add_argument("--config", action="append", default=[])
-    inspect_run_parser = inspect_subparsers.add_parser(
-        "run", help="Inspect run execution manifest"
+
+    runs_parser = subparsers.add_parser("runs", help="List and inspect recorded runs")
+    runs_subparsers = runs_parser.add_subparsers(dest="runs_command", required=True)
+    runs_ls_parser = runs_subparsers.add_parser("ls", help="List recorded runs, newest first")
+    runs_ls_parser.add_argument("--workflow", default=None, help="Only runs of this workflow.")
+    runs_ls_parser.add_argument("--status", default=None, help="Only runs with this status.")
+    runs_ls_parser.add_argument(
+        "--since", default=None, metavar="TIMESTAMP", help="Only runs started at or after this."
     )
-    inspect_run_parser.add_argument("run_id")
+    runs_ls_parser.add_argument("--limit", type=int, default=20, help="Most runs to list.")
+    runs_ls_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table."
+    )
+    runs_show_parser = runs_subparsers.add_parser("show", help="Show one run and its tasks")
+    runs_show_parser.add_argument("run_id", nargs="?")
+    runs_show_parser.add_argument(
+        "--json", action="store_true", help="Emit the full run manifest as JSON."
+    )
+
+    history_parser = subparsers.add_parser("history", help="Show every run of one task")
+    history_parser.add_argument("task", help="Task name, base name, or fan-out display label.")
+    history_parser.add_argument("--limit", type=int, default=20, help="Most runs to list.")
+    history_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table."
+    )
+
+    query_parser = subparsers.add_parser(
+        "query", help="Run one read-only SQL statement against the provenance database"
+    )
+    query_parser.add_argument("sql", help="One SELECT. Table names are in the store docs.")
+    query_parser.add_argument(
+        "--limit", type=int, default=SQL_ROW_LIMIT, help="Most rows to return."
+    )
+    query_output = query_parser.add_mutually_exclusive_group()
+    query_output.add_argument("--json", action="store_true", help="Emit JSON rows.")
+    query_output.add_argument("--csv", action="store_true", help="Emit CSV, header first.")
+
+    export_parser = subparsers.add_parser("export", help="Export a run's record")
+    export_subparsers = export_parser.add_subparsers(dest="export_command", required=True)
+    export_events_parser = export_subparsers.add_parser(
+        "events", help="Export a run's ledger events as JSONL"
+    )
+    export_events_parser.add_argument("run_id", nargs="?")
+    export_events_parser.add_argument(
+        "--out", default=None, metavar="PATH", help="Write here instead of to stdout."
+    )
+    export_manifest_parser = export_subparsers.add_parser(
+        "manifest", help="Export a run's manifest as YAML"
+    )
+    export_manifest_parser.add_argument("run_id", nargs="?")
+    export_manifest_parser.add_argument(
+        "--out", default=None, metavar="PATH", help="Write here instead of to stdout."
+    )
 
     lineage_parser = subparsers.add_parser(
         "lineage", help="Trace what an asset was built from, or what came of it"

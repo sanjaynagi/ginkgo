@@ -1,0 +1,67 @@
+"""``ginkgo query`` — one read-only SQL statement against the ledger."""
+
+from __future__ import annotations
+
+import csv
+import json
+import sys
+
+from rich import box
+from rich.table import Table
+
+from ginkgo import query as ledger
+from ginkgo.cli.common import console
+from ginkgo.query import SqlResult
+
+__all__ = ["command_query"]
+
+
+def command_query(args) -> int:
+    """Handle ``ginkgo query`` — run one SELECT and print what it selected.
+
+    A statement the ledger refuses raises :class:`~ginkgo.store.errors.StoreError`,
+    which the CLI's top-level handler prints as a single line; there is nothing
+    for this command to add to it.
+    """
+    with ledger.open(missing_ok=True) as reader:
+        result = reader.sql(args.sql, limit=getattr(args, "limit", ledger.SQL_ROW_LIMIT))
+
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_payload(), indent=2, sort_keys=True, default=str))
+        return 0
+    if getattr(args, "csv", False):
+        _write_csv(result)
+        return 0
+
+    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
+    return _render_table(console(sys.stdout, width=None if is_tty else 160), result=result)
+
+
+def _write_csv(result: SqlResult) -> None:
+    """Write the result to stdout as CSV, header first."""
+    writer = csv.writer(sys.stdout)
+    writer.writerow(result.columns)
+    writer.writerows(tuple(row) for row in result.rows)
+
+
+def _render_table(rich_console, *, result: SqlResult) -> int:
+    """Print the result as a table, saying so when the row limit cut it short."""
+    rich_console.print("[bold green]🌿 ginkgo query[/]\n")
+    if not result.rows:
+        rich_console.print("[dim]No rows.[/]")
+        return 0
+
+    table = Table(
+        box=box.SQUARE,
+        border_style="#0f766e",
+        header_style="bold #134e4a",
+        expand=False,
+    )
+    for column in result.columns:
+        table.add_column(column, overflow="fold")
+    for row in result.rows:
+        table.add_row(*("" if value is None else str(value) for value in tuple(row)))
+    rich_console.print(table)
+    if result.truncated:
+        rich_console.print(f"\n[dim]Stopped at {len(result.rows)} rows. Pass --limit for more.[/]")
+    return 0
