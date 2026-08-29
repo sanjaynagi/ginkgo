@@ -77,6 +77,7 @@ workflow.
 | `busy_timeout` | `5000` ms | Two `ginkgo run`s in one workspace are supported; the loser of a lock race waits rather than failing. |
 | `foreign_keys` | `ON` | |
 | `temp_store` | `MEMORY` | Sorting and grouping stay off a possibly network-mounted disk. |
+| `query_only` | `ON` (read opens) | `ginkgo query` runs user-written SQL on a read connection. `mode=ro` is a property of the URI alone; this refuses a write inside the engine as well, so neither guard is the only one. |
 
 Transaction control is explicit: the driver's implicit `BEGIN` is turned off,
 and `store.transaction()` wraps a `BEGIN IMMEDIATE` … `COMMIT`, taking the
@@ -174,10 +175,25 @@ an empty workspace with their own empty result instead of a missing-file
 error.
 
 Readers go through `ginkgo.query`, which opens read-only — including the cache
-readers `cache ls`, `cache explain` and `cache stats`, and the asset readers
-`asset ls/versions/show/inspect`, `models`, the report, and `lineage`. No read path ever
+readers `cache ls`, `cache explain` and `cache stats`, the asset readers
+`asset ls/versions/show/inspect`, `models`, the report, and `lineage`, and the
+run readers `runs ls/show`, `history`, `query` and `export`. No read path ever
 opens a write connection, so listings work while a run is writing and can never
 migrate a database out from under one.
+
+`SqliteStore.query` serves ginkgo's own SQL, which knows its columns and its
+row count. `SqliteStore.select` serves SQL ginkgo did not write — `Query.sql`,
+behind `ginkgo query` — and answers the two further questions that raises: an
+empty result still has to name its columns, so a CSV export has a header, and a
+statement nobody reviewed has to be stopped at a row limit. The limit is applied
+while fetching from the cursor rather than by wrapping the statement, so the SQL
+that runs is the SQL the user wrote.
+
+The tables here are versioned but not stable. `Query.sql` hands them out
+directly, and they change between releases without a deprecation period; the
+methods on `Query` are the surface that is kept working. This is stated in the
+`ginkgo.query` module docstring and on the Querying Provenance guide page, so a
+user meets it before writing SQL rather than after an upgrade.
 
 Two `ginkgo run` processes in one workspace are supported and tested
 (`tests/store/test_concurrent_runs.py`). WAL keeps readers off the writer's

@@ -5,24 +5,34 @@ through here, so there is one place that knows the schema and one place to
 change when it moves. Readers open the database read-only, which means they
 work while a run is writing and can never migrate it out from under one.
 
-Phase 1 shipped the run surface, Phase 2 the cache surface and Phase 3 the
-asset and lineage surface. ``task_history`` and ``sql`` arrive with the phase
-that gives them a caller.
+Every method returns either a core type ginkgo already models — a
+:class:`~ginkgo.runtime.run_summary.RunSummary`, an
+:class:`~ginkgo.core.asset.AssetVersion` — or a frozen row dataclass declared
+here for a shape that has no model elsewhere.
+
+The database schema is versioned but **not stable**. :meth:`Query.sql` hands
+out raw SQL over the tables described in ``docs/architecture/store.md``, and
+those tables change between ginkgo versions without a deprecation period; a
+query written against them may need rewriting after an upgrade. The methods on
+:class:`Query` are the surface that is kept working.
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.core.asset import AssetKey, AssetVersion
+from ginkgo.formatting import parse_timestamp
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.store.errors import StoreError
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.store.sqlite import MEMORY, open_store
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -36,25 +46,162 @@ __all__ = [
     "Query",
     "RerunExplanation",
     "RunRow",
+    "SqlResult",
+    "TaskRow",
     "open",
 ]
+
+SQL_ROW_LIMIT = 1000
+"""Rows :meth:`Query.sql` returns when the caller names no limit of its own."""
+
+_READ_VERBS = frozenset({"SELECT", "WITH", "VALUES", "EXPLAIN"})
+"""The statements :meth:`Query.sql` will run. Everything else is refused."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class RunRow:
-    """One row of the run index."""
+    """One row of the run index.
+
+    The listing shape, for ``ginkgo runs ls``. One run in full is a
+    :class:`~ginkgo.runtime.run_summary.RunSummary` from :meth:`Query.run`.
+
+    Attributes
+    ----------
+    run_id : str
+        The run's id.
+    workflow : str | None
+        Path of the workflow module it ran.
+    status : str
+        ``running``, ``succeeded``, ``failed``, or ``interrupted``.
+    started_at, finished_at : str | None
+        ISO-8601 UTC timestamps; ``finished_at`` is ``None`` while it runs.
+    duration_s : float | None
+        Wall-clock seconds, once the run has finished.
+    parent_run_id : str | None
+        The run that launched this one as a sub-workflow, if any.
+    """
 
     run_id: str
     workflow: str | None
     status: str
     started_at: str | None
     finished_at: str | None
+    duration_s: float | None
     parent_run_id: str | None
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the row as JSON-ready data."""
+        return {
+            "run_id": self.run_id,
+            "workflow": self.workflow,
+            "status": self.status,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_s": self.duration_s,
+            "parent_run_id": self.parent_run_id,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class TaskRow:
+    """One run of one task, as ``ginkgo history`` lists them.
+
+    A task's history crosses runs, which is what makes this neither a
+    :class:`~ginkgo.runtime.run_summary.TaskSummary` (one task within one run,
+    with its inputs, outputs and logs) nor a :class:`RunRow`.
+
+    Attributes
+    ----------
+    run_id, task_id : str
+        Where this execution happened.
+    name : str
+        The task's fully qualified name.
+    display_label : str | None
+        The label the run rendered, when fan-out gave it one.
+    status : str
+        ``succeeded``, ``failed``, ``cached``, ``skipped``, …
+    cached : bool
+        Whether the output was served from the cache rather than computed.
+    cache_key : str | None
+        The entry it hit or wrote.
+    started_at, finished_at : str | None
+        ISO-8601 UTC timestamps.
+    duration_s : float | None
+        Wall-clock seconds, when both timestamps are present.
+    attempts : int
+        How many times it was tried, retries included.
+    """
+
+    run_id: str
+    task_id: str
+    name: str
+    display_label: str | None
+    status: str
+    cached: bool
+    cache_key: str | None
+    started_at: str | None
+    finished_at: str | None
+    duration_s: float | None
+    attempts: int
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the row as JSON-ready data."""
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "name": self.name,
+            "display_label": self.display_label,
+            "status": self.status,
+            "cached": self.cached,
+            "cache_key": self.cache_key,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_s": self.duration_s,
+            "attempts": self.attempts,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class SqlResult:
+    """What one :meth:`Query.sql` statement selected.
+
+    Attributes
+    ----------
+    columns : tuple[str, ...]
+        Column names, in the order the statement selected them. Present even
+        when no row came back, so a CSV export still has a header.
+    rows : list[sqlite3.Row]
+        The rows, addressable by index or by column name.
+    truncated : bool
+        Whether the row limit cut the result short.
+    """
+
+    columns: tuple[str, ...]
+    rows: list[sqlite3.Row]
+    truncated: bool
+
+    def to_payload(self) -> list[dict[str, Any]]:
+        """Return the rows as a list of column-keyed mappings."""
+        return [dict(zip(self.columns, tuple(row), strict=True)) for row in self.rows]
 
 
 @dataclass(frozen=True, kw_only=True)
 class CacheEntryRow:
-    """One cache entry, as the cache commands display it."""
+    """One cache entry, as the cache commands display it.
+
+    Attributes
+    ----------
+    cache_key : str
+        The entry's content-addressed key.
+    function : str
+        Fully qualified name of the task that wrote it.
+    size_bytes : int
+        Bytes the entry's stored output occupies.
+    created_at, last_hit_at : str | None
+        ISO-8601 UTC timestamps; ``last_hit_at`` is ``None`` until a run hits it.
+    hit_count : int
+        Runs that have served from this entry.
+    """
 
     cache_key: str
     function: str
@@ -66,7 +213,23 @@ class CacheEntryRow:
 
 @dataclass(frozen=True, kw_only=True)
 class CacheStats:
-    """What the cache holds, in aggregate."""
+    """What the cache holds, in aggregate.
+
+    Attributes
+    ----------
+    entries : int
+        Entries in the index.
+    total_bytes : int
+        Bytes across all of them.
+    never_hit : int
+        Entries no run has ever served from.
+    never_hit_bytes : int
+        Bytes those entries hold — what pruning them would free.
+    hit_histogram : dict[int, int]
+        Entry count by hit count.
+    top_functions : list[tuple[str, int, int]]
+        The ten largest tasks as ``(function, entries, bytes)``, biggest first.
+    """
 
     entries: int
     total_bytes: int
@@ -136,7 +299,26 @@ class RerunExplanation:
 
 @dataclass(frozen=True, kw_only=True)
 class EventRow:
-    """One ledger event."""
+    """One ledger event.
+
+    The ledger is the same event stream ``ginkgo run --agent-output`` prints, so
+    *payload* is exactly the JSON object that run printed for this event.
+
+    Attributes
+    ----------
+    seq : int
+        The event's position in the ledger. Ascending, and unique across runs.
+    run_id : str
+        The run that emitted it.
+    ts : str
+        ISO-8601 UTC timestamp.
+    type : str
+        The event's discriminator, e.g. ``"task_completed"``.
+    task_id : str | None
+        The task it concerns, or ``None`` for a run-level event.
+    payload : dict[str, Any]
+        The whole event as data.
+    """
 
     seq: int
     run_id: str
@@ -305,6 +487,7 @@ class Query:
                 status=row["status"],
                 started_at=row["started_at"],
                 finished_at=row["finished_at"],
+                duration_s=_duration_seconds(row["started_at"], row["finished_at"]),
                 parent_run_id=row["parent_run_id"],
             )
             for row in rows
@@ -332,6 +515,53 @@ class Query:
             (run_id,),
         )
         return {row["status"]: int(row["n"]) for row in rows}
+
+    def task_history(self, name: str, *, limit: int = 20) -> list[TaskRow]:
+        """Return every run of one task, newest first.
+
+        The task is matched on its display label as well as its name, so the
+        label ``ginkgo run`` printed for a fanned-out branch is what a user can
+        ask about afterwards.
+
+        Parameters
+        ----------
+        name : str
+            The task's name, its base name, or the display label of one branch.
+        limit : int, optional
+            Most rows to return.
+
+        Returns
+        -------
+        list[TaskRow]
+            Empty when no run has a task by that name.
+        """
+        # Ordered by the run rather than by the task: a cached task never
+        # started, so its own timestamp is null and would sort it out of the
+        # history it belongs to.
+        rows = self._store.query(
+            "SELECT t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
+            "t.cache_key, t.started_at, t.finished_at, t.attempts "
+            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            "WHERE t.name = ? OR t.display_label = ? OR t.name LIKE ? "
+            "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
+            (name, name, f"%.{name}", limit),
+        )
+        return [
+            TaskRow(
+                run_id=str(row["run_id"]),
+                task_id=str(row["task_id"]),
+                name=str(row["name"]),
+                display_label=row["display_label"],
+                status=str(row["status"]),
+                cached=bool(row["cached"]),
+                cache_key=row["cache_key"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+                duration_s=_duration_seconds(row["started_at"], row["finished_at"]),
+                attempts=int(row["attempts"] or 0),
+            )
+            for row in rows
+        ]
 
     def events(
         self,
@@ -436,7 +666,7 @@ class Query:
             ],
         )
 
-    def previous_cache_key(self, *, run_id: str, task_id: str) -> tuple[str, str] | None:
+    def _previous_cache_key(self, *, run_id: str, task_id: str) -> tuple[str, str] | None:
         """Return the key this task's node last used, and how it was found.
 
         The comparison ``ginkgo cache explain`` wants is against the same node
@@ -537,7 +767,7 @@ class Query:
         if not current:
             return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
 
-        prior = self.previous_cache_key(run_id=run_id, task_id=task_id)
+        prior = self._previous_cache_key(run_id=run_id, task_id=task_id)
         if prior is None:
             return RerunExplanation(**identity, reason="no_prior_entry", details=[])
 
@@ -553,6 +783,69 @@ class Query:
             compared_with={"cache_key": prior_key, "strategy": strategy},
             components=components,
         )
+
+    # -- raw SQL -------------------------------------------------------------
+
+    def sql(
+        self, query: str, params: Sequence[Any] = (), *, limit: int = SQL_ROW_LIMIT
+    ) -> SqlResult:
+        """Run one read-only statement against the ledger.
+
+        For the question no method here answers. The tables are described in
+        ``docs/architecture/store.md``; they are versioned but not stable, so a
+        query written against them may need rewriting after an upgrade.
+
+        Three things are refused, so that a mistake is reported rather than
+        performed: a statement that is not a read, more than one statement, and
+        more rows than *limit*. The row cap is applied while fetching from the
+        cursor rather than by wrapping the statement in a ``LIMIT``, so the SQL
+        that runs is the SQL the caller wrote and any error names their text
+        rather than ginkgo's rewrite of it.
+
+        Parameters
+        ----------
+        query : str
+            One ``SELECT`` (or ``WITH``, ``VALUES``, ``EXPLAIN``). A trailing
+            semicolon is allowed; a second statement is not.
+        params : Sequence[Any], optional
+            Values for the statement's ``?`` placeholders. Use these rather
+            than formatting values into *query*.
+        limit : int, optional
+            Most rows to return. :data:`SQL_ROW_LIMIT` by default.
+
+        Returns
+        -------
+        SqlResult
+            The column names, the rows, and whether the limit cut them short.
+
+        Raises
+        ------
+        StoreError
+            If the statement writes, is not one statement, or the database
+            rejects it — an unknown table or column, or a syntax error.
+        """
+        statement = query.strip().rstrip(";").strip()
+        if not statement:
+            raise StoreError("No SQL to run.")
+        verb = statement.split(None, 1)[0].upper()
+        if verb not in _READ_VERBS:
+            raise StoreError(
+                f"{verb} is not a read. `ginkgo query` runs one SELECT (or WITH, VALUES, "
+                "EXPLAIN) against a read-only connection; nothing may change the ledger."
+            )
+        try:
+            columns, rows = self._store.select(statement, params, limit=limit)
+        except sqlite3.ProgrammingError as exc:
+            raise StoreError(
+                "That is more than one statement. `ginkgo query` runs one; give it "
+                "the SELECT you want and drop the rest."
+            ) from exc
+        except sqlite3.Error as exc:
+            raise StoreError(
+                f"SQLite rejected the query: {exc}. The table and column names are "
+                "listed in the provenance store documentation."
+            ) from exc
+        return SqlResult(columns=columns, rows=rows[:limit], truncated=len(rows) > limit)
 
     # -- assets and lineage --------------------------------------------------
 
@@ -823,6 +1116,15 @@ def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
     if any(name.startswith("inputs") for name in moved):
         reasons.append("input_changed")
     return reasons or ["cache_key_changed"]
+
+
+def _duration_seconds(started_at: Any, finished_at: Any) -> float | None:
+    """Return the seconds between two stored timestamps, when both parse."""
+    started = parse_timestamp(started_at)
+    finished = parse_timestamp(finished_at)
+    if started is None or finished is None:
+        return None
+    return max(0.0, (finished - started).total_seconds())
 
 
 def _first(rows: list[Any], column: str) -> str | None:

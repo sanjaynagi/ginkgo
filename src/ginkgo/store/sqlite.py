@@ -239,6 +239,39 @@ class SqliteStore:
         """Return every row *sql* selects."""
         return self._connection.execute(sql, tuple(params)).fetchall()
 
+    def select(
+        self, sql: str, params: Sequence[Any] = (), *, limit: int | None = None
+    ) -> tuple[tuple[str, ...], list[sqlite3.Row]]:
+        """Return the columns *sql* names and at most *limit* of its rows.
+
+        What :meth:`query` cannot answer for SQL the store did not write: an
+        empty result still has to say which columns it has, and a statement
+        nobody reviewed has to be stopped before it materialises a million
+        rows. Ginkgo's own queries know both already and use :meth:`query`.
+
+        Parameters
+        ----------
+        sql : str
+            One statement.
+        params : Sequence[Any], optional
+            Values for its placeholders.
+        limit : int | None, optional
+            Stop after this many rows. Unlimited when omitted.
+
+        Returns
+        -------
+        tuple[tuple[str, ...], list[sqlite3.Row]]
+            The column names, and the rows. One row beyond *limit* is fetched
+            so the caller can tell a full result from a truncated one.
+        """
+        cursor = self._connection.execute(sql, tuple(params))
+        try:
+            rows = cursor.fetchall() if limit is None else cursor.fetchmany(limit + 1)
+            columns = tuple(str(column[0]) for column in cursor.description or ())
+        finally:
+            cursor.close()
+        return columns, rows
+
     def close(self) -> None:
         """Release the connection. Safe to call more than once."""
         if self._closed:
@@ -307,6 +340,9 @@ def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:
     ``busy_timeout`` goes first so every pragma after it waits for a
     concurrent writer instead of failing on one.
 
+    ``query_only`` closes a read-only connection to writes from the inside;
+    see :meth:`SqliteStore.select`.
+
     ``journal_mode`` is a property of the database file rather than of the
     connection, so a read-only connection cannot set it — the writer that
     created the file already did. Switching it also takes a lock no busy
@@ -319,6 +355,11 @@ def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA temp_store=MEMORY")
+    if not writable:
+        # A reader carries user-supplied SQL (``ginkgo query``), and mode=ro is
+        # a property of this connection's URI alone. query_only refuses a write
+        # inside the engine as well, so neither guard is the only one.
+        connection.execute("PRAGMA query_only=ON")
 
 
 def _journal_mode(connection: sqlite3.Connection) -> str:
