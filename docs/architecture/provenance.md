@@ -45,12 +45,12 @@ task's logs go, and a copy of each environment lockfile.
 
 `RunSummary` (`runtime/run_summary.py`) is the single read model (issue #79),
 built from the `runs`, `tasks`, `attempts`, `task_inputs` and `edges` rows.
-Every presenter — `inspect run`, `debug`, `report`, `models`, notifications,
+Every presenter — `runs show`, `debug`, `report`, `models`, notifications,
 the end-of-run console summary — formats that and nothing else. Readers reach
 it through `ginkgo.query`, which opens the database read-only, so a listing
 works while a run is writing.
 
-A run is visible as soon as it has rows: `inspect run` on a live run shows its
+A run is visible as soon as it has rows: `runs show` on a live run shows its
 tasks as they reach each state, rather than waiting for a finalize step.
 
 ## On disk
@@ -64,7 +64,7 @@ tasks as they reach each state, rather than waiting for a finalize step.
 ```
 
 `manifest.yaml` is an **export**, and ginkgo never reads it back. It is exactly
-what `ginkgo inspect run` prints, serialised as YAML — the same
+what `ginkgo runs show --json` prints, serialised as YAML — the same
 `RunSummary.to_payload()` on both sides, so the file and the command cannot
 disagree about what a run was. Written through a temporary file and renamed
 over its destination, so an interrupted export leaves the previous one intact.
@@ -97,7 +97,7 @@ A parent passes `GINKGO_PARENT_RUN_ID` and `GINKGO_PARENT_TASK_ID` to the child
 `runs.parent_run_id` / `runs.parent_task_id` and one `child_of` edge in the
 parent's graph. The parent then reads the child's run id back out of the store
 once the subprocess exits. The child's run id is the whole of the handle:
-`SubWorkflowResult` carries `run_id` and `status`, and `ginkgo inspect run
+`SubWorkflowResult` carries `run_id` and `status`, and `ginkgo runs show
 <child_run_id>` is how you read what it did.
 
 ## What is not here

@@ -100,8 +100,9 @@ ginkgo run --cores 8 --agent-output
 # Inspect the static workflow graph without running any tasks.
 ginkgo inspect workflow
 
-# Inspect a completed run from its stored provenance.
-ginkgo inspect run <run_id>
+# List recorded runs, then inspect one from its stored provenance.
+ginkgo runs ls
+ginkgo runs show <run_id>
 
 # Show a human-friendly debug report for failed tasks in a run.
 ginkgo debug <run_id>

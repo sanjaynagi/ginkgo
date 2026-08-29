@@ -89,7 +89,7 @@ failure too: usage recorded right before an OOM kill is exactly what you
 need to size the retry.
 
 `ginkgo report` surfaces it as a **Peak RSS** column in the task ledger
-(`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo inspect run`
+(`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo runs show --json`
 includes the raw `resource_usage` record per task. See
 [Assets and Reports](assets.md#html-reports).
 

@@ -47,6 +47,30 @@ def parse_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+def duration_seconds(started_at: Any, finished_at: Any) -> float | None:
+    """Return the wall-clock seconds between two timestamps.
+
+    Takes whatever the ledger holds — ISO-8601 strings, datetimes, or nothing —
+    so a caller reading a row and a caller holding parsed values ask the same
+    question the same way.
+
+    Parameters
+    ----------
+    started_at, finished_at : Any
+        The two endpoints. Anything unparseable reads as no timestamp.
+
+    Returns
+    -------
+    float | None
+        The duration, never negative, or ``None`` unless both endpoints parse.
+    """
+    started = started_at if isinstance(started_at, datetime) else parse_timestamp(started_at)
+    finished = finished_at if isinstance(finished_at, datetime) else parse_timestamp(finished_at)
+    if started is None or finished is None:
+        return None
+    return max(0.0, (finished - started).total_seconds())
+
+
 def format_duration(seconds: float | None) -> str:
     """Return a compact duration label.
 

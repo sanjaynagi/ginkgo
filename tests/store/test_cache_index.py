@@ -33,7 +33,7 @@ def db_path(tmp_path: Path) -> Path:
 def _components(path: Path, cache_key: str) -> dict:
     """Read one entry's key components the way `cache explain` does."""
     with Query(open_store(path, readonly=True), layout=WorkspaceLayout.relative()) as reader:
-        return reader.cache_key_components(cache_key)
+        return reader._cache_key_components(cache_key)
 
 
 def _record(index: CacheIndex, cache_key: str, **overrides) -> None:

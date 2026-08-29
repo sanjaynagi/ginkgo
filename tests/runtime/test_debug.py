@@ -63,7 +63,7 @@ def test_run_level_failure_without_failed_tasks_reports_error(
     _record_run(cwd=tmp_path, status="failed", error="Pixi environment 'ghost_env' not found.")
 
     # Exit code reports whether debug could produce a report, not whether the
-    # inspected run failed, matching `inspect run`.
+    # inspected run failed, matching `runs show`.
     assert _debug() == 0
     stdout = capsys.readouterr().out
     assert "Debug Report" in stdout

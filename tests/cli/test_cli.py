@@ -50,7 +50,7 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 def _manifest(run_dir: Path) -> dict[str, Any]:
     """Read a run's exported manifest, keying its tasks by task id.
 
-    The manifest is what ``ginkgo inspect run`` prints, written as YAML; the
+    The manifest is what ``ginkgo runs show --json`` prints, written as YAML; the
     only reshaping here is the list of tasks into a mapping, which is how these
     tests ask about one of them.
     """
@@ -237,7 +237,9 @@ def test_version_flag_reports_pyproject_version() -> None:
         ("cache", "{ls,stats,clear,explain,prune}"),
         ("asset", "{ls,versions,inspect,show}"),
         ("env", "{ls,clear}"),
-        ("inspect", "{workflow,run}"),
+        ("inspect", "{workflow}"),
+        ("runs", "{ls,show}"),
+        ("export", "{events,manifest}"),
         ("secrets", "{list,validate}"),
     ],
 )
@@ -1934,11 +1936,11 @@ def main():
         assert debug_payload["status"] == "failed"
         assert debug_payload["failures"][0]["task_name"] == "explode"
 
-        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
-        assert inspect.returncode == 0, inspect.stderr
-        inspect_payload = json.loads(inspect.stdout)
-        assert inspect_payload["status"] == "failed"
-        assert inspect_payload["tasks"][0]["failure"]["kind"] == "user_code_error"
+        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        payload = json.loads(shown.stdout)
+        assert payload["status"] == "failed"
+        assert payload["tasks"][0]["failure"]["kind"] == "user_code_error"
 
     def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
         Path("workflow.py").write_text(
@@ -2083,9 +2085,9 @@ def main():
         # The run's own phases are recorded; the profiler's breakdown is a
         # console report, not part of the run's provenance.
         run_dir = _extract_run_dir(result.stdout)
-        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
-        assert inspect.returncode == 0, inspect.stderr
-        timings = json.loads(inspect.stdout)["timings"]
+        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        timings = json.loads(shown.stdout)["timings"]
         assert timings["workflow_execute_seconds"] > 0
         assert "scheduler_dispatch" not in timings
 

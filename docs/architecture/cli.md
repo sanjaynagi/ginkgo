@@ -6,6 +6,12 @@ The current CLI supports:
 - `ginkgo debug`
 - `ginkgo doctor`
 - `ginkgo inspect`
+- `ginkgo runs ls`
+- `ginkgo runs show`
+- `ginkgo history`
+- `ginkgo query`
+- `ginkgo export events`
+- `ginkgo export manifest`
 - `ginkgo secrets`
 - `ginkgo init`
 - `ginkgo asset ls`
@@ -43,6 +49,54 @@ different question with the same verb: which run and task produced those bytes,
 through which cache entry, and what that task consumed. Both readings are
 `ginkgo.query.Query.lineage` and `.why` underneath, and both open the database
 read-only.
+
+`ginkgo runs` is where a recorded run is read. `runs ls` lists the run index
+with `--workflow`, `--status`, `--since` and `--limit` filters; `runs show`
+prints one run's header and task table, or its full manifest under `--json`.
+That JSON is what `ginkgo inspect run` used to print: a run belongs to the
+`runs` group rather than to `inspect`, so it has one home there and `inspect`
+is now only about a workflow's static graph.
+
+`ginkgo history <task-name>` crosses runs instead of staying inside one — one
+row per execution of that task, with status, duration, cache key and attempts,
+resolved through `Query.task_history`. The task is matched on its name, its
+fully qualified name, or the display label of one fan-out branch. Rows are
+ordered by the *run's* start time: a cached task never started, so its own
+timestamp is null and would sort out of the history it belongs to.
+
+`ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
+table, `--json`, or `--csv`. Three things are refused: a statement that is not a
+read; more than one statement; and more rows than `--limit` (1000 by default).
+The row cap is applied while fetching from the cursor rather than by wrapping
+the statement in a `LIMIT`, so the SQL that runs is the SQL the user wrote and a
+syntax error names their text.
+
+"Not a read" is decided by `_refusal`, over a scanner (`_top_level_words`) that
+yields a statement's bare words outside parentheses, skipping string literals,
+quoted identifiers and comments. The leading word must be `SELECT`, `WITH`,
+`VALUES` or `EXPLAIN`; a `WITH` is then followed to the verb its clause ends in,
+because `WITH t AS (SELECT 1) DELETE FROM runs` leads with a word this allows.
+Scanning rather than splitting on whitespace is also what makes `VALUES(1),(2)`
+a read: the verb ends at the first character that cannot continue an identifier.
+
+The check is what produces a readable message; it is not the enforcement. Every
+read connection is `mode=ro` with `PRAGMA query_only=ON`, and the in-memory
+ledger `query.open(missing_ok=True)` returns is created write-mode and then
+closed to writes with `SqliteStore.restrict_to_reads()` — so an empty workspace
+refuses exactly what a populated one does, and a write the scanner failed to
+recognise still fails inside the engine.
+
+`Query.sql` returns a `SqlResult` — columns, rows, the `limit` applied, and
+whether it `truncated`. Every output mode reports truncation: `--json` in the
+envelope, `--csv` on stderr so stdout stays openable, the table in a footer.
+
+`ginkgo export events <run_id>` replays a finished run's ledger as JSONL in the
+`--agent-output` wire shape, and `ginkgo export manifest <run_id>` re-exports
+the run's manifest as YAML. Both print to stdout unless `--out` names a file.
+Neither has a format of its own: events go through `cli/renderers/jsonl.py`'s
+`event_line`, which is also what the live agent renderer writes, and the
+manifest through `runtime/rundir.py`'s `manifest_text` / `write_manifest`, which
+is what the run itself wrote at finalize.
 
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each

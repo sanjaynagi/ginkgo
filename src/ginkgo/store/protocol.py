@@ -108,6 +108,12 @@ class ProvenanceStore(Protocol):
         """Return every row *sql* selects."""
         ...
 
+    def select(
+        self, sql: str, params: Sequence[Any] = (), *, limit: int | None = None
+    ) -> tuple[tuple[str, ...], list[sqlite3.Row]]:
+        """Return the columns *sql* names and at most *limit* of its rows."""
+        ...
+
     def close(self) -> None:
         """Release the connection. Safe to call more than once."""
         ...

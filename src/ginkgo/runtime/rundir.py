@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-__all__ = ["RunDir"]
+__all__ = ["RunDir", "manifest_text", "write_atomic", "write_manifest"]
 
 
 @dataclass(kw_only=True)
@@ -104,23 +104,43 @@ class RunDir:
         return self.relative(destination)
 
     def write_manifest(self, manifest: dict[str, Any]) -> Path:
-        """Write the run's exported manifest and return where it went.
-
-        Written beside its destination and renamed over it, so a reader never
-        sees half a manifest and an interrupted export leaves the previous one
-        intact.
-        """
-        self.path.mkdir(parents=True, exist_ok=True)
-        pending = self.manifest_path.with_suffix(".yaml.tmp")
-        pending.write_text(
-            yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False),
-            encoding="utf-8",
-        )
-        os.replace(pending, self.manifest_path)
-        return self.manifest_path
+        """Write the run's exported manifest into the run directory."""
+        return write_manifest(manifest, path=self.manifest_path)
 
 
 def _slugify(value: str) -> str:
     """Return *value* reduced to a filesystem-safe stem."""
     slug = "".join(char if char.isalnum() else "_" for char in value).strip("_")
     return slug or "task"
+
+
+def write_manifest(manifest: dict[str, Any], *, path: Path) -> Path:
+    """Write a run's exported manifest to *path* and return it.
+
+    The one place the manifest's destination lives, so the copy ``ginkgo export
+    manifest`` writes is byte-identical to the one the run wrote at finalize.
+    """
+    return write_atomic(manifest_text(manifest), path=path)
+
+
+def write_atomic(text: str, *, path: Path) -> Path:
+    """Write *text* to *path* through a temporary file, and return *path*.
+
+    Written beside its destination and renamed over it, so a reader never sees
+    half a file and an interrupted write leaves the previous one intact. Every
+    document ginkgo exports goes out this way, whichever command asked for it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_suffix(path.suffix + ".tmp")
+    pending.write_text(text, encoding="utf-8")
+    os.replace(pending, path)
+    return path
+
+
+def manifest_text(manifest: dict[str, Any]) -> str:
+    """Return the YAML text of a run's exported manifest.
+
+    The format itself, so a manifest printed to a terminal and a manifest on
+    disk are the same document.
+    """
+    return yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False)

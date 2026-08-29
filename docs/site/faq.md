@@ -666,10 +666,10 @@ Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
 `.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
 task with the classified category and a log tail (add `--json` for
 machine-readable output); it defaults to the latest run if no id is given.
-`ginkgo inspect run [RUN_ID]` prints a normalized JSON snapshot drawn from the
-manifest — per-task status, attempts, cache key, exit code, the `failure` record,
-log paths, timings, dependencies, and (for remote tasks) the remote job id and
-backend.
+`ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
+full snapshot — per-task status, attempts, cache key, exit code, the `failure`
+record, log paths, timings, dependencies, and (for remote tasks) the remote job
+id and backend.
 
 ## Remote Execution
 
@@ -820,7 +820,7 @@ What happened goes into one SQLite database per workspace, at
 `.ginkgo/ginkgo.db`. It holds an append-only event log — task started, running,
 completed, failed, retrying, cache hits and misses — and the tables the CLI
 reads: runs, tasks, attempts, inputs, outputs, and the dependency graph. Ask it
-questions with `ginkgo inspect run`, `ginkgo debug` and `ginkgo report`, all of
+questions with `ginkgo runs show`, `ginkgo debug` and `ginkgo report`, all of
 which work on a run that is still going.
 
 Set `GINKGO_DB=<path>` to put the database somewhere else. Do that if `.ginkgo`
@@ -830,7 +830,7 @@ and FUSE, and ginkgo warns once when it notices.
 Each run also gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC
 timestamp plus a discriminator) holding the bytes:
 
-- `manifest.yaml` — everything `ginkgo inspect run` shows for that run, written
+- `manifest.yaml` — everything `ginkgo runs show --json` shows for that run, written
   as YAML once it finishes. It is there for you to read; ginkgo never reads it
   back. Back up `ginkgo.db` as you would `.git`: if it is lost, so is the run
   history.
@@ -909,6 +909,6 @@ inlining the child's tasks. The parent tells the child who called it through
 the parent reads the child's run id back out of the database once the subprocess
 exits. The calling task gets a `SubWorkflowResult` (`run_id` and `status`) and
 records `sub_run_id`; on failure the child's run id is still attached to the
-raised error. Either way, `ginkgo inspect run <child_run_id>` is how you read
+raised error. Either way, `ginkgo runs show <child_run_id>` is how you read
 what the child did — the run id is the handle, and there is no second path to
 the same facts.
