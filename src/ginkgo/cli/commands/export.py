@@ -7,7 +7,7 @@ import sys
 
 from ginkgo.cli.common import console, open_run
 from ginkgo.cli.renderers.jsonl import event_line
-from ginkgo.runtime.rundir import manifest_text, write_manifest
+from ginkgo.runtime.rundir import manifest_text, write_atomic
 
 __all__ = ["command_export"]
 
@@ -25,20 +25,14 @@ def command_export(args) -> int:
     with open_run(args.run_id) as (reader, run_id):
         if exporting_events:
             text = "".join(event_line(event.payload) for event in reader.events(run_id))
-            manifest = None
         else:
-            manifest = reader.run(run_id).to_payload()
-            text = manifest_text(manifest)
+            text = manifest_text(reader.run(run_id).to_payload())
 
     out = Path(args.out) if getattr(args, "out", None) else None
     if out is None:
         sys.stdout.write(text)
         return 0
 
-    if manifest is not None:
-        write_manifest(manifest, path=out)
-    else:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, encoding="utf-8")
+    write_atomic(text, path=out)
     console(sys.stderr).print(f"Wrote {out}")
     return 0

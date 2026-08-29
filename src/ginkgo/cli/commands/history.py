@@ -10,6 +10,7 @@ from rich.table import Table
 
 from ginkgo import query
 from ginkgo.cli.common import console
+from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import TaskRow
 
@@ -40,14 +41,20 @@ def command_history(args) -> int:
 
 
 def _table(rows: list[TaskRow]) -> Table:
-    """Build the per-run table for one task."""
+    """Build the per-run table for one task.
+
+    The Task column carries the display label where a run had one: a fan-out
+    matches every sibling branch, and without the label the rows that differ
+    read identically.
+    """
     table = Table(
         box=box.SQUARE,
         border_style="#0f766e",
         header_style="bold #134e4a",
         expand=False,
     )
-    table.add_column("Run ID", style="bold", no_wrap=True)
+    table.add_column("Task", style="bold", overflow="fold")
+    table.add_column("Run ID", no_wrap=True)
     table.add_column("Started", no_wrap=True)
     table.add_column("Duration", justify="right")
     table.add_column("Status")
@@ -56,6 +63,7 @@ def _table(rows: list[TaskRow]) -> Table:
     table.add_column("Attempts", justify="right")
     for row in rows:
         table.add_row(
+            row.display_label or task_base_name(row.name),
             row.run_id,
             format_timestamp(parse_timestamp(row.started_at)),
             format_duration(row.duration_s),

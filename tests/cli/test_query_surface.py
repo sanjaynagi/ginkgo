@@ -150,6 +150,38 @@ class TestRunsAndHistory:
         assert "Cache Key" in result.stdout
         assert "Attempts" in result.stdout
 
+    def test_history_names_the_task_in_its_own_column(self, workspace: Path) -> None:
+        result = _run_cli("history", "greet", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert "Task" in result.stdout
+        assert "greet" in result.stdout
+
+    def test_a_like_wildcard_is_matched_literally(self, workspace: Path) -> None:
+        """`history "%"` asks for a task called `%`, not for every task."""
+        result = _run_cli("history", "%", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == []
+
+    def test_runs_ls_workflow_filter_matches_literally(self, workspace: Path) -> None:
+        result = _run_cli("runs", "ls", "--workflow", "%", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == []
+
+    def test_runs_ls_rejects_a_since_that_is_not_a_timestamp(self, workspace: Path) -> None:
+        result = _run_cli("runs", "ls", "--since", "last tuesday", cwd=workspace)
+
+        assert result.returncode == 1
+        assert "not an ISO-8601 timestamp" in result.stderr
+
+    def test_runs_ls_since_accepts_a_bare_date(self, workspace: Path) -> None:
+        result = _run_cli("runs", "ls", "--since", "2000-01-01", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert len(json.loads(result.stdout)) == 2
+
     def test_history_of_an_unknown_task_is_an_answer(self, workspace: Path) -> None:
         result = _run_cli("history", "absent", cwd=workspace)
 
@@ -167,9 +199,12 @@ class TestQueryVerb:
         )
 
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == [
-            {"run_id": run_id, "status": "succeeded"} for run_id in run_ids
-        ]
+        assert json.loads(result.stdout) == {
+            "columns": ["run_id", "status"],
+            "rows": [{"run_id": run_id, "status": "succeeded"} for run_id in run_ids],
+            "truncated": False,
+            "limit": 1000,
+        }
 
     def test_csv_leads_with_a_header(self, workspace: Path) -> None:
         result = _run_cli("query", "SELECT status FROM runs", "--csv", cwd=workspace)
@@ -183,9 +218,35 @@ class TestQueryVerb:
         assert result.returncode == 0, result.stderr
         assert "Stopped at 1 rows" in result.stdout
 
+    def test_json_carries_the_truncation_signal(self, workspace: Path) -> None:
+        result = _run_cli(
+            "query", "SELECT run_id FROM runs", "--limit", "1", "--json", cwd=workspace
+        )
+
+        payload = json.loads(result.stdout)
+        assert payload["truncated"] is True
+        assert payload["limit"] == 1
+        assert len(payload["rows"]) == 1
+
+    def test_csv_keeps_stdout_clean_and_warns_on_stderr(self, workspace: Path) -> None:
+        result = _run_cli(
+            "query", "SELECT run_id FROM runs", "--limit", "1", "--csv", cwd=workspace
+        )
+
+        assert result.returncode == 0
+        # stdout stays CSV a spreadsheet can open; the warning goes elsewhere.
+        assert len(result.stdout.splitlines()) == 2
+        assert "Stopped at 1 rows" in result.stderr
+        assert "Stopped at" not in result.stdout
+
     @pytest.mark.parametrize(
         "statement",
-        ["DELETE FROM runs", "UPDATE runs SET status = 'x'", "PRAGMA table_list"],
+        [
+            "DELETE FROM runs",
+            "UPDATE runs SET status = 'x'",
+            "PRAGMA table_list",
+            "WITH t AS (SELECT 1) DELETE FROM runs",
+        ],
     )
     def test_a_write_is_refused_by_name(self, workspace: Path, statement: str) -> None:
         result = _run_cli("query", statement, cwd=workspace)
@@ -205,12 +266,18 @@ class TestQueryVerb:
         assert result.returncode == 1
         assert "no such column: nope" in result.stderr
 
+    def test_values_without_a_space_is_a_read(self, workspace: Path) -> None:
+        result = _run_cli("query", "VALUES(1),(2)", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert len(json.loads(result.stdout)["rows"]) == 2
+
     def test_a_refused_write_left_the_ledger_alone(self, workspace: Path) -> None:
         _run_cli("query", "DELETE FROM runs", cwd=workspace)
 
         counted = _run_cli("query", "SELECT count(*) AS n FROM runs", "--json", cwd=workspace)
 
-        assert json.loads(counted.stdout) == [{"n": 2}]
+        assert json.loads(counted.stdout)["rows"] == [{"n": 2}]
 
 
 class TestExport:
@@ -260,6 +327,21 @@ class TestExport:
             workspace / ".ginkgo" / "runs" / run_ids[0] / "manifest.yaml"
         ).read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize("subcommand", ["events", "manifest"])
+    def test_out_writes_atomically_into_a_new_directory(
+        self, workspace: Path, run_ids, tmp_path, subcommand: str
+    ) -> None:
+        """Both exports land the same way: a temporary file, renamed over."""
+        destination = tmp_path / subcommand / "export.out"
+
+        result = _run_cli(
+            "export", subcommand, run_ids[0], "--out", str(destination), cwd=workspace
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert destination.is_file()
+        assert list(destination.parent.iterdir()) == [destination]
+
     def test_an_unknown_run_is_reported(self, workspace: Path) -> None:
         result = _run_cli("export", "events", "no-such-run", cwd=workspace)
 
@@ -291,7 +373,15 @@ class TestEmptyWorkspace:
         result = _run_cli("query", "SELECT run_id FROM runs", "--json", cwd=empty)
 
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == []
+        payload = json.loads(result.stdout)
+        assert payload["rows"] == []
+        assert payload["columns"] == ["run_id"]
+
+    def test_a_write_is_refused_the_same_way_as_on_a_real_ledger(self, empty: Path) -> None:
+        result = _run_cli("query", "WITH t AS (SELECT 1) DELETE FROM runs", cwd=empty)
+
+        assert result.returncode == 1
+        assert "is not a read" in result.stderr
 
     def test_export_names_the_missing_database(self, empty: Path) -> None:
         result = _run_cli("export", "events", cwd=empty)

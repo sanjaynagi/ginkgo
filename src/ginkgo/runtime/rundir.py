@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 
-__all__ = ["RunDir", "manifest_text", "write_manifest"]
+__all__ = ["RunDir", "manifest_text", "write_atomic", "write_manifest"]
 
 
 @dataclass(kw_only=True)
@@ -117,14 +117,22 @@ def _slugify(value: str) -> str:
 def write_manifest(manifest: dict[str, Any], *, path: Path) -> Path:
     """Write a run's exported manifest to *path* and return it.
 
-    The one place the manifest's format lives, so the copy ``ginkgo export
+    The one place the manifest's destination lives, so the copy ``ginkgo export
     manifest`` writes is byte-identical to the one the run wrote at finalize.
+    """
+    return write_atomic(manifest_text(manifest), path=path)
+
+
+def write_atomic(text: str, *, path: Path) -> Path:
+    """Write *text* to *path* through a temporary file, and return *path*.
+
     Written beside its destination and renamed over it, so a reader never sees
-    half a manifest and an interrupted export leaves the previous one intact.
+    half a file and an interrupted write leaves the previous one intact. Every
+    document ginkgo exports goes out this way, whichever command asked for it.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_suffix(path.suffix + ".tmp")
-    pending.write_text(manifest_text(manifest), encoding="utf-8")
+    pending.write_text(text, encoding="utf-8")
     os.replace(pending, path)
     return path
 
