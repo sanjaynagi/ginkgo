@@ -1,6 +1,6 @@
 """The one read model for a run, built from the store's projections.
 
-Every presenter — ``inspect run``, ``debug``, ``report``, notifications, the
+Every presenter — ``runs show``, ``debug``, ``report``, notifications, the
 end-of-run console summary — formats this and nothing else (issue #79). It is
 loaded from the ledger's projection tables, so a run is visible the moment it
 has rows, and the run directory is needed only for the bytes it holds: logs and
@@ -310,7 +310,7 @@ class RunSummary:
     def to_payload(self) -> dict[str, Any]:
         """Return the run as a JSON-serialisable mapping.
 
-        The one home for the run's serialised form: ``ginkgo inspect run``
+        The one home for the run's serialised form: ``ginkgo runs show``
         prints this as JSON and the run directory keeps it as YAML, so the file
         and the command cannot disagree about what a run was.
 

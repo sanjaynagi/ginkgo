@@ -18,7 +18,7 @@ Start here:
 
 When you already have a run id:
 
-- `ginkgo inspect run <run_id>`
+- `ginkgo runs show <run_id>`
   Reconstructs a completed run from stored provenance.
 - `ginkgo debug <run_id>`
   Shows a human-readable failure summary.

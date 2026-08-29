@@ -282,7 +282,7 @@ Remote task execution is fully tracked in run provenance:
 - `resources` records the CPU, memory, and GPU requests
 - Pod logs are captured at task completion
 
-All of this is visible in `ginkgo inspect run <run_id>`.
+All of this is visible in `ginkgo runs show <run_id>`.
 
 ## Tips
 

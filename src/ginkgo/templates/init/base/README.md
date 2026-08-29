@@ -101,7 +101,7 @@ ginkgo run --cores 8 --agent-output
 ginkgo inspect workflow
 
 # Inspect a completed run from its stored provenance.
-ginkgo inspect run <run_id>
+ginkgo runs show <run_id>
 
 # Show a human-friendly debug report for failed tasks in a run.
 ginkgo debug <run_id>

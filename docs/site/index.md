@@ -80,6 +80,7 @@ ginkgo run flow.py
       <li><a href="guide/environments/">Environments</a></li>
       <li><a href="guide/assets/">Assets and reports</a></li>
       <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
+      <li><a href="guide/querying-provenance/">Querying provenance</a></li>
       <li><a href="guide/cli/">CLI</a></li>
       <li><a href="guide/coding-agents/">Working with coding agents</a></li>
       <li><a href="guide/notifications/">Notifications</a></li>
@@ -117,6 +118,7 @@ guide/resources
 guide/environments
 guide/assets
 guide/caching-and-provenance
+guide/querying-provenance
 guide/cli
 guide/coding-agents
 guide/notifications

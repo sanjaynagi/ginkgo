@@ -197,7 +197,7 @@ will be picked up post-benchmark:
 - **Benchmark harness lane.** The per-workload scenario grid, cost
   model, and comparison report.
 - **Inspect rendering.** The `remote_input_access` block is stored in
-  provenance but not rendered by `ginkgo inspect run`.
+  provenance but not rendered by `ginkgo runs show`.
 - **Custom FUSE driver.** A potential Phase 10 item if the OSS drivers
   miss the acceptance bar on the sequential whole-file benchmark.
 

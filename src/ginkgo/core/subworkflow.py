@@ -65,7 +65,7 @@ def subworkflow(
     Called from inside a ``@task(kind="subworkflow")`` body with fully
     resolved argument values. The child workflow runs as a self-contained
     ``ginkgo run`` subprocess; its ``run_id`` is returned to the parent
-    task, and ``ginkgo inspect run <run_id>`` reads what it did.
+    task, and ``ginkgo runs show <run_id>`` reads what it did.
 
     Parameters
     ----------

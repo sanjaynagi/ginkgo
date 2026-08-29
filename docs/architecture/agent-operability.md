@@ -64,8 +64,17 @@ Ginkgo exposes machine-readable post-hoc inspection and diagnostics:
 
 - `ginkgo inspect workflow` returns a static task graph snapshot without
   execution.
-- `ginkgo inspect run <run_id>` returns a run snapshot from the ledger, for a
-  live run as readily as a finished one.
+- `ginkgo runs show <run_id> --json` returns a run snapshot from the ledger, for
+  a live run as readily as a finished one; `ginkgo runs ls --json` returns the
+  run index, filterable by workflow, status and start time.
+- `ginkgo history <task-name> --json` returns every run of one task across runs.
+- `ginkgo query "<sql>" --json|--csv` returns the result of one read-only SQL
+  statement, for the question no verb answers. The tables are versioned but not
+  stable; the methods on `ginkgo.query.Query` are what is kept working.
+- `ginkgo export events <run_id>` returns a finished run's ledger as JSONL in
+  the same shape `--agent-output` streams live, so an agent that parses the live
+  stream parses the export unchanged. `ginkgo export manifest <run_id>` returns
+  the run's manifest as YAML.
 - `ginkgo debug --json` returns failed-task diagnostics, including failure
   summaries and log tails.
 - `ginkgo doctor --json` returns structured validation diagnostics.

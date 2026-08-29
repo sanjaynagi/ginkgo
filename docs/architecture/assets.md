@@ -207,7 +207,7 @@ of `shell` / `notebook` / `script` tasks. `fig("results/fig_pca.png",
 name="pca")` and `table("data/frame.csv", name="frame")` may appear in
 the `output=` list alongside plain strings; the runner validates that
 the declared path exists after execution and the registrar stores the
-bytes under the kind's namespace so the report and `ginkgo inspect run`
+bytes under the kind's namespace so the report and `ginkgo runs show`
 render rich previews. In-memory payloads (e.g. `fig(matplotlib_figure)`)
 are invalid in declared outputs and raise a clear error — they remain
 valid as Python-task return values where the evaluator serialises the

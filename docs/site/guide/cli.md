@@ -16,8 +16,22 @@ at the nearest `ginkgo.toml`.
   record the run. The command you reach for most.
 
 `ginkgo inspect`
-: Inspect the resolved task graph (`inspect workflow`) or the structure of a
-  recorded run (`inspect run <run_id>`).
+: Inspect the resolved task graph of a workflow without running it
+  (`inspect workflow`).
+
+`ginkgo runs`
+: List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`).
+  See [Querying Provenance](querying-provenance.md).
+
+`ginkgo history`
+: Show every run of one task, with its status, duration, and cache key.
+
+`ginkgo query`
+: Run one read-only SQL statement against the provenance database.
+
+`ginkgo export`
+: Write a run's ledger events as JSONL (`export events`) or its manifest as
+  YAML (`export manifest`).
 
 `ginkgo debug`
 : Inspect a finished run &mdash; task status, timing, logs, and cache decisions
@@ -131,7 +145,7 @@ ginkgo run flow.py --item alpha --item beta --verbose
 ```
 
 Resolved values are recorded with the run, along with where each came from
-&mdash; the CLI, config, or the default. `ginkgo inspect run` shows both.
+&mdash; the CLI, config, or the default. `ginkgo runs show` shows both.
 
 The `[params]` table layers across config files, so `--config extra.toml` setting
 one parameter leaves the others in `ginkgo.toml` alone.

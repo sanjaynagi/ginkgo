@@ -60,7 +60,7 @@ These read-only commands give an agent — or a person — a stable view of a
 workflow and its runs:
 
 - `ginkgo inspect workflow` — the resolved task graph, before running anything
-- `ginkgo inspect run <run_id>` — the structure of a recorded run
+- `ginkgo runs show <run_id>` — the structure of a recorded run
 - `ginkgo debug <run_id>` — task status, logs, and failure detail
 - `ginkgo report <run_id>` — a full HTML report of a run (see
   [Assets and Reports](assets.md))
