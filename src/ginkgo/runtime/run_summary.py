@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ginkgo.formatting import parse_timestamp
+from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.store.jsonio import loads
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.store.protocol import ProvenanceStore
@@ -25,16 +25,6 @@ from ginkgo.workspace_layout import WorkspaceLayout
 # needs to decide terminality (see TaskSummary.is_terminal and the CLI
 # renderers).
 TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed"})
-
-
-def _duration_seconds(
-    started_at: datetime | None,
-    finished_at: datetime | None,
-) -> float | None:
-    """Return wall-clock seconds between two timestamps when both are valid."""
-    if started_at is None or finished_at is None:
-        return None
-    return max(0.0, (finished_at - started_at).total_seconds())
 
 
 def _base_name(value: Any) -> str:
@@ -289,7 +279,7 @@ class RunSummary:
             status=str(run.get("status") or "unknown"),
             started_at=started_at,
             finished_at=finished_at,
-            duration_s=_duration_seconds(started_at, finished_at),
+            duration_s=duration_seconds(started_at, finished_at),
             run_dir=root / run_id,
             error=_text(run.get("error")),
             jobs=run.get("jobs"),
@@ -487,7 +477,7 @@ def _build_task_summary(
         cached=bool(row.get("cached")),
         started_at=started,
         finished_at=finished,
-        duration_s=_duration_seconds(started, finished),
+        duration_s=duration_seconds(started, finished),
         exit_code=row.get("exit_code") if isinstance(row.get("exit_code"), int) else None,
         error=_text(failure.get("message")) if failure else None,
         failure=failure,
