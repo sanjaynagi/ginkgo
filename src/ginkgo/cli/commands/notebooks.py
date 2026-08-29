@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from ginkgo import query
-from ginkgo.cli.common import console
+from ginkgo.cli.common import stdout_console
 from ginkgo.query import Query
 
 
@@ -51,8 +50,7 @@ class NotebookArtifactPair:
 def command_notebooks(args) -> int:
     """Handle ``ginkgo notebooks``."""
     del args
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 240)
+    rich_console = stdout_console(piped_width=240)
     rich_console.print("[bold green]🌿 ginkgo[/] [bold]notebooks[/]\n")
 
     # A workspace with no ledger has no notebooks, which is an empty listing

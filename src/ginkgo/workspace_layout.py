@@ -6,7 +6,6 @@ root, with one subdirectory per concern::
     .ginkgo/
       ginkgo.db
       runs/  cache/  artifacts/  staging/  fuse/  notebooks/  reports/
-      remote-staged.json
 
 :class:`WorkspaceLayout` is the single place that convention is written down.
 Every component that needs one of these paths asks the layout for it, so
@@ -123,8 +122,3 @@ class WorkspaceLayout:
         if override:
             return Path(override)
         return self.root / "ginkgo.db"
-
-    @property
-    def staging_cache_file(self) -> Path:
-        """Persisted staging state for remote inputs."""
-        return self.root / "remote-staged.json"

@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from rich.markup import escape
 
 from ginkgo import query
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -58,8 +58,7 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.caching.provenance import combined_log_tail, make_run_id
-from ginkgo.runtime.rundir import RunDir
+from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
@@ -656,10 +655,8 @@ def _print_profile_table(
     profile: dict[str, dict[str, float | int]],
 ) -> None:
     """Print a Rich profile table summarising recorded phase timings."""
-    from rich.table import Table
-
-    table = Table(title="Runtime Profile", show_lines=False)
-    table.add_column("phase")
+    table = new_table("phase")
+    table.title = "Runtime Profile"
     table.add_column("seconds", justify="right")
     table.add_column("count", justify="right")
 

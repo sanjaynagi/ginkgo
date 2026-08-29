@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -616,6 +618,23 @@ class TestReportData:
         # Tasks should land in distinct columns because there's a dependency.
         xs = {node.x for node in report.graph.nodes}
         assert len(xs) == 2
+
+    def test_a_cyclic_predecessor_map_lays_out_rather_than_recursing(self, tmp_path: Path) -> None:
+        """A cycle cannot come from a task graph, so the report must not follow one."""
+        run = _make_run(tmp_path=tmp_path, run_id="run-cycle", fail=False)
+        summary = run.summary()
+        node_ids = [task.node_id for task in summary.tasks]
+        cyclic = replace(
+            summary,
+            tasks=tuple(
+                replace(task, dependency_ids=(node_ids[(index + 1) % len(node_ids)],))
+                for index, task in enumerate(summary.tasks)
+            ),
+        )
+
+        report = build_report_data(summary=cyclic)
+
+        assert len(report.graph.nodes) == len(summary.tasks)
 
 
 # ----- Export ------------------------------------------------------------

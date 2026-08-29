@@ -9,8 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from ginkgo.remote.backend import RemoteObjectMeta
-from ginkgo.runtime.caching.provenance import make_run_id
-from ginkgo.runtime.rundir import RunDir
+from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.store.sqlite import open_store

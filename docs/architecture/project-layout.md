@@ -114,8 +114,7 @@ Runtime state lives under `.ginkgo/`, one subdirectory per concern:
 ├── staging/              # downloaded remote inputs
 ├── fuse/                 # mount points for streamed remote inputs
 ├── notebooks/            # notebook artifacts for runs without provenance
-├── reports/              # exported HTML report bundles
-└── remote-staged.json    # persisted staging state
+└── reports/              # exported HTML report bundles
 ```
 
 `WorkspaceLayout` (`src/ginkgo/workspace_layout.py`) owns this convention.

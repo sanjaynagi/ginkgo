@@ -45,7 +45,8 @@ ginkgo/
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
 │   ├── profiling.py      # phase-timer aggregation for --profile
 │   ├── run_summary.py    # RunSummary, the one read model, loaded from the ledger
-│   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk
+│   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk;
+│   │                     # also run ids and log tails
 │   ├── store_recorder.py # bus subscriber: events -> ledger rows, and the manifest
 │   ├── event_values.py   # rendering user values into a form an event can carry
 │   ├── executor_registry.py    # named executors: config, lookup, lazy build
@@ -61,10 +62,9 @@ ginkgo/
 │   │   ├── script.py           # ScriptRunner
 │   │   └── subworkflow.py      # child `ginkgo run` subprocess
 │   ├── caching/
-│   │   ├── cache.py            # CacheStore (content-addressed)
+│   │   ├── cache.py            # CacheStore: cache keys and the entry's bytes
 │   │   ├── index.py            # CacheIndex: the cache's rows in the ledger
-│   │   ├── coordinator.py      # cache lookups for the evaluator
-│   │   ├── provenance.py       # run ids and log tails
+│   │   ├── node_cache.py       # NodeCache: is there a result for this node?
 │   │   ├── hash_memo.py        # content digests, memoised in digest_memo
 │   │   └── digest_registry.py  # known digests for this run's outputs
 │   ├── artifacts/
@@ -96,7 +96,7 @@ ginkgo/
 │   ├── _executor_common.py  # helpers shared by both remote executors
 │   ├── publisher.py         # remote output publishing
 │   ├── resolve.py           # backend factory
-│   ├── staging.py           # remote input staging
+│   ├── staging.py           # remote input staging; StagingIndex owns staging_entries
 │   ├── worker.py            # remote worker entry point
 │   └── access/              # FUSE / staged remote input access
 │       ├── doctor.py        # access-layer diagnostics
@@ -112,6 +112,8 @@ ginkgo/
 │   ├── protocol.py          # ProvenanceStore: the ledger's write and read surface
 │   ├── sqlite.py            # SqliteStore: connection, pragmas, transactions
 │   ├── schema.py            # versioned DDL steps and migrate()
+│   ├── direct_index.py      # DirectIndex: a connection, a lock, a transaction
+│   ├── maintenance.py       # prune_events / prune_digest_memo / vacuum
 │   ├── writer.py            # StoreWriter: queued, batched appends of stored rows
 │   ├── projector.py         # stored row -> projection rows, one function per type
 │   ├── fs.py                # network-filesystem detection for the SQLite warning
@@ -126,13 +128,14 @@ ginkgo/
 │   └── pixi.py
 ├── cli/
 │   ├── app.py               # parser tree and dispatch
-│   ├── common.py
+│   ├── common.py            # the shared console, table style, and run opener
 │   ├── errors.py            # how a top-level failure is reported
 │   ├── workspace.py         # canonical workflow discovery
 │   ├── workflow_params.py   # CLI side of ginkgo.param
 │   ├── commands/            # one module per command: run, inspect, cache,
-│   │                        # asset, db, debug, doctor, env, init, models,
-│   │                        # notebooks, report, secrets
+│   │                        # asset, db, debug, doctor, env, export, history,
+│   │                        # init, lineage, models, notebooks, query, report,
+│   │                        # runs, secrets
 │   └── renderers/           # rich live output, JSONL agent output, dry-run
 │                            # and debug renderers, shared formatting
 └── templates/

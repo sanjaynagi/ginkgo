@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.store.jsonio import dumps_or_none
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
@@ -115,6 +117,9 @@ class CacheStore:
     trust_mtimes: bool = False
     _root: Path = field(init=False, repr=False)
     _artifact_store: LocalArtifactStore = field(init=False, repr=False)
+    _seen_env_materializations: set[tuple[str, str]] = field(
+        default_factory=set, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else WorkspaceLayout.for_cwd().cache
@@ -301,11 +306,14 @@ class CacheStore:
         output_path = entry_dir / "output.json"
         size_bytes = output_path.stat().st_size if output_path.is_file() else 0
 
+        materialized_digest = self._materialized_digest(task_def=task_def)
+        self._record_env_materialization(task_def=task_def, digest=materialized_digest)
+
         meta = {
             "cache_key": cache_key,
             "env": task_def.env,
             "env_hash": self._env_hash(task_def=task_def),
-            "env_materialized_digest": self._materialized_digest(task_def=task_def),
+            "env_materialized_digest": materialized_digest,
             "extra": extra_meta,
             "extra_source_hash": extra_source_hash,
             "function": task_def.name,
@@ -655,10 +663,32 @@ class CacheStore:
         }
 
     def _materialized_digest(self, *, task_def: TaskDef) -> str | None:
-        """Return the digest of the task's environment as materialised here."""
+        """Return the digest of the task's environment as materialised here.
+
+        A pure read. Every lookup path asks for this — ``load``, ``has_entry``,
+        the ``--dry-run`` preview — and a read path must not open a write
+        transaction, so recording is :meth:`save`'s job.
+        """
         if task_def.env is None or self.backend is None:
             return None
         return self.backend.materialized_digest(env=task_def.env)
+
+    def _record_env_materialization(self, *, task_def: TaskDef, digest: str | None) -> None:
+        """Record how *task_def*'s declared environment materialised on this host.
+
+        Called from :meth:`save`, which is the one place with both the digest
+        and a write in hand. Memoised per process: an entry is saved per task
+        and the answer does not move mid-run.
+        """
+        if digest is None:
+            return
+        env_hash = dumps_or_none(self._env_hash(task_def=task_def))
+        if env_hash is None or (env_hash, digest) in self._seen_env_materializations:
+            return
+        self._seen_env_materializations.add((env_hash, digest))
+        self.index.record_env_materialization(
+            env_hash=env_hash, host=socket.gethostname(), materialized_digest=digest
+        )
 
     def _env_materialization_matches(self, *, cache_key: str, task_def: TaskDef) -> bool:
         """Return whether an entry's environment still matches the local one.

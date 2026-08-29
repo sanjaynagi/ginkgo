@@ -4,6 +4,9 @@ Everything a run writes that is *bytes* lives here. What happened during the
 run is the ledger's business (:mod:`ginkgo.store`); this module owns only the
 directory those bytes go in, so neither concern has to know the other's shape.
 
+It also names a run (:func:`make_run_id`) and reads back the logs it wrote
+(:func:`tail_text`, :func:`combined_log_tail`).
+
 The layout after a run is::
 
     runs/<run_id>/
@@ -15,15 +18,103 @@ The layout after a run is::
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 import yaml
 
-__all__ = ["RunDir", "manifest_text", "write_atomic", "write_manifest"]
+__all__ = [
+    "RunDir",
+    "run_directory_problems",
+    "combined_log_tail",
+    "make_run_id",
+    "manifest_text",
+    "tail_text",
+    "write_atomic",
+    "write_manifest",
+]
+
+
+def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[str]:
+    """Return the runs and run directories that have no counterpart under *root*.
+
+    This module owns what a run leaves on disk, so it owns the question of
+    whether the ledger and the disk still describe the same set of runs. Both
+    directions mean different things: a row with no directory is a run whose
+    logs and manifest were deleted — the record survives, the evidence does
+    not; a directory with no row is bytes from a database that is gone, which
+    nothing will ever read again.
+
+    Parameters
+    ----------
+    recorded_run_ids : set[str]
+        Every run the ledger has a row for.
+    root : Path
+        The runs root, normally ``WorkspaceLayout.runs``.
+
+    Returns
+    -------
+    list[str]
+        One sentence per problem.
+    """
+    problems = [
+        f"run {run_id} has a row but no run directory"
+        for run_id in sorted(recorded_run_ids)
+        if not (root / run_id).is_dir()
+    ]
+    if not root.is_dir():
+        return problems
+    problems += [
+        f"run directory {entry.name} has no row (orphan)"
+        for entry in sorted(root.iterdir())
+        if entry.is_dir() and entry.name not in recorded_run_ids
+    ]
+    return problems
+
+
+def make_run_id(*, workflow_path: str | Path | None = None) -> str:
+    """Return a timestamped run identifier."""
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+    token_source = str(Path(workflow_path).resolve()) if workflow_path is not None else timestamp
+    discriminator = secrets.token_hex(4)
+    suffix = abs(hash((token_source, timestamp, discriminator))) % (16**8)
+    return f"{timestamp}_{suffix:08x}"
+
+
+def tail_text(path: Path, *, lines: int = 50) -> list[str]:
+    """Return the last *lines* lines from a text file."""
+    if not path.is_file():
+        return []
+    content = path.read_text(encoding="utf-8").splitlines()
+    return content[-lines:]
+
+
+def combined_log_tail(
+    *,
+    run_dir: Path,
+    stdout_log: object,
+    stderr_log: object,
+    lines: int,
+) -> list[str]:
+    """Combine stdout and stderr tails for failure display.
+
+    Each log argument is the relative path stored on a task record; it
+    may be a string path, ``None``, or any other value depending on the
+    caller's task representation. Non-string values are ignored, so
+    callers can pass either mapping ``.get(...)`` results or dataclass
+    attributes without an extra ``isinstance`` check.
+    """
+    combined: list[str] = []
+    if isinstance(stdout_log, str):
+        combined.extend(tail_text(run_dir / stdout_log, lines=lines))
+    if isinstance(stderr_log, str):
+        combined.extend(tail_text(run_dir / stderr_log, lines=lines))
+    return combined[-lines:]
 
 
 @dataclass(kw_only=True)

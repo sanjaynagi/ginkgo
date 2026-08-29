@@ -105,6 +105,39 @@ class RemoteArtifactStore:
         self._ensure_local(artifact_id)
         return self.local.read_bytes(artifact_id=artifact_id)
 
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds locally, if its stat is unchanged."""
+        return self.local.materialized_artifact_id(path=path)
+
+    def is_published(self, artifact_id: str) -> bool:
+        """Return whether this store has already uploaded *artifact_id*.
+
+        Answered from the artifact's own row: :meth:`_publish` stamps the
+        remote URI on it, so the record of "these bytes are on the remote"
+        lives with the artifact rather than in a set beside it. The URI is
+        compared against this store's prefix, so pointing a workspace at a
+        second bucket republishes rather than trusting the first one's upload.
+        """
+        record = self.local.load_record(artifact_id=artifact_id)
+        if record is None or not record.remote_uri:
+            return False
+        return record.remote_uri.startswith(f"{self.scheme}://{self.bucket}/{self.prefix}")
+
+    def publish(self, *, artifact_id: str) -> ArtifactRecord | None:
+        """Upload an artifact this store already holds locally.
+
+        The cheap half of :meth:`store` for the case that is only unpublished:
+        the bytes are in the local CAS under a digest that is already known, so
+        re-hashing the source and re-sharing it into the blob directory to
+        arrive back at the same id is work with no result. Answers ``None`` if
+        the local store has no row for *artifact_id*, which leaves the caller
+        to store the source from scratch.
+        """
+        record = self.local.load_record(artifact_id=artifact_id)
+        if record is None:
+            return None
+        return self._publish(record)
+
     # --- Publishing (local → remote) -----------------------------------------
 
     def _publish(self, record: ArtifactRecord) -> ArtifactRecord:
@@ -133,7 +166,6 @@ class RemoteArtifactStore:
             storage_backend=record.storage_backend,
             remote_uri=f"{self.scheme}://{self.bucket}/{self.prefix}refs/{record.artifact_id}.json",
         )
-        self.local.put_record(updated)
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as ref_file:
             ref_file.write(updated.to_json())
             ref_path = Path(ref_file.name)
@@ -145,6 +177,13 @@ class RemoteArtifactStore:
             )
         finally:
             ref_path.unlink(missing_ok=True)
+
+        # Only now is the row stamped. `is_published` reads it, so recording the
+        # remote URI before the upload that makes it true would remember a
+        # failed publish as a success: nothing would ever retry the upload, and
+        # every worker resolving the artifact would 404 on a ref that is not
+        # there.
+        self.local.put_record(updated)
         return updated
 
     def _upload_blob(self, digest_hex: str) -> None:

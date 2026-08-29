@@ -240,7 +240,7 @@ class SqliteStore:
 
         For the in-memory ledger a reader opens when a workspace has none: the
         schema has to be created, so the open is write-mode, but nothing after
-        that may write — least of all the user SQL :meth:`select` carries. A
+        that may write — least of all the user SQL :meth:`select_with_columns` carries. A
         read-only open has ``query_only`` from its pragmas already; this is how
         a store that had to be created earns the same guarantee.
         """
@@ -251,15 +251,17 @@ class SqliteStore:
         """Return every row *sql* selects."""
         return self._connection.execute(sql, tuple(params)).fetchall()
 
-    def select(
+    def select_with_columns(
         self, sql: str, params: Sequence[Any] = (), *, limit: int | None = None
     ) -> tuple[tuple[str, ...], list[sqlite3.Row]]:
         """Return the columns *sql* names and at most *limit* of its rows.
 
-        What :meth:`query` cannot answer for SQL the store did not write: an
-        empty result still has to say which columns it has, and a statement
-        nobody reviewed has to be stopped before it materialises a million
-        rows. Ginkgo's own queries know both already and use :meth:`query`.
+        The entry point for SQL the store did not write — today, ``ginkgo
+        query``. Such a statement has to say which columns it has even when it
+        matched nothing, because the result is rendered as a table, and it has
+        to be stopped before it materialises a million rows. Ginkgo's own
+        queries know their columns and their size already, and use
+        :meth:`query`.
 
         Parameters
         ----------
@@ -353,7 +355,7 @@ def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:
     concurrent writer instead of failing on one.
 
     ``query_only`` closes a read-only connection to writes from the inside;
-    see :meth:`SqliteStore.select`.
+    see :meth:`SqliteStore.select_with_columns`.
 
     ``journal_mode`` is a property of the database file rather than of the
     connection, so a read-only connection cannot set it — the writer that

@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
-from ginkgo.runtime.caching.provenance import make_run_id
+from ginkgo.runtime.rundir import make_run_id
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.task_runners.subworkflow import (
     DEPTH_ENV,

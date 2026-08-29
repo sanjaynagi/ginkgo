@@ -12,7 +12,8 @@ one; only the value-to-string formatting is shared.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -23,6 +24,46 @@ def now_iso() -> str:
     breath carry the same shape of timestamp.
     """
     return datetime.now(UTC).isoformat()
+
+
+_DURATION = re.compile(r"(?P<count>\d+)(?P<unit>[mhd])")
+_DURATION_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def parse_duration(value: str, *, option: str) -> timedelta:
+    """Parse a compact duration such as ``45m``, ``12h`` or ``30d``.
+
+    Every ginkgo option that takes an age takes this shape, so it is parsed
+    and its error worded in one place.
+
+    Parameters
+    ----------
+    value : str
+        The duration as typed.
+    option : str
+        The option the value came from, named in the error message.
+
+    Returns
+    -------
+    timedelta
+
+    Raises
+    ------
+    ValueError
+        If *value* is not a positive integer followed by ``m``, ``h`` or ``d``.
+    """
+    match = _DURATION.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(
+            f"Invalid duration for {option}. Use a positive integer followed by "
+            "m, h, or d (for example: 45m, 12h, 30d)."
+        )
+    return timedelta(seconds=int(match.group("count")) * _DURATION_SECONDS[match.group("unit")])
+
+
+def cutoff_before(value: str, *, option: str) -> datetime:
+    """Return the UTC instant *value* ago — everything older than it."""
+    return datetime.now(UTC) - parse_duration(value, option=option)
 
 
 def parse_timestamp(value: Any) -> datetime | None:

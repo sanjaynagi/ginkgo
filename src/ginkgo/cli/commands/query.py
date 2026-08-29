@@ -6,11 +6,9 @@ import csv
 import json
 import sys
 
-from rich import box
-from rich.table import Table
 
 from ginkgo import query as ledger
-from ginkgo.cli.common import console
+from ginkgo.cli.common import console, stdout_console, new_table
 from ginkgo.query import SqlResult
 
 __all__ = ["command_query"]
@@ -33,8 +31,7 @@ def command_query(args) -> int:
         _write_csv(result)
         return 0
 
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    return _render_table(console(sys.stdout, width=None if is_tty else 160), result=result)
+    return _render_table(stdout_console(), result=result)
 
 
 def _write_csv(result: SqlResult) -> None:
@@ -58,12 +55,7 @@ def _render_table(rich_console, *, result: SqlResult) -> int:
         rich_console.print("[dim]No rows.[/]")
         return 0
 
-    table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    table = new_table()
     for column in result.columns:
         table.add_column(column, overflow="fold")
     for row in result.rows:

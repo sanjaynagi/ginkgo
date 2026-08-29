@@ -149,3 +149,81 @@ class TestRemoteArtifactStore:
 
         # Local gone, but no remote delete call.
         assert not remote_store.local.exists(artifact_id=record.artifact_id)
+
+
+class TestPublishRecording:
+    """`is_published` reads the artifact's row, so the row must not lead it."""
+
+    def test_a_failed_ref_upload_is_not_remembered_as_published(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+
+        def _fail_on_ref(*, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
+            if key.startswith("artifacts/refs/"):
+                raise OSError("ref upload failed")
+            return RemoteObjectMeta(uri=f"gs://{bucket}/{key}", size=100)
+
+        mock_backend.upload.side_effect = _fail_on_ref
+
+        with pytest.raises(OSError, match="ref upload failed"):
+            remote_store.store(src_path=src)
+
+        artifact_id = remote_store.local.materialized_artifact_id(path=src)
+        assert artifact_id is not None
+        assert remote_store.is_published(artifact_id) is False
+
+    def test_a_retry_after_a_failed_ref_upload_publishes(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+        attempts: list[str] = []
+
+        def _fail_first_ref(*, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
+            if key.startswith("artifacts/refs/"):
+                attempts.append(key)
+                if len(attempts) == 1:
+                    raise OSError("ref upload failed")
+            return RemoteObjectMeta(uri=f"gs://{bucket}/{key}", size=100)
+
+        mock_backend.upload.side_effect = _fail_first_ref
+
+        with pytest.raises(OSError):
+            remote_store.store(src_path=src)
+        record = remote_store.store(src_path=src)
+
+        assert remote_store.is_published(record.artifact_id) is True
+
+    def test_publish_uploads_without_re_storing_the_source(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An artifact known locally but unpublished needs the upload, not the hash."""
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+        record = remote_store.local.store(src_path=src)
+        assert remote_store.is_published(record.artifact_id) is False
+
+        published = remote_store.publish(artifact_id=record.artifact_id)
+
+        assert published is not None
+        assert remote_store.is_published(record.artifact_id) is True
+        assert any(
+            call.kwargs["key"].startswith("artifacts/refs/")
+            for call in mock_backend.upload.call_args_list
+        )
+
+    def test_publishing_an_unknown_artifact_answers_none(
+        self, remote_store: RemoteArtifactStore
+    ) -> None:
+        assert remote_store.publish(artifact_id="0" * 64) is None

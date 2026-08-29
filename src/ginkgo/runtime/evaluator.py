@@ -22,7 +22,7 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Literal
 
-from ginkgo.core.asset import AssetRef, AssetVersion
+from ginkgo.core.asset import AssetRef, AssetVersion, collect_asset_refs
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
 from ginkgo.core.subworkflow import SubWorkflowResult
@@ -47,7 +47,7 @@ from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
 from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
-from ginkgo.runtime.caching.coordinator import CacheCoordinator
+from ginkgo.runtime.caching.node_cache import NodeCache
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.caching.index import CacheIndex
@@ -305,6 +305,7 @@ class NodeRun:
     driver_directive: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
+    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
@@ -378,7 +379,7 @@ class ConcurrentEvaluator:
     param_context: ParamContext | None = None
     _digests: DigestRegistry = field(init=False, repr=False)
     _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
-    _cache_coordinator: CacheCoordinator = field(init=False, repr=False)
+    _node_cache: NodeCache = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
@@ -438,7 +439,6 @@ class ConcurrentEvaluator:
             registry=self.executor_registry,
             digests=self._digests,
             local_artifact_store=self._cache_store._artifact_store,
-            staging_cache_path=WorkspaceLayout.for_cwd().staging_cache_file,
             run_id_provider=lambda: self._run_id,
             emit_event=self._emit_event,
         )
@@ -449,7 +449,7 @@ class ConcurrentEvaluator:
             backend=self.backend,
             secret_resolver=self.secret_resolver,
         )
-        self._cache_coordinator = CacheCoordinator(
+        self._node_cache = NodeCache(
             cache_store=self._cache_store,
             validator=self._validator,
             digests=self._digests,
@@ -609,7 +609,6 @@ class ConcurrentEvaluator:
             finally:
                 self._log_drain.stop()
                 self._executors = None
-                self._remote_dispatch.save_staging_cache()
                 self._cache_index.close()
 
         assert self._failure is not None
@@ -765,6 +764,7 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
+            asset_inputs=node.asset_inputs,
         )
         self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
@@ -1142,6 +1142,7 @@ class ConcurrentEvaluator:
         node.secret_values = ()
         node.extra_source_hash = None
         node.asset_versions = []
+        node.asset_inputs = {}
         # measured_resources is deliberately NOT reset: a retried attempt's
         # peak (an OOM kill under memory_retry_multiplier, say) is exactly
         # the number needed to right-size the task, so measurements span
@@ -1183,7 +1184,7 @@ class ConcurrentEvaluator:
         self._digests.record_artifacts(artifact_ids)
 
         # Record stat-index for future --trust-mtimes runs.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=node.cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
         for path in tmp_paths:
             shutil.rmtree(path)
@@ -1228,8 +1229,15 @@ class ConcurrentEvaluator:
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
+        asset_inputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Resolve concrete arguments for a task call."""
+        """Resolve concrete arguments for a task call.
+
+        *asset_inputs* is filled in as arguments resolve, with the identity of
+        the asset each parameter was handed. This is the only moment it is
+        knowable for a semantically typed parameter: the next line rehydrates
+        the ref into the payload the task asked for, and the identity is gone.
+        """
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
 
@@ -1248,6 +1256,17 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
+                if asset_inputs is not None:
+                    refs = collect_asset_refs(materialised)
+                    if refs:
+                        # One row per parameter is what task_inputs holds, so
+                        # the first ref is the one recorded — see the
+                        # ``asset_inputs`` docstring on TaskPlanned.
+                        asset_inputs[name] = {
+                            "asset_key": str(refs[0].key),
+                            "version_id": refs[0].version_id,
+                            "artifact_id": refs[0].artifact_id,
+                        }
                 # A path-shaped annotation binds a filesystem path at every
                 # depth, so the whole value — including any nested containers
                 # — keeps its ``AssetRef`` entries rather than becoming live
@@ -1943,7 +1962,7 @@ class ConcurrentEvaluator:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.content_lookup(node=node)
+        hit = self._node_cache.content_lookup(node=node)
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
@@ -1965,7 +1984,7 @@ class ConcurrentEvaluator:
         complete, ``False`` to fall through to the content-addressed path.
         """
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.lookup_by_stat(node=node)
+        hit = self._node_cache.lookup_by_stat(node=node)
         if hit is None:
             self._record_task_timing(
                 node_id=node.node_id,
@@ -1996,7 +2015,7 @@ class ConcurrentEvaluator:
         # and a hit routed through the ledger's writer could land while
         # another process held the write lock for a save.
         self._cache_index.record_hit(cache_key)
-        self._cache_coordinator.propagate_known_digests(cache_key=cache_key)
+        self._node_cache.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
@@ -2030,7 +2049,7 @@ class ConcurrentEvaluator:
 
         # Record stat-index entry so future --trust-mtimes runs can
         # find this cache key without content hashing.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=cache_key)
 
     def _record_task_metadata(
         self,
@@ -2050,6 +2069,7 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
+                asset_inputs=dict(node.asset_inputs),
                 cache_key=node.cache_key,
                 source_hash=node.task_def.cache_source_hash,
                 version=node.task_def.version,

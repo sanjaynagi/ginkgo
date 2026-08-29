@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import sys
 
 from rich.tree import Tree
 
 from ginkgo import query
-from ginkgo.cli.common import console
+from ginkgo.cli.common import stdout_console
 from ginkgo.core.asset import AssetVersion
 from ginkgo.query import LineageGraph, Provenance
 
@@ -23,8 +22,7 @@ _EMPTY_WALK = {
 
 def command_lineage(args) -> int:
     """Handle ``ginkgo lineage`` — trace one asset, path, or artifact."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
+    rich_console = stdout_console()
     direction = "downstream" if getattr(args, "downstream", False) else "upstream"
     as_json = bool(getattr(args, "json", False))
 

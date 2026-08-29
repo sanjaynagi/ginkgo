@@ -340,7 +340,6 @@ class TestDispatchManagerRouting:
             registry=registry,
             digests=DigestRegistry(),
             local_artifact_store=None,
-            staging_cache_path=tmp_path / "staged.json",
             run_id_provider=lambda: "run",
             emit_event=lambda event: None,
         )
@@ -436,7 +435,6 @@ class TestCodeBundlePerExecutor:
             registry=registry,
             digests=DigestRegistry(),
             local_artifact_store=None,
-            staging_cache_path=tmp_path / "staged.json",
             run_id_provider=lambda: "run",
             emit_event=lambda event: None,
         )

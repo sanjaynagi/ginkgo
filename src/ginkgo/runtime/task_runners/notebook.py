@@ -463,7 +463,7 @@ class NotebookRunner(DriverTaskRunner):
             root_dir=root_dir,
             html_path=root_dir / f"{task_key}.html",
             executed_path=executed_path,
-            params_path=root_dir / f"{task_key}.params.yaml",
+            params_path=root_dir / f"{task_key}.parameters.yaml",
         )
 
     def _prepare_notebook_artifacts(self, *, artifacts: NotebookArtifacts) -> None:

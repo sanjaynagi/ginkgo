@@ -14,7 +14,7 @@ from ginkgo.cli.renderers.debug import (
     render_run_failure_panel,
 )
 from ginkgo.cli.renderers.models import FailureDetails
-from ginkgo.runtime.caching.provenance import combined_log_tail
+from ginkgo.runtime.rundir import combined_log_tail
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 

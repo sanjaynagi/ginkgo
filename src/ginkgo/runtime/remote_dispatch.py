@@ -29,7 +29,7 @@ class RemoteDispatchManager:
 
     Owns the remote-only state of a run: the code bundle published per
     executor, the remote artifact store, in-flight job handles, dispatch
-    statistics, and the staging cache persisted between runs. The evaluator
+    statistics, and the in-flight artifact uploads. The evaluator
     builds the base worker payload (shared with local process-pool dispatch)
     and hands it to :meth:`dispatch` along with the executor name placement
     chose; :meth:`dispatch` augments the payload with remote transport
@@ -43,7 +43,6 @@ class RemoteDispatchManager:
     registry: ExecutorRegistry
     digests: DigestRegistry
     local_artifact_store: Any
-    staging_cache_path: Path
     run_id_provider: Callable[[], str]
     emit_event: Callable[[object], None]
     stats: RemoteDispatchStats = field(default_factory=RemoteDispatchStats)
@@ -56,7 +55,6 @@ class RemoteDispatchManager:
     )
     _artifact_store: Any = field(default=None, init=False, repr=False)
     _artifact_store_checked: bool = field(default=False, init=False, repr=False)
-    _published_artifacts: set[str] = field(default_factory=set, init=False, repr=False)
 
     def dispatch(
         self,
@@ -86,7 +84,6 @@ class RemoteDispatchManager:
                 type_hints=node.task_def.type_hints,
                 remote_store=self._artifact_store,
                 known_digests=self.digests.known,
-                published_artifacts=self._published_artifacts,
             )
             payload["remote_artifact_store"] = {
                 "scheme": self._artifact_store.scheme,
@@ -128,18 +125,6 @@ class RemoteDispatchManager:
             if log_path is not None:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 log_path.write_text(logs, encoding="utf-8")
-
-    def save_staging_cache(self) -> None:
-        """Persist staging state so the next run skips re-hashing unchanged inputs."""
-        if not self.digests.known and not self._published_artifacts:
-            return
-        from ginkgo.runtime.artifacts.remote_arg_transfer import save_staging_cache
-
-        save_staging_cache(
-            cache_path=self.staging_cache_path,
-            known_digests=self.digests.known,
-            published_artifacts=self._published_artifacts,
-        )
 
     def _poll_job(self, handle: RemoteJobHandle, *, node: NodeRun) -> dict[str, Any]:
         """Poll a remote job handle until it reaches a terminal state.
@@ -209,14 +194,6 @@ class RemoteDispatchManager:
             )
 
         return payload
-
-    def _load_staging_cache(self) -> None:
-        """Restore persisted staging state from ``.ginkgo/remote-staged.json``."""
-        from ginkgo.runtime.artifacts.remote_arg_transfer import load_staging_cache
-
-        digests, published = load_staging_cache(cache_path=self.staging_cache_path)
-        self.digests.update(digests)
-        self._published_artifacts.update(published)
 
     def _ensure_code_bundle(self, *, executor_name: str) -> dict[str, str] | None:
         """Create and publish an executor's code bundle on its first dispatch.
@@ -322,7 +299,6 @@ class RemoteDispatchManager:
         if self._artifact_store_checked:
             return
         self._artifact_store_checked = True
-        self._load_staging_cache()
         from ginkgo.runtime.artifacts.remote_artifact_store import (
             load_remote_artifact_store,
         )

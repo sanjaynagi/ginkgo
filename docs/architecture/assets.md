@@ -32,7 +32,8 @@ The current asset model supports:
 - immutable `AssetVersion` records keyed by logical `AssetKey`
 - resolved `AssetRef` values passed to downstream tasks
 - alias pointers and version history in `.ginkgo/ginkgo.db`
-- upstream lineage edges recorded from consumed `AssetRef` inputs
+- upstream lineage edges recorded from consumed assets, however the
+  consumer annotated the parameter
 - provenance records that include asset metadata alongside cache keys
   and artifact identifiers
 
@@ -48,7 +49,7 @@ them. A lost database means a catalog that has to be rebuilt by re-running the
 workflow, exactly as for the cache.
 
 `AssetStore` is the only reader and the only writer of those rows. Like
-`CacheIndex` it is a `DirectIndex` (`ginkgo/runtime/direct_index.py`) rather
+`CacheIndex` it is a `DirectIndex` (`ginkgo/store/direct_index.py`) rather
 than a projection of the event ledger, and for the same reason: registering a
 version has to read the parents registered moments earlier — possibly by a
 sibling task on another thread in the same run — and the recorder's writer
@@ -285,7 +286,13 @@ every nested `AssetResult`, and replaces it with a resolved `AssetRef`:
    namespace (`file` / `table` / `array` / `fig` / `text` / `model`),
    and the sentinel is replaced with an `AssetRef` pointing at the
    stored artifact.
-5. Upstream lineage is recorded for any consumed `AssetRef` inputs.
+5. Upstream lineage is recorded for every asset the task consumed. A parameter
+   that binds a path still holds the `AssetRef` in the resolved arguments; one
+   annotated as the payload (`enriched: pd.DataFrame`) had its ref rehydrated
+   before the task ran, and its identity is read from
+   `NodeRun.asset_inputs`, captured at resolution time for exactly this reason
+   (issue #253). Both sources feed the same `derived_from` edges, so lineage
+   does not depend on how a consumer chose to write its signature.
 6. For kinds flagged as `rehydrate_on_receive` (all except `file` and
    `fig`), the producer's live Python object is stashed in the
    per-evaluator `LivePayloadRegistry` keyed by `artifact_id`, so a

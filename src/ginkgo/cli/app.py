@@ -435,13 +435,31 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     env_clear_parser.add_argument("--all", action="store_true")
     env_clear_parser.add_argument("--dry-run", action="store_true")
 
-    # Registered as a group from the outset: vacuum and prune join these three
-    # in later phases, and the help text should not move when they do.
     db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
     db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
     db_subparsers.add_parser("check", help="Check database integrity and schema version")
     db_subparsers.add_parser("path", help="Print the provenance database path")
+    db_subparsers.add_parser("vacuum", help="Rebuild the database, releasing freed space")
+    db_prune_parser = db_subparsers.add_parser(
+        "prune", help="Delete history the projections no longer need"
+    )
+    db_prune_parser.add_argument(
+        "--events-older-than",
+        metavar="DURATION",
+        help="Delete the raw events of runs that finished more than this ago (30d, 12h, 45m)",
+    )
+    db_prune_parser.add_argument(
+        "--digest-memo-older-than",
+        metavar="DURATION",
+        help="Delete memoised file digests not seen for this long",
+    )
+    db_prune_parser.add_argument(
+        "--staging-older-than",
+        metavar="DURATION",
+        help="Delete staged remote inputs not used for this long, and their bytes",
+    )
+    db_prune_parser.add_argument("--dry-run", action="store_true")
 
     debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")
     debug_parser.add_argument("run_id", nargs="?")

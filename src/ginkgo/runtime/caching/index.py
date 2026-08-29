@@ -10,7 +10,7 @@ The index sits in ``runtime/`` because the shape of a cache entry is a runtime
 concept; ``store/`` below it knows only tables and transactions.
 
 Unlike the run tables, the cache tables are **not** projections of the event
-ledger. They are a :class:`~ginkgo.runtime.direct_index.DirectIndex`:
+ledger. They are a :class:`~ginkgo.store.direct_index.DirectIndex`:
 `CacheIndex` is the only thing that writes them, synchronously, on its own
 connection, because a cache save has to be visible to the `load` that may
 follow it microseconds later and the recorder's connection belongs to its
@@ -29,7 +29,7 @@ from typing import Any
 
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
-from ginkgo.runtime.direct_index import DirectIndex
+from ginkgo.store.direct_index import DirectIndex
 from ginkgo.store.jsonio import dumps_or_none, loads
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
 
@@ -395,26 +395,85 @@ class CacheIndex(DirectIndex):
             )
         )
 
-    def materialization_matches(self, *, path: Path, artifact_id: str) -> bool:
-        """Return whether *path* still has the stat it had when materialized.
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds, if its stat is still the recorded one.
 
-        The answer is only trusted for files: a directory's mtime does not move
-        when a child's contents change, so callers ask about files.
+        A path whose size or mtime has moved since it was materialized answers
+        ``None``: the row describes bytes that are no longer there. The answer
+        is only trusted for files — a directory's mtime does not move when a
+        child's contents change, so callers ask about files.
         """
         resolved = path.resolve()
         rows = self._query(
             "SELECT artifact_id, size, mtime_ns FROM materializations WHERE path = ?",
             (str(resolved),),
         )
-        if not rows or str(rows[0]["artifact_id"]) != artifact_id:
-            return False
+        if not rows:
+            return None
         try:
             st = resolved.stat()
         except OSError:
-            return False
-        return st.st_size == rows[0]["size"] and st.st_mtime_ns == rows[0]["mtime_ns"]
+            return None
+        if st.st_size != rows[0]["size"] or st.st_mtime_ns != rows[0]["mtime_ns"]:
+            return None
+        return str(rows[0]["artifact_id"])
+
+    def materialization_matches(self, *, path: Path, artifact_id: str) -> bool:
+        """Return whether *path* still holds the bytes of *artifact_id*."""
+        return self.materialized_artifact_id(path=path) == artifact_id
 
     # -- digest memo ---------------------------------------------------------
+
+    # -- environment materializations ----------------------------------------
+
+    def record_env_materialization(
+        self, *, env_hash: str, host: str, materialized_digest: str
+    ) -> None:
+        """Note the digest a declared environment materialised to on *host*.
+
+        A cache key names the environment a task *declared*; this records what
+        that declaration actually installed as, here. One row per host, holding
+        the most recent observation, so ``db check`` can say when two machines
+        disagree about an environment the key calls identical.
+        """
+        self._write(
+            ProjectionOp(
+                sql="INSERT INTO env_materializations "
+                "(env_hash, host, materialized_digest, seen_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (env_hash, host) DO UPDATE SET "
+                "materialized_digest=excluded.materialized_digest, seen_at=excluded.seen_at",
+                params=(env_hash, host, materialized_digest, now_iso()),
+            )
+        )
+
+    def env_materializations(self) -> list[dict[str, Any]]:
+        """Return every recorded environment materialization, newest first."""
+        rows = self._query(
+            "SELECT env_hash, host, materialized_digest, seen_at "
+            "FROM env_materializations ORDER BY seen_at DESC"
+        )
+        return [dict(row) for row in rows]
+
+    def env_drift_problems(self) -> list[str]:
+        """Return the declared environments recorded as materializing two ways.
+
+        One row per host, so a machine reinstalling is not drift; two hosts
+        disagreeing about what one declaration installs is. Not corruption —
+        but it is why a cache key can be shared between machines and a result
+        not be, so ``db check`` reports it.
+        """
+        digests: dict[str, set[str]] = {}
+        hosts: dict[str, set[str]] = {}
+        for row in self.env_materializations():
+            env_hash = str(row["env_hash"])
+            digests.setdefault(env_hash, set()).add(str(row["materialized_digest"]))
+            hosts.setdefault(env_hash, set()).add(str(row["host"]))
+        return [
+            f"environment {env_hash} materialized {len(seen)} different ways "
+            f"across {len(hosts[env_hash])} hosts"
+            for env_hash, seen in sorted(digests.items())
+            if len(seen) > 1
+        ]
 
     def digest(self, *, kind: str, fingerprint: str) -> str | None:
         """Return a remembered content digest, if this content has been hashed.

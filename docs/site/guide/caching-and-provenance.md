@@ -101,9 +101,38 @@ Together, the cache and the ledger answer different questions:
 
 ```bash
 ginkgo db path                # where the database is
-ginkgo db check               # schema version and integrity
+ginkgo db check               # schema version, integrity, rows against bytes
 ginkgo db migrate             # create or upgrade it
+ginkgo db prune --events-older-than 90d --dry-run
+ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
+ginkgo db vacuum              # give the freed space back
 ```
+
+`ginkgo db check` asks every index whether its rows and the files they name
+still agree — the cache, the artifact store, the run directories, the staged
+remote inputs — and reports both directions: a row whose bytes are gone, and
+bytes no row can find. It never repairs anything.
+
+`ginkgo db prune --events-older-than 90d` deletes the raw event stream of runs
+that finished more than 90 days ago. Everything `ginkgo runs show`, the report
+and `ginkgo history` read is left alone; what goes is the per-event detail
+`ginkgo export events` prints. Add `--digest-memo-older-than` to drop memoised
+file digests, which cost only a re-hash to lose, `--staging-older-than` to
+evict downloaded remote inputs that nothing has read for a while — bytes and
+row together, and the only eviction the staging cache has — and `--dry-run` to
+see the counts first. Deleting rows does not shrink the database file; `ginkgo
+db vacuum` does.
+
+`ginkgo db check` reads; it never creates. In a directory nobody has run a
+workflow in it says so and succeeds.
+
+### Upgrading from a pre-ledger workspace
+
+Workspaces recorded before `.ginkgo/ginkgo.db` existed are **not** migrated.
+Their runs, cache entries and asset catalog lived in files ginkgo no longer
+reads, so they are invisible to every command. If you have one, delete
+`.ginkgo/` and run the workflow again; there is no import path, and nothing in
+the old layout is read by mistake.
 
 `ginkgo.db` is the record of your runs and of your cache; back it up as you
 would `.git`. If it is lost, the run history goes with it and the cache goes

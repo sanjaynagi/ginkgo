@@ -108,10 +108,13 @@ class ProvenanceStore(Protocol):
         """Return every row *sql* selects."""
         ...
 
-    def select(
+    def select_with_columns(
         self, sql: str, params: Sequence[Any] = (), *, limit: int | None = None
     ) -> tuple[tuple[str, ...], list[sqlite3.Row]]:
-        """Return the columns *sql* names and at most *limit* of its rows."""
+        """Return the columns *sql* names and at most *limit* of its rows.
+
+        For SQL the store did not write; :meth:`query` is for ginkgo's own.
+        """
         ...
 
     def close(self) -> None:

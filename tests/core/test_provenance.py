@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from ginkgo import secret
-import ginkgo.runtime.caching.provenance as provenance_module
-from ginkgo.runtime.caching.provenance import make_run_id
+import ginkgo.runtime.rundir as rundir_module
+from ginkgo.runtime.rundir import make_run_id
 from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
@@ -27,14 +27,14 @@ def test_make_run_id_remains_unique_under_fixed_clock(
     # Freeze the clock so both ids share a timestamp. Uniqueness must then
     # come from the real random discriminator, not from the clock — so
     # token_hex is deliberately left unpatched.
-    real_datetime = provenance_module.datetime
+    real_datetime = rundir_module.datetime
 
     class _FixedDatetime:
         @classmethod
         def now(cls, tz=None):  # noqa: ANN001, ANN206
             return real_datetime(2026, 4, 1, 12, 0, 0, 123456, tzinfo=tz)
 
-    monkeypatch.setattr(provenance_module, "datetime", _FixedDatetime)
+    monkeypatch.setattr(rundir_module, "datetime", _FixedDatetime)
 
     workflow_path = tmp_path / "workflow.py"
     first = make_run_id(workflow_path=workflow_path)
