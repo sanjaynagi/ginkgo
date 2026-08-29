@@ -102,7 +102,7 @@ systems:
 - `TaskCompleted` and `TaskFailed` events carry `remote_job_id`.
 - Provenance records include `execution_backend`, `remote_job_id`, and
   `resources` for remote tasks.
-- `ginkgo runs show` surfaces all remote metadata.
+- `ginkgo runs show --json` surfaces all remote metadata.
 - Pod/container logs are captured at task completion via `handle.logs_tail()`.
 
 ## GCS Backend

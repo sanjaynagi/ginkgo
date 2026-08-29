@@ -77,7 +77,7 @@ workflow.
 | `busy_timeout` | `5000` ms | Two `ginkgo run`s in one workspace are supported; the loser of a lock race waits rather than failing. |
 | `foreign_keys` | `ON` | |
 | `temp_store` | `MEMORY` | Sorting and grouping stay off a possibly network-mounted disk. |
-| `query_only` | `ON` (read opens) | `ginkgo query` runs user-written SQL on a read connection. `mode=ro` is a property of the URI alone; this refuses a write inside the engine as well, so neither guard is the only one. |
+| `query_only` | `ON` (read opens) | `ginkgo query` runs user-written SQL on a read connection. `mode=ro` is a property of the URI alone; this refuses a write inside the engine as well, so neither guard is the only one. `SqliteStore.restrict_to_reads()` applies it after the fact to the in-memory ledger a reader opens for a workspace with no database, which has to be created write-mode before anything can be selected from it. |
 
 Transaction control is explicit: the driver's implicit `BEGIN` is turned off,
 and `store.transaction()` wraps a `BEGIN IMMEDIATE` … `COMMIT`, taking the

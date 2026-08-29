@@ -27,6 +27,8 @@ When you already have a run id:
   Shows every run of one task, with status, duration, and cache key.
 - `ginkgo query "<sql>"`
   Runs one read-only SQL statement against the provenance database.
+- `ginkgo export events <run_id>` / `ginkgo export manifest <run_id>`
+  Writes a run's ledger events as JSONL, or its manifest as YAML.
 - `ginkgo debug <run_id>`
   Shows a human-readable failure summary.
 - `ginkgo debug <run_id> --json`

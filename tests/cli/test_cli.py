@@ -50,7 +50,7 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 def _manifest(run_dir: Path) -> dict[str, Any]:
     """Read a run's exported manifest, keying its tasks by task id.
 
-    The manifest is what ``ginkgo runs show`` prints, written as YAML; the
+    The manifest is what ``ginkgo runs show --json`` prints, written as YAML; the
     only reshaping here is the list of tasks into a mapping, which is how these
     tests ask about one of them.
     """

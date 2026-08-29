@@ -57,10 +57,16 @@ ginkgo query "SELECT cache_key, function, size_bytes FROM cache_entries" --csv
 ginkgo query "SELECT * FROM runs" --json --limit 5
 ```
 
-One `SELECT` at a time, against a read-only connection. A statement that would
-change anything is refused before it reaches SQLite, and so is a second
-statement after a semicolon. At most 1000 rows come back unless `--limit` says
-otherwise.
+One `SELECT` at a time. At most 1000 rows come back unless `--limit` says
+otherwise, and a truncated result says so — in the JSON envelope's `truncated`
+field, or on stderr under `--csv`, so the CSV on stdout stays openable.
+
+Two things stop a write, and they do different jobs. Ginkgo reads the
+statement's leading verb — and, for a `WITH`, the verb its clause ends in — and
+refuses anything that is not a read, which is what gives you a message naming
+what you wrote. Behind that, the connection is opened `mode=ro` with
+`PRAGMA query_only=ON`, so a write ginkgo failed to recognise still fails inside
+SQLite. A second statement after a semicolon is refused too.
 
 ## From Python
 
@@ -80,7 +86,9 @@ to read an empty ledger instead, which is what every CLI listing does.
 ### Into pandas
 
 `Query.sql` returns column names alongside the rows, which is all a
-`DataFrame` needs:
+`DataFrame` needs. Repeated names (`SELECT r.run_id, t.run_id`) keep both
+columns; only the JSON envelope suffixes the second, since a mapping cannot
+hold two of them:
 
 ```python
 import pandas as pd

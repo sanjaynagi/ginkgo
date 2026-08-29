@@ -37,7 +37,7 @@ def render_value(value: Any) -> Any:
         Secrets replaced by their redaction marker, path-like values by their
         string, and anything else without a JSON form by
         :func:`~ginkgo.runtime.artifacts.value_codec.summarise_value`'s
-        description of it. This is what ``runs show`` and ``debug`` show as a
+        description of it. This is what ``runs show --json`` and ``debug`` show as a
         task's inputs and a run's parameters.
     """
     value = redact_value(value)

@@ -65,14 +65,30 @@ ordered by the *run's* start time: a cached task never started, so its own
 timestamp is null and would sort out of the history it belongs to.
 
 `ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
-table, `--json`, or `--csv`. Three things are refused: a statement whose first
-verb is not `SELECT`, `WITH`, `VALUES` or `EXPLAIN`; more than one statement;
-and more rows than `--limit` (1000 by default). The row cap is applied while
-fetching from the cursor rather than by wrapping the statement in a `LIMIT`, so
-the SQL that runs is the SQL the user wrote and a syntax error names their text.
-Enforcement is not the check alone: a read-only connection is opened `mode=ro`
-and set `PRAGMA query_only=ON`, so a write refused by neither would still fail
-inside the engine.
+table, `--json`, or `--csv`. Three things are refused: a statement that is not a
+read; more than one statement; and more rows than `--limit` (1000 by default).
+The row cap is applied while fetching from the cursor rather than by wrapping
+the statement in a `LIMIT`, so the SQL that runs is the SQL the user wrote and a
+syntax error names their text.
+
+"Not a read" is decided by `_refusal`, over a scanner (`_top_level_words`) that
+yields a statement's bare words outside parentheses, skipping string literals,
+quoted identifiers and comments. The leading word must be `SELECT`, `WITH`,
+`VALUES` or `EXPLAIN`; a `WITH` is then followed to the verb its clause ends in,
+because `WITH t AS (SELECT 1) DELETE FROM runs` leads with a word this allows.
+Scanning rather than splitting on whitespace is also what makes `VALUES(1),(2)`
+a read: the verb ends at the first character that cannot continue an identifier.
+
+The check is what produces a readable message; it is not the enforcement. Every
+read connection is `mode=ro` with `PRAGMA query_only=ON`, and the in-memory
+ledger `query.open(missing_ok=True)` returns is created write-mode and then
+closed to writes with `SqliteStore.restrict_to_reads()` — so an empty workspace
+refuses exactly what a populated one does, and a write the scanner failed to
+recognise still fails inside the engine.
+
+`Query.sql` returns a `SqlResult` — columns, rows, the `limit` applied, and
+whether it `truncated`. Every output mode reports truncation: `--json` in the
+envelope, `--csv` on stderr so stdout stays openable, the table in a footer.
 
 `ginkgo export events <run_id>` replays a finished run's ledger as JSONL in the
 `--agent-output` wire shape, and `ginkgo export manifest <run_id>` re-exports

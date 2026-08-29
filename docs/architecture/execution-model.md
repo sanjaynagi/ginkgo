@@ -157,7 +157,7 @@ provenance finalize, manifest load, and renderer finish. The recorder is a
 no-op when `--profile` is not set and does not run when disabled, so the
 default path is not instrumented. The phase totals are persisted under
 `timings.profile` in the run manifest, printed as a Rich summary table at
-the end of the run, and exposed by `ginkgo runs show`.
+the end of the run, and exposed by `ginkgo runs show --json`.
 
 ## Remote References and Staged Access
 
@@ -289,7 +289,7 @@ Key properties:
   which becomes `runs.parent_run_id` / `runs.parent_task_id` and a `child_of`
   edge. The parent reads the child's run id back out of the ledger once the
   subprocess exits and records it as the task's `sub_run_id`, making it
-  discoverable via `ginkgo runs show`.
+  discoverable via `ginkgo runs show --json`.
 - **Failure propagation.** Non-zero child exit raises `SubWorkflowError`
   in the parent task, which triggers normal retry / fail-fast behaviour.
   The child run directory remains for debugging.

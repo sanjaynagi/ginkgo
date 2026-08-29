@@ -830,7 +830,7 @@ and FUSE, and ginkgo warns once when it notices.
 Each run also gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC
 timestamp plus a discriminator) holding the bytes:
 
-- `manifest.yaml` — everything `ginkgo runs show` shows for that run, written
+- `manifest.yaml` — everything `ginkgo runs show --json` shows for that run, written
   as YAML once it finishes. It is there for you to read; ginkgo never reads it
   back. Back up `ginkgo.db` as you would `.git`: if it is lost, so is the run
   history.

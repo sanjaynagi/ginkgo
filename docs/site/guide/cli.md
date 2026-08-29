@@ -145,7 +145,7 @@ ginkgo run flow.py --item alpha --item beta --verbose
 ```
 
 Resolved values are recorded with the run, along with where each came from
-&mdash; the CLI, config, or the default. `ginkgo runs show` shows both.
+&mdash; the CLI, config, or the default. `ginkgo runs show --json` shows both.
 
 The `[params]` table layers across config files, so `--config extra.toml` setting
 one parameter leaves the others in `ginkgo.toml` alone.

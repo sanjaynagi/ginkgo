@@ -245,7 +245,7 @@ paths that must exist, and `resolve_output_value` rebuilds the declared
 scalar/list/tuple shape with absent optionals replaced by `None`.
 
 Manifests carry presence explicitly: `output_summary` emits `optional` and
-`present` keys rather than dropping an absent output, so `ginkgo runs show`
+`present` keys rather than dropping an absent output, so `ginkgo runs show --json`
 shows which optional outputs materialised.
 
 Two limits are deliberate. Dry-run cannot report optionality, because a driver

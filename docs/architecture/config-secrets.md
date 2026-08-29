@@ -63,7 +63,7 @@ can enumerate a workflow's inputs without running it.
 
 Resolved values are recorded on the run as `runs.params`, with each
 parameter's source (`cli`, `config`, or `default`) beside them in
-`runs.param_sources`. Both are in `ginkgo runs show` and the run's exported
+`runs.param_sources`. Both are in `ginkgo runs show --json` and the run's exported
 snapshot.
 
 The `[params]` table layers key by key across config sources, unlike top-level

@@ -60,7 +60,10 @@ These read-only commands give an agent — or a person — a stable view of a
 workflow and its runs:
 
 - `ginkgo inspect workflow` — the resolved task graph, before running anything
-- `ginkgo runs show <run_id>` — the structure of a recorded run
+- `ginkgo runs show <run_id> --json` — the structure of a recorded run
+- `ginkgo history <task-name> --json` — every run of one task, across runs
+- `ginkgo query "<sql>" --json` — one read-only SQL statement over the ledger
+- `ginkgo export events <run_id>` — a finished run's events as JSONL
 - `ginkgo debug <run_id>` — task status, logs, and failure detail
 - `ginkgo report <run_id>` — a full HTML report of a run (see
   [Assets and Reports](assets.md))
