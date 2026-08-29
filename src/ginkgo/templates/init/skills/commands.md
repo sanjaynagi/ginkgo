@@ -18,8 +18,15 @@ Start here:
 
 When you already have a run id:
 
+- `ginkgo runs ls`
+  Lists recorded runs, newest first.
 - `ginkgo runs show <run_id>`
-  Reconstructs a completed run from stored provenance.
+  Reconstructs a completed run from stored provenance; `--json` for the full
+  snapshot.
+- `ginkgo history <task-name>`
+  Shows every run of one task, with status, duration, and cache key.
+- `ginkgo query "<sql>"`
+  Runs one read-only SQL statement against the provenance database.
 - `ginkgo debug <run_id>`
   Shows a human-readable failure summary.
 - `ginkgo debug <run_id> --json`

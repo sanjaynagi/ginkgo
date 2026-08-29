@@ -64,7 +64,7 @@ tasks as they reach each state, rather than waiting for a finalize step.
 ```
 
 `manifest.yaml` is an **export**, and ginkgo never reads it back. It is exactly
-what `ginkgo runs show` prints, serialised as YAML — the same
+what `ginkgo runs show --json` prints, serialised as YAML — the same
 `RunSummary.to_payload()` on both sides, so the file and the command cannot
 disagree about what a run was. Written through a temporary file and renamed
 over its destination, so an interrupted export leaves the previous one intact.

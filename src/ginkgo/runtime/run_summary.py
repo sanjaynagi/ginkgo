@@ -310,7 +310,7 @@ class RunSummary:
     def to_payload(self) -> dict[str, Any]:
         """Return the run as a JSON-serialisable mapping.
 
-        The one home for the run's serialised form: ``ginkgo runs show``
+        The one home for the run's serialised form: ``ginkgo runs show --json``
         prints this as JSON and the run directory keeps it as YAML, so the file
         and the command cannot disagree about what a run was.
 

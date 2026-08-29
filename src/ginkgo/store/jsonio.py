@@ -12,7 +12,7 @@ holding a bare string is more useful to a reader than an exception.
 
 Key order is the order the object had. Much of what lands in these columns was
 written by a user — a task's parameters, an asset's metadata, a model's metrics
-— and the order they wrote it in is how ``runs show`` and the report card
+— and the order they wrote it in is how ``runs show --json`` and the report card
 show it back. Sorting the keys made the rows byte-stable, which nothing asked
 for, at the cost of rendering ``accuracy, precision, recall`` alphabetically.
 """

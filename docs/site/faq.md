@@ -666,10 +666,10 @@ Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
 `.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
 task with the classified category and a log tail (add `--json` for
 machine-readable output); it defaults to the latest run if no id is given.
-`ginkgo runs show [RUN_ID]` prints a normalized JSON snapshot drawn from the
-manifest — per-task status, attempts, cache key, exit code, the `failure` record,
-log paths, timings, dependencies, and (for remote tasks) the remote job id and
-backend.
+`ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
+full snapshot — per-task status, attempts, cache key, exit code, the `failure`
+record, log paths, timings, dependencies, and (for remote tasks) the remote job
+id and backend.
 
 ## Remote Execution
 
