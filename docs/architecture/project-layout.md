@@ -107,9 +107,9 @@ Runtime state lives under `.ginkgo/`, one subdirectory per concern:
 
 ```
 .ginkgo/
-├── runs/                 # per-run provenance
+├── ginkgo.db             # the provenance ledger: runs, cache index, catalog
+├── runs/                 # per-run manifests, logs, env locks
 ├── cache/                # task cache entries
-├── assets/               # asset catalog
 ├── artifacts/            # content-addressed artifact store
 ├── staging/              # downloaded remote inputs
 ├── fuse/                 # mount points for streamed remote inputs

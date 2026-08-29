@@ -212,19 +212,21 @@ class TaskPlanned(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class AssetMaterialized(TaskEvent):
-    """One asset version was written to the catalog by this task."""
+    """One asset version was written to the catalog by this task.
+
+    A version's metrics and its check outcomes travel in ``metadata``, where
+    the asset itself carries them; the sub-kind travels there too. Fields of
+    their own would have been a second place to look for the same facts.
+    """
 
     event: str = "asset_materialized"
     asset_key: str = ""
     version_id: str = ""
     kind: str = ""
-    sub_kind: str | None = None
     artifact_id: str = ""
     content_hash: str = ""
     cache_key: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    metrics: dict[str, Any] = field(default_factory=dict)
-    checks: list[dict[str, Any]] = field(default_factory=list)
     parents: list[dict[str, Any]] = field(default_factory=list)
 
 

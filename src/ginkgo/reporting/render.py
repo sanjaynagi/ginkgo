@@ -46,7 +46,6 @@ def export_report(
     summary: RunSummary,
     out_dir: Path,
     workspace_label: str | None = None,
-    assets_root: Path | None = None,
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
@@ -65,9 +64,9 @@ def export_report(
         written at ``out_dir / "index.html"`` with assets inlined.
     workspace_label : str | None
         Label for the workspace header. Inferred when omitted.
-    assets_root, artifacts_root : Path | None
-        Overrides for the asset catalog and artifact store roots. Inferred
-        from the run directory when omitted.
+    artifacts_root : Path | None
+        Override for the artifact store root. Inferred from the run directory
+        when omitted.
     policy : SizingPolicy | None
         Per-kind preview caps.
     single_file : bool
@@ -96,7 +95,6 @@ def export_report(
     report = build_report_data(
         summary=summary,
         workspace_label=workspace_label,
-        assets_root=assets_root,
         artifacts_root=artifacts_root,
         policy=policy,
     )

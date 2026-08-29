@@ -268,16 +268,18 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
     parameters = {str(param): inputs.get(param, _ABSENT) for param in {**inputs, **hashes}}
     for param, value in parameters.items():
         entry = hashes.get(str(param), {})
+        asset = _asset_identity(entry=entry, value=value)
         ops.append(
             ProjectionOp(
                 sql="""
                 INSERT INTO task_inputs (
                   run_id, task_id, param, position, value_type, value_summary,
                   digest, artifact_id, asset_key, asset_version_id, remote_uri
-                ) VALUES (?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (run_id, task_id, param, position) DO UPDATE SET
                   value_type=excluded.value_type, value_summary=excluded.value_summary,
-                  digest=excluded.digest, asset_key=excluded.asset_key,
+                  digest=excluded.digest, artifact_id=excluded.artifact_id,
+                  asset_key=excluded.asset_key,
                   asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri
                 """,
                 params=(
@@ -287,18 +289,18 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                     entry.get("type"),
                     None if value is _ABSENT else dumps(value),
                     _digest_of(entry),
-                    entry.get("asset"),
-                    entry.get("version_id") if entry.get("asset") else None,
+                    asset.get("artifact_id"),
+                    asset.get("asset"),
+                    asset.get("version_id"),
                     _remote_uri(entry),
                 ),
             )
         )
-        asset_key = entry.get("asset")
-        if asset_key:
+        if asset.get("asset"):
             ops.append(
                 _edge(
                     run_id=event.run_id,
-                    src=("asset_version", str(entry.get("version_id") or asset_key)),
+                    src=("asset_version", str(asset.get("version_id") or asset["asset"])),
                     dst=("task", task_id),
                     edge="consumed",
                 )
@@ -667,6 +669,31 @@ def accumulate_seconds(
         """,
         params=(path, path, seconds, *where_params),
     )
+
+
+def _asset_identity(*, entry: dict[str, Any], value: Any) -> dict[str, Any]:
+    """Return the asset an input names, from either half of what was recorded.
+
+    A task that declares a parameter as ``file`` and is handed an ``AssetRef``
+    is hashed as the file it resolves to, because the cache keys on content and
+    changing that payload would invalidate every entry. The identity is not
+    lost, though: the *rendered* argument still describes the ref. So the hash
+    entry is asked first, and the rendered value second — which is why an asset
+    consumed through a ``file`` parameter still gets its ``consumed`` edge.
+    """
+    if entry.get("asset"):
+        return {
+            "asset": entry["asset"],
+            "version_id": entry.get("version_id"),
+            "artifact_id": entry.get("artifact_id"),
+        }
+    if isinstance(value, dict) and value.get("type") == "asset_ref" and value.get("asset"):
+        return {
+            "asset": value["asset"],
+            "version_id": value.get("version_id"),
+            "artifact_id": value.get("artifact_id"),
+        }
+    return {}
 
 
 def _digest_of(entry: dict[str, Any]) -> str | None:

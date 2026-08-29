@@ -109,7 +109,8 @@ HTML reports. Assets without a group appear under "Ungrouped assets". Captions
 are rendered as short subtitles on each asset card and are also shown by
 `ginkgo asset show`.
 
-Assets are content-addressed and stored under `.ginkgo/assets/`. Re-running a
+Asset bytes are content-addressed and stored under `.ginkgo/artifacts/`; the
+catalog that names and versions them lives in `.ginkgo/ginkgo.db`. Re-running a
 task that produces the same content adds a new *version* pointing at the same
 bytes, so an asset key gives you a stable handle with full version history.
 

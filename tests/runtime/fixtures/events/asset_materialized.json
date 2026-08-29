@@ -3,21 +3,22 @@
   "asset_key": "table:rows",
   "attempt": 0,
   "cache_key": "cache_abcdef",
-  "checks": [
-    {
-      "name": "not_empty",
-      "passed": true
-    }
-  ],
   "content_hash": "b3:abcdef",
   "display_label": null,
   "event": "asset_materialized",
   "kind": "table",
   "metadata": {
-    "columns": 3
-  },
-  "metrics": {
-    "rows": 10
+    "columns": 3,
+    "ginkgo_checks": [
+      {
+        "name": "not_empty",
+        "passed": true
+      }
+    ],
+    "metrics": {
+      "rows": 10
+    },
+    "sub_kind": "parquet"
   },
   "parents": [
     {
@@ -26,7 +27,6 @@
     }
   ],
   "run_id": "run_20260828_090000",
-  "sub_kind": "parquet",
   "task_id": "task_0007",
   "task_name": "analysis.fit",
   "ts": "2026-08-28T09:00:00+00:00",

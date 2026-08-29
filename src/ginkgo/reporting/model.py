@@ -18,13 +18,15 @@ from typing import Any
 from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo import query
+from ginkgo.query import Query
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
     ASSET_GROUP_METADATA_KEY,
 )
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.wildcards import slug
@@ -437,7 +439,6 @@ def build_report_data(
     *,
     summary: RunSummary,
     workspace_label: str | None = None,
-    assets_root: Path | None = None,
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     ginkgo_version: str | None = None,
@@ -452,8 +453,6 @@ def build_report_data(
     workspace_label : str | None
         Display label for the enclosing workspace. Inferred from the run
         directory's grandparent when omitted.
-    assets_root : Path | None
-        Root of the asset catalog. Defaults to ``<workspace>/.ginkgo/assets``.
     artifacts_root : Path | None
         Root of the artifact store. Defaults to ``<workspace>/.ginkgo/artifacts``.
     policy : SizingPolicy | None
@@ -482,15 +481,40 @@ def build_report_data(
     policy = policy or SizingPolicy()
     workspace_root = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
     layout = WorkspaceLayout(root=workspace_root)
-    assets_root = assets_root if assets_root is not None else layout.assets
     artifacts_root = artifacts_root if artifacts_root is not None else layout.artifacts
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
-    # A report is a read: it opens the index read-only, and where a workspace
-    # has no database it reads an empty one rather than creating it.
+    # A report is a read: it opens the ledger read-only through the same
+    # reader every other read path uses, and where a workspace has no database
+    # it reads an empty one rather than creating it.
+    with query.open(layout, missing_ok=True) as reader:
+        return _build(
+            summary=summary,
+            reader=reader,
+            run_dir=run_dir,
+            artifacts_root=artifacts_root,
+            workspace_label=workspace_label,
+            ginkgo_version=ginkgo_version,
+            generated_at=generated_at,
+            policy=policy,
+        )
+
+
+def _build(
+    *,
+    summary: RunSummary,
+    reader: Query,
+    run_dir: Path,
+    artifacts_root: Path,
+    workspace_label: str,
+    ginkgo_version: str,
+    generated_at: datetime | None,
+    policy: SizingPolicy,
+) -> ReportData:
+    """Assemble the report's sections against one open reader."""
     artifact_store = (
-        LocalArtifactStore(root=artifacts_root, index=CacheIndex.for_reading(layout.db))
+        LocalArtifactStore(root=artifacts_root, index=CacheIndex.attached_to(reader.catalog))
         if artifacts_root.exists()
         else None
     )
@@ -508,7 +532,7 @@ def build_report_data(
     graph = _build_graph(summary=summary, failures=failures)
     assets = _build_assets(
         summary=summary,
-        assets_root=assets_root,
+        catalog=reader.catalog,
         artifact_store=artifact_store,
         policy=policy,
         artifact_copies=artifact_copies,
@@ -847,7 +871,7 @@ def _first_log_path(*, task: TaskSummary, run_dir: Path) -> Path | None:
 def _build_assets(
     *,
     summary: RunSummary,
-    assets_root: Path,
+    catalog: AssetStore,
     artifact_store: LocalArtifactStore | None,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
@@ -859,10 +883,9 @@ def _build_assets(
     to show those, so we resolve each ``(key, version_id)`` pair directly
     rather than filtering on producer ``run_id``.
     """
-    if not assets_root.exists() or artifact_store is None:
+    if artifact_store is None:
         return ()
 
-    store = AssetStore(root=assets_root)
     seen_version_ids: set[str] = set()
     taken_anchors: set[str] = set()
     cards_by_section: dict[str, list[AssetCard]] = {}
@@ -880,7 +903,7 @@ def _build_assets(
             continue
         seen_version_ids.add(version_id)
         try:
-            version = store.get_version(key=AssetKey.parse(key_text), version_id=version_id)
+            version = catalog.get_version(key=AssetKey.parse(key_text), version_id=version_id)
         except (FileNotFoundError, ValueError):
             # A missing version or a manifest key that is not ``<kind>:<name>``
             # only costs this report one card.

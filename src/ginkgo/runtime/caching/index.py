@@ -10,32 +10,28 @@ The index sits in ``runtime/`` because the shape of a cache entry is a runtime
 concept; ``store/`` below it knows only tables and transactions.
 
 Unlike the run tables, the cache tables are **not** projections of the event
-ledger. They are a direct-write index: `CacheIndex` is the only thing that
-writes them, synchronously, on its own connection, because a cache save has to
-be visible to the `load` that may follow it microseconds later and the
-recorder's connection belongs to its writer thread. Two connections over one
-WAL database is what WAL is for, and every write here is either an
-``INSERT OR IGNORE`` on a content-addressed key or an idempotent upsert, so two
-runs saving the same entry at once agree by construction.
-
-Nothing constructs an index as a side effect. Opening one is a decision — to
-write (`open`), to read (`for_reading`), or to keep the rows to this process
-(`in_memory`) — because the first of those creates and migrates a database.
+ledger. They are a :class:`~ginkgo.runtime.direct_index.DirectIndex`:
+`CacheIndex` is the only thing that writes them, synchronously, on its own
+connection, because a cache save has to be visible to the `load` that may
+follow it microseconds later and the recorder's connection belongs to its
+writer thread. Two connections over one WAL database is what WAL is for, and
+every write here is either an ``INSERT OR IGNORE`` on a content-addressed key
+or an idempotent upsert, so two runs saving the same entry at once agree by
+construction.
 """
 
 from __future__ import annotations
 
 import sqlite3
-import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.direct_index import DirectIndex
 from ginkgo.store.jsonio import dumps_or_none, loads
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
-from ginkgo.store.sqlite import MEMORY, open_store
 
 __all__ = ["ENTRY_COLUMNS", "CacheEntry", "CacheIndex"]
 
@@ -141,7 +137,7 @@ class CacheEntry:
         return {column: self[column] for column in ENTRY_COLUMNS}
 
 
-class CacheIndex:
+class CacheIndex(DirectIndex):
     """The cache's view of the provenance database.
 
     Parameters
@@ -155,50 +151,9 @@ class CacheIndex:
     one index and one connection.
     """
 
-    def __init__(self, *, store: ProvenanceStore) -> None:
-        self._store = store
-        self._lock = threading.RLock()
+    def __init__(self, *, store: ProvenanceStore, **shared: Any) -> None:
+        super().__init__(store=store, **shared)
         self._seen_digests: set[tuple[str, str]] = set()
-
-    @classmethod
-    def open(cls, *, path: Path, readonly: bool = False) -> CacheIndex:
-        """Open the index for writing, creating and migrating the database.
-
-        Parameters
-        ----------
-        path : Path
-            The database file, normally ``WorkspaceLayout.db``.
-        readonly : bool, optional
-            Open a reader instead: it never creates the file and never
-            migrates it, and fails if there is nothing there to read.
-
-        Returns
-        -------
-        CacheIndex
-        """
-        return cls(store=open_store(Path(path), readonly=readonly, thread_shared=True))
-
-    @classmethod
-    def in_memory(cls) -> CacheIndex:
-        """Return an index over a private database that touches no filesystem.
-
-        What a remote worker gets: it has the artifacts it staged but not the
-        workspace that indexes them, and creating a database in a pod's scratch
-        directory would record rows nothing will ever read.
-        """
-        return cls(store=open_store(MEMORY, thread_shared=True))
-
-    @classmethod
-    def for_reading(cls, path: Path) -> CacheIndex:
-        """Return a read-only index over *path*, or an empty one if it is absent.
-
-        A workspace nobody has run anything in has no database and no cache,
-        which is an answer rather than an error — and a read path must never be
-        the thing that creates one.
-        """
-        if not Path(path).is_file():
-            return cls.in_memory()
-        return cls.open(path=path, readonly=True)
 
     def close(self) -> None:
         """Flush what was deferred and release the connection.
@@ -207,13 +162,7 @@ class CacheIndex:
         """
         with self._lock:
             self._flush_seen_digests()
-            self._store.close()
-
-    def __enter__(self) -> CacheIndex:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+            super().close()
 
     # -- cache entries -------------------------------------------------------
 
@@ -279,13 +228,13 @@ class CacheIndex:
     def entry(self, cache_key: str) -> CacheEntry | None:
         """Return one cache entry, or ``None`` when the index has no such row."""
         with self._lock:
-            rows = self._store.query(
+            rows = self._query(
                 f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
                 (cache_key,),
             )
             if not rows:
                 return None
-            artifacts = self._store.query(
+            artifacts = self._query(
                 "SELECT path, artifact_id FROM cache_artifacts WHERE cache_key = ?",
                 (cache_key,),
             )
@@ -295,16 +244,12 @@ class CacheIndex:
 
     def cache_keys(self) -> list[str]:
         """Return every cache key the index holds, sorted."""
-        with self._lock:
-            rows = self._store.query("SELECT cache_key FROM cache_entries ORDER BY cache_key")
+        rows = self._query("SELECT cache_key FROM cache_entries ORDER BY cache_key")
         return [str(row["cache_key"]) for row in rows]
 
     def cache_artifact_ids(self) -> list[str]:
         """Return every artifact id a cache entry names, sorted."""
-        with self._lock:
-            rows = self._store.query(
-                "SELECT DISTINCT artifact_id FROM cache_artifacts ORDER BY artifact_id"
-            )
+        rows = self._query("SELECT DISTINCT artifact_id FROM cache_artifacts ORDER BY artifact_id")
         return [str(row["artifact_id"]) for row in rows]
 
     def referenced_artifact_ids(self) -> set[str]:
@@ -313,11 +258,9 @@ class CacheIndex:
         Both halves are one query so a garbage collector cannot see a
         half-updated picture and delete bytes the other half still wants.
         """
-        with self._lock:
-            rows = self._store.query(
-                "SELECT artifact_id FROM cache_artifacts "
-                "UNION SELECT artifact_id FROM asset_versions"
-            )
+        rows = self._query(
+            "SELECT artifact_id FROM cache_artifacts UNION SELECT artifact_id FROM asset_versions"
+        )
         return {str(row["artifact_id"]) for row in rows}
 
     def record_hit(self, cache_key: str, *, at: str | None = None) -> None:
@@ -379,11 +322,10 @@ class CacheIndex:
 
     def artifact(self, artifact_id: str) -> ArtifactRecord | None:
         """Return one artifact record, or ``None`` when the index has no such row."""
-        with self._lock:
-            rows = self._store.query(
-                f"SELECT {_ARTIFACT_COLUMNS} FROM artifacts WHERE artifact_id = ?",  # noqa: S608
-                (artifact_id,),
-            )
+        rows = self._query(
+            f"SELECT {_ARTIFACT_COLUMNS} FROM artifacts WHERE artifact_id = ?",  # noqa: S608
+            (artifact_id,),
+        )
         if not rows:
             return None
         row = rows[0]
@@ -401,8 +343,7 @@ class CacheIndex:
 
     def artifact_ids(self) -> list[str]:
         """Return every artifact id the index holds, sorted."""
-        with self._lock:
-            rows = self._store.query("SELECT artifact_id FROM artifacts ORDER BY artifact_id")
+        rows = self._query("SELECT artifact_id FROM artifacts ORDER BY artifact_id")
         return [str(row["artifact_id"]) for row in rows]
 
     def forget_artifact(self, artifact_id: str) -> None:
@@ -418,10 +359,7 @@ class CacheIndex:
 
     def stat_index_lookup(self, stat_key: str) -> str | None:
         """Return the content key a stat fingerprint last resolved to."""
-        with self._lock:
-            rows = self._store.query(
-                "SELECT cache_key FROM stat_index WHERE stat_key = ?", (stat_key,)
-            )
+        rows = self._query("SELECT cache_key FROM stat_index WHERE stat_key = ?", (stat_key,))
         return str(rows[0]["cache_key"]) if rows else None
 
     def record_stat_index(self, *, stat_key: str, cache_key: str) -> None:
@@ -464,11 +402,10 @@ class CacheIndex:
         when a child's contents change, so callers ask about files.
         """
         resolved = path.resolve()
-        with self._lock:
-            rows = self._store.query(
-                "SELECT artifact_id, size, mtime_ns FROM materializations WHERE path = ?",
-                (str(resolved),),
-            )
+        rows = self._query(
+            "SELECT artifact_id, size, mtime_ns FROM materializations WHERE path = ?",
+            (str(resolved),),
+        )
         if not rows or str(rows[0]["artifact_id"]) != artifact_id:
             return False
         try:
@@ -500,7 +437,7 @@ class CacheIndex:
             been hashed before.
         """
         with self._lock:
-            rows = self._store.query(
+            rows = self._query(
                 "SELECT digest FROM digest_memo WHERE kind = ? AND fingerprint = ?",
                 (kind, fingerprint),
             )
@@ -538,8 +475,3 @@ class CacheIndex:
                 for kind, fingerprint in seen
             )
         )
-
-    def _write(self, *ops: ProjectionOp) -> None:
-        """Run *ops* in one transaction, holding the index's lock."""
-        with self._lock, self._store.transaction():
-            self._store.apply(ops)

@@ -5,7 +5,7 @@ root, with one subdirectory per concern::
 
     .ginkgo/
       ginkgo.db
-      runs/  cache/  assets/  artifacts/  staging/  fuse/  notebooks/  reports/
+      runs/  cache/  artifacts/  staging/  fuse/  notebooks/  reports/
       remote-staged.json
 
 :class:`WorkspaceLayout` is the single place that convention is written down.
@@ -72,7 +72,7 @@ class WorkspaceLayout:
         ----------
         path : Path
             A directory whose siblings form the wanted layout, typically a
-            cache or assets root.
+            cache root.
         """
         return cls(root=path.parent)
 
@@ -85,11 +85,6 @@ class WorkspaceLayout:
     def cache(self) -> Path:
         """Task cache entries."""
         return self.root / "cache"
-
-    @property
-    def assets(self) -> Path:
-        """Asset catalog."""
-        return self.root / "assets"
 
     @property
     def artifacts(self) -> Path:

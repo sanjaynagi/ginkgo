@@ -513,8 +513,8 @@ class TestEvaluatorIntegration:
         # The error is raised before registration, so no version for the
         # offending name may exist. Assert this unconditionally — an empty
         # store is the expected outcome, not a reason to skip the check.
-        asset_dir = tmp_path / ".ginkgo" / "assets"
-        keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            keys = catalog.list_asset_keys()
         assert not any(key.namespace == "table" and key.name == "dup" for key in keys)
 
     def test_passing_check_is_persisted_with_asset_version(
@@ -547,8 +547,8 @@ class TestEvaluatorIntegration:
         with pytest.raises(AssetCheckError, match=message):
             ginkgo.evaluate(expression)
 
-        asset_dir = tmp_path / ".ginkgo" / "assets"
-        keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            keys = catalog.list_asset_keys()
         assert not keys
 
     def test_cache_hit_reuses_artifact_id(
@@ -663,8 +663,8 @@ class TestExplicitAssetNames:
         assert str(result.key) == f"{kind}:{EXPLICIT_NAME}"
         assert AssetKey.parse(str(result.key)) == result.key
 
-        catalogued = AssetStore(root=tmp_path / ".ginkgo" / "assets").list_asset_keys()
-        assert result.key in catalogued
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            assert result.key in catalog.list_asset_keys()
 
     @pytest.mark.parametrize(
         ("kind", "expression_factory", "required_modules"),
@@ -753,8 +753,8 @@ class TestExplicitAssetNames:
         assert isinstance(first, AssetRef)
         assert isinstance(second, AssetRef)
         assert first.key == second.key
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        assert len(store.list_versions(key=first.key)) == 2
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            assert len(catalog.list_versions(key=first.key)) == 2
 
 
 class TestAssetCheckTransport:
@@ -898,7 +898,9 @@ class TestModelsCommand:
         rc = main(["models"])
         assert rc == 1
         output = capsys.readouterr().out
-        assert "No runs found" in output
+        # The run domain's own answer, not a missing-database error: an empty
+        # workspace reads the same here as it does for inspect and notebooks.
+        assert "No runs recorded in" in output
 
     def test_lists_models_from_latest_run(
         self,

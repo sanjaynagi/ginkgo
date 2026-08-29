@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from rich import box
 from rich.table import Table
 
-from ginkgo.cli.common import ASSETS_ROOT, console
+from ginkgo import query
+from ginkgo.cli.common import console
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
@@ -26,7 +27,18 @@ def command_asset(args) -> int:
     """Handle ``ginkgo asset`` subcommands."""
     is_tty = getattr(sys.stdout, "isatty", lambda: False)()
     rich_console = console(sys.stdout, width=None if is_tty else 160)
-    store = AssetStore(root=ASSETS_ROOT)
+    layout = WorkspaceLayout.relative()
+    # A workspace nobody has run anything in has an empty catalog, not a
+    # missing one — the same answer `ginkgo lineage` and `ginkgo notebooks`
+    # give, so that every read of an empty workspace reads alike.
+    with query.open(missing_ok=True) as reader:
+        return _run_asset_command(
+            args=args, rich_console=rich_console, store=reader.catalog, layout=layout
+        )
+
+
+def _run_asset_command(*, args, rich_console, store: AssetStore, layout: WorkspaceLayout) -> int:
+    """Render one ``ginkgo asset`` subcommand against an open catalog."""
 
     if args.asset_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo asset[/] [bold]ls[/]\n")
@@ -80,10 +92,7 @@ def command_asset(args) -> int:
 
     asset_ref = resolve_asset_selector(store=store, value=args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
-    layout = WorkspaceLayout.sibling_of(ASSETS_ROOT)
-    artifact_store = LocalArtifactStore(
-        root=layout.artifacts, index=CacheIndex.for_reading(layout.db)
-    )
+    artifact_store = LocalArtifactStore(root=layout.artifacts, index=CacheIndex.attached_to(store))
     artifact_path = (
         artifact_store.artifact_path(artifact_id=version.artifact_id)
         if artifact_store.exists(artifact_id=version.artifact_id)

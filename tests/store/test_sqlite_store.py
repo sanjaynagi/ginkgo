@@ -162,7 +162,7 @@ class TestMigrations:
 
     def test_every_object_in_the_schema_is_created(self, tmp_path):
         """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
-        expected = (Path(__file__).parent / "fixtures" / "schema_v2.txt").read_text(
+        expected = (Path(__file__).parent / "fixtures" / "schema_v4.txt").read_text(
             encoding="utf-8"
         )
 
@@ -187,9 +187,22 @@ class TestMigrations:
             "INSERT INTO artifacts (artifact_id, kind, digest_algorithm, created_at) "
             "VALUES ('a1', 'blob', 'blake3', '2026-08-28')"
         )
+        # A v1 asset key and one of its versions, to see what v3 does to each.
+        connection.execute(
+            "INSERT INTO asset_keys (asset_key, namespace, name, latest_version_id) "
+            "VALUES ('table:rows', 'table', 'rows', 'v1')"
+        )
+        connection.execute(
+            "INSERT INTO asset_versions (asset_key, version_id, kind, sub_kind, artifact_id, "
+            "content_hash, run_id, producer_task, created_at, metadata, metrics, checks) "
+            "VALUES ('table:rows', 'v1', 'table', 'parquet', 'a1', 'b3:1', 'run-1', "
+            "'pkg.build', '2026-08-28', '{\"columns\": 3}', '{}', '[]')"
+        )
 
         assert migrate(connection) == SCHEMA_VERSION
 
+        # v2: artifacts gained a digest, cache_key_components went, the memo
+        # kept only what is read back.
         columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts)")}
         assert "digest_hex" in columns
         assert connection.execute("SELECT digest_hex FROM artifacts").fetchone()[0] == ""
@@ -198,6 +211,30 @@ class TestMigrations:
         ).fetchall()
         memo_columns = {row[1] for row in connection.execute("PRAGMA table_info(digest_memo)")}
         assert memo_columns == {"kind", "fingerprint", "digest", "last_seen"}
+
+        # v3: asset_keys is gone — and with it the summary row this database
+        # held, which is the point: nothing is migrated out of it, because
+        # asset_versions already answers every question it answered.
+        assert not connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'asset_keys'"
+        ).fetchall()
+        # The version itself survives the dropped columns intact.
+        version_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(asset_versions)")
+        }
+        assert {"metrics", "checks", "sub_kind"}.isdisjoint(version_columns)
+        assert {"code_version", "data_version", "metadata"} <= version_columns
+        row = connection.execute(
+            "SELECT asset_key, version_id, artifact_id, metadata FROM asset_versions"
+        ).fetchone()
+        assert row == ("table:rows", "v1", "a1", '{"columns": 3}')
+
+        # v4: walking lineage forwards has an index of its own.
+        indexes = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        }
+        assert {"edges_src", "edges_dst"} <= indexes
 
 
 class TestWriting:

@@ -18,7 +18,7 @@ import pytest
 import yaml
 from rich.console import Console
 
-from ginkgo.core.asset import AssetKey, make_asset_version
+from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.cli import (
@@ -121,11 +121,20 @@ def _extract_run_dir(output: str) -> Path:
     return Path(match.group(1).strip())
 
 
-def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
-    asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
+def _seed_asset(
+    *,
+    cwd: Path,
+    name: str,
+    text: str,
+    run_id: str,
+    alias: str | None = None,
+    parent: AssetVersion | None = None,
+) -> AssetVersion:
+    index = CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db")
+    asset_store = AssetStore.attached_to(index)
     artifact_store = LocalArtifactStore(
         root=cwd / ".ginkgo" / "artifacts",
-        index=CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db"),
+        index=index,
     )
     source = cwd / f"{name}.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -139,10 +148,29 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
         run_id=run_id,
         producer_task="tests.seed",
     )
-    asset_store.register_version(version=version)
+    asset_store.register_version(
+        version=version,
+        parents=[_asset_ref(parent)] if parent is not None else [],
+        code_version=f"source-{name}",
+        task_id="task_0001",
+    )
     if alias is not None:
         asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
-    return version.version_id
+    index.close()
+    return version
+
+
+def _asset_ref(version: AssetVersion) -> AssetRef:
+    """Render a seeded version as the reference a consuming task would hold."""
+    return AssetRef(
+        key=version.key,
+        version_id=version.version_id,
+        kind=version.kind,
+        artifact_id=version.artifact_id,
+        content_hash=version.content_hash,
+        artifact_path="",
+        metadata=dict(version.metadata),
+    )
 
 
 def _seed_cache_entry(
@@ -603,14 +631,14 @@ class TestCliAssets:
             name="prepared_data",
             text="hello",
             run_id="run-1",
-        )
+        ).version_id
         second_version = _seed_asset(
             cwd=Path.cwd(),
             name="prepared_data",
             text="goodbye",
             run_id="run-2",
             alias="latest",
-        )
+        ).version_id
 
         listed = _run_cli("asset", "ls", cwd=Path.cwd())
         assert listed.returncode == 0, listed.stderr
@@ -654,6 +682,63 @@ class TestCliAssets:
         assert missing.returncode == 1
         assert "No asset 'sites/forest/notes' in the catalog" in missing.stderr
         assert "file:sites/forest/note" in missing.stderr
+
+
+class TestCliLineage:
+    def _chain(self) -> tuple[AssetVersion, AssetVersion]:
+        """Seed a version in one run and a version derived from it in another."""
+        upstream = _seed_asset(cwd=Path.cwd(), name="prepared_data", text="hello", run_id="run-1")
+        downstream = _seed_asset(
+            cwd=Path.cwd(),
+            name="report_figure",
+            text="goodbye",
+            run_id="run-2",
+            parent=upstream,
+        )
+        return upstream, downstream
+
+    def test_upstream_tree_reaches_the_earlier_run(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli("lineage", "file:report_figure", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo lineage" in result.stdout
+        assert downstream.version_id in result.stdout
+        assert upstream.version_id in result.stdout
+
+    def test_json_carries_the_graph(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli("lineage", "file:report_figure", "--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["direction"] == "upstream"
+        assert payload["root"]["version_id"] == downstream.version_id
+        assert payload["edges"] == [
+            {"parent": upstream.version_id, "child": downstream.version_id}
+        ]
+
+    def test_downstream_walks_the_other_way(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli(
+            "lineage", "file:prepared_data", "--downstream", "--json", cwd=Path.cwd()
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["root"]["version_id"] == upstream.version_id
+        assert downstream.version_id in payload["versions"]
+
+    def test_an_unknown_asset_is_reported(self) -> None:
+        self._chain()
+
+        result = _run_cli("lineage", "file:absent", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert "No versions registered for asset file:absent" in result.stderr
 
 
 class TestCliEnv:

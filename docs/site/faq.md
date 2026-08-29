@@ -532,7 +532,7 @@ An asset is a typed, named, versioned task output, produced by returning
 `file` return is just bytes at a path, an asset also carries a *kind*, a stable
 *key* (`<kind>:<name>`, where the name is exactly what you passed as `name=`),
 a content hash, a producer task, and metadata, and it
-is registered in a catalog under `.ginkgo/assets/` and tracked across runs.
+is registered in the catalog in `.ginkgo/ginkgo.db` and tracked across runs.
 Re-running a task that produces identical content adds a new *version* pointing
 at the same bytes, so the key stays a stable handle with full version history.
 Assets can also be consumed by downstream tasks; what the consumer receives —
