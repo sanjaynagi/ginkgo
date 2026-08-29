@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,14 +19,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rich import box
-from rich.table import Table
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import CACHE_ROOT, console
+from ginkgo.cli.common import CACHE_ROOT, stdout_console, new_table
 from ginkgo.cli.renderers.common import task_base_name
-from ginkgo.formatting import format_bytes, format_int, parse_timestamp
+from ginkgo.formatting import cutoff_before, format_bytes, format_int, parse_timestamp
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 from ginkgo.runtime.caching.cache import CacheStore
@@ -37,8 +34,7 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 def command_cache(args) -> int:
     """Handle ``ginkgo cache`` subcommands."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
+    rich_console = stdout_console()
     if args.cache_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
         entries: list[CacheEntryDisplay] = []
@@ -49,12 +45,7 @@ def command_cache(args) -> int:
             rich_console.print("[dim]No cache entries found.[/]")
             return 0
 
-        table = Table(
-            box=box.SQUARE,
-            border_style="#0f766e",
-            header_style="bold #134e4a",
-            expand=False,
-        )
+        table = new_table()
         table.add_column("Cache Key", style="bold", overflow="fold")
         table.add_column("Task", no_wrap=True)
         table.add_column("Size", justify="right")
@@ -233,14 +224,14 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
         f"([bold]{format_bytes(stats.never_hit_bytes)}[/])"
     )
     if stats.hit_histogram:
-        histogram = Table(box=box.SQUARE, border_style="#0f766e", header_style="bold #134e4a")
+        histogram = new_table()
         histogram.add_column("Hits", justify="right")
         histogram.add_column("Entries", justify="right")
         for hits, count in sorted(stats.hit_histogram.items()):
             histogram.add_row(str(hits), format_int(count))
         rich_console.print(histogram)
     if stats.top_functions:
-        functions = Table(box=box.SQUARE, border_style="#0f766e", header_style="bold #134e4a")
+        functions = new_table()
         functions.add_column("Task", no_wrap=True)
         functions.add_column("Entries", justify="right")
         functions.add_column("Size", justify="right")
@@ -355,12 +346,6 @@ def _format_age(created_at: datetime | None) -> str:
     return f"{seconds // 86400}d"
 
 
-def _prune_cutoff(older_than: str) -> datetime:
-    """Return the UTC cutoff timestamp implied by a duration string."""
-    duration = _parse_duration_seconds(older_than)
-    return datetime.now(UTC) - duration
-
-
 def select_prune_entries(
     *,
     entries: list[CacheEntryDisplay],
@@ -404,7 +389,7 @@ def select_prune_entries(
     selected: set[str] = set()
 
     if older_than is not None:
-        cutoff = _prune_cutoff(older_than)
+        cutoff = cutoff_before(older_than, option="--older-than")
         for entry in give_up_first:
             if entry.created_at is not None and entry.created_at < cutoff:
                 selected.add(entry.cache_key)
@@ -457,23 +442,6 @@ def _parse_size_bytes(value: str) -> int:
     unit = (match.group(2) or "B").upper().rstrip("B") or "B"
     multipliers = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
     return int(count * multipliers[unit])
-
-
-def _parse_duration_seconds(value: str):
-    """Parse a compact duration string like ``30d`` or ``12h``."""
-    match = re.fullmatch(r"(?P<count>\d+)(?P<unit>[mhd])", value.strip())
-    if match is None:
-        raise ValueError(
-            "Invalid duration for --older-than. Use a positive integer followed by "
-            "m, h, or d (for example: 45m, 12h, 30d)."
-        )
-
-    count = int(match.group("count"))
-    unit = match.group("unit")
-    multipliers = {"m": 60, "h": 3600, "d": 86400}
-    from datetime import timedelta
-
-    return timedelta(seconds=count * multipliers[unit])
 
 
 def _safe_rmtree(path: Path) -> None:

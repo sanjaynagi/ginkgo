@@ -638,6 +638,38 @@ class LocalArtifactStore:
         """
         self._index.record_artifact(record)
 
+    def integrity_problems(self) -> list[str]:
+        """Return the ways the artifact rows and the bytes on disk disagree.
+
+        Both directions: a row whose blob or tree manifest is gone names an
+        artifact nothing can restore, and a file in ``blobs/`` or ``trees/``
+        with no row is bytes nothing can find — the digest that would name them
+        only exists in the row. A tree's member blobs are reachable through its
+        manifest rather than through a row of their own, so they count as known.
+        """
+        problems: list[str] = []
+        known: set[Path] = set()
+        for artifact_id in self.list_artifact_ids():
+            record = self._index.artifact(artifact_id)
+            path = self.artifact_path(artifact_id=artifact_id)
+            known.add(path)
+            if not path.exists():
+                problems.append(f"artifact {artifact_id} has a row but no bytes")
+                continue
+            if record is not None and record.kind != "blob":
+                tree = self._load_tree_ref(record=record)
+                known.update(self._blobs_dir / entry.blob_digest for entry in tree.entries)
+
+        for directory in (self._blobs_dir, self._trees_dir):
+            if not directory.is_dir():
+                continue
+            problems += [
+                f"artifact file {directory.name}/{entry.name} has no row (orphan)"
+                for entry in sorted(directory.iterdir())
+                if entry.is_file() and entry not in known
+            ]
+        return problems
+
     def materialized_artifact_id(self, *, path: Path) -> str | None:
         """Return the artifact *path* holds, if it still has the recorded stat.
 

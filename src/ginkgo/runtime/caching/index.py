@@ -424,6 +424,36 @@ class CacheIndex(DirectIndex):
 
     # -- digest memo ---------------------------------------------------------
 
+    # -- environment materializations ----------------------------------------
+
+    def record_env_materialization(
+        self, *, env_hash: str, host: str, materialized_digest: str
+    ) -> None:
+        """Note the digest a declared environment materialised to on *host*.
+
+        A cache key names the environment a task *declared*; this records what
+        that declaration actually installed as, here. One row per host, holding
+        the most recent observation, so ``db check`` can say when two machines
+        disagree about an environment the key calls identical.
+        """
+        self._write(
+            ProjectionOp(
+                sql="INSERT INTO env_materializations "
+                "(env_hash, host, materialized_digest, seen_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (env_hash, host) DO UPDATE SET "
+                "materialized_digest=excluded.materialized_digest, seen_at=excluded.seen_at",
+                params=(env_hash, host, materialized_digest, now_iso()),
+            )
+        )
+
+    def env_materializations(self) -> list[dict[str, Any]]:
+        """Return every recorded environment materialization, newest first."""
+        rows = self._query(
+            "SELECT env_hash, host, materialized_digest, seen_at "
+            "FROM env_materializations ORDER BY seen_at DESC"
+        )
+        return [dict(row) for row in rows]
+
     def digest(self, *, kind: str, fingerprint: str) -> str | None:
         """Return a remembered content digest, if this content has been hashed.
 

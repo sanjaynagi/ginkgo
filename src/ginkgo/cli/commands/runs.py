@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 
-from rich import box
-from rich.table import Table
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import console, open_run
+from ginkgo.cli.common import open_run, stdout_console, new_table
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
 from ginkgo.runtime.run_summary import RunSummary
@@ -21,8 +18,7 @@ __all__ = ["command_runs"]
 
 def command_runs(args) -> int:
     """Handle ``ginkgo runs`` — ``ls`` for the index, ``show`` for one run."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
+    rich_console = stdout_console()
     as_json = bool(getattr(args, "json", False))
 
     if args.runs_command == "ls":
@@ -51,12 +47,7 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
         rich_console.print("[dim]No runs recorded in this workspace.[/]")
         return 0
 
-    table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    table = new_table()
     table.add_column("Run ID", style="bold", no_wrap=True)
     table.add_column("Workflow", overflow="fold")
     table.add_column("Status")
@@ -93,12 +84,7 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
         rich_console.print("\n[dim]This run recorded no tasks.[/]")
         return 0
 
-    table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    table = new_table()
     table.add_column("Task", style="bold", overflow="fold")
     table.add_column("Status")
     table.add_column("Cached")

@@ -297,6 +297,20 @@ class StagingCache:
         )
         return folder_dir
 
+    def integrity_problems(self) -> list[str]:
+        """Return the staged URIs whose bytes are no longer on disk.
+
+        A row without its bytes is a URI that will be re-downloaded — harmless,
+        but it means the cache is smaller than the index says it is.
+        """
+        with StagingIndex.for_reading(self._db_path) as index:
+            entries = index.entries()
+        return [
+            f"staged {entry.uri} has a row but no bytes at {entry.blob_path}"
+            for entry in entries
+            if not (self._root / entry.blob_path).exists()
+        ]
+
     def lookup(self, *, uri: str) -> StagingEntry | None:
         """Look up the staging entry for a URI without downloading.
 

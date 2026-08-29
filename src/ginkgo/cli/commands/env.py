@@ -7,11 +7,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich import box
-from rich.table import Table
 from rich.text import Text
 
-from ginkgo.cli.common import console
+from ginkgo.cli.common import console, new_table
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.envs.pixi import PixiEnvNotFoundError, PixiRegistry, _env_manifest, _list_envs
 
@@ -40,12 +38,7 @@ def command_env(args) -> int:
             )
             return 0
 
-        table = Table(
-            box=box.SQUARE,
-            border_style="#0f766e",
-            header_style="bold #134e4a",
-            expand=False,
-        )
+        table = new_table()
         table.add_column("Env", style="bold")
         table.add_column("Installed", no_wrap=True)
         table.add_column("Manifest")

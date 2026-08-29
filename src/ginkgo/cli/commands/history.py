@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 
-from rich import box
 from rich.table import Table
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import console
+from ginkgo.cli.common import stdout_console, new_table
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import TaskRow
@@ -23,8 +21,7 @@ _KEY_PREFIX = 12
 
 def command_history(args) -> int:
     """Handle ``ginkgo history`` — how one task has fared over its runs."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
+    rich_console = stdout_console()
 
     with query.open(missing_ok=True) as reader:
         rows = reader.task_history(args.task, limit=getattr(args, "limit", 20))
@@ -48,12 +45,7 @@ def _table(rows: list[TaskRow]) -> Table:
     matches every sibling branch, and without the label the rows that differ
     read identically.
     """
-    table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    table = new_table()
     table.add_column("Task", style="bold", overflow="fold")
     table.add_column("Run ID", no_wrap=True)
     table.add_column("Started", no_wrap=True)
