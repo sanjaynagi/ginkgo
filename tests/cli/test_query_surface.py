@@ -157,6 +157,30 @@ class TestRunsAndHistory:
         assert "Task" in result.stdout
         assert "greet" in result.stdout
 
+    def test_history_table_keeps_a_fan_out_label(self) -> None:
+        """`[central]` is a label, not Rich markup; the table must print it."""
+        from rich.console import Console
+
+        from ginkgo.cli.commands.history import _table
+
+        row = query.TaskRow(
+            run_id="r1",
+            task_id="task_0001",
+            name="workflow.flow.report",
+            display_label="report[central]",
+            status="succeeded",
+            cached=False,
+            cache_key="abc123",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:00:01+00:00",
+            duration_s=1.0,
+            attempts=1,
+        )
+        console = Console(record=True, width=200)
+        console.print(_table([row]))
+
+        assert "report[central]" in console.export_text()
+
     def test_a_like_wildcard_is_matched_literally(self, workspace: Path) -> None:
         """`history "%"` asks for a task called `%`, not for every task."""
         result = _run_cli("history", "%", "--json", cwd=workspace)

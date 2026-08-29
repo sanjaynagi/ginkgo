@@ -7,6 +7,7 @@ import sys
 
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
 from ginkgo import query
 from ginkgo.cli.common import console
@@ -63,7 +64,7 @@ def _table(rows: list[TaskRow]) -> Table:
     table.add_column("Attempts", justify="right")
     for row in rows:
         table.add_row(
-            row.display_label or task_base_name(row.name),
+            Text(row.display_label or task_base_name(row.name)),
             row.run_id,
             format_timestamp(parse_timestamp(row.started_at)),
             format_duration(row.duration_s),

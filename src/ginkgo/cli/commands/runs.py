@@ -8,6 +8,7 @@ import sys
 
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
 from ginkgo import query
 from ginkgo.cli.common import console, open_run
@@ -105,7 +106,7 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
     table.add_column("Attempts", justify="right")
     for task in summary.tasks:
         table.add_row(
-            task.display_label or task.base_name,
+            Text(task.display_label or task.base_name),
             task.status,
             "yes" if task.cached else "no",
             format_duration(task.duration_s),
