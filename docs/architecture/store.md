@@ -34,10 +34,11 @@ owned entirely by one class that writes it synchronously: `CacheIndex`
 (`runtime/artifacts/asset_store.py`) for the catalog, and `StagingIndex`
 (`remote/staging.py`) for downloaded remote inputs. That is deliberate. A cache
 save must be visible to the `load` that may follow it microseconds later, which
-an event queued for the writer thread cannot promise. Registering an asset version must read the parents registered
-moments earlier — possibly by a sibling task on another thread in the same run —
-to derive the child's `data_version`, and the projector is a pure function over
-one event that cannot query. In every case the facts held are not events that
+an event queued for the writer thread cannot promise. Registering an asset
+version must read the parents registered moments earlier — possibly by a
+sibling task on another thread in the same run — to derive the child's
+`data_version`, and the projector is a pure function over one event that
+cannot query. In every case the facts held are not events that
 happened to a run; they are what the cache, the catalog and the staging cache
 currently hold.
 
@@ -141,8 +142,10 @@ provenance never degrades silently.
 
 - `ginkgo db migrate` — create or upgrade the database.
 - `ginkgo db check` — schema version, `PRAGMA integrity_check`, and every way
-  an index and the bytes it names can disagree. Each owner answers for its own
-  half, in both directions:
+  an index and the bytes it names can disagree. A read path: it opens the
+  database read-only and never creates one, so a workspace nobody has run
+  anything in reports that and succeeds. Each owner answers for its own half,
+  in both directions:
   - the cache — an entry row whose `output.json` is gone, an entry directory
     with no row, a `cache_artifacts` row whose blob the artifact store lost;
   - the artifact store — a row whose blob or tree manifest is missing, and a
@@ -150,7 +153,11 @@ provenance never degrades silently.
   - runs — a `runs` row with no run directory, and a run directory with no row;
   - the staging cache — a staged URI whose bytes are gone;
   - environments — a declared environment recorded as materializing two
-    different ways across hosts.
+    different ways across hosts (`CacheIndex.env_drift_problems`).
+
+  The run check is `rundir.run_directory_problems`, beside everything else
+  about a run directory; the rest are `integrity_problems()` on the class that
+  owns the bytes.
 
   It reports; it never repairs. Exit status is 1 if anything was reported.
 - `ginkgo db prune --events-older-than <30d|12h|45m> [--dry-run]` — delete the
@@ -159,8 +166,14 @@ provenance never degrades silently.
   per-event detail `ginkgo export events` reads. A run still in flight keeps its
   events whatever its start time. `--digest-memo-older-than` prunes
   `digest_memo` on `last_seen`, where losing a row costs one re-hash.
+  `--staging-older-than` prunes `staging_entries` on `last_used_at` **and the
+  bytes beside them** — staged downloads are the largest thing under
+  `.ginkgo/` and this is their only eviction; a blob two URIs share is kept
+  until the last row naming it goes. At least one cutoff is required.
 - `ginkgo db vacuum` — rebuild the file, returning the pages a prune freed to
-  the filesystem, and report the size either side.
+  the filesystem, and report the size either side. SQLite cannot rebuild while
+  another connection holds the database and says nothing when it declines, so
+  an unchanged size is reported as "no space reclaimed" rather than as a win.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
 
 There is no `db rebuild`. The database is the record, not a cache of the run
@@ -250,9 +263,10 @@ something a third-party tool opens for itself:
 | `artifacts/blobs/*`, `artifacts/trees/<digest>.json` | The content-addressed store and its tree manifests. Bytes, named by their own digest. |
 | `staging/blobs/*`, `staging/folders/*` | Downloaded remote inputs. Bytes; `staging_entries` is their index. |
 | `runs/<id>/logs/*` | Task stdout and stderr, appended while a task runs and read as text. A log. |
+| `runs/<id>/notebooks/*.ipynb`, `*.html` | The executed notebook and its rendered page — the task's output, opened by a browser or Jupyter. Bytes. |
 | `runs/<id>/envs/*.lock` | A copy of the lockfile a run resolved, kept so the environment can be rebuilt from the run directory alone. Bytes. |
 | `runs/<id>/manifest.yaml` | The `RunSummary` the ledger already holds, exported once at finalize for a person to read. Derived, and stated as such. |
 | `<task>.params.yaml` beside an executed notebook | Papermill's parameter file. Written for a third-party tool to read. |
-| `kernel.json` under the notebook runtime root | A Jupyter kernelspec. Jupyter discovers it on disk; there is no other way to hand it over. |
+| `jupyter/` under the notebook runtime root | A Jupyter data directory: `share/jupyter/kernels/ginkgo-<digest>/kernel.json` and what belongs beside it. Every Jupyter subprocess discovers kernels by walking `jupyter_path()` on disk, so the directory layout *is* the interface; there is no way to hand a kernelspec over in memory. |
 | `refs/<artifact_id>.json` in a remote object store | The cross-machine wire format. A worker with no access to this workspace's database learns an artifact's shape from it. |
 | `.ginkgo-report.json` at the root of an exported report | The marker that says a directory is a ginkgo report, and so may have its contents replaced. It guards *deleting the user's files*, and an exported bundle is portable — copied to a webserver, moved, shared — so the evidence has to travel with the bytes it guards rather than living in a workspace database the bundle may no longer be anywhere near. A row keyed by path would go stale in the dangerous direction. |

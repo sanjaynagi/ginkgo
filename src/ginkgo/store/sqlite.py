@@ -240,7 +240,7 @@ class SqliteStore:
 
         For the in-memory ledger a reader opens when a workspace has none: the
         schema has to be created, so the open is write-mode, but nothing after
-        that may write — least of all the user SQL :meth:`select` carries. A
+        that may write — least of all the user SQL :meth:`select_with_columns` carries. A
         read-only open has ``query_only`` from its pragmas already; this is how
         a store that had to be created earns the same guarantee.
         """
@@ -355,7 +355,7 @@ def _apply_pragmas(connection: sqlite3.Connection, *, writable: bool) -> None:
     concurrent writer instead of failing on one.
 
     ``query_only`` closes a read-only connection to writes from the inside;
-    see :meth:`SqliteStore.select`.
+    see :meth:`SqliteStore.select_with_columns`.
 
     ``journal_mode`` is a property of the database file rather than of the
     connection, so a read-only connection cannot set it — the writer that

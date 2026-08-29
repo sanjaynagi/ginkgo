@@ -15,6 +15,7 @@ registered serializer and then stored as bytes.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -44,6 +45,8 @@ from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.events import AssetMaterialized, GinkgoEvent, task_id_for_node
 
+
+logger = logging.getLogger(__name__)
 
 ASSET_GROUP_METADATA_KEY = "ginkgo_group"
 ASSET_CAPTION_METADATA_KEY = "ginkgo_caption"
@@ -391,12 +394,21 @@ class AssetRegistrar:
         unique: dict[tuple[str, str, str], AssetRef] = {}
         for asset_ref in collect_asset_refs(node.resolved_args):
             unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
-        for declared in getattr(node, "asset_inputs", {}).values():
-            version_id = declared.get("version_id")
-            if version_id is None:
-                continue
+        for param, declared in node.asset_inputs.items():
+            version_id = declared["version_id"]
             version = self.asset_store.version_by_id(version_id)
             if version is None:
+                # The catalog has no row for a version the evaluator resolved
+                # moments ago. Nothing downstream can be traced through it, and
+                # that is a registration bug rather than a shape lineage should
+                # quietly accept.
+                logger.warning(
+                    "Task %s consumed asset version %s through %r, "
+                    "which the catalog has no row for; lineage will not record it",
+                    node.task_def.name,
+                    version_id,
+                    param,
+                )
                 continue
             key = (version.key.namespace, version.key.name, version.version_id)
             unique.setdefault(

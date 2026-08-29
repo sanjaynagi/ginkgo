@@ -185,14 +185,29 @@ def _stage_path(
 
     ``known_digests`` records path → artifact-id resolved from the local
     store; on a warm run the store's own materialization rows answer it for
-    paths this run has not touched. A hit there guarantees only that the
-    artifact exists locally, so the store is asked separately whether the
-    artifact has been published — that fact lives on the artifact's row.
+    files this run has not touched. Only for files: a directory's mtime does
+    not move when a child's contents change, so the stat guard behind those
+    rows cannot tell a stale folder from a fresh one, and a folder is hashed
+    rather than recognised.
+
+    A hit guarantees only that the artifact exists locally, so the store is
+    asked separately whether it has been published — that fact lives on the
+    artifact's row.
     """
     resolved = path.resolve()
     key = str(resolved)
-    artifact_id = known_digests.get(key) or remote_store.materialized_artifact_id(path=resolved)
-    if artifact_id is None or not remote_store.is_published(artifact_id):
+    artifact_id = known_digests.get(key)
+    if artifact_id is None and resolved.is_file():
+        artifact_id = remote_store.materialized_artifact_id(path=resolved)
+
+    if artifact_id is not None and not remote_store.is_published(artifact_id):
+        # Known locally, not yet on the remote: upload the bytes already in the
+        # CAS rather than re-hashing and re-sharing the source to arrive back
+        # at the same id.
+        published = remote_store.publish(artifact_id=artifact_id)
+        artifact_id = None if published is None else published.artifact_id
+
+    if artifact_id is None:
         # A source already inside a Ginkgo content-addressed cache
         # (staging or artifact blobs) is immutable by construction, so
         # the store can hardlink it into the artifact blob dir instead

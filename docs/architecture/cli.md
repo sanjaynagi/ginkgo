@@ -158,11 +158,18 @@ functions holding the most — as a table or `--json`.
 and the bytes it names disagree — the cache, the artifact store in both
 directions, runs against run directories, the staging cache, and an environment
 recorded as materializing two different ways across hosts — and exits 1 if it
-found anything. `db prune --events-older-than <duration>` deletes the raw events
-of runs that finished before the cutoff, leaving every projection intact, and
-`--digest-memo-older-than` prunes the digest memo on `last_seen`; `--dry-run`
-counts without deleting. `db vacuum` then returns the freed pages to the
-filesystem. Durations are the same `30d` / `12h` / `45m` shape `cache prune
+found anything. Like every other read path it opens the database read-only and
+never creates one; an empty workspace reports that and exits 0. Creating the
+database is `db migrate`'s job.
+
+`db prune` takes three cutoffs, at least one required.
+`--events-older-than <duration>` deletes the raw events of runs that finished
+before it, leaving every projection intact; `--digest-memo-older-than` prunes
+the digest memo on `last_seen`; `--staging-older-than` prunes staged remote
+inputs on `last_used_at` and deletes their bytes, which is the only eviction
+the staging cache has. `--dry-run` counts without deleting. `db vacuum` then
+returns the freed pages to the filesystem, and says so plainly when it could
+not. Durations are the same `30d` / `12h` / `45m` shape `cache prune
 --older-than` takes, parsed by `formatting.parse_duration`.
 
 Every command that prints a table builds it through `cli/common.py`'s

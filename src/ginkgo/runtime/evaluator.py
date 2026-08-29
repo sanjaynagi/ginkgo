@@ -1260,7 +1260,8 @@ class ConcurrentEvaluator:
                     refs = collect_asset_refs(materialised)
                     if refs:
                         # One row per parameter is what task_inputs holds, so
-                        # the first ref is the one recorded.
+                        # the first ref is the one recorded — see the
+                        # ``asset_inputs`` docstring on TaskPlanned.
                         asset_inputs[name] = {
                             "asset_key": str(refs[0].key),
                             "version_id": refs[0].version_id,

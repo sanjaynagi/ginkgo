@@ -202,6 +202,13 @@ class TaskPlanned(TaskEvent):
     *content*, and by the time a semantically typed parameter reaches the task
     the ref has already become a DataFrame — so identity has to travel beside
     the hashes rather than be recovered from them.
+
+    One asset per parameter, which is the shape ``task_inputs`` holds: its key
+    is ``(run_id, task_id, param, position)`` and the projector writes position
+    0. A parameter handed a list of assets records the first, and the rest
+    reach lineage through the producing tasks' own edges. Recording all of them
+    would mean a row per position and a projector loop over positions rather
+    than over parameters; nothing asks for it yet.
     """
 
     event: str = "task_planned"
