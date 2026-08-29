@@ -10,7 +10,7 @@ The index sits in ``runtime/`` because the shape of a cache entry is a runtime
 concept; ``store/`` below it knows only tables and transactions.
 
 Unlike the run tables, the cache tables are **not** projections of the event
-ledger. They are a :class:`~ginkgo.runtime.direct_index.DirectIndex`:
+ledger. They are a :class:`~ginkgo.store.direct_index.DirectIndex`:
 `CacheIndex` is the only thing that writes them, synchronously, on its own
 connection, because a cache save has to be visible to the `load` that may
 follow it microseconds later and the recorder's connection belongs to its
@@ -29,7 +29,7 @@ from typing import Any
 
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
-from ginkgo.runtime.direct_index import DirectIndex
+from ginkgo.store.direct_index import DirectIndex
 from ginkgo.store.jsonio import dumps_or_none, loads
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
 
@@ -395,24 +395,32 @@ class CacheIndex(DirectIndex):
             )
         )
 
-    def materialization_matches(self, *, path: Path, artifact_id: str) -> bool:
-        """Return whether *path* still has the stat it had when materialized.
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds, if its stat is still the recorded one.
 
-        The answer is only trusted for files: a directory's mtime does not move
-        when a child's contents change, so callers ask about files.
+        A path whose size or mtime has moved since it was materialized answers
+        ``None``: the row describes bytes that are no longer there. The answer
+        is only trusted for files — a directory's mtime does not move when a
+        child's contents change, so callers ask about files.
         """
         resolved = path.resolve()
         rows = self._query(
             "SELECT artifact_id, size, mtime_ns FROM materializations WHERE path = ?",
             (str(resolved),),
         )
-        if not rows or str(rows[0]["artifact_id"]) != artifact_id:
-            return False
+        if not rows:
+            return None
         try:
             st = resolved.stat()
         except OSError:
-            return False
-        return st.st_size == rows[0]["size"] and st.st_mtime_ns == rows[0]["mtime_ns"]
+            return None
+        if st.st_size != rows[0]["size"] or st.st_mtime_ns != rows[0]["mtime_ns"]:
+            return None
+        return str(rows[0]["artifact_id"])
+
+    def materialization_matches(self, *, path: Path, artifact_id: str) -> bool:
+        """Return whether *path* still holds the bytes of *artifact_id*."""
+        return self.materialized_artifact_id(path=path) == artifact_id
 
     # -- digest memo ---------------------------------------------------------
 

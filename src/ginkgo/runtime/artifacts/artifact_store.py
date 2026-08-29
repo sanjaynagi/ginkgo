@@ -638,6 +638,14 @@ class LocalArtifactStore:
         """
         self._index.record_artifact(record)
 
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds, if it still has the recorded stat.
+
+        The counterpart of the materialization :meth:`store` records: it lets a
+        later run recognise an unchanged input without re-hashing it.
+        """
+        return self._index.materialized_artifact_id(path=path)
+
 
 # -- module-level helpers --------------------------------------------------
 

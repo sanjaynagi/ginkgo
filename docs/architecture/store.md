@@ -28,7 +28,7 @@ The store has two halves.
 The cache and asset tables — `cache_entries`, `cache_artifacts`, `artifacts`,
 `stat_index`, `materializations`, `digest_memo`, `asset_versions`,
 `asset_aliases` — are neither. They are **direct-write indexes**
-(`runtime/direct_index.py`), each owned entirely by one class that writes it
+(`store/direct_index.py`), each owned entirely by one class that writes it
 synchronously: `CacheIndex` (`runtime/caching/index.py`) for the cache half and
 `AssetStore` (`runtime/artifacts/asset_store.py`) for the catalog. That is
 deliberate on both sides. A cache save must be visible to the `load` that may

@@ -1,54 +1,63 @@
 """Local staging cache for remote artifacts.
 
 Downloads remote files into a content-addressed local cache so that tasks
-receive normal filesystem paths.  ETag-based freshness checks avoid
-redundant downloads on subsequent runs.
+receive normal filesystem paths. ETag-based freshness checks avoid redundant
+downloads on subsequent runs.
+
+The bytes live on disk; what was staged, and from where, is a row in the
+ledger's ``staging_entries`` table — one home for the fact, queryable by
+``ginkgo db check`` alongside every other index.
 
 Layout::
 
     .ginkgo/staging/
-      blobs/<digest>                # cached file bytes
-      metadata/<uri_hash>.json      # freshness and identity metadata
+      blobs/<digest>              # cached file bytes
+      folders/<folder_digest>/    # cached prefix downloads
 """
 
 from __future__ import annotations
 
-
 import json
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import os
-from pathlib import Path
 import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 from ginkgo.config import load_runtime_config
-from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
-from ginkgo.remote.backend import RemoteObjectMeta, ObjectStore
-from ginkgo.remote.resolve import resolve_backend
 from ginkgo.core.hashing import hash_file, hash_str
+from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef
+from ginkgo.formatting import now_iso
+from ginkgo.remote.backend import ObjectStore, RemoteObjectMeta
+from ginkgo.remote.resolve import resolve_backend
+from ginkgo.store.direct_index import DirectIndex
+from ginkgo.store.protocol import ProjectionOp
 from ginkgo.workspace_layout import WorkspaceLayout
+
+__all__ = ["StagingCache", "StagingEntry", "StagingIndex"]
 
 
 @dataclass(frozen=True, kw_only=True)
 class StagingEntry:
-    """Metadata for a staged remote object.
+    """What the staging cache knows about one staged remote URI.
 
     Parameters
     ----------
     uri : str
         Original remote URI.
     digest : str
-        BLAKE3 content digest of the staged file.
+        BLAKE3 content digest of the staged file, or the manifest digest of a
+        staged folder.
     etag : str | None
-        Provider ETag at time of download.
+        Provider ETag at time of download; ``None`` for a folder.
     version_id : str | None
         Provider version ID at time of download.
     size : int
-        File size in bytes.
+        Total size in bytes of what was staged.
     staged_at : str
-        ISO-8601 timestamp of when the file was staged.
+        ISO-8601 timestamp of when it was staged.
     blob_path : str
-        Relative path to the blob within the staging cache.
+        Path within the staging cache, relative to its root.
     """
 
     uri: str
@@ -59,33 +68,126 @@ class StagingEntry:
     staged_at: str
     blob_path: str
 
-    def to_json(self) -> str:
-        """Serialize to JSON."""
-        return json.dumps(asdict(self), indent=2, sort_keys=True)
 
-    @classmethod
-    def from_json(cls, data: str) -> StagingEntry:
-        """Deserialize from JSON."""
-        return cls(**json.loads(data))
+class StagingIndex(DirectIndex):
+    """The ``staging_entries`` table: what has been downloaded, and from where.
+
+    One row per remote URI. The row is the only record — the bytes beside it
+    are content-addressed and carry no identity of their own, so without it a
+    second run could not tell a stale download from a fresh one.
+    """
+
+    def entry(self, *, uri: str) -> StagingEntry | None:
+        """Return the recorded entry for *uri*, or ``None`` if it is not staged."""
+        rows = self._query(
+            "SELECT uri, digest, etag, version_id, size, staged_at, blob_path "
+            "FROM staging_entries WHERE uri = ?",
+            (uri,),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return StagingEntry(
+            uri=str(row["uri"]),
+            digest=str(row["digest"]),
+            etag=row["etag"],
+            version_id=row["version_id"],
+            size=int(row["size"] or 0),
+            staged_at=str(row["staged_at"]),
+            blob_path=str(row["blob_path"]),
+        )
+
+    def entries(self) -> list[StagingEntry]:
+        """Return every recorded entry, oldest first."""
+        rows = self._query(
+            "SELECT uri, digest, etag, version_id, size, staged_at, blob_path "
+            "FROM staging_entries ORDER BY staged_at"
+        )
+        return [
+            StagingEntry(
+                uri=str(row["uri"]),
+                digest=str(row["digest"]),
+                etag=row["etag"],
+                version_id=row["version_id"],
+                size=int(row["size"] or 0),
+                staged_at=str(row["staged_at"]),
+                blob_path=str(row["blob_path"]),
+            )
+            for row in rows
+        ]
+
+    def record(self, entry: StagingEntry) -> None:
+        """Record a freshly staged URI, replacing whatever was there before."""
+        self._write(
+            ProjectionOp(
+                sql="INSERT INTO staging_entries "
+                "(uri, digest, etag, version_id, size, staged_at, blob_path, last_used_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (uri) DO UPDATE SET "
+                "digest=excluded.digest, etag=excluded.etag, version_id=excluded.version_id, "
+                "size=excluded.size, staged_at=excluded.staged_at, "
+                "blob_path=excluded.blob_path, last_used_at=excluded.last_used_at",
+                params=(
+                    entry.uri,
+                    entry.digest,
+                    entry.etag,
+                    entry.version_id,
+                    entry.size,
+                    entry.staged_at,
+                    entry.blob_path,
+                    entry.staged_at,
+                ),
+            )
+        )
+
+    def record_use(self, *, uri: str) -> None:
+        """Note that a staged URI was reused rather than re-downloaded."""
+        self._write(
+            ProjectionOp(
+                sql="UPDATE staging_entries SET last_used_at = ? WHERE uri = ?",
+                params=(now_iso(), uri),
+            )
+        )
 
 
 class StagingCache:
     """Content-addressed local cache for remote file downloads.
 
+    The database is opened on first use, never on construction: a workspace
+    that stages nothing gets no database out of building one of these.
+
     Parameters
     ----------
     root : Path | None
-        Root directory for the staging cache.  Defaults to
-        ``.ginkgo/staging`` under the current working directory.
+        Root directory for the staged bytes. Defaults to ``.ginkgo/staging``
+        under the current working directory.
+    db_path : Path | None
+        The ledger holding ``staging_entries``. Defaults to the database
+        belonging to the workspace *root* sits in.
     """
 
-    def __init__(self, *, root: Path | None = None) -> None:
+    def __init__(self, *, root: Path | None = None, db_path: Path | None = None) -> None:
         self._root = root if root is not None else _default_staging_root()
         self._blobs_dir = self._root / "blobs"
-        self._metadata_dir = self._root / "metadata"
         self._folders_dir = self._root / "folders"
-        for directory in (self._blobs_dir, self._metadata_dir, self._folders_dir):
+        for directory in (self._blobs_dir, self._folders_dir):
             directory.mkdir(parents=True, exist_ok=True)
+        self._db_path = (
+            db_path if db_path is not None else WorkspaceLayout.sibling_of(self._root).db
+        )
+        self._index: StagingIndex | None = None
+
+    @property
+    def index(self) -> StagingIndex:
+        """The staging table, opened for writing on first use."""
+        if self._index is None:
+            self._index = StagingIndex.open(path=self._db_path)
+        return self._index
+
+    def close(self) -> None:
+        """Release the database connection, if one was ever opened."""
+        if self._index is not None:
+            self._index.close()
+            self._index = None
 
     def stage_file(
         self,
@@ -112,25 +214,17 @@ class StagingCache:
             Local path to the staged file.
         """
         backend = backend or resolve_backend(ref.scheme)
-        uri_key = _uri_hash(ref.uri)
-        metadata_path = self._metadata_dir / f"{uri_key}.json"
 
-        # Check for a cached entry.
-        existing = self._load_entry(metadata_path)
+        existing = self.index.entry(uri=ref.uri)
         if existing is not None:
             blob_path = self._blobs_dir / existing.digest
-            if blob_path.exists():
-                # Check freshness via ETag if available.
-                if not self._needs_refresh(existing=existing, ref=ref, backend=backend):
-                    return blob_path
+            if blob_path.exists() and not self._needs_refresh(
+                existing=existing, ref=ref, backend=backend
+            ):
+                self.index.record_use(uri=ref.uri)
+                return blob_path
 
-        # Download the file to a temp location, then move into the cache.
-        return self._download_and_cache(
-            ref=ref,
-            backend=backend,
-            uri_key=uri_key,
-            metadata_path=metadata_path,
-        )
+        return self._download_and_cache(ref=ref, backend=backend)
 
     def stage_folder(
         self,
@@ -156,13 +250,13 @@ class StagingCache:
             Local directory path containing the staged files.
         """
         backend = backend or resolve_backend(ref.scheme)
-        uri_key = _uri_hash(ref.uri)
 
         objects = backend.list_prefix(bucket=ref.bucket, prefix=ref.key)
         folder_digest = _folder_manifest_digest(uri=ref.uri, objects=objects)
         folder_dir = self._folders_dir / folder_digest
 
         if folder_dir.exists():
+            self.index.record_use(uri=ref.uri)
             return folder_dir
 
         temp_dir = self._folders_dir / f".tmp-{folder_digest}"
@@ -190,25 +284,24 @@ class StagingCache:
                 shutil.rmtree(temp_dir)
             raise
 
-        metadata_path = self._metadata_dir / f"{uri_key}.json"
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "uri": ref.uri,
-                    "folder_digest": folder_digest,
-                    "object_count": len(objects),
-                    "staged_at": datetime.now(timezone.utc).isoformat(),
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+        self.index.record(
+            StagingEntry(
+                uri=ref.uri,
+                digest=folder_digest,
+                etag=None,
+                version_id=ref.version_id,
+                size=sum(obj.size or 0 for obj in objects),
+                staged_at=now_iso(),
+                blob_path=f"folders/{folder_digest}",
+            )
         )
-
         return folder_dir
 
     def lookup(self, *, uri: str) -> StagingEntry | None:
         """Look up the staging entry for a URI without downloading.
+
+        A read path: it opens the database read-only, and answers ``None`` for
+        a workspace that has never staged anything rather than creating one.
 
         Parameters
         ----------
@@ -218,11 +311,10 @@ class StagingCache:
         Returns
         -------
         StagingEntry | None
-            Cached entry, or ``None`` if not staged.
+            Recorded entry, or ``None`` if not staged.
         """
-        uri_key = _uri_hash(uri)
-        metadata_path = self._metadata_dir / f"{uri_key}.json"
-        return self._load_entry(metadata_path)
+        with StagingIndex.for_reading(self._db_path) as index:
+            return index.entry(uri=uri)
 
     def _needs_refresh(
         self,
@@ -253,14 +345,12 @@ class StagingCache:
         *,
         ref: RemoteFileRef,
         backend: ObjectStore,
-        uri_key: str,
-        metadata_path: Path,
     ) -> Path:
         """Download a remote file and store it in the staging cache."""
-        import tempfile
-
-        # Download to a temp file first.
-        temp_path = Path(tempfile.mktemp(prefix="ginkgo-stage-", dir=str(self._blobs_dir)))
+        with tempfile.NamedTemporaryFile(
+            prefix="ginkgo-stage-", dir=self._blobs_dir, delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
         try:
             meta = backend.download(
                 bucket=ref.bucket,
@@ -268,7 +358,6 @@ class StagingCache:
                 dest_path=temp_path,
             )
 
-            # Compute content digest.
             digest = hash_file(temp_path)
 
             # Move to content-addressed location.
@@ -278,18 +367,17 @@ class StagingCache:
             else:
                 temp_path.unlink()
 
-            # Write metadata.
-            entry = StagingEntry(
-                uri=ref.uri,
-                digest=digest,
-                etag=meta.etag,
-                version_id=meta.version_id or ref.version_id,
-                size=meta.size,
-                staged_at=datetime.now(timezone.utc).isoformat(),
-                blob_path=f"blobs/{digest}",
+            self.index.record(
+                StagingEntry(
+                    uri=ref.uri,
+                    digest=digest,
+                    etag=meta.etag,
+                    version_id=meta.version_id or ref.version_id,
+                    size=meta.size,
+                    staged_at=now_iso(),
+                    blob_path=f"blobs/{digest}",
+                )
             )
-            metadata_path.write_text(entry.to_json(), encoding="utf-8")
-
             return blob_path
 
         except Exception:
@@ -297,20 +385,6 @@ class StagingCache:
             if temp_path.exists():
                 temp_path.unlink()
             raise
-
-    def _load_entry(self, metadata_path: Path) -> StagingEntry | None:
-        """Load a staging entry from disk."""
-        if not metadata_path.exists():
-            return None
-        try:
-            return StagingEntry.from_json(metadata_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, TypeError, KeyError):
-            return None
-
-
-def _uri_hash(uri: str) -> str:
-    """Return a stable hash of a URI for use as a cache key."""
-    return hash_str(uri)
 
 
 def _folder_manifest_digest(

@@ -64,7 +64,6 @@ def stage_args_for_remote(
     type_hints: dict[str, Any],
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str] | None = None,
-    published_artifacts: set[str] | None = None,
 ) -> dict[str, Any]:
     """Rewrite ``file`` / ``folder`` arguments into remote-artifact references.
 
@@ -80,15 +79,10 @@ def stage_args_for_remote(
     known_digests : dict[str, str] | None
         Optional path → artifact-id cache from the local artifact store.
         A hit means the artifact exists locally but says nothing about
-        whether it has been published to the remote store yet.
-    published_artifacts : set[str] | None
-        Optional set of artifact ids already uploaded to ``remote_store``
-        during this run. Used to avoid redundant remote uploads without
-        conflating local-cache state with remote-publish state.
+        whether it has been published to the remote store yet — the store
+        answers that from the artifact's own row.
     """
     known_digests = known_digests or {}
-    if published_artifacts is None:
-        published_artifacts = set()
     staged: dict[str, Any] = {}
     for name, value in args.items():
         annotation = type_hints.get(name, Any)
@@ -97,7 +91,6 @@ def stage_args_for_remote(
             annotation=annotation,
             remote_store=remote_store,
             known_digests=known_digests,
-            published_artifacts=published_artifacts,
         )
     return staged
 
@@ -108,7 +101,6 @@ def _stage_value(
     annotation: Any,
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str],
-    published_artifacts: set[str],
 ) -> Any:
     """Stage a single argument value, recursing into typed containers."""
     # Fuse-streamed refs bypass CAS entirely — the worker mounts the
@@ -128,7 +120,6 @@ def _stage_value(
                 tag=_REMOTE_FILE_TAG,
                 remote_store=remote_store,
                 known_digests=known_digests,
-                published_artifacts=published_artifacts,
             )
     if _annotation_matches(annotation=annotation, target=folder):
         path_str = _file_path_from_value(value=value, tag="folder")
@@ -138,7 +129,6 @@ def _stage_value(
                 tag=_REMOTE_FOLDER_TAG,
                 remote_store=remote_store,
                 known_digests=known_digests,
-                published_artifacts=published_artifacts,
             )
 
     # Recurse into typed containers.
@@ -152,7 +142,6 @@ def _stage_value(
                 annotation=inner_annotation,
                 remote_store=remote_store,
                 known_digests=known_digests,
-                published_artifacts=published_artifacts,
             )
             for item in value
         ]
@@ -167,7 +156,6 @@ def _stage_value(
                 annotation=value_annotation,
                 remote_store=remote_store,
                 known_digests=known_digests,
-                published_artifacts=published_artifacts,
             )
             for key, item in value.items()
         }
@@ -192,19 +180,19 @@ def _stage_path(
     tag: str,
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str],
-    published_artifacts: set[str],
 ) -> dict[str, str]:
     """Upload a single path and return its remote-reference dict.
 
     ``known_digests`` records path → artifact-id resolved from the local
-    store. A hit there guarantees only that the artifact exists locally,
-    not that it has been published to the remote store — the two caches
-    must stay separate.
+    store; on a warm run the store's own materialization rows answer it for
+    paths this run has not touched. A hit there guarantees only that the
+    artifact exists locally, so the store is asked separately whether the
+    artifact has been published — that fact lives on the artifact's row.
     """
     resolved = path.resolve()
     key = str(resolved)
-    artifact_id = known_digests.get(key)
-    if artifact_id is None or artifact_id not in published_artifacts:
+    artifact_id = known_digests.get(key) or remote_store.materialized_artifact_id(path=resolved)
+    if artifact_id is None or not remote_store.is_published(artifact_id):
         # A source already inside a Ginkgo content-addressed cache
         # (staging or artifact blobs) is immutable by construction, so
         # the store can hardlink it into the artifact blob dir instead
@@ -215,8 +203,7 @@ def _stage_path(
             src_is_readonly=_is_managed_cas_blob(path=resolved),
         )
         artifact_id = record.artifact_id
-        known_digests[key] = artifact_id
-        published_artifacts.add(artifact_id)
+    known_digests[key] = artifact_id
     return {
         "__ginkgo_type__": tag,
         "artifact_id": artifact_id,
@@ -367,7 +354,6 @@ def _stage_encoded_path(
         tag=tag,
         remote_store=remote_store,
         known_digests={},
-        published_artifacts=set(),
     )
 
 
@@ -468,84 +454,6 @@ def _materialize_remote_output(
     if not dest.exists():
         remote_store.retrieve(artifact_id=artifact_id, dest_path=dest)
     return dest
-
-
-def load_staging_cache(*, cache_path: Path) -> tuple[dict[str, str], set[str]]:
-    """Load persisted staging state from disk.
-
-    Returns
-    -------
-    tuple[dict[str, str], set[str]]
-        ``(known_digests, published_artifacts)`` — the path→artifact-id
-        map (keyed on ``(abspath, mtime_ns, size)``) and the set of
-        artifact ids confirmed on the remote store.
-    """
-    import json
-
-    known_digests: dict[str, str] = {}
-    published_artifacts: set[str] = set()
-    if not cache_path.exists():
-        return known_digests, published_artifacts
-
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return known_digests, published_artifacts
-
-    for entry in data.get("digests", []):
-        path_str = entry.get("path")
-        artifact_id = entry.get("artifact_id")
-        mtime_ns = entry.get("mtime_ns")
-        size = entry.get("size")
-        if not (path_str and artifact_id):
-            continue
-        p = Path(path_str)
-        try:
-            stat = p.stat()
-        except OSError:
-            continue
-        if stat.st_mtime_ns == mtime_ns and stat.st_size == size:
-            known_digests[path_str] = artifact_id
-
-    published_artifacts = set(data.get("published", []))
-    return known_digests, published_artifacts
-
-
-def save_staging_cache(
-    *,
-    cache_path: Path,
-    known_digests: dict[str, str],
-    published_artifacts: set[str],
-) -> None:
-    """Persist staging state to disk.
-
-    Each digest entry records the file's ``mtime_ns`` and ``size`` so
-    stale entries are automatically invalidated on the next load.
-    """
-    import json
-
-    entries = []
-    for path_str, artifact_id in known_digests.items():
-        p = Path(path_str)
-        try:
-            stat = p.stat()
-        except OSError:
-            continue
-        entries.append(
-            {
-                "path": path_str,
-                "artifact_id": artifact_id,
-                "mtime_ns": stat.st_mtime_ns,
-                "size": stat.st_size,
-            }
-        )
-
-    data = {
-        "digests": entries,
-        "published": sorted(published_artifacts),
-    }
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def build_worker_remote_store(

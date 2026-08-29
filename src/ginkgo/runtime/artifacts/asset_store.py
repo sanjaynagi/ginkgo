@@ -7,7 +7,7 @@ in the content-addressed artifact store, exactly as before; only the catalog
 metadata moved.
 
 Like the cache index, the catalog is a
-:class:`~ginkgo.runtime.direct_index.DirectIndex` rather than a projection of
+:class:`~ginkgo.store.direct_index.DirectIndex` rather than a projection of
 the event ledger: registering a version has to read the parents registered
 moments earlier — possibly by a sibling task on another thread in the same run
 — to derive the child's ``data_version``, and the recorder's writer thread is
@@ -26,7 +26,7 @@ from typing import Any
 
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion
 from ginkgo.core.hashing import hash_str
-from ginkgo.runtime.direct_index import DirectIndex
+from ginkgo.store.direct_index import DirectIndex
 from ginkgo.store.jsonio import dumps, loads
 from ginkgo.store.protocol import ProjectionOp
 
@@ -61,7 +61,7 @@ class AssetStore(DirectIndex):
     ----------
     store : ProvenanceStore
         An open store. The catalog owns it and closes it with
-        :meth:`~ginkgo.runtime.direct_index.DirectIndex.close`, unless it was
+        :meth:`~ginkgo.store.direct_index.DirectIndex.close`, unless it was
         attached to another index's connection.
 
     Notes

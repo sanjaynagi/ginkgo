@@ -438,7 +438,6 @@ class ConcurrentEvaluator:
             registry=self.executor_registry,
             digests=self._digests,
             local_artifact_store=self._cache_store._artifact_store,
-            staging_cache_path=WorkspaceLayout.for_cwd().staging_cache_file,
             run_id_provider=lambda: self._run_id,
             emit_event=self._emit_event,
         )
@@ -609,7 +608,6 @@ class ConcurrentEvaluator:
             finally:
                 self._log_drain.stop()
                 self._executors = None
-                self._remote_dispatch.save_staging_cache()
                 self._cache_index.close()
 
         assert self._failure is not None

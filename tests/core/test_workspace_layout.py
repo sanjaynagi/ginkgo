@@ -62,7 +62,6 @@ class TestDirectories:
         assert layout.notebooks.name == "notebooks"
         assert layout.reports.name == "reports"
         assert layout.db.name == "ginkgo.db"
-        assert layout.staging_cache_file.name == "remote-staged.json"
 
     def test_no_two_concerns_share_a_directory(self, tmp_path, monkeypatch):
         # GINKGO_DB would move the database out of the layout and collapse the
@@ -79,10 +78,9 @@ class TestDirectories:
             layout.notebooks,
             layout.reports,
             layout.db,
-            layout.staging_cache_file,
         }
 
-        assert len(paths) == 9
+        assert len(paths) == 8
         assert all(path.parent == layout.root for path in paths)
 
     def test_creates_no_directories(self, tmp_path):

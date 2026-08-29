@@ -48,7 +48,7 @@ them. A lost database means a catalog that has to be rebuilt by re-running the
 workflow, exactly as for the cache.
 
 `AssetStore` is the only reader and the only writer of those rows. Like
-`CacheIndex` it is a `DirectIndex` (`ginkgo/runtime/direct_index.py`) rather
+`CacheIndex` it is a `DirectIndex` (`ginkgo/store/direct_index.py`) rather
 than a projection of the event ledger, and for the same reason: registering a
 version has to read the parents registered moments earlier — possibly by a
 sibling task on another thread in the same run — and the recorder's writer

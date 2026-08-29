@@ -105,6 +105,24 @@ class RemoteArtifactStore:
         self._ensure_local(artifact_id)
         return self.local.read_bytes(artifact_id=artifact_id)
 
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds locally, if its stat is unchanged."""
+        return self.local.materialized_artifact_id(path=path)
+
+    def is_published(self, artifact_id: str) -> bool:
+        """Return whether this store has already uploaded *artifact_id*.
+
+        Answered from the artifact's own row: :meth:`_publish` stamps the
+        remote URI on it, so the record of "these bytes are on the remote"
+        lives with the artifact rather than in a set beside it. The URI is
+        compared against this store's prefix, so pointing a workspace at a
+        second bucket republishes rather than trusting the first one's upload.
+        """
+        record = self.local.load_record(artifact_id=artifact_id)
+        if record is None or not record.remote_uri:
+            return False
+        return record.remote_uri.startswith(f"{self.scheme}://{self.bucket}/{self.prefix}")
+
     # --- Publishing (local → remote) -----------------------------------------
 
     def _publish(self, record: ArtifactRecord) -> ArtifactRecord:
