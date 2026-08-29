@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from ginkgo.core.remote import remote_file, remote_folder
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.remote.staging import StagingCache, StagingEntry, StagingIndex
+from ginkgo.store.sqlite import MEMORY
 from tests.conftest import make_download_backend as _make_mock_backend
 
 
@@ -178,3 +179,18 @@ class TestStagingIndex:
         assert entry is not None
         assert entry.blob_path == f"folders/{folder_path.name}"
         assert entry.size == 3
+
+
+class TestWorkerStaging:
+    """A worker has the bytes it staged but no workspace database to index them."""
+
+    def test_an_in_memory_index_writes_no_database(self, tmp_path) -> None:
+        cache = StagingCache(root=tmp_path / "staging", db_path=MEMORY)
+        backend = _make_mock_backend()
+        ref = remote_file("s3://bucket/worker.txt")
+
+        path = cache.stage_file(ref=ref, backend=backend)
+
+        assert path.read_bytes() == b"hello world"
+        assert cache.lookup(uri=ref.uri) is not None
+        assert not list(tmp_path.glob("*.db"))

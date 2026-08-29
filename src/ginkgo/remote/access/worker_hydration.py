@@ -19,6 +19,8 @@ from ginkgo.remote.access.protocol import (
     decode_fuse_ref,
 )
 from ginkgo.remote.access.staged import StagedAccess
+from ginkgo.remote.staging import StagingCache
+from ginkgo.store.sqlite import MEMORY
 
 
 def hydrate_fuse_refs(
@@ -91,7 +93,12 @@ class _Hydrator:
         except Exception as exc:  # noqa: BLE001
             # Fall back to staged download of the single ref.
             if self.fallback_access is None:
-                self.fallback_access = StagedAccess(policy="stage (fallback)")
+                # In a worker: the pod has nowhere to write an index that
+                # anything would read back, so the rows go to memory.
+                self.fallback_access = StagedAccess(
+                    policy="stage (fallback)",
+                    cache=StagingCache(db_path=MEMORY),
+                )
             if self.mounted_access is not None:
                 self.mounted_access.stats().fallback_reason = (
                     (self.mounted_access.stats().fallback_reason or "") + f" {exc}"

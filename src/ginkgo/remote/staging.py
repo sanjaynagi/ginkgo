@@ -32,6 +32,7 @@ from ginkgo.remote.backend import ObjectStore, RemoteObjectMeta
 from ginkgo.remote.resolve import resolve_backend
 from ginkgo.store.direct_index import DirectIndex
 from ginkgo.store.protocol import ProjectionOp
+from ginkgo.store.sqlite import MEMORY
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = ["StagingCache", "StagingEntry", "StagingIndex"]
@@ -159,28 +160,46 @@ class StagingCache:
     ----------
     root : Path | None
         Root directory for the staged bytes. Defaults to ``.ginkgo/staging``
-        under the current working directory.
+        under the current working directory, or to whatever
+        ``GINKGO_STAGING_ROOT`` or ``[remote] staging_root`` names.
     db_path : Path | None
-        The ledger holding ``staging_entries``. Defaults to the database
-        belonging to the workspace *root* sits in.
+        The ledger holding ``staging_entries``. Defaults to the database beside
+        an explicitly given *root*, and otherwise to this workspace's — the
+        staged bytes may be configured to live elsewhere, but the rows that
+        index them belong to the workspace. Pass
+        :data:`~ginkgo.store.sqlite.MEMORY` where there is no workspace to
+        write to: a remote worker has the inputs it staged but not the
+        database that indexes them, and a row written in a pod's scratch
+        directory is one nothing will ever read.
     """
 
     def __init__(self, *, root: Path | None = None, db_path: Path | None = None) -> None:
         self._root = root if root is not None else _default_staging_root()
         self._blobs_dir = self._root / "blobs"
         self._folders_dir = self._root / "folders"
-        for directory in (self._blobs_dir, self._folders_dir):
-            directory.mkdir(parents=True, exist_ok=True)
-        self._db_path = (
-            db_path if db_path is not None else WorkspaceLayout.sibling_of(self._root).db
-        )
+        if db_path is not None:
+            self._db_path = db_path
+        elif root is not None:
+            self._db_path = WorkspaceLayout.sibling_of(root).db
+        else:
+            self._db_path = WorkspaceLayout.for_cwd().db
         self._index: StagingIndex | None = None
 
     @property
     def index(self) -> StagingIndex:
-        """The staging table, opened for writing on first use."""
+        """The staging table, opened for writing on first use.
+
+        Neither the database nor the directories the bytes go in are made
+        until something is actually staged.
+        """
         if self._index is None:
-            self._index = StagingIndex.open(path=self._db_path)
+            for directory in (self._blobs_dir, self._folders_dir):
+                directory.mkdir(parents=True, exist_ok=True)
+            self._index = (
+                StagingIndex.in_memory()
+                if self._db_path == MEMORY
+                else StagingIndex.open(path=self._db_path)
+            )
         return self._index
 
     def close(self) -> None:
@@ -303,6 +322,8 @@ class StagingCache:
         A row without its bytes is a URI that will be re-downloaded — harmless,
         but it means the cache is smaller than the index says it is.
         """
+        if self._db_path == MEMORY:
+            return []
         with StagingIndex.for_reading(self._db_path) as index:
             entries = index.entries()
         return [
@@ -327,6 +348,8 @@ class StagingCache:
         StagingEntry | None
             Recorded entry, or ``None`` if not staged.
         """
+        if self._db_path == MEMORY:
+            return self.index.entry(uri=uri)
         with StagingIndex.for_reading(self._db_path) as index:
             return index.entry(uri=uri)
 
