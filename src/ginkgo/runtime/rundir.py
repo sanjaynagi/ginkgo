@@ -30,6 +30,7 @@ import yaml
 
 __all__ = [
     "RunDir",
+    "run_directory_problems",
     "combined_log_tail",
     "make_run_id",
     "manifest_text",
@@ -37,6 +38,43 @@ __all__ = [
     "write_atomic",
     "write_manifest",
 ]
+
+
+def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[str]:
+    """Return the runs and run directories that have no counterpart under *root*.
+
+    This module owns what a run leaves on disk, so it owns the question of
+    whether the ledger and the disk still describe the same set of runs. Both
+    directions mean different things: a row with no directory is a run whose
+    logs and manifest were deleted — the record survives, the evidence does
+    not; a directory with no row is bytes from a database that is gone, which
+    nothing will ever read again.
+
+    Parameters
+    ----------
+    recorded_run_ids : set[str]
+        Every run the ledger has a row for.
+    root : Path
+        The runs root, normally ``WorkspaceLayout.runs``.
+
+    Returns
+    -------
+    list[str]
+        One sentence per problem.
+    """
+    problems = [
+        f"run {run_id} has a row but no run directory"
+        for run_id in sorted(recorded_run_ids)
+        if not (root / run_id).is_dir()
+    ]
+    if not root.is_dir():
+        return problems
+    problems += [
+        f"run directory {entry.name} has no row (orphan)"
+        for entry in sorted(root.iterdir())
+        if entry.is_dir() and entry.name not in recorded_run_ids
+    ]
+    return problems
 
 
 def make_run_id(*, workflow_path: str | Path | None = None) -> str:

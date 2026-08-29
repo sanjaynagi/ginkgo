@@ -454,6 +454,27 @@ class CacheIndex(DirectIndex):
         )
         return [dict(row) for row in rows]
 
+    def env_drift_problems(self) -> list[str]:
+        """Return the declared environments recorded as materializing two ways.
+
+        One row per host, so a machine reinstalling is not drift; two hosts
+        disagreeing about what one declaration installs is. Not corruption —
+        but it is why a cache key can be shared between machines and a result
+        not be, so ``db check`` reports it.
+        """
+        digests: dict[str, set[str]] = {}
+        hosts: dict[str, set[str]] = {}
+        for row in self.env_materializations():
+            env_hash = str(row["env_hash"])
+            digests.setdefault(env_hash, set()).add(str(row["materialized_digest"]))
+            hosts.setdefault(env_hash, set()).add(str(row["host"]))
+        return [
+            f"environment {env_hash} materialized {len(seen)} different ways "
+            f"across {len(hosts[env_hash])} hosts"
+            for env_hash, seen in sorted(digests.items())
+            if len(seen) > 1
+        ]
+
     def digest(self, *, kind: str, fingerprint: str) -> str | None:
         """Return a remembered content digest, if this content has been hashed.
 

@@ -9,6 +9,7 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.schema import SCHEMA_VERSION
+from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.sqlite import open_store
 
 
@@ -137,12 +138,39 @@ class TestDbCommands:
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.chdir(tmp_path)
+        main(["db", "migrate"])
+        capsys.readouterr()
 
         assert main(["db", "check"]) == 0
 
         output = capsys.readouterr().out
         assert f"Schema version: {SCHEMA_VERSION}" in output
         assert "integrity check passed" in output
+
+    def test_check_on_an_empty_workspace_creates_nothing(self, tmp_path, monkeypatch, capsys):
+        """Creating the database is migrate's job, and a run's. Not a check's."""
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["db", "check"]) == 0
+
+        assert "nothing has run in this workspace" in capsys.readouterr().out
+        assert not (tmp_path / ".ginkgo").exists()
+
+    def test_check_never_opens_a_write_connection(self, tmp_path, monkeypatch):
+        """A read path must not be able to migrate a database out from under a run."""
+        monkeypatch.chdir(tmp_path)
+        main(["db", "migrate"])
+        opened: list[bool] = []
+        real_open = sqlite_module.SqliteStore.open
+
+        def _record(cls, path, *, readonly=False, thread_shared=False):
+            opened.append(readonly)
+            return real_open(path, readonly=readonly, thread_shared=thread_shared)
+
+        monkeypatch.setattr(sqlite_module.SqliteStore, "open", classmethod(_record))
+
+        assert main(["db", "check"]) == 0
+        assert opened and all(opened)
 
     def test_path_prints_where_the_database_lives(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -322,8 +350,45 @@ class TestDbVacuum:
 
     def test_vacuum_reports_the_size_either_side(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        _run_row(tmp_path, "run-1", events=200)
-        main(["db", "prune", "--events-older-than", "0d"])
+        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=2000)
+        main(["db", "prune", "--events-older-than", "1d"])
+        capsys.readouterr()
 
         assert main(["db", "vacuum"]) == 0
         assert "→" in capsys.readouterr().out
+
+    def test_vacuum_says_so_when_nothing_was_reclaimed(self, tmp_path, monkeypatch, capsys):
+        """An unchanged size is the only signal SQLite gives that it did nothing."""
+        monkeypatch.chdir(tmp_path)
+        main(["db", "migrate"])
+        main(["db", "vacuum"])
+        capsys.readouterr()
+
+        assert main(["db", "vacuum"]) == 0
+        assert "no space reclaimed" in capsys.readouterr().out
+
+    def test_a_relocated_staging_root_is_not_reported_as_missing_bytes(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`db check` must find the staged bytes wherever they were configured."""
+        elsewhere = tmp_path / "scratch" / "staging"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GINKGO_STAGING_ROOT", str(elsewhere))
+        cache = StagingCache(db_path=tmp_path / ".ginkgo" / "ginkgo.db")
+        (elsewhere / "blobs").mkdir(parents=True, exist_ok=True)
+        (elsewhere / "blobs" / "deadbeef").write_bytes(b"bytes")
+        cache.index.record(
+            StagingEntry(
+                uri="s3://bucket/key",
+                digest="deadbeef",
+                etag=None,
+                version_id=None,
+                size=5,
+                staged_at="2026-08-28T10:00:00+00:00",
+                blob_path="blobs/deadbeef",
+            )
+        )
+        cache.close()
+
+        assert main(["db", "check"]) == 0
+        assert "integrity check passed" in capsys.readouterr().out

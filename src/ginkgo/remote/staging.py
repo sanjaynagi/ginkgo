@@ -23,6 +23,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Sequence
 
 from ginkgo.config import load_runtime_config
 from ginkgo.core.hashing import hash_file, hash_str
@@ -85,18 +86,7 @@ class StagingIndex(DirectIndex):
             "FROM staging_entries WHERE uri = ?",
             (uri,),
         )
-        if not rows:
-            return None
-        row = rows[0]
-        return StagingEntry(
-            uri=str(row["uri"]),
-            digest=str(row["digest"]),
-            etag=row["etag"],
-            version_id=row["version_id"],
-            size=int(row["size"] or 0),
-            staged_at=str(row["staged_at"]),
-            blob_path=str(row["blob_path"]),
-        )
+        return _entry_from_row(rows[0]) if rows else None
 
     def entries(self) -> list[StagingEntry]:
         """Return every recorded entry, oldest first."""
@@ -104,18 +94,7 @@ class StagingIndex(DirectIndex):
             "SELECT uri, digest, etag, version_id, size, staged_at, blob_path "
             "FROM staging_entries ORDER BY staged_at"
         )
-        return [
-            StagingEntry(
-                uri=str(row["uri"]),
-                digest=str(row["digest"]),
-                etag=row["etag"],
-                version_id=row["version_id"],
-                size=int(row["size"] or 0),
-                staged_at=str(row["staged_at"]),
-                blob_path=str(row["blob_path"]),
-            )
-            for row in rows
-        ]
+        return [_entry_from_row(row) for row in rows]
 
     def record(self, entry: StagingEntry) -> None:
         """Record a freshly staged URI, replacing whatever was there before."""
@@ -137,6 +116,24 @@ class StagingIndex(DirectIndex):
                     entry.blob_path,
                     entry.staged_at,
                 ),
+            )
+        )
+
+    def unused_since(self, *, before: str) -> list[StagingEntry]:
+        """Return the entries not used since *before*, an ISO-8601 timestamp."""
+        rows = self._query(
+            "SELECT uri, digest, etag, version_id, size, staged_at, blob_path "
+            "FROM staging_entries WHERE last_used_at < ? ORDER BY last_used_at",
+            (before,),
+        )
+        return [_entry_from_row(row) for row in rows]
+
+    def forget(self, *, uris: Sequence[str]) -> None:
+        """Drop the rows for *uris*. The bytes are the caller's to remove."""
+        self._write(
+            *(
+                ProjectionOp(sql="DELETE FROM staging_entries WHERE uri = ?", params=(uri,))
+                for uri in uris
             )
         )
 
@@ -316,6 +313,50 @@ class StagingCache:
         )
         return folder_dir
 
+    def prune(self, *, before: str, dry_run: bool = False) -> tuple[int, int]:
+        """Delete staged downloads not used since *before*.
+
+        The staged bytes are the largest thing under ``.ginkgo/`` and the only
+        store with no eviction of its own; ``last_used_at`` is what makes one
+        possible. Losing an entry costs a re-download, never a wrong answer.
+
+        A blob shared by two URIs — the same bytes fetched from two places — is
+        removed only when the last row naming it goes, so pruning one URI never
+        strands the other.
+
+        Parameters
+        ----------
+        before : str
+            ISO-8601 cutoff. Entries last used before it go.
+        dry_run : bool, optional
+            Measure without deleting.
+
+        Returns
+        -------
+        tuple[int, int]
+            The number of entries and the number of bytes removed, or that
+            would be.
+        """
+        if not self._db_path.is_file():
+            return 0, 0
+        with StagingIndex.for_reading(self._db_path) as index:
+            stale = index.unused_since(before=before)
+            still_used = {entry.blob_path for entry in index.entries() if entry not in stale}
+        if not stale:
+            return 0, 0
+
+        freed = 0
+        for entry in stale:
+            if entry.blob_path in still_used:
+                continue
+            target = self._root / entry.blob_path
+            freed += _tree_size(target)
+            if not dry_run:
+                _remove(target)
+        if not dry_run:
+            self.index.forget(uris=[entry.uri for entry in stale])
+        return len(stale), freed
+
     def integrity_problems(self) -> list[str]:
         """Return the staged URIs whose bytes are no longer on disk.
 
@@ -422,6 +463,36 @@ class StagingCache:
             if temp_path.exists():
                 temp_path.unlink()
             raise
+
+
+def _entry_from_row(row: Any) -> StagingEntry:
+    """Build a :class:`StagingEntry` from one ``staging_entries`` row."""
+    return StagingEntry(
+        uri=str(row["uri"]),
+        digest=str(row["digest"]),
+        etag=row["etag"],
+        version_id=row["version_id"],
+        size=int(row["size"] or 0),
+        staged_at=str(row["staged_at"]),
+        blob_path=str(row["blob_path"]),
+    )
+
+
+def _tree_size(path: Path) -> int:
+    """Return the bytes *path* occupies, counting a directory's contents."""
+    if path.is_file():
+        return path.stat().st_size
+    if not path.is_dir():
+        return 0
+    return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+
+
+def _remove(path: Path) -> None:
+    """Delete a staged file or folder, tolerating one already gone."""
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _folder_manifest_digest(

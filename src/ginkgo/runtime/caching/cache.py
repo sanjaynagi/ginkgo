@@ -306,11 +306,14 @@ class CacheStore:
         output_path = entry_dir / "output.json"
         size_bytes = output_path.stat().st_size if output_path.is_file() else 0
 
+        materialized_digest = self._materialized_digest(task_def=task_def)
+        self._record_env_materialization(task_def=task_def, digest=materialized_digest)
+
         meta = {
             "cache_key": cache_key,
             "env": task_def.env,
             "env_hash": self._env_hash(task_def=task_def),
-            "env_materialized_digest": self._materialized_digest(task_def=task_def),
+            "env_materialized_digest": materialized_digest,
             "extra": extra_meta,
             "extra_source_hash": extra_source_hash,
             "function": task_def.name,
@@ -662,21 +665,23 @@ class CacheStore:
     def _materialized_digest(self, *, task_def: TaskDef) -> str | None:
         """Return the digest of the task's environment as materialised here.
 
-        Each answer is also recorded against this host, so the history of what
-        a declared environment installed as is queryable rather than only ever
-        compared once and discarded (``db check`` reads it back). Recording is
-        memoised per process: the digest is asked for on every cache-key build
-        and the answer does not move mid-run.
+        A pure read. Every lookup path asks for this — ``load``, ``has_entry``,
+        the ``--dry-run`` preview — and a read path must not open a write
+        transaction, so recording is :meth:`save`'s job.
         """
         if task_def.env is None or self.backend is None:
             return None
-        digest = self.backend.materialized_digest(env=task_def.env)
-        if digest is not None:
-            self._record_env_materialization(task_def=task_def, digest=digest)
-        return digest
+        return self.backend.materialized_digest(env=task_def.env)
 
-    def _record_env_materialization(self, *, task_def: TaskDef, digest: str) -> None:
-        """Record how *task_def*'s declared environment materialised on this host."""
+    def _record_env_materialization(self, *, task_def: TaskDef, digest: str | None) -> None:
+        """Record how *task_def*'s declared environment materialised on this host.
+
+        Called from :meth:`save`, which is the one place with both the digest
+        and a write in hand. Memoised per process: an entry is saved per task
+        and the answer does not move mid-run.
+        """
+        if digest is None:
+            return
         env_hash = dumps_or_none(self._env_hash(task_def=task_def))
         if env_hash is None or (env_hash, digest) in self._seen_env_materializations:
             return

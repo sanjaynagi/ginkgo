@@ -454,6 +454,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         metavar="DURATION",
         help="Delete memoised file digests not seen for this long",
     )
+    db_prune_parser.add_argument(
+        "--staging-older-than",
+        metavar="DURATION",
+        help="Delete staged remote inputs not used for this long, and their bytes",
+    )
     db_prune_parser.add_argument("--dry-run", action="store_true")
 
     debug_parser = subparsers.add_parser("debug", help="Debug failed workflow runs")

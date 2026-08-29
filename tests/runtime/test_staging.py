@@ -194,3 +194,72 @@ class TestWorkerStaging:
         assert path.read_bytes() == b"hello world"
         assert cache.lookup(uri=ref.uri) is not None
         assert not list(tmp_path.glob("*.db"))
+
+
+class TestPrune:
+    """Staged bytes are the only store with an eviction path of its own."""
+
+    def _stage(self, cache, uri: str, content: bytes = b"hello world") -> None:
+        cache.stage_file(ref=remote_file(uri), backend=_make_mock_backend(content=content))
+
+    def test_an_unused_entry_and_its_bytes_go(self, tmp_path) -> None:
+        cache = StagingCache(root=tmp_path / "staging")
+        self._stage(cache, "s3://bucket/old.txt")
+        entry = cache.lookup(uri="s3://bucket/old.txt")
+        assert entry is not None
+
+        count, freed = cache.prune(before="2099-01-01T00:00:00+00:00")
+
+        assert count == 1
+        assert freed == len(b"hello world")
+        assert cache.lookup(uri="s3://bucket/old.txt") is None
+        assert not (tmp_path / "staging" / entry.blob_path).exists()
+
+    def test_a_recently_used_entry_stays(self, tmp_path) -> None:
+        cache = StagingCache(root=tmp_path / "staging")
+        self._stage(cache, "s3://bucket/fresh.txt")
+
+        assert cache.prune(before="2000-01-01T00:00:00+00:00") == (0, 0)
+        assert cache.lookup(uri="s3://bucket/fresh.txt") is not None
+
+    def test_a_dry_run_measures_without_deleting(self, tmp_path) -> None:
+        cache = StagingCache(root=tmp_path / "staging")
+        self._stage(cache, "s3://bucket/old.txt")
+
+        count, freed = cache.prune(before="2099-01-01T00:00:00+00:00", dry_run=True)
+
+        assert (count, freed) == (1, len(b"hello world"))
+        assert cache.lookup(uri="s3://bucket/old.txt") is not None
+
+    def test_bytes_shared_with_a_surviving_entry_are_kept(self, tmp_path) -> None:
+        """Two URIs, identical content: one blob, and it outlives the first row."""
+        cache = StagingCache(root=tmp_path / "staging")
+        self._stage(cache, "s3://bucket/a.txt")
+        entry = cache.lookup(uri="s3://bucket/a.txt")
+        assert entry is not None
+        # Backdate only the first entry, so the second is the surviving user.
+        cache.index.record(
+            StagingEntry(
+                uri="s3://bucket/b.txt",
+                digest=entry.digest,
+                etag=None,
+                version_id=None,
+                size=entry.size,
+                staged_at="2099-01-01T00:00:00+00:00",
+                blob_path=entry.blob_path,
+            )
+        )
+
+        count, freed = cache.prune(before="2098-01-01T00:00:00+00:00")
+
+        assert count == 1
+        assert freed == 0
+        assert (tmp_path / "staging" / entry.blob_path).exists()
+
+    def test_pruning_a_workspace_that_never_staged_anything(self, tmp_path) -> None:
+        assert StagingCache(root=tmp_path / "staging").prune(
+            before="2099-01-01T00:00:00+00:00"
+        ) == (
+            0,
+            0,
+        )

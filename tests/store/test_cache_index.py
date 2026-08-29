@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ginkgo import task
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.query import Query
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.errors import StoreError
@@ -272,3 +275,56 @@ class TestHitAccounting:
         )
 
         assert not [op for op in projection_ops(event) if "cache_entries" in op.sql]
+
+
+class TestEnvMaterializationIsWrittenOnlyBySave:
+    """Every lookup path asks for the digest; a lookup must not open a write."""
+
+    class _Backend:
+        """The two questions a cache asks an execution environment."""
+
+        def env_identity(self, *, env: str) -> str:
+            return f"lock-for-{env}"
+
+        def materialized_digest(self, *, env: str) -> str:
+            return f"digest-for-{env}"
+
+    def _store(self, path: Path, tmp_path: Path, *, index: CacheIndex) -> CacheStore:
+        return CacheStore(index=index, root=tmp_path / "cache", backend=self._Backend())
+
+    def test_a_lookup_over_a_read_only_index_neither_raises_nor_writes(
+        self, db_path: Path, tmp_path: Path
+    ) -> None:
+        with CacheIndex.open(path=db_path) as writable:
+            _record(writable, "key-1")
+
+        @task(env="bio")
+        def produce() -> int:
+            return 1
+
+        with CacheIndex.open(path=db_path, readonly=True) as index:
+            store = self._store(db_path, tmp_path, index=index)
+
+            assert store.has_entry(cache_key="key-1", task_def=produce) is False
+            assert index.env_materializations() == []
+
+    def test_save_records_the_digest_against_this_host(
+        self, db_path: Path, tmp_path: Path
+    ) -> None:
+        @task(env="bio")
+        def produce() -> int:
+            return 1
+
+        with CacheIndex.open(path=db_path) as index:
+            store = self._store(db_path, tmp_path, index=index)
+            store.save(
+                cache_key="key-1",
+                result=1,
+                task_def=produce,
+                resolved_args={},
+                input_hashes={},
+            )
+            rows = index.env_materializations()
+
+        assert [row["materialized_digest"] for row in rows] == ["digest-for-bio"]
+        assert rows[0]["host"] == socket.gethostname()
