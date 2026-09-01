@@ -7,8 +7,15 @@ stores artifacts on the local filesystem under ``.ginkgo/artifacts/``.
 Storage layout::
 
     .ginkgo/artifacts/
-      blobs/<digest>              # raw file bytes, read-only
+      blobs/<digest><ext>         # raw file bytes, read-only
       trees/<tree_digest>.json    # directory manifest
+
+A recorded blob keeps its original file extension in its store filename, so a
+logged command shows what the bytes are and a consumer that dispatches on
+``Path.suffix`` (ImageMagick, a viewer) is not surprised by a bare digest
+(#231). A tree's member blobs are named by digest alone: they are reached
+through the manifest and materialise under their real relative paths, so the
+extension would inform nobody.
 
 The metadata record for each artifact — kind, size, extension, where it was
 published — is a row in the ``artifacts`` table rather than a file beside the
@@ -40,6 +47,10 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 
 DIGEST_ALGORITHM = "blake3"
+
+# Longer than any real file extension; the digest already spends 64 of the
+# filename's 255 bytes, so an unbounded suffix could make store() fail.
+_MAX_EXTENSION_LEN = 32
 
 
 @runtime_checkable
@@ -263,8 +274,7 @@ class LocalArtifactStore:
         _remove_dest(dest_path)
 
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
-            dest_path.symlink_to(blob_path)
+            dest_path.symlink_to(self._blob_path(record))
         else:
             self._retrieve_tree(artifact_id=artifact_id, dest_path=dest_path)
 
@@ -277,8 +287,7 @@ class LocalArtifactStore:
         _remove_dest(dest_path)
 
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
-            shutil.copy2(blob_path, dest_path)
+            shutil.copy2(self._blob_path(record), dest_path)
             dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
             self._record_materialization(path=dest_path, artifact_id=artifact_id)
             return
@@ -369,7 +378,7 @@ class LocalArtifactStore:
         # the blob unconditionally -- orphaned blob cleanup can be added
         # later if needed.
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
+            blob_path = self._blob_path(record)
             if blob_path.exists():
                 blob_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 blob_path.unlink()
@@ -397,7 +406,7 @@ class LocalArtifactStore:
             return self._blobs_dir / artifact_id
 
         if record.kind == "blob":
-            return self._blobs_dir / record.digest_hex
+            return self._blob_path(record)
         return self._trees_dir / f"{record.digest_hex}.json"
 
     def store_bytes(self, *, data: bytes, extension: str) -> ArtifactRecord:
@@ -415,23 +424,15 @@ class LocalArtifactStore:
         ArtifactRecord
         """
         digest = hash_bytes(data)
-        blob_path = self._blobs_dir / digest
+        ext = f".{extension}" if extension else ""
+        record = self._existing_blob_record(digest=digest, extension=ext, size=len(data))
+        blob_path = self._blob_path(record)
 
         if not blob_path.exists():
-            blob_path.write_bytes(data)
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                blob_path.write_bytes(data)
             blob_path.chmod(_READ_ONLY_FILE)
 
-        ext = f".{extension}" if extension else ""
-        record = ArtifactRecord(
-            artifact_id=digest,
-            kind="blob",
-            digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=digest,
-            extension=ext,
-            size=len(data),
-            created_at=now_iso(),
-            storage_backend="local",
-        )
         self.put_record(record)
         return record
 
@@ -448,7 +449,9 @@ class LocalArtifactStore:
         bytes
         """
         record = self._index.artifact(artifact_id)
-        blob_path = self._blobs_dir / (record.digest_hex if record is not None else artifact_id)
+        blob_path = (
+            self._blob_path(record) if record is not None else self._blobs_dir / artifact_id
+        )
 
         if not blob_path.exists():
             raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
@@ -464,33 +467,24 @@ class LocalArtifactStore:
     ) -> ArtifactRecord:
         """Store a single file as a blob."""
         digest = self._hash_file(src_path)
-        blob_path = self._blobs_dir / digest
+        record = self._existing_blob_record(
+            digest=digest, extension=src_path.suffix, size=src_path.stat().st_size
+        )
+        blob_path = self._blob_path(record)
 
         if not blob_path.exists():
             # chmod on a hardlinked blob also flips the source's mode;
             # that is intentional when ``src_is_readonly`` is set — the
             # caller has promised immutability — and enforces the
             # store's read-only invariant on the shared inode.
-            share_bytes(
-                src=src_path,
-                dst=blob_path,
-                allow_hardlink=src_is_readonly,
-            )
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                share_bytes(
+                    src=src_path,
+                    dst=blob_path,
+                    allow_hardlink=src_is_readonly,
+                )
             blob_path.chmod(_READ_ONLY_FILE)
 
-        size = blob_path.stat().st_size
-        ext = src_path.suffix  # includes leading dot
-
-        record = ArtifactRecord(
-            artifact_id=digest,
-            kind="blob",
-            digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=digest,
-            extension=ext,
-            size=size,
-            created_at=now_iso(),
-            storage_backend="local",
-        )
         self.put_record(record)
         return record
 
@@ -511,7 +505,8 @@ class LocalArtifactStore:
             # Store the blob.
             blob_path = self._blobs_dir / entry.blob_digest
             if not blob_path.exists():
-                share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
+                if not self._share_from_sibling(digest=entry.blob_digest, dst=blob_path):
+                    share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
                 blob_path.chmod(_READ_ONLY_FILE)
 
         tree_path = self._trees_dir / f"{tree_ref.digest_hex}.json"
@@ -530,6 +525,57 @@ class LocalArtifactStore:
         )
         self.put_record(record)
         return record
+
+    def _blob_path(self, record: ArtifactRecord) -> Path:
+        """Return the store path for a blob record: its digest plus extension."""
+        return self._blobs_dir / f"{record.digest_hex}{record.extension}"
+
+    def _share_from_sibling(self, *, digest: str, dst: Path) -> bool:
+        """Populate *dst* from another store filename the same bytes live under.
+
+        A recorded blob (``<digest><ext>``) and a tree member (``<digest>``)
+        name the same content differently, so storing one after the other
+        would otherwise write the bytes to disk twice. Blobs are immutable,
+        so the copies can share an inode via hardlink instead.
+        """
+        candidates = [self._blobs_dir / digest]
+        existing = self._index.artifact(digest)
+        if existing is not None and existing.kind == "blob":
+            candidates.append(self._blob_path(existing))
+        for src in candidates:
+            if src != dst and src.exists():
+                share_bytes(src=src, dst=dst, allow_hardlink=True)
+                return True
+        return False
+
+    def _existing_blob_record(self, *, digest: str, extension: str, size: int) -> ArtifactRecord:
+        """Return the record a blob store should write bytes against.
+
+        The store is content-addressed, so the digest is the identity; the
+        extension is only the filename's label. When the same bytes arrive
+        twice under two names, the first record wins — re-labelling would
+        strand the earlier file as an orphan the integrity check then flags.
+        The check is in-process only: two processes storing the same bytes
+        under different names can still each write their own file, and the
+        later record wins.
+        """
+        existing = self._index.artifact(digest)
+        if existing is not None and existing.kind == "blob":
+            return existing
+        if len(extension) > _MAX_EXTENSION_LEN:
+            # A "suffix" this long is not an extension, and the digest
+            # already spends 64 of the filename's 255 bytes.
+            extension = ""
+        return ArtifactRecord(
+            artifact_id=digest,
+            kind="blob",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=digest,
+            extension=extension,
+            size=size,
+            created_at=now_iso(),
+            storage_backend="local",
+        )
 
     def _retrieve_tree(self, *, artifact_id: str, dest_path: Path) -> None:
         """Reconstruct a directory from its tree manifest."""

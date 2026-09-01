@@ -260,7 +260,7 @@ something a third-party tool opens for itself:
 | File | Why it is not a table |
 |---|---|
 | `cache/<key>/output.json` | The cached value itself. Bytes. |
-| `artifacts/blobs/*`, `artifacts/trees/<digest>.json` | The content-addressed store and its tree manifests. Bytes, named by their own digest. |
+| `artifacts/blobs/*`, `artifacts/trees/<digest>.json` | The content-addressed store and its tree manifests. Bytes, named by their own digest — a recorded blob keeps its file extension after the digest. |
 | `staging/blobs/*`, `staging/folders/*` | Downloaded remote inputs. Bytes; `staging_entries` is their index. |
 | `runs/<id>/logs/*` | Task stdout and stderr, appended while a task runs and read as text. A log. |
 | `runs/<id>/notebooks/*.ipynb`, `*.html` | The executed notebook and its rendered page — the task's output, opened by a browser or Jupyter. Bytes. |

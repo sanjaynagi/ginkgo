@@ -132,7 +132,7 @@ class TestArtifactStoreIntegration:
         with patch.object(fs_share, "_reflink", return_value=False):
             record = store.store(src_path=src, src_is_readonly=True)
 
-        blob_path = tmp_path / "artifacts" / "blobs" / record.digest_hex
+        blob_path = tmp_path / "artifacts" / "blobs" / f"{record.digest_hex}{record.extension}"
         # Same inode only if hardlink was used.
         assert blob_path.stat().st_ino == src.stat().st_ino
 
@@ -144,7 +144,7 @@ class TestArtifactStoreIntegration:
         with patch.object(fs_share, "_reflink", return_value=False):
             record = store.store(src_path=src)
 
-        blob_path = tmp_path / "artifacts" / "blobs" / record.digest_hex
+        blob_path = tmp_path / "artifacts" / "blobs" / f"{record.digest_hex}{record.extension}"
         assert blob_path.stat().st_ino != src.stat().st_ino
         # User file should remain writable.
         assert src.stat().st_mode & stat.S_IWUSR

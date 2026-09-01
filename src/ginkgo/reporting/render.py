@@ -193,9 +193,9 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
         source = copies_by_relpath.get(relpath)
         if source is None or not source.is_file():
             return relpath
-        # The type comes from the bundle path, not the source: figure sources
-        # are extensionless content-addressed blobs, while the bundle path
-        # carries the artifact's real extension.
+        # The type comes from the bundle path: it always carries the
+        # artifact's extension, whether or not the CAS source filename
+        # does (older stores wrote extensionless blobs).
         return _data_uri(source, mime=mimetypes.guess_type(relpath)[0])
 
     def log_inliner(relpath: str) -> str:

@@ -151,6 +151,47 @@ class TestRemoteArtifactStore:
         assert not remote_store.local.exists(artifact_id=record.artifact_id)
 
 
+class TestPublishRefusesMissingBytes:
+    """A ref must never be stamped for bytes that are not on disk."""
+
+    def test_publishing_a_blob_missing_from_disk_raises(
+        self,
+        remote_store: RemoteArtifactStore,
+        local_store: LocalArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello\n")
+        record = local_store.store(src_path=src)
+        local_store.artifact_path(artifact_id=record.artifact_id).unlink()
+
+        with pytest.raises(FileNotFoundError, match="Cannot publish blob"):
+            remote_store.publish(artifact_id=record.artifact_id)
+
+        refreshed = local_store.load_record(artifact_id=record.artifact_id)
+        assert refreshed is not None and refreshed.remote_uri is None
+        assert not any(
+            "refs/" in str(call.kwargs.get("key", ""))
+            for call in mock_backend.upload.call_args_list
+        )
+
+    def test_publishing_a_tree_missing_from_disk_raises(
+        self,
+        remote_store: RemoteArtifactStore,
+        local_store: LocalArtifactStore,
+        tmp_path: Path,
+    ) -> None:
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("aaa")
+        record = local_store.store(src_path=src_dir)
+        (local_store._trees_dir / f"{record.digest_hex}.json").unlink()
+
+        with pytest.raises(FileNotFoundError, match="Cannot publish tree"):
+            remote_store.publish(artifact_id=record.artifact_id)
+
+
 class TestPublishRecording:
     """`is_published` reads the artifact's row, so the row must not lead it."""
 
