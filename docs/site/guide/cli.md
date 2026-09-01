@@ -103,6 +103,12 @@ tasks declare (e.g. `--resource api_calls=10`) — see
 
 `--dry-run` resolves the graph and computes cache keys without executing any
 task body &mdash; the fastest way to confirm a workflow is wired correctly.
+On a warm cache it goes further: with cached upstream outputs in hand, each
+downstream task's arguments run through the same input validation the real
+run applies, so a kind/path mismatch (say, a `table` asset wired into a
+`file` parameter) is reported under **Problems** before anything runs &mdash;
+and the command exits non-zero, so a scripted preflight fails loudly. A
+first, cold dry run cannot resolve those arguments and so makes no claim.
 
 `--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see

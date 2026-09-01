@@ -382,6 +382,10 @@ def run_workflow(
                 console=rich_console,
                 verbose=output_mode == "verbose",
             )
+            if plan.diagnostics:
+                # The plan just proved the run would fail; a preflight that
+                # says so must also say it to the shell.
+                return 1
         else:
             rich_console.print(
                 f"[green]✓[/] [bold]{workflow_path.name}[/] "
