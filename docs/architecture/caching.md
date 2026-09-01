@@ -95,6 +95,14 @@ are pinned by environment identity instead. Without that boundary a project
 that keeps its environment in its own tree (`.pixi/envs/`, `.venv/`) would walk
 the whole interpreter for every task.
 
+The hash starts at the `def` line, so the `@task(...)` decorator itself is
+excluded. Its cache-relevant arguments — `env` and `version` — are already
+first-class in the key payload, while resources (`threads`, `memory`, `gpu`,
+`retries`) are deliberately absent from it; hashing the decorator text let a
+resource edit invalidate every cached result anyway (issue #192). Everything
+from the `def` onwards is hashed as its original bytes, not a regenerated form,
+so signature, body, comment and docstring edits all still invalidate.
+
 ## Environment identity
 
 `ExecutionEnvironment.env_identity` returns the identity of the *declared*

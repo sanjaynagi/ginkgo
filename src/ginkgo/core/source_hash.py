@@ -21,6 +21,7 @@ import ast
 import inspect
 import sys
 import sysconfig
+import textwrap
 import tokenize
 from functools import cache
 from importlib.util import resolve_name
@@ -35,6 +36,11 @@ __all__ = ["compute_source_hash"]
 
 def compute_source_hash(fn: Callable[..., Any]) -> str:
     """Return the BLAKE3 digest of task source and local imports.
+
+    Decorator lines are excluded from the digest, so a change to a resource
+    declaration (``threads``, ``memory``, ``gpu``, ``retries``) leaves the
+    cache key untouched. The decorator arguments that are cache-relevant —
+    ``env`` and ``version`` — are hashed explicitly by the cache-key payload.
 
     Parameters
     ----------
@@ -53,12 +59,13 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         if a module in the local import closure cannot be read or parsed.
     """
     try:
-        source = inspect.getsource(fn)
+        raw_source = inspect.getsource(fn)
     except OSError as exc:
         raise ValueError(
             f"Cannot extract source for task '{fn.__qualname__}'. "
             "Tasks must be defined as named, top-level functions."
         ) from exc
+    source = _source_without_decorators(raw_source)
     module = sys.modules.get(fn.__module__)
     if not isinstance(module, ModuleType):
         return hash_str(source)
@@ -66,6 +73,33 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     modules = _local_import_closure(module)
     module_hashes = [f"{name}:{hash_file(path)}" for name, path in sorted(modules.items())]
     return hash_str("\n".join((source, *module_hashes)))
+
+
+def _source_without_decorators(source: str) -> str:
+    """Return ``source`` from its ``def`` line on, dropping decorator lines.
+
+    The remaining text is the original bytes of the definition, not a
+    regenerated form, so every edit to a signature, body, comment or docstring
+    still changes the digest. A source that will not parse — a fragment, or a
+    definition mid-edit — is returned dedented and unchanged rather than
+    raising: over-invalidation is the safe direction here.
+    """
+    dedented = textwrap.dedent(source)
+    try:
+        tree = ast.parse(dedented)
+    except SyntaxError:
+        return dedented
+
+    definition = tree.body[0] if tree.body else None
+    if not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return dedented
+    if not definition.decorator_list:
+        return dedented
+
+    # ``lineno`` on a decorated definition points at the ``def`` keyword line;
+    # every decorator, however many lines its call spans, sits above it.
+    lines = dedented.splitlines(keepends=True)
+    return "".join(lines[definition.lineno - 1 :])
 
 
 def _local_import_closure(module: ModuleType) -> dict[str, Path]:

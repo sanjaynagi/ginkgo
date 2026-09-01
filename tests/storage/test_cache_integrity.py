@@ -37,6 +37,120 @@ class TestSourceHash:
 
         assert fn_a.source_hash != fn_b.source_hash
 
+    def test_resource_declarations_do_not_change_the_hash(self):
+        """Resources are not cache-relevant, so decorator text must not be hashed."""
+
+        def declare_lean():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_generous():
+            @task(threads=8, memory="16Gi", retries=3)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_lean().source_hash == declare_generous().source_hash
+
+    def test_multi_line_decorator_is_fully_excluded(self):
+        """A decorator call spanning several lines leaves no trace in the hash."""
+
+        def declare_inline():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_wrapped():
+            @task(
+                threads=1,
+                memory="4Gi",
+            )
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_inline().source_hash == declare_wrapped().source_hash
+
+    def test_undecorated_function_hashes_like_its_decorated_twin(self):
+        """With decorators stripped, only the definition itself is left to hash."""
+
+        def declare_plain():
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_decorated():
+            @task(threads=4)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert source_hash.compute_source_hash(declare_plain()) == (
+            declare_decorated().source_hash
+        )
+
+    def test_body_change_still_changes_the_hash(self):
+        """Stripping decorators must not blunt invalidation on a body edit."""
+
+        def declare_original():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_edited():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 2
+
+            return compute
+
+        assert declare_original().source_hash != declare_edited().source_hash
+
+    def test_comment_change_still_changes_the_hash(self):
+        """The definition's original bytes are hashed, comments included."""
+
+        def declare_uncommented():
+            @task()
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_commented():
+            @task()
+            def compute(x: int) -> int:
+                # Bump by one.
+                return x + 1
+
+            return compute
+
+        assert declare_uncommented().source_hash != declare_commented().source_hash
+
+    def test_async_definition_keeps_its_decorators_out_of_the_hash(self):
+        source = textwrap.dedent("""\
+            @task(threads=8)
+            async def compute(x: int) -> int:
+                return x + 1
+        """)
+        assert source_hash._source_without_decorators(source) == (
+            "async def compute(x: int) -> int:\n    return x + 1\n"
+        )
+
+    def test_unparseable_definition_falls_back_to_the_raw_source(self):
+        source = "@task()\ndef compute(x: int) ->\n"
+        assert source_hash._source_without_decorators(source) == source
+
     def test_unsourceable_function_raises_at_registration(self):
         # Functions created via exec() have no inspectable source.
         ns: dict = {}

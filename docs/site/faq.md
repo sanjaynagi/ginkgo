@@ -446,6 +446,14 @@ error no longer quietly truncates the closure and masks a stale cache.
 Runtime-only dependencies (dynamic imports, data files) still cannot be tracked
 this way; bump `version=` on the task when those change.
 
+### Does changing a task's threads or memory invalidate its cache?
+
+No. The `source_hash` starts at the `def` line, so the `@task(...)` decorator is
+not hashed: raising `threads=`, adding `memory=`, or changing `retries=` leaves
+the cache key untouched and cached results stay valid. The decorator arguments
+that do matter to identity — `env=` and `version=` — go into the key directly
+rather than through the source hash.
+
 ### How do warm runs skip work?
 
 Cache lookups happen during node *preparation*, before any worker is dispatched.
