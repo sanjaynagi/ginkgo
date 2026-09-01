@@ -48,6 +48,17 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _unwrapped(output: str) -> str:
+    """Collapse Rich's console wrapping so a multi-word phrase reads contiguously.
+
+    Rich wraps at the console width, and where the wrap lands depends on
+    variable-length content in the same paragraph (a tmpdir path, a task label).
+    Assert against this rather than the raw stream whenever the phrase under test
+    is not guaranteed to start its own line.
+    """
+    return " ".join(output.split())
+
+
 def _manifest(run_dir: Path) -> dict[str, Any]:
     """Read a run's exported manifest, keying its tasks by task id.
 
@@ -929,7 +940,7 @@ def main():
         result = _run_cli("run", "markup_error_workflow.py", cwd=Path.cwd())
         assert result.returncode == 1
         assert "MarkupError" not in result.stderr
-        assert "solver failed at [/tmp/example/pixi.toml:1:1]" in result.stderr
+        assert "solver failed at [/tmp/example/pixi.toml:1:1]" in _unwrapped(result.stderr)
 
 
 class TestCliDryRun:
@@ -988,7 +999,7 @@ def main():
 
         assert result.returncode == 0, result.stderr
         assert "1 task" in result.stdout
-        assert "Dropped (not reachable from the flow return value)" in result.stdout
+        assert "Dropped (not reachable from the flow return value)" in _unwrapped(result.stdout)
         assert "! label()" in result.stdout
         # The plan section is the only report; the run-header warning is
         # suppressed so a dry run does not say it twice.
@@ -1015,7 +1026,7 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "not reachable from the flow return value" in result.stderr
+        assert "not reachable from the flow return value" in _unwrapped(result.stderr)
 
     def test_run_dry_run_groups_waves_and_expands_fanout(self) -> None:
         Path("workflow.py").write_text(
@@ -1359,6 +1370,9 @@ class TestCliInit:
     def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
         if shutil.which("docker") is None or shutil.which("pixi") is None:
             pytest.skip("running the scaffold end to end needs docker and pixi")
+        # The client binary existing does not mean the daemon is reachable.
+        if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
+            pytest.skip("running the scaffold end to end needs a reachable docker daemon")
 
         init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert init_result.returncode == 0, init_result.stderr
@@ -1479,9 +1493,10 @@ def main():
 
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 1
-        assert "no flow.py was found" in result.stderr
-        assert "Create workflow/flow.py" in result.stderr
-        assert "pass an explicit path" in result.stderr
+        stderr = _unwrapped(result.stderr)
+        assert "no flow.py was found" in stderr
+        assert "Create workflow/flow.py" in stderr
+        assert "pass an explicit path" in stderr
 
     def test_explicit_path_accepts_any_file_name(self) -> None:
         Path("anything.py").write_text(self._WORKFLOW_SOURCE, encoding="utf-8")
