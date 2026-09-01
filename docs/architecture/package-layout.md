@@ -124,6 +124,7 @@ ginkgo/
 │   └── sizing.py            # per-kind preview caps and size formatting
 ├── envs/
 │   ├── container.py         # ContainerBackend (Docker/Podman)
+│   ├── interpreter.py       # what the running interpreter cannot import
 │   ├── mounts.py            # bind-mount model for container execution
 │   └── pixi.py
 ├── cli/
