@@ -54,6 +54,20 @@ often that happens. This is the only cadence — events update state and wait
 for the next frame rather than painting one of their own.
 """
 
+_LIVE_CHROME_LINES = 9
+"""Lines the live layout spends on everything except task rows.
+
+The resource line, the blank line under it, one notice line, the status
+line, the task table's four frame lines (top border, header, header rule,
+bottom border), and the progress bar.
+"""
+
+_MIN_LIVE_ROWS = 3
+"""Task rows the live table keeps even on a terminal too short for them."""
+
+_BEGIN_SYNCHRONISED_UPDATE = "\x1b[?2026h"
+_END_SYNCHRONISED_UPDATE = "\x1b[?2026l"
+
 _ENV_PREPARE_STATUS = "preparing env"
 """Display status shown while a task's execution environment is installed."""
 
@@ -269,6 +283,8 @@ class _RunLayoutRenderer:
         self._state = state
         self._activity_spinner = activity_spinner
         self._time_spinner = time_spinner
+        self.repainting = True
+        """False once the display has stopped repainting and can print in full."""
 
     def render_run_layout(self, *, now: float) -> Group:
         """Return the full live layout: resource line, notices, table, progress."""
@@ -326,6 +342,47 @@ class _RunLayoutRenderer:
         text.append(")", style="dim")
         return text
 
+    def row_budget(self) -> int:
+        """Return how many task rows the terminal has room for.
+
+        A live block as tall as the terminal cannot be overwritten in place:
+        the terminal scrolls to make room for the last line, so the next
+        repaint redraws the whole screen instead of the lines that changed.
+        One spare line keeps the block inside the screen.
+        """
+        extra_notices = max(0, len(self._state.notices) - 1)
+        return max(
+            _MIN_LIVE_ROWS,
+            self._console.height - _LIVE_CHROME_LINES - extra_notices - 1,
+        )
+
+    def visible_items(self) -> tuple[list[_TaskGroup | _TaskRow], int, int]:
+        """Return the rows to show, and how many are hidden above and below.
+
+        The window is contiguous and in display order, and it follows the
+        frontier — the last row the run has dispatched — so the tasks in
+        flight stay on screen while finished ones scroll off the top. Each
+        end that hides rows spends one row of the budget saying so.
+        """
+        items = self._state.display_items()
+        budget = self.row_budget()
+        if not self.repainting or len(items) <= budget:
+            return items, 0, 0
+        window = budget - 1
+        start = self._window_start(items=items, window=window)
+        if start > 0 and start + window < len(items):
+            window = budget - 2
+            start = self._window_start(items=items, window=window)
+        return items[start : start + window], start, len(items) - start - window
+
+    def _window_start(self, *, items: list[_TaskGroup | _TaskRow], window: int) -> int:
+        """Return the first row of a *window*-sized view of the frontier."""
+        frontier = max(
+            (index for index, item in enumerate(items) if _has_started(item)),
+            default=0,
+        )
+        return min(max(0, frontier - window + 2), len(items) - window)
+
     def render_task_table(self, *, now: float) -> Table:
         table = Table(
             box=box.SQUARE,
@@ -338,7 +395,10 @@ class _RunLayoutRenderer:
         table.add_column("Environment", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
         max_label = _task_label_width(self._console)
-        for item in self._state.display_items():
+        items, above, below = self.visible_items()
+        if above:
+            table.add_row(*_hidden_row_cells(count=above, where="above"))
+        for item in items:
             if isinstance(item, _TaskGroup):
                 # Collapsed group row with multi-state progress bar.
                 counts = item.status_counts()
@@ -373,6 +433,8 @@ class _RunLayoutRenderer:
                     Text(item.env_label, style="bold #134e4a"),
                     _task_duration_text(item, now=now),
                 )
+        if below:
+            table.add_row(*_hidden_row_cells(count=below, where="below"))
         return table
 
     def render_progress_section(self) -> Table:
@@ -536,7 +598,9 @@ class _RunLayoutRenderer:
         return max(len("Status"), *(len(_status_label(row.status)) for row in rows), 30)
 
     def task_table_width(self, *, now: float | None = None) -> int:
-        items = self._state.display_items()
+        # The rows the window leaves out are the rows the table does not
+        # measure: the status line is centred over what is on screen.
+        items, _above, _below = self.visible_items()
         if not items:
             return len("Task") + len("Status") + len("Environment") + len("Time") + 13
 
@@ -600,6 +664,32 @@ class _RunLayoutRenderer:
         )
 
 
+class _SynchronisedLive(Live):
+    """A ``Live`` that asks the terminal to show each repaint all at once.
+
+    Rich repaints by erasing the block line by line and writing it back, so a
+    terminal drawing what it has received so far shows the half-erased state.
+    That is the flicker. DEC private mode 2026 asks the terminal to hold its
+    screen until the frame is complete; a terminal that does not know the mode
+    ignores it and is left exactly as it was.
+    """
+
+    def refresh(self) -> None:
+        console = self.console
+        if not console.is_terminal or console.is_dumb_terminal:
+            super().refresh()
+            return
+        # Rich's own lock, so two refreshes cannot interleave their brackets
+        # and leave the terminal holding a frame that never ends.
+        with self._lock:
+            console.file.write(_BEGIN_SYNCHRONISED_UPDATE)
+            try:
+                super().refresh()
+            finally:
+                console.file.write(_END_SYNCHRONISED_UPDATE)
+                console.file.flush()
+
+
 class CliRunRenderer:
     """Render human-friendly task lifecycle output from evaluator JSON events.
 
@@ -642,7 +732,7 @@ class CliRunRenderer:
         self._state.seed(planned_tasks=planned_tasks)
         self._started = True
         self._run_started_at = time.perf_counter()
-        self._live = Live(
+        self._live = _SynchronisedLive(
             self,
             console=self._console,
             refresh_per_second=_LIVE_REFRESH_PER_SECOND,
@@ -682,8 +772,12 @@ class CliRunRenderer:
 
         self._final_elapsed = elapsed
         self._success = success
+        # The window over the task rows exists to keep repaints inside the
+        # screen. Nothing will be repainted now, so the last frame — the one
+        # that stays in the scrollback — shows every row and may scroll.
+        self._layout.repainting = False
         if self._live is not None:
-            self._live.refresh()
+            # ``stop`` paints the final frame itself, at full height.
             self._live.stop()
         elif self._started:
             self._console.print(self)
@@ -733,6 +827,22 @@ class CliRunRenderer:
         if self._final_elapsed is not None and self._run_started_at is not None:
             return self._run_started_at + self._final_elapsed
         return time.perf_counter()
+
+
+def _hidden_row_cells(*, count: int, where: str) -> tuple[Text, Text, Text, Text]:
+    """Return the table cells standing in for rows the window does not show."""
+    return (
+        Text("…", style="dim"),
+        Text(f"{count} {where}", style="dim"),
+        Text(""),
+        Text(""),
+    )
+
+
+def _has_started(item: _TaskGroup | _TaskRow) -> bool:
+    """Return True once the run has dispatched this row, or any of a group's."""
+    rows = item.rows if isinstance(item, _TaskGroup) else [item]
+    return any(row.started_at is not None for row in rows)
 
 
 def _as_float(value: object) -> float | None:

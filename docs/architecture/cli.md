@@ -187,14 +187,28 @@ Every command that prints a table builds it through `cli/common.py`'s
 `stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
 width rule are written down once rather than in each command module.
 
-The live run table repaints on one cadence and one only:
-`renderers/run.py:_LIVE_REFRESH_PER_SECOND`, handed to Rich's `Live`. Rich has
-no synchronised-output support, so each repaint erases the block line by line
-before redrawing it, and the terminal flickers in proportion to how often that
-happens. Events therefore update `_RunEventState` and stop; the next frame
-picks the change up. A task finishing does not paint a frame of its own, which
-is what keeps a burst of concurrent completions from becoming a burst of
-repaints.
+Three rules keep the live run table from flickering, all in
+`renderers/run.py`. Rich repaints by erasing the block line by line and
+writing it back, so what the terminal shows mid-repaint is a half-erased
+screen — the flicker — and the fix is to make that happen less often, more
+cheaply, and invisibly.
+
+- **One cadence.** `_LIVE_REFRESH_PER_SECOND`, handed to Rich's `Live`, is the
+  only thing that paints. Events update `_RunEventState` and stop; the next
+  frame picks the change up. A task finishing does not paint a frame of its
+  own, which is what keeps a burst of concurrent completions from becoming a
+  burst of repaints.
+- **The block fits the screen.** A live block as tall as the terminal cannot be
+  overwritten in place — the terminal scrolls to fit the last line, so the next
+  repaint redraws everything. `row_budget` sizes the task rows from the console
+  height and `_LIVE_CHROME_LINES`, leaving a spare line, and `visible_items`
+  keeps a contiguous window over the rows that follows the frontier, so the
+  tasks in flight stay on screen while finished ones scroll off the top. The
+  window is a repaint concern only: `finish` clears `repainting`, and the final
+  frame — the one that stays in the scrollback — shows every row.
+- **Each repaint is one update.** `_SynchronisedLive` brackets a repaint in DEC
+  private mode 2026, which asks the terminal to hold its screen until the frame
+  is complete. Terminals that do not know the mode ignore it.
 
 ## Error reporting
 
