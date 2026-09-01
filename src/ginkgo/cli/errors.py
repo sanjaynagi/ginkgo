@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 from typing import IO
 
 from rich.text import Text
 from rich.traceback import Traceback
 
 from ginkgo.cli.common import console
+from ginkgo.envs.interpreter import import_failure_mismatch
 from ginkgo.errors import GinkgoError, failure_location
 
 __all__ = [
@@ -57,9 +59,23 @@ def report_failure(
     ones whose default report is a bare message. The hint that advertises the
     escape hatch is only printed alongside a location, so that ginkgo's own
     one-line messages stay one line.
+
+    A ``ModuleNotFoundError`` inside a project that declares its environment
+    carries the interpreter-mismatch explanation as well: on its own, that
+    message sends the reader to the manifest, which is the one thing that is
+    already right.
     """
     rich_console = console(stream)
     rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
+
+    # A workflow module imports in the CLI's own interpreter, so a missing
+    # module here is as likely to mean the wrong interpreter as a missing
+    # dependency. Say which when the project declares an environment this
+    # interpreter is not.
+    if isinstance(exc, ModuleNotFoundError):
+        mismatch = import_failure_mismatch(message=str(exc), project_root=Path.cwd())
+        if mismatch is not None:
+            rich_console.print(Text("\n".join(mismatch.hint_lines), style="yellow"))
 
     location = None if isinstance(exc, GinkgoError) else failure_location(exc)
     if location is not None:

@@ -13,8 +13,9 @@ from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
 from ginkgo.envs.container import container_backend_from_config
+from ginkgo.envs.interpreter import InterpreterMismatch, detect_import_mismatch
 from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.remote.access.doctor import collect_access_diagnostics
+from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
@@ -72,6 +73,17 @@ def command_doctor(args) -> int:
         executor_configs=_extract_executor_configs(config=config),
     )
 
+    # A Python task body runs in this very interpreter and cannot declare
+    # ``env=``, so the project manifest is the environment it needs. When the
+    # two have parted company -- a globally installed CLI run inside a pixi
+    # project -- the only symptom is a bare ModuleNotFoundError from whichever
+    # task imports first. Reported here, where it is cheap to see.
+    mismatch = detect_import_mismatch(workflow_path=workflow_path, project_root=Path.cwd())
+    environment_diagnostics: list[AccessDiagnostic | InterpreterMismatch] = [
+        *([] if mismatch is None else [mismatch]),
+        *access_diagnostics,
+    ]
+
     if args.json:
         combined = [item.to_payload() for item in diagnostics]
         combined.extend(
@@ -82,9 +94,11 @@ def command_doctor(args) -> int:
                 "location": None,
                 "suggestion": item.suggestion,
             }
-            for item in access_diagnostics
+            for item in environment_diagnostics
         )
-        has_errors = any(item.severity == "error" for item in (*diagnostics, *access_diagnostics))
+        has_errors = any(
+            item.severity == "error" for item in (*diagnostics, *environment_diagnostics)
+        )
         print(
             json.dumps(
                 {"ok": not has_errors, "diagnostics": combined},
@@ -114,7 +128,7 @@ def command_doctor(args) -> int:
         if item.suggestion:
             target.print(f"[dim]{escape(item.suggestion)}[/]")
 
-    for item in access_diagnostics:
+    for item in environment_diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]![/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
         target.print(f"{marker} {item.code}: {escape(item.message)}")
@@ -122,7 +136,7 @@ def command_doctor(args) -> int:
             target.print(f"[dim]{escape(item.suggestion)}[/]")
 
     has_errors = bool(workflow_errors) or any(
-        item.severity == "error" for item in access_diagnostics
+        item.severity == "error" for item in environment_diagnostics
     )
     return 1 if has_errors else 0
 

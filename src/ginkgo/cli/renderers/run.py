@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
+from pathlib import Path
 
 import yaml
 from rich import box
@@ -30,6 +31,7 @@ from ginkgo.cli.renderers.common import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
+from ginkgo.envs.interpreter import import_failure_mismatch
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
@@ -503,6 +505,14 @@ class _RunLayoutRenderer:
             summary.add_row("Log", str(details.log_path))
 
         sections: list[object] = [summary]
+        # A Python task body imports in the CLI's own interpreter, so a missing
+        # module is as likely to mean the wrong interpreter as a missing
+        # dependency. When the project declares an environment this one is not,
+        # the message alone would send the reader looking in the manifest.
+        mismatch = import_failure_mismatch(message=details.error, project_root=Path.cwd())
+        if mismatch is not None:
+            sections.append(Text(""))
+            sections.append(Text("\n".join(mismatch.hint_lines), style="yellow"))
         if self._summary.mode == "verbose" and details.inputs:
             sections.append(Text(""))
             sections.append(Text("Inputs", style="bold #7f1d1d"))

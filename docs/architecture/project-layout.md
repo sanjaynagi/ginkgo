@@ -217,3 +217,30 @@ package-local root from `resolve_envs_workflow_root`, which anchors on the
 **discovered canonical package**, not on the directory of the file being run.
 So `ginkgo run experiments/alt_flow.py` still resolves `workflow/envs/`, and
 doctor validates the same environment set the run will use.
+
+## The interpreter and the project manifest
+
+A Python task cannot declare `env=` — its body executes in the interpreter the
+CLI runs from — so a project's own `pixi.toml` (or a `pyproject.toml` carrying
+`[tool.pixi]`) describes the environment those bodies need, and notebook task
+bodies with them. Install the CLI globally and run it inside such a project and
+the two part company: the manifest is right, the interpreter is wrong, and the
+only symptom is a bare `ModuleNotFoundError`.
+
+`ginkgo/envs/interpreter.py` detects that. It scans the Python files and
+notebook code cells beside the workflow for the root modules they import,
+skipping `envs/`, `scripts/`, `tests/` and hidden directories — those bodies
+run somewhere else — then checks each against the running interpreter with
+`importlib.util.find_spec`. Manifest dependency names are deliberately not
+consulted: a distribution name is not an import name (`pyyaml` installs
+`yaml`), and guessing that mapping would trade a precise answer for a noisy
+one.
+
+The finding reaches the user in two places: `ginkgo doctor` reports it as an
+`interpreter_env_mismatch` error beside its other diagnostics, and a
+`ModuleNotFoundError` — from a failed task, or from importing the workflow
+itself — carries the same explanation where it is rendered. Both name the
+running interpreter, the manifest, and the `pixi run` command that pairs them.
+All of it stays quiet when the project declares no manifest, or when the
+running interpreter can import everything the workflow does, which is what
+`pixi run` gives without needing a special case.

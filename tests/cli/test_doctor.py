@@ -271,3 +271,56 @@ class TestDoctorExecutorSelection:
         missing = [item for item in diagnostics if item.code == "FUSE_IMAGE_NOT_CONFIGURED"]
         assert len(missing) == 1
         assert "[remote.executors.gpu-k8s]" in missing[0].message
+
+
+class TestDoctorInterpreterEnvironment:
+    """Whether the interpreter running ginkgo can import what the project declares.
+
+    Cover for issue #221: Python and notebook task bodies execute in the CLI's
+    own interpreter and cannot declare ``env=``, so the project manifest is the
+    environment they need. Doctor is where that mismatch is cheap to see.
+    """
+
+    def _manifest(self) -> None:
+        """Write a project manifest declaring the scaffold's ``run`` task."""
+        Path("pixi.toml").write_text(
+            '[workspace]\nname = "demo"\n\n[dependencies]\npython = ">=3.11"\n\n'
+            '[tasks]\nrun = "ginkgo run"\n',
+            encoding="utf-8",
+        )
+
+    def test_a_missing_import_is_reported_against_the_manifest(self) -> None:
+        self._manifest()
+        _write_workflow(env=None)
+        Path("analysis.py").write_text("import totally_absent_lib\n", encoding="utf-8")
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 1
+        combined = result.stdout + result.stderr
+        assert "interpreter_env_mismatch" in combined
+        assert "cannot import: totally_absent_lib" in combined
+        assert "pixi.toml" in combined
+        assert "Try: pixi run run" in combined
+
+    def test_json_reports_the_mismatch_as_a_diagnostic(self) -> None:
+        self._manifest()
+        _write_workflow(env=None)
+        Path("analysis.py").write_text("import totally_absent_lib\n", encoding="utf-8")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert [item["code"] for item in payload["diagnostics"]] == ["interpreter_env_mismatch"]
+
+    def test_an_interpreter_that_imports_everything_stays_quiet(self) -> None:
+        """The ``pixi run`` case, where the interpreter is the declared environment."""
+        self._manifest()
+        _write_workflow(env=None)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"ok": True, "diagnostics": []}
