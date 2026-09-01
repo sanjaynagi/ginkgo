@@ -52,6 +52,20 @@ class FailureDetails:
     error: str | None = None
     failure_kind: str | None = None
     inputs: dict[str, object] | None = None
+    task_kind: str | None = None
+    """The task's declared kind (``"python"``, ``"shell"``, ...), when known."""
+    env_label: str = "local"
+    """The environment the task ran in; ``"local"`` is the CLI's own."""
+
+    @property
+    def ran_in_cli_interpreter(self) -> bool:
+        """Whether this task's body executed in the interpreter the CLI runs from.
+
+        Only a ``python`` task in the local environment does. A shell, script
+        or notebook body runs in a subprocess or a kernel of its own, so
+        advice about *this* interpreter would not touch what failed there.
+        """
+        return self.task_kind == "python" and self.env_label == "local"
 
 
 @dataclass

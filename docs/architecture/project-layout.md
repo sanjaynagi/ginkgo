@@ -231,16 +231,34 @@ only symptom is a bare `ModuleNotFoundError`.
 notebook code cells beside the workflow for the root modules they import,
 skipping `envs/`, `scripts/`, `tests/` and hidden directories — those bodies
 run somewhere else — then checks each against the running interpreter with
-`importlib.util.find_spec`. Manifest dependency names are deliberately not
-consulted: a distribution name is not an import name (`pyyaml` installs
-`yaml`), and guessing that mapping would trade a precise answer for a noisy
-one.
+`importlib.util.find_spec`. Imports are read from the parsed syntax tree, not
+matched in raw text, so an import written inside a docstring or string
+literal, under `if TYPE_CHECKING:`, or inside a `try`/`except ImportError`
+guard does not count: none of those is a module the environment has to supply.
+A file that does not parse contributes nothing. Manifest dependency names are
+deliberately not consulted either: a distribution name is not an import name
+(`pyyaml` installs `yaml`), and guessing that mapping would trade a precise
+answer for a noisy one.
 
-The finding reaches the user in two places: `ginkgo doctor` reports it as an
-`interpreter_env_mismatch` error beside its other diagnostics, and a
-`ModuleNotFoundError` — from a failed task, or from importing the workflow
-itself — carries the same explanation where it is rendered. Both name the
-running interpreter, the manifest, and the `pixi run` command that pairs them.
-All of it stays quiet when the project declares no manifest, or when the
-running interpreter can import everything the workflow does, which is what
-`pixi run` gives without needing a special case.
+An unimportable module has two causes with two different fixes, and the module
+reports them apart:
+
+- **`interpreter_env_mismatch`** — the running interpreter is *not* the
+  manifest's environment. `sys.prefix` is not under the manifest's `.pixi/`,
+  and `PIXI_PROJECT_MANIFEST` (which `pixi run` exports) does not name this
+  manifest. The fix is to re-run under `pixi run`, and the finding names the
+  interpreter, the manifest, and that command.
+- **`missing_dependency`** — the interpreter *is* the manifest's environment,
+  so the manifest is the thing that is short. The finding says to add the
+  package and `pixi install`, and deliberately carries no `pixi run` advice,
+  which would be a no-op.
+
+The finding reaches the user in two places: `ginkgo doctor` reports it beside
+its other diagnostics, and a `ModuleNotFoundError` — from a failed task, or
+from importing the workflow itself — carries the same explanation where it is
+rendered. In a run's failure panels the hint is gated to the tasks that
+actually execute in the CLI's interpreter (a `python` task in the local
+environment) and rendered at most once per run: a shell task's subprocess
+would not be helped by advice about this interpreter. All of it stays quiet
+when the project declares no manifest, or when the running interpreter can
+import everything the workflow does.

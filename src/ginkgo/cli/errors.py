@@ -11,7 +11,7 @@ from rich.text import Text
 from rich.traceback import Traceback
 
 from ginkgo.cli.common import console
-from ginkgo.envs.interpreter import import_failure_mismatch
+from ginkgo.envs.interpreter import explain_import_failure
 from ginkgo.errors import GinkgoError, failure_location
 
 __all__ = [
@@ -70,12 +70,16 @@ def report_failure(
 
     # A workflow module imports in the CLI's own interpreter, so a missing
     # module here is as likely to mean the wrong interpreter as a missing
-    # dependency. Say which when the project declares an environment this
-    # interpreter is not.
+    # dependency. Say which when the project declares an environment. Printed
+    # unwrapped for the same reason as the location line below: the hint names
+    # an interpreter and a manifest path, and a wrapped path cannot be copied.
     if isinstance(exc, ModuleNotFoundError):
-        mismatch = import_failure_mismatch(message=str(exc), project_root=Path.cwd())
-        if mismatch is not None:
-            rich_console.print(Text("\n".join(mismatch.hint_lines), style="yellow"))
+        finding = explain_import_failure(message=str(exc), project_root=Path.cwd())
+        if finding is not None:
+            rich_console.print(
+                Text("\n".join(finding.hint_lines), style="yellow"),
+                soft_wrap=True,
+            )
 
     location = None if isinstance(exc, GinkgoError) else failure_location(exc)
     if location is not None:

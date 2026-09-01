@@ -31,7 +31,7 @@ from ginkgo.cli.renderers.common import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
-from ginkgo.envs.interpreter import import_failure_mismatch
+from ginkgo.envs.interpreter import EnvironmentFinding, explain_import_failure
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
@@ -473,7 +473,11 @@ class _RunLayoutRenderer:
         category_summary = self.render_failure_category_summary(details)
         if category_summary is not None:
             parts.append(category_summary)
-        parts.extend(self.render_failure_panel(item) for item in details)
+        hinted, hint = _interpreter_hint(details)
+        parts.extend(
+            self.render_failure_panel(item, hint=hint if item is hinted else None)
+            for item in details
+        )
         return Group(*parts)
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
@@ -489,7 +493,12 @@ class _RunLayoutRenderer:
         summary.append("\n")
         return summary
 
-    def render_failure_panel(self, details: FailureDetails) -> Panel:
+    def render_failure_panel(
+        self,
+        details: FailureDetails,
+        *,
+        hint: EnvironmentFinding | None = None,
+    ) -> Panel:
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
         summary.add_column()
@@ -505,14 +514,9 @@ class _RunLayoutRenderer:
             summary.add_row("Log", str(details.log_path))
 
         sections: list[object] = [summary]
-        # A Python task body imports in the CLI's own interpreter, so a missing
-        # module is as likely to mean the wrong interpreter as a missing
-        # dependency. When the project declares an environment this one is not,
-        # the message alone would send the reader looking in the manifest.
-        mismatch = import_failure_mismatch(message=details.error, project_root=Path.cwd())
-        if mismatch is not None:
+        if hint is not None:
             sections.append(Text(""))
-            sections.append(Text("\n".join(mismatch.hint_lines), style="yellow"))
+            sections.append(Text("\n".join(hint.hint_lines), style="yellow"))
         if self._summary.mode == "verbose" and details.inputs:
             sections.append(Text(""))
             sections.append(Text("Inputs", style="bold #7f1d1d"))
@@ -779,3 +783,28 @@ def _format_count(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.1f}"
     return "--"
+
+
+def _interpreter_hint(
+    details: list[FailureDetails],
+) -> tuple[FailureDetails | None, EnvironmentFinding | None]:
+    """Return the one failure that should carry the environment hint, and it.
+
+    A Python task body imports in the CLI's own interpreter, so a missing
+    module there is as likely to mean the wrong interpreter as a missing
+    dependency, and the message alone would send the reader to the manifest —
+    the one thing that is already right. A shell or script body fails in a
+    subprocess of its own, where none of that advice applies, so those are
+    left alone.
+
+    The hint is the same for every task in a run, and the manifest is read to
+    build it, so it is computed once here and attached to the first failure
+    that qualifies rather than repeated down every panel.
+    """
+    for item in details:
+        if not item.ran_in_cli_interpreter:
+            continue
+        finding = explain_import_failure(message=item.error, project_root=Path.cwd())
+        if finding is not None:
+            return item, finding
+    return None, None

@@ -13,7 +13,7 @@ from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
 from ginkgo.envs.container import container_backend_from_config
-from ginkgo.envs.interpreter import InterpreterMismatch, detect_import_mismatch
+from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
@@ -77,10 +77,12 @@ def command_doctor(args) -> int:
     # ``env=``, so the project manifest is the environment it needs. When the
     # two have parted company -- a globally installed CLI run inside a pixi
     # project -- the only symptom is a bare ModuleNotFoundError from whichever
-    # task imports first. Reported here, where it is cheap to see.
-    mismatch = detect_import_mismatch(workflow_path=workflow_path, project_root=Path.cwd())
-    environment_diagnostics: list[AccessDiagnostic | InterpreterMismatch] = [
-        *([] if mismatch is None else [mismatch]),
+    # task imports first. Reported here, where it is cheap to see. Running
+    # from the project's own environment gets the other finding: the same
+    # missing import, but a fix that edits the manifest instead.
+    import_problem = detect_import_problem(workflow_path=workflow_path, project_root=Path.cwd())
+    environment_diagnostics: list[AccessDiagnostic | EnvironmentFinding] = [
+        *([] if import_problem is None else [import_problem]),
         *access_diagnostics,
     ]
 

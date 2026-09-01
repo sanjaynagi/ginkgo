@@ -315,6 +315,20 @@ class TestDoctorInterpreterEnvironment:
         assert payload["ok"] is False
         assert [item["code"] for item in payload["diagnostics"]] == ["interpreter_env_mismatch"]
 
+    def test_a_docstring_example_import_does_not_fail_doctor(self) -> None:
+        """An import inside prose is not one the environment has to supply."""
+        self._manifest()
+        _write_workflow(env=None)
+        Path("analysis.py").write_text(
+            '"""Notes.\n\nExample::\n\n    import totally_absent_lib\n"""\n',
+            encoding="utf-8",
+        )
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"ok": True, "diagnostics": []}
+
     def test_an_interpreter_that_imports_everything_stays_quiet(self) -> None:
         """The ``pixi run`` case, where the interpreter is the declared environment."""
         self._manifest()

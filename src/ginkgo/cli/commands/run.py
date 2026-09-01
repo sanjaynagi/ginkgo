@@ -663,6 +663,8 @@ def _load_failure_details(
             error=task.error,
             failure_kind=task.failure_kind,
             inputs=task.inputs if verbose else None,
+            task_kind=task.kind,
+            env_label=task.env or "local",
         )
         for task in run_summary.failed_tasks
     ]

@@ -29,6 +29,7 @@ from ginkgo.cli import (
 )
 from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
+from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -1153,7 +1154,6 @@ def main():
         assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 
 
-_IMPORT_PATTERN = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
 _TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
 _EXPORTED_NAME_PATTERN = re.compile(r'"([A-Za-z_]\w*)"')
 
@@ -1200,8 +1200,12 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
 
     Covers both the Python sources and the code cells of the starter notebook,
     since a notebook task's body executes in the same environment as the CLI.
-    Relative imports are skipped by the pattern, so the project's own packages
-    do not appear.
+    Relative imports are skipped by the extraction, so the project's own
+    packages do not appear.
+
+    Extraction is shared with ``ginkgo.envs.interpreter``, which asks the same
+    question of a user's project at runtime, so the two cannot drift on what
+    counts as an import.
     """
     sources = [path.read_text(encoding="utf-8") for path in sorted(project_dir.rglob("*.py"))]
     sources.extend(
@@ -1209,11 +1213,7 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
         for cell in _scaffold_notebook(project_dir=project_dir)["cells"]
         if cell["cell_type"] == "code"
     )
-    roots = {
-        match.group(1).split(".")[0]
-        for text in sources
-        for match in _IMPORT_PATTERN.finditer(text)
-    }
+    roots = {root for text in sources for root in source_import_roots(text=text)}
     return {root for root in roots if root not in sys.stdlib_module_names and root != "workflow"}
 
 
