@@ -69,12 +69,25 @@ writes a row for any version the catalog is missing
 (`AssetRegistrar.reassert_cached_versions` → `AssetStore.reassert_version`).
 A row that already exists is left untouched, however much richer. A row
 written this way is honestly partial: the ref carries the key, the kind, the
-artifact, the content hash and the metadata, while the producing cache entry
-supplies the function that made it and — where recomputing the version id from
-`created_run_id` proves the attribution — the run. What only the execution knew
-(`code_version`, `data_version`, parent edges) stays null rather than guessed.
-`ginkgo db check` reports what is still dangling, for a workspace no run has
-repaired yet.
+artifact, the content hash and the metadata, and the producing cache entry
+supplies the run and the task — but only where recomputing the version id from
+the entry's `created_run_id` reproduces the ref's own id. That proof matters,
+because an entry describes whoever *wrote* it: a task that passes an input's
+ref straight back out would otherwise have the row name it as the producer of
+a version another task made. Where the proof fails, run and task are both
+withheld; `created_at` is kept as an upper bound, its column being the one that
+cannot be left null. What only the execution knew (`code_version`,
+`data_version`, parent edges) stays null rather than guessed.
+
+The repair is bounded by when a run next replays the asset, and until then the
+bytes really are at risk: a workspace that loses its rows and then runs
+`ginkgo cache gc` before any warm run deletes artifacts nothing else protects,
+irreversibly. `ginkgo db check` is how that state is detected — it reports the
+versions a cache entry would replay that the catalog has no row for. It reads
+the entries' encoded form rather than decoding them, so it cannot see a ref
+buried inside a pickled `asset_result` payload; unpickling every entry in a
+workspace to find one is not a trade a read-only check should make, so it
+under-reports there.
 
 The catalog is metadata-only. Asset bytes are never stored in the catalog
 itself; every asset version points to an immutable `artifact_id` in the

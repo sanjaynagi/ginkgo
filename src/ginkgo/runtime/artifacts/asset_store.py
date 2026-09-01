@@ -203,8 +203,11 @@ class AssetStore(DirectIndex):
         producer_task : str | None
             Fully-qualified name of the task that produced it, if known.
         created_at : str | None
-            When the version came into being, as far as it can be recovered;
-            the time of the repair when it cannot.
+            When the version came into being, as far as it can be recovered —
+            at worst an upper bound, since the entry replaying it cannot
+            predate it — and the time of the repair when there is nothing to
+            recover it from. The column is ``NOT NULL``, so unlike the
+            provenance columns it cannot be left to say nothing.
         cache_key : str | None
             The cache key of the entry the version was replayed from.
 

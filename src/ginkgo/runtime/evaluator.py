@@ -2025,6 +2025,8 @@ class ConcurrentEvaluator:
         # catalog has to know them either way: their rows are what lineage
         # resolves a consumed version through, and what keeps the artifact
         # collector from treating an asset's bytes as orphaned (issue #263).
+        # Best-effort by contract — the registrar contains and logs its own
+        # failures, so a repair cannot cost the task its cache hit.
         self._asset_registrar.reassert_cached_versions(value=value, cache_key=cache_key)
         node.result = value
         node.state = "completed"

@@ -259,6 +259,13 @@ def encoded_asset_refs(payload: Any) -> list[AssetRef]:
     the bytes behind everything in it. Asking which asset versions the value
     names does not: the refs are in the encoded form itself. That is what lets
     an integrity check read a cache entry it could not otherwise load.
+
+    One blind spot, deliberately kept: a ref inside an ``asset_result``'s
+    pickled payload is invisible here, because seeing it would mean calling
+    ``pickle.loads`` on a file this function exists to inspect without
+    trusting. A reader that walks every entry in a workspace is the last place
+    to execute what an entry contains, so the check this feeds under-reports
+    rather than unpickles.
     """
     if isinstance(payload, list):
         return [ref for item in payload for ref in encoded_asset_refs(item)]

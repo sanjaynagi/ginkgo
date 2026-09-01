@@ -657,28 +657,39 @@ class CacheStore:
         Returns
         -------
         list[str]
-            One sentence, counting the dangling versions and naming a few, or
-            nothing when every replayable ref has a row.
+            One sentence counting the dangling versions and naming a few, plus
+            one per entry whose stored output could not be read at all.
         """
         dangling: dict[str, str] = {}
+        problems: list[str] = []
         for cache_key in self.index.cache_keys():
             output_path = self.output_path(cache_key)
             if not output_path.is_file():
                 # Already reported by `integrity_problems` as a row with no bytes.
                 continue
-            payload = json.loads(output_path.read_text(encoding="utf-8"))
-            for ref in encoded_asset_refs(payload):
+            try:
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                refs = encoded_asset_refs(payload)
+            except Exception as exc:
+                # A check reports; it does not raise. An entry truncated by a
+                # full disk, or written by a ginkgo whose encoding has since
+                # moved on, is a finding in its own right — and must not cost
+                # the user every check that comes after this one.
+                problems.append(f"cache entry {cache_key} has an unreadable output.json: {exc}")
+                continue
+            for ref in refs:
                 if ref.version_id in dangling or assets.version_by_id(ref.version_id) is not None:
                     continue
                 dangling[ref.version_id] = f"{ref.key}@{ref.version_id[:12]} in entry {cache_key}"
         if not dangling:
-            return []
+            return problems
         examples = "; ".join(sorted(dangling.values())[:3])
         more = "" if len(dangling) <= 3 else f"; and {len(dangling) - 3} more"
         return [
+            *problems,
             f"{len(dangling)} asset version(s) a cache entry replays have no catalog row "
             f"({examples}{more}) — lineage through them is lost and their artifacts are "
-            f"unprotected until a run replays them"
+            f"unprotected until a run replays them",
         ]
 
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:

@@ -175,6 +175,37 @@ class TestDbCheckCache:
         assert main(["db", "check"]) == 0
         assert "integrity check passed" in capsys.readouterr().out
 
+    def test_a_truncated_output_is_reported_and_the_check_goes_on(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A check reports; it never raises. Everything after it still runs."""
+        monkeypatch.chdir(tmp_path)
+        _entry(tmp_path, "key-1")
+        (tmp_path / ".ginkgo" / "cache" / "key-1" / "output.json").write_text(
+            '{"__ginkgo_type__": "asse', encoding="utf-8"
+        )
+        _run_row(tmp_path, "run-1")  # a later check, which must still be reached
+
+        assert main(["db", "check"]) == 1
+
+        output = capsys.readouterr().out
+        assert "cache entry key-1 has an unreadable output.json" in output
+        assert "run run-1 has a row but no run directory" in output
+
+    def test_an_output_missing_the_fields_a_ref_needs_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """An entry written by a ginkgo whose encoding has since moved on."""
+        monkeypatch.chdir(tmp_path)
+        _entry(tmp_path, "key-1")
+        (tmp_path / ".ginkgo" / "cache" / "key-1" / "output.json").write_text(
+            json.dumps({"__ginkgo_type__": "asset_ref", "value": {"kind": "table"}}),
+            encoding="utf-8",
+        )
+
+        assert main(["db", "check"]) == 1
+        assert "cache entry key-1 has an unreadable output.json" in capsys.readouterr().out
+
     def test_a_save_in_flight_is_not_an_orphan(self, tmp_path, monkeypatch, capsys):
         """A concurrent save's temporary directory is about to be renamed."""
         monkeypatch.chdir(tmp_path)

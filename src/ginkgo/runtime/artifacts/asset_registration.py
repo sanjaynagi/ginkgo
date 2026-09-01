@@ -358,8 +358,14 @@ class AssetRegistrar:
         own hit rather than leaving a consumer to write another task's rows.
 
         The repair is one-way: a version the catalog already knows is left
-        alone, so a healthy warm run costs one lookup per replayed asset and
-        never trades a fully-attributed row for a partial one.
+        alone, so a healthy warm run costs one lookup per replayed asset,
+        reads nothing that only a repair needs, and never trades a
+        fully-attributed row for a partial one.
+
+        A repair that fails is contained. The workspace is then left exactly
+        as it was — the state this repair exists to correct, and one the
+        consumer still warns about — so failing the cache hit as well would
+        turn an incomplete catalog into a broken run.
 
         Parameters
         ----------
@@ -377,18 +383,37 @@ class AssetRegistrar:
         refs = collect_asset_refs(value)
         if not refs:
             return []
+        try:
+            return self._reassert_missing(refs=refs, cache_key=cache_key)
+        except Exception as exc:
+            logger.warning(
+                "Could not re-assert the catalog rows for the assets cache entry %s "
+                "replayed (%s); lineage through them will be incomplete",
+                cache_key,
+                exc,
+            )
+            return []
+
+    def _reassert_missing(self, *, refs: list[AssetRef], cache_key: str) -> list[AssetRef]:
+        """Write a catalog row for each replayed ref the catalog does not hold."""
+        missing = [ref for ref in refs if self.asset_store.version_by_id(ref.version_id) is None]
+        if not missing:
+            return []
+        # Only a repair needs to know who wrote the entry, so only a repair
+        # reads it.
         entry = self.cache_store.index.entry(cache_key)
-        return [
-            ref
-            for ref in refs
+        written: list[AssetRef] = []
+        for ref in missing:
+            run_id, producer_task = _proven_producer(ref=ref, entry=entry)
             if self.asset_store.reassert_version(
                 ref=ref,
-                run_id=_producing_run_id(ref=ref, entry=entry),
-                producer_task=None if entry is None else entry["function"],
+                run_id=run_id,
+                producer_task=producer_task,
                 created_at=None if entry is None else entry["created_at"],
                 cache_key=cache_key,
-            )
-        ]
+            ):
+                written.append(ref)
+        return written
 
     def _announce(
         self,
@@ -469,22 +494,36 @@ class AssetRegistrar:
         return list(unique.values())
 
 
-def _producing_run_id(*, ref: AssetRef, entry: CacheEntry | None) -> str | None:
-    """Return the run that produced a replayed version, when that is provable.
+def _proven_producer(*, ref: AssetRef, entry: CacheEntry | None) -> tuple[str | None, str | None]:
+    """Return the run and task that produced a replayed version, when provable.
 
-    The entry's ``created_run_id`` is the run that wrote it, which is the run
-    that produced the value inside it. That is an inference, and a version id
-    can settle it: it hashes over the key, the content and the producing run,
-    so a recomputation that lands on the ref's own id proves the attribution.
-    Where it does not, the row is better left saying nothing than guessing.
+    An entry's ``created_run_id`` and ``function`` describe the run and the
+    task that *wrote the entry*, which is not the same claim as the one a
+    catalog row makes. A task that passes an input's ref straight back out
+    writes an entry replaying a version some other task produced, and taking
+    the entry at its word would have that row name the wrong producer.
+
+    A version id settles it: it hashes over the key, the content and the
+    producing run, so a recomputation that lands on the ref's own id proves
+    the entry's run minted this version, and with it that the entry's function
+    is the task that did. Where the recomputation disagrees, both halves are
+    withheld — a row that says nothing about its provenance is worth more than
+    one that says something false.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        The producing run id and task name, or ``(None, None)``.
     """
     if entry is None:
-        return None
+        return None, None
     run_id = entry["created_run_id"]
     if not run_id:
-        return None
+        return None, None
     minted = make_asset_version_id(key=ref.key, content_hash=ref.content_hash, run_id=str(run_id))
-    return str(run_id) if minted == ref.version_id else None
+    if minted != ref.version_id:
+        return None, None
+    return str(run_id), entry["function"]
 
 
 def _current_index_for(

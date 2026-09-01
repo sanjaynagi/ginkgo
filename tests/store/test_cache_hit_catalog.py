@@ -20,7 +20,12 @@ import pandas as pd
 import pytest
 
 from ginkgo import table, task
+from ginkgo.core.asset import AssetKey, AssetRef, asset_ref_from_version, make_asset_version
 from ginkgo.query import Query
+from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.value_codec import encoded_asset_refs
+from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.rundir import make_run_id
@@ -137,6 +142,144 @@ class TestCatalogLostBehindAnIntactCache:
         row = next(row for row in _versions(warm.db) if row["asset_key"] == "table:a")
         with CacheIndex.open(path=warm.db, readonly=True) as index:
             assert str(row["artifact_id"]) in index.referenced_artifact_ids()
+
+    def test_a_repair_that_fails_does_not_fail_the_cache_hit(
+        self,
+        wiped_workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A repair is best-effort: failing it must degrade to the old warning."""
+
+        def _explode(self, **_):
+            raise RuntimeError("catalog is unwritable")
+
+        monkeypatch.setattr(AssetStore, "reassert_version", _explode)
+
+        with caplog.at_level(logging.WARNING):
+            warm = _warm(wiped_workspace)
+
+        assert any(row.get("cached") for row in warm.tasks().values()), (
+            "the producer's cache hit did not complete"
+        )
+        assert "Could not re-assert the catalog rows" in caplog.text
+        # And the workspace is left in exactly the state the repair exists to
+        # fix, which the consumer still warns about.
+        assert "catalog has no row" in caplog.text
+
+
+def _replayed_ref(*, minted_in: str) -> AssetRef:
+    """Return the ref a cache entry replays for a version minted in one run."""
+    return asset_ref_from_version(
+        version=make_asset_version(
+            key=AssetKey(namespace="table", name="a"),
+            kind="table",
+            artifact_id="artifact-a",
+            content_hash="hash-a",
+            run_id=minted_in,
+            producer_task="pkg.workflow.produce",
+        ),
+        artifact_path="/artifacts/artifact-a",
+    )
+
+
+class TestWhatARepairedRowMayClaim:
+    """The entry describes whoever wrote it, which is not always the producer."""
+
+    @pytest.fixture
+    def registrar(self, tmp_path: Path) -> AssetRegistrar:
+        """A registrar over a workspace holding one cache entry, written by ``run-mint``."""
+        layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
+        index = CacheIndex.open(path=layout.db)
+        index.record_entry(
+            cache_key="key-1",
+            meta={"function": "pkg.workflow.produce", "created_at": "2026-08-28T10:00:00+00:00"},
+            artifact_ids={},
+            size_bytes=1,
+            run_id="run-mint",
+        )
+        return AssetRegistrar(
+            cache_store=CacheStore(index=index, root=layout.cache),
+            asset_store=AssetStore.attached_to(index),
+            run_id_provider=lambda: "run-warm",
+        )
+
+    @pytest.fixture
+    def db(self, tmp_path: Path) -> Path:
+        return WorkspaceLayout(root=tmp_path / ".ginkgo").db
+
+    def _claims(self, db: Path, version_id: str) -> dict:
+        """Return what the row itself says, where a null is still a null.
+
+        Read back through ``version_by_id`` an unattributed row is
+        indistinguishable from one attributed to the empty string, and the
+        distinction is the whole point of withholding.
+        """
+        with open_store(db, readonly=True) as store:
+            rows = store.query(
+                "SELECT run_id, producer_task FROM asset_versions WHERE version_id = ?",
+                (version_id,),
+            )
+        assert rows, "the replayed version was not re-asserted"
+        return dict(rows[0])
+
+    def test_a_provable_producer_is_recorded(self, registrar: AssetRegistrar, db: Path) -> None:
+        """The entry's run minted this version, so the entry can be believed."""
+        ref = _replayed_ref(minted_in="run-mint")
+
+        assert registrar.reassert_cached_versions(value=ref, cache_key="key-1") == [ref]
+        assert self._claims(db, ref.version_id) == {
+            "run_id": "run-mint",
+            "producer_task": "pkg.workflow.produce",
+        }
+
+    def test_an_unprovable_producer_is_withheld(self, registrar: AssetRegistrar, db: Path) -> None:
+        """A version some other run minted: the entry only replayed it.
+
+        This is the pass-through shape — a task handing an upstream ref back
+        out — where believing the entry would name the wrong producer.
+        """
+        ref = _replayed_ref(minted_in="run-elsewhere")
+
+        assert registrar.reassert_cached_versions(value=ref, cache_key="key-1") == [ref]
+        assert self._claims(db, ref.version_id) == {"run_id": None, "producer_task": None}
+
+    def test_a_ref_nested_in_the_replayed_value_is_repaired(
+        self, registrar: AssetRegistrar
+    ) -> None:
+        """Cached results are rarely a bare ref; the walk has to reach inside."""
+        ref = _replayed_ref(minted_in="run-mint")
+
+        written = registrar.reassert_cached_versions(
+            value={"tables": [ref], "count": 1}, cache_key="key-1"
+        )
+
+        assert written == [ref]
+        assert registrar.asset_store.version_by_id(ref.version_id) is not None
+
+    def test_a_missing_entry_leaves_the_row_unattributed(
+        self, registrar: AssetRegistrar, db: Path
+    ) -> None:
+        """A cache directory the index never knew still gets its bytes protected."""
+        ref = _replayed_ref(minted_in="run-mint")
+
+        assert registrar.reassert_cached_versions(value=ref, cache_key="key-absent") == [ref]
+        assert self._claims(db, ref.version_id) == {"run_id": None, "producer_task": None}
+
+
+class TestEncodedAssetRefs:
+    """What the integrity check can see without decoding an entry."""
+
+    def test_it_finds_refs_nested_in_containers(self) -> None:
+        from ginkgo.runtime.artifacts.value_codec import encode_value
+
+        ref = _replayed_ref(minted_in="run-mint")
+        payload = encode_value({"tables": [ref, None], "n": 2}, base_dir=Path("/tmp"))
+
+        assert [found.version_id for found in encoded_asset_refs(payload)] == [ref.version_id]
+
+    def test_it_finds_nothing_in_a_value_that_names_no_asset(self) -> None:
+        assert encoded_asset_refs({"__ginkgo_type__": "file", "value": "/out/a.txt"}) == []
 
 
 class TestAHealthyWarmRun:

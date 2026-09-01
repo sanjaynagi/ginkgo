@@ -152,7 +152,11 @@ provenance never degrades silently.
     file in `blobs/` or `trees/` that no row (and no tree manifest) names;
   - the cache and the asset catalog together — a cache entry whose stored
     output would replay an `AssetRef` naming a version `asset_versions` has no
-    row for (`CacheStore.asset_reference_problems`);
+    row for, and an entry whose `output.json` cannot be read at all
+    (`CacheStore.asset_reference_problems`). It walks the encoded form rather
+    than decoding it, so a ref inside a pickled `asset_result` payload is
+    invisible to it — a read-only check does not unpickle what it is
+    inspecting, and under-reports instead;
   - runs — a `runs` row with no run directory, and a run directory with no row;
   - the staging cache — a staged URI whose bytes are gone;
   - environments — a declared environment recorded as materializing two
