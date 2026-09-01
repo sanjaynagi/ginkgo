@@ -155,7 +155,16 @@ downstream behaviour.
   just the frameworks that happen to have a native format. Detection
   pickles such a payload at `model()` call time so an unpicklable one
   (a lambda, an open handle) fails with a `TypeError` at the user's own
-  call site rather than at serialisation. `framework=` overrides
+  call site rather than at serialisation. Two payloads pickle cleanly
+  but must still be refused there: a `str`/`os.PathLike`, which would
+  store a *path* posing as a model (`file(path)` is the right kind for a
+  model file on disk), and a value whose class lives in `__main__` or in
+  the synthetic `ginkgo_user_*` module a single-file flow is loaded
+  under — pickle records the class by that module name, which no reader
+  can import, so the blob would fail on every later load. The check
+  covers the payload's own class and one level of dict values or
+  list/tuple/set items; deeper graph walking is deliberately not done.
+  `framework=` overrides
   detection and takes a sub-kind name (`sklearn`, `xgboost`,
   `lightgbm`, `pytorch`, `keras`, `pickle`), which differs from the
   module roots — `torch` maps to `pytorch`, `tensorflow` to `keras`.

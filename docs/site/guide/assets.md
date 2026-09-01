@@ -117,13 +117,33 @@ module:
 | `torch` | `pytorch` | `torch.save` |
 | `keras`, `tensorflow` | `keras` | native `.keras` archive |
 
-Any other payload — a dict of weights, a statsmodels result, a JAX pytree, your
-own estimator class — is stored with `pickle` under the sub-kind `pickle`, and
-shows as `framework=pickle` in `ginkgo models`. So a hand-rolled model is a
-first-class model asset with metrics, versioning, and a report card, with no
-dependency beyond the standard library. A payload that cannot be pickled — a
-lambda, a closure, an open file handle, a live database connection — raises
-`TypeError` at the `model()` call itself, naming the type and the pickle error.
+Any other payload — a dict of weights, a statsmodels result, a JAX pytree, an
+estimator class of your own — is stored with `pickle` under the sub-kind
+`pickle`, and shows as `framework=pickle` in `ginkgo models`. So a hand-rolled
+model is a first-class model asset with metrics, versioning, and a report card,
+with no dependency beyond the standard library. A payload that cannot be
+pickled — a lambda, a closure, an open file handle, a live database
+connection — raises `TypeError` at the `model()` call itself, naming the type
+and the pickle error.
+
+**Your own classes must live in an importable module.** Pickle stores an
+instance by its class's *module name* and re-imports that module on load. A
+class defined in the flow script itself has no durable module name: Ginkgo
+loads a single-file flow under a synthetic `ginkgo_user_…` name unique to that
+run and that file path, so the stored bytes would raise `ModuleNotFoundError`
+in every other process — including `ginkgo asset show` and any later run of the
+same file from a different directory. `model()` refuses such a payload at the
+call site, and refuses it too when the class only appears one level down, in
+the values of a dict or the items of a list. The fix is to move the class into
+a module beside the flow and import it (`from workflow.modules.estimators
+import MyEstimator`); the [canonical `workflow/`
+layout](tasks-and-flows.md#keep-flows-thin) gives your classes real importable
+names for free. Payloads built from library and built-in types are unaffected.
+
+`model()` takes the model *object*, never a path: `model("out/model.pkl")`
+would otherwise store the string. Use `file("out/model.pkl")` to register a
+model file a command has already written to disk.
+
 Reloading a `pickle` model asset unpickles the stored bytes, which executes code
 held in the blob; you accept that contract when you save it, the same way the
 PyTorch path does.

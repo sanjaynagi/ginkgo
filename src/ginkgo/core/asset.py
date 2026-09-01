@@ -629,9 +629,15 @@ def model(
         LightGBM sklearn-wrapped models, PyTorch ``nn.Module``
         instances, and Keras/TensorFlow models use their native
         serialiser. Any other payload — a dict of weights, a
-        statsmodels result, your own estimator class — is stored with
-        ``pickle``; a payload that cannot be pickled (a lambda, an open
-        file handle) raises ``TypeError`` here.
+        statsmodels result, an estimator class of your own — is stored
+        with ``pickle``; a payload that cannot be pickled (a lambda, an
+        open file handle) raises ``TypeError`` here. So do the two
+        payloads that pickle but could not be read back as a model: a
+        path (``model("out/m.pkl")`` — use ``file(path)`` for a model
+        file on disk), and a value whose class is defined in the flow
+        script itself, since pickle records that class by a module name
+        no other process can import. Define such classes in an
+        importable module beside the flow.
     name : str | None
         Optional explicit local asset name.
     group : str | None

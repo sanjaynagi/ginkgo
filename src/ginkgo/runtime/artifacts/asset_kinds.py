@@ -213,6 +213,51 @@ _NATIVE_MODEL_FRAMEWORKS: frozenset[str] = frozenset(_MODEL_MODULE_ROOTS.values(
 _MODEL_FRAMEWORKS: frozenset[str] = _NATIVE_MODEL_FRAMEWORKS | {_GENERIC_MODEL_SUB_KIND}
 
 
+def _unloadable_pickle_class(payload: Any) -> type | None:
+    """Return the class of a payload pickle could store but nothing could load.
+
+    Pickle records an instance by its class's ``__module__`` and qualified
+    name, and unpickling re-imports that module. Two module names never
+    survive the trip: ``__main__``, which resolves to whichever script the
+    reading process happens to be running, and the synthetic
+    ``ginkgo_user_*`` name a single-file flow is loaded under, which no other
+    process — nor the same file at another path — can import at all. Pickling
+    such a payload succeeds and produces bytes that raise
+    ``ModuleNotFoundError`` on every later read.
+
+    Checks the payload's own class and, one level down, the classes inside a
+    dict's values or a list/tuple/set's items: a dict of plain floats is fine,
+    while a dict holding one flow-defined estimator is as broken as the
+    estimator alone. Deeper nesting is not walked — a general object-graph
+    walk would cost more than the failure mode it buys.
+
+    Parameters
+    ----------
+    payload : Any
+        The payload about to be stored under the generic ``pickle`` sub-kind.
+
+    Returns
+    -------
+    type | None
+        The offending class, or ``None`` when every class checked lives in an
+        importable module.
+    """
+    from ginkgo.runtime.module_loader import USER_MODULE_PREFIX
+
+    candidates: list[Any] = [payload]
+    if isinstance(payload, dict):
+        candidates.extend(payload.values())
+    elif isinstance(payload, (list, tuple, set, frozenset)):
+        candidates.extend(payload)
+
+    for candidate in candidates:
+        cls = type(candidate)
+        module = cls.__module__
+        if module == "__main__" or module.startswith(USER_MODULE_PREFIX):
+            return cls
+    return None
+
+
 def _detect_model(
     payload: Any,
     *,
@@ -234,6 +279,12 @@ def _detect_model(
     here rather than at serialisation time so an unpicklable payload
     fails at the ``model()`` call site, where the traceback points at
     the user's own code.
+
+    Two payloads are refused there rather than stored: a ``str`` or
+    ``os.PathLike``, which would otherwise become a pickled *path* posing
+    as a model in ``ginkgo models`` (``file(path)`` stores a model file),
+    and a value whose class no reader could import — see
+    :func:`_unloadable_pickle_class`.
     """
     if framework is not None:
         if framework not in _MODEL_FRAMEWORKS:
@@ -248,6 +299,14 @@ def _detect_model(
     if sub_kind == _GENERIC_MODEL_SUB_KIND:
         import pickle
 
+        if isinstance(payload, (str, os.PathLike)):
+            raise TypeError(
+                f"model() does not accept a path; got "
+                f"{type(payload).__module__}.{type(payload).__name__} {str(payload)!r}. "
+                f"model() takes the trained model object itself. To store a model "
+                f"file that already exists on disk, use file(path) instead."
+            )
+
         try:
             pickle.dumps(payload)
         except Exception as exc:
@@ -255,9 +314,23 @@ def _detect_model(
                 f"model() cannot store payload of type "
                 f"{type(payload).__module__}.{type(payload).__name__}: it is not a "
                 f"{', '.join(sorted(_NATIVE_MODEL_FRAMEWORKS))} model and is not "
-                f"picklable ({exc}). Store it as text(json.dumps(...)) or file(path) "
-                f"instead."
+                f"picklable ({type(exc).__name__}: {exc}). Store it as "
+                f"text(json.dumps(...)) or file(path) instead."
             ) from exc
+
+        unloadable = _unloadable_pickle_class(payload)
+        if unloadable is not None:
+            raise TypeError(
+                f"model() cannot store a payload whose class is defined in "
+                f"{unloadable.__module__!r}: pickle records "
+                f"{unloadable.__qualname__} by that module name, which no other "
+                f"process can import, so the stored model would fail to load. "
+                f"Move {unloadable.__qualname__} into an importable module beside "
+                f"the flow and import it there — a package-style workflow layout "
+                f"gives your classes real importable names. A payload built only "
+                f"from library and built-in types (a dict of weights, a "
+                f"scikit-learn estimator) has no such problem."
+            )
 
     return payload, sub_kind, {"framework": sub_kind, "metrics": dict(metrics or {})}
 
@@ -432,7 +505,7 @@ WRAPPER_KINDS: frozenset[str] = frozenset(kind for kind in ASSET_KINDS if kind !
 # Sub-kinds whose detect callable accepted a ``str`` path rather than an
 # in-memory value. Only ``table`` and ``fig`` accept a bare ``str`` as a path;
 # ``text`` treats ``str`` as inline content, and ``array`` / ``model`` reject
-# strings outright.
+# both ``str`` and ``os.PathLike`` outright, so neither has a path-backed form.
 _PATH_SUB_KINDS: dict[str, frozenset[str]] = {
     "table": frozenset({"csv", "tsv"}),
     "fig": frozenset({"png", "svg", "html"}),

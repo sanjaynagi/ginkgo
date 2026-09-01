@@ -149,12 +149,23 @@ def _asset_result_path(result: AssetResult) -> Path:
     if result.kind == "text" and isinstance(payload, Path):
         return payload
 
+    if path_sub_kinds:
+        remedy = (
+            f"{result.kind}(...) accepts a str or Path for a declared output "
+            f'(e.g. {result.kind}("results/foo.{sorted(path_sub_kinds)[0]}")).'
+        )
+    else:
+        remedy = (
+            f"{result.kind}(...) has no path form — it wraps a live Python object, "
+            f"so it cannot be a command's declared output. Declare the file the "
+            f"command writes with file(path), or build the {result.kind} asset in a "
+            f"python task."
+        )
+
     raise TypeError(
         f"{result.kind}(...) output must wrap a declared file path; got "
         f"in-memory payload of type "
-        f"{type(payload).__module__}.{type(payload).__name__}. "
-        "Path-based wrappers accept a str or Path argument (e.g. "
-        f'{result.kind}("results/foo.png")).'
+        f"{type(payload).__module__}.{type(payload).__name__}. " + remedy
     )
 
 
