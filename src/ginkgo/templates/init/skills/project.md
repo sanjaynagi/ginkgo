@@ -9,7 +9,7 @@ Key files and directories:
 - `{{ envs_relpath }}`: task-local Pixi environments
 - `{{ notebooks_relpath }}`: notebooks executed by notebook tasks
 - `{{ scripts_relpath }}`: standalone scripts executed by script tasks
-- `{{ tests_relpath }}`: test workflows used by `ginkgo test`
+- `{{ tests_relpath }}`: validation workflows, each run by path with `ginkgo run`
 - `.ginkgo/`: runtime state for runs, cache, artifacts, and provenance
 
 The package directory is always named `workflow/`, whatever the project is
@@ -27,6 +27,10 @@ Keep `flow.py` thin:
 
 Task-local Pixi environments live under `{{ envs_relpath }}` and are referenced
 by name from tasks, for example `@task("script", env="analysis_tools")`.
+
+`ginkgo.project_root()` returns the project root — the nearest directory at
+or above the working directory holding `ginkgo.toml` — so a path can be named
+relative to the project rather than to wherever `ginkgo` was invoked from.
 
 Prefer `ginkgo inspect` and `ginkgo debug` for run state before looking inside
 `.ginkgo/` directly.

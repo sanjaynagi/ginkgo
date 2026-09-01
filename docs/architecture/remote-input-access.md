@@ -43,9 +43,9 @@ Implementations:
 
 `AccessStats` carries the per-mount counters (bytes read, range
 requests, cache hits, mount / unmount seconds). The worker folds these
-into the result envelope as `remote_input_access`; the evaluator folds
-them into provenance via
-`RunProvenanceRecorder.update_task_extra(remote_input_access=...)`.
+into the result envelope as `remote_input_access`; the evaluator records
+them against the task as `TaskAnnotated(fields={"remote_input_access": …})`,
+which lands in the ledger's `tasks.extra`.
 
 ## Per-input policy resolution
 
@@ -179,8 +179,10 @@ trigger streaming (`auto_fuse=true`, `default="fuse"`, or any
 - The FUSE driver binaries on the driver host's PATH (informational —
   not required).
 - `/dev/fuse` availability (warning — expected to be absent on macOS).
-- Whether a `fuse_image` is configured on the executor when streaming
-  is enabled (warning).
+- Whether a `fuse_image` is configured, for *every* configured executor
+  section, when streaming is enabled (warning per section). A task can be
+  pinned to any executor, so diagnosing one section would clear a run whose
+  other executors cannot mount.
 
 ## Deferred work
 
@@ -195,7 +197,7 @@ will be picked up post-benchmark:
 - **Benchmark harness lane.** The per-workload scenario grid, cost
   model, and comparison report.
 - **Inspect rendering.** The `remote_input_access` block is stored in
-  provenance but not rendered by `ginkgo inspect run`.
+  provenance but not rendered by `ginkgo runs show --json`.
 - **Custom FUSE driver.** A potential Phase 10 item if the OSS drivers
   miss the acceptance bar on the sequential whole-file benchmark.
 

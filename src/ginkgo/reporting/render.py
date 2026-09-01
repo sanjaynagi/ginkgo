@@ -18,6 +18,8 @@ from typing import Any
 
 import jinja2
 
+from ginkgo.runtime.run_summary import RunSummary
+
 from .model import ReportData, build_report_data
 from .sizing import SizingPolicy
 
@@ -41,10 +43,9 @@ class ExportResult:
 
 def export_report(
     *,
-    run_dir: Path,
+    summary: RunSummary,
     out_dir: Path,
     workspace_label: str | None = None,
-    assets_root: Path | None = None,
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
@@ -55,17 +56,17 @@ def export_report(
 
     Parameters
     ----------
-    run_dir : Path
-        Directory containing the run's ``manifest.yaml``.
+    summary : RunSummary
+        The run to report on, loaded from the ledger.
     out_dir : Path
         Destination directory. For the default bundle, the report is
         written inside this directory. For ``single_file``, the HTML is
         written at ``out_dir / "index.html"`` with assets inlined.
     workspace_label : str | None
         Label for the workspace header. Inferred when omitted.
-    assets_root, artifacts_root : Path | None
-        Overrides for the asset catalog and artifact store roots. Inferred
-        from ``run_dir`` when omitted.
+    artifacts_root : Path | None
+        Override for the artifact store root. Inferred from the run directory
+        when omitted.
     policy : SizingPolicy | None
         Per-kind preview caps.
     single_file : bool
@@ -92,9 +93,8 @@ def export_report(
         export wrote and ``force`` is False.
     """
     report = build_report_data(
-        run_dir=run_dir,
+        summary=summary,
         workspace_label=workspace_label,
-        assets_root=assets_root,
         artifacts_root=artifacts_root,
         policy=policy,
     )
@@ -193,9 +193,9 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
         source = copies_by_relpath.get(relpath)
         if source is None or not source.is_file():
             return relpath
-        # The type comes from the bundle path, not the source: figure sources
-        # are extensionless content-addressed blobs, while the bundle path
-        # carries the artifact's real extension.
+        # The type comes from the bundle path: it always carries the
+        # artifact's extension, whether or not the CAS source filename
+        # does (older stores wrote extensionless blobs).
         return _data_uri(source, mime=mimetypes.guess_type(relpath)[0])
 
     def log_inliner(relpath: str) -> str:

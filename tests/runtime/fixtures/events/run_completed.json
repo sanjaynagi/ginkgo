@@ -1,0 +1,15 @@
+{
+  "error": null,
+  "event": "run_completed",
+  "finished_at": "2026-08-28T09:00:00+00:00",
+  "resources": {
+    "peak_rss_bytes": 1048576
+  },
+  "run_id": "run_20260828_090000",
+  "status": "success",
+  "task_counts": {
+    "succeeded": 4
+  },
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 2
+}

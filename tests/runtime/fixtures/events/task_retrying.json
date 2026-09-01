@@ -1,0 +1,16 @@
+{
+  "attempt": 1,
+  "delay_seconds": 1.5,
+  "display_label": null,
+  "event": "task_retrying",
+  "failure": {
+    "kind": "exception",
+    "message": "boom"
+  },
+  "retries_remaining": 2,
+  "run_id": "run_20260828_090000",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

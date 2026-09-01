@@ -36,11 +36,20 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
+    v: int = 4
     task_id: str = ""
+    node_id: int = -1
+    """The scheduler node this task is, recorded rather than parsed back out."""
     task_name: str = ""
     kind: str = "python"
+    execution_mode: str = "python"
     env: str | None = None
+    retries: int = 0
     dependency_ids: list[str] = field(default_factory=list)
+    stdout_log: str | None = None
+    """Where the task's stdout will be written, relative to the run directory."""
+    stderr_log: str | None = None
+    """Where the task's stderr will be written, relative to the run directory."""
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -171,10 +180,82 @@ class TaskCompleted(TaskEvent):
     """Task completion event."""
 
     event: str = "task_completed"
+    v: int = 2
     status: Literal["success", "cached"] = "success"
     cache_key: str | None = None
     outputs: list[dict[str, Any]] = field(default_factory=list)
+    assets: list[dict[str, Any]] = field(default_factory=list)
+    output_summary: dict[str, Any] = field(default_factory=dict)
+    resource_usage: dict[str, Any] = field(default_factory=dict)
     remote_job_id: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskPlanned(TaskEvent):
+    """Arguments resolved and cache key built, before any cache probe.
+
+    Everything the cache key was computed from is on this event, so the ledger
+    can answer "why did this re-run" without the cache index being intact.
+
+    ``asset_inputs`` carries the identity of an asset a parameter was handed,
+    captured where the argument was resolved. The cache key hashes the asset's
+    *content*, and by the time a semantically typed parameter reaches the task
+    the ref has already become a DataFrame — so identity has to travel beside
+    the hashes rather than be recovered from them.
+
+    One asset per parameter, which is the shape ``task_inputs`` holds: its key
+    is ``(run_id, task_id, param, position)`` and the projector writes position
+    0. A parameter handed a list of assets records the first, and the rest
+    reach lineage through the producing tasks' own edges. Recording all of them
+    would mean a row per position and a projector loop over positions rather
+    than over parameters; nothing asks for it yet.
+    """
+
+    event: str = "task_planned"
+    inputs: dict[str, Any] = field(default_factory=dict)
+    input_hashes: list[dict[str, Any]] = field(default_factory=list)
+    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    cache_key: str | None = None
+    source_hash: str | None = None
+    version: int | None = None
+    env_hash: str | None = None
+    extra_source_hash: str | None = None
+    dependency_ids: list[str] = field(default_factory=list)
+    dynamic_dependency_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(kw_only=True, frozen=True)
+class AssetMaterialized(TaskEvent):
+    """One asset version was written to the catalog by this task.
+
+    A version's metrics and its check outcomes travel in ``metadata``, where
+    the asset itself carries them; the sub-kind travels there too. Fields of
+    their own would have been a second place to look for the same facts.
+    """
+
+    event: str = "asset_materialized"
+    asset_key: str = ""
+    version_id: str = ""
+    kind: str = ""
+    artifact_id: str = ""
+    content_hash: str = ""
+    cache_key: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    parents: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskAnnotated(TaskEvent):
+    """Facts about a task that have no lifecycle of their own.
+
+    An environment lock file copied, a container image digest, remote access
+    statistics, notebook artefact paths, a sub-run id: each is a field the
+    projector merges into the task's ``extra``, and none of them deserves an
+    event type.
+    """
+
+    event: str = "task_annotated"
+    fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -217,7 +298,16 @@ class RunStarted(RunEvent):
     """Run start event."""
 
     event: str = "run_started"
+    v: int = 2
     workflow: str = ""
+    jobs: int | None = None
+    cores: int | None = None
+    memory: int | None = None
+    params: dict[str, Any] = field(default_factory=dict)
+    param_sources: dict[str, str] = field(default_factory=dict)
+    ginkgo_version: str | None = None
+    parent_run_id: str | None = None
+    parent_task_id: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -231,12 +321,37 @@ class RunValidated(RunEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class PhaseTimed(RunEvent):
+    """How long one named phase took.
+
+    ``task_id`` is what makes it a task's phase rather than the run's; there is
+    no separate scope field, because two fields that must agree drift.
+    """
+
+    event: str = "phase_timed"
+    task_id: str | None = None
+    phase: str = ""
+    seconds: float = 0.0
+
+
+@dataclass(kw_only=True, frozen=True)
+class RunResourcesSampled(RunEvent):
+    """A snapshot of the run's CPU and memory usage; the latest one wins."""
+
+    event: str = "run_resources_sampled"
+    resources: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True, frozen=True)
 class RunCompleted(RunEvent):
     """Run completion event."""
 
     event: str = "run_completed"
+    v: int = 2
     status: Literal["success", "failed"] = "success"
     task_counts: dict[str, int] = field(default_factory=dict)
+    finished_at: str | None = None
+    resources: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
 

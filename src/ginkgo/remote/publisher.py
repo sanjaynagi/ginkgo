@@ -29,8 +29,6 @@ class RemotePublisher:
         Local blobs directory to read from.
     local_trees_dir : Path
         Local trees directory to read from.
-    local_refs_dir : Path
-        Local refs directory to update with remote URIs.
     """
 
     backend: ObjectStore
@@ -39,7 +37,6 @@ class RemotePublisher:
     scheme: str
     local_blobs_dir: Path
     local_trees_dir: Path
-    local_refs_dir: Path
 
     def publish(self, *, record: ArtifactRecord) -> ArtifactRecord:
         """Upload an artifact's content to the remote store.
@@ -55,7 +52,8 @@ class RemotePublisher:
         Returns
         -------
         ArtifactRecord
-            Updated record with ``remote_uri`` set.
+            Updated record with ``remote_uri`` set. Recording that is the
+            caller's job: the publisher moves bytes, the index remembers.
         """
         if record.remote_uri is not None:
             return record
@@ -65,8 +63,12 @@ class RemotePublisher:
         return self._publish_tree(record)
 
     def _publish_blob(self, record: ArtifactRecord) -> ArtifactRecord:
-        """Upload a single blob."""
-        blob_path = self.local_blobs_dir / record.digest_hex
+        """Upload a single blob.
+
+        The local filename carries the record's extension (#231); the remote
+        key stays the bare digest so the remote layout is pure CAS.
+        """
+        blob_path = self.local_blobs_dir / f"{record.digest_hex}{record.extension}"
         remote_key = f"{self.prefix}blobs/{record.digest_hex}"
         self.backend.upload(src_path=blob_path, bucket=self.bucket, key=remote_key)
 
@@ -82,11 +84,6 @@ class RemotePublisher:
             storage_backend=record.storage_backend,
             remote_uri=remote_uri,
         )
-
-        # Update the local ref file with the remote URI.
-        ref_path = self.local_refs_dir / f"{record.artifact_id}.json"
-        if ref_path.exists():
-            ref_path.write_text(updated.to_json(), encoding="utf-8")
 
         return updated
 
@@ -118,9 +115,5 @@ class RemotePublisher:
             storage_backend=record.storage_backend,
             remote_uri=remote_uri,
         )
-
-        ref_path = self.local_refs_dir / f"{record.artifact_id}.json"
-        if ref_path.exists():
-            ref_path.write_text(updated.to_json(), encoding="utf-8")
 
         return updated

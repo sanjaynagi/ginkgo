@@ -532,7 +532,7 @@ An asset is a typed, named, versioned task output, produced by returning
 `file` return is just bytes at a path, an asset also carries a *kind*, a stable
 *key* (`<kind>:<name>`, where the name is exactly what you passed as `name=`),
 a content hash, a producer task, and metadata, and it
-is registered in a catalog under `.ginkgo/assets/` and tracked across runs.
+is registered in the catalog in `.ginkgo/ginkgo.db` and tracked across runs.
 Re-running a task that produces identical content adds a new *version* pointing
 at the same bytes, so the key stays a stable handle with full version history.
 Assets can also be consumed by downstream tasks; what the consumer receives —
@@ -666,10 +666,10 @@ Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
 `.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
 task with the classified category and a log tail (add `--json` for
 machine-readable output); it defaults to the latest run if no id is given.
-`ginkgo inspect run [RUN_ID]` prints a normalized JSON snapshot drawn from the
-manifest — per-task status, attempts, cache key, exit code, the `failure` record,
-log paths, timings, dependencies, and (for remote tasks) the remote job id and
-backend.
+`ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
+full snapshot — per-task status, attempts, cache key, exit code, the `failure`
+record, log paths, timings, dependencies, and (for remote tasks) the remote job
+id and backend.
 
 ## Remote Execution
 
@@ -697,9 +697,12 @@ def train_model(dataset: str) -> str:
 
 ### Which remote backends are actually supported?
 
-Two executors exist: Kubernetes (`--executor k8s`) and GCP Batch
-(`--executor batch`); the CLI `--executor` choices are exactly `local` (default),
-`k8s`, and `batch`. There is a single Kubernetes executor that submits
+Two executor *types* exist: Kubernetes and GCP Batch. `--executor` takes
+`local` (the default), any name declared under `[remote.executors]` in
+ginkgo.toml, or `k8s` / `batch` for the legacy single-executor config
+sections. Several named executors of either type can be configured at once,
+and a task routes to one with `@task(executor="name")`. There is a single
+Kubernetes executor implementation that submits
 `batch/v1` Jobs, so GKE / EKS / OKE are not separate backends — they are just
 clusters the one Kubernetes executor talks to. GCP Batch is a distinct
 serverless executor.
@@ -813,19 +816,31 @@ rclone. Any other scheme raises an "unsupported remote scheme" error.
 
 ### What does Ginkgo record for each run, and where does it live?
 
-Each run gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC timestamp
-plus a discriminator). Inside it:
+What happened goes into one SQLite database per workspace, at
+`.ginkgo/ginkgo.db`. It holds an append-only event log — task started, running,
+completed, failed, retrying, cache hits and misses — and the tables the CLI
+reads: runs, tasks, attempts, inputs, outputs, and the dependency graph. Ask it
+questions with `ginkgo runs show`, `ginkgo debug` and `ginkgo report`, all of
+which work on a run that is still going.
 
-- `manifest.yaml` — run id, workflow path, jobs/cores/memory, status, start/finish
-  times, aggregate resources and timings, and a `tasks` map. Each task entry holds
-  status, attempt/attempts, cache key, `cached`, exit code, env, kind, dependency
-  ids, the `failure` record, outputs, log paths, per-task timings, and (for remote
-  tasks) the job id and execution backend.
-- `events.jsonl` — an append-only event stream (task started/running/
-  completed/failed/retrying, cache hits/misses, etc.).
-- `params.yaml` — the workflow parameters.
+Set `GINKGO_DB=<path>` to put the database somewhere else. Do that if `.ginkgo`
+is on a network filesystem: SQLite locking is unreliable over NFS, Lustre, SMB
+and FUSE, and ginkgo warns once when it notices.
+
+Each run also gets a directory at `.ginkgo/runs/<run_id>/` (the id is a UTC
+timestamp plus a discriminator) holding the bytes:
+
+- `manifest.yaml` — everything `ginkgo runs show --json` shows for that run, written
+  as YAML once it finishes. It is there for you to read; ginkgo never reads it
+  back. Back up `ginkgo.db` as you would `.git`: if it is lost, so is the run
+  history.
 - `envs/` — copies of the environment lock files used by the run.
 - `logs/` — per-task stdout/stderr.
+- `notebooks/` — executed notebooks and their rendered HTML.
+
+Runs recorded by a version of ginkgo older than the database are not migrated
+and are not visible. Delete `.ginkgo/`, or keep it and accept that the older
+runs no longer show up.
 
 ## Configuration And Secrets
 
@@ -887,11 +902,13 @@ exceeded.
 
 ### How is a child run stitched into the parent's provenance?
 
-The child run gets its own full run directory and `manifest.yaml` under
+The child is a run in its own right, with its own directory under
 `.ginkgo/runs/<child_run_id>/`; the parent stores a reference to it rather than
-inlining the child's tasks. The child process prints a machine-readable
-`GINKGO_CHILD_RUN_ID=<run_id>` line, which the parent captures and returns to the
-calling task as a `SubWorkflowResult` (with `run_id`, `status`, and
-`manifest_path`). In the parent's manifest, the calling task records `sub_run_id`
-(the child's run id) on success, and on failure the child's run id is still
-recorded via the raised error, so you can trace into the child run either way.
+inlining the child's tasks. The parent tells the child who called it through
+`GINKGO_PARENT_RUN_ID` and `GINKGO_PARENT_TASK_ID`; the child records both, and
+the parent reads the child's run id back out of the database once the subprocess
+exits. The calling task gets a `SubWorkflowResult` (`run_id` and `status`) and
+records `sub_run_id`; on failure the child's run id is still attached to the
+raised error. Either way, `ginkgo runs show <child_run_id>` is how you read
+what the child did — the run id is the handle, and there is no second path to
+the same facts.

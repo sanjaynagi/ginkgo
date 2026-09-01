@@ -1,4 +1,4 @@
-"""Structured inspection command handlers."""
+"""``ginkgo inspect workflow`` — the static task graph, without running it."""
 
 from __future__ import annotations
 
@@ -6,31 +6,30 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from ginkgo.cli.common import resolve_run_dir
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
 from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.runtime.caching.provenance import load_manifest
 
 
 def command_inspect(args) -> int:
-    """Handle ``ginkgo inspect``."""
-    if args.inspect_command == "workflow":
-        payload = inspect_workflow(
-            workflow_path=resolve_workflow_path(
-                project_root=Path.cwd(),
-                workflow=args.workflow,
-            ).path,
-            config_paths=[Path(path).resolve() for path in args.config],
-            param_extras=getattr(args, "param_extras", ()),
-        )
-    else:
-        payload = inspect_run(run_dir=resolve_run_dir(args.run_id))
+    """Handle ``ginkgo inspect``.
 
+    A recorded run is ``ginkgo runs show <run_id> --json``: one command per
+    concept, and a run is the ``runs`` group's concept rather than this one's.
+    """
+    payload = inspect_workflow(
+        workflow_path=resolve_workflow_path(
+            project_root=Path.cwd(),
+            workflow=args.workflow,
+        ).path,
+        config_paths=[Path(path).resolve() for path in args.config],
+        param_extras=getattr(args, "param_extras", ()),
+    )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -80,7 +79,12 @@ def inspect_workflow(
             for name, decl in session.declarations.items()
         ]
 
-    evaluator = ConcurrentEvaluator()
+    evaluator = ConcurrentEvaluator(
+        executor_registry=ExecutorRegistry.for_validation(
+            project_root=Path.cwd(),
+            config_paths=config_paths,
+        )
+    )
     evaluator.build_and_validate(expr)
 
     nodes = []
@@ -103,76 +107,4 @@ def inspect_workflow(
         "edge_count": sum(len(node["dependencies"]) for node in nodes),
         "params": params,
         "tasks": nodes,
-    }
-
-
-def inspect_run(*, run_dir: Path) -> dict[str, Any]:
-    """Return a normalized run snapshot from provenance."""
-    manifest = load_manifest(run_dir)
-    tasks = manifest.get("tasks", {})
-    task_rows = []
-    dynamic_expansions = []
-    if isinstance(tasks, dict):
-        for task_id, task in sorted(tasks.items()):
-            if not isinstance(task, dict):
-                continue
-            dynamic_dependencies = task.get("dynamic_dependency_ids") or []
-            if dynamic_dependencies:
-                dynamic_expansions.append(
-                    {
-                        "parent_task_id": task_id,
-                        "dynamic_dependency_ids": [
-                            f"task_{int(dep_id):04d}" for dep_id in dynamic_dependencies
-                        ],
-                    }
-                )
-            row: dict[str, Any] = {
-                "task_id": task_id,
-                "task_name": task_base_name(str(task.get("task", "unknown"))),
-                "status": task.get("status"),
-                "attempt": task.get("attempt"),
-                "attempts": task.get("attempts"),
-                "cache_key": task.get("cache_key"),
-                "cached": task.get("cached"),
-                "exit_code": task.get("exit_code"),
-                "env": task.get("env"),
-                "kind": task.get("kind"),
-                "dependency_ids": [
-                    f"task_{int(dep_id):04d}" for dep_id in task.get("dependency_ids", [])
-                ],
-                "dynamic_dependency_ids": [
-                    f"task_{int(dep_id):04d}" for dep_id in dynamic_dependencies
-                ],
-                "failure": task.get("failure"),
-                "outputs": task.get("outputs", []),
-                "stdout_log": task.get("stdout_log"),
-                "stderr_log": task.get("stderr_log"),
-                "started_at": task.get("started_at"),
-                "finished_at": task.get("finished_at"),
-                "timings": task.get("timings", {}),
-            }
-            # Remote execution metadata (present only for remote tasks).
-            if task.get("remote_job_id") is not None:
-                row["remote_job_id"] = task["remote_job_id"]
-            if task.get("execution_backend") is not None:
-                row["execution_backend"] = task["execution_backend"]
-            if task.get("resources") is not None:
-                row["resources"] = task["resources"]
-            if task.get("resource_usage") is not None:
-                row["resource_usage"] = task["resource_usage"]
-            if task.get("sub_run_id") is not None:
-                row["sub_run_id"] = task["sub_run_id"]
-            task_rows.append(row)
-
-    return {
-        "run_id": manifest.get("run_id", run_dir.name),
-        "workflow": manifest.get("workflow"),
-        "status": manifest.get("status"),
-        "started_at": manifest.get("started_at"),
-        "finished_at": manifest.get("finished_at"),
-        "error": manifest.get("error"),
-        "resources": manifest.get("resources"),
-        "timings": manifest.get("timings", {}),
-        "tasks": task_rows,
-        "dynamic_expansions": dynamic_expansions,
     }

@@ -167,7 +167,6 @@ def load_remote_publisher() -> Any | None:
         scheme=parsed["scheme"],
         local_blobs_dir=artifacts_root / "blobs",
         local_trees_dir=artifacts_root / "trees",
-        local_refs_dir=artifacts_root / "refs",
     )
 
 
@@ -250,7 +249,9 @@ class RemoteStager:
         # when the host has a healthy driver + `/dev/fuse`; that per-scheme
         # check is deferred to `resolve_access` via `require_local_driver`.
         dispatches_remote = bool(
-            getattr(task_def, "remote", False) or getattr(task_def, "gpu", 0) > 0
+            getattr(task_def, "remote", False)
+            or getattr(task_def, "executor", None) is not None
+            or getattr(task_def, "gpu", 0) > 0
         )
         is_driver_kind = getattr(task_def, "kind", None) in _DRIVER_KINDS
         require_local_driver = False

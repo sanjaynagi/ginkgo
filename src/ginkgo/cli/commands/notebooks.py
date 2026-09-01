@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from ginkgo.cli.common import RUNS_ROOT, console
-from ginkgo.runtime.caching.provenance import load_manifest
+from ginkgo import query
+from ginkgo.cli.common import stdout_console
+from ginkgo.query import Query
+
+
+_RUN_LIMIT = 200
+"""How far back ``ginkgo notebooks`` looks; older runs are rarely wanted."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -15,7 +19,7 @@ class NotebookArtifactPair:
     """Display metadata for one executed notebook artifact pair."""
 
     run_id: str
-    """Run whose manifest listed this pair, which replayed it on a cache hit."""
+    """Run that listed this pair, which replayed it on a cache hit."""
 
     run_dir: Path
     task_key: str
@@ -25,7 +29,7 @@ class NotebookArtifactPair:
     notebook_path: Path
     render_status: str | None
     artifact_run_id: str | None = None
-    """Run that produced the artifacts, when the manifest records it."""
+    """Run that produced the artifacts, when the ledger records it."""
 
     @property
     def render_failed(self) -> bool:
@@ -46,11 +50,13 @@ class NotebookArtifactPair:
 def command_notebooks(args) -> int:
     """Handle ``ginkgo notebooks``."""
     del args
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 240)
+    rich_console = stdout_console(piped_width=240)
     rich_console.print("[bold green]🌿 ginkgo[/] [bold]notebooks[/]\n")
 
-    entries = list_notebook_artifact_pairs(runs_root=RUNS_ROOT)
+    # A workspace with no ledger has no notebooks, which is an empty listing
+    # rather than a failure.
+    with query.open(missing_ok=True) as reader:
+        entries = list_notebook_artifact_pairs(reader=reader)
     if not entries:
         rich_console.print("[dim]No executed notebooks found.[/]")
         return 0
@@ -73,59 +79,30 @@ def command_notebooks(args) -> int:
     return 0
 
 
-def list_notebook_artifact_pairs(*, runs_root: Path) -> list[NotebookArtifactPair]:
+def list_notebook_artifact_pairs(*, reader: Query) -> list[NotebookArtifactPair]:
     """Return executed notebook artifact pairs ordered by most recent run first."""
-    if not runs_root.is_dir():
-        return []
-
     entries: list[NotebookArtifactPair] = []
-    run_dirs = sorted((path for path in runs_root.iterdir() if path.is_dir()), reverse=True)
-    for run_dir in run_dirs:
-        manifest = load_manifest(run_dir)
-        tasks = manifest.get("tasks", {})
-        if not isinstance(tasks, dict):
-            continue
-
-        started_at = str(manifest.get("started_at") or "")
-        for task_key, task in tasks.items():
-            if not isinstance(task_key, str) or not isinstance(task, dict):
+    for run in reader.runs(limit=_RUN_LIMIT):
+        summary = reader.run(run.run_id)
+        for task in summary.tasks:
+            if task.executed_notebook is None or task.rendered_html is None:
                 continue
-
-            executed_notebook = task.get("executed_notebook")
-            rendered_html = task.get("rendered_html")
-            if not isinstance(executed_notebook, str) or not isinstance(rendered_html, str):
-                continue
-
-            notebook_path = (run_dir / executed_notebook).resolve()
-            html_path = (run_dir / rendered_html).resolve()
-            render_status = task.get("render_status")
-            artifact_run_id = task.get("notebook_artifact_run_id")
             entries.append(
                 NotebookArtifactPair(
-                    run_id=run_dir.name,
-                    run_dir=run_dir.resolve(),
-                    task_key=task_key,
-                    task_name=_task_base_name(task.get("task")),
-                    started_at=started_at,
-                    html_path=html_path,
-                    notebook_path=notebook_path,
-                    render_status=render_status if isinstance(render_status, str) else None,
-                    artifact_run_id=artifact_run_id if isinstance(artifact_run_id, str) else None,
+                    run_id=summary.run_id,
+                    run_dir=summary.run_dir.resolve(),
+                    task_key=task.task_key,
+                    task_name=task.base_name,
+                    started_at=run.started_at or "",
+                    html_path=(summary.run_dir / task.rendered_html).resolve(),
+                    notebook_path=(summary.run_dir / task.executed_notebook).resolve(),
+                    render_status=task.render_status,
+                    artifact_run_id=task.notebook_artifact_run_id,
                 )
             )
 
     entries.sort(
-        key=lambda entry: (
-            entry.started_at,
-            entry.run_id,
-            entry.task_key,
-        ),
+        key=lambda entry: (entry.started_at, entry.run_id, entry.task_key),
         reverse=True,
     )
     return entries
-
-
-def _task_base_name(task_name: object) -> str:
-    """Return the final dotted segment of a task identifier."""
-    text = str(task_name or "unknown")
-    return text.rsplit(".", maxsplit=1)[-1]

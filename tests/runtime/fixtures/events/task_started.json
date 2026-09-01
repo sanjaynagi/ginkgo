@@ -1,0 +1,18 @@
+{
+  "attempt": 1,
+  "display_label": null,
+  "env": "analysis",
+  "event": "task_started",
+  "execution_backend": "local",
+  "kind": "python",
+  "remote_job_id": "job-1",
+  "resources": {
+    "max_attempts": 3,
+    "threads": 2
+  },
+  "run_id": "run_20260828_090000",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

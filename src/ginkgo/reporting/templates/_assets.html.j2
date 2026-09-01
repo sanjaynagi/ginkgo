@@ -5,11 +5,12 @@
 <section class="asset-section">
   <h3>{{ section.title }}</h3>
     {% for card in section.cards %}
-<div class="asset">
+<div class="asset" id="{{ card.anchor }}">
   <div class="asset-head">
     <div>
       <span class="kind-badge kind-{{ card.kind_tone }}">{{ card.kind_label }}</span>
       <span class="name">{{ card.name }}</span>
+      <a class="asset-link" href="#{{ card.anchor }}" title="Link to {{ card.asset_key }}" aria-label="Link to {{ card.asset_key }}">#</a>
       {% for check in card.checks %}
       <span class="check-badge check-{{ "pass" if check.passed else "fail" }}">{{ "✓" if check.passed else "✗" }} {{ check.name }}</span>
       {% endfor %}

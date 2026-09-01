@@ -25,6 +25,7 @@ import pytest
 
 from ginkgo.runtime.artifacts import fs_share
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.fs_share import share_bytes
 
 
@@ -112,9 +113,9 @@ class TestArtifactStoreIntegration:
         src_b = tmp_path / "b.bin"
         src_b.write_bytes(b"identical bytes")
 
-        store = LocalArtifactStore(root=tmp_path / "artifacts")
+        store = LocalArtifactStore(root=tmp_path / "artifacts", index=CacheIndex.in_memory())
         record_default = store.store(src_path=src_a)
-        store2 = LocalArtifactStore(root=tmp_path / "artifacts2")
+        store2 = LocalArtifactStore(root=tmp_path / "artifacts2", index=CacheIndex.in_memory())
         record_readonly = store2.store(src_path=src_b, src_is_readonly=True)
 
         assert record_default.artifact_id == record_readonly.artifact_id
@@ -126,24 +127,24 @@ class TestArtifactStoreIntegration:
         """When reflink is refused, ``src_is_readonly=True`` should hardlink."""
         src = tmp_path / "src.bin"
         src.write_bytes(b"abc")
-        store = LocalArtifactStore(root=tmp_path / "artifacts")
+        store = LocalArtifactStore(root=tmp_path / "artifacts", index=CacheIndex.in_memory())
 
         with patch.object(fs_share, "_reflink", return_value=False):
             record = store.store(src_path=src, src_is_readonly=True)
 
-        blob_path = tmp_path / "artifacts" / "blobs" / record.digest_hex
+        blob_path = tmp_path / "artifacts" / "blobs" / f"{record.digest_hex}{record.extension}"
         # Same inode only if hardlink was used.
         assert blob_path.stat().st_ino == src.stat().st_ino
 
     def test_store_without_hint_never_shares_inode(self, tmp_path: Path) -> None:
         src = tmp_path / "src.bin"
         src.write_bytes(b"abc")
-        store = LocalArtifactStore(root=tmp_path / "artifacts")
+        store = LocalArtifactStore(root=tmp_path / "artifacts", index=CacheIndex.in_memory())
 
         with patch.object(fs_share, "_reflink", return_value=False):
             record = store.store(src_path=src)
 
-        blob_path = tmp_path / "artifacts" / "blobs" / record.digest_hex
+        blob_path = tmp_path / "artifacts" / "blobs" / f"{record.digest_hex}{record.extension}"
         assert blob_path.stat().st_ino != src.stat().st_ino
         # User file should remain writable.
         assert src.stat().st_mode & stat.S_IWUSR

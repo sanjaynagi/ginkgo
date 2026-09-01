@@ -15,13 +15,23 @@ at the nearest `ginkgo.toml`.
 : Build the expression tree, validate the workflow, evaluate ready tasks, and
   record the run. The command you reach for most.
 
-`ginkgo test`
-: Validate a workflow without executing task bodies. Use it in CI or before a
-  long run to catch wiring errors early.
-
 `ginkgo inspect`
-: Inspect the resolved task graph (`inspect workflow`) or the structure of a
-  recorded run (`inspect run <run_id>`).
+: Inspect the resolved task graph of a workflow without running it
+  (`inspect workflow`).
+
+`ginkgo runs`
+: List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`).
+  See [Querying Provenance](querying-provenance.md).
+
+`ginkgo history`
+: Show every run of one task, with its status, duration, and cache key.
+
+`ginkgo query`
+: Run one read-only SQL statement against the provenance database.
+
+`ginkgo export`
+: Write a run's ledger events as JSONL (`export events`) or its manifest as
+  YAML (`export manifest`).
 
 `ginkgo debug`
 : Inspect a finished run &mdash; task status, timing, logs, and cache decisions
@@ -58,6 +68,13 @@ at the nearest `ginkgo.toml`.
 `ginkgo secrets`
 : List and validate the secret references a workflow resolves at run time.
 
+`ginkgo db`
+: Maintain the provenance database. `db path` prints where it is, `db migrate`
+  creates or upgrades it, `db check` reports anything the database and the files
+  beside it disagree about, `db prune` deletes history you no longer need, and
+  `db vacuum` gives the freed space back. See
+  [Caching and Provenance](caching-and-provenance.md).
+
 Run `ginkgo <command> --help` for the full flag set of any command.
 
 ## Running Workflows
@@ -74,12 +91,24 @@ and writes run history under `.ginkgo/runs/`. Run it from a project root with
 no path argument and Ginkgo discovers the canonical `workflow/flow.py`
 entrypoint.
 
+Commands may be run from any directory inside the project. Ginkgo locates the
+root — the nearest enclosing `ginkgo.toml` — and works from there, so
+`.ginkgo/`, config files, and task environments resolve identically wherever
+you invoke from. Paths you pass on the command line are relative to where you
+stand; a task's own relative output paths are relative to the project root.
+
 Repeated `--resource name=value` flags budget any custom resource dimensions
 tasks declare (e.g. `--resource api_calls=10`) — see
 [Custom Resource Dimensions](resources.md#custom-resource-dimensions).
 
 `--dry-run` resolves the graph and computes cache keys without executing any
 task body &mdash; the fastest way to confirm a workflow is wired correctly.
+On a warm cache it goes further: with cached upstream outputs in hand, each
+downstream task's arguments run through the same input validation the real
+run applies, so a kind/path mismatch (say, a `table` asset wired into a
+`file` parameter) is reported under **Problems** before anything runs &mdash;
+and the command exits non-zero, so a scripted preflight fails loudly. A
+first, cold dry run cannot resolve those arguments and so makes no claim.
 
 `--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see
@@ -123,8 +152,8 @@ required parameter that is not supplied fails the same way.
 ginkgo run flow.py --item alpha --item beta --verbose
 ```
 
-Resolved values are recorded in the run's `params.yaml`, and where each came
-from &mdash; the CLI, config, or the default &mdash; in `manifest.yaml`.
+Resolved values are recorded with the run, along with where each came from
+&mdash; the CLI, config, or the default. `ginkgo runs show --json` shows both.
 
 The `[params]` table layers across config files, so `--config extra.toml` setting
 one parameter leaves the others in `ginkgo.toml` alone.
@@ -143,10 +172,30 @@ Use these commands to inspect a workflow without committing to the full
 workload:
 
 ```bash
-ginkgo test --dry-run
+ginkgo run --dry-run
 ginkgo doctor flow.py
 ginkgo debug <run_id>
 ```
+
+`ginkgo run --dry-run` previews the plan for the entrypoint you actually run,
+and is the quickest way to confirm a workflow you just wrote is wired correctly.
+It reports the waves tasks fall into, which would run and which would serve from
+cache, and the resources they declare.
+
+### Validation workflows
+
+A project may keep workflow files under `tests/workflows/` that exercise its own
+flow. There is no separate command for them: a validation workflow is a workflow,
+so run it by path like any other.
+
+```bash
+ginkgo run tests/workflows/smoke.py --dry-run  # validate
+ginkgo run tests/workflows/smoke.py            # execute
+```
+
+Each such file must expose a flow, usually by re-exporting the project's own.
+`ginkgo init` scaffolds one `tests/workflows/smoke.py` that re-exports `main`
+from `workflow/flow.py`.
 
 `ginkgo doctor` catches environment and configuration problems before a run.
 Pass `--json` for structured output suitable for programmatic use:
@@ -163,22 +212,72 @@ navigating `.ginkgo/runs/`.
 
 ```bash
 ginkgo cache ls                          # list cached task results
-ginkgo cache explain --run <run_id>      # explain cache decisions for a run
+ginkgo cache stats                       # size, hit counts, biggest tasks
+ginkgo cache explain <run_id>            # explain cache decisions for a run
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
 ginkgo cache clear <cache_key>           # remove a specific cache entry
+ginkgo cache clear --orphans             # remove entries the database has lost
 ```
 
 `cache prune` requires at least one of `--older-than`, `--max-size`, or
-`--max-entries`. Add `--dry-run` to preview what would be removed.
+`--max-entries`. Add `--least-recently-hit` to give up unused entries before old
+ones, and `--dry-run` to preview what would be removed. `cache stats` takes
+`--json`.
+
+### Why Did This Task Run Again?
+
+`ginkgo cache explain <run_id>` prints JSON with one entry per task. For a task
+that re-ran, it names the components of the cache key that moved, so the answer
+is a specific fact rather than "the key changed":
+
+```json
+{
+  "task_name": "produce",
+  "cache_key": "fddb71a9…",
+  "compared_with": {"cache_key": "4388619b…", "strategy": "same_node"},
+  "reason": "input_changed",
+  "details": ["input_changed"],
+  "components": [
+    {
+      "component": "inputs.samples",
+      "status": "changed",
+      "current": {"type": "str", "sha256": "2f64dc9d…"},
+      "prior": {"type": "str", "sha256": "f7a9858a…"}
+    }
+  ]
+}
+```
+
+`reason` and `details` are the summary; `components` lists what actually
+differs. Component names follow the cache key: `task`, `version`, `source_hash`,
+`extra_source_hash` (the notebook or script a driver task runs), `env`,
+`env_hash.pixi_lock` (the identity of the declared environment), and one
+`inputs.<parameter>` per task argument.
+
+`compared_with` says what the entry was compared against, and how it was found.
+`"strategy": "same_node"` means the key this same node used in the most recent
+earlier run of the workflow — the entry this run superseded, which is the
+comparison you want. `"strategy": "newest_by_function"` is the fallback used
+when the node is new or its label changed: the newest earlier entry written by
+the same task, which may be a different branch of a fan-out. Read those
+components more sceptically.
+
+A component's `status` is `changed`, or `added` / `removed` for a parameter that
+appeared or went away.
+
+Some tasks get a summary `reason` on its own, with no `components`: a task that
+did not re-run reports `all_inputs_match`, one with no earlier entry to compare
+against reports `no_prior_entry`, and one whose key has no cache entry at all —
+because it failed, or because the entry was pruned — reports `no_entry_for_key`.
 
 ## A Typical Loop
 
 For local development, a practical cycle looks like this:
 
 1. author and adjust tasks in code
-2. check the wiring with `ginkgo run --dry-run` (or `ginkgo test`)
+2. check the wiring with `ginkgo run --dry-run`
 3. run with `ginkgo run`
 4. inspect failures or cache reuse with `ginkgo debug`
 

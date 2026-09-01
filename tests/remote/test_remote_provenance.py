@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from ginkgo.runtime.events import (
+    GraphNodeRegistered,
     TaskCompleted,
     TaskFailed,
     TaskStarted,
@@ -73,146 +74,89 @@ class TestRemoteEventFields:
         assert event.remote_job_id is None
 
 
-class TestProvenanceMarkRunning:
-    """Tests for execution_backend in provenance recorder."""
+class TestTaskProjection:
+    """What the ledger records about where a task ran."""
 
-    def test_mark_running_with_execution_backend(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
-
-        recorder = RunProvenanceRecorder(
-            run_id="test-run",
-            workflow_path=Path("test.py"),
-            root_dir=tmp_path,
-            jobs=1,
-            cores=1,
-        )
-        recorder.ensure_task(node_id=0, task_name="my_task", env=None)
-        recorder.mark_running(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            attempt=1,
-            retries=0,
-            execution_backend="remote",
+    def _register(self, ledger) -> None:
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id=ledger.run_id, task_id="task_0000", node_id=0, task_name="my_task"
+            )
         )
 
-        task = recorder._task(0)
-        assert task["execution_backend"] == "remote"
-
-    def test_mark_running_without_execution_backend(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
-
-        recorder = RunProvenanceRecorder(
-            run_id="test-run",
-            workflow_path=Path("test.py"),
-            root_dir=tmp_path,
-            jobs=1,
-            cores=1,
+    def test_task_started_records_execution_backend(self, ledger) -> None:
+        self._register(ledger)
+        ledger.bus.emit(
+            TaskStarted(
+                run_id=ledger.run_id,
+                task_id="task_0000",
+                task_name="my_task",
+                attempt=1,
+                execution_backend="remote",
+            )
         )
-        recorder.ensure_task(node_id=0, task_name="my_task", env=None)
-        recorder.mark_running(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            attempt=1,
-            retries=0,
+        assert ledger.task()["execution_backend"] == "remote"
+
+    def test_task_started_leaves_the_backend_unset_when_local(self, ledger) -> None:
+        self._register(ledger)
+        ledger.bus.emit(
+            TaskStarted(run_id=ledger.run_id, task_id="task_0000", task_name="my_task", attempt=1)
         )
+        assert ledger.task()["execution_backend"] is None
 
-        task = recorder._task(0)
-        assert "execution_backend" not in task
-
-    def test_update_task_extra_remote_job_id(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
-
-        recorder = RunProvenanceRecorder(
-            run_id="test-run",
-            workflow_path=Path("test.py"),
-            root_dir=tmp_path,
-            jobs=1,
-            cores=1,
+    def test_task_completed_records_the_remote_job_id(self, ledger) -> None:
+        self._register(ledger)
+        ledger.bus.emit(
+            TaskCompleted(
+                run_id=ledger.run_id,
+                task_id="task_0000",
+                task_name="my_task",
+                attempt=1,
+                remote_job_id="ginkgo/ginkgo-test-001",
+            )
         )
-        recorder.ensure_task(node_id=0, task_name="my_task", env=None)
-        recorder.update_task_extra(
-            node_id=0,
-            remote_job_id="ginkgo/ginkgo-test-001",
-        )
-
-        task = recorder._task(0)
-        assert task["remote_job_id"] == "ginkgo/ginkgo-test-001"
+        assert ledger.task()["remote_job_id"] == "ginkgo/ginkgo-test-001"
 
 
 class TestInspectRunRemoteFields:
-    """Tests for remote fields in inspect_run output."""
+    """Tests for remote fields in the run's serialised form."""
 
-    def test_inspect_run_includes_remote_fields(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
-        from ginkgo.cli.commands.inspect import inspect_run
+    def _run(self, ledger, **started) -> dict[str, Any]:
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id=ledger.run_id, task_id="task_0000", node_id=0, task_name="my_task"
+            )
+        )
+        ledger.bus.emit(
+            TaskStarted(
+                run_id=ledger.run_id,
+                task_id="task_0000",
+                task_name="my_task",
+                attempt=1,
+                **started,
+            )
+        )
+        ledger.bus.emit(
+            TaskCompleted(
+                run_id=ledger.run_id,
+                task_id="task_0000",
+                task_name="my_task",
+                attempt=1,
+                remote_job_id=started.get("remote_job_id"),
+            )
+        )
+        return ledger.finish().to_payload()["tasks"][0]
 
-        recorder = RunProvenanceRecorder(
-            run_id="test-run",
-            workflow_path=Path("test.py"),
-            root_dir=tmp_path,
-            jobs=1,
-            cores=1,
+    def test_inspect_run_includes_remote_fields(self, ledger) -> None:
+        task = self._run(
+            ledger, execution_backend="remote", remote_job_id="ginkgo/ginkgo-test-001"
         )
-        recorder.ensure_task(node_id=0, task_name="my_task", env=None)
-        recorder.mark_running(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            attempt=1,
-            retries=0,
-            execution_backend="remote",
-        )
-        recorder.update_task_extra(
-            node_id=0,
-            remote_job_id="ginkgo/ginkgo-test-001",
-            resources={"cores": 4, "memory_gb": 8},
-        )
-        recorder.mark_succeeded(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            value=42,
-        )
-        recorder.finalize(status="succeeded")
-
-        result = inspect_run(run_dir=recorder.run_dir)
-        task = result["tasks"][0]
 
         assert task["remote_job_id"] == "ginkgo/ginkgo-test-001"
         assert task["execution_backend"] == "remote"
-        assert task["resources"] == {"cores": 4, "memory_gb": 8}
 
-    def test_inspect_run_omits_remote_fields_for_local(self, tmp_path: Path) -> None:
-        from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
-        from ginkgo.cli.commands.inspect import inspect_run
-
-        recorder = RunProvenanceRecorder(
-            run_id="test-run",
-            workflow_path=Path("test.py"),
-            root_dir=tmp_path,
-            jobs=1,
-            cores=1,
-        )
-        recorder.ensure_task(node_id=0, task_name="my_task", env=None)
-        recorder.mark_running(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            attempt=1,
-            retries=0,
-        )
-        recorder.mark_succeeded(
-            node_id=0,
-            task_name="my_task",
-            env=None,
-            value=42,
-        )
-        recorder.finalize(status="succeeded")
-
-        result = inspect_run(run_dir=recorder.run_dir)
-        task = result["tasks"][0]
+    def test_inspect_run_omits_remote_fields_for_local(self, ledger) -> None:
+        task = self._run(ledger)
 
         assert "remote_job_id" not in task
         assert "execution_backend" not in task

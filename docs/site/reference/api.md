@@ -46,6 +46,11 @@ worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md) and
    :members:
 ```
 
+```{eval-rst}
+.. automodule:: ginkgo.project
+   :members: project_root, find_project_root
+```
+
 ```{raw} html
 </div>
 ```

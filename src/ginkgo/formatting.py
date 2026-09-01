@@ -12,7 +12,104 @@ one; only the value-to-string formatting is shared.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+
+def now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string.
+
+    The one clock ginkgo stamps rows with, so two rows written in the same
+    breath carry the same shape of timestamp.
+    """
+    return datetime.now(UTC).isoformat()
+
+
+_DURATION = re.compile(r"(?P<count>\d+)(?P<unit>[mhd])")
+_DURATION_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def parse_duration(value: str, *, option: str) -> timedelta:
+    """Parse a compact duration such as ``45m``, ``12h`` or ``30d``.
+
+    Every ginkgo option that takes an age takes this shape, so it is parsed
+    and its error worded in one place.
+
+    Parameters
+    ----------
+    value : str
+        The duration as typed.
+    option : str
+        The option the value came from, named in the error message.
+
+    Returns
+    -------
+    timedelta
+
+    Raises
+    ------
+    ValueError
+        If *value* is not a positive integer followed by ``m``, ``h`` or ``d``.
+    """
+    match = _DURATION.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(
+            f"Invalid duration for {option}. Use a positive integer followed by "
+            "m, h, or d (for example: 45m, 12h, 30d)."
+        )
+    return timedelta(seconds=int(match.group("count")) * _DURATION_SECONDS[match.group("unit")])
+
+
+def cutoff_before(value: str, *, option: str) -> datetime:
+    """Return the UTC instant *value* ago — everything older than it."""
+    return datetime.now(UTC) - parse_duration(value, option=option)
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse a stored ISO-8601 timestamp, returning a UTC-aware datetime.
+
+    Parameters
+    ----------
+    value : Any
+        An ISO-8601 string; anything else reads as no timestamp.
+
+    Returns
+    -------
+    datetime | None
+        The timestamp, or ``None`` when there is nothing parseable.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def duration_seconds(started_at: Any, finished_at: Any) -> float | None:
+    """Return the wall-clock seconds between two timestamps.
+
+    Takes whatever the ledger holds — ISO-8601 strings, datetimes, or nothing —
+    so a caller reading a row and a caller holding parsed values ask the same
+    question the same way.
+
+    Parameters
+    ----------
+    started_at, finished_at : Any
+        The two endpoints. Anything unparseable reads as no timestamp.
+
+    Returns
+    -------
+    float | None
+        The duration, never negative, or ``None`` unless both endpoints parse.
+    """
+    started = started_at if isinstance(started_at, datetime) else parse_timestamp(started_at)
+    finished = finished_at if isinstance(finished_at, datetime) else parse_timestamp(finished_at)
+    if started is None or finished is None:
+        return None
+    return max(0.0, (finished - started).total_seconds())
 
 
 def format_duration(seconds: float | None) -> str:

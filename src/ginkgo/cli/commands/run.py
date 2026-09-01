@@ -13,7 +13,10 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Sequence
 
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console
+from rich.markup import escape
+
+from ginkgo import query
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -52,20 +55,39 @@ from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.caching.provenance import (
-    RunProvenanceRecorder,
-    combined_log_tail,
-    make_run_id,
-)
+from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
-from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted, RunValidated
+from ginkgo.runtime.event_values import render_value
+from ginkgo.runtime.events import (
+    EventBus,
+    PhaseTimed,
+    RunCompleted,
+    RunResourcesSampled,
+    RunStarted,
+    RunValidated,
+    TaskNotice,
+)
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.store_recorder import StoreRecorder
+from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
+from ginkgo.workspace_layout import WorkspaceLayout
+
+
+def _ginkgo_version() -> str | None:
+    """Return the installed ginkgo version, recorded on every run."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("ginkgo")
+    except PackageNotFoundError:  # pragma: no cover - editable installs always resolve
+        return None
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
@@ -189,12 +211,6 @@ def run_workflow(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
         )
 
-    # Machine-readable marker for sub-workflow parent runs to capture the
-    # child run id without parsing Rich-formatted output.
-    if os.environ.get("GINKGO_CALLED_FROM_PARENT_RUN"):
-        sys.stdout.write(f"GINKGO_CHILD_RUN_ID={run_id}\n")
-        sys.stdout.flush()
-
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
 
     load_started = time.perf_counter()
@@ -250,14 +266,10 @@ def run_workflow(
         container=container_backend_from_config(project_root=Path.cwd(), config=runtime_config),
     )
 
-    remote_executor = None
-    code_bundle_config = None
-    if executor == "k8s":
-        remote_executor = _build_k8s_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
-    elif executor == "batch":
-        remote_executor = _build_batch_executor(runtime_config=runtime_config)
-        code_bundle_config = _load_code_bundle_config(runtime_config=runtime_config)
+    # Named executors: --executor picks the run default, and tasks may pin
+    # any configured one. Backends are constructed on first dispatch, so a
+    # run that never reaches a remote task never builds its client.
+    executor_registry = ExecutorRegistry.from_config(runtime_config, default=executor)
 
     resource_overrides = ResourceOverrides.from_config(runtime_config.get("resources"))
     # CLI --resource flags win over [resources.budgets] per dimension.
@@ -273,8 +285,7 @@ def run_workflow(
         "resource_overrides": resource_overrides,
         "resource_budgets": resource_budgets or None,
         "backend": backend,
-        "remote_executor": remote_executor,
-        "code_bundle_config": code_bundle_config,
+        "executor_registry": executor_registry,
         "secret_resolver": secret_resolver,
         "profiler": profiler,
         "param_context": param_context,
@@ -308,6 +319,35 @@ def run_workflow(
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
+    # Executors named by tasks themselves, which dispatch there regardless of
+    # the run default — surfaced in the header so a locally-defaulted run does
+    # not look like it stayed on this machine.
+    pinned_executors = tuple(
+        sorted(
+            {
+                node.task_def.executor
+                for node in evaluator.task_nodes.values()
+                if node.task_def.executor is not None
+                and node.task_def.executor != executor_registry.default_name
+            }
+        )
+    )
+    default_executor = executor_registry.default_name
+    dispatch_targets: list[str] = [
+        *pinned_executors,
+        *([default_executor] if default_executor is not None else []),
+    ]
+    # Backends are built on first dispatch, so a half-written executor section
+    # is caught here rather than after every local task has already run.
+    executor_registry.validate_settings(names=dispatch_targets)
+
+    # Code-sync is configured per executor, so a run that dispatches to one
+    # without a code table quietly runs its image's baked copy. Warned about
+    # for the same reason as the checks above: the run looks healthy.
+    # Messages quote config sections, whose brackets Rich would read as markup.
+    for message in executor_registry.code_sync_gaps(names=dispatch_targets):
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(message)}")
+
     task_count = len(evaluator.task_nodes)
     edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
     env_count = len(
@@ -328,11 +368,25 @@ def run_workflow(
                     env_count=env_count,
                 )
             )
-            bus.emit(
-                RunCompleted(
-                    run_id=run_id, status="success", task_counts={"validated": task_count}
+            # The same warm-cache probe the plan preview runs: a provable
+            # input-contract violation must fail the scripted preflight too.
+            plan = build_dry_run_plan(evaluator=evaluator, workflow_label=workflow_path.name)
+            for diagnostic in plan.diagnostics:
+                bus.emit(
+                    TaskNotice(
+                        run_id=run_id,
+                        task_id=diagnostic.task_id,
+                        task_name=diagnostic.task_name,
+                        display_label=diagnostic.label,
+                        message=diagnostic.message,
+                    )
                 )
+            status = "failed" if plan.diagnostics else "success"
+            bus.emit(
+                RunCompleted(run_id=run_id, status=status, task_counts={"validated": task_count})
             )
+            if plan.diagnostics:
+                return 1
         elif plan_preview:
             plan = build_dry_run_plan(
                 evaluator=evaluator,
@@ -343,6 +397,10 @@ def run_workflow(
                 console=rich_console,
                 verbose=output_mode == "verbose",
             )
+            if plan.diagnostics:
+                # The plan just proved the run would fail; a preflight that
+                # says so must also say it to the shell.
+                return 1
         else:
             rich_console.print(
                 f"[green]✓[/] [bold]{workflow_path.name}[/] "
@@ -371,46 +429,37 @@ def run_workflow(
             rich_console.print(f"[cyan]🗂[/] Run directory: {RUNS_ROOT / run_id}\n")
         rich_console.print("")
 
-    recorder = RunProvenanceRecorder(
-        run_id=run_id,
-        workflow_path=workflow_path,
-        root_dir=RUNS_ROOT,
-        jobs=jobs,
-        cores=cores,
-        memory=memory,
-        # Declared parameters layer over the loaded config so the record shows
-        # the values the run actually used, including any given on the CLI. The
-        # raw [params] table is dropped: recording it alongside would show a
-        # config value next to the resolved value that superseded it.
-        params={
-            **{key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY},
-            **declared_params,
-        },
-        param_sources=param_sources,
-    )
-    recorder.add_run_timing(phase="workflow_load_seconds", seconds=load_elapsed)
-    recorder.add_run_timing(phase="workflow_validate_seconds", seconds=validate_elapsed)
+    run_dir = RunDir.create(run_id=run_id, root=RUNS_ROOT)
+    bus = EventBus()
+    # Opening the ledger is the first thing that can fail for workspace
+    # reasons, and it fails the run: provenance nobody records is provenance
+    # nobody can reconstruct.
+    recorder = StoreRecorder(path=WorkspaceLayout.relative().db, run_dir=run_dir).start()
+    bus.subscribe(recorder)
     resource_monitor = RunResourceMonitor(
         root_pid=os.getpid(),
-        sink=recorder.update_resources,
+        sink=lambda resources: bus.emit(RunResourcesSampled(run_id=run_id, resources=resources)),
     )
-    with profiler.timed("resource_monitor_startup"):
-        resource_monitor.start()
     warning_console = console(sys.stderr)
-    notification_service = build_notification_service(
-        config=runtime_params,
-        resolver=secret_resolver,
-        run_dir=recorder.run_dir,
-        workflow_path=workflow_path,
-        logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
-    )
     try:
         with ExitStack() as stack:
-            events_stream = stack.enter_context(recorder.events_path.open("a", encoding="utf-8"))
-            bus = EventBus()
-            bus.subscribe(JsonlEventRenderer(stream=events_stream, include_task_logs=True))
+            stack.callback(recorder.close)
+            reader = stack.enter_context(query.open())
+            notification_service = build_notification_service(
+                config=runtime_params,
+                resolver=secret_resolver,
+                store=reader.store,
+                run_id=run_id,
+                run_dir=run_dir.path,
+                workflow_path=workflow_path,
+                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+            )
             if notification_service is not None:
-                bus.subscribe(notification_service.handle)
+                stack.callback(notification_service.close)
+                # Registered on the recorder, not the bus: the service asks the
+                # store which tasks failed, so it must not run until the events
+                # it is reacting to are committed.
+                recorder.on_committed(notification_service.handle)
             renderer = None
             if output_mode in {"agent", "agent_verbose"}:
                 bus.subscribe(
@@ -425,23 +474,69 @@ def run_workflow(
                     summary=CliRunSummary(
                         run_id=run_id,
                         mode=output_mode,
-                        run_dir=recorder.run_dir,
+                        run_dir=run_dir.path,
                         cores=evaluator.cores,
                         memory=memory,
-                        executor=executor,
+                        executor_label=(
+                            executor_registry.label(executor_registry.default_name)
+                            if executor_registry.default_name is not None
+                            else "local"
+                        ),
+                        pinned_executors=pinned_executors,
                     ),
                     resources=ResourceRenderState(provider=resource_monitor.current_summary),
                 )
                 bus.subscribe(RichEventRenderer(renderer=renderer))
             evaluator = ConcurrentEvaluator(
-                provenance=recorder,
+                run_dir=run_dir,
                 event_bus=bus,
                 trust_mtimes=trust_mtimes,
                 **evaluator_kwargs,
             )
             if renderer is not None:
                 renderer.start(planned_tasks=planned_tasks)
-            bus.emit(RunStarted(run_id=run_id, workflow=str(workflow_path)))
+            bus.emit(
+                RunStarted(
+                    run_id=run_id,
+                    workflow=str(workflow_path),
+                    jobs=jobs,
+                    cores=cores,
+                    memory=memory,
+                    # Declared parameters layer over the loaded config so the
+                    # record shows the values the run actually used, including
+                    # any given on the CLI. The raw [params] table is dropped:
+                    # recording it alongside would show a config value next to
+                    # the resolved value that superseded it.
+                    params=render_value(
+                        {
+                            **{
+                                key: value
+                                for key, value in params.items()
+                                if key != PARAMS_CONFIG_KEY
+                            },
+                            **declared_params,
+                        }
+                    ),
+                    param_sources=param_sources,
+                    ginkgo_version=_ginkgo_version(),
+                    parent_run_id=os.environ.get(PARENT_RUN_ID_ENV) or None,
+                    parent_task_id=os.environ.get(PARENT_TASK_ID_ENV) or None,
+                )
+            )
+            # A run that dies before RunCompleted — a graph that will not
+            # build, an environment that will not prepare — would otherwise sit
+            # in the ledger as 'running' forever, with no manifest.
+            stack.callback(_close_unfinished_run, bus=bus, recorder=recorder, run_id=run_id)
+            bus.emit(
+                PhaseTimed(run_id=run_id, phase="workflow_load_seconds", seconds=load_elapsed)
+            )
+            bus.emit(
+                PhaseTimed(
+                    run_id=run_id,
+                    phase="workflow_validate_seconds",
+                    seconds=validate_elapsed,
+                )
+            )
             bus.emit(
                 RunValidated(
                     run_id=run_id,
@@ -450,31 +545,42 @@ def run_workflow(
                     env_count=env_count,
                 )
             )
+            with profiler.timed("resource_monitor_startup"):
+                resource_monitor.start()
             run_started = time.perf_counter()
+            failure: BaseException | None = None
             try:
                 evaluator.evaluate(expr)
             except BaseException as exc:
-                recorder.add_run_timing(
+                failure = exc
+
+            with profiler.timed("resource_monitor_shutdown"):
+                resource_summary = resource_monitor.stop()
+            bus.emit(
+                PhaseTimed(
+                    run_id=run_id,
                     phase="workflow_execute_seconds",
                     seconds=time.perf_counter() - run_started,
                 )
-                with profiler.timed("resource_monitor_shutdown"):
-                    resource_summary = resource_monitor.stop()
-                with profiler.timed("provenance_finalize"):
-                    recorder.finalize(status="failed", error=str(exc), resources=resource_summary)
-                with profiler.timed("manifest_load"):
-                    run_summary = RunSummary.load(recorder.run_dir)
-                bus.emit(
-                    RunCompleted(
-                        run_id=run_id,
-                        status="failed",
-                        task_counts=dict(run_summary.task_counts()),
-                        error=str(exc),
-                    )
+            )
+            # The counts describe the tasks, which are already in the ledger;
+            # flushing is what makes them readable rather than merely queued.
+            recorder.flush()
+            bus.emit(
+                RunCompleted(
+                    run_id=run_id,
+                    status="failed" if failure is not None else "success",
+                    task_counts=reader.task_status_counts(run_id),
+                    resources=resource_summary,
+                    error=str(failure) if failure is not None else None,
                 )
+            )
+            with profiler.timed("run_summary_load"):
+                run_summary = reader.run(run_id)
+
+            if failure is not None:
                 if renderer is not None:
                     failure_details = _load_failure_details(
-                        run_dir=recorder.run_dir,
                         run_summary=run_summary,
                         renderer=renderer,
                         verbose=output_mode == "verbose",
@@ -487,29 +593,11 @@ def run_workflow(
                             failure_details=failure_details,
                             remote_summary=evaluator.remote_stats.summary(),
                         )
-                    print(f"Run directory: {recorder.run_dir}", file=sys.stderr)
+                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
-                    recorder.set_profile(profile=profiler.snapshot())
                     _print_profile_table(console=rich_console, profile=profiler.snapshot())
-                raise
+                raise failure
 
-            with profiler.timed("resource_monitor_shutdown"):
-                resource_summary = resource_monitor.stop()
-            recorder.add_run_timing(
-                phase="workflow_execute_seconds",
-                seconds=time.perf_counter() - run_started,
-            )
-            with profiler.timed("provenance_finalize"):
-                recorder.finalize(status="succeeded", resources=resource_summary)
-            with profiler.timed("manifest_load"):
-                run_summary = RunSummary.load(recorder.run_dir)
-            bus.emit(
-                RunCompleted(
-                    run_id=run_id,
-                    status="success",
-                    task_counts=dict(run_summary.task_counts()),
-                )
-            )
             if renderer is not None:
                 with profiler.timed("renderer_finish"):
                     renderer.finish(
@@ -524,50 +612,60 @@ def run_workflow(
                         remote_summary=evaluator.remote_stats.summary(),
                     )
             if profiler.enabled:
-                recorder.set_profile(profile=profiler.snapshot())
                 _print_profile_table(console=rich_console, profile=profiler.snapshot())
     finally:
-        if notification_service is not None:
-            notification_service.close()
+        resource_monitor.stop()
     return 0
+
+
+def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:
+    """Fail the run in the ledger if it is unwinding without having completed.
+
+    Registered on the exit stack rather than written into one exception
+    handler, so it covers every way out of the run — including the ones nobody
+    has thought of yet.
+    """
+    if recorder.completed:
+        return
+    exc = sys.exception()
+    bus.emit(
+        RunCompleted(
+            run_id=run_id,
+            status="failed",
+            error=str(exc) if exc is not None else "The run ended before it completed.",
+        )
+    )
 
 
 def _load_failure_details(
     *,
-    run_dir: Path,
     run_summary: RunSummary,
     renderer: CliRunRenderer,
     verbose: bool,
 ) -> list[FailureDetails]:
     """Load failed-task diagnostics from a finished run."""
-    details: list[FailureDetails] = []
+    run_dir = run_summary.run_dir
     tail_lines = 20 if verbose else 10
-    for task in run_summary.failed_tasks:
-        node_id = task.node_id if task.node_id is not None else -1
-        log_tail = combined_log_tail(
-            run_dir=run_dir,
-            stdout_log=task.stdout_log,
-            stderr_log=task.stderr_log,
-            lines=tail_lines,
+    return [
+        FailureDetails(
+            task_label=(
+                renderer.label_for_node(task.node_id if task.node_id is not None else -1)
+                or task.name
+            ),
+            exit_code=task.exit_code,
+            log_path=run_dir / task.stderr_log if task.stderr_log is not None else None,
+            log_tail=combined_log_tail(
+                run_dir=run_dir,
+                stdout_log=task.stdout_log,
+                stderr_log=task.stderr_log,
+                lines=tail_lines,
+            ),
+            error=task.error,
+            failure_kind=task.failure_kind,
+            inputs=task.inputs if verbose else None,
         )
-        stderr_path = run_dir / task.stderr_log if isinstance(task.stderr_log, str) else None
-        failure_kind = (
-            task.failure.get("kind")
-            if isinstance(task.failure, dict) and isinstance(task.failure.get("kind"), str)
-            else None
-        )
-        details.append(
-            FailureDetails(
-                task_label=renderer.label_for_node(node_id) or task.name,
-                exit_code=task.exit_code,
-                log_path=stderr_path,
-                log_tail=log_tail,
-                error=task.error,
-                failure_kind=failure_kind,
-                inputs=task.inputs if verbose else None,
-            )
-        )
-    return details
+        for task in run_summary.failed_tasks
+    ]
 
 
 def _print_profile_table(
@@ -576,10 +674,8 @@ def _print_profile_table(
     profile: dict[str, dict[str, float | int]],
 ) -> None:
     """Print a Rich profile table summarising recorded phase timings."""
-    from rich.table import Table
-
-    table = Table(title="Runtime Profile", show_lines=False)
-    table.add_column("phase")
+    table = new_table("phase")
+    table.title = "Runtime Profile"
     table.add_column("seconds", justify="right")
     table.add_column("count", justify="right")
 
@@ -641,82 +737,3 @@ def _render_notebooks(
 def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
     return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
-
-
-def _load_code_bundle_config(*, runtime_config: dict[str, Any]) -> dict[str, Any] | None:
-    """Read code-sync configuration from ``[remote.k8s.code]`` or ``[remote.batch.code]``."""
-    remote = runtime_config.get("remote", {})
-    for section in ("k8s", "batch"):
-        backend_config = remote.get(section, {})
-        if not isinstance(backend_config, dict):
-            continue
-        code_config = backend_config.get("code")
-        if isinstance(code_config, dict):
-            return dict(code_config)
-    return None
-
-
-def _build_k8s_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``KubernetesExecutor`` from ``[remote.k8s]`` config."""
-    from ginkgo.remote.kubernetes import KubernetesExecutor
-
-    k8s_config = runtime_config.get("remote", {}).get("k8s", {})
-    if not isinstance(k8s_config, dict):
-        k8s_config = {}
-
-    image = k8s_config.get("image")
-    if not image:
-        raise ValueError(
-            "Kubernetes executor requires an image. Set [remote.k8s] image in ginkgo.toml."
-        )
-
-    return KubernetesExecutor(
-        namespace=k8s_config.get("namespace", "default"),
-        image=image,
-        service_account=k8s_config.get("service_account"),
-        pull_policy=k8s_config.get("pull_policy", "IfNotPresent"),
-        gpu_type=k8s_config.get("gpu_type"),
-        node_selector=k8s_config.get("node_selector"),
-        tolerations=k8s_config.get("tolerations"),
-        ttl_seconds_after_finished=int(k8s_config.get("ttl_seconds_after_finished", 3600)),
-        ephemeral_storage=k8s_config.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(k8s_config.get("backoff_limit", 2)),
-        fuse_image=k8s_config.get("fuse_image"),
-        fuse_annotations=k8s_config.get("fuse_annotations"),
-        fuse_privileged=bool(k8s_config.get("fuse_privileged", False)),
-    )
-
-
-def _build_batch_executor(*, runtime_config: dict[str, Any]) -> Any:
-    """Construct a ``GCPBatchExecutor`` from ``[remote.batch]`` config."""
-    from ginkgo.remote.gcp_batch import GCPBatchExecutor
-
-    batch_config = runtime_config.get("remote", {}).get("batch", {})
-    if not isinstance(batch_config, dict):
-        batch_config = {}
-
-    project = batch_config.get("project")
-    if not project:
-        raise ValueError(
-            "GCP Batch executor requires a project. Set [remote.batch] project in ginkgo.toml."
-        )
-
-    image = batch_config.get("image")
-    if not image:
-        raise ValueError(
-            "GCP Batch executor requires an image. Set [remote.batch] image in ginkgo.toml."
-        )
-
-    region = batch_config.get("region", "europe-west2")
-
-    return GCPBatchExecutor(
-        project=project,
-        region=region,
-        image=image,
-        service_account=batch_config.get("service_account"),
-        gpu_type=batch_config.get("gpu_type"),
-        gpu_driver_version=batch_config.get("gpu_driver_version", "LATEST"),
-        max_run_duration=batch_config.get("max_run_duration", "3600s"),
-        fuse_image=batch_config.get("fuse_image"),
-        fuse_privileged=bool(batch_config.get("fuse_privileged", False)),
-    )

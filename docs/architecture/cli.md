@@ -3,10 +3,15 @@
 The current CLI supports:
 
 - `ginkgo run`
-- `ginkgo test`
 - `ginkgo debug`
 - `ginkgo doctor`
 - `ginkgo inspect`
+- `ginkgo runs ls`
+- `ginkgo runs show`
+- `ginkgo history`
+- `ginkgo query`
+- `ginkgo export events`
+- `ginkgo export manifest`
 - `ginkgo secrets`
 - `ginkgo init`
 - `ginkgo asset ls`
@@ -14,12 +19,21 @@ The current CLI supports:
 - `ginkgo asset show`
 - `ginkgo asset inspect`
 - `ginkgo models`
+- `ginkgo lineage`
 - `ginkgo cache ls`
+- `ginkgo cache stats`
 - `ginkgo cache explain`
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo env ls`
 - `ginkgo env clear`
+- `ginkgo db migrate`
+- `ginkgo db check`
+- `ginkgo db prune`
+- `ginkgo db vacuum`
+- `ginkgo db path`
+- `ginkgo report`
+- `ginkgo notebooks`
 
 Implemented CLI features include the dry-run execution-plan preview, merged
 config overrides, human-readable run summaries, structured inspection and
@@ -34,17 +48,90 @@ exactly one kind holds it and reporting the candidate keys when several do. An
 unknown key reports near matches from the catalog, so no lookup ever invents a
 kind the user did not use.
 
+`ginkgo lineage <asset-key[@version]>` walks the lineage edges around one asset
+version and renders them as a tree — `--downstream` for what came of it,
+`--depth N` to stop the walk, `--json` for the graph as data. Given a
+materialized file path or an artifact id in place of an asset key, it answers a
+different question with the same verb: which run and task produced those bytes,
+through which cache entry, and what that task consumed. Both readings are
+`ginkgo.query.Query.lineage` and `.why` underneath, and both open the database
+read-only.
+
+`ginkgo runs` is where a recorded run is read. `runs ls` lists the run index
+with `--workflow`, `--status`, `--since` and `--limit` filters; `runs show`
+prints one run's header and task table, or its full manifest under `--json`.
+That JSON is what `ginkgo inspect run` used to print: a run belongs to the
+`runs` group rather than to `inspect`, so it has one home there and `inspect`
+is now only about a workflow's static graph.
+
+`ginkgo history <task-name>` crosses runs instead of staying inside one — one
+row per execution of that task, with status, duration, cache key and attempts,
+resolved through `Query.task_history`. The task is matched on its name, its
+fully qualified name, or the display label of one fan-out branch. Rows are
+ordered by the *run's* start time: a cached task never started, so its own
+timestamp is null and would sort out of the history it belongs to.
+
+`ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
+table, `--json`, or `--csv`. Three things are refused: a statement that is not a
+read; more than one statement; and more rows than `--limit` (1000 by default).
+The row cap is applied while fetching from the cursor rather than by wrapping
+the statement in a `LIMIT`, so the SQL that runs is the SQL the user wrote and a
+syntax error names their text.
+
+"Not a read" is decided by `_refusal`, over a scanner (`_top_level_words`) that
+yields a statement's bare words outside parentheses, skipping string literals,
+quoted identifiers and comments. The leading word must be `SELECT`, `WITH`,
+`VALUES` or `EXPLAIN`; a `WITH` is then followed to the verb its clause ends in,
+because `WITH t AS (SELECT 1) DELETE FROM runs` leads with a word this allows.
+Scanning rather than splitting on whitespace is also what makes `VALUES(1),(2)`
+a read: the verb ends at the first character that cannot continue an identifier.
+
+The check is what produces a readable message; it is not the enforcement. Every
+read connection is `mode=ro` with `PRAGMA query_only=ON`, and the in-memory
+ledger `query.open(missing_ok=True)` returns is created write-mode and then
+closed to writes with `SqliteStore.restrict_to_reads()` — so an empty workspace
+refuses exactly what a populated one does, and a write the scanner failed to
+recognise still fails inside the engine.
+
+`Query.sql` returns a `SqlResult` — columns, rows, the `limit` applied, and
+whether it `truncated`. Every output mode reports truncation: `--json` in the
+envelope, `--csv` on stderr so stdout stays openable, the table in a footer.
+
+`ginkgo export events <run_id>` replays a finished run's ledger as JSONL in the
+`--agent-output` wire shape, and `ginkgo export manifest <run_id>` re-exports
+the run's manifest as YAML. Both print to stdout unless `--out` names a file.
+Neither has a format of its own: events go through `cli/renderers/jsonl.py`'s
+`event_line`, which is also what the live agent renderer writes, and the
+manifest through `runtime/rundir.py`'s `manifest_text` / `write_manifest`, which
+is what the run itself wrote at finalize.
+
 `ginkgo run --dry-run` validates the workflow and prints a static execution
 plan instead of running it: tasks grouped into dependency waves, each
 annotated `[cached]`, `[will run]`, or `[unknown]`, with static `.map()`
 fan-out fully expanded and a peak-resource summary. Cache status is resolved
 by a leaf-anchored cascade — a task is checkable only while every upstream
 dependency is a confirmed cache hit — so a fully warm rerun previews as all
-`[cached]`. The plan builder (`runtime/dry_run.py`) is read-only: no task
-runs, no environment is prepared, and no cached output is materialised. Large
-fan-out groups collapse unless `--verbose` is passed. `ginkgo test --dry-run`
-keeps its terse per-workflow validation line rather than printing a full plan
-for each discovered workflow.
+`[cached]`. Probing a checkable task also validates its resolved arguments
+through the run's own `TaskValidator.validate_inputs` — cached upstream
+outputs included, so a kind/path mismatch such as a `table` asset bound to a
+`file` parameter is provable before anything runs (#232). Each refusal is
+collected as a `PlanDiagnostic`, rendered under a red **Problems** section,
+and makes the command exit non-zero — in `--agent-output` mode each
+diagnostic is a `task_notice` event and the synthetic `run_completed` says
+`failed`. A cold cache cannot resolve those arguments and so reports
+nothing. Probe errors the live run would repair before validating (a
+deleted output the artifact store can restore) degrade the node to
+`[unknown]` rather than aborting the preview: the probe materialises
+nothing, so it makes no claim it cannot stand behind. The plan builder (`runtime/dry_run.py`) is
+read-only: no task runs, no environment is prepared, and no cached output is
+materialised. Large fan-out groups collapse unless `--verbose` is passed.
+
+There is no separate command for a project's validation workflows. `ginkgo test`
+used to discover every `*.py` under `tests/workflows/` (or a legacy `.tests/`)
+and run each one, which duplicated `ginkgo run --dry-run` closely enough that
+user testing found the two read as interchangeable. A validation workflow is a
+workflow, so it is run by path, and `ginkgo run --dry-run` is the one wiring
+check — it previews the plan for the entrypoint that will actually run.
 
 Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
 base name, with its fan-out values in brackets when the graph fixed them —
@@ -68,9 +155,37 @@ is reported together with the parameters the workflow does declare. See
 
 `ginkgo cache prune` accepts `--older-than <duration>`, `--max-size <size>`,
 and `--max-entries <N>`. At least one of the three is required; multiple
-may be combined, and eviction always proceeds oldest-first with orphan
-artifact garbage collection at the end. `--dry-run` previews what would be
-removed without touching disk.
+may be combined, and eviction proceeds oldest-first — or least-recently-hit
+first under `--least-recently-hit` — with orphan artifact garbage collection at
+the end. `--dry-run` previews what would be removed without touching disk.
+
+`ginkgo cache clear <key>` removes one entry. `ginkgo cache clear --orphans`
+removes every entry directory the database has no row for, which is what a lost
+database leaves behind; `ginkgo db check` lists them first. `ginkgo cache stats`
+summarises the index — entries, bytes, hit histogram, never-hit bytes, and the
+functions holding the most — as a table or `--json`.
+
+`ginkgo db` maintains the ledger itself. `db check` reports every way an index
+and the bytes it names disagree — the cache, the artifact store in both
+directions, runs against run directories, the staging cache, and an environment
+recorded as materializing two different ways across hosts — and exits 1 if it
+found anything. Like every other read path it opens the database read-only and
+never creates one; an empty workspace reports that and exits 0. Creating the
+database is `db migrate`'s job.
+
+`db prune` takes three cutoffs, at least one required.
+`--events-older-than <duration>` deletes the raw events of runs that finished
+before it, leaving every projection intact; `--digest-memo-older-than` prunes
+the digest memo on `last_seen`; `--staging-older-than` prunes staged remote
+inputs on `last_used_at` and deletes their bytes, which is the only eviction
+the staging cache has. `--dry-run` counts without deleting. `db vacuum` then
+returns the freed pages to the filesystem, and says so plainly when it could
+not. Durations are the same `30d` / `12h` / `45m` shape `cache prune
+--older-than` takes, parsed by `formatting.parse_duration`.
+
+Every command that prints a table builds it through `cli/common.py`'s
+`stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
+width rule are written down once rather than in each command module.
 
 ## Error reporting
 

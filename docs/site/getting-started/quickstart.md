@@ -39,6 +39,11 @@ the expression tree, checks environments and secrets, computes cache keys for
 every task, and reports which tasks would run, which would serve from cache,
 and which resources they declare.
 
+A project may also keep validation workflows under `tests/workflows/`. Those are
+workflows too, so they run by path: `ginkgo run tests/workflows/smoke.py`, with
+`--dry-run` to validate instead of executing. See
+[Validation workflows](../guide/cli.md#validation-workflows).
+
 ## 4. Run The Workflow
 
 ```bash

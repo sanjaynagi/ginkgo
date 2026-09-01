@@ -8,7 +8,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from ginkgo.cli.common import console, resolve_run_dir
+from ginkgo.cli.common import console, open_run
 from ginkgo.reporting import SizingPolicy, export_report
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -18,10 +18,12 @@ def command_report(args) -> int:
     rich_console = console(sys.stdout)
 
     try:
-        run_dir = resolve_run_dir(args.run_id)
+        with open_run(args.run_id) as (reader, run_id):
+            summary = reader.run(run_id)
     except FileNotFoundError as exc:
         rich_console.print(f"[red]✖[/] {exc}")
         return 1
+    run_dir = summary.run_dir
 
     out_dir = _resolve_output_dir(run_dir=run_dir, out=args.out, single_file=args.single_file)
     policy = SizingPolicy(
@@ -31,7 +33,7 @@ def command_report(args) -> int:
 
     try:
         result = export_report(
-            run_dir=run_dir,
+            summary=summary,
             out_dir=out_dir,
             policy=policy,
             single_file=bool(args.single_file),

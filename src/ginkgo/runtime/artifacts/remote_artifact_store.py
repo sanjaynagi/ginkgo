@@ -105,6 +105,39 @@ class RemoteArtifactStore:
         self._ensure_local(artifact_id)
         return self.local.read_bytes(artifact_id=artifact_id)
 
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds locally, if its stat is unchanged."""
+        return self.local.materialized_artifact_id(path=path)
+
+    def is_published(self, artifact_id: str) -> bool:
+        """Return whether this store has already uploaded *artifact_id*.
+
+        Answered from the artifact's own row: :meth:`_publish` stamps the
+        remote URI on it, so the record of "these bytes are on the remote"
+        lives with the artifact rather than in a set beside it. The URI is
+        compared against this store's prefix, so pointing a workspace at a
+        second bucket republishes rather than trusting the first one's upload.
+        """
+        record = self.local.load_record(artifact_id=artifact_id)
+        if record is None or not record.remote_uri:
+            return False
+        return record.remote_uri.startswith(f"{self.scheme}://{self.bucket}/{self.prefix}")
+
+    def publish(self, *, artifact_id: str) -> ArtifactRecord | None:
+        """Upload an artifact this store already holds locally.
+
+        The cheap half of :meth:`store` for the case that is only unpublished:
+        the bytes are in the local CAS under a digest that is already known, so
+        re-hashing the source and re-sharing it into the blob directory to
+        arrive back at the same id is work with no result. Answers ``None`` if
+        the local store has no row for *artifact_id*, which leaves the caller
+        to store the source from scratch.
+        """
+        record = self.local.load_record(artifact_id=artifact_id)
+        if record is None:
+            return None
+        return self._publish(record)
+
     # --- Publishing (local → remote) -----------------------------------------
 
     def _publish(self, record: ArtifactRecord) -> ArtifactRecord:
@@ -115,11 +148,13 @@ class RemoteArtifactStore:
         present.
         """
         if record.kind == "blob":
-            self._upload_blob(record.digest_hex)
+            self._upload_blob(record.digest_hex, extension=record.extension)
         else:
             self._upload_tree(record.digest_hex)
 
-        # Upload ref JSON last (visibility marker).
+        # Upload the record JSON last: it is the marker that says the bytes
+        # are all there, and the only way a machine without this workspace's
+        # database can learn the artifact's shape.
         updated = ArtifactRecord(
             artifact_id=record.artifact_id,
             kind=record.kind,
@@ -131,16 +166,27 @@ class RemoteArtifactStore:
             storage_backend=record.storage_backend,
             remote_uri=f"{self.scheme}://{self.bucket}/{self.prefix}refs/{record.artifact_id}.json",
         )
-        ref_path = self.local._refs_dir / f"{record.artifact_id}.json"
-        ref_path.write_text(updated.to_json(), encoding="utf-8")
-        self.backend.upload(
-            src_path=ref_path,
-            bucket=self.bucket,
-            key=f"{self.prefix}refs/{record.artifact_id}.json",
-        )
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as ref_file:
+            ref_file.write(updated.to_json())
+            ref_path = Path(ref_file.name)
+        try:
+            self.backend.upload(
+                src_path=ref_path,
+                bucket=self.bucket,
+                key=f"{self.prefix}refs/{record.artifact_id}.json",
+            )
+        finally:
+            ref_path.unlink(missing_ok=True)
+
+        # Only now is the row stamped. `is_published` reads it, so recording the
+        # remote URI before the upload that makes it true would remember a
+        # failed publish as a success: nothing would ever retry the upload, and
+        # every worker resolving the artifact would 404 on a ref that is not
+        # there.
+        self.local.put_record(updated)
         return updated
 
-    def _upload_blob(self, digest_hex: str) -> None:
+    def _upload_blob(self, digest_hex: str, *, extension: str = "") -> None:
         """Upload a single blob to remote, skipping if already present.
 
         Blobs are content-addressed, so a remote object at the same key
@@ -148,10 +194,18 @@ class RemoteArtifactStore:
         a rerun from O(full dataset upload) into O(HEAD per blob), which
         is the difference between minutes and hours for large folder
         artifacts.
+
+        *extension* names the local file (a recorded blob carries its
+        extension in its store filename, #231); the remote key stays the
+        bare digest so the remote layout is pure CAS and a tree's member
+        blobs — uploaded without a record in hand — share it.
         """
-        blob_path = self.local._blobs_dir / digest_hex
+        blob_path = self.local._blobs_dir / f"{digest_hex}{extension}"
         if not blob_path.exists():
-            return
+            # Returning silently here would let _publish upload the ref JSON
+            # and stamp the row as published for bytes that never left this
+            # machine — a 404 every worker then trusts forever.
+            raise FileNotFoundError(f"Cannot publish blob missing from local store: {digest_hex}")
         remote_key = f"{self.prefix}blobs/{digest_hex}"
         try:
             self.backend.head(bucket=self.bucket, key=remote_key)
@@ -174,7 +228,9 @@ class RemoteArtifactStore:
         """
         tree_path = self.local._trees_dir / f"{digest_hex}.json"
         if not tree_path.exists():
-            return
+            # Same refusal as _upload_blob: a stamped ref for an absent tree
+            # is a permanent 404 nothing retries.
+            raise FileNotFoundError(f"Cannot publish tree missing from local store: {digest_hex}")
 
         remote_tree_key = f"{self.prefix}trees/{digest_hex}.json"
         try:
@@ -213,18 +269,20 @@ class RemoteArtifactStore:
 
         # Download the content.
         if record.kind == "blob":
-            self._download_blob(record.digest_hex)
+            self._download_blob(record.digest_hex, extension=record.extension)
         else:
             self._download_tree(record.digest_hex)
 
-        # Write the local ref file so LocalArtifactStore can find it.
-        local_ref_path = self.local._refs_dir / f"{artifact_id}.json"
-        local_ref_path.parent.mkdir(parents=True, exist_ok=True)
-        local_ref_path.write_text(record.to_json(), encoding="utf-8")
+        # Record it locally so LocalArtifactStore can find it.
+        self.local.put_record(record)
 
-    def _download_blob(self, digest_hex: str) -> None:
-        """Download a single blob from remote into local store."""
-        dest = self.local._blobs_dir / digest_hex
+    def _download_blob(self, digest_hex: str, *, extension: str = "") -> None:
+        """Download a single blob from remote into local store.
+
+        *extension* names the local file to match the local store's layout;
+        the remote key is always the bare digest.
+        """
+        dest = self.local._blobs_dir / f"{digest_hex}{extension}"
         if dest.exists():
             return
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -4,8 +4,8 @@ Ginkgo keeps its runtime state in a ``.ginkgo/`` directory at the workspace
 root, with one subdirectory per concern::
 
     .ginkgo/
-      runs/  cache/  assets/  artifacts/  staging/  fuse/  notebooks/  reports/
-      remote-staged.json
+      ginkgo.db
+      runs/  cache/  artifacts/  staging/  fuse/  notebooks/  reports/
 
 :class:`WorkspaceLayout` is the single place that convention is written down.
 Every component that needs one of these paths asks the layout for it, so
@@ -15,10 +15,13 @@ across six subpackages.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 DIRECTORY_NAME = ".ginkgo"
+GINKGO_DB_ENV_VAR = "GINKGO_DB"
+"""Environment variable relocating the provenance ledger away from ``.ginkgo/``."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -36,7 +39,15 @@ class WorkspaceLayout:
 
     @classmethod
     def for_cwd(cls) -> WorkspaceLayout:
-        """Return the layout under the current working directory."""
+        """Return the layout under the current working directory.
+
+        The working directory is the project root: the CLI resolves the root
+        and changes directory to it before dispatching any command, so a run
+        launched from ``workflow/`` still finds the root's ``.ginkgo/``. See
+        ``cli/app.py``'s ``_normalize_working_directory``. Code driving ginkgo
+        as a library rather than through the CLI does not get that guarantee,
+        and should pass an explicit ``root=`` if it is not already at the root.
+        """
         return cls(root=Path.cwd() / DIRECTORY_NAME)
 
     @classmethod
@@ -60,7 +71,7 @@ class WorkspaceLayout:
         ----------
         path : Path
             A directory whose siblings form the wanted layout, typically a
-            cache or assets root.
+            cache root.
         """
         return cls(root=path.parent)
 
@@ -73,11 +84,6 @@ class WorkspaceLayout:
     def cache(self) -> Path:
         """Task cache entries."""
         return self.root / "cache"
-
-    @property
-    def assets(self) -> Path:
-        """Asset catalog."""
-        return self.root / "assets"
 
     @property
     def artifacts(self) -> Path:
@@ -105,6 +111,14 @@ class WorkspaceLayout:
         return self.root / "reports"
 
     @property
-    def staging_cache_file(self) -> Path:
-        """Persisted staging state for remote inputs."""
-        return self.root / "remote-staged.json"
+    def db(self) -> Path:
+        """The provenance ledger.
+
+        ``GINKGO_DB`` relocates it, and is read here and nowhere else. That
+        matters on a shared filesystem, where SQLite's locking is unreliable
+        and the fix is to put the database somewhere local.
+        """
+        override = os.environ.get(GINKGO_DB_ENV_VAR, "").strip()
+        if override:
+            return Path(override)
+        return self.root / "ginkgo.db"

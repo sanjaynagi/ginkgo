@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 
 from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.events import task_id_for_node
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
@@ -22,6 +23,29 @@ if TYPE_CHECKING:
 CacheStatus = Literal["cached", "will_run", "unknown"]
 
 _DRIVER_KINDS = {"notebook", "script"}
+
+
+@dataclass(kw_only=True)
+class PlanDiagnostic:
+    """A problem the dry run can already prove would fail the real run.
+
+    Parameters
+    ----------
+    task_id : str
+        Stable task id (``task_0007``), for event-stream consumers.
+    task_name : str
+        Full task name (``module.task``), for event-stream consumers.
+    label : str
+        Display label of the task that would fail.
+    message : str
+        The validator's refusal, verbatim — it names the parameter, the
+        value's kind, and the remedy.
+    """
+
+    task_id: str
+    task_name: str
+    label: str
+    message: str
 
 
 @dataclass(kw_only=True)
@@ -134,6 +158,12 @@ class DryRunPlan:
     dropped_labels : tuple[str, ...]
         Labels of task calls constructed by the flow but unreachable from its
         return value, and so absent from the waves above.
+    diagnostics : tuple[PlanDiagnostic, ...]
+        Input-contract violations found while probing the cache: a task whose
+        resolved arguments the validator already refuses. Only provable on a
+        warm cache — a task downstream of anything un-cached cannot be
+        resolved, so an empty tuple is "nothing provable", not "nothing
+        wrong". The run command exits non-zero when any are present.
     """
 
     workflow_label: str
@@ -145,6 +175,7 @@ class DryRunPlan:
     will_run_count: int
     unknown_count: int
     dropped_labels: tuple[str, ...] = ()
+    diagnostics: tuple[PlanDiagnostic, ...] = ()
 
 
 def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
@@ -169,8 +200,10 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     nodes = evaluator.task_nodes
     waves_by_node = _assign_waves(nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
-    cache_status = _resolve_cache_status(evaluator=evaluator, topo_order=topo_order)
     labels = display_labels({node_id: node.expr for node_id, node in nodes.items()})
+    cache_status, diagnostics = _resolve_cache_status(
+        evaluator=evaluator, topo_order=topo_order, labels=labels
+    )
 
     planned: dict[int, PlannedTask] = {}
     for node_id in topo_order:
@@ -211,6 +244,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         will_run_count=statuses.count("will_run"),
         unknown_count=statuses.count("unknown"),
         dropped_labels=tuple(call.label for call in evaluator.unreachable_calls),
+        diagnostics=tuple(diagnostics),
     )
 
 
@@ -235,28 +269,74 @@ def _assign_waves(nodes: Mapping[int, NodeRun]) -> dict[int, int]:
 
 
 def _resolve_cache_status(
-    *, evaluator: ConcurrentEvaluator, topo_order: list[int]
-) -> dict[int, CacheStatus]:
+    *, evaluator: ConcurrentEvaluator, topo_order: list[int], labels: Mapping[int, str]
+) -> tuple[dict[int, CacheStatus], list[PlanDiagnostic]]:
     """Resolve cache status for every node via a leaf-anchored cascade.
 
     Nodes are visited in topological order. A node is checkable only while
     every dependency is a confirmed cache hit; once the chain breaks, the node
-    and everything below it is ``unknown``.
+    and everything below it is ``unknown``. Probing a checkable node also
+    validates its resolved arguments — the run's own input check, brought
+    forward — and collects each refusal as a :class:`PlanDiagnostic` (#232).
     """
     nodes = evaluator.task_nodes
     status: dict[int, CacheStatus] = {}
+    diagnostics: list[PlanDiagnostic] = []
     for node_id in topo_order:
-        status[node_id] = _probe_node(evaluator=evaluator, node=nodes[node_id], status=status)
-    return status
+        status[node_id] = _probe_node(
+            evaluator=evaluator,
+            node=nodes[node_id],
+            status=status,
+            label=labels[node_id],
+            diagnostics=diagnostics,
+        )
+    return status, diagnostics
 
 
 def _probe_node(
-    *, evaluator: ConcurrentEvaluator, node: NodeRun, status: dict[int, CacheStatus]
+    *,
+    evaluator: ConcurrentEvaluator,
+    node: NodeRun,
+    status: dict[int, CacheStatus],
+    label: str,
+    diagnostics: list[PlanDiagnostic],
 ) -> CacheStatus:
     """Return the cache status of one node, given resolved upstream statuses."""
     # Downstream of anything not known-cached: the cache key cannot be
     # computed without first running an upstream task.
     if any(status.get(dep_id) != "cached" for dep_id in node.dependency_ids):
+        return "unknown"
+
+    try:
+        resolved_args = evaluator.resolve_probe_args(node=node)
+    except Exception:
+        # Cache status is best-effort: any resolution failure degrades the
+        # node to "unknown" rather than aborting the preview.
+        return "unknown"
+
+    # With the real arguments in hand — cached upstream outputs included —
+    # the run's own input validation can already say whether this task would
+    # fail on dispatch. A refusal is a diagnosis, not a probe failure, so it
+    # is collected rather than swallowed (#232).
+    try:
+        evaluator.validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
+    except TypeError as exc:
+        diagnostics.append(
+            PlanDiagnostic(
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                label=label,
+                message=str(exc),
+            )
+        )
+        # A diagnosed driver task still never reached a cache key, so it
+        # keeps the status the probe can actually stand behind.
+        return "unknown" if node.task_def.kind in _DRIVER_KINDS else "will_run"
+    except (FileNotFoundError, ValueError):
+        # The same errors NodeCache._is_valid_cached_result treats as "not
+        # really cached": typically a working-tree path the live run would
+        # restore from the artifact store before validating. The probe must
+        # not materialise anything, so it cannot tell — no claim.
         return "unknown"
 
     # Notebook/script cache keys fold in a source hash obtained by evaluating
@@ -266,14 +346,11 @@ def _probe_node(
 
     cache_store = evaluator.cache_store
     try:
-        resolved_args = evaluator.resolve_probe_args(node=node)
         cache_key, _ = cache_store.build_cache_key(
             task_def=node.task_def,
             resolved_args=resolved_args,
         )
     except Exception:
-        # Cache status is best-effort: any resolution failure degrades the
-        # node to "unknown" rather than aborting the preview.
         return "unknown"
 
     if not cache_store.has_entry(cache_key=cache_key, task_def=node.task_def):

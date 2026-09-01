@@ -18,14 +18,18 @@ from typing import Any
 from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo import query
+from ginkgo.query import Query
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
     ASSET_GROUP_METADATA_KEY,
 )
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
+from ginkgo.wildcards import slug
 from ginkgo.workspace_layout import WorkspaceLayout
 
 from .sizing import (
@@ -203,9 +207,15 @@ class CheckOutcome:
 
 @dataclass(frozen=True, kw_only=True)
 class AssetCard:
-    """One asset version produced by the run."""
+    """One asset version produced by the run.
+
+    ``anchor`` is the fragment id the card carries in the document, so a reader
+    can deep-link a single asset (``report.html#asset-fig-pca-plot``). It is
+    derived from the asset key and made unique across the whole report.
+    """
 
     asset_key: str
+    anchor: str
     name: str
     caption: str | None
     namespace: str
@@ -427,25 +437,22 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 
 def build_report_data(
     *,
-    run_dir: Path,
+    summary: RunSummary,
     workspace_label: str | None = None,
-    assets_root: Path | None = None,
     artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     ginkgo_version: str | None = None,
     generated_at: datetime | None = None,
 ) -> ReportData:
-    """Build a :class:`ReportData` from a completed run directory.
+    """Build a :class:`ReportData` from a completed run.
 
     Parameters
     ----------
-    run_dir : Path
-        Directory containing ``manifest.yaml`` and friends.
+    summary : RunSummary
+        The run to report on, loaded from the ledger.
     workspace_label : str | None
         Display label for the enclosing workspace. Inferred from the run
         directory's grandparent when omitted.
-    assets_root : Path | None
-        Root of the asset catalog. Defaults to ``<workspace>/.ginkgo/assets``.
     artifacts_root : Path | None
         Root of the artifact store. Defaults to ``<workspace>/.ginkgo/artifacts``.
     policy : SizingPolicy | None
@@ -462,8 +469,7 @@ def build_report_data(
     -------
     ReportData
     """
-    run_dir = Path(run_dir).resolve()
-    summary = RunSummary.load(run_dir)
+    run_dir = summary.run_dir.resolve()
 
     # Terminal runs only — fail fast if the run is still live.
     if summary.status not in {"succeeded", "failed"}:
@@ -475,12 +481,43 @@ def build_report_data(
     policy = policy or SizingPolicy()
     workspace_root = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
     layout = WorkspaceLayout(root=workspace_root)
-    assets_root = assets_root if assets_root is not None else layout.assets
     artifacts_root = artifacts_root if artifacts_root is not None else layout.artifacts
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
-    artifact_store = LocalArtifactStore(root=artifacts_root) if artifacts_root.exists() else None
+    # A report is a read: it opens the ledger read-only through the same
+    # reader every other read path uses, and where a workspace has no database
+    # it reads an empty one rather than creating it.
+    with query.open(layout, missing_ok=True) as reader:
+        return _build(
+            summary=summary,
+            reader=reader,
+            run_dir=run_dir,
+            artifacts_root=artifacts_root,
+            workspace_label=workspace_label,
+            ginkgo_version=ginkgo_version,
+            generated_at=generated_at,
+            policy=policy,
+        )
+
+
+def _build(
+    *,
+    summary: RunSummary,
+    reader: Query,
+    run_dir: Path,
+    artifacts_root: Path,
+    workspace_label: str,
+    ginkgo_version: str,
+    generated_at: datetime | None,
+    policy: SizingPolicy,
+) -> ReportData:
+    """Assemble the report's sections against one open reader."""
+    artifact_store = (
+        LocalArtifactStore(root=artifacts_root, index=CacheIndex.attached_to(reader.catalog))
+        if artifacts_root.exists()
+        else None
+    )
 
     # Sections — each returns its typed pieces plus any copy instructions.
     artifact_copies: list[ArtifactCopy] = []
@@ -495,7 +532,7 @@ def build_report_data(
     graph = _build_graph(summary=summary, failures=failures)
     assets = _build_assets(
         summary=summary,
-        assets_root=assets_root,
+        catalog=reader.catalog,
         artifact_store=artifact_store,
         policy=policy,
         artifact_copies=artifact_copies,
@@ -678,11 +715,21 @@ def _build_graph(*, summary: RunSummary, failures: tuple[FailureCard, ...]) -> G
     # Layer assignment: longest-path level from roots.
     level: dict[int, int] = {}
 
-    def _level(node_id: int) -> int:
+    def _level(node_id: int, visiting: frozenset[int] = frozenset()) -> int:
+        """Return the longest path from a root to *node_id*.
+
+        A task graph is a DAG, so a cycle here means something upstream is
+        wrong. The report is not the place to find out: the recursion would
+        run until the stack gave out. An edge that closes a cycle is ignored
+        instead, which draws the graph as if the back-edge were not there.
+        """
         if node_id in level:
             return level[node_id]
+        if node_id in visiting:
+            return 0
         parents = predecessors.get(node_id, [])
-        value = 0 if not parents else 1 + max(_level(parent) for parent in parents)
+        reachable = [_level(parent, visiting | {node_id}) for parent in parents]
+        value = 1 + max(reachable) if reachable else 0
         level[node_id] = value
         return value
 
@@ -834,7 +881,7 @@ def _first_log_path(*, task: TaskSummary, run_dir: Path) -> Path | None:
 def _build_assets(
     *,
     summary: RunSummary,
-    assets_root: Path,
+    catalog: AssetStore,
     artifact_store: LocalArtifactStore | None,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
@@ -846,11 +893,11 @@ def _build_assets(
     to show those, so we resolve each ``(key, version_id)`` pair directly
     rather than filtering on producer ``run_id``.
     """
-    if not assets_root.exists() or artifact_store is None:
+    if artifact_store is None:
         return ()
 
-    store = AssetStore(root=assets_root)
     seen_version_ids: set[str] = set()
+    taken_anchors: set[str] = set()
     cards_by_section: dict[str, list[AssetCard]] = {}
 
     references: list[tuple[str, str]] = []
@@ -866,13 +913,18 @@ def _build_assets(
             continue
         seen_version_ids.add(version_id)
         try:
-            version = store.get_version(key=AssetKey.parse(key_text), version_id=version_id)
+            version = catalog.get_version(key=AssetKey.parse(key_text), version_id=version_id)
         except (FileNotFoundError, ValueError):
             # A missing version or a manifest key that is not ``<kind>:<name>``
             # only costs this report one card.
             continue
         card = _build_asset_card(
             version=version,
+            anchor=_reserve_asset_anchor(
+                namespace=version.key.namespace,
+                name=version.key.name,
+                taken=taken_anchors,
+            ),
             artifact_store=artifact_store,
             policy=policy,
             artifact_copies=artifact_copies,
@@ -888,9 +940,36 @@ def _build_assets(
     return tuple(sections)
 
 
+def _reserve_asset_anchor(*, namespace: str, name: str, taken: set[str]) -> str:
+    """Return the fragment id for one asset card, and record it in ``taken``.
+
+    The id is ``asset-`` followed by the slug of ``<namespace> <name>`` with the
+    slug's underscores rewritten as hyphens, so ``table:sales/by-region``
+    deep-links as ``#asset-table-sales-by-region``. A key holding nothing
+    alphanumeric slugs to nothing and lands on the bare ``asset``.
+
+    Two keys can reduce to the same slug — ``pca plot`` and ``pca-plot`` both
+    become ``pca-plot`` — so a later claimant takes a ``--2``, ``--3`` suffix.
+    The doubled hyphen is what makes that safe: :func:`slug` collapses each run
+    of non-alphanumerics to a single separator, so no key slugs to an id ending
+    in ``--2``, and a suffixed id can never shadow the id another asset would
+    claim for itself.
+    """
+    body = slug(f"{namespace} {name}").replace("_", "-")
+    base = f"asset-{body}" if body else "asset"
+    anchor = base
+    ordinal = 2
+    while anchor in taken:
+        anchor = f"{base}--{ordinal}"
+        ordinal += 1
+    taken.add(anchor)
+    return anchor
+
+
 def _build_asset_card(
     *,
     version: AssetVersion,
+    anchor: str,
     artifact_store: LocalArtifactStore,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
@@ -919,6 +998,7 @@ def _build_asset_card(
 
     return AssetCard(
         asset_key=str(version.key),
+        anchor=anchor,
         name=version.key.name,
         caption=_asset_caption(metadata=version.metadata),
         namespace=namespace,
@@ -1401,13 +1481,9 @@ def _build_environment_kv(*, summary: RunSummary, ginkgo_version: str) -> tuple[
         sample_count = resources.get("sample_count")
         if isinstance(sample_count, int):
             entries.append(KVEntry(key="samples", value=format_int(sample_count)))
-    timings = summary.raw_manifest.get("timings") if summary.raw_manifest else None
-    if isinstance(timings, dict):
-        run_timings = timings.get("run")
-        if isinstance(run_timings, dict):
-            execute = run_timings.get("workflow_execute_seconds")
-            if isinstance(execute, (int, float)):
-                entries.append(KVEntry(key="execute", value=format_duration(float(execute))))
+    execute = summary.timings.get("workflow_execute_seconds")
+    if isinstance(execute, (int, float)):
+        entries.append(KVEntry(key="execute", value=format_duration(float(execute))))
     return tuple(entries)
 
 

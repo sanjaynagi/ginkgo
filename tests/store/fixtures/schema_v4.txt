@@ -1,0 +1,161 @@
+table artifacts
+CREATE TABLE artifacts (
+  artifact_id TEXT PRIMARY KEY, kind TEXT NOT NULL, digest_algorithm TEXT NOT NULL,
+  extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
+, digest_hex TEXT NOT NULL DEFAULT '')
+
+table asset_aliases
+CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
+  PRIMARY KEY (asset_key, alias))
+
+table asset_versions
+CREATE TABLE asset_versions (
+  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
+  code_version TEXT, data_version TEXT,
+  metadata TEXT,
+  PRIMARY KEY (asset_key, version_id)
+)
+
+index asset_versions_created
+CREATE INDEX asset_versions_created ON asset_versions(asset_key, created_at)
+
+index asset_versions_version
+CREATE INDEX asset_versions_version ON asset_versions(version_id)
+
+table attempts
+CREATE TABLE attempts (
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+  started_at TEXT, finished_at TEXT, status TEXT NOT NULL,
+  exit_code INTEGER, failure TEXT, retry_delay_s REAL, execution_backend TEXT, remote_job_id TEXT,
+  PRIMARY KEY (run_id, task_id, attempt)
+)
+
+table cache_artifacts
+CREATE TABLE cache_artifacts (cache_key TEXT NOT NULL, path TEXT NOT NULL, artifact_id TEXT NOT NULL,
+  PRIMARY KEY (cache_key, path))
+
+index cache_artifacts_artifact
+CREATE INDEX cache_artifacts_artifact ON cache_artifacts(artifact_id)
+
+table cache_entries
+CREATE TABLE cache_entries (
+  cache_key TEXT PRIMARY KEY, function TEXT NOT NULL, version INTEGER, source_hash TEXT,
+  extra_source_hash TEXT, env TEXT, env_hash TEXT, env_materialized_digest TEXT,
+  inputs TEXT, input_hashes TEXT, extra TEXT,
+  output_codec TEXT, size_bytes INTEGER,
+  created_run_id TEXT, created_at TEXT NOT NULL,
+  hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT
+)
+
+index cache_function
+CREATE INDEX cache_function ON cache_entries(function, created_at)
+
+table digest_memo
+CREATE TABLE digest_memo (
+  kind TEXT NOT NULL, fingerprint TEXT NOT NULL, digest TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  PRIMARY KEY (kind, fingerprint)
+)
+
+table edges
+CREATE TABLE edges (
+  run_id TEXT NOT NULL, src_kind TEXT NOT NULL, src_id TEXT NOT NULL,
+  dst_kind TEXT NOT NULL, dst_id TEXT NOT NULL, edge TEXT NOT NULL,
+  PRIMARY KEY (run_id, src_kind, src_id, dst_kind, dst_id, edge)
+)
+
+index edges_dst
+CREATE INDEX edges_dst ON edges(dst_kind, dst_id)
+
+index edges_src
+CREATE INDEX edges_src ON edges(src_kind, src_id)
+
+table env_materializations
+CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
+  materialized_digest TEXT, seen_at TEXT NOT NULL, PRIMARY KEY (env_hash, host))
+
+table events
+CREATE TABLE events (
+  seq       INTEGER PRIMARY KEY,
+  run_id    TEXT NOT NULL,
+  ts        TEXT NOT NULL,
+  type      TEXT NOT NULL,
+  v         INTEGER NOT NULL DEFAULT 1,
+  task_id   TEXT,
+  attempt   INTEGER,
+  cache_key TEXT,
+  asset_key TEXT,
+  payload   TEXT NOT NULL
+)
+
+index events_asset
+CREATE INDEX events_asset    ON events(asset_key, seq) WHERE asset_key IS NOT NULL
+
+index events_run
+CREATE INDEX events_run      ON events(run_id, seq)
+
+index events_type_ts
+CREATE INDEX events_type_ts  ON events(type, ts)
+
+table materializations
+CREATE TABLE materializations (path TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, size INTEGER, mtime_ns INTEGER)
+
+table runs
+CREATE TABLE runs (
+  run_id TEXT PRIMARY KEY, workflow TEXT NOT NULL, status TEXT NOT NULL,
+  started_at TEXT NOT NULL, finished_at TEXT, error TEXT,
+  jobs INTEGER, cores INTEGER, memory INTEGER,
+  params TEXT, param_sources TEXT, resources TEXT, timings TEXT,
+  parent_run_id TEXT, parent_task_id TEXT,
+  ginkgo_version TEXT, snapshot_written INTEGER NOT NULL DEFAULT 0
+)
+
+index runs_parent
+CREATE INDEX runs_parent  ON runs(parent_run_id) WHERE parent_run_id IS NOT NULL
+
+index runs_started
+CREATE INDEX runs_started ON runs(started_at)
+
+table schema_version
+CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TEXT NOT NULL)
+
+table staging_entries
+CREATE TABLE staging_entries (uri TEXT PRIMARY KEY, digest TEXT, etag TEXT, version_id TEXT,
+  size INTEGER, staged_at TEXT, blob_path TEXT, last_used_at TEXT)
+
+table stat_index
+CREATE TABLE stat_index (stat_key TEXT PRIMARY KEY, cache_key TEXT NOT NULL)
+
+table task_inputs
+CREATE TABLE task_inputs (
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+  value_type TEXT, value_summary TEXT, digest TEXT,
+  artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT,
+  PRIMARY KEY (run_id, task_id, param, position)
+)
+
+table task_outputs
+CREATE TABLE task_outputs (
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT,
+  value_type TEXT, path TEXT, artifact_id TEXT, asset_key TEXT, asset_version_id TEXT,
+  PRIMARY KEY (run_id, task_id, position)
+)
+
+table tasks
+CREATE TABLE tasks (
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, node_id INTEGER NOT NULL,
+  name TEXT NOT NULL, display_label TEXT, kind TEXT NOT NULL, execution_mode TEXT NOT NULL, env TEXT,
+  status TEXT NOT NULL, cached INTEGER, cache_key TEXT, source_hash TEXT, version INTEGER,
+  env_hash TEXT, extra_source_hash TEXT,
+  started_at TEXT, finished_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER,
+  exit_code INTEGER, failure TEXT, output_summary TEXT, resource_usage TEXT, timings TEXT, extra TEXT,
+  stdout_log TEXT, stderr_log TEXT, execution_backend TEXT, remote_job_id TEXT,
+  PRIMARY KEY (run_id, task_id)
+)
+
+index tasks_cache_key
+CREATE INDEX tasks_cache_key ON tasks(cache_key) WHERE cache_key IS NOT NULL
+
+index tasks_name
+CREATE INDEX tasks_name      ON tasks(name, started_at)

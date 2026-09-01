@@ -1,0 +1,16 @@
+{
+  "attempt": 2,
+  "display_label": null,
+  "event": "task_failed",
+  "exit_code": 1,
+  "failure": {
+    "kind": "exception",
+    "message": "boom"
+  },
+  "remote_job_id": "job-1",
+  "run_id": "run_20260828_090000",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

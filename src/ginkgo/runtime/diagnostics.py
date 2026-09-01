@@ -14,6 +14,7 @@ from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
 
@@ -93,6 +94,10 @@ def collect_workflow_diagnostics(
             secret_resolver=secret_resolver,
             backend=backend,
             constructed_calls=tuple(constructed_calls),
+            executor_registry=ExecutorRegistry.for_validation(
+                project_root=Path.cwd(),
+                config_paths=config_paths,
+            ),
         )
         evaluator.build_and_validate(expr)
 

@@ -1,4 +1,19 @@
-"""Cache lookups for the evaluator: content-addressed and stat-index paths."""
+"""The cache as the evaluator sees it: asked about one node at a time.
+
+Three objects share the word *cache*, and each owns a different thing:
+
+``CacheIndex`` (``index.py``)
+    The rows. Every fact about an entry that lives in the database.
+``CacheStore`` (``cache.py``)
+    The bytes and the keys. Builds a cache key from a task and its arguments,
+    writes and reads ``cache/<key>/output.json``, and owns the artifacts an
+    entry names.
+``NodeCache`` (here)
+    The question the evaluator actually asks: *is there a result for this
+    node?* It carries the two lookup paths — the content-addressed key and the
+    stat-index fast path for ``--trust-mtimes`` runs — and the bookkeeping both
+    share with task completion. Every method takes a node.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from ginkgo.core.task import TaskDef
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.task_validation import TaskValidator
 
 if TYPE_CHECKING:
@@ -23,8 +39,8 @@ class CacheHit:
 
 
 @dataclass(kw_only=True)
-class CacheCoordinator:
-    """Cache lookups and cache-side bookkeeping for the evaluator.
+class NodeCache:
+    """Whether one node has a cached result, and what follows from the answer.
 
     Owns the two lookup paths — content-addressed keys and the stat-index
     fast path for ``--trust-mtimes`` runs — plus the bookkeeping both
@@ -37,6 +53,7 @@ class CacheCoordinator:
     cache_store: CacheStore
     validator: TaskValidator
     digests: DigestRegistry
+    index: CacheIndex
 
     def content_lookup(self, *, node: NodeRun) -> CacheHit | None:
         """Return a valid content-addressed cached result for a prepared node.
@@ -64,7 +81,7 @@ class CacheCoordinator:
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
 
-    def stat_lookup(self, *, node: NodeRun) -> CacheHit | None:
+    def lookup_by_stat(self, *, node: NodeRun) -> CacheHit | None:
         """Return a stat-index cached result for ``--trust-mtimes`` mode.
 
         On a hit the node's cache key is set to the indexed content key and
@@ -72,17 +89,21 @@ class CacheCoordinator:
         output files exist, not that their content matches the artifact
         store.
         """
+        if node.resolved_args is None:
+            # Nothing has been resolved yet, so there is no fingerprint to
+            # take — the same guard the recording side has always had.
+            return None
         stat_key = self.cache_store.stat_fingerprint(
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        cached_result = self.cache_store.try_stat_index(stat_key=stat_key, task_def=node.task_def)
-        if cached_result is MISSING:
+        content_key = self.index.stat_index_lookup(stat_key)
+        if content_key is None:
             return None
 
-        content_key = self.cache_store._stat_index.get(stat_key)
-        if content_key is None:
+        cached_result = self.cache_store.load(cache_key=content_key, task_def=node.task_def)
+        if cached_result is MISSING:
             return None
 
         node.cache_key = content_key
@@ -98,7 +119,7 @@ class CacheCoordinator:
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
         )
-        self.cache_store.record_stat_index(stat_key=stat_key, cache_key=cache_key)
+        self.index.record_stat_index(stat_key=stat_key, cache_key=cache_key)
 
     def propagate_known_digests(self, *, cache_key: str) -> None:
         """Populate the digest registry from a cache entry's artifact IDs.

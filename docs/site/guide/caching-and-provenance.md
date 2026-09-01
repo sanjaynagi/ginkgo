@@ -81,20 +81,73 @@ outputs.
 A task's declared output path is not the source of truth — the artifact store
 is.
 
-## What Lives In A Run Directory
+## Where Provenance Lives
 
-Each run gets a directory under `.ginkgo/runs/<run_id>/`. This is where Ginkgo
-records runtime metadata such as:
+What happened goes into one SQLite database per workspace, at
+`.ginkgo/ginkgo.db`: an append-only event log, plus the tables `ginkgo inspect
+run`, `ginkgo debug` and `ginkgo report` read. All three work on a run that is
+still going.
 
-- task-level status and timing information
-- logs
-- notebook artifacts
-- run manifests and provenance payloads
+Each run also gets a directory under `.ginkgo/runs/<run_id>/` holding the bytes
+— per-task logs, notebook artifacts, copies of the environment lock files, and
+a `manifest.yaml` snapshot of everything the database recorded for the run.
 
-Together, the cache and the run directory answer different questions:
+Together, the cache and the ledger answer different questions:
 
 - cache: can this work be reused safely?
 - provenance: what happened in this specific run?
+
+## Maintaining The Provenance Database
+
+```bash
+ginkgo db path                # where the database is
+ginkgo db check               # schema version, integrity, rows against bytes
+ginkgo db migrate             # create or upgrade it
+ginkgo db prune --events-older-than 90d --dry-run
+ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
+ginkgo db vacuum              # give the freed space back
+```
+
+`ginkgo db check` asks every index whether its rows and the files they name
+still agree — the cache, the artifact store, the run directories, the staged
+remote inputs — and reports both directions: a row whose bytes are gone, and
+bytes no row can find. It never repairs anything.
+
+`ginkgo db prune --events-older-than 90d` deletes the raw event stream of runs
+that finished more than 90 days ago. Everything `ginkgo runs show`, the report
+and `ginkgo history` read is left alone; what goes is the per-event detail
+`ginkgo export events` prints. Add `--digest-memo-older-than` to drop memoised
+file digests, which cost only a re-hash to lose, `--staging-older-than` to
+evict downloaded remote inputs that nothing has read for a while — bytes and
+row together, and the only eviction the staging cache has — and `--dry-run` to
+see the counts first. Deleting rows does not shrink the database file; `ginkgo
+db vacuum` does.
+
+`ginkgo db check` reads; it never creates. In a directory nobody has run a
+workflow in it says so and succeeds.
+
+### Upgrading from a pre-ledger workspace
+
+Workspaces recorded before `.ginkgo/ginkgo.db` existed are **not** migrated.
+Their runs, cache entries and asset catalog lived in files ginkgo no longer
+reads, so they are invisible to every command. If you have one, delete
+`.ginkgo/` and run the workflow again; there is no import path, and nothing in
+the old layout is read by mistake.
+
+`ginkgo.db` is the record of your runs and of your cache; back it up as you
+would `.git`. If it is lost, the run history goes with it and the cache goes
+cold: the cached bytes are still under `.ginkgo/cache/`, but the keys that find
+them were rows in the database. `ginkgo db check` lists those stranded
+directories and `ginkgo cache clear --orphans` removes them.
+
+Each run directory still holds a `manifest.yaml` of what that run did, which is
+there to be read rather than re-imported: ginkgo does not load it back.
+
+`GINKGO_DB=<path>` relocates the database. Do that if `.ginkgo` is on a network
+filesystem: SQLite locking is unreliable over NFS, Lustre, SMB and FUSE, and
+ginkgo prints one warning when it notices.
+
+Two `ginkgo run` processes can share a workspace; the ledger is built for it.
 
 ## Inspecting Cache State
 
@@ -102,12 +155,16 @@ Use the cache subcommands to inspect or clean cache state:
 
 ```bash
 ginkgo cache ls
+ginkgo cache stats
 ginkgo cache clear <cache-key>
 ginkgo cache prune --older-than 30d --dry-run
 ```
 
 These commands report reuse behavior without navigating the hidden cache
-directory by hand.
+directory by hand. `ginkgo cache stats` adds the aggregate picture: how many
+entries there are, how much they take, how often they are hit, and how much is
+held by entries nothing has ever reused. They read the database read-only, so
+they answer while a run is in progress.
 
 ## Bounding Cache Size
 
@@ -126,10 +183,16 @@ ginkgo cache prune --max-entries 500
 
 # Combined: also remove anything older than 90 days
 ginkgo cache prune --older-than 90d --max-size 5GB
+
+# Give up what nobody has used lately, rather than what is oldest
+ginkgo cache prune --max-size 5GB --least-recently-hit
 ```
 
-Eviction is oldest-first, and orphaned artifacts are garbage-collected at the
-end of the operation. Use `--dry-run` to preview what would be removed.
+Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
+the entries with the oldest last hit first — an old entry that hits on every run
+is worth more than a young one nothing has touched. Orphaned artifacts are
+garbage-collected at the end of the operation. Use `--dry-run` to preview what
+would be removed.
 
 ## Partial Resume
 

@@ -7,6 +7,7 @@ import pytest
 
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 
 
@@ -15,7 +16,7 @@ def local_store(tmp_path: Path) -> LocalArtifactStore:
     """Create a LocalArtifactStore in a temp directory."""
     root = tmp_path / ".ginkgo" / "artifacts"
     root.mkdir(parents=True)
-    return LocalArtifactStore(root=root)
+    return LocalArtifactStore(root=root, index=CacheIndex.in_memory())
 
 
 @pytest.fixture
@@ -148,3 +149,122 @@ class TestRemoteArtifactStore:
 
         # Local gone, but no remote delete call.
         assert not remote_store.local.exists(artifact_id=record.artifact_id)
+
+
+class TestPublishRefusesMissingBytes:
+    """A ref must never be stamped for bytes that are not on disk."""
+
+    def test_publishing_a_blob_missing_from_disk_raises(
+        self,
+        remote_store: RemoteArtifactStore,
+        local_store: LocalArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello\n")
+        record = local_store.store(src_path=src)
+        local_store.artifact_path(artifact_id=record.artifact_id).unlink()
+
+        with pytest.raises(FileNotFoundError, match="Cannot publish blob"):
+            remote_store.publish(artifact_id=record.artifact_id)
+
+        refreshed = local_store.load_record(artifact_id=record.artifact_id)
+        assert refreshed is not None and refreshed.remote_uri is None
+        assert not any(
+            "refs/" in str(call.kwargs.get("key", ""))
+            for call in mock_backend.upload.call_args_list
+        )
+
+    def test_publishing_a_tree_missing_from_disk_raises(
+        self,
+        remote_store: RemoteArtifactStore,
+        local_store: LocalArtifactStore,
+        tmp_path: Path,
+    ) -> None:
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("aaa")
+        record = local_store.store(src_path=src_dir)
+        (local_store._trees_dir / f"{record.digest_hex}.json").unlink()
+
+        with pytest.raises(FileNotFoundError, match="Cannot publish tree"):
+            remote_store.publish(artifact_id=record.artifact_id)
+
+
+class TestPublishRecording:
+    """`is_published` reads the artifact's row, so the row must not lead it."""
+
+    def test_a_failed_ref_upload_is_not_remembered_as_published(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+
+        def _fail_on_ref(*, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
+            if key.startswith("artifacts/refs/"):
+                raise OSError("ref upload failed")
+            return RemoteObjectMeta(uri=f"gs://{bucket}/{key}", size=100)
+
+        mock_backend.upload.side_effect = _fail_on_ref
+
+        with pytest.raises(OSError, match="ref upload failed"):
+            remote_store.store(src_path=src)
+
+        artifact_id = remote_store.local.materialized_artifact_id(path=src)
+        assert artifact_id is not None
+        assert remote_store.is_published(artifact_id) is False
+
+    def test_a_retry_after_a_failed_ref_upload_publishes(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+        attempts: list[str] = []
+
+        def _fail_first_ref(*, src_path: Path, bucket: str, key: str) -> RemoteObjectMeta:
+            if key.startswith("artifacts/refs/"):
+                attempts.append(key)
+                if len(attempts) == 1:
+                    raise OSError("ref upload failed")
+            return RemoteObjectMeta(uri=f"gs://{bucket}/{key}", size=100)
+
+        mock_backend.upload.side_effect = _fail_first_ref
+
+        with pytest.raises(OSError):
+            remote_store.store(src_path=src)
+        record = remote_store.store(src_path=src)
+
+        assert remote_store.is_published(record.artifact_id) is True
+
+    def test_publish_uploads_without_re_storing_the_source(
+        self,
+        remote_store: RemoteArtifactStore,
+        mock_backend: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An artifact known locally but unpublished needs the upload, not the hash."""
+        src = tmp_path / "data.csv"
+        src.write_text("hello,world\n")
+        record = remote_store.local.store(src_path=src)
+        assert remote_store.is_published(record.artifact_id) is False
+
+        published = remote_store.publish(artifact_id=record.artifact_id)
+
+        assert published is not None
+        assert remote_store.is_published(record.artifact_id) is True
+        assert any(
+            call.kwargs["key"].startswith("artifacts/refs/")
+            for call in mock_backend.upload.call_args_list
+        )
+
+    def test_publishing_an_unknown_artifact_answers_none(
+        self, remote_store: RemoteArtifactStore
+    ) -> None:
+        assert remote_store.publish(artifact_id="0" * 64) is None

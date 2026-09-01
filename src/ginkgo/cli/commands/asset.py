@@ -4,18 +4,17 @@ from __future__ import annotations
 
 
 import difflib
-import sys
 from dataclasses import dataclass
 
-from rich import box
-from rich.table import Table
 
-from ginkgo.cli.common import ASSETS_ROOT, console
+from ginkgo import query
+from ginkgo.cli.common import stdout_console, new_table
 from ginkgo.runtime.artifacts.asset_registration import (
     ASSET_CAPTION_METADATA_KEY,
     ASSET_CHECKS_METADATA_KEY,
 )
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.core.asset import AssetKey
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -23,9 +22,19 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 def command_asset(args) -> int:
     """Handle ``ginkgo asset`` subcommands."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
-    store = AssetStore(root=ASSETS_ROOT)
+    rich_console = stdout_console()
+    layout = WorkspaceLayout.relative()
+    # A workspace nobody has run anything in has an empty catalog, not a
+    # missing one — the same answer `ginkgo lineage` and `ginkgo notebooks`
+    # give, so that every read of an empty workspace reads alike.
+    with query.open(missing_ok=True) as reader:
+        return _run_asset_command(
+            args=args, rich_console=rich_console, store=reader.catalog, layout=layout
+        )
+
+
+def _run_asset_command(*, args, rich_console, store: AssetStore, layout: WorkspaceLayout) -> int:
+    """Render one ``ginkgo asset`` subcommand against an open catalog."""
 
     if args.asset_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo asset[/] [bold]ls[/]\n")
@@ -34,12 +43,7 @@ def command_asset(args) -> int:
             rich_console.print("[dim]No assets found.[/]")
             return 0
 
-        table = Table(
-            box=box.SQUARE,
-            border_style="#0f766e",
-            header_style="bold #134e4a",
-            expand=False,
-        )
+        table = new_table()
         table.add_column("Asset Key", style="bold", overflow="fold")
         table.add_column("Latest Version", overflow="fold")
         table.add_column("Versions", justify="right")
@@ -79,7 +83,7 @@ def command_asset(args) -> int:
 
     asset_ref = resolve_asset_selector(store=store, value=args.ref)
     version = store.resolve_version(key=asset_ref.key, selector=asset_ref.selector)
-    artifact_store = LocalArtifactStore(root=WorkspaceLayout.sibling_of(ASSETS_ROOT).artifacts)
+    artifact_store = LocalArtifactStore(root=layout.artifacts, index=CacheIndex.attached_to(store))
     artifact_path = (
         artifact_store.artifact_path(artifact_id=version.artifact_id)
         if artifact_store.exists(artifact_id=version.artifact_id)
@@ -269,12 +273,7 @@ def _render_table_metadata(*, console, metadata: dict) -> None:
     schema = metadata.get("schema") or []
     if not schema:
         return
-    schema_table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    schema_table = new_table()
     schema_table.add_column("Column", style="bold")
     schema_table.add_column("Dtype")
     for entry in schema:
@@ -319,12 +318,7 @@ def _render_model_metadata(*, console, metadata: dict) -> None:
     if not metrics:
         console.print("Metrics: -")
         return
-    metrics_table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    metrics_table = new_table()
     metrics_table.add_column("Metric", style="bold")
     metrics_table.add_column("Value", justify="right")
     for name in sorted(metrics):

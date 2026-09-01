@@ -8,14 +8,28 @@ other programmatic clients.
 The evaluator emits typed runtime events through an in-process event bus in
 `ginkgo/runtime/events.py`. These events cover:
 
-- run lifecycle
-- task lifecycle
-- cache hits and misses
-- environment preparation
-- dynamic graph expansion
+- run lifecycle — `RunStarted`, `RunValidated`, `RunResourcesSampled`,
+  `RunCompleted`
+- task lifecycle — `TaskPlanned`, `TaskStarted`, `TaskRunning`, `TaskRetrying`,
+  `TaskCompleted`, `TaskFailed`
+- cache hits and misses — `TaskCacheHit`, `TaskCacheMiss`
+- environment preparation — `EnvPrepare*`
+- dynamic graph expansion — `GraphNodeRegistered`, `GraphExpanded`
+- phase timings — `PhaseTimed`, one per named phase, of the run when it carries
+  no `task_id` and of the task when it does
+- open-ended facts about a task — `TaskAnnotated`, whose `fields` carry things
+  with no lifecycle of their own: a container image digest, a copied lockfile,
+  remote access statistics, notebook artefact pointers, a sub-run id
+- assets materialised — `AssetMaterialized`
 
 This keeps runtime state changes explicit and lets multiple consumers observe
 the same execution facts without duplicating scheduler logic.
+
+The protocol is now also the storage format: the same events are the ledger at
+`.ginkgo/ginkgo.db`, and every projection the CLI reads is derived from them
+(see [Provenance Store](store.md)). An event a renderer can show is an event
+`ginkgo.query` can answer questions about. `TaskLog` is the one event that is
+not stored — log chunks are bytes, and the log files already hold them.
 
 ## Human and Agent Output Modes
 
@@ -50,16 +64,27 @@ Ginkgo exposes machine-readable post-hoc inspection and diagnostics:
 
 - `ginkgo inspect workflow` returns a static task graph snapshot without
   execution.
-- `ginkgo inspect run <run_id>` reconstructs a run snapshot from provenance.
+- `ginkgo runs show <run_id> --json` returns a run snapshot from the ledger, for
+  a live run as readily as a finished one; `ginkgo runs ls --json` returns the
+  run index, filterable by workflow, status and start time.
+- `ginkgo history <task-name> --json` returns every run of one task across runs.
+- `ginkgo query "<sql>" --json|--csv` returns the result of one read-only SQL
+  statement, for the question no verb answers. The tables are versioned but not
+  stable; the methods on `ginkgo.query.Query` are what is kept working.
+- `ginkgo export events <run_id>` returns a finished run's ledger as JSONL in
+  the same shape `--agent-output` streams live, so an agent that parses the live
+  stream parses the export unchanged. `ginkgo export manifest <run_id>` returns
+  the run's manifest as YAML.
 - `ginkgo debug --json` returns failed-task diagnostics, including failure
   summaries and log tails.
 - `ginkgo doctor --json` returns structured validation diagnostics.
 - `ginkgo cache explain <run_id>` provides best-effort rerun reasons from
-  cache metadata. `--run <run_id>` remains accepted as an alias.
+  cache metadata, naming the cache-key components that differ from the previous
+  entry (`inputs.<parameter>`, `source_hash`, `env_hash.pixi_lock`, …) under the
+  summary reason. `--run <run_id>` remains accepted as an alias.
 
-To support these surfaces, task provenance records structured failure
-summaries and a compact typed output index alongside the existing manifest
-fields.
+To support these surfaces, the ledger records structured failure summaries and
+a compact typed output index against each task.
 
 ## Runtime Notifications
 

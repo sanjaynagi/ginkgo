@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from typing import Any
 
-from rich import box
-from rich.table import Table
 
-from ginkgo.cli.common import console, resolve_run_dir
+from ginkgo.cli.common import open_run, stdout_console, new_table
 from ginkgo.runtime.run_summary import RunSummary
 
 
@@ -26,17 +23,15 @@ class ModelRow:
 
 def command_models(args) -> int:
     """Handle ``ginkgo models`` — list models produced by a run."""
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    rich_console = console(sys.stdout, width=None if is_tty else 160)
+    rich_console = stdout_console()
 
-    run_id = getattr(args, "run_id", None)
     try:
-        run_dir = resolve_run_dir(run_id)
+        with open_run(getattr(args, "run_id", None)) as (reader, run_id):
+            summary = reader.run(run_id)
     except FileNotFoundError as exc:
         rich_console.print(f"[red]{exc}[/]")
         return 1
 
-    summary = RunSummary.load(run_dir)
     rows = collect_model_rows(run_summary=summary)
 
     rich_console.print(f"[bold green]🌿 ginkgo models[/] [dim]run={summary.run_id}[/]\n")
@@ -44,12 +39,7 @@ def command_models(args) -> int:
         rich_console.print("[dim]No model assets in this run.[/]")
         return 0
 
-    table = Table(
-        box=box.SQUARE,
-        border_style="#0f766e",
-        header_style="bold #134e4a",
-        expand=False,
-    )
+    table = new_table()
     table.add_column("Task", style="bold", overflow="fold")
     table.add_column("Name", overflow="fold")
     table.add_column("Framework")

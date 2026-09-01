@@ -4,8 +4,6 @@
 
 Ginkgo is a scientific workflow orchestrator built for the 21st century.
 
-**Python-native. Dynamic. Reproducible. Agent-ready.**
-
 - `@flow` and `@task()` — define workflows in plain Python, no DSL to learn
 - An intuitive, aesthetic API built specifically for data science and bioinformatics
 - natively dynamic workflows — expand workflows during runtime from resolved tasks
@@ -163,12 +161,21 @@ ginkgo run
 
 ## Core CLI Commands
 
+To confirm a workflow is wired correctly, run `ginkgo run --dry-run`: it previews
+the plan for the entrypoint you actually run without executing any task body.
+Validation workflows a project keeps under `tests/workflows/` are workflows too,
+so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
+[CLI guide](docs/site/guide/cli.md).
+
 - `ginkgo run`
-- `ginkgo test --dry-run`
 - `ginkgo doctor`
 - `ginkgo debug`
 - `ginkgo init`
-- `ginkgo inspect` (`inspect workflow`, `inspect run`)
+- `ginkgo inspect workflow`
+- `ginkgo runs` (`runs ls`, `runs show`)
+- `ginkgo history`
+- `ginkgo query`
+- `ginkgo export` (`export events`, `export manifest`)
 - `ginkgo asset` (`asset ls`, `asset versions`, `asset inspect`, `asset show`)
 - `ginkgo report`
 - `ginkgo models`

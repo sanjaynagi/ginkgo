@@ -109,7 +109,8 @@ HTML reports. Assets without a group appear under "Ungrouped assets". Captions
 are rendered as short subtitles on each asset card and are also shown by
 `ginkgo asset show`.
 
-Assets are content-addressed and stored under `.ginkgo/assets/`. Re-running a
+Asset bytes are content-addressed and stored under `.ginkgo/artifacts/`; the
+catalog that names and versions them lives in `.ginkgo/ginkgo.db`. Re-running a
 task that produces the same content adds a new *version* pointing at the same
 bytes, so an asset key gives you a stable handle with full version history.
 
@@ -215,10 +216,9 @@ still reaches the text boundary and is refused. Do the writing in a separate
 `file` asset with `asset(csv_path)` when the bytes on disk, rather than the typed
 payload, are what downstream tasks need.
 
-One caveat for the kinds that do bind a path: stored artifacts are
-content-addressed blobs with no file extension, so a command that switches
-behaviour on the suffix (`.png` versus `.svg`, say) may still need the bytes
-copied to a named path first.
+The path such a kind binds is content-addressed but keeps the artifact's
+file extension (`blobs/<digest>.png`), so a command that switches behaviour
+on the suffix (`.png` versus `.svg`, say) reads it correctly as-is.
 
 ### Inspecting Assets
 
@@ -255,6 +255,12 @@ The report includes the run summary, the task graph, per-task status and
 timing, failure detail with log tails, asset previews (tables, figures, model
 metrics), and links to rendered notebooks. By default it is written to
 `.ginkgo/reports/<run-id>/`.
+
+Every asset card carries a fragment id built from its key, so a single figure
+or table can be linked directly: `table:sales/by-region` renders at
+`#asset-table-sales-by-region`. A `#` beside the asset name navigates to that
+fragment, leaving the URL to share in the address bar. It appears when you
+hover the card, or stays visible where there is no pointer to hover with.
 
 The task ledger's **Peak RSS** column shows each task's measured peak memory
 against what it declared (`3.2 GiB / 16 GiB`), or the measured figure alone

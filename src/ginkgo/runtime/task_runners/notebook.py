@@ -28,6 +28,7 @@ from ginkgo.core.types import tmp_dir
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.notebook_kernels import (
     ExecutionCommand,
     NotebookCommandBuilder,
@@ -217,18 +218,23 @@ class NotebookRunner(DriverTaskRunner):
     cache_store : CacheStore
         Cache backing store; consulted to replay notebook manifest extras
         on a cache hit.
-    provenance : Any | None
-        Run provenance recorder. May be ``None`` in dry-run / validation
-        contexts; manifest writes are then no-ops.
+    run_dir : RunDir | None
+        The run's directory, which holds the notebook artifacts. ``None`` in
+        dry-run / validation contexts; the notebook bookkeeping is then skipped.
+    annotate : Callable
+        Records notebook metadata against the task node, as a ``TaskAnnotated``
+        event.
     notice_emitter : Callable
-        Callback used to surface kernel-installation notices.
+        Callback used to surface notices — kernel installation, and a failed
+        HTML export — as run events.
     runtime_root_factory : Callable[[], Path]
         Lazily resolves the on-disk runtime root for shared notebook files.
     """
 
     backend: ExecutionEnvironment | None
     cache_store: CacheStore
-    provenance: Any | None
+    run_dir: RunDir | None
+    annotate: Callable[..., None]
     notice_emitter: Callable[[Any, str], None]
     runtime_root_factory: Callable[[], Path]
     _kernel_lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -241,6 +247,14 @@ class NotebookRunner(DriverTaskRunner):
         Determines the notebook backend from the file extension, runs
         execution, renders HTML, validates any declared outputs, and
         returns the appropriate result value.
+
+        A failed HTML export always writes a placeholder failure page,
+        records ``render_status="failed"`` in the manifest, and emits a
+        task notice so the outcome reaches machine-readable output. It
+        fails the task whenever that page would otherwise become the
+        task's result — see ``_html_is_task_result``. A task that declares
+        its own outputs keeps them and succeeds, with the notice carrying
+        the export failure.
         """
         assert node.execution_args is not None
         notebook_path = directive.path
@@ -345,6 +359,23 @@ class NotebookRunner(DriverTaskRunner):
                 render_error=render_error,
                 managed_kernel_name=kernel_spec.name if kernel_spec is not None else None,
             )
+            self.notice_emitter(
+                node,
+                f"HTML export failed; {artifacts.html_path} holds the export error "
+                "instead of the rendered notebook.",
+            )
+            if self._html_is_task_result(directive=directive, html_path=artifacts.html_path):
+                hint = "The notebook executed successfully; only the HTML export failed."
+                if artifacts.executed_path is not None:
+                    hint = f"{hint} The executed notebook is at {artifacts.executed_path}."
+                raise NotebookTaskError(
+                    task_name=node.task_def.name,
+                    phase="render",
+                    cmd=render_command,
+                    exit_code=render_result.returncode or 1,
+                    output=render_error,
+                    hint=hint,
+                )
         else:
             self._record_notebook_manifest(
                 node=node,
@@ -369,6 +400,20 @@ class NotebookRunner(DriverTaskRunner):
             output=directive.output,
         )
 
+    @staticmethod
+    def _html_is_task_result(*, directive: NotebookDirective, html_path: Path) -> bool:
+        """Report whether the rendered HTML is what this task hands downstream.
+
+        With no declared output the HTML path *is* the task's return value; a
+        declared output may also name it explicitly. Either way the export is
+        the deliverable, so a failed export leaves the task with nothing to
+        return but the placeholder failure page.
+        """
+        if directive.output is None:
+            return True
+        resolved = html_path.resolve()
+        return any(value.resolve() == resolved for value in iter_output_values(directive.output))
+
     # Cache replay -----------------------------------------------------------
 
     def replay_cached_extras(self, *, node: Any, cache_key: str) -> None:
@@ -378,8 +423,14 @@ class NotebookRunner(DriverTaskRunner):
         cached return value. To keep cache hits visible in the run summary
         and downstream tooling, we persist the notebook manifest extras
         alongside the cache entry on save and re-apply them here on hit.
+
+        A replayed failed export emits its notice again: the replayed
+        pointer names the placeholder failure page of the run that produced
+        it, so this run's report links a traceback too, and a machine-readable
+        consumer of the event stream should hear about it on every run rather
+        than only the first.
         """
-        if self.provenance is None or node.task_def.kind != "notebook":
+        if self.run_dir is None or node.task_def.kind != "notebook":
             return
         cached_extra = self.cache_store.load_extra_meta(cache_key=cache_key)
         if cached_extra is None:
@@ -387,10 +438,16 @@ class NotebookRunner(DriverTaskRunner):
         notebook_extras = cached_extra.get("notebook_extras")
         if not isinstance(notebook_extras, dict):
             return
-        self.provenance.update_task_extra(
-            node_id=node.node_id,
-            **resolve_cached_artifact_pointers(extras=notebook_extras),
-        )
+        replayed = resolve_cached_artifact_pointers(extras=notebook_extras)
+        self.annotate(node=node, fields=replayed)
+        rendered_html = replayed.get("rendered_html")
+        if replayed.get("render_status") == "failed" and isinstance(rendered_html, str):
+            self.notice_emitter(
+                node,
+                f"HTML export failed in run {replayed.get('notebook_artifact_run_id')}, whose "
+                f"notebook artifacts this task replayed; {rendered_html} holds the export error "
+                "instead of the rendered notebook.",
+            )
 
     # Private helpers --------------------------------------------------------
 
@@ -398,8 +455,8 @@ class NotebookRunner(DriverTaskRunner):
         """Return deterministic artifact paths for one notebook task."""
         task_key = f"task_{node.node_id:04d}"
         root_dir = (
-            self.provenance.run_dir / "notebooks"
-            if self.provenance is not None
+            self.run_dir.path / "notebooks"
+            if self.run_dir is not None
             else WorkspaceLayout.for_cwd().notebooks
         )
         root_dir.mkdir(parents=True, exist_ok=True)
@@ -408,7 +465,7 @@ class NotebookRunner(DriverTaskRunner):
             root_dir=root_dir,
             html_path=root_dir / f"{task_key}.html",
             executed_path=executed_path,
-            params_path=root_dir / f"{task_key}.params.yaml",
+            params_path=root_dir / f"{task_key}.parameters.yaml",
         )
 
     def _prepare_notebook_artifacts(self, *, artifacts: NotebookArtifacts) -> None:
@@ -572,8 +629,8 @@ class NotebookRunner(DriverTaskRunner):
         render_error: str | None,
         managed_kernel_name: str | None = None,
     ) -> None:
-        """Persist notebook-specific metadata to the task manifest."""
-        if self.provenance is None:
+        """Record notebook-specific metadata against the task."""
+        if self.run_dir is None:
             return
         extra: dict[str, Any] = {
             "task_type": "notebook",
@@ -585,15 +642,15 @@ class NotebookRunner(DriverTaskRunner):
             # into the cache entry with them, so a later run that replays the
             # pointers replays this too and can tell a reused artifact (and its
             # recorded render status) from one it produced itself.
-            "notebook_artifact_run_id": self.provenance.run_id,
+            "notebook_artifact_run_id": self.run_dir.run_id,
             "rendered_html": relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
+                run_dir=self.run_dir.path,
                 path=rendered_html,
             ),
         }
         if executed_path is not None:
             extra["executed_notebook"] = relativize_to_run_dir(
-                run_dir=self.provenance.run_dir,
+                run_dir=self.run_dir.path,
                 path=executed_path,
             )
         if render_error is not None:
@@ -602,7 +659,7 @@ class NotebookRunner(DriverTaskRunner):
             extra["render_error"] = None
         if managed_kernel_name is not None:
             extra["managed_kernel_name"] = managed_kernel_name
-        self.provenance.update_task_extra(node_id=node.node_id, **extra)
+        self.annotate(node=node, fields=extra)
 
         # Stash an absolute-path version of the extras on the node so that
         # _complete_node can persist them in the cache entry. Replaying these

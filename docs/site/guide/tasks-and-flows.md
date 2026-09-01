@@ -217,6 +217,19 @@ notebooks. The HTML export is recorded in provenance and appears in the
 [run report](assets.md). A notebook task can declare an `env` so the notebook
 runs against that environment's kernel.
 
+If the notebook executes but the HTML export fails, Ginkgo writes a placeholder
+page carrying the export error, records `render_status: failed` in the manifest,
+and emits a `task_notice` event that `--agent-output` and the run summary carry.
+What happens to the task depends on whether that page would be its result:
+
+- No `output` (or an `output` naming the rendered HTML) — the export *is* the
+  deliverable, so the task fails. The placeholder page never becomes the value
+  a downstream task consumes, and nothing is cached, so a rerun retries.
+- Some other declared `output` — the HTML is a side artifact. The task keeps its
+  declared output and succeeds, with the notice carrying the export failure. The
+  task caches as usual, so a later run that hits the cache reuses that
+  placeholder page — and emits the notice again to say so.
+
 ## Subworkflow Tasks
 
 Use `@task("subworkflow")` to run another workflow as a single task. The body

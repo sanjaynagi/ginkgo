@@ -13,19 +13,33 @@ import pytest
 import yaml
 
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
-from ginkgo.runtime.caching.provenance import (
-    RunProvenanceRecorder,
-    load_manifest,
-    make_run_id,
-)
+from ginkgo.runtime.rundir import make_run_id
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.task_runners.subworkflow import (
     DEPTH_ENV,
-    PARENT_RUN_ENV,
+    PARENT_RUN_ID_ENV,
+    PARENT_TASK_ID_ENV,
     SubWorkflowError,
     SubWorkflowRecursionError,
-    _extract_child_run_id,
 )
+
+from tests.conftest import Ledger
+
+
+def _record_child_run(*, root: Path, run_id: str, parent_run_id: str) -> None:
+    """Record the run a child ``ginkgo run`` would have recorded for itself.
+
+    The parent finds its child by asking the ledger who names it as a parent,
+    so a stubbed subprocess has to leave that row behind.
+    """
+    child = Ledger.start(
+        root=root,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        parent_task_id="task_0000",
+    )
+    child.finish()
+    child.close()
 
 
 # Tasks defined at module scope so the task validator accepts them.
@@ -71,19 +85,6 @@ class TestSubWorkflowConstructor:
         assert expr.config == ("a.yaml", "b.yaml")
 
 
-class TestChildRunIdParsing:
-    def test_extracts_run_id(self) -> None:
-        text = "loading...\nGINKGO_CHILD_RUN_ID=20260420_121212_000001_abcd1234\ndone\n"
-        assert _extract_child_run_id(text) == "20260420_121212_000001_abcd1234"
-
-    def test_returns_none_when_missing(self) -> None:
-        assert _extract_child_run_id("no marker here") is None
-
-    def test_prefers_last_match(self) -> None:
-        text = "GINKGO_CHILD_RUN_ID=first\nGINKGO_CHILD_RUN_ID=second\n"
-        assert _extract_child_run_id(text) == "second"
-
-
 class TestRecursionGuard:
     def test_rejects_excessive_depth(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -93,15 +94,13 @@ class TestRecursionGuard:
 
         monkeypatch.setenv(DEPTH_ENV, "8")
 
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "parent.py"),
-            workflow_path=tmp_path / "parent.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "parent.py")
         )
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         runner = evaluator._subworkflow_runner
 
         class _FakeNode:
@@ -118,13 +117,9 @@ class TestRecursionGuard:
 
 
 class TestEvaluatorDispatch:
-    def _make_recorder(self, tmp_path: Path) -> RunProvenanceRecorder:
-        return RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "parent.py"),
-            workflow_path=tmp_path / "parent.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+    def _make_recorder(self, tmp_path: Path) -> Ledger:
+        return Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "parent.py")
         )
 
     def test_dispatch_captures_child_run_id(
@@ -150,17 +145,18 @@ class TestEvaluatorDispatch:
         ) -> subprocess.CompletedProcess[str]:
             captured["argv"] = argv
             captured["env"] = env
-            stdout = "GINKGO_CHILD_RUN_ID=fake_child_run_id_123\n"
-            if on_stdout is not None:
-                on_stdout(stdout)
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=0,
-                stdout=stdout,
-                stderr="",
+            _record_child_run(
+                root=tmp_path,
+                run_id="fake_child_run_id_123",
+                parent_run_id=recorder.run_id,
             )
+            if on_stdout is not None:
+                on_stdout("child output\n")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(call_child_task(workflow_path=str(child_path), region="emea"))
@@ -175,11 +171,11 @@ class TestEvaluatorDispatch:
         assert "--config" in cmd  # params dict produced a temp config
 
         env = captured["env"]
-        assert env[PARENT_RUN_ENV] == recorder.run_id
+        assert env[PARENT_RUN_ID_ENV] == recorder.run_id
+        assert env[PARENT_TASK_ID_ENV] == "task_0000"
         assert env[DEPTH_ENV] == "1"
 
-        manifest = load_manifest(recorder.run_dir)
-        (task_entry,) = manifest["tasks"].values()
+        task_entry = recorder.task()
         assert task_entry["sub_run_id"] == "fake_child_run_id_123"
         assert task_entry["status"] == "succeeded"
 
@@ -194,18 +190,17 @@ class TestEvaluatorDispatch:
         recorder = self._make_recorder(tmp_path)
 
         def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
-            stdout = "GINKGO_CHILD_RUN_ID=child_fail_id\n"
-            on_stdout = kwargs.get("on_stdout")
-            if on_stdout is not None:
-                on_stdout(stdout)
+            _record_child_run(root=tmp_path, run_id="child_fail_id", parent_run_id=recorder.run_id)
             return subprocess.CompletedProcess(
                 args=kwargs.get("argv", ""),
                 returncode=2,
-                stdout=stdout,
+                stdout="",
                 stderr="something broke\n",
             )
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         with pytest.raises(SubWorkflowError) as exc_info:
@@ -214,8 +209,7 @@ class TestEvaluatorDispatch:
         assert exc_info.value.exit_code == 2
         assert exc_info.value.child_run_id == "child_fail_id"
 
-        manifest = load_manifest(recorder.run_dir)
-        (task_entry,) = manifest["tasks"].values()
+        task_entry = recorder.task()
         assert task_entry["status"] == "failed"
         assert task_entry["sub_run_id"] == "child_fail_id"
 
@@ -224,12 +218,14 @@ class TestEvaluatorDispatch:
         child_path.write_text("", encoding="utf-8")
 
         recorder = self._make_recorder(tmp_path)
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
 
         with pytest.raises(TypeError, match="subworkflow"):
             evaluator.evaluate(call_child_wrong_return(workflow_path=str(child_path)))
 
-    def test_missing_run_id_marker_raises(
+    def test_a_child_that_recorded_no_run_raises(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -241,16 +237,15 @@ class TestEvaluatorDispatch:
 
         def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(
-                args=kwargs.get("argv", ""),
-                returncode=0,
-                stdout="no marker in this output\n",
-                stderr="",
+                args=kwargs.get("argv", ""), returncode=0, stdout="", stderr=""
             )
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
-        with pytest.raises(RuntimeError, match="GINKGO_CHILD_RUN_ID"):
+        with pytest.raises(RuntimeError, match="recorded no run"):
             evaluator.evaluate(call_child_no_params_task(workflow_path=str(child_path)))
 
 
@@ -302,7 +297,8 @@ class TestEndToEnd:
         )
 
         env = os.environ.copy()
-        env.pop("GINKGO_CALLED_FROM_PARENT_RUN", None)
+        env.pop("GINKGO_PARENT_RUN_ID", None)
+        env.pop("GINKGO_PARENT_TASK_ID", None)
         env.pop("GINKGO_CALL_DEPTH", None)
 
         result = subprocess.run(
@@ -361,13 +357,7 @@ class TestSubworkflowParams:
         child_path = tmp_path / "child.py"
         child_path.write_text("", encoding="utf-8")
 
-        recorder = RunProvenanceRecorder(
-            run_id="parent_run",
-            workflow_path=tmp_path / "parent.py",
-            root_dir=tmp_path / "runs",
-            jobs=1,
-            cores=1,
-        )
+        recorder = Ledger.start(root=tmp_path, run_id="parent_run")
         written: dict[str, Any] = {}
 
         def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -376,13 +366,12 @@ class TestSubworkflowParams:
             # Read the temp config while it still exists; it is deleted on return.
             config_path = Path(cmd.split("--config")[1].strip().strip("'\""))
             written["payload"] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            stdout = "GINKGO_CHILD_RUN_ID=child_run_1\n"
-            on_stdout = kwargs.get("on_stdout")
-            if on_stdout is not None:
-                on_stdout(stdout)
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=stdout, stderr="")
+            _record_child_run(root=tmp_path, run_id="child_run_1", parent_run_id="parent_run")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         evaluator.evaluate(
@@ -401,14 +390,10 @@ class TestSubworkflowParams:
         # so depth must survive the layering rather than fall back to its default.
         (workspace / "ginkgo.toml").write_text("[params]\ndepth = 42\n", encoding="utf-8")
 
-        recorder = RunProvenanceRecorder(
-            run_id="parent_run",
-            workflow_path=workspace / "parent.py",
-            root_dir=workspace / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        recorder = Ledger.start(root=workspace, run_id="parent_run")
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
         )
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
 
         result = evaluator.evaluate(
             call_child_with_region(workflow_path=str(child_path), region="2L:1-100")

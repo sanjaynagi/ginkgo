@@ -90,15 +90,6 @@ class TestArtifactRecord:
         assert parsed["kind"] == "blob"
         assert parsed["artifact_id"] == "abc123"
 
-    def test_from_path(self, tmp_path: object) -> None:
-        from pathlib import Path
-
-        record = self._make_record()
-        path = Path(str(tmp_path)) / "ref.json"
-        path.write_text(record.to_json(), encoding="utf-8")
-        restored = ArtifactRecord.from_path(path)
-        assert restored == record
-
 
 class TestTreeManifestSerialization:
     def test_round_trip(self) -> None:

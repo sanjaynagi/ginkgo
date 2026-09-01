@@ -2,8 +2,10 @@
 
 Start here:
 
-- `ginkgo test --dry-run`
-  Validates test workflows in `{{ tests_relpath }}` without executing tasks.
+- `ginkgo run --dry-run`
+  Previews the plan for `{{ workflow_relpath }}` without executing any task body.
+- `ginkgo run {{ tests_relpath }}/smoke.py --dry-run`
+  Validates a workflow in `{{ tests_relpath }}` without executing tasks.
 - `ginkgo run --agent-output`
   Executes and emits machine-readable JSONL runtime events on stdout for programmatic
   consumers or agents.
@@ -16,8 +18,17 @@ Start here:
 
 When you already have a run id:
 
-- `ginkgo inspect run <run_id>`
-  Reconstructs a completed run from stored provenance.
+- `ginkgo runs ls`
+  Lists recorded runs, newest first.
+- `ginkgo runs show <run_id>`
+  Reconstructs a completed run from stored provenance; `--json` for the full
+  snapshot.
+- `ginkgo history <task-name>`
+  Shows every run of one task, with status, duration, and cache key.
+- `ginkgo query "<sql>"`
+  Runs one read-only SQL statement against the provenance database.
+- `ginkgo export events <run_id>` / `ginkgo export manifest <run_id>`
+  Writes a run's ledger events as JSONL, or its manifest as YAML.
 - `ginkgo debug <run_id>`
   Shows a human-readable failure summary.
 - `ginkgo debug <run_id> --json`
@@ -26,5 +37,5 @@ When you already have a run id:
 Testing guidance:
 
 - put workflow validation files under `{{ tests_relpath }}`
-- use `ginkgo test --dry-run` for static validation
-- use `ginkgo test` when you want those test workflows to execute
+- use `ginkgo run --dry-run` for static validation of your own flow
+- run a validation workflow by path when you want it to execute

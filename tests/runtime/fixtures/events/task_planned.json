@@ -1,0 +1,37 @@
+{
+  "asset_inputs": {
+    "table": {
+      "artifact_id": "artifact-abcdef",
+      "asset_key": "table:rows",
+      "version_id": "v-abcdef"
+    }
+  },
+  "attempt": 0,
+  "cache_key": "cache_abcdef",
+  "dependency_ids": [
+    "task_0001"
+  ],
+  "display_label": "fit[a]",
+  "dynamic_dependency_ids": [
+    "task_0008"
+  ],
+  "env_hash": "env_abcdef",
+  "event": "task_planned",
+  "extra_source_hash": "extra_abcdef",
+  "input_hashes": [
+    {
+      "digest": "b3:1234",
+      "param": "table"
+    }
+  ],
+  "inputs": {
+    "rows": 10
+  },
+  "run_id": "run_20260828_090000",
+  "source_hash": "src_abcdef",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1,
+  "version": 3
+}

@@ -513,8 +513,8 @@ class TestEvaluatorIntegration:
         # The error is raised before registration, so no version for the
         # offending name may exist. Assert this unconditionally — an empty
         # store is the expected outcome, not a reason to skip the check.
-        asset_dir = tmp_path / ".ginkgo" / "assets"
-        keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            keys = catalog.list_asset_keys()
         assert not any(key.namespace == "table" and key.name == "dup" for key in keys)
 
     def test_passing_check_is_persisted_with_asset_version(
@@ -547,8 +547,8 @@ class TestEvaluatorIntegration:
         with pytest.raises(AssetCheckError, match=message):
             ginkgo.evaluate(expression)
 
-        asset_dir = tmp_path / ".ginkgo" / "assets"
-        keys = AssetStore(root=asset_dir).list_asset_keys() if asset_dir.is_dir() else []
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            keys = catalog.list_asset_keys()
         assert not keys
 
     def test_cache_hit_reuses_artifact_id(
@@ -663,8 +663,8 @@ class TestExplicitAssetNames:
         assert str(result.key) == f"{kind}:{EXPLICIT_NAME}"
         assert AssetKey.parse(str(result.key)) == result.key
 
-        catalogued = AssetStore(root=tmp_path / ".ginkgo" / "assets").list_asset_keys()
-        assert result.key in catalogued
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            assert result.key in catalog.list_asset_keys()
 
     @pytest.mark.parametrize(
         ("kind", "expression_factory", "required_modules"),
@@ -753,8 +753,8 @@ class TestExplicitAssetNames:
         assert isinstance(first, AssetRef)
         assert isinstance(second, AssetRef)
         assert first.key == second.key
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        assert len(store.list_versions(key=first.key)) == 2
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            assert len(catalog.list_versions(key=first.key)) == 2
 
 
 class TestAssetCheckTransport:
@@ -898,7 +898,9 @@ class TestModelsCommand:
         rc = main(["models"])
         assert rc == 1
         output = capsys.readouterr().out
-        assert "No runs found" in output
+        # The run domain's own answer, not a missing-database error: an empty
+        # workspace reads the same here as it does for inspect and notebooks.
+        assert "No runs recorded in" in output
 
     def test_lists_models_from_latest_run(
         self,
@@ -941,28 +943,24 @@ class TestModelsCommand:
 
 
 def _run_with_provenance(tmp_path: Path, expr: object) -> None:
-    """Evaluate an expression under a real provenance recorder.
+    """Evaluate an expression against a real ledger.
 
-    Writes a manifest under ``.ginkgo/runs/<run_id>/`` so the ``ginkgo
-    models`` command path can discover the run and its asset entries.
+    Records the run in ``.ginkgo/ginkgo.db`` so the ``ginkgo models`` command
+    path can discover it and its asset entries.
     """
-    from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, make_run_id
+    from tests.conftest import Ledger
 
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# placeholder\n", encoding="utf-8")
-    recorder = RunProvenanceRecorder(
-        run_id=make_run_id(workflow_path=workflow_path),
-        workflow_path=workflow_path,
-        root_dir=tmp_path / ".ginkgo" / "runs",
-        jobs=1,
-        cores=1,
-    )
+    ledger = Ledger.start(root=tmp_path, workflow=str(workflow_path))
     try:
-        ginkgo.evaluate(expr, provenance=recorder, jobs=1, cores=1)
-        recorder.finalize(status="succeeded")
+        ginkgo.evaluate(expr, run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1)
+        ledger.finish()
     except Exception:
-        recorder.finalize(status="failed")
+        ledger.finish(status="failed")
         raise
+    finally:
+        ledger.close()
 
 
 # ---------------------------------------------------------------------------

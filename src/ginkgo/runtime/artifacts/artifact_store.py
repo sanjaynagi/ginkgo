@@ -7,9 +7,20 @@ stores artifacts on the local filesystem under ``.ginkgo/artifacts/``.
 Storage layout::
 
     .ginkgo/artifacts/
-      blobs/<digest>              # raw file bytes, read-only
+      blobs/<digest><ext>         # raw file bytes, read-only
       trees/<tree_digest>.json    # directory manifest
-      refs/<artifact_id>.json     # artifact metadata record
+
+A recorded blob keeps its original file extension in its store filename, so a
+logged command shows what the bytes are and a consumer that dispatches on
+``Path.suffix`` (ImageMagick, a viewer) is not surprised by a bare digest
+(#231). A tree's member blobs are named by digest alone: they are reached
+through the manifest and materialise under their real relative paths, so the
+extension would inform nobody.
+
+The metadata record for each artifact — kind, size, extension, where it was
+published — is a row in the ``artifacts`` table rather than a file beside the
+bytes, so one index answers "what is in the store" and a garbage collector can
+join it against the cache and asset tables in one query.
 """
 
 from __future__ import annotations
@@ -17,7 +28,6 @@ from __future__ import annotations
 
 import shutil
 import stat
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -31,11 +41,16 @@ from ginkgo.runtime.artifacts.artifact_model import (
 from ginkgo.runtime.artifacts.fs_share import share_bytes
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_file
-from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.formatting import now_iso
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
 DIGEST_ALGORITHM = "blake3"
+
+# Longer than any real file extension; the digest already spends 64 of the
+# filename's 255 bytes, so an unbounded suffix could make store() fail.
+_MAX_EXTENSION_LEN = 32
 
 
 @runtime_checkable
@@ -183,22 +198,29 @@ class LocalArtifactStore:
     root : Path
         Root directory for artifact storage.  Defaults to
         ``.ginkgo/artifacts`` under the current working directory.
+    hash_memo : HashMemo | None
+        Shared content-hash memo, so a file hashed elsewhere in the run is
+        not read again here.
+    index : CacheIndex
+        The database rows recording what the store holds. Required, and never
+        opened here: a read path passes a reader, a remote worker passes an
+        in-memory index, and neither should have a database created for it as
+        the side effect of constructing a store.
     """
 
     def __init__(
         self,
         *,
+        index: CacheIndex,
         root: Path | None = None,
         hash_memo: HashMemo | None = None,
-        materialization_log: MaterializationLog | None = None,
     ) -> None:
         self._root = root if root is not None else WorkspaceLayout.for_cwd().artifacts
         self._blobs_dir = self._root / "blobs"
         self._trees_dir = self._root / "trees"
-        self._refs_dir = self._root / "refs"
         self._hash_memo = hash_memo
-        self._materialization_log = materialization_log
-        for directory in (self._blobs_dir, self._trees_dir, self._refs_dir):
+        self._index = index
+        for directory in (self._blobs_dir, self._trees_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
     def store(
@@ -245,19 +267,14 @@ class LocalArtifactStore:
         dest_path : Path
             Target symlink location.
         """
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if not ref_path.exists():
-            raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
-
-        record = ArtifactRecord.from_path(ref_path)
+        record = self._load_record(artifact_id=artifact_id)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Clean up any existing path at dest.
         _remove_dest(dest_path)
 
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
-            dest_path.symlink_to(blob_path)
+            dest_path.symlink_to(self._blob_path(record))
         else:
             self._retrieve_tree(artifact_id=artifact_id, dest_path=dest_path)
 
@@ -270,8 +287,7 @@ class LocalArtifactStore:
         _remove_dest(dest_path)
 
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
-            shutil.copy2(blob_path, dest_path)
+            shutil.copy2(self._blob_path(record), dest_path)
             dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
             self._record_materialization(path=dest_path, artifact_id=artifact_id)
             return
@@ -292,9 +308,7 @@ class LocalArtifactStore:
             # change updates the file's own mtime.  Not used for directories
             # because a directory's mtime only changes on add/remove, not on
             # child content modification.
-            if self._materialization_log is not None and self._materialization_log.check(
-                path=path, artifact_id=artifact_id
-            ):
+            if self._index.materialization_matches(path=path, artifact_id=artifact_id):
                 return True
             return self._hash_file(path) == record.digest_hex
 
@@ -314,7 +328,7 @@ class LocalArtifactStore:
         -------
         bool
         """
-        return (self._refs_dir / f"{artifact_id}.json").exists()
+        return self._index.artifact(artifact_id) is not None
 
     def load_record(self, *, artifact_id: str) -> ArtifactRecord | None:
         """Return the stored metadata record for one artifact.
@@ -329,10 +343,7 @@ class LocalArtifactStore:
         ArtifactRecord | None
             The record, or ``None`` when the artifact is not in the store.
         """
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if not ref_path.is_file():
-            return None
-        return ArtifactRecord.from_path(ref_path)
+        return self._index.artifact(artifact_id)
 
     def list_artifact_ids(self) -> list[str]:
         """Return the IDs of every artifact currently in the store.
@@ -342,9 +353,7 @@ class LocalArtifactStore:
         list[str]
             Sorted artifact IDs.
         """
-        return sorted(
-            ref_path.stem for ref_path in self._refs_dir.iterdir() if ref_path.suffix == ".json"
-        )
+        return self._index.artifact_ids()
 
     def delete(self, *, artifact_id: str) -> None:
         """Remove an artifact from the store.
@@ -354,11 +363,9 @@ class LocalArtifactStore:
         artifact_id : str
             The artifact ID to remove.
         """
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if not ref_path.exists():
+        record = self._index.artifact(artifact_id)
+        if record is None:
             return
-
-        record = ArtifactRecord.from_path(ref_path)
 
         if record.kind == "tree":
             # Remove tree manifest.
@@ -371,12 +378,12 @@ class LocalArtifactStore:
         # the blob unconditionally -- orphaned blob cleanup can be added
         # later if needed.
         if record.kind == "blob":
-            blob_path = self._blobs_dir / record.digest_hex
+            blob_path = self._blob_path(record)
             if blob_path.exists():
                 blob_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 blob_path.unlink()
 
-        ref_path.unlink()
+        self._index.forget_artifact(artifact_id)
 
     def artifact_path(self, *, artifact_id: str) -> Path:
         """Return the absolute path for an artifact's primary content.
@@ -394,13 +401,12 @@ class LocalArtifactStore:
         -------
         Path
         """
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if not ref_path.exists():
+        record = self._index.artifact(artifact_id)
+        if record is None:
             return self._blobs_dir / artifact_id
 
-        record = ArtifactRecord.from_path(ref_path)
         if record.kind == "blob":
-            return self._blobs_dir / record.digest_hex
+            return self._blob_path(record)
         return self._trees_dir / f"{record.digest_hex}.json"
 
     def store_bytes(self, *, data: bytes, extension: str) -> ArtifactRecord:
@@ -418,24 +424,16 @@ class LocalArtifactStore:
         ArtifactRecord
         """
         digest = hash_bytes(data)
-        blob_path = self._blobs_dir / digest
+        ext = f".{extension}" if extension else ""
+        record = self._existing_blob_record(digest=digest, extension=ext, size=len(data))
+        blob_path = self._blob_path(record)
 
         if not blob_path.exists():
-            blob_path.write_bytes(data)
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                blob_path.write_bytes(data)
             blob_path.chmod(_READ_ONLY_FILE)
 
-        ext = f".{extension}" if extension else ""
-        record = ArtifactRecord(
-            artifact_id=digest,
-            kind="blob",
-            digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=digest,
-            extension=ext,
-            size=len(data),
-            created_at=_now_iso(),
-            storage_backend="local",
-        )
-        self._write_ref(record)
+        self.put_record(record)
         return record
 
     def read_bytes(self, *, artifact_id: str) -> bytes:
@@ -450,12 +448,10 @@ class LocalArtifactStore:
         -------
         bytes
         """
-        ref_path = self._refs_dir / f"{artifact_id}.json"
-        if ref_path.exists():
-            record = ArtifactRecord.from_path(ref_path)
-            blob_path = self._blobs_dir / record.digest_hex
-        else:
-            blob_path = self._blobs_dir / artifact_id
+        record = self._index.artifact(artifact_id)
+        blob_path = (
+            self._blob_path(record) if record is not None else self._blobs_dir / artifact_id
+        )
 
         if not blob_path.exists():
             raise FileNotFoundError(f"Artifact not found in store: {artifact_id}")
@@ -471,34 +467,25 @@ class LocalArtifactStore:
     ) -> ArtifactRecord:
         """Store a single file as a blob."""
         digest = self._hash_file(src_path)
-        blob_path = self._blobs_dir / digest
+        record = self._existing_blob_record(
+            digest=digest, extension=src_path.suffix, size=src_path.stat().st_size
+        )
+        blob_path = self._blob_path(record)
 
         if not blob_path.exists():
             # chmod on a hardlinked blob also flips the source's mode;
             # that is intentional when ``src_is_readonly`` is set — the
             # caller has promised immutability — and enforces the
             # store's read-only invariant on the shared inode.
-            share_bytes(
-                src=src_path,
-                dst=blob_path,
-                allow_hardlink=src_is_readonly,
-            )
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                share_bytes(
+                    src=src_path,
+                    dst=blob_path,
+                    allow_hardlink=src_is_readonly,
+                )
             blob_path.chmod(_READ_ONLY_FILE)
 
-        size = blob_path.stat().st_size
-        ext = src_path.suffix  # includes leading dot
-
-        record = ArtifactRecord(
-            artifact_id=digest,
-            kind="blob",
-            digest_algorithm=DIGEST_ALGORITHM,
-            digest_hex=digest,
-            extension=ext,
-            size=size,
-            created_at=_now_iso(),
-            storage_backend="local",
-        )
-        self._write_ref(record)
+        self.put_record(record)
         return record
 
     def _store_directory(
@@ -518,7 +505,8 @@ class LocalArtifactStore:
             # Store the blob.
             blob_path = self._blobs_dir / entry.blob_digest
             if not blob_path.exists():
-                share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
+                if not self._share_from_sibling(digest=entry.blob_digest, dst=blob_path):
+                    share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
                 blob_path.chmod(_READ_ONLY_FILE)
 
         tree_path = self._trees_dir / f"{tree_ref.digest_hex}.json"
@@ -532,11 +520,62 @@ class LocalArtifactStore:
             digest_hex=tree_ref.digest_hex,
             extension="",
             size=total_size,
-            created_at=_now_iso(),
+            created_at=now_iso(),
             storage_backend="local",
         )
-        self._write_ref(record)
+        self.put_record(record)
         return record
+
+    def _blob_path(self, record: ArtifactRecord) -> Path:
+        """Return the store path for a blob record: its digest plus extension."""
+        return self._blobs_dir / f"{record.digest_hex}{record.extension}"
+
+    def _share_from_sibling(self, *, digest: str, dst: Path) -> bool:
+        """Populate *dst* from another store filename the same bytes live under.
+
+        A recorded blob (``<digest><ext>``) and a tree member (``<digest>``)
+        name the same content differently, so storing one after the other
+        would otherwise write the bytes to disk twice. Blobs are immutable,
+        so the copies can share an inode via hardlink instead.
+        """
+        candidates = [self._blobs_dir / digest]
+        existing = self._index.artifact(digest)
+        if existing is not None and existing.kind == "blob":
+            candidates.append(self._blob_path(existing))
+        for src in candidates:
+            if src != dst and src.exists():
+                share_bytes(src=src, dst=dst, allow_hardlink=True)
+                return True
+        return False
+
+    def _existing_blob_record(self, *, digest: str, extension: str, size: int) -> ArtifactRecord:
+        """Return the record a blob store should write bytes against.
+
+        The store is content-addressed, so the digest is the identity; the
+        extension is only the filename's label. When the same bytes arrive
+        twice under two names, the first record wins — re-labelling would
+        strand the earlier file as an orphan the integrity check then flags.
+        The check is in-process only: two processes storing the same bytes
+        under different names can still each write their own file, and the
+        later record wins.
+        """
+        existing = self._index.artifact(digest)
+        if existing is not None and existing.kind == "blob":
+            return existing
+        if len(extension) > _MAX_EXTENSION_LEN:
+            # A "suffix" this long is not an extension, and the digest
+            # already spends 64 of the filename's 255 bytes.
+            extension = ""
+        return ArtifactRecord(
+            artifact_id=digest,
+            kind="blob",
+            digest_algorithm=DIGEST_ALGORITHM,
+            digest_hex=digest,
+            extension=extension,
+            size=size,
+            created_at=now_iso(),
+            storage_backend="local",
+        )
 
     def _retrieve_tree(self, *, artifact_id: str, dest_path: Path) -> None:
         """Reconstruct a directory from its tree manifest."""
@@ -615,8 +654,7 @@ class LocalArtifactStore:
 
     def _record_materialization(self, *, path: Path, artifact_id: str) -> None:
         """Record stat metadata for a materialized artifact path."""
-        if self._materialization_log is not None:
-            self._materialization_log.record(path=path, artifact_id=artifact_id)
+        self._index.record_materialization(path=path, artifact_id=artifact_id)
 
     def _tree_digest_for_path(self, path: Path) -> str:
         """Return the manifest digest for a directory path."""
@@ -637,20 +675,59 @@ class LocalArtifactStore:
             raise FileNotFoundError(f"Tree manifest not found: {record.digest_hex}")
         return deserialize_tree_manifest(tree_path.read_text(encoding="utf-8"))
 
-    def _write_ref(self, record: ArtifactRecord) -> None:
-        """Write an artifact metadata record to the refs directory."""
-        ref_path = self._refs_dir / f"{record.artifact_id}.json"
-        ref_path.write_text(record.to_json(), encoding="utf-8")
+    def put_record(self, record: ArtifactRecord) -> None:
+        """Record an artifact this store now holds.
+
+        Public because a remote store that downloaded the bytes into this
+        store's directories has to say so; local writes go through
+        :meth:`store` and :meth:`store_bytes`.
+        """
+        self._index.record_artifact(record)
+
+    def integrity_problems(self) -> list[str]:
+        """Return the ways the artifact rows and the bytes on disk disagree.
+
+        Both directions: a row whose blob or tree manifest is gone names an
+        artifact nothing can restore, and a file in ``blobs/`` or ``trees/``
+        with no row is bytes nothing can find — the digest that would name them
+        only exists in the row. A tree's member blobs are reachable through its
+        manifest rather than through a row of their own, so they count as known.
+        """
+        problems: list[str] = []
+        known: set[Path] = set()
+        for artifact_id in self.list_artifact_ids():
+            record = self._index.artifact(artifact_id)
+            path = self.artifact_path(artifact_id=artifact_id)
+            known.add(path)
+            if not path.exists():
+                problems.append(f"artifact {artifact_id} has a row but no bytes")
+                continue
+            if record is not None and record.kind != "blob":
+                tree = self._load_tree_ref(record=record)
+                known.update(self._blobs_dir / entry.blob_digest for entry in tree.entries)
+
+        for directory in (self._blobs_dir, self._trees_dir):
+            if not directory.is_dir():
+                continue
+            problems += [
+                f"artifact file {directory.name}/{entry.name} has no row (orphan)"
+                for entry in sorted(directory.iterdir())
+                if entry.is_file() and entry not in known
+            ]
+        return problems
+
+    def materialized_artifact_id(self, *, path: Path) -> str | None:
+        """Return the artifact *path* holds, if it still has the recorded stat.
+
+        The counterpart of the materialization :meth:`store` records: it lets a
+        later run recognise an unchanged input without re-hashing it.
+        """
+        return self._index.materialized_artifact_id(path=path)
 
 
 # -- module-level helpers --------------------------------------------------
 
 _READ_ONLY_FILE = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH  # 0o444
-
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _remove_dest(dest_path: Path) -> None:

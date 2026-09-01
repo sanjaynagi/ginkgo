@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from io import StringIO
 from pathlib import Path
 
@@ -23,9 +24,14 @@ from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import (
+    AssetMaterialized,
     EnvPrepareCompleted,
     EnvPrepareFailed,
     EnvPrepareStarted,
+    PhaseTimed,
+    RunResourcesSampled,
+    TaskAnnotated,
+    TaskPlanned,
     TaskStarted,
 )
 
@@ -122,6 +128,23 @@ def test_task_started_still_maps_to_running() -> None:
     adapter(TaskStarted(run_id="r1", task_id="task_0", task_name="mod.task_a"))
 
     assert sink.lines[0]["status"] == "running"
+
+
+def test_ledger_only_events_are_ignored_silently() -> None:
+    """Events that exist for the provenance store must not reach the Rich table."""
+    sink = _RecordingRenderer()
+    adapter = RichEventRenderer(renderer=sink)
+    task_scope = {"run_id": "r1", "task_id": "task_0", "task_name": "mod.task_a"}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        adapter(TaskPlanned(**task_scope))
+        adapter(TaskAnnotated(**task_scope, fields={"env_lock": "envs/analysis.lock"}))
+        adapter(AssetMaterialized(**task_scope, asset_key="table:rows", version_id="v1"))
+        adapter(PhaseTimed(run_id="r1", phase="validate", seconds=0.5))
+        adapter(RunResourcesSampled(run_id="r1", resources={"cpu_percent": 1.0}))
+
+    assert sink.lines == []
 
 
 def test_preparing_env_is_an_active_status() -> None:

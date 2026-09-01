@@ -12,12 +12,13 @@ import tomllib
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from rich.console import Console
 
-from ginkgo.core.asset import AssetKey, make_asset_version
+from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.cli import (
@@ -28,6 +29,8 @@ from ginkgo.cli import (
 )
 from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +47,73 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _manifest(run_dir: Path) -> dict[str, Any]:
+    """Read a run's exported manifest, keying its tasks by task id.
+
+    The manifest is what ``ginkgo runs show --json`` prints, written as YAML; the
+    only reshaping here is the list of tasks into a mapping, which is how these
+    tests ask about one of them.
+    """
+    data = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    return {**data, "tasks": {task["task_id"]: task for task in data["tasks"]}}
+
+
+def _record_notebook_run(
+    *,
+    run_id: str,
+    started_at: str,
+    task_id: str,
+    task_name: str,
+    render_status: str | None = None,
+    artifact_run_id: str | None = None,
+    pointers: dict[str, str] | None = None,
+) -> Path:
+    """Record a run whose one task rendered a notebook, and write the artifacts.
+
+    Returns the run directory, so a caller can name the files it produced.
+    """
+    from ginkgo.runtime.events import GraphNodeRegistered, TaskAnnotated, TaskCompleted
+
+    from tests.conftest import Ledger
+
+    ledger = Ledger.start(root=Path.cwd(), run_id=run_id, workflow="workflow.py", ts=started_at)
+    notebooks = ledger.path / "notebooks"
+    notebooks.mkdir(parents=True, exist_ok=True)
+    (notebooks / f"{task_id}.ipynb").write_text("{}", encoding="utf-8")
+    (notebooks / f"{task_id}.html").write_text("<html></html>", encoding="utf-8")
+    ledger.bus.emit(
+        GraphNodeRegistered(
+            run_id=run_id,
+            task_id=task_id,
+            node_id=int(task_id.rsplit("_", 1)[1]),
+            task_name=task_name,
+        )
+    )
+    ledger.bus.emit(
+        TaskAnnotated(
+            run_id=run_id,
+            task_id=task_id,
+            task_name=task_name,
+            fields={
+                "task_type": "notebook",
+                "render_status": render_status,
+                "notebook_artifact_run_id": artifact_run_id,
+                **(
+                    pointers
+                    or {
+                        "executed_notebook": f"notebooks/{task_id}.ipynb",
+                        "rendered_html": f"notebooks/{task_id}.html",
+                    }
+                ),
+            },
+        )
+    )
+    ledger.bus.emit(TaskCompleted(run_id=run_id, task_id=task_id, task_name=task_name, attempt=1))
+    ledger.finish()
+    ledger.close()
+    return ledger.path
+
+
 def _extract_run_dir(output: str) -> Path:
     match = re.search(r"Run directory: (.+)", output)
     if match is None:
@@ -51,9 +121,21 @@ def _extract_run_dir(output: str) -> Path:
     return Path(match.group(1).strip())
 
 
-def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | None = None) -> str:
-    asset_store = AssetStore(root=cwd / ".ginkgo" / "assets")
-    artifact_store = LocalArtifactStore(root=cwd / ".ginkgo" / "artifacts")
+def _seed_asset(
+    *,
+    cwd: Path,
+    name: str,
+    text: str,
+    run_id: str,
+    alias: str | None = None,
+    parent: AssetVersion | None = None,
+) -> AssetVersion:
+    index = CacheIndex.open(path=cwd / ".ginkgo" / "ginkgo.db")
+    asset_store = AssetStore.attached_to(index)
+    artifact_store = LocalArtifactStore(
+        root=cwd / ".ginkgo" / "artifacts",
+        index=index,
+    )
     source = cwd / f"{name}.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
@@ -66,10 +148,29 @@ def _seed_asset(*, cwd: Path, name: str, text: str, run_id: str, alias: str | No
         run_id=run_id,
         producer_task="tests.seed",
     )
-    asset_store.register_version(version=version)
+    asset_store.register_version(
+        version=version,
+        parents=[_asset_ref(parent)] if parent is not None else [],
+        code_version=f"source-{name}",
+        task_id="task_0001",
+    )
     if alias is not None:
         asset_store.set_alias(key=version.key, alias=alias, version_id=version.version_id)
-    return version.version_id
+    index.close()
+    return version
+
+
+def _asset_ref(version: AssetVersion) -> AssetRef:
+    """Render a seeded version as the reference a consuming task would hold."""
+    return AssetRef(
+        key=version.key,
+        version_id=version.version_id,
+        kind=version.kind,
+        artifact_id=version.artifact_id,
+        content_hash=version.content_hash,
+        artifact_path="",
+        metadata=dict(version.metadata),
+    )
 
 
 def _seed_cache_entry(
@@ -79,15 +180,25 @@ def _seed_cache_entry(
     age_days: int,
     function: str = "demo.x",
     payload: str = "{}",
+    last_hit_days: int | None = None,
 ) -> Path:
-    """Create a cache-entry directory aged ``age_days`` days, for prune tests."""
+    """Create a cache entry aged ``age_days`` days — bytes and row — for prune tests."""
     entry = cache_root / name
     entry.mkdir(parents=True)
-    ts = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
-    (entry / "meta.json").write_text(
-        json.dumps({"function": function, "timestamp": ts}), encoding="utf-8"
-    )
     (entry / "output.json").write_text(payload, encoding="utf-8")
+
+    created_at = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+    with CacheIndex.open(path=WorkspaceLayout.sibling_of(cache_root).db) as index:
+        index.record_entry(
+            cache_key=name,
+            meta={"function": function, "created_at": created_at},
+            artifact_ids={},
+            size_bytes=len(payload.encode("utf-8")),
+            run_id=None,
+        )
+        if last_hit_days is not None:
+            hit_at = (datetime.now(timezone.utc) - timedelta(days=last_hit_days)).isoformat()
+            index.record_hit(name, at=hit_at)
     return entry
 
 
@@ -108,7 +219,7 @@ def _run_trivial_workflow_cache_key(cwd: Path) -> str:
     result = _run_cli("run", "workflow.py", cwd=cwd)
     assert result.returncode == 0, result.stderr
     run_dir = _extract_run_dir(result.stdout)
-    manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+    manifest = _manifest(run_dir)
     return next(iter(manifest["tasks"].values()))["cache_key"]
 
 
@@ -123,10 +234,12 @@ def test_version_flag_reports_pyproject_version() -> None:
 @pytest.mark.parametrize(
     ("command", "subcommands"),
     [
-        ("cache", "{ls,clear,explain,prune}"),
+        ("cache", "{ls,stats,clear,explain,prune}"),
         ("asset", "{ls,versions,inspect,show}"),
         ("env", "{ls,clear}"),
-        ("inspect", "{workflow,run}"),
+        ("inspect", "{workflow}"),
+        ("runs", "{ls,show}"),
+        ("export", "{events,manifest}"),
         ("secrets", "{list,validate}"),
     ],
 )
@@ -150,7 +263,7 @@ def test_bare_ginkgo_shows_help() -> None:
 
 def test_missing_positional_keeps_its_precise_error() -> None:
     """Only a missing subcommand becomes help; other missing arguments do not."""
-    result = _run_cli("cache", "clear", cwd=REPO_ROOT)
+    result = _run_cli("asset", "versions", cwd=REPO_ROOT)
 
     assert result.returncode == 2
     assert "the following arguments are required" in result.stderr
@@ -207,10 +320,7 @@ def main():
         assert '{"status":' not in first.stdout
 
         first_run_dir = _extract_run_dir(first.stdout)
-        first_manifest = yaml.safe_load(
-            (first_run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
-        first_params = yaml.safe_load((first_run_dir / "params.yaml").read_text(encoding="utf-8"))
+        first_manifest = _manifest(first_run_dir)
         first_task = next(iter(first_manifest["tasks"].values()))
 
         assert Path("result.txt").read_text(encoding="utf-8") == "second"
@@ -218,7 +328,7 @@ def main():
         assert first_task["status"] == "succeeded"
         assert first_task["cached"] is False
         assert first_task["inputs"]["message"] == "second"
-        assert first_params == {"extra": "override", "message": "second"}
+        assert first_manifest["params"] == {"extra": "override", "message": "second"}
 
         second = _run_cli(
             "run",
@@ -232,9 +342,7 @@ def main():
         assert second.returncode == 0, second.stderr
 
         second_run_dir = _extract_run_dir(second.stdout)
-        second_manifest = yaml.safe_load(
-            (second_run_dir / "manifest.yaml").read_text(encoding="utf-8")
-        )
+        second_manifest = _manifest(second_run_dir)
         second_task = next(iter(second_manifest["tasks"].values()))
 
         assert "cached" in second.stdout
@@ -319,13 +427,11 @@ def main():
         assert result.returncode == 0, result.stderr
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _manifest(run_dir)
         task = next(iter(manifest["tasks"].values()))
 
         assert task["status"] == "succeeded"
-        assert task["retries"] == 2
         assert task["max_attempts"] == 3
-        assert task["attempt"] == 2
         assert task["attempts"] == 2
 
     @pytest.mark.parametrize(
@@ -356,6 +462,54 @@ def main():
             assert "old123" in result.stdout
         else:
             assert "Removed" in result.stdout
+
+    def test_cache_prune_least_recently_hit_gives_up_the_unused_first(self) -> None:
+        """Age is not use: an old entry that keeps hitting outlives a young idle one."""
+        cache_root = Path(".ginkgo") / "cache"
+        old_but_used = _seed_cache_entry(
+            cache_root=cache_root, name="used", age_days=100, last_hit_days=1
+        )
+        young_but_idle = _seed_cache_entry(cache_root=cache_root, name="idle", age_days=5)
+
+        result = _run_cli(
+            "cache", "prune", "--max-entries", "1", "--least-recently-hit", cwd=Path.cwd()
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert old_but_used.exists()
+        assert not young_but_idle.exists()
+
+    def test_cache_stats_counts_entries_and_bytes(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        _seed_cache_entry(cache_root=cache_root, name="a", age_days=1, payload="x" * 100)
+        _seed_cache_entry(
+            cache_root=cache_root, name="b", age_days=2, payload="y" * 50, last_hit_days=1
+        )
+
+        result = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        stats = json.loads(result.stdout)
+        assert stats["entries"] == 2
+        assert stats["total_bytes"] == 150
+        assert stats["never_hit"] == 1
+        assert stats["never_hit_bytes"] == 100
+        assert stats["hit_histogram"] == {"0": 1, "1": 1}
+        assert stats["top_functions"][0]["entries"] == 2
+
+    def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "output.json").write_text("{}", encoding="utf-8")
+
+        result = _run_cli("cache", "clear", "--orphans", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 orphaned cache director" in result.stdout
+        assert known.exists()
+        assert not orphan.exists()
 
     def test_cache_prune_rejects_invalid_duration(self) -> None:
         result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
@@ -392,68 +546,28 @@ def main():
             for index, age_days in enumerate([100, 60, 5])
         ]
 
-        # Cap total at 3KB so only the oldest must drop.
-        result = _run_cli("cache", "prune", "--max-size", "3KB", cwd=Path.cwd())
+        # Cap total at 2KB so only the oldest must drop.
+        result = _run_cli("cache", "prune", "--max-size", "2KB", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert not entries[0].exists()
         assert entries[1].exists()
         assert entries[2].exists()
 
     def test_notebooks_lists_pairs_in_most_recent_run_order(self) -> None:
-        older_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
-        newer_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
-        older_run.mkdir(parents=True)
-        newer_run.mkdir(parents=True)
-
-        older_notebook = older_run / "notebooks" / "task_0000.ipynb"
-        older_html = older_run / "notebooks" / "task_0000.html"
-        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
+        older_run = _record_notebook_run(
+            run_id="20260301_090000_000000_aaaaaaaa",
+            started_at="2026-03-01T09:00:00+00:00",
+            task_id="task_0000",
+            task_name="demo.render_old",
+        )
+        newer_run = _record_notebook_run(
+            run_id="20260302_090000_000000_bbbbbbbb",
+            started_at="2026-03-02T09:00:00+00:00",
+            task_id="task_0001",
+            task_name="demo.render_new",
+        )
         newer_html = newer_run / "notebooks" / "task_0001.html"
-        older_notebook.parent.mkdir(parents=True)
-        newer_notebook.parent.mkdir(parents=True)
-        older_notebook.write_text("{}", encoding="utf-8")
-        older_html.write_text("<html></html>", encoding="utf-8")
-        newer_notebook.write_text("{}", encoding="utf-8")
-        newer_html.write_text("<html></html>", encoding="utf-8")
-
-        older_manifest = {
-            "run_id": older_run.name,
-            "workflow": "workflow.py",
-            "status": "succeeded",
-            "started_at": "2026-03-01T09:00:00+00:00",
-            "finished_at": "2026-03-01T09:01:00+00:00",
-            "tasks": {
-                "task_0000": {
-                    "task": "demo.render_old",
-                    "task_type": "notebook",
-                    "executed_notebook": "notebooks/task_0000.ipynb",
-                    "rendered_html": "notebooks/task_0000.html",
-                }
-            },
-        }
-        newer_manifest = {
-            "run_id": newer_run.name,
-            "workflow": "workflow.py",
-            "status": "succeeded",
-            "started_at": "2026-03-02T09:00:00+00:00",
-            "finished_at": "2026-03-02T09:01:00+00:00",
-            "tasks": {
-                "task_0001": {
-                    "task": "demo.render_new",
-                    "task_type": "notebook",
-                    "executed_notebook": "notebooks/task_0001.ipynb",
-                    "rendered_html": "notebooks/task_0001.html",
-                }
-            },
-        }
-        (older_run / "manifest.yaml").write_text(
-            yaml.safe_dump(older_manifest, sort_keys=False),
-            encoding="utf-8",
-        )
-        (newer_run / "manifest.yaml").write_text(
-            yaml.safe_dump(newer_manifest, sort_keys=False),
-            encoding="utf-8",
-        )
+        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
 
         result = _run_cli("notebooks", cwd=Path.cwd())
 
@@ -464,52 +578,33 @@ def main():
         assert result.stdout.index("render_new") < result.stdout.index("render_old")
         assert str(newer_html.resolve()) in result.stdout
         assert str(newer_notebook.resolve()) in result.stdout
+        assert older_run.name in result.stdout
 
     def test_notebooks_attributes_a_replayed_artifact_to_the_producing_run(self) -> None:
         """A cached rerun must not claim the earlier run's artifact (#202)."""
-        producing_run = Path(".ginkgo") / "runs" / "20260301_090000_000000_aaaaaaaa"
-        replaying_run = Path(".ginkgo") / "runs" / "20260302_090000_000000_bbbbbbbb"
-        notebooks = producing_run / "notebooks"
-        notebooks.mkdir(parents=True)
-        replaying_run.mkdir(parents=True)
-        executed = notebooks / "task_0014.ipynb"
-        html = notebooks / "task_0014.html"
-        executed.write_text("{}", encoding="utf-8")
-        html.write_text("<html></html>", encoding="utf-8")
-
-        task_entry = {
-            "task": "demo.render_overview_notebook",
-            "task_type": "notebook",
-            "render_status": "failed",
-            "notebook_artifact_run_id": producing_run.name,
-        }
-        for run_dir, pointers in (
-            (
-                producing_run,
-                {
-                    "executed_notebook": "notebooks/task_0014.ipynb",
-                    "rendered_html": "notebooks/task_0014.html",
-                },
-            ),
-            (
-                # A cache hit replays absolute pointers into the new manifest.
-                replaying_run,
-                {
-                    "executed_notebook": str(executed.resolve()),
-                    "rendered_html": str(html.resolve()),
-                },
-            ),
-        ):
-            manifest = {
-                "run_id": run_dir.name,
-                "workflow": "workflow.py",
-                "status": "succeeded",
-                "started_at": f"2026-03-0{1 if run_dir is producing_run else 2}T09:00:00+00:00",
-                "tasks": {"task_0014": {**task_entry, **pointers}},
-            }
-            (run_dir / "manifest.yaml").write_text(
-                yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-            )
+        producing_run = _record_notebook_run(
+            run_id="20260301_090000_000000_aaaaaaaa",
+            started_at="2026-03-01T09:00:00+00:00",
+            task_id="task_0014",
+            task_name="demo.render_overview_notebook",
+            render_status="failed",
+            artifact_run_id="20260301_090000_000000_aaaaaaaa",
+        )
+        executed = producing_run / "notebooks" / "task_0014.ipynb"
+        html = producing_run / "notebooks" / "task_0014.html"
+        # A cache hit replays the producing run's absolute pointers.
+        replaying_run = _record_notebook_run(
+            run_id="20260302_090000_000000_bbbbbbbb",
+            started_at="2026-03-02T09:00:00+00:00",
+            task_id="task_0014",
+            task_name="demo.render_overview_notebook",
+            render_status="failed",
+            artifact_run_id=producing_run.name,
+            pointers={
+                "executed_notebook": str(executed.resolve()),
+                "rendered_html": str(html.resolve()),
+            },
+        )
 
         result = _run_cli("notebooks", cwd=Path.cwd())
 
@@ -538,14 +633,14 @@ class TestCliAssets:
             name="prepared_data",
             text="hello",
             run_id="run-1",
-        )
+        ).version_id
         second_version = _seed_asset(
             cwd=Path.cwd(),
             name="prepared_data",
             text="goodbye",
             run_id="run-2",
             alias="latest",
-        )
+        ).version_id
 
         listed = _run_cli("asset", "ls", cwd=Path.cwd())
         assert listed.returncode == 0, listed.stderr
@@ -589,6 +684,63 @@ class TestCliAssets:
         assert missing.returncode == 1
         assert "No asset 'sites/forest/notes' in the catalog" in missing.stderr
         assert "file:sites/forest/note" in missing.stderr
+
+
+class TestCliLineage:
+    def _chain(self) -> tuple[AssetVersion, AssetVersion]:
+        """Seed a version in one run and a version derived from it in another."""
+        upstream = _seed_asset(cwd=Path.cwd(), name="prepared_data", text="hello", run_id="run-1")
+        downstream = _seed_asset(
+            cwd=Path.cwd(),
+            name="report_figure",
+            text="goodbye",
+            run_id="run-2",
+            parent=upstream,
+        )
+        return upstream, downstream
+
+    def test_upstream_tree_reaches_the_earlier_run(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli("lineage", "file:report_figure", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "🌿 ginkgo lineage" in result.stdout
+        assert downstream.version_id in result.stdout
+        assert upstream.version_id in result.stdout
+
+    def test_json_carries_the_graph(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli("lineage", "file:report_figure", "--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["direction"] == "upstream"
+        assert payload["root"]["version_id"] == downstream.version_id
+        assert payload["edges"] == [
+            {"parent": upstream.version_id, "child": downstream.version_id}
+        ]
+
+    def test_downstream_walks_the_other_way(self) -> None:
+        upstream, downstream = self._chain()
+
+        result = _run_cli(
+            "lineage", "file:prepared_data", "--downstream", "--json", cwd=Path.cwd()
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["root"]["version_id"] == upstream.version_id
+        assert downstream.version_id in payload["versions"]
+
+    def test_an_unknown_asset_is_reported(self) -> None:
+        self._chain()
+
+        result = _run_cli("lineage", "file:absent", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert "No versions registered for asset file:absent" in result.stderr
 
 
 class TestCliEnv:
@@ -687,7 +839,7 @@ def main():
         assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
         run_dir = _extract_run_dir(failed.stderr)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _manifest(run_dir)
         task = next(iter(manifest["tasks"].values()))
         assert manifest["status"] == "failed"
         assert task["status"] == "failed"
@@ -961,65 +1113,13 @@ def main():
         assert "Detected cycle in workflow graph" in result.stderr
         assert "Run directory:" not in result.stdout
 
-    def test_test_dry_run_discovers_hidden_workflows_without_execution(self) -> None:
-        tests_dir = Path(".tests")
-        tests_dir.mkdir()
-        (tests_dir / "dry_run_flow.py").write_text(
-            """
-from pathlib import Path
-from ginkgo import flow, task
-
-@task()
-def write_marker(path: str) -> str:
-    Path(path).write_text("executed", encoding="utf-8")
-    return path
-
-@flow
-def main():
-    return write_marker(path="should-not-exist.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo test --dry-run" in result.stdout
-        assert "✓ dry_run_flow.py (dry-run) - 1 tasks validated" in result.stdout
-        assert "✓ Validated 1 test workflow" in result.stdout
-        assert not Path("should-not-exist.txt").exists()
-
-    def test_test_execution_prints_header_and_summary(self) -> None:
-        tests_dir = Path(".tests")
-        tests_dir.mkdir()
-        (tests_dir / "exec_flow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def produce() -> str:
-    return "ok"
-
-@flow
-def main():
-    return produce()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("test", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo test" in result.stdout
-        assert "🌿 ginkgo run exec_flow.py" in result.stdout
-        assert "✓ Completed 1 test workflow" in result.stdout
-
-    def test_test_resolves_envs_from_canonical_package_not_workflow_parent(self) -> None:
+    def test_envs_resolve_from_the_canonical_package_not_the_workflow_parent(self) -> None:
         """Regression test for issue #119.
 
         On a canonical ``ginkgo init`` layout, Pixi environments live under
         ``workflow/envs/``, a sibling of ``workflow/flow.py`` -- not of
-        ``tests/workflows/*.py``. ``ginkgo test`` must still resolve them.
+        ``tests/workflows/*.py``. Running a validation workflow by path must
+        still resolve them.
         """
         package_dir = Path("workflow")
         (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
@@ -1047,7 +1147,8 @@ def main():
             encoding="utf-8",
         )
 
-        result = _run_cli("test", "--dry-run", cwd=Path.cwd())
+        result = _run_cli("run", "tests/workflows/smoke.py", "--dry-run", cwd=Path.cwd())
+
         assert result.returncode == 0, result.stderr
         assert "Pixi environment 'analysis_tools' not found" not in result.stderr
 
@@ -1125,7 +1226,7 @@ class TestCliInit:
         assert "Created:" in result.stdout
         assert "workflow/flow.py" in result.stdout
         assert "README.md" in result.stdout
-        assert "ginkgo test --dry-run" in result.stdout
+        assert "ginkgo run --dry-run" in result.stdout
 
         project_dir = Path("demo-project")
         assert (project_dir / "pixi.toml").is_file()
@@ -1282,7 +1383,7 @@ class TestCliInit:
         result = _run_cli("init", ".", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "Next steps: run ginkgo test --dry-run" in result.stdout
+        assert "Next steps: run ginkgo run --dry-run" in result.stdout
         assert "Next steps: cd" not in result.stdout
 
     def test_init_can_skip_skills(self) -> None:
@@ -1469,7 +1570,7 @@ def main():
         assert "RSS avg " in result.stdout
 
         run_dir = _extract_run_dir(result.stdout)
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _manifest(run_dir)
         assert manifest["memory"] == 32
         assert manifest["resources"]["status"] == "completed"
         assert manifest["resources"]["sample_count"] >= 1
@@ -1835,11 +1936,11 @@ def main():
         assert debug_payload["status"] == "failed"
         assert debug_payload["failures"][0]["task_name"] == "explode"
 
-        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
-        assert inspect.returncode == 0, inspect.stderr
-        inspect_payload = json.loads(inspect.stdout)
-        assert inspect_payload["status"] == "failed"
-        assert inspect_payload["tasks"][0]["failure"]["kind"] == "user_code_error"
+        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        payload = json.loads(shown.stdout)
+        assert payload["status"] == "failed"
+        assert payload["tasks"][0]["failure"]["kind"] == "user_code_error"
 
     def test_doctor_json_reports_machine_readable_diagnostics(self, monkeypatch) -> None:
         Path("workflow.py").write_text(
@@ -1958,9 +2059,7 @@ def main():
 
 
 class TestCliRunProfile:
-    def test_run_profile_emits_table_and_persists_snapshot(self) -> None:
-        from ginkgo.runtime.caching.provenance import load_manifest
-
+    def test_run_profile_emits_the_table(self) -> None:
         Path("workflow.py").write_text(
             """
 from ginkgo import flow, task
@@ -1983,21 +2082,16 @@ def main():
         assert "scheduler_dispatch" in result.stdout
         assert "evaluator_validate" in result.stdout
 
+        # The run's own phases are recorded; the profiler's breakdown is a
+        # console report, not part of the run's provenance.
         run_dir = _extract_run_dir(result.stdout)
-        manifest = load_manifest(run_dir)
-        profile = manifest["timings"]["profile"]
-        assert "scheduler_dispatch" in profile
-        assert profile["scheduler_dispatch"]["seconds"] > 0
-        assert profile["scheduler_dispatch"]["count"] >= 1
+        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        timings = json.loads(shown.stdout)["timings"]
+        assert timings["workflow_execute_seconds"] > 0
+        assert "scheduler_dispatch" not in timings
 
-        inspect = _run_cli("inspect", "run", run_dir.name, cwd=Path.cwd())
-        assert inspect.returncode == 0, inspect.stderr
-        inspect_payload = json.loads(inspect.stdout)
-        assert "scheduler_dispatch" in inspect_payload["timings"]["profile"]
-
-    def test_run_without_profile_does_not_emit_table_or_snapshot(self) -> None:
-        from ginkgo.runtime.caching.provenance import load_manifest
-
+    def test_run_without_profile_does_not_emit_the_table(self) -> None:
         Path("workflow.py").write_text(
             """
 from ginkgo import flow, task
@@ -2017,10 +2111,6 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert "Runtime Profile" not in result.stdout
-
-        run_dir = _extract_run_dir(result.stdout)
-        manifest = load_manifest(run_dir)
-        assert manifest["timings"]["profile"] == {}
 
 
 _PARAM_WORKFLOW = (
@@ -2129,12 +2219,9 @@ class TestCliWorkflowParams:
         result = _run_cli("run", "workflow.py", "--n-reps", "7", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        run_dir = _extract_run_dir(result.stdout)
-        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
-        assert params["n_reps"] == 7
-        assert params["label"] == "cfg"
-
-        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        manifest = _manifest(_extract_run_dir(result.stdout))
+        assert manifest["params"]["n_reps"] == 7
+        assert manifest["params"]["label"] == "cfg"
         assert manifest["param_sources"] == {"n_reps": "cli", "label": "config"}
 
     def test_unknown_flag_is_rejected_and_lists_declared_parameters(self) -> None:
@@ -2332,7 +2419,7 @@ def main():
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "discovered:3"
 
-    def test_params_yaml_records_effective_values_only(self) -> None:
+    def test_recorded_params_are_the_effective_values_only(self) -> None:
         """The raw [params] table must not sit beside the values that superseded it."""
         Path("workflow.py").write_text(
             """
@@ -2362,8 +2449,7 @@ def main():
         result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        run_dir = _extract_run_dir(result.stdout)
-        params = yaml.safe_load((run_dir / "params.yaml").read_text(encoding="utf-8"))
+        params = _manifest(_extract_run_dir(result.stdout))["params"]
         assert params["label"] == "effective"
         assert params["other"] == "kept"
         assert "params" not in params

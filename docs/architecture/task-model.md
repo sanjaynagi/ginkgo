@@ -16,10 +16,11 @@
   `core/resources.py` owns the matching rules. `memory_retry_multiplier`
   escalates the memory footprint per retry attempt, capped at the local
   `--memory` budget for locally-placed tasks.
-- `remote=True` for explicit remote dispatch. Placement is otherwise decided
-  by the evaluator: a `gpu` requirement is satisfied from the local `--gpus`
-  budget when it fits, dispatched to the remote executor when one is
-  configured, and a build error otherwise (see
+- `remote=True` for dispatch to the run's default executor, or
+  `executor="name"` to pin a task to a specific configured one. Placement is
+  otherwise decided by the evaluator: a `gpu` requirement is satisfied from the
+  local `--gpus` budget when it fits, dispatched to the default executor when
+  one is configured, and a build error otherwise (see
   [remote execution](remote-execution.md)).
 
 Python tasks execute in a spawned subprocess worker pool (`ProcessPoolExecutor`,
@@ -90,6 +91,29 @@ Implemented notebook behavior includes:
 - HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
 - notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
+
+A failed HTML export is handled by whether the export is the task's result. In
+every case the runner writes the placeholder failure page, records
+`render_status="failed"` with the captured `render_error`, and emits a
+`TaskNotice` so the outcome reaches the event stream that `--agent-output`
+writes. From there:
+
+- when the task declares no `output`, or declares one naming the rendered HTML,
+  the page would become the task's return value; the runner raises
+  `NotebookTaskError(phase="render")` instead, so the task fails, the run status
+  reflects it, and no cache entry is written for a run that produced no report;
+- when the task declares its own outputs, the HTML is a side artifact; the
+  declared outputs are validated and returned as normal and the task succeeds,
+  with the notice carrying the export failure.
+
+The rule is that a placeholder failure page never satisfies a task's output
+contract — `NotebookRunner._html_is_task_result` decides which case applies,
+rather than a configuration flag.
+
+The succeeding case does cache, failed export and all, so a later cache hit
+replays the earlier run's placeholder page as this run's notebook artifact.
+`replay_cached_extras` re-emits the notice on such a hit: a run whose report
+links a traceback page says so on every run, not only the first.
 
 Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
 run under `build_jupyter_env_prefix`. Every such subprocess walks
@@ -245,7 +269,7 @@ paths that must exist, and `resolve_output_value` rebuilds the declared
 scalar/list/tuple shape with absent optionals replaced by `None`.
 
 Manifests carry presence explicitly: `output_summary` emits `optional` and
-`present` keys rather than dropping an absent output, so `ginkgo inspect run`
+`present` keys rather than dropping an absent output, so `ginkgo runs show --json`
 shows which optional outputs materialised.
 
 Two limits are deliberate. Dry-run cannot report optionality, because a driver

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -26,7 +25,9 @@ from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.envs.container import ContainerBackend
-from ginkgo.runtime.caching.provenance import latest_run_dir, load_manifest
+import ginkgo.query as ginkgo_query
+from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -55,15 +56,17 @@ class BenchmarkRecord:
     wall_time_seconds : float
         End-to-end measured wall time.
     status : str
-        Run status from the manifest.
+        Run status.
     task_count : int
-        Total tasks present in the run manifest.
+        Total tasks in the run.
     executed_task_count : int
         Tasks that executed rather than returning from cache.
     cached_task_count : int
         Tasks returned from cache.
     run_id : str
         Ginkgo run identifier.
+    provenance_write_seconds : float
+        Time the run spent writing its ledger, from ``runs.timings``.
     timestamp_utc : str
         Timestamp when the benchmark record was written.
     platform : str
@@ -81,6 +84,7 @@ class BenchmarkRecord:
     executed_task_count: int
     cached_task_count: int
     run_id: str
+    provenance_write_seconds: float
     timestamp_utc: str
     platform: str
     python_version: str
@@ -214,6 +218,7 @@ def compare_against_baseline(
         )
         passed = record.wall_time_seconds <= allowed_seconds
         counter_failures = _compare_counters(record=record, entry=entry)
+        provenance_budget = entry.get("max_provenance_write_seconds")
         comparison = {
             "example": record.example,
             "mode": record.mode,
@@ -226,9 +231,23 @@ def compare_against_baseline(
             "percentage_delta": percentage_delta,
             "allowed_seconds": allowed_seconds,
             "max_regression_pct": max_regression_pct,
+            "provenance_write_seconds": record.provenance_write_seconds,
+            # Only gated where a baseline names a budget: the ledger's write
+            # cost is new, and a number invented for a runner nobody measured
+            # would be a guess dressed as a threshold.
+            "provenance_status": _provenance_status(
+                observed=record.provenance_write_seconds, budget=provenance_budget
+            ),
         }
         comparisons.append(comparison)
     return comparisons
+
+
+def _provenance_status(*, observed: float, budget: object) -> str:
+    """Return whether the ledger's write cost stayed inside its budget."""
+    if not isinstance(budget, (int, float)):
+        return "not_gated"
+    return "passed" if observed <= float(budget) * 1.2 else "failed"
 
 
 def _compare_counters(
@@ -423,7 +442,7 @@ def _benchmark_example(*, example: str, mode: str, jobs: int, cores: int) -> Ben
     # Use the same local-only mocks as the example integration tests.
     with _benchmark_runtime(example=example):
         if mode == "cold":
-            elapsed, manifest = _timed_run(
+            elapsed, summary = _timed_run(
                 example_dir=example_dir,
                 config_paths=config_paths,
                 jobs=jobs,
@@ -436,7 +455,7 @@ def _benchmark_example(*, example: str, mode: str, jobs: int, cores: int) -> Ben
                 jobs=jobs,
                 cores=cores,
             )
-            elapsed, manifest = _timed_run(
+            elapsed, summary = _timed_run(
                 example_dir=example_dir,
                 config_paths=config_paths,
                 jobs=jobs,
@@ -445,22 +464,19 @@ def _benchmark_example(*, example: str, mode: str, jobs: int, cores: int) -> Ben
         else:
             raise ValueError(f"Unsupported benchmark mode: {mode!r}")
 
-    _assert_cache_behavior(example=example, mode=mode, manifest=manifest)
-    return _record_from_manifest(example=example, mode=mode, elapsed=elapsed, manifest=manifest)
+    _assert_cache_behavior(example=example, mode=mode, summary=summary)
+    return _record_from_summary(example=example, mode=mode, elapsed=elapsed, summary=summary)
 
 
-def _record_from_manifest(
+def _record_from_summary(
     *,
     example: str,
     mode: str,
     elapsed: float,
-    manifest: dict[str, object],
+    summary: RunSummary,
 ) -> BenchmarkRecord:
-    """Convert a run manifest into a structured benchmark record."""
-    task_statuses = Counter(
-        str(task["status"])
-        for task in dict(manifest["tasks"]).values()  # type: ignore[arg-type]
-    )
+    """Convert a finished run into a structured benchmark record."""
+    task_statuses = summary.task_counts()
     task_count = sum(task_statuses.values())
     cached_task_count = task_statuses.get("cached", 0)
     return BenchmarkRecord(
@@ -468,11 +484,12 @@ def _record_from_manifest(
         case="default" if example != "bioinfo" else "agam",
         mode=mode,
         wall_time_seconds=elapsed,
-        status=str(manifest["status"]),
+        status=summary.status,
         task_count=task_count,
         executed_task_count=task_count - cached_task_count,
         cached_task_count=cached_task_count,
-        run_id=str(manifest["run_id"]),
+        run_id=summary.run_id,
+        provenance_write_seconds=float(summary.timings.get("provenance_write_seconds", 0.0)),
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
         platform=platform.platform(),
         python_version=platform.python_version(),
@@ -483,10 +500,10 @@ def _assert_cache_behavior(
     *,
     example: str,
     mode: str,
-    manifest: dict[str, object],
+    summary: RunSummary,
 ) -> None:
     """Assert the benchmark run reflects the requested cache mode."""
-    statuses = [str(task["status"]) for task in dict(manifest["tasks"]).values()]  # type: ignore[arg-type]
+    statuses = [task.status for task in summary.tasks]
     if mode == "cold" and any(status == "cached" for status in statuses):
         raise AssertionError(f"Cold benchmark for {example} unexpectedly used cached tasks.")
     if mode != "cached":
@@ -540,8 +557,8 @@ def _timed_run(
     config_paths: list[Path],
     jobs: int,
     cores: int,
-) -> tuple[float, dict[str, object]]:
-    """Run one workflow invocation and return wall time plus manifest."""
+) -> tuple[float, RunSummary]:
+    """Run one workflow invocation and return wall time plus the finished run."""
     with _working_directory(path=example_dir):
         started = time.perf_counter()
         exit_code = run_workflow(
@@ -558,11 +575,12 @@ def _timed_run(
             f"Example benchmark failed for {example_dir.name} with exit code {exit_code}."
         )
 
-    runs_root = example_dir / ".ginkgo" / "runs"
-    run_dir = latest_run_dir(runs_root)
-    if run_dir is None:
-        raise RuntimeError(f"No run directory produced for benchmark {example_dir.name}.")
-    return elapsed, load_manifest(run_dir)
+    layout = WorkspaceLayout(root=example_dir / ".ginkgo")
+    with ginkgo_query.open(layout) as store:
+        run_id = store.latest_run_id()
+        if run_id is None:
+            raise RuntimeError(f"No run recorded for benchmark {example_dir.name}.")
+        return elapsed, store.run(run_id)
 
 
 @contextmanager

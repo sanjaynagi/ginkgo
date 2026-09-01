@@ -6,6 +6,11 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from ginkgo.cli.commands.doctor import _extract_executor_configs
+from ginkgo.remote.access import doctor as access_doctor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
@@ -215,3 +220,54 @@ def main():
 
         assert result.returncode == 0, result.stderr + result.stdout
         assert "Workflow validation passed" in result.stdout
+
+
+class TestDoctorExecutorSelection:
+    """Which executor settings the FUSE probes are diagnosed against."""
+
+    def test_every_executor_section_is_collected(self) -> None:
+        config = {
+            "remote": {
+                "k8s": {"image": "plain"},
+                "executors": {
+                    "cheap-batch": {"type": "batch", "image": "plain"},
+                    "stream-k8s": {"type": "k8s", "fuse_image": "fuse-worker"},
+                },
+            }
+        }
+        assert _extract_executor_configs(config=config) == {
+            "[remote.k8s]": {"image": "plain"},
+            "[remote.executors.cheap-batch]": {"type": "batch", "image": "plain"},
+            "[remote.executors.stream-k8s]": {"type": "k8s", "fuse_image": "fuse-worker"},
+        }
+
+    def test_named_executors_are_keyed_by_section(self) -> None:
+        config = {"remote": {"executors": {"a": {"type": "k8s", "image": "one"}}}}
+        assert _extract_executor_configs(config=config) == {
+            "[remote.executors.a]": {"type": "k8s", "image": "one"}
+        }
+
+    def test_no_remote_config_yields_nothing(self) -> None:
+        assert _extract_executor_configs(config={}) == {}
+
+    def test_executor_without_fuse_image_is_reported_despite_a_streaming_peer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One well-configured executor must not clear the others."""
+        (tmp_path / "ginkgo.toml").write_text(
+            '[remote.access]\ndefault = "fuse"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(access_doctor, "_probe_driver_binaries", lambda: [])
+
+        diagnostics = access_doctor.collect_access_diagnostics(
+            project_root=tmp_path,
+            executor_configs={
+                "[remote.executors.stream-k8s]": {"fuse_image": "fuse-worker"},
+                "[remote.executors.gpu-k8s]": {"image": "plain"},
+            },
+        )
+
+        missing = [item for item in diagnostics if item.code == "FUSE_IMAGE_NOT_CONFIGURED"]
+        assert len(missing) == 1
+        assert "[remote.executors.gpu-k8s]" in missing[0].message

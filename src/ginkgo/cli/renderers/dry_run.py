@@ -54,6 +54,7 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
         _render_wave(wave=wave, console=console, label_width=label_width, verbose=verbose)
 
     _render_dropped(plan=plan, console=console)
+    _render_problems(plan=plan, console=console)
 
     console.print()
     console.print(_summary(plan))
@@ -68,6 +69,18 @@ def _render_dropped(*, plan: DryRunPlan, console: Console) -> None:
     console.print(Text("Dropped (not reachable from the flow return value)", style="yellow"))
     for label in plan.dropped_labels:
         console.print(Text(f"  ! {label}", style="yellow"))
+
+
+def _render_problems(*, plan: DryRunPlan, console: Console) -> None:
+    """Print the input-contract violations the probe could already prove."""
+    if not plan.diagnostics:
+        return
+
+    console.print()
+    console.print(Text("Problems — this run would fail", style="bold red"))
+    for diagnostic in plan.diagnostics:
+        console.print(Text(f"  ✗ {diagnostic.label}", style="red"))
+        console.print(Text(f"    {diagnostic.message}", style="dim"))
 
 
 def _header(plan: DryRunPlan) -> Text:

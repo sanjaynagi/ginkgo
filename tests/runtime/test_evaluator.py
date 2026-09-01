@@ -33,11 +33,15 @@ from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalEnvironment
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
 from ginkgo.runtime.executors import Executors
+from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import EventBus, TaskNotice
-from ginkgo.runtime.caching.provenance import RunProvenanceRecorder, load_manifest, make_run_id
-from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.runtime.rundir import make_run_id
+
+from tests.conftest import Ledger
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from tests._vw_support import append_line
 
@@ -48,6 +52,7 @@ def _notebook_subprocess_stub(
     run_dir: Path,
     calls: list[str] | None = None,
     declared_output: Path | None = None,
+    render_fails: bool = False,
 ):
     """Build a fake ``run_subprocess`` for a single-task ipynb notebook run.
 
@@ -65,6 +70,8 @@ def _notebook_subprocess_stub(
         When given, every issued command line is appended to it.
     declared_output : Path | None
         When given, the papermill branch also writes this declared output file.
+    render_fails : bool
+        When true, the nbconvert branch fails without writing any HTML.
     """
 
     def fake_run_subprocess(
@@ -93,6 +100,10 @@ def _notebook_subprocess_stub(
                 declared_output.write_text("declared output", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         if "nbconvert" in command:
+            if render_fails:
+                return subprocess.CompletedProcess(
+                    args=argv, returncode=2, stdout="", stderr="nbconvert exploded"
+                )
             (run_dir / "notebooks" / "task_0000.html").write_text(
                 "<html>report</html>", encoding="utf-8"
             )
@@ -522,43 +533,43 @@ class TestEvaluate:
         )
         expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
 
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
 
         calls: list[str] = []
         fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=recorder.run_dir, calls=calls
+            tmp_path=tmp_path, run_dir=recorder.path, calls=calls
         )
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
-        manifest = load_manifest(recorder.run_dir)
+        tasks = recorder.tasks()
 
-        assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
         assert len(calls) == 4
         assert "import ipykernel" in calls[0]
         assert "ipykernel install" in calls[1]
         assert "JUPYTER_PATH=" in calls[2]
         assert " -k ginkgo-" in calls[2]
-        assert manifest["tasks"]["task_0000"]["task_type"] == "notebook"
-        assert manifest["tasks"]["task_0000"]["render_status"] == "succeeded"
-        assert manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
-        assert manifest["tasks"]["task_0000"]["managed_kernel_name"].startswith("ginkgo-")
+        assert tasks["task_0000"]["task_type"] == "notebook"
+        assert tasks["task_0000"]["render_status"] == "succeeded"
+        assert tasks["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
+        assert tasks["task_0000"]["managed_kernel_name"].startswith("ginkgo-")
 
         # Re-evaluating with the same notebook hits cache.
-        cached = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        cached = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(
             cached._shell_runner,
             "run_subprocess",
             lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
         )
-        assert cached.evaluate(expr) == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        assert cached.evaluate(expr) == Path(recorder.path / "notebooks" / "task_0000.html")
 
     def test_cached_notebook_with_declared_output_replays_rendered_html(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -575,38 +586,34 @@ class TestEvaluate:
             notebook_path=str(nb_path), output_path=str(output_path)
         )
 
-        first_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        first_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
 
         fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=first_recorder.run_dir, declared_output=output_path
+            tmp_path=tmp_path, run_dir=first_recorder.path, declared_output=output_path
         )
 
-        first_evaluator = ConcurrentEvaluator(provenance=first_recorder, jobs=1, cores=1)
+        first_evaluator = ConcurrentEvaluator(
+            run_dir=first_recorder.run_dir, event_bus=first_recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(first_evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         first_result = first_evaluator.evaluate(expr)
-        first_manifest = load_manifest(first_recorder.run_dir)
-        first_html = first_recorder.run_dir / "notebooks" / "task_0000.html"
+        first_tasks = first_recorder.tasks()
+        first_html = first_recorder.path / "notebooks" / "task_0000.html"
 
         assert first_result == output_path
-        assert first_manifest["tasks"]["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
+        assert first_tasks["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
 
         # Second run reuses the same cwd-scoped cache but a fresh recorder
         # (and therefore a fresh run_dir). The notebook body must be skipped
         # entirely yet rendered_html still has to surface in the new manifest.
-        second_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py") + "-2",
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        second_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py") + "-2"
         )
-        cached_evaluator = ConcurrentEvaluator(provenance=second_recorder, jobs=1, cores=1)
+        cached_evaluator = ConcurrentEvaluator(
+            run_dir=second_recorder.run_dir, event_bus=second_recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(
             cached_evaluator._shell_runner,
             "run_subprocess",
@@ -614,23 +621,19 @@ class TestEvaluate:
         )
 
         cached_result = cached_evaluator.evaluate(expr)
-        second_manifest = load_manifest(second_recorder.run_dir)
-        replayed_html = second_manifest["tasks"]["task_0000"].get("rendered_html")
+        second_tasks = second_recorder.tasks()
+        replayed_html = second_tasks["task_0000"].get("rendered_html")
 
         assert cached_result == output_path
-        assert second_manifest["tasks"]["task_0000"].get("cached") is True
+        assert second_tasks["task_0000"].get("cached") is True
         assert isinstance(replayed_html, str)
         # Absolute path pointing back at the original run's HTML artifact.
         assert Path(replayed_html) == first_html
-        assert (second_recorder.run_dir / replayed_html).resolve() == first_html.resolve()
+        assert (second_recorder.path / replayed_html).resolve() == first_html.resolve()
         # And the replayed pointer names the run that actually rendered it,
         # so the second run does not claim the artifact as its own (#202).
-        assert first_manifest["tasks"]["task_0000"]["notebook_artifact_run_id"] == (
-            first_recorder.run_id
-        )
-        assert second_manifest["tasks"]["task_0000"]["notebook_artifact_run_id"] == (
-            first_recorder.run_id
-        )
+        assert first_tasks["task_0000"]["notebook_artifact_run_id"] == (first_recorder.run_id)
+        assert second_tasks["task_0000"]["notebook_artifact_run_id"] == (first_recorder.run_id)
         assert second_recorder.run_id != first_recorder.run_id
 
     def test_ipynb_notebook_task_uses_env_managed_kernel(
@@ -648,12 +651,8 @@ class TestEvaluate:
         )
         expr = notebook_ipynb_env_task(notebook_path=str(nb_path), value=7)
 
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
         registry = PixiRegistry(project_root=tmp_path)
         monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
@@ -666,11 +665,12 @@ class TestEvaluate:
 
         calls: list[str] = []
         fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=recorder.run_dir, calls=calls
+            tmp_path=tmp_path, run_dir=recorder.path, calls=calls
         )
 
         evaluator = ConcurrentEvaluator(
-            provenance=recorder,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
             jobs=1,
             cores=1,
             backend=LocalEnvironment(pixi_registry=registry),
@@ -679,7 +679,7 @@ class TestEvaluate:
 
         result = evaluator.evaluate(expr)
 
-        assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
         assert any("python -c 'import ipykernel'" in call for call in calls)
         assert any("python -m ipykernel install" in call for call in calls)
         assert any("JUPYTER_PATH=" in call and "papermill" in call for call in calls)
@@ -694,27 +694,25 @@ class TestEvaluate:
         )
         expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
 
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-        )
-        events: list[object] = []
         bus = EventBus()
+        events: list[object] = []
         bus.subscribe(events.append)
-
-        fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=recorder.run_dir
+        recorder = Ledger.start(
+            root=tmp_path,
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            bus=bus,
         )
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1, event_bus=bus)
+        fake_run_subprocess = _notebook_subprocess_stub(tmp_path=tmp_path, run_dir=recorder.path)
+
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
         result = evaluator.evaluate(expr)
 
-        assert result == Path(recorder.run_dir / "notebooks" / "task_0000.html")
+        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
         notices = [event for event in events if isinstance(event, TaskNotice)]
         assert len(notices) == 1
         assert notices[0].message == "📦 Installing ipykernel for local..."
@@ -770,12 +768,8 @@ class TestEvaluate:
             )
             notebooks.append(notebook_ipynb_env_task(notebook_path=str(nb_path), value=index + 1))
 
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=2,
-            cores=2,
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
         registry = PixiRegistry(project_root=tmp_path)
         monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
@@ -826,7 +820,8 @@ class TestEvaluate:
             raise AssertionError(command)
 
         evaluator = ConcurrentEvaluator(
-            provenance=recorder,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
             jobs=2,
             cores=2,
             backend=LocalEnvironment(pixi_registry=registry),
@@ -838,19 +833,24 @@ class TestEvaluate:
         assert len(result) == 2
         assert install_calls == 1
 
-    def test_marimo_notebook_render_failure_writes_fallback_html(
+    def test_marimo_notebook_render_failure_fails_the_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A failed export fails a task whose result is the rendered HTML.
+
+        The placeholder failure page must never become the task's return
+        value: downstream tasks would consume a traceback as the report and
+        the run would still report success — see issues #218 and #219.
+        """
         nb_path = tmp_path / "explore.py"
         nb_path.write_text("print('marimo')\n", encoding="utf-8")
         expr = notebook_marimo_task(notebook_path=str(nb_path), sample_id="s1")
 
-        recorder = RunProvenanceRecorder(
+        collector = EventCollector()
+        recorder = Ledger.start(
+            root=tmp_path,
             run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            workflow_path=tmp_path / "workflow.py",
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
+            bus=collector.bus,
         )
 
         def fake_run_subprocess(
@@ -868,24 +868,84 @@ class TestEvaluate:
                 )
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
 
-        evaluator = ConcurrentEvaluator(provenance=recorder, jobs=1, cores=1)
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-        result = evaluator.evaluate(expr)
 
-        html_path = Path(result)
-        manifest = load_manifest(recorder.run_dir)
+        with pytest.raises(NotebookTaskError, match="failed during render"):
+            evaluator.evaluate(expr)
+
+        recorder.finish(status="failed")
+        tasks = recorder.tasks()
+        html_path = recorder.path / "notebooks" / "task_0000.html"
         assert html_path.is_file()
         assert "HTML export failed" in html_path.read_text(encoding="utf-8")
-        assert manifest["tasks"]["task_0000"]["render_status"] == "failed"
-        assert manifest["tasks"]["task_0000"]["render_error"] == "render blew up"
+        assert tasks["task_0000"]["status"] == "failed"
+        assert tasks["task_0000"]["render_status"] == "failed"
+        assert tasks["task_0000"]["render_error"] == "render blew up"
 
         # The failure must be visible through the run-summary model, not just
         # buried in the manifest — see issue #138.
-        run_summary = RunSummary.load(recorder.run_dir)
+        run_summary = recorder.summary()
         assert len(run_summary.notebooks) == 1
         notebook_summary = run_summary.notebooks[0]
         assert notebook_summary.render_status == "failed"
         assert notebook_summary.render_error == "render blew up"
+
+        # And through the event stream, which is what --agent-output emits.
+        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
+        assert [notice.message for notice in notices] == [
+            f"HTML export failed; {html_path} holds the export error "
+            "instead of the rendered notebook."
+        ]
+
+    def test_notebook_render_failure_with_declared_output_succeeds_with_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A task with its own declared output survives a failed export.
+
+        The HTML is a side artifact there, so the task keeps its declared
+        output — but the export failure still reaches the event stream as a
+        ``task_notice`` rather than only the manifest.
+        """
+        nb_path = tmp_path / "report.ipynb"
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
+        )
+        output_path = tmp_path / "declared.txt"
+        expr = notebook_ipynb_with_output_task(
+            notebook_path=str(nb_path), output_path=str(output_path)
+        )
+
+        collector = EventCollector()
+        recorder = Ledger.start(
+            root=tmp_path,
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            bus=collector.bus,
+        )
+        fake_run_subprocess = _notebook_subprocess_stub(
+            tmp_path=tmp_path,
+            run_dir=recorder.path,
+            declared_output=output_path,
+            render_fails=True,
+        )
+
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
+
+        result = evaluator.evaluate(expr)
+
+        assert result == output_path
+        tasks = recorder.tasks()
+        assert tasks["task_0000"]["status"] == "succeeded"
+        assert tasks["task_0000"]["render_status"] == "failed"
+        assert tasks["task_0000"]["render_error"] == "nbconvert exploded"
+
+        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
+        assert any("HTML export failed" in notice.message for notice in notices)
 
     def test_script_task_runs_and_validates_outputs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -984,7 +1044,7 @@ class TestEvaluate:
         # two source hashes, and the resulting cache keys, must differ.
         assert directive_v1.source_hash != directive_v2.source_hash
 
-        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache")
+        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache", index=CacheIndex.in_memory())
         resolved_args = {"notebook_path": str(nb_path), "value": 1}
         key_v1, _ = cache.build_cache_key(
             task_def=notebook_ipynb_task,
@@ -1654,15 +1714,7 @@ class TestSecrets:
             config={},
             environ={"API_TOKEN": "first-token"},
         )
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
-        )
+        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
         expr = reveal_secret_task(
             secret_value=secret("API_TOKEN"),
             output_path="result.txt",
@@ -1670,29 +1722,26 @@ class TestSecrets:
         evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
-            provenance=recorder,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
             secret_resolver=first_resolver,
         )
 
         first_result = evaluator.evaluate(expr)
-        first_manifest = load_manifest(recorder.run_dir)
-        first_task = next(iter(first_manifest["tasks"].values()))
-        cache_key = first_task["cache_key"]
-        meta_path = tmp_path / ".ginkgo" / "cache" / cache_key / "meta.json"
+        first_summary = recorder.finish()
+        first_task = first_summary.tasks[0]
+        cache_key = first_task.cache_key
+        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+            entry = index.entry(cache_key)
+        assert entry is not None
 
         assert Path(first_result).read_text(encoding="utf-8") == "first-token"
-        assert first_task["inputs"]["secret_value"]["redacted"] is True
-        assert "first-token" not in recorder.manifest_path.read_text(encoding="utf-8")
-        assert "first-token" not in meta_path.read_text(encoding="utf-8")
+        assert first_task.inputs["secret_value"]["redacted"] is True
+        assert "first-token" not in recorder.run_dir.manifest_path.read_text(encoding="utf-8")
+        assert "first-token" not in str(entry["inputs"])
 
-        second_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        second_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
         )
         second_resolver = build_secret_resolver(
             project_root=tmp_path,
@@ -1702,13 +1751,14 @@ class TestSecrets:
         second_evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
-            provenance=second_recorder,
+            run_dir=second_recorder.run_dir,
+            event_bus=second_recorder.bus,
             secret_resolver=second_resolver,
         )
 
         second_result = second_evaluator.evaluate(expr)
-        second_manifest = load_manifest(second_recorder.run_dir)
-        second_task = next(iter(second_manifest["tasks"].values()))
+        second_tasks = second_recorder.tasks()
+        second_task = next(iter(second_tasks.values()))
 
         assert second_task["status"] == "cached"
         assert second_task["cache_key"] == cache_key
@@ -1722,19 +1772,12 @@ class TestSecrets:
         monkeypatch.chdir(tmp_path)
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
-        )
+        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
         evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
-            provenance=recorder,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
             secret_resolver=build_secret_resolver(
                 project_root=tmp_path,
                 config={},
@@ -1745,15 +1788,16 @@ class TestSecrets:
         with pytest.raises(RuntimeError, match="failure:\\[REDACTED\\]"):
             evaluator.evaluate(fail_with_secret_task(secret_value=secret("API_TOKEN")))
 
-        manifest = load_manifest(recorder.run_dir)
-        task = next(iter(manifest["tasks"].values()))
-        stdout_log = recorder.run_dir / task["stdout_log"]
-        stderr_log = recorder.run_dir / task["stderr_log"]
+        tasks = recorder.tasks()
+        task = next(iter(tasks.values()))
+        stdout_log = recorder.path / task["stdout_log"]
+        stderr_log = recorder.path / task["stderr_log"]
 
         assert "[REDACTED]" in stdout_log.read_text(encoding="utf-8")
         assert "super-secret" not in stdout_log.read_text(encoding="utf-8")
         assert "super-secret" not in stderr_log.read_text(encoding="utf-8")
-        assert "super-secret" not in recorder.manifest_path.read_text(encoding="utf-8")
+        recorder.finish()
+        assert "super-secret" not in recorder.run_dir.manifest_path.read_text(encoding="utf-8")
 
 
 class TestAssets:
@@ -1765,16 +1809,10 @@ class TestAssets:
         monkeypatch.chdir(tmp_path)
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
+        evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=recorder.run_dir, event_bus=recorder.bus
         )
-        evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
 
         result = evaluator.evaluate(
             transform_asset_task(
@@ -1790,16 +1828,35 @@ class TestAssets:
         assert (tmp_path / "transformed.txt").is_file()
         assert not (tmp_path / "transformed.txt").is_symlink()
 
-        manifest = load_manifest(recorder.run_dir)
-        tasks = list(manifest["tasks"].values())
-        assert tasks[0]["assets"][0]["asset_key"] == "file:prepared_data"
-        assert tasks[1]["assets"][0]["asset_key"] == "file:transformed_data"
+        registered = {
+            task["assets"][0]["asset_key"]
+            for task in recorder.tasks().values()
+            if task.get("assets")
+        }
+        assert registered == {"file:prepared_data", "file:transformed_data"}
 
-        store = AssetStore(root=tmp_path / ".ginkgo" / "assets")
-        lineage = store.lineage_for(key=result.key, version_id=result.version_id)
-        assert lineage is not None
-        assert len(lineage.parents) == 1
-        assert lineage.parents[0].name == "prepared_data"
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            parents = catalog.parents_of(result.version_id)
+            assert len(parents) == 1
+            parent = catalog.version_by_id(parents[0])
+            assert parent is not None
+            assert parent.key.name == "prepared_data"
+
+        # The catalog row is the index; the ledger still records that each
+        # version came into being, with the parents it was built from.
+        recorder.recorder.flush()
+        with open_store(recorder.db, readonly=True) as store:
+            rows = store.query(
+                "SELECT asset_key, payload FROM events WHERE type = 'asset_materialized' "
+                "ORDER BY seq"
+            )
+        assert [row["asset_key"] for row in rows] == [
+            "file:prepared_data",
+            "file:transformed_data",
+        ]
+        downstream = json.loads(rows[1]["payload"])
+        assert downstream["version_id"] == result.version_id
+        assert [parent["asset_key"] for parent in downstream["parents"]] == ["file:prepared_data"]
 
     def test_asset_ref_cache_identity_drives_downstream_cache(
         self,
@@ -1814,32 +1871,24 @@ class TestAssets:
             log_path="consumer.log",
         )
 
-        first_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        first_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
         )
-        first_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        first_evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=first_recorder.run_dir, event_bus=first_recorder.bus
+        )
         assert first_evaluator.evaluate(expr) == "hello"
 
-        second_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        second_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
         )
-        second_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        second_evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=second_recorder.run_dir, event_bus=second_recorder.bus
+        )
         assert second_evaluator.evaluate(expr) == "hello"
 
-        manifest = load_manifest(second_recorder.run_dir)
-        statuses = [task["status"] for task in manifest["tasks"].values()]
+        tasks = second_recorder.tasks()
+        statuses = [task["status"] for task in tasks.values()]
         assert statuses == ["cached", "cached"]
 
     def test_shell_task_can_register_asset_output(
@@ -1863,16 +1912,12 @@ class TestAssets:
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text("# placeholder\n", encoding="utf-8")
 
-        first_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        first_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
         )
-        first_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=first_recorder)
+        first_evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=first_recorder.run_dir, event_bus=first_recorder.bus
+        )
         first_result = first_evaluator.evaluate(
             shell_asset_with_payload_task(output_path="shell.txt", payload="first")
         )
@@ -1881,16 +1926,12 @@ class TestAssets:
         assert (tmp_path / "shell.txt").is_file()
         assert not (tmp_path / "shell.txt").is_symlink()
 
-        second_recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        second_recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
         )
-        second_evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=second_recorder)
+        second_evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=second_recorder.run_dir, event_bus=second_recorder.bus
+        )
         second_result = second_evaluator.evaluate(
             shell_asset_with_payload_task(output_path="shell.txt", payload="second")
         )
@@ -1908,16 +1949,10 @@ class TestAssets:
         monkeypatch.chdir(tmp_path)
         workflow_path = tmp_path / "workflow.py"
         workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = RunProvenanceRecorder(
-            run_id=make_run_id(workflow_path=workflow_path),
-            workflow_path=workflow_path,
-            root_dir=tmp_path / ".ginkgo" / "runs",
-            jobs=1,
-            cores=1,
-            memory=None,
-            params={},
+        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
+        evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=recorder.run_dir, event_bus=recorder.bus
         )
-        evaluator = ConcurrentEvaluator(jobs=1, cores=1, provenance=recorder)
 
         result = evaluator.evaluate(
             nested_asset_inputs_task(
@@ -1926,18 +1961,20 @@ class TestAssets:
             )
         )
 
-        manifest = load_manifest(recorder.run_dir)
+        tasks = recorder.tasks()
         consumer_task = next(
             task
-            for task in manifest["tasks"].values()
-            if str(task["task"]).endswith(".nested_asset_inputs_task")
+            for task in tasks.values()
+            if str(task["name"]).endswith(".nested_asset_inputs_task")
         )
-        meta_path = tmp_path / ".ginkgo" / "cache" / consumer_task["cache_key"] / "meta.json"
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+            entry = index.entry(consumer_task["cache_key"])
+        assert entry is not None
+        inputs = entry["inputs"]
 
         assert result
-        assert meta["inputs"]["sources"]["type"] == "list"
-        first_item = meta["inputs"]["sources"]["items"][0]
+        assert inputs["sources"]["type"] == "list"
+        first_item = inputs["sources"]["items"][0]
         assert first_item["type"] == "asset_ref"
         assert first_item["asset"] == "file:prepared_data"
 

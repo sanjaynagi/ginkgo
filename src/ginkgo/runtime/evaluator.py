@@ -22,9 +22,10 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Literal
 
-from ginkgo.core.asset import AssetRef, AssetVersion
+from ginkgo.core.asset import AssetRef, AssetVersion, collect_asset_refs
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
+from ginkgo.core.subworkflow import SubWorkflowResult
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
@@ -36,8 +37,9 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
-from ginkgo.runtime.remote_executor import RemoteDispatchStats, RemoteExecutor
+from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
@@ -45,10 +47,10 @@ from ginkgo.runtime.artifacts.output_index import output_summary
 from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
 from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
-from ginkgo.runtime.caching.coordinator import CacheCoordinator
+from ginkgo.runtime.caching.node_cache import NodeCache
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.caching.materialization_log import MaterializationLog
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
@@ -57,11 +59,14 @@ from ginkgo.runtime.events import (
     EventBus,
     GraphExpanded,
     GraphNodeRegistered,
+    PhaseTimed,
+    TaskAnnotated,
     TaskCacheHit,
     TaskCacheMiss,
     TaskCompleted,
     TaskFailed,
     TaskNotice,
+    TaskPlanned,
     TaskReady,
     TaskRetrying,
     TaskStaging,
@@ -70,8 +75,9 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
-from ginkgo.runtime.caching.provenance import RunProvenanceRecorder
+from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.profiling import ProfileRecorder
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.environment.secrets import (
     SecretResolver,
@@ -157,7 +163,7 @@ def evaluate(
     resource_overrides: ResourceOverrides | None = None,
     resource_budgets: dict[str, int] | None = None,
     backend: ExecutionEnvironment | None = None,
-    provenance: RunProvenanceRecorder | None = None,
+    run_dir: RunDir | None = None,
     secret_resolver: SecretResolver | None = None,
     event_bus: EventBus | None = None,
 ) -> Any:
@@ -184,6 +190,9 @@ def evaluate(
         omits are unconstrained.
     backend : ExecutionEnvironment | None
         Execution environment for environment-isolated tasks.
+    run_dir : RunDir | None
+        The run's directory, for per-task log paths and lockfile copies.
+        ``None`` outside a live run.
     event_bus : EventBus | None
         Optional event bus to receive lifecycle events. Useful for tests
         and ad-hoc programmatic callers that want to observe task progress.
@@ -201,7 +210,7 @@ def evaluate(
         resource_overrides=resource_overrides,
         resource_budgets=resource_budgets,
         backend=backend,
-        provenance=provenance,
+        run_dir=run_dir,
         secret_resolver=secret_resolver,
         event_bus=event_bus,
     ).evaluate(expr)
@@ -281,7 +290,7 @@ class NodeRun:
     memory_gb: int = 0
     gpu: int = 0
     custom_resources: dict[str, int] = field(default_factory=dict)
-    remote: bool = False
+    executor_name: str | None = None
     result: Any = MISSING
     tmp_paths: list[Path] = field(default_factory=list)
     transport_path: Path | None = None
@@ -296,9 +305,15 @@ class NodeRun:
     driver_directive: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
+    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
+
+    @property
+    def remote(self) -> bool:
+        """Whether the node is placed on a remote executor."""
+        return self.executor_name is not None
 
     # Identity views, delegated so collaborators that receive a run can
     # read the vertex without reaching through ``.node``.
@@ -338,8 +353,8 @@ class ConcurrentEvaluator:
     resource_overrides: ResourceOverrides | None = None
     resource_budgets: dict[str, int] | None = None
     backend: ExecutionEnvironment | None = None
-    remote_executor: RemoteExecutor | None = None
-    provenance: RunProvenanceRecorder | None = None
+    executor_registry: ExecutorRegistry = field(default_factory=ExecutorRegistry)
+    run_dir: RunDir | None = None
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
     trust_mtimes: bool = False
@@ -361,11 +376,10 @@ class ConcurrentEvaluator:
     _executors: Executors | None = field(default=None, init=False, repr=False)
     _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
-    code_bundle_config: dict[str, Any] | None = None
     param_context: ParamContext | None = None
     _digests: DigestRegistry = field(init=False, repr=False)
     _remote_dispatch: RemoteDispatchManager = field(init=False, repr=False)
-    _cache_coordinator: CacheCoordinator = field(init=False, repr=False)
+    _node_cache: NodeCache = field(init=False, repr=False)
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
@@ -404,29 +418,27 @@ class ConcurrentEvaluator:
         if self.gpus < 0:
             raise ValueError("gpus must be at least 0")
 
-        self._hash_memo = HashMemo()
-        artifacts_root = WorkspaceLayout.for_cwd().artifacts
-        self._materialization_log = MaterializationLog(
-            path=artifacts_root / "materializations.json"
-        )
+        # The cache index writes on the scheduler's threads, so it holds its
+        # own connection rather than the recorder's, which belongs to the
+        # writer thread.
+        self._cache_index = CacheIndex.open(path=WorkspaceLayout.for_cwd().db)
+        self._hash_memo = HashMemo(index=self._cache_index)
         self._cache_store = CacheStore(
+            index=self._cache_index,
             backend=self.backend,
             publisher=load_remote_publisher(),
             hash_memo=self._hash_memo,
-            materialization_log=self._materialization_log,
             trust_mtimes=self.trust_mtimes,
         )
-        self._asset_store = AssetStore(
-            root=WorkspaceLayout.sibling_of(self._cache_store._root).assets
-        )
+        # The catalog shares the cache index's connection and lock: two sets of
+        # tables in one database, not two databases.
+        self._asset_store = AssetStore.attached_to(self._cache_index)
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
-            executor=self.remote_executor,
-            code_bundle_config=self.code_bundle_config,
+            registry=self.executor_registry,
             digests=self._digests,
             local_artifact_store=self._cache_store._artifact_store,
-            staging_cache_path=WorkspaceLayout.for_cwd().staging_cache_file,
             run_id_provider=lambda: self._run_id,
             emit_event=self._emit_event,
         )
@@ -437,10 +449,11 @@ class ConcurrentEvaluator:
             backend=self.backend,
             secret_resolver=self.secret_resolver,
         )
-        self._cache_coordinator = CacheCoordinator(
+        self._node_cache = NodeCache(
             cache_store=self._cache_store,
             validator=self._validator,
             digests=self._digests,
+            index=self._cache_index,
         )
         self._log_drain = LogDrain(
             event_bus=self.event_bus,
@@ -457,7 +470,8 @@ class ConcurrentEvaluator:
             shell_runner=self._shell_runner,
             validator=self._validator,
             cache_store=self._cache_store,
-            provenance=self.provenance,
+            run_dir=self.run_dir,
+            annotate=self._annotate_task,
             notice_emitter=self._emit_notebook_notice,
             runtime_root_factory=self._notebook_runtime_root,
         )
@@ -468,11 +482,7 @@ class ConcurrentEvaluator:
         self._subworkflow_runner = SubworkflowRunner(
             shell_runner=self._shell_runner,
             run_id_provider=lambda: self._run_id or "",
-            runs_root=(
-                self.provenance.root_dir
-                if self.provenance is not None
-                else WorkspaceLayout.for_cwd().runs
-            ),
+            db_path=WorkspaceLayout.for_cwd().db,
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
         self._live_payloads = LivePayloadRegistry()
@@ -481,7 +491,13 @@ class ConcurrentEvaluator:
             asset_store=self._asset_store,
             run_id_provider=lambda: self._run_id,
             live_payloads=self._live_payloads,
+            emit_event=self._emit_event,
         )
+
+    @property
+    def validator(self) -> TaskValidator:
+        """The run's input/contract validator, shared with dry-run probing."""
+        return self._validator
 
     @property
     def cache_store(self) -> CacheStore:
@@ -598,9 +614,7 @@ class ConcurrentEvaluator:
             finally:
                 self._log_drain.stop()
                 self._executors = None
-                self._materialization_log.save()
-                self._cache_store.save_stat_index()
-                self._remote_dispatch.save_staging_cache()
+                self._cache_index.close()
 
         assert self._failure is not None
         raise self._failure
@@ -704,27 +718,31 @@ class ConcurrentEvaluator:
             )
         )
         self._expr_nodes[expr_id] = node_id
+        stdout_log = stderr_log = None
+        if self.run_dir is not None:
+            stdout_path, stderr_path = self.run_dir.log_paths_for(
+                node_id=node_id,
+                task_name=expr.task_def.name,
+            )
+            self._nodes[node_id].stdout_path = stdout_path
+            self._nodes[node_id].stderr_path = stderr_path
+            stdout_log = self.run_dir.relative(stdout_path)
+            stderr_log = self.run_dir.relative(stderr_path)
         self._emit_event(
             GraphNodeRegistered(
                 run_id=self._run_id,
                 task_id=task_id_for_node(node_id),
-                task_name=expr.task_def.name,
-                kind=expr.task_def.kind,
-                env=expr.task_def.env,
-                dependency_ids=[task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
-            )
-        )
-        if self.provenance is not None:
-            stdout_path, stderr_path = self.provenance.ensure_task(
                 node_id=node_id,
                 task_name=expr.task_def.name,
-                env=expr.task_def.env,
                 kind=expr.task_def.kind,
                 execution_mode=expr.task_def.execution_mode,
+                env=expr.task_def.env,
                 retries=expr.task_def.retries,
+                dependency_ids=[task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
             )
-            self._nodes[node_id].stdout_path = stdout_path
-            self._nodes[node_id].stderr_path = stderr_path
+        )
         return node_id
 
     def _prepare_pending_nodes(self) -> None:
@@ -751,6 +769,7 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
+            asset_inputs=node.asset_inputs,
         )
         self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
@@ -787,7 +806,7 @@ class ConcurrentEvaluator:
         node.memory_gb = resources.memory_gb
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
-        node.remote = self._resolve_placement(task_def=node.task_def)
+        node.executor_name = self._resolve_placement(task_def=node.task_def)
         self._apply_memory_escalation(node=node, resources=resources)
         # Custom budgets are run-level, so the demand check applies wherever
         # the task is placed.
@@ -1068,7 +1087,13 @@ class ConcurrentEvaluator:
         if self._failure is None:
             self._failure = sanitized_exc
             self._cancel_pending_futures()
-        self._record_task_failure(node=node, exc=sanitized_exc)
+        # Usage measured before the failure helps right-size OOM-prone tasks.
+        usage = self._resource_usage_for(node=node)
+        if usage:
+            self._annotate_task(node=node, fields={"resource_usage": usage})
+        child_run_id = getattr(sanitized_exc, "child_run_id", None)
+        if child_run_id is not None:
+            self._annotate_task(node=node, fields={"sub_run_id": child_run_id})
         self._emit_event(
             TaskFailed(
                 run_id=self._run_id,
@@ -1114,7 +1139,7 @@ class ConcurrentEvaluator:
         node.memory_gb = 0
         node.gpu = 0
         node.custom_resources = {}
-        node.remote = False
+        node.executor_name = None
         node.tmp_paths = []
         node.transport_path = None
         node.dynamic_template = None
@@ -1122,21 +1147,13 @@ class ConcurrentEvaluator:
         node.secret_values = ()
         node.extra_source_hash = None
         node.asset_versions = []
+        node.asset_inputs = {}
         # measured_resources is deliberately NOT reset: a retried attempt's
         # peak (an OOM kill under memory_retry_multiplier, say) is exactly
         # the number needed to right-size the task, so measurements span
         # attempts — peaks take the max, CPU seconds accumulate.
 
         retries_remaining = node.task_def.retries - node.attempt
-        if self.provenance is not None:
-            self.provenance.mark_retrying(
-                node_id=node.node_id,
-                task_name=node.task_def.name,
-                env=node.task_def.env,
-                exc=exc,
-                attempt=node.attempt,
-                retries_remaining=retries_remaining,
-            )
         self._emit_event(
             TaskRetrying(
                 run_id=self._run_id,
@@ -1163,14 +1180,16 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
+            extra_source_hash=node.extra_source_hash,
             extra_meta=extra_meta,
+            run_id=self._run_id,
         )
 
         # Propagate output digests so downstream tasks can skip re-hashing.
         self._digests.record_artifacts(artifact_ids)
 
         # Record stat-index for future --trust-mtimes runs.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=node.cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
         for path in tmp_paths:
             shutil.rmtree(path)
@@ -1183,15 +1202,8 @@ class ConcurrentEvaluator:
         node.dynamic_dependency_ids.clear()
         node.execution_args = None
         node.secret_values = ()
-        if self.provenance is not None:
-            self.provenance.mark_succeeded(
-                node_id=node.node_id,
-                task_name=node.task_def.name,
-                env=node.task_def.env,
-                value=value,
-                outputs=self._output_summary_for(node=node, value=value),
-                assets=self._asset_index_for(value=value),
-            )
+        if isinstance(value, SubWorkflowResult):
+            self._annotate_task(node=node, fields={"sub_run_id": value.run_id})
         self._emit_event(
             TaskCompleted(
                 run_id=self._run_id,
@@ -1202,15 +1214,11 @@ class ConcurrentEvaluator:
                 status="success",
                 cache_key=node.cache_key,
                 outputs=self._output_summary_for(node=node, value=value),
+                assets=self._asset_index_for(value=value),
+                resource_usage=self._resource_usage_for(node=node),
                 remote_job_id=node.remote_job_id,
             )
         )
-        if self.provenance is not None and node.remote_job_id is not None:
-            self.provenance.update_task_extra(
-                node_id=node.node_id,
-                remote_job_id=node.remote_job_id,
-            )
-        self._record_resource_usage(node=node)
         self._record_task_timing(
             node_id=node.node_id,
             phase="finalize_seconds",
@@ -1226,8 +1234,15 @@ class ConcurrentEvaluator:
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
+        asset_inputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Resolve concrete arguments for a task call."""
+        """Resolve concrete arguments for a task call.
+
+        *asset_inputs* is filled in as arguments resolve, with the identity of
+        the asset each parameter was handed. This is the only moment it is
+        knowable for a semantically typed parameter: the next line rehydrates
+        the ref into the payload the task asked for, and the identity is gone.
+        """
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
 
@@ -1246,6 +1261,17 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
+                if asset_inputs is not None:
+                    refs = collect_asset_refs(materialised)
+                    if refs:
+                        # One row per parameter is what task_inputs holds, so
+                        # the first ref is the one recorded — see the
+                        # ``asset_inputs`` docstring on TaskPlanned.
+                        asset_inputs[name] = {
+                            "asset_key": str(refs[0].key),
+                            "version_id": refs[0].version_id,
+                            "artifact_id": refs[0].artifact_id,
+                        }
                 # A path-shaped annotation binds a filesystem path at every
                 # depth, so the whole value — including any nested containers
                 # — keeps its ``AssetRef`` entries rather than becoming live
@@ -1532,8 +1558,9 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             execution_args=node.execution_args,
         )
-        # Placement was resolved when the node was prepared.
-        execution_backend = "remote" if node.remote else "local"
+        # Placement was resolved when the node was prepared; the backend
+        # recorded in events and provenance is the executor's name.
+        execution_backend = node.executor_name or LOCAL
 
         self._emit_event(
             TaskStarted(
@@ -1551,16 +1578,6 @@ class ConcurrentEvaluator:
                 execution_backend=execution_backend,
             )
         )
-        if self.provenance is not None:
-            self.provenance.mark_running(
-                node_id=node.node_id,
-                task_name=node.task_def.name,
-                env=node.task_def.env,
-                attempt=node.attempt,
-                retries=node.task_def.retries,
-                execution_backend=execution_backend,
-            )
-
         if node.task_def.kind in {"notebook", "script", "shell"}:
             future = shell_executor.submit(
                 self._run_driver_task,
@@ -1569,16 +1586,17 @@ class ConcurrentEvaluator:
             self._running_futures[future] = (node.node_id, "driver")
             return
 
-        # Remote dispatch: the node was placed on the remote executor either
-        # explicitly (remote=True) or because its GPU requirement exceeds the
-        # local budget.
-        if node.remote:
+        # Remote dispatch: the node was placed on an executor either
+        # explicitly (executor= / remote=True) or because its GPU requirement
+        # exceeds the local budget.
+        if node.executor_name is not None:
             node.transport_path = Path(
                 tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
             )
             assert self._executors is not None
             future = self._remote_dispatch.dispatch(
                 node=node,
+                executor_name=node.executor_name,
                 payload=self._build_worker_payload(node=node),
                 gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
                 watcher=self._executors.get_or_create_remote_watcher(),
@@ -1598,16 +1616,9 @@ class ConcurrentEvaluator:
         and local (process-pool) workers, and surfaces a notice when a
         mount fell back to staging.
         """
-        if (
-            isinstance(payload, dict)
-            and isinstance(payload.get("remote_input_access"), dict)
-            and self.provenance is not None
-        ):
+        if isinstance(payload, dict) and isinstance(payload.get("remote_input_access"), dict):
             access_stats = payload["remote_input_access"]
-            self.provenance.update_task_extra(
-                node_id=node.node_id,
-                remote_input_access=access_stats,
-            )
+            self._annotate_task(node=node, fields={"remote_input_access": access_stats})
             self._warn_on_access_fallback(node=node, access_stats=access_stats)
 
     def _warn_on_access_fallback(
@@ -1683,46 +1694,58 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _resolve_placement(self, *, task_def: TaskDef) -> bool:
-        """Decide whether a task runs on the remote executor.
+    def _resolve_placement(self, *, task_def: TaskDef) -> str | None:
+        """Return the executor a task is placed on, or ``None`` for local.
 
         Placement is derived from the declared requirement and the available
-        capability: ``remote=True`` is an explicit directive, and a GPU
-        requirement the local ``--gpus`` budget cannot satisfy falls back to
-        the remote executor. Either route without a usable remote executor
-        is an error rather than a silent local run. Placement depends only
-        on the task definition, so it is validated for every node up front
-        in ``build_and_validate``.
+        capability. A task naming an ``executor`` routes there whatever the
+        run default is; ``remote=True`` routes to the run's default executor
+        (``--executor``); and a GPU requirement the local ``--gpus`` budget
+        cannot satisfy falls back to that same default. Any route without a
+        usable executor is an error rather than a silent local run.
+        Placement depends only on the task definition, so it is validated
+        for every node up front in ``build_and_validate``.
         """
-        gpu = self.effective_resources(task_def=task_def).gpu
-        remote_capable = self.remote_executor is not None and task_def.kind == "python"
+        registry = self.executor_registry
+        if task_def.executor is not None:
+            self._require_remote_capable_kind(task_def=task_def, reason="executor")
+            return registry.resolve(task_def.executor, task_name=task_def.name)
         if task_def.remote:
-            if not remote_capable:
-                if task_def.kind != "python":
-                    raise ValueError(
-                        f"{task_def.name} declares remote=True but remote dispatch "
-                        f"only supports python tasks, not kind={task_def.kind!r}"
-                    )
+            self._require_remote_capable_kind(task_def=task_def, reason="remote")
+            if not registry.has_default:
                 raise ValueError(
-                    f"{task_def.name} declares remote=True but no remote executor "
-                    "is configured (pass --executor k8s or --executor batch)"
+                    f"{task_def.name} declares remote=True but this run has no default "
+                    f"executor (pass --executor <name>). {registry.available_hint()}"
                 )
-            return True
+            assert registry.default_name is not None
+            return registry.default_name
+        gpu = self.effective_resources(task_def=task_def).gpu
         if gpu > (self.gpus or 0):
-            if not remote_capable:
-                if self.remote_executor is not None:
-                    raise ValueError(
-                        f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                        "are available locally (--gpus), and remote dispatch only "
-                        f"supports python tasks, not kind={task_def.kind!r}"
-                    )
+            if task_def.kind != "python":
                 raise ValueError(
                     f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus) and no remote executor is "
-                    "configured (--executor)"
+                    "are available locally (--gpus), and remote dispatch only "
+                    f"supports python tasks, not kind={task_def.kind!r}"
                 )
-            return True
-        return False
+            if not registry.has_default:
+                raise ValueError(
+                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
+                    "are available locally (--gpus) and this run has no default "
+                    f"executor (--executor). {registry.available_hint()}"
+                )
+            return registry.default_name
+        return None
+
+    def _require_remote_capable_kind(self, *, task_def: TaskDef, reason: str) -> None:
+        """Reject remote placement for task kinds the workers cannot run."""
+        if task_def.kind != "python":
+            declaration = (
+                "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
+            )
+            raise ValueError(
+                f"{task_def.name} declares {declaration} but remote dispatch "
+                f"only supports python tasks, not kind={task_def.kind!r}"
+            )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""
@@ -1795,8 +1818,8 @@ class ConcurrentEvaluator:
 
     def _notebook_runtime_root(self) -> Path:
         """Return the shared runtime root for notebook support files."""
-        if self.provenance is not None:
-            return self.provenance.root_dir.parent
+        if self.run_dir is not None:
+            return self.run_dir.root.parent
         return WorkspaceLayout.for_cwd().root
 
     def _warn_on_untracked_path_inputs(
@@ -1944,7 +1967,7 @@ class ConcurrentEvaluator:
         """Attempt a content-addressed cache hit for one prepared node."""
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.content_lookup(node=node)
+        hit = self._node_cache.content_lookup(node=node)
         self._record_task_metadata(
             node=node,
             include_env_metadata=False,
@@ -1966,7 +1989,7 @@ class ConcurrentEvaluator:
         complete, ``False`` to fall through to the content-addressed path.
         """
         cache_lookup_started = time.perf_counter()
-        hit = self._cache_coordinator.stat_lookup(node=node)
+        hit = self._node_cache.lookup_by_stat(node=node)
         if hit is None:
             self._record_task_timing(
                 node_id=node.node_id,
@@ -1992,21 +2015,18 @@ class ConcurrentEvaluator:
         if node.attempt == 0:
             node.attempt = 1
 
-        self._cache_coordinator.propagate_known_digests(cache_key=cache_key)
+        # Counted here rather than projected from the event: every other
+        # cache_entries column is written by the index on its own connection,
+        # and a hit routed through the ledger's writer could land while
+        # another process held the write lock for a save.
+        self._cache_index.record_hit(cache_key)
+        self._node_cache.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
             shutil.rmtree(path)
         node.tmp_paths = []
-        if self.provenance is not None:
-            self.provenance.mark_cached(
-                node_id=node.node_id,
-                task_name=node.task_def.name,
-                env=node.task_def.env,
-                value=value,
-                outputs=self._output_summary_for(node=node, value=value),
-                assets=self._asset_index_for(value=value),
-            )
+        if self.run_dir is not None:
             self._notebook_runner.replay_cached_extras(node=node, cache_key=cache_key)
         self._emit_event(
             TaskCacheHit(
@@ -2028,12 +2048,13 @@ class ConcurrentEvaluator:
                 status="cached",
                 cache_key=cache_key,
                 outputs=self._output_summary_for(node=node, value=value),
+                assets=self._asset_index_for(value=value),
             )
         )
 
         # Record stat-index entry so future --trust-mtimes runs can
         # find this cache key without content hashing.
-        self._cache_coordinator.record_stat_index_entry(node=node, cache_key=cache_key)
+        self._node_cache.record_stat_index_entry(node=node, cache_key=cache_key)
 
     def _record_task_metadata(
         self,
@@ -2041,46 +2062,50 @@ class ConcurrentEvaluator:
         node: NodeRun,
         include_env_metadata: bool = True,
     ) -> None:
-        """Update provenance inputs and environment copies for a task node."""
-        if self.provenance is None:
+        """Announce the task's resolved inputs, cache identity, and environment."""
+        if self.event_bus is None:
             return
-        self.provenance.update_task_inputs(
-            node_id=node.node_id,
-            task_name=node.task_def.name,
-            env=node.task_def.env,
-            kind=node.task_def.kind,
-            execution_mode=node.task_def.execution_mode,
-            resolved_args=node.resolved_args,
-            input_hashes=node.input_hashes,
-            cache_key=node.cache_key,
-            dependency_ids=sorted(node.dependency_ids),
-            dynamic_dependency_ids=sorted(node.dynamic_dependency_ids),
+        self._emit_event(
+            TaskPlanned(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                inputs=render_value(node.resolved_args or {}),
+                input_hashes=_input_hash_entries(node.input_hashes),
+                asset_inputs=dict(node.asset_inputs),
+                cache_key=node.cache_key,
+                source_hash=node.task_def.cache_source_hash,
+                version=node.task_def.version,
+                env_hash=self._env_identity(env=node.task_def.env),
+                extra_source_hash=node.extra_source_hash,
+                dependency_ids=[task_id_for_node(dep) for dep in sorted(node.dependency_ids)],
+                dynamic_dependency_ids=[
+                    task_id_for_node(dep) for dep in sorted(node.dynamic_dependency_ids)
+                ],
+            )
         )
         if not include_env_metadata:
             return
+        if node.task_def.env is None or self.backend is None:
+            return
 
-        if node.task_def.env is not None and self.backend is not None:
-            # Record backend type and container-specific metadata.
-            if is_container_env(node.task_def.env):
-                extra: dict[str, Any] = {"backend": "container"}
-                digest = self.backend.materialized_digest(env=node.task_def.env)
-                if digest is not None:
-                    extra["container_image_digest"] = digest
-                self.provenance.update_task_extra(
-                    node_id=node.node_id,
-                    **extra,
-                )
-            else:
-                self.provenance.update_task_extra(
-                    node_id=node.node_id,
-                    backend="local",
-                )
-                lock_path = self.backend.env_lock_path(env=node.task_def.env)
-                if lock_path is not None:
-                    self.provenance.copy_env_lock(
-                        env_name=node.task_def.env,
-                        lock_path=lock_path,
-                    )
+        if is_container_env(node.task_def.env):
+            fields: dict[str, Any] = {"backend": "container"}
+            digest = self.backend.materialized_digest(env=node.task_def.env)
+            if digest is not None:
+                fields["container_image_digest"] = digest
+            self._annotate_task(node=node, fields=fields)
+            return
+
+        fields = {"backend": "local"}
+        lock_path = self.backend.env_lock_path(env=node.task_def.env)
+        if lock_path is not None and self.run_dir is not None:
+            copied = self.run_dir.copy_env_lock(env_name=node.task_def.env, lock_path=lock_path)
+            if copied is not None:
+                fields["env_lock"] = copied
+        self._annotate_task(node=node, fields=fields)
 
     def _record_measured_usage(self, *, node: NodeRun, measured: dict[str, Any]) -> None:
         """Fold one usage measurement into the node's running totals.
@@ -2100,44 +2125,52 @@ class ConcurrentEvaluator:
             current.get("cpu_seconds", 0.0) + measured.get("cpu_seconds", 0.0), 3
         )
 
-    def _record_resource_usage(self, *, node: NodeRun) -> None:
-        """Persist measured-vs-declared resource usage for one task.
+    def _resource_usage_for(self, *, node: NodeRun) -> dict[str, Any]:
+        """Return measured-vs-declared resource usage for one task.
 
         The measured values cover every attempt of the task: the peak is
         the maximum across attempts and CPU seconds are the total cost.
         """
-        if self.provenance is None or node.measured_resources is None:
-            return
-        self.provenance.update_task_extra(
-            node_id=node.node_id,
-            resource_usage={
-                "declared": {"threads": node.threads, "memory_gb": node.memory_gb},
-                "measured": dict(node.measured_resources),
-            },
-        )
+        if node.measured_resources is None:
+            return {}
+        return {
+            "declared": {"threads": node.threads, "memory_gb": node.memory_gb},
+            "measured": dict(node.measured_resources),
+        }
 
     def _record_task_timing(self, *, node_id: int, phase: str, started: float) -> None:
-        """Record one task-phase timing bucket when provenance is enabled."""
-        if self.provenance is None:
+        """Record how long one task phase took."""
+        seconds = time.perf_counter() - started
+        if seconds < 0:
             return
-        self.provenance.add_task_timing(
-            node_id=node_id,
-            phase=phase,
-            seconds=time.perf_counter() - started,
+        self._emit_event(
+            PhaseTimed(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node_id),
+                phase=phase,
+                seconds=round(seconds, 6),
+            )
         )
 
-    def _record_task_failure(self, *, node: NodeRun, exc: BaseException) -> None:
-        """Persist task failure details to the run manifest."""
-        if self.provenance is None:
+    def _env_identity(self, *, env: str | None) -> str | None:
+        """Return the backend's identity string for *env*, if there is one."""
+        if env is None or self.backend is None:
+            return None
+        return self.backend.env_identity(env=env) or None
+
+    def _annotate_task(self, *, node: NodeRun, fields: dict[str, Any]) -> None:
+        """Attach open-ended facts to a task node."""
+        if not fields:
             return
-        # Usage measured before the failure helps right-size OOM-prone tasks.
-        self._record_resource_usage(node=node)
-        self.provenance.mark_failed(
-            node_id=node.node_id,
-            task_name=node.task_def.name,
-            env=node.task_def.env,
-            exc=exc,
-            failure=classify_failure(exc=exc),
+        self._emit_event(
+            TaskAnnotated(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                fields=fields,
+            )
         )
 
     def _display_label_for(self, *, node: NodeRun) -> str | None:
@@ -2173,9 +2206,7 @@ class ConcurrentEvaluator:
     @property
     def _run_id(self) -> str:
         """Return the active run id, or a placeholder outside live runs."""
-        if self.provenance is not None:
-            return self.provenance.run_id
-        return "validation"
+        return self.run_dir.run_id if self.run_dir is not None else "validation"
 
     def _emit_event(self, event: object) -> None:
         """Emit a runtime event to the attached event bus, if any."""
@@ -2296,6 +2327,26 @@ class ConcurrentEvaluator:
             f"{node.task_def.name} is declared with kind={kind!r} and must return "
             f"{_expected.get(kind, 'an execution directive')} or dynamic task expressions."
         )
+
+
+def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return one entry per hashed input, digests spelled ``digest``.
+
+    The cache key's own payload still says ``sha256`` — renaming it there would
+    invalidate every entry on disk for no gain — but the ledger records what
+    the value is, and it is a BLAKE3 digest.
+    """
+    entries: list[dict[str, Any]] = []
+    for param, value in (input_hashes or {}).items():
+        entry: dict[str, Any] = {"param": str(param)}
+        if isinstance(value, dict):
+            entry.update(
+                {("digest" if key == "sha256" else key): item for key, item in value.items()}
+            )
+        else:
+            entry["digest"] = value
+        entries.append(entry)
+    return entries
 
 
 def _producer_task_name(value: Any) -> str | None:
