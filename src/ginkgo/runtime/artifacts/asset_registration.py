@@ -27,6 +27,7 @@ from ginkgo.core.asset import (
     asset_ref_from_version,
     collect_asset_refs,
     make_asset_version,
+    make_asset_version_id,
 )
 from ginkgo.core.hashing import hash_str
 from ginkgo.errors import GinkgoError
@@ -43,6 +44,7 @@ from ginkgo.runtime.artifacts.asset_serialization import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheEntry
 from ginkgo.runtime.events import AssetMaterialized, GinkgoEvent, task_id_for_node
 
 
@@ -344,6 +346,75 @@ class AssetRegistrar:
 
         return asset_ref, version
 
+    def reassert_cached_versions(self, *, value: Any, cache_key: str) -> list[AssetRef]:
+        """Re-establish catalog rows for the asset versions a cache hit replayed.
+
+        A task that executes registers a row for every version it materializes;
+        a task that hits the cache registers nothing, and hands its consumers
+        refs rebuilt from ``output.json``. Where the catalog no longer holds
+        those versions — rebuilt, restored or lost behind an intact cache — the
+        consumer's lineage silently drops them and the artifact collector stops
+        protecting their bytes (issue #263). The producer repairs that on its
+        own hit rather than leaving a consumer to write another task's rows.
+
+        The repair is one-way: a version the catalog already knows is left
+        alone, so a healthy warm run costs one lookup per replayed asset,
+        reads nothing that only a repair needs, and never trades a
+        fully-attributed row for a partial one.
+
+        A repair that fails is contained. The workspace is then left exactly
+        as it was — the state this repair exists to correct, and one the
+        consumer still warns about — so failing the cache hit as well would
+        turn an incomplete catalog into a broken run.
+
+        Parameters
+        ----------
+        value : Any
+            The replayed cached result, whose nested refs name the versions.
+        cache_key : str
+            The entry the value came from, which is what the row can be
+            attributed from.
+
+        Returns
+        -------
+        list[AssetRef]
+            The refs whose rows were missing and have now been written.
+        """
+        refs = collect_asset_refs(value)
+        if not refs:
+            return []
+        try:
+            return self._reassert_missing(refs=refs, cache_key=cache_key)
+        except Exception as exc:
+            logger.warning(
+                "Could not re-assert the catalog rows for the assets cache entry %s "
+                "replayed (%s); lineage through them will be incomplete",
+                cache_key,
+                exc,
+            )
+            return []
+
+    def _reassert_missing(self, *, refs: list[AssetRef], cache_key: str) -> list[AssetRef]:
+        """Write a catalog row for each replayed ref the catalog does not hold."""
+        missing = [ref for ref in refs if self.asset_store.version_by_id(ref.version_id) is None]
+        if not missing:
+            return []
+        # Only a repair needs to know who wrote the entry, so only a repair
+        # reads it.
+        entry = self.cache_store.index.entry(cache_key)
+        written: list[AssetRef] = []
+        for ref in missing:
+            run_id, producer_task = _proven_producer(ref=ref, entry=entry)
+            if self.asset_store.reassert_version(
+                ref=ref,
+                run_id=run_id,
+                producer_task=producer_task,
+                created_at=None if entry is None else entry["created_at"],
+                cache_key=cache_key,
+            ):
+                written.append(ref)
+        return written
+
     def _announce(
         self,
         *,
@@ -421,6 +492,38 @@ class AssetRegistrar:
                 ),
             )
         return list(unique.values())
+
+
+def _proven_producer(*, ref: AssetRef, entry: CacheEntry | None) -> tuple[str | None, str | None]:
+    """Return the run and task that produced a replayed version, when provable.
+
+    An entry's ``created_run_id`` and ``function`` describe the run and the
+    task that *wrote the entry*, which is not the same claim as the one a
+    catalog row makes. A task that passes an input's ref straight back out
+    writes an entry replaying a version some other task produced, and taking
+    the entry at its word would have that row name the wrong producer.
+
+    A version id settles it: it hashes over the key, the content and the
+    producing run, so a recomputation that lands on the ref's own id proves
+    the entry's run minted this version, and with it that the entry's function
+    is the task that did. Where the recomputation disagrees, both halves are
+    withheld — a row that says nothing about its provenance is worth more than
+    one that says something false.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        The producing run id and task name, or ``(None, None)``.
+    """
+    if entry is None:
+        return None, None
+    run_id = entry["created_run_id"]
+    if not run_id:
+        return None, None
+    minted = make_asset_version_id(key=ref.key, content_hash=ref.content_hash, run_id=str(run_id))
+    if minted != ref.version_id:
+        return None, None
+    return str(run_id), entry["function"]
 
 
 def _current_index_for(

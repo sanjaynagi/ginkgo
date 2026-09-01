@@ -10,7 +10,7 @@ import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
@@ -37,10 +37,14 @@ from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
     decode_value,
     encode_value,
+    encoded_asset_refs,
     hash_value_bytes,
     summarise_value,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
+
+if TYPE_CHECKING:
+    from ginkgo.runtime.artifacts.asset_store import AssetStore
 
 MISSING = object()
 
@@ -634,6 +638,59 @@ class CacheStore:
             or not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
         ]
         return problems
+
+    def asset_reference_problems(self, *, assets: AssetStore) -> list[str]:
+        """Report entries that would replay an asset version the catalog lost.
+
+        An entry's ``output.json`` outlives the database, so a catalog rebuilt
+        or restored behind an intact cache leaves the refs inside it naming
+        versions with no row. Replaying one of those drops the consumer's
+        lineage and unprotects the asset's bytes (issue #263). A run repairs
+        what it replays; this names what is still dangling, so a workspace in
+        that state is diagnosable without waiting for a warning mid-run.
+
+        Parameters
+        ----------
+        assets : AssetStore
+            The catalog to check the replayed versions against.
+
+        Returns
+        -------
+        list[str]
+            One sentence counting the dangling versions and naming a few, plus
+            one per entry whose stored output could not be read at all.
+        """
+        dangling: dict[str, str] = {}
+        problems: list[str] = []
+        for cache_key in self.index.cache_keys():
+            output_path = self.output_path(cache_key)
+            if not output_path.is_file():
+                # Already reported by `integrity_problems` as a row with no bytes.
+                continue
+            try:
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                refs = encoded_asset_refs(payload)
+            except Exception as exc:
+                # A check reports; it does not raise. An entry truncated by a
+                # full disk, or written by a ginkgo whose encoding has since
+                # moved on, is a finding in its own right — and must not cost
+                # the user every check that comes after this one.
+                problems.append(f"cache entry {cache_key} has an unreadable output.json: {exc}")
+                continue
+            for ref in refs:
+                if ref.version_id in dangling or assets.version_by_id(ref.version_id) is not None:
+                    continue
+                dangling[ref.version_id] = f"{ref.key}@{ref.version_id[:12]} in entry {cache_key}"
+        if not dangling:
+            return problems
+        examples = "; ".join(sorted(dangling.values())[:3])
+        more = "" if len(dangling) <= 3 else f"; and {len(dangling) - 3} more"
+        return [
+            *problems,
+            f"{len(dangling)} asset version(s) a cache entry replays have no catalog row "
+            f"({examples}{more}) — lineage through them is lost and their artifacts are "
+            f"unprotected until a run replays them",
+        ]
 
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:
         """Return environment identity information for cache-keying.

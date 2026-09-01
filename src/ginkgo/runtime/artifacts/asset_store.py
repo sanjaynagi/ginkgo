@@ -26,6 +26,7 @@ from typing import Any
 
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion
 from ginkgo.core.hashing import hash_str
+from ginkgo.formatting import now_iso
 from ginkgo.store.direct_index import DirectIndex
 from ginkgo.store.jsonio import dumps, loads
 from ginkgo.store.protocol import ProjectionOp
@@ -165,6 +166,80 @@ class AssetStore(DirectIndex):
         ]
         self._write(*ops)
         return version
+
+    def reassert_version(
+        self,
+        *,
+        ref: AssetRef,
+        run_id: str | None = None,
+        producer_task: str | None = None,
+        created_at: str | None = None,
+        cache_key: str | None = None,
+    ) -> bool:
+        """Write a catalog row for a version replayed from the cache, if it has none.
+
+        A cache hit hands a consumer an :class:`AssetRef` rebuilt from the
+        entry's ``output.json``, which outlives the database: a catalog rebuilt
+        or lost behind an intact cache leaves that ref naming a version with no
+        row. Lineage then cannot record what was consumed, and the artifact
+        garbage collector — which protects ``cache_artifacts ∪ asset_versions``
+        — stops seeing the asset's bytes as live (issue #263).
+
+        The row this writes is honestly partial. A ref carries the version's
+        identity, its bytes and its metadata, but nothing about how it was
+        made: no parent edges, no ``code_version`` and no ``data_version``.
+        What the producing cache entry knows — its function, the run that wrote
+        it, when — the caller passes in.
+
+        An existing row is left exactly as it is, however much richer: a
+        re-assertion repairs an absence and never overwrites a fact.
+
+        Parameters
+        ----------
+        ref : AssetRef
+            The reference a cache hit replayed.
+        run_id : str | None
+            The run that produced the version, where it can be established.
+        producer_task : str | None
+            Fully-qualified name of the task that produced it, if known.
+        created_at : str | None
+            When the version came into being, as far as it can be recovered —
+            at worst an upper bound, since the entry replaying it cannot
+            predate it — and the time of the repair when there is nothing to
+            recover it from. The column is ``NOT NULL``, so unlike the
+            provenance columns it cannot be left to say nothing.
+        cache_key : str | None
+            The cache key of the entry the version was replayed from.
+
+        Returns
+        -------
+        bool
+            ``True`` when a row was missing and has been written.
+        """
+        with self._lock:
+            if self.version_by_id(ref.version_id) is not None:
+                return False
+            self._write(
+                ProjectionOp(
+                    sql=_INSERT_VERSION,
+                    params=(
+                        str(ref.key),
+                        ref.version_id,
+                        ref.kind,
+                        ref.artifact_id,
+                        ref.content_hash,
+                        run_id,
+                        None,
+                        producer_task,
+                        cache_key,
+                        created_at or now_iso(),
+                        None,
+                        None,
+                        dumps(ref.metadata),
+                    ),
+                )
+            )
+        return True
 
     def set_alias(self, *, key: AssetKey, alias: str, version_id: str) -> None:
         """Point one alias at a specific asset version.
