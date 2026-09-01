@@ -478,6 +478,7 @@ _MODEL_EXTENSION_BY_SUB_KIND = {
     "lightgbm": "joblib",
     "pytorch": "pt",
     "keras": "keras",
+    "pickle": "pkl",
 }
 
 
@@ -488,7 +489,9 @@ def serialize_model(result: AssetResult) -> SerializedAsset:
     wrappers in xgboost/lightgbm); PyTorch uses ``torch.save`` with the
     full model object so reloading does not require the original class
     to be re-defined in the same import path; Keras writes the native
-    ``.keras`` archive via a temporary file.
+    ``.keras`` archive via a temporary file. Every other payload takes
+    the generic ``pickle`` sub-kind, which needs no dependency beyond
+    the standard library.
     """
     sub_kind = result.sub_kind
     payload = result.payload
@@ -521,6 +524,10 @@ def serialize_model(result: AssetResult) -> SerializedAsset:
             target = Path(tmpdir) / "model.keras"
             payload.save(str(target))
             data = target.read_bytes()
+    elif sub_kind == "pickle":
+        import pickle
+
+        data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
     else:
         raise ValueError(f"unknown model sub_kind {sub_kind!r}")
 

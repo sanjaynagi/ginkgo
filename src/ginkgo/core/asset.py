@@ -625,9 +625,13 @@ def model(
     Parameters
     ----------
     payload : Any
-        The trained model object. Supports scikit-learn estimators,
-        XGBoost and LightGBM sklearn-wrapped models, PyTorch
-        ``nn.Module`` instances, and Keras/TensorFlow models.
+        The trained model object. Scikit-learn estimators, XGBoost and
+        LightGBM sklearn-wrapped models, PyTorch ``nn.Module``
+        instances, and Keras/TensorFlow models use their native
+        serialiser. Any other payload — a dict of weights, a
+        statsmodels result, your own estimator class — is stored with
+        ``pickle``; a payload that cannot be pickled (a lambda, an open
+        file handle) raises ``TypeError`` here.
     name : str | None
         Optional explicit local asset name.
     group : str | None
@@ -638,7 +642,10 @@ def model(
     framework : str | None
         Optional explicit framework override, bypassing module-based
         detection. Must be one of ``"sklearn"``, ``"xgboost"``,
-        ``"lightgbm"``, ``"pytorch"``, ``"keras"``.
+        ``"lightgbm"``, ``"pytorch"``, ``"keras"``, or ``"pickle"``
+        for the generic fallback. Note these are sub-kind names, not
+        module names: a ``torch`` payload is ``"pytorch"`` and a
+        ``tensorflow`` one is ``"keras"``.
     metrics : dict[str, float] | None
         Optional scalar metrics captured at training time. Stored as a
         first-class field on the asset version for ``ginkgo models`` and

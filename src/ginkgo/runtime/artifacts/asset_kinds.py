@@ -208,7 +208,9 @@ _MODEL_MODULE_ROOTS: dict[str, str] = {
     "keras": "keras",
     "tensorflow": "keras",
 }
-_MODEL_FRAMEWORKS: frozenset[str] = frozenset(_MODEL_MODULE_ROOTS.values())
+_GENERIC_MODEL_SUB_KIND = "pickle"
+_NATIVE_MODEL_FRAMEWORKS: frozenset[str] = frozenset(_MODEL_MODULE_ROOTS.values())
+_MODEL_FRAMEWORKS: frozenset[str] = _NATIVE_MODEL_FRAMEWORKS | {_GENERIC_MODEL_SUB_KIND}
 
 
 def _detect_model(
@@ -224,6 +226,14 @@ def _detect_model(
     ``lightgbm.sklearn.LGBMClassifier``) resolve to their owning package
     rather than ``sklearn``, which keeps serialisation consistent with
     the library that produced them.
+
+    Anything else — a dict of weights, a statsmodels result, a
+    hand-rolled estimator — falls back to the generic ``pickle``
+    sub-kind, so the model kind is not closed to the frameworks that
+    happen to have a native serialiser. The fallback pickles the payload
+    here rather than at serialisation time so an unpicklable payload
+    fails at the ``model()`` call site, where the traceback points at
+    the user's own code.
     """
     if framework is not None:
         if framework not in _MODEL_FRAMEWORKS:
@@ -233,12 +243,20 @@ def _detect_model(
         sub_kind = framework
     else:
         root = _module_root(payload)
+        sub_kind = _MODEL_MODULE_ROOTS.get(root, _GENERIC_MODEL_SUB_KIND)
+
+    if sub_kind == _GENERIC_MODEL_SUB_KIND:
+        import pickle
+
         try:
-            sub_kind = _MODEL_MODULE_ROOTS[root]
-        except KeyError as exc:
+            pickle.dumps(payload)
+        except Exception as exc:
             raise TypeError(
-                f"model() does not support payload of type "
-                f"{type(payload).__module__}.{type(payload).__name__}"
+                f"model() cannot store payload of type "
+                f"{type(payload).__module__}.{type(payload).__name__}: it is not a "
+                f"{', '.join(sorted(_NATIVE_MODEL_FRAMEWORKS))} model and is not "
+                f"picklable ({exc}). Store it as text(json.dumps(...)) or file(path) "
+                f"instead."
             ) from exc
 
     return payload, sub_kind, {"framework": sub_kind, "metrics": dict(metrics or {})}

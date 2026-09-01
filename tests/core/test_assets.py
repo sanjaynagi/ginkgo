@@ -207,9 +207,24 @@ class TestFactories:
         with pytest.raises(ValueError):
             model(clf, framework="onnx")
 
-    def test_model_rejects_unsupported_type(self) -> None:
-        with pytest.raises(TypeError):
-            model(object())
+    def test_model_generic_framework_override(self) -> None:
+        sklearn = pytest.importorskip("sklearn.dummy")
+        clf = sklearn.DummyClassifier()
+        wrapper = model(clf, framework="pickle")
+        assert wrapper.sub_kind == "pickle"
+        assert wrapper.kind_fields["framework"] == "pickle"
+
+    def test_model_unrecognised_payload_falls_back_to_pickle(self) -> None:
+        wrapper = model({"weights": [0.1, 0.2], "bias": 0.5}, metrics={"acc": 0.9})
+        assert wrapper.kind == "model"
+        assert wrapper.sub_kind == "pickle"
+        assert wrapper.kind_fields["framework"] == "pickle"
+        assert wrapper.kind_fields["metrics"] == {"acc": 0.9}
+
+    def test_model_rejects_unpicklable_payload(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            model(lambda x: x)
+        assert "picklable" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +347,29 @@ class TestSerializers:
 
         restored = joblib.load(io.BytesIO(result.data))
         assert list(restored.predict([[0.5], [2.5]])) == [0, 1]
+
+    def test_serialize_pickle_model_roundtrip(self) -> None:
+        from ginkgo.runtime.artifacts.asset_loaders import load_model_bytes
+
+        payload = {"weights": [0.1, -0.4], "bias": 0.25}
+        wrapper = model(payload, name="hand_rolled", metrics={"accuracy": 1.0})
+        result = serialize_asset(result=wrapper, index=0)
+        assert result.extension == "pkl"
+        assert result.metadata["sub_kind"] == "pickle"
+        assert result.metadata["framework"] == "pickle"
+        assert result.metadata["metrics"] == {"accuracy": 1.0}
+        assert result.metadata["byte_size"] == len(result.data)
+
+        class _Store:
+            def read_bytes(self, *, artifact_id: str) -> bytes:  # noqa: ARG002
+                return result.data
+
+        restored = load_model_bytes(
+            artifact_store=_Store(),  # type: ignore[arg-type]
+            artifact_id="stub",
+            metadata=dict(result.metadata),
+        )
+        assert restored == payload
 
     def test_serialization_error_wraps_underlying_failure(self) -> None:
         class Exploding:

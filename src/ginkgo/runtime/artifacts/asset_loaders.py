@@ -203,6 +203,14 @@ def load_model_bytes(
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    if sub_kind == "pickle":
+        import pickle
+
+        # Unpickling executes code held in the blob, the same contract the
+        # pytorch branch above accepts. The user accepts it at save time,
+        # and the bytes come from their own run's artifact store.
+        return pickle.loads(data)
+
     raise ValueError(f"unknown model sub_kind {sub_kind!r}")
 
 

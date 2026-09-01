@@ -549,7 +549,9 @@ matching helper (`table()`, `array()`, `fig()`, `text()`, `model()`) or
 serialization *sub-kind*: for example `table()` accepts a
 pandas/polars/pyarrow/duckdb object or a `.csv`/`.tsv` path, and `model()`
 derives the framework from the payload's top-level module (or from an explicit
-`framework=`). A `file` asset expects a path-like payload and is the only kind
+`framework=`), falling back to stdlib `pickle` for any payload outside the five
+natively serialized frameworks — see
+[What `model()` accepts](guide/assets.md#what-model-accepts). A `file` asset expects a path-like payload and is the only kind
 that stores its bytes by copying the declared source path directly.
 
 ### What are asset checks, and what happens to a run when a check fails?
