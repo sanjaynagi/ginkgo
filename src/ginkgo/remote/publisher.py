@@ -63,8 +63,12 @@ class RemotePublisher:
         return self._publish_tree(record)
 
     def _publish_blob(self, record: ArtifactRecord) -> ArtifactRecord:
-        """Upload a single blob."""
-        blob_path = self.local_blobs_dir / record.digest_hex
+        """Upload a single blob.
+
+        The local filename carries the record's extension (#231); the remote
+        key stays the bare digest so the remote layout is pure CAS.
+        """
+        blob_path = self.local_blobs_dir / f"{record.digest_hex}{record.extension}"
         remote_key = f"{self.prefix}blobs/{record.digest_hex}"
         self.backend.upload(src_path=blob_path, bucket=self.bucket, key=remote_key)
 

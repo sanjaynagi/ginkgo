@@ -264,7 +264,12 @@ File and folder outputs flow through a formal `ArtifactStore` contract,
 implemented locally by `LocalArtifactStore` in
 `ginkgo/runtime/artifacts/artifact_store.py`. Artifact identity is content-addressed:
 files use the blob digest and directories use a manifest digest. The store keeps
-bytes — `blobs/`, `trees/` — and records what it holds in the `artifacts` table;
+bytes — `blobs/`, `trees/` — and records what it holds in the `artifacts` table.
+A recorded blob's filename is its digest plus its original extension
+(`blobs/<digest>.parquet`), so a path handed to a command reveals its own
+format; a tree's member blobs stay bare digests, since they materialise under
+their real relative paths. Identity is the digest alone — the same bytes stored
+under two names keep the first record's extension;
 which entry owns which output is a `cache_artifacts` row. A remote artifact
 still carries a JSON record beside its bytes in the object store, because a
 machine that downloads it cannot read this workspace's database.

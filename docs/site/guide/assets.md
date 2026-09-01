@@ -208,10 +208,9 @@ Alternatively, have the producer return a `file` asset — `asset(csv_path)` —
 when the bytes on disk, rather than the typed payload, are what downstream
 tasks need.
 
-One caveat for the kinds that do bind a path: stored artifacts are
-content-addressed blobs with no file extension, so a command that switches
-behaviour on the suffix (`.png` versus `.svg`, say) may still need the bytes
-copied to a named path first.
+The path such a kind binds is content-addressed but keeps the artifact's
+file extension (`blobs/<digest>.png`), so a command that switches behaviour
+on the suffix (`.png` versus `.svg`, say) reads it correctly as-is.
 
 ### Inspecting Assets
 

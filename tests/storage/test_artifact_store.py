@@ -329,7 +329,7 @@ class TestStorageLayout:
         src.write_text("data")
 
         record = store.store(src_path=src)
-        blob_path = store._blobs_dir / record.digest_hex
+        blob_path = store._blobs_dir / f"{record.digest_hex}{record.extension}"
         assert blob_path.exists()
         assert blob_path.read_text() == "data"
 
@@ -356,6 +356,81 @@ class TestStorageLayout:
         LocalArtifactStore(root=root, index=CacheIndex.in_memory())
         assert (root / "blobs").is_dir()
         assert (root / "trees").is_dir()
+
+
+class TestBlobExtensions:
+    """A recorded blob's store filename carries its extension (#231)."""
+
+    def test_stored_file_keeps_its_suffix(self, store, tmp_path):
+        src = tmp_path / "figure.png"
+        src.write_bytes(b"png bytes")
+
+        record = store.store(src_path=src)
+
+        path = store.artifact_path(artifact_id=record.artifact_id)
+        assert path.suffix == ".png"
+        assert path.name == f"{record.digest_hex}.png"
+        assert path.exists()
+
+    def test_store_bytes_keeps_its_suffix(self, store):
+        record = store.store_bytes(data=b"payload", extension="parquet")
+
+        path = store.artifact_path(artifact_id=record.artifact_id)
+        assert path.suffix == ".parquet"
+        assert path.read_bytes() == b"payload"
+
+    def test_extensionless_source_stays_bare(self, store, tmp_path):
+        src = tmp_path / "README"
+        src.write_text("no suffix")
+
+        record = store.store(src_path=src)
+
+        path = store.artifact_path(artifact_id=record.artifact_id)
+        assert path.name == record.digest_hex
+
+    def test_retrieve_restore_read_delete_agree_on_the_path(self, store, tmp_path):
+        src = tmp_path / "data.csv"
+        src.write_text("a,b")
+        record = store.store(src_path=src)
+
+        linked = tmp_path / "linked.csv"
+        store.retrieve(artifact_id=record.artifact_id, dest_path=linked)
+        assert linked.resolve() == store.artifact_path(artifact_id=record.artifact_id)
+
+        restored = tmp_path / "restored.csv"
+        store.restore(artifact_id=record.artifact_id, dest_path=restored)
+        assert restored.read_text() == "a,b"
+
+        assert store.read_bytes(artifact_id=record.artifact_id) == b"a,b"
+
+        store.delete(artifact_id=record.artifact_id)
+        assert not store.artifact_path(artifact_id=record.artifact_id).exists()
+
+    def test_same_bytes_under_two_names_keep_the_first_record(self, store, tmp_path):
+        """Re-labelling the digest would strand the first file as an orphan."""
+        first = tmp_path / "table.csv"
+        first.write_text("same content")
+        second = tmp_path / "table.txt"
+        second.write_text("same content")
+
+        r1 = store.store(src_path=first)
+        r2 = store.store(src_path=second)
+
+        assert r1.artifact_id == r2.artifact_id
+        assert r2.extension == ".csv"
+        assert [p.name for p in store._blobs_dir.iterdir()] == [f"{r1.digest_hex}.csv"]
+        assert store.integrity_problems() == []
+
+    def test_tree_member_blobs_stay_bare_digests(self, store, tmp_path):
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "a.csv").write_text("aaa")
+
+        store.store(src_path=src_dir)
+
+        blob_names = [p.name for p in store._blobs_dir.iterdir()]
+        assert len(blob_names) == 1
+        assert "." not in blob_names[0]
 
 
 class TestRecordAccess:

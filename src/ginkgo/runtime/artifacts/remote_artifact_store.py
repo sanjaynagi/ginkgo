@@ -148,7 +148,7 @@ class RemoteArtifactStore:
         present.
         """
         if record.kind == "blob":
-            self._upload_blob(record.digest_hex)
+            self._upload_blob(record.digest_hex, extension=record.extension)
         else:
             self._upload_tree(record.digest_hex)
 
@@ -186,7 +186,7 @@ class RemoteArtifactStore:
         self.local.put_record(updated)
         return updated
 
-    def _upload_blob(self, digest_hex: str) -> None:
+    def _upload_blob(self, digest_hex: str, *, extension: str = "") -> None:
         """Upload a single blob to remote, skipping if already present.
 
         Blobs are content-addressed, so a remote object at the same key
@@ -194,8 +194,13 @@ class RemoteArtifactStore:
         a rerun from O(full dataset upload) into O(HEAD per blob), which
         is the difference between minutes and hours for large folder
         artifacts.
+
+        *extension* names the local file (a recorded blob carries its
+        extension in its store filename, #231); the remote key stays the
+        bare digest so the remote layout is pure CAS and a tree's member
+        blobs — uploaded without a record in hand — share it.
         """
-        blob_path = self.local._blobs_dir / digest_hex
+        blob_path = self.local._blobs_dir / f"{digest_hex}{extension}"
         if not blob_path.exists():
             return
         remote_key = f"{self.prefix}blobs/{digest_hex}"
@@ -259,16 +264,20 @@ class RemoteArtifactStore:
 
         # Download the content.
         if record.kind == "blob":
-            self._download_blob(record.digest_hex)
+            self._download_blob(record.digest_hex, extension=record.extension)
         else:
             self._download_tree(record.digest_hex)
 
         # Record it locally so LocalArtifactStore can find it.
         self.local.put_record(record)
 
-    def _download_blob(self, digest_hex: str) -> None:
-        """Download a single blob from remote into local store."""
-        dest = self.local._blobs_dir / digest_hex
+    def _download_blob(self, digest_hex: str, *, extension: str = "") -> None:
+        """Download a single blob from remote into local store.
+
+        *extension* names the local file to match the local store's layout;
+        the remote key is always the bare digest.
+        """
+        dest = self.local._blobs_dir / f"{digest_hex}{extension}"
         if dest.exists():
             return
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -58,7 +58,9 @@ def _make_publisher(tmp_path: Path) -> tuple[RemotePublisher, MagicMock]:
 class TestPublishBlob:
     def test_uploads_blob_and_sets_remote_uri(self, tmp_path) -> None:
         publisher, backend = _make_publisher(tmp_path)
-        blob_path = tmp_path / "blobs" / "abc123"
+        # The local CAS filename carries the record's extension (#231);
+        # the remote key stays the bare digest.
+        blob_path = tmp_path / "blobs" / "abc123.csv"
         blob_path.write_bytes(b"data")
 
         record = _make_record()
@@ -72,7 +74,7 @@ class TestPublishBlob:
     def test_returns_the_record_to_be_indexed(self, tmp_path) -> None:
         """The publisher moves bytes and hands the record back; the caller records it."""
         publisher, _ = _make_publisher(tmp_path)
-        blob_path = tmp_path / "blobs" / "abc123"
+        blob_path = tmp_path / "blobs" / "abc123.csv"
         blob_path.write_bytes(b"data")
 
         record = _make_record()
