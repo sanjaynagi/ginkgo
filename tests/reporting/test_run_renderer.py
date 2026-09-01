@@ -6,6 +6,7 @@ import json
 import warnings
 from io import StringIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -150,10 +151,9 @@ def test_ledger_only_events_are_ignored_silently() -> None:
 def test_preparing_env_is_an_active_status() -> None:
     state = _seeded_state()
 
-    refresh_status = state.handle_event_line(_event_line("preparing env", env="analysis"))
+    state.handle_event_line(_event_line("preparing env", env="analysis"))
 
     assert state.rows[0].status == "preparing env"
-    assert refresh_status == "preparing env"
 
 
 def test_preparation_does_not_start_the_task_clock() -> None:
@@ -169,21 +169,46 @@ def test_preparation_does_not_start_the_task_clock() -> None:
     assert state.rows[0].started_at is not None
 
 
-def test_leaving_preparation_triggers_a_live_refresh() -> None:
+def test_leaving_preparation_returns_the_row_to_waiting() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    refresh_status = state.handle_event_line(_event_line("waiting", env="analysis"))
+    state.handle_event_line(_event_line("waiting", env="analysis"))
 
-    assert refresh_status == "waiting"
     assert state.rows[0].status == "waiting"
     assert state.prepared_envs == ["analysis"]
 
 
-def test_unrelated_waiting_event_does_not_trigger_a_refresh() -> None:
+def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
     state = _seeded_state()
 
-    assert state.handle_event_line(_event_line("waiting")) == ""
+    state.handle_event_line(_event_line("waiting"))
+
+    assert state.env_prepare_seconds == 0.0
+    assert state.prepared_envs == []
+
+
+def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
+    """Events change state only; the Live display owns the repaint cadence.
+
+    Repainting per event stacks erase-and-redraw bursts on top of Rich's own
+    refresh thread, which is what the terminal shows as flicker.
+    """
+    live = MagicMock()
+    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
+    console = Console(file=StringIO(), width=120, force_terminal=True)
+    renderer = CliRunRenderer(console=console, summary=summary)
+    with patch("ginkgo.cli.renderers.run.Live", return_value=live):
+        renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", "local")])
+
+    for status in ("preparing env", "waiting", "running", "succeeded"):
+        renderer.write(_event_line(status, env="analysis") + "\n")
+
+    assert live.refresh.call_count == 0
+
+    renderer.finish(elapsed=1.0, success=True)
+
+    assert live.refresh.call_count == 1
 
 
 def test_env_prepare_time_accumulates_on_transition_out() -> None:

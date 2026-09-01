@@ -187,6 +187,15 @@ Every command that prints a table builds it through `cli/common.py`'s
 `stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
 width rule are written down once rather than in each command module.
 
+The live run table repaints on one cadence and one only:
+`renderers/run.py:_LIVE_REFRESH_PER_SECOND`, handed to Rich's `Live`. Rich has
+no synchronised-output support, so each repaint erases the block line by line
+before redrawing it, and the terminal flickers in proportion to how often that
+happens. Events therefore update `_RunEventState` and stop; the next frame
+picks the change up. A task finishing does not paint a frame of its own, which
+is what keeps a burst of concurrent completions from becoming a burst of
+repaints.
+
 ## Error reporting
 
 Two kinds of failure reach the CLI's top-level handler, and they are reported

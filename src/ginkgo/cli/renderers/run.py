@@ -45,10 +45,14 @@ from ginkgo.cli.renderers.models import (
 _GROUP_THRESHOLD = 6
 """Minimum invocation count to collapse same-task rows into a group."""
 
-_LIVE_REFRESH_STATUSES = frozenset(
-    {"preparing env", "staging", "submitted", "running", "succeeded", "failed"}
-)
-"""Status transitions significant enough to force an immediate Live refresh."""
+_LIVE_REFRESH_PER_SECOND = 10
+"""Frames per second the live display repaints at.
+
+Rich has no synchronised-output support: every repaint erases the block line
+by line before redrawing it, so the terminal flickers in proportion to how
+often that happens. This is the only cadence — events update state and wait
+for the next frame rather than painting one of their own.
+"""
 
 _ENV_PREPARE_STATUS = "preparing env"
 """Display status shown while a task's execution environment is installed."""
@@ -90,14 +94,12 @@ class _RunEventState:
         row = self.rows.get(node_id)
         return None if row is None else row.label
 
-    def handle_event_line(self, line: str) -> str:
+    def handle_event_line(self, line: str) -> None:
         """Apply one JSON event line to task state.
 
-        Returns
-        -------
-        str
-            The status that should trigger a live refresh, or ``""`` when
-            the event does not warrant one.
+        Applying an event never paints: the live display reads this state on
+        its own refresh cadence, which is what keeps a burst of events from
+        becoming a burst of repaints.
         """
         payload = json.loads(line)
         node_id = int(payload.get("node_id", -1))
@@ -108,8 +110,7 @@ class _RunEventState:
             message = payload.get("message")
             if isinstance(message, str) and message:
                 self.notices.append(message)
-                return "notice"
-            return ""
+            return
 
         event_time = time.perf_counter()
         if node_id not in self.rows:
@@ -124,7 +125,7 @@ class _RunEventState:
         row = self.rows[node_id]
         if isinstance(display_label, str):
             self._apply_display_label(node_id=node_id, display_label=display_label)
-        prepare_ended = self._track_env_prepare(
+        self._track_env_prepare(
             node_id=node_id,
             status=status,
             env=payload.get("env"),
@@ -139,13 +140,6 @@ class _RunEventState:
         elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
-        # Only refresh on state transitions that the user needs to see
-        # immediately. Rapid cache hits are batched by Rich's internal
-        # refresh rate to avoid flicker. Leaving `preparing env` is as visible
-        # a transition as entering it, whatever status follows.
-        if status in _LIVE_REFRESH_STATUSES or prepare_ended:
-            return status
-        return ""
 
     def _track_env_prepare(
         self,
@@ -154,26 +148,18 @@ class _RunEventState:
         status: str,
         env: object,
         event_time: float,
-    ) -> bool:
-        """Accumulate time a node spent preparing its execution environment.
-
-        Returns
-        -------
-        bool
-            True when this event ended an in-progress preparation window,
-            whether it completed or failed.
-        """
+    ) -> None:
+        """Accumulate time a node spent preparing its execution environment."""
         if status == _ENV_PREPARE_STATUS:
             self._env_prepare_started[node_id] = event_time
             if isinstance(env, str) and env not in self.prepared_envs:
                 self.prepared_envs.append(env)
-            return False
+            return
 
         started = self._env_prepare_started.pop(node_id, None)
         if started is None:
-            return False
+            return
         self.env_prepare_seconds += max(0.0, event_time - started)
-        return True
 
     def label_for(self, *, task_name: str) -> str:
         """Return a display label for a node the plan did not announce.
@@ -656,7 +642,12 @@ class CliRunRenderer:
         self._state.seed(planned_tasks=planned_tasks)
         self._started = True
         self._run_started_at = time.perf_counter()
-        self._live = Live(self, console=self._console, refresh_per_second=12, transient=False)
+        self._live = Live(
+            self,
+            console=self._console,
+            refresh_per_second=_LIVE_REFRESH_PER_SECOND,
+            transient=False,
+        )
         if self._console.is_terminal:
             self._live.start()
         else:
@@ -667,7 +658,7 @@ class CliRunRenderer:
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             if line.strip():
-                self._handle_event_line(line)
+                self._state.handle_event_line(line)
         return len(text)
 
     def flush(self) -> None:
@@ -686,7 +677,7 @@ class CliRunRenderer:
     ) -> None:
         """Print the final run summary."""
         if self._buffer.strip():
-            self._handle_event_line(self._buffer.strip())
+            self._state.handle_event_line(self._buffer.strip())
             self._buffer = ""
 
         self._final_elapsed = elapsed
@@ -737,11 +728,6 @@ class CliRunRenderer:
 
     def __rich__(self):
         return self._layout.render_run_layout(now=self._elapsed_clock())
-
-    def _handle_event_line(self, line: str) -> None:
-        refresh_status = self._state.handle_event_line(line)
-        if refresh_status and self._live is not None:
-            self._live.refresh()
 
     def _elapsed_clock(self) -> float:
         if self._final_elapsed is not None and self._run_started_at is not None:
