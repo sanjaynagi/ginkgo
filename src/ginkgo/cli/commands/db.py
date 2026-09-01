@@ -7,7 +7,8 @@ file is.
 
 ``check`` reports rather than repairs, and every half is answered by whoever
 owns it: SQLite for the file's integrity, the cache and the artifact store for
-whether their rows and their bytes agree, ``rundir`` for the run directories,
+whether their rows and their bytes agree, the cache and the asset catalog for
+whether a replayed asset still has a row, ``rundir`` for the run directories,
 the staging cache for its downloads, the cache index for environment drift.
 It is a read path — it opens the database read-only and never creates one.
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 from ginkgo.cli.common import stdout_console
 from ginkgo.formatting import cutoff_before, format_bytes, format_int
 from ginkgo.remote.staging import StagingCache
+from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.rundir import run_directory_problems
@@ -162,6 +164,7 @@ def _check(layout, *, rich_console) -> int:
         cache = CacheStore(index=index, root=layout.cache)
         problems += cache.integrity_problems()
         problems += cache.artifact_store_view.integrity_problems()
+        problems += cache.asset_reference_problems(assets=AssetStore.attached_to(index))
         problems += index.env_drift_problems()
 
     problems += StagingCache(db_path=path).integrity_problems()

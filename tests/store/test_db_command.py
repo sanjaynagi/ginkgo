@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 from ginkgo.cli.app import main
+from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion
 from ginkgo.formatting import now_iso
 from ginkgo.remote.staging import StagingCache, StagingEntry
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
+from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.runtime.artifacts.value_codec import encode_value
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.schema import SCHEMA_VERSION
@@ -48,6 +53,41 @@ def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
             artifact_ids={},
             size_bytes=2,
             run_id=None,
+        )
+
+
+_REPLAYED_REF = AssetRef(
+    key=AssetKey(namespace="table", name="a"),
+    version_id="7f" * 32,
+    kind="table",
+    artifact_id="artifact-a",
+    content_hash="hash-a",
+    artifact_path="/artifacts/artifact-a",
+)
+"""The asset reference a cache entry hands back to whoever consumes it."""
+
+
+def _asset_output(tmp_path, cache_key: str, ref: AssetRef) -> None:
+    """Give an entry the stored output of a task that produced one asset."""
+    entry_dir = tmp_path / ".ginkgo" / "cache" / cache_key
+    payload = encode_value(ref, base_dir=entry_dir)
+    (entry_dir / "output.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _catalogue(tmp_path, ref: AssetRef) -> None:
+    """Register the catalog row the entry's ref names."""
+    with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+        AssetStore.attached_to(index).register_version(
+            version=AssetVersion(
+                key=ref.key,
+                version_id=ref.version_id,
+                kind=ref.kind,
+                artifact_id=ref.artifact_id,
+                content_hash=ref.content_hash,
+                run_id="run-1",
+                producer_task="pkg.produce",
+                created_at=now_iso(),
+            )
         )
 
 
@@ -108,6 +148,29 @@ class TestDbCheckCache:
     def test_a_consistent_cache_passes(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         _entry(tmp_path, "key-1")
+
+        assert main(["db", "check"]) == 0
+        assert "integrity check passed" in capsys.readouterr().out
+
+    def test_an_entry_replaying_an_uncatalogued_version_is_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A catalog lost behind an intact cache is diagnosable (issue #263)."""
+        monkeypatch.chdir(tmp_path)
+        _entry(tmp_path, "key-1")
+        _asset_output(tmp_path, "key-1", _REPLAYED_REF)
+
+        assert main(["db", "check"]) == 1
+
+        output = capsys.readouterr().out
+        assert "1 asset version(s) a cache entry replays have no catalog row" in output
+        assert "table:a" in output
+
+    def test_an_entry_whose_versions_are_catalogued_passes(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        _entry(tmp_path, "key-1")
+        _asset_output(tmp_path, "key-1", _REPLAYED_REF)
+        _catalogue(tmp_path, _REPLAYED_REF)
 
         assert main(["db", "check"]) == 0
         assert "integrity check passed" in capsys.readouterr().out

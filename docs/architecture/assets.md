@@ -59,6 +59,23 @@ The ledger still records that a version was materialized, as an
 `AssetMaterialized` event carrying the key, the version, the artifact and the
 parents; it is the history, and `asset_versions` is the index.
 
+A cache hit registers nothing, but it does re-assert. The identity a consumer
+sees is replayed from the producer's `output.json`, which outlives the
+database, so a catalog rebuilt or restored behind an intact cache would leave
+every replayed ref naming a version with no row — lineage dropped, and the
+asset's bytes protected only for as long as the producing cache entry survives
+(issue #263). So the producer, on its own hit, walks the replayed value and
+writes a row for any version the catalog is missing
+(`AssetRegistrar.reassert_cached_versions` → `AssetStore.reassert_version`).
+A row that already exists is left untouched, however much richer. A row
+written this way is honestly partial: the ref carries the key, the kind, the
+artifact, the content hash and the metadata, while the producing cache entry
+supplies the function that made it and — where recomputing the version id from
+`created_run_id` proves the attribution — the run. What only the execution knew
+(`code_version`, `data_version`, parent edges) stays null rather than guessed.
+`ginkgo db check` reports what is still dangling, for a workspace no run has
+repaired yet.
+
 The catalog is metadata-only. Asset bytes are never stored in the catalog
 itself; every asset version points to an immutable `artifact_id` in the
 artifact store. This keeps three identities distinct, and none of them changed

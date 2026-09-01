@@ -27,6 +27,7 @@ from ginkgo.core.asset import (
     asset_ref_from_version,
     collect_asset_refs,
     make_asset_version,
+    make_asset_version_id,
 )
 from ginkgo.core.hashing import hash_str
 from ginkgo.errors import GinkgoError
@@ -43,6 +44,7 @@ from ginkgo.runtime.artifacts.asset_serialization import (
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.caching.cache import CacheStore
+from ginkgo.runtime.caching.index import CacheEntry
 from ginkgo.runtime.events import AssetMaterialized, GinkgoEvent, task_id_for_node
 
 
@@ -344,6 +346,50 @@ class AssetRegistrar:
 
         return asset_ref, version
 
+    def reassert_cached_versions(self, *, value: Any, cache_key: str) -> list[AssetRef]:
+        """Re-establish catalog rows for the asset versions a cache hit replayed.
+
+        A task that executes registers a row for every version it materializes;
+        a task that hits the cache registers nothing, and hands its consumers
+        refs rebuilt from ``output.json``. Where the catalog no longer holds
+        those versions — rebuilt, restored or lost behind an intact cache — the
+        consumer's lineage silently drops them and the artifact collector stops
+        protecting their bytes (issue #263). The producer repairs that on its
+        own hit rather than leaving a consumer to write another task's rows.
+
+        The repair is one-way: a version the catalog already knows is left
+        alone, so a healthy warm run costs one lookup per replayed asset and
+        never trades a fully-attributed row for a partial one.
+
+        Parameters
+        ----------
+        value : Any
+            The replayed cached result, whose nested refs name the versions.
+        cache_key : str
+            The entry the value came from, which is what the row can be
+            attributed from.
+
+        Returns
+        -------
+        list[AssetRef]
+            The refs whose rows were missing and have now been written.
+        """
+        refs = collect_asset_refs(value)
+        if not refs:
+            return []
+        entry = self.cache_store.index.entry(cache_key)
+        return [
+            ref
+            for ref in refs
+            if self.asset_store.reassert_version(
+                ref=ref,
+                run_id=_producing_run_id(ref=ref, entry=entry),
+                producer_task=None if entry is None else entry["function"],
+                created_at=None if entry is None else entry["created_at"],
+                cache_key=cache_key,
+            )
+        ]
+
     def _announce(
         self,
         *,
@@ -421,6 +467,24 @@ class AssetRegistrar:
                 ),
             )
         return list(unique.values())
+
+
+def _producing_run_id(*, ref: AssetRef, entry: CacheEntry | None) -> str | None:
+    """Return the run that produced a replayed version, when that is provable.
+
+    The entry's ``created_run_id`` is the run that wrote it, which is the run
+    that produced the value inside it. That is an inference, and a version id
+    can settle it: it hashes over the key, the content and the producing run,
+    so a recomputation that lands on the ref's own id proves the attribution.
+    Where it does not, the row is better left saying nothing than guessing.
+    """
+    if entry is None:
+        return None
+    run_id = entry["created_run_id"]
+    if not run_id:
+        return None
+    minted = make_asset_version_id(key=ref.key, content_hash=ref.content_hash, run_id=str(run_id))
+    return str(run_id) if minted == ref.version_id else None
 
 
 def _current_index_for(

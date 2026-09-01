@@ -150,6 +150,9 @@ provenance never degrades silently.
     with no row, a `cache_artifacts` row whose blob the artifact store lost;
   - the artifact store — a row whose blob or tree manifest is missing, and a
     file in `blobs/` or `trees/` that no row (and no tree manifest) names;
+  - the cache and the asset catalog together — a cache entry whose stored
+    output would replay an `AssetRef` naming a version `asset_versions` has no
+    row for (`CacheStore.asset_reference_problems`);
   - runs — a `runs` row with no run directory, and a run directory with no row;
   - the staging cache — a staged URI whose bytes are gone;
   - environments — a declared environment recorded as materializing two

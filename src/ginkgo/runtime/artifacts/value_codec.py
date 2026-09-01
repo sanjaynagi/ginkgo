@@ -252,6 +252,23 @@ def decode_value(
     return payload
 
 
+def encoded_asset_refs(payload: Any) -> list[AssetRef]:
+    """Return every asset reference an encoded payload names, without decoding it.
+
+    Restoring a value through :func:`decode_value` needs the artifact store and
+    the bytes behind everything in it. Asking which asset versions the value
+    names does not: the refs are in the encoded form itself. That is what lets
+    an integrity check read a cache entry it could not otherwise load.
+    """
+    if isinstance(payload, list):
+        return [ref for item in payload for ref in encoded_asset_refs(item)]
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("__ginkgo_type__") == "asset_ref":
+        return [AssetRef.from_dict(payload["value"])]
+    return [ref for item in payload.values() for ref in encoded_asset_refs(item)]
+
+
 def _encode_asset_checks(*, checks: tuple[Any, ...]) -> str:
     """Encode asset checks for process and remote-result transport."""
     try:
