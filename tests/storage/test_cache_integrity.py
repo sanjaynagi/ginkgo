@@ -1,7 +1,11 @@
 """Integration tests for cache integrity and working-tree materialization."""
 
+import importlib
+import linecache
 import stat
+import sys
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -36,6 +40,201 @@ class TestSourceHash:
             return x + 2
 
         assert fn_a.source_hash != fn_b.source_hash
+
+    def test_resource_declarations_do_not_change_the_hash(self):
+        """Resources are not cache-relevant, so decorator text must not be hashed."""
+
+        def declare_lean():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_generous():
+            @task(threads=8, memory="16Gi", retries=3)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_lean().source_hash == declare_generous().source_hash
+
+    def test_multi_line_decorator_is_filtered_the_same_way(self):
+        """A resource kwarg spanning several lines leaves no trace in the hash."""
+
+        def declare_inline():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_wrapped():
+            @task(
+                threads=1,
+                memory="4Gi",
+            )
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_inline().source_hash == declare_wrapped().source_hash
+
+    def test_resourceless_decorator_hashes_like_its_resourced_twin(self):
+        """Deleting every resource kwarg leaves the bare ``@task()`` call behind."""
+
+        def declare_bare():
+            @task()
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_resourced():
+            @task(threads=4)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_bare().source_hash == declare_resourced().source_hash
+
+    def test_env_argument_still_changes_the_hash(self):
+        """Only the resource-only arguments are filtered; ``env`` stays."""
+
+        def declare_local():
+            @task(threads=4)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_foreign():
+            @task(threads=4, env="flye")
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        assert declare_local().source_hash != declare_foreign().source_hash
+
+    def test_body_change_still_changes_the_hash(self):
+        """Filtering resource kwargs must not blunt invalidation on a body edit."""
+
+        def declare_original():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_edited():
+            @task(threads=1)
+            def compute(x: int) -> int:
+                return x + 2
+
+            return compute
+
+        assert declare_original().source_hash != declare_edited().source_hash
+
+    def test_comment_change_still_changes_the_hash(self):
+        """The definition's original bytes are hashed, comments included."""
+
+        def declare_uncommented():
+            @task()
+            def compute(x: int) -> int:
+                return x + 1
+
+            return compute
+
+        def declare_commented():
+            @task()
+            def compute(x: int) -> int:
+                # Bump by one.
+                return x + 1
+
+            return compute
+
+        assert declare_uncommented().source_hash != declare_commented().source_hash
+
+    def test_async_definition_is_filtered_like_any_other(self):
+        source = textwrap.dedent("""\
+            @task(threads=8)
+            async def compute(x: int) -> int:
+                return x + 1
+        """)
+        assert source_hash._without_resource_kwargs(source) == (
+            "@task()\nasync def compute(x: int) -> int:\n    return x + 1\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            pytest.param(
+                '@task("shell", threads=8, env="flye")\ndef c():\n    pass\n',
+                '@task("shell", env="flye")\ndef c():\n    pass\n',
+                id="positional-kind-and-env-survive",
+            ),
+            pytest.param(
+                '@task(\n    threads=8,\n    memory="4Gi",\n)\ndef c():\n    pass\n',
+                "@task()\ndef c():\n    pass\n",
+                id="multi-line-call-with-trailing-comma",
+            ),
+            pytest.param(
+                "@task(retry_on=(ValueError, KeyError), version=2)\ndef c():\n    pass\n",
+                "@task(version=2)\ndef c():\n    pass\n",
+                id="complex-value-expression",
+            ),
+            pytest.param(
+                "@task(threads=8, **extra)\ndef c():\n    pass\n",
+                "@task(**extra)\ndef c():\n    pass\n",
+                id="double-star-argument-survives",
+            ),
+            pytest.param(
+                "@ginkgo.task(threads=8)\n@other(threads=8)\ndef c():\n    pass\n",
+                "@ginkgo.task()\n@other(threads=8)\ndef c():\n    pass\n",
+                id="attribute-spelling-only",
+            ),
+            pytest.param(
+                '@task(threads=8)\ndef c():\n    return "é"  # threads=8\n',
+                '@task()\ndef c():\n    return "é"  # threads=8\n',
+                id="non-ascii-offsets-and-comment-text",
+            ),
+            pytest.param("@task\ndef c():\n    pass\n", "@task\ndef c():\n    pass\n", id="bare"),
+        ],
+    )
+    def test_resource_kwargs_are_deleted_from_task_calls(self, source, expected):
+        assert source_hash._without_resource_kwargs(source) == expected
+
+    def test_unparseable_source_falls_back_unchanged(self):
+        source = "@task(threads=8)\ndef compute(x: int) ->\n"
+        assert source_hash._without_resource_kwargs(source) == source
+
+    def test_nested_task_with_column_zero_string_falls_back_to_raw_source(self):
+        """``textwrap.dedent`` cannot flatten this, so the raw text is hashed."""
+
+        def declare(threads: int):
+            if threads == 1:
+
+                @task(threads=1)
+                def compute() -> str:
+                    return """
+banner
+"""
+            else:
+
+                @task(threads=8)
+                def compute() -> str:
+                    return """
+banner
+"""
+
+            return compute
+
+        # Over-invalidation, not a crash: the definition text keeps its kwargs.
+        assert declare(1).source_hash != declare(8).source_hash
 
     def test_unsourceable_function_raises_at_registration(self):
         # Functions created via exec() have no inspectable source.
@@ -132,6 +331,308 @@ class TestSourceHash:
             sys.modules.pop("pkg.helpers", None)
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)
+
+
+@contextmanager
+def _imported_from(install_root: Path, name: str):
+    """Import ``name`` from ``install_root``, then unload it and its siblings."""
+    sys.path.insert(0, str(install_root))
+    try:
+        yield importlib.import_module(name)
+    finally:
+        sys.path.remove(str(install_root))
+        for loaded in list(sys.modules):
+            module = sys.modules[loaded]
+            path = getattr(module, "__file__", None)
+            if path is not None and Path(path).is_relative_to(install_root):
+                sys.modules.pop(loaded, None)
+
+
+def _write_module(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+class TestInstalledTaskModuleClosure:
+    """A task module living in site-packages is bounded by its own package."""
+
+    def test_own_helpers_stay_in_closure_and_other_distributions_stay_out(
+        self, tmp_path, monkeypatch
+    ):
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "mypkg" / "__init__.py", "")
+        _write_module(
+            install_root / "mypkg" / "tasks.py",
+            """\
+            import vendorlib
+
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return vendorlib.scale(helpers.compute(x))
+            """,
+        )
+        _write_module(
+            install_root / "mypkg" / "helpers.py",
+            "def compute(x: int) -> int:\n    return x + 1\n",
+        )
+        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "mypkg.tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "mypkg",
+                "mypkg.tasks",
+                "mypkg.helpers",
+            }
+
+    def test_namespace_portion_bounds_at_the_own_regular_package(self, tmp_path, monkeypatch):
+        """Sibling portions of a shared namespace belong to other distributions."""
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "ns" / "inner" / "__init__.py", "")
+        _write_module(
+            install_root / "ns" / "inner" / "tasks.py",
+            """\
+            from ns import other
+
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return other.scale(helpers.compute(x))
+            """,
+        )
+        _write_module(
+            install_root / "ns" / "inner" / "helpers.py",
+            "def compute(x: int) -> int:\n    return x + 1\n",
+        )
+        _write_module(
+            install_root / "ns" / "other" / "__init__.py", "def scale(x): return x * 2\n"
+        )
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "ns.inner.tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "ns.inner",
+                "ns.inner.tasks",
+                "ns.inner.helpers",
+            }
+
+    def test_changed_helper_changes_the_hash(self, tmp_path, monkeypatch):
+        """The point of the closure: an installed helper still invalidates."""
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "mypkg" / "__init__.py", "")
+        _write_module(
+            install_root / "mypkg" / "tasks.py",
+            """\
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return helpers.compute(x)
+            """,
+        )
+        helpers_path = install_root / "mypkg" / "helpers.py"
+        _write_module(helpers_path, "def compute(x: int) -> int:\n    return x + 1\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "mypkg.tasks") as tasks:
+            before = source_hash.compute_source_hash(tasks.compute)
+            helpers_path.write_text(
+                "def compute(x: int) -> int:\n    return x + 100\n", encoding="utf-8"
+            )
+            assert source_hash.compute_source_hash(tasks.compute) != before
+
+    def test_init_less_installed_package_still_hashes_its_helpers(self, tmp_path, monkeypatch):
+        """A PEP 420 / stub-only package has no ``__init__.py`` to bound the walk."""
+        install_root = tmp_path / "site-packages"
+        _write_module(
+            install_root / "nspkg" / "tasks.py",
+            """\
+            from nspkg import helpers
+
+            def compute(x: int) -> int:
+                return helpers.compute(x)
+            """,
+        )
+        helpers_path = install_root / "nspkg" / "helpers.py"
+        _write_module(helpers_path, "def compute(x: int) -> int:\n    return x + 1\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        monkeypatch.setattr(source_hash, "_packages_distributions", lambda: {"nspkg": ["nsdist"]})
+        with _imported_from(install_root, "nspkg.tasks") as tasks:
+            before = source_hash.compute_source_hash(tasks.compute)
+            helpers_path.write_text(
+                "def compute(x: int) -> int:\n    return x + 100\n", encoding="utf-8"
+            )
+            assert source_hash.compute_source_hash(tasks.compute) != before
+
+    def test_unresolvable_installed_module_falls_back_to_the_install_root(
+        self, tmp_path, monkeypatch
+    ):
+        """No ``__init__.py`` and no metadata: over-hash rather than narrow silently."""
+        install_root = tmp_path / "site-packages"
+        _write_module(
+            install_root / "solo_tasks.py",
+            """\
+            import vendorlib
+
+            def compute(x: int) -> int:
+                return vendorlib.scale(x)
+            """,
+        )
+        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        monkeypatch.setattr(source_hash, "_packages_distributions", dict)
+        with _imported_from(install_root, "solo_tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "solo_tasks",
+                "vendorlib",
+            }
+
+    def test_distribution_confirmed_bare_module_holds_only_itself(self, tmp_path, monkeypatch):
+        """Metadata naming the module as its own top level bounds it to itself."""
+        install_root = tmp_path / "site-packages"
+        _write_module(
+            install_root / "solo_tasks.py",
+            """\
+            import vendorlib
+
+            def compute(x: int) -> int:
+                return vendorlib.scale(x)
+            """,
+        )
+        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        monkeypatch.setattr(
+            source_hash, "_packages_distributions", lambda: {"solo_tasks": ["solodist"]}
+        )
+        with _imported_from(install_root, "solo_tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {"solo_tasks"}
+
+
+def _hash_module_task(path: Path, body: str, *, module_name: str) -> str:
+    """Write ``body`` to ``path``, import it fresh, and hash its ``compute`` task."""
+    _write_module(path, body)
+    linecache.checkcache()
+    for loaded in [n for n in sys.modules if n == module_name or n.startswith(f"{module_name}.")]:
+        sys.modules.pop(loaded, None)
+    importlib.invalidate_caches()
+    module = importlib.import_module(module_name)
+    return source_hash.compute_source_hash(module.compute.fn)
+
+
+class TestSourceHashEndToEnd:
+    """Hash one real module on disk, rewrite it, hash again."""
+
+    @pytest.fixture
+    def hash_of(self, tmp_path, monkeypatch):
+        monkeypatch.syspath_prepend(str(tmp_path))
+        module_path = tmp_path / "e2e_tasks.py"
+
+        def _hash(body: str) -> str:
+            return _hash_module_task(module_path, body, module_name="e2e_tasks")
+
+        yield _hash
+        sys.modules.pop("e2e_tasks", None)
+
+    def test_resource_edit_leaves_the_hash_untouched(self, hash_of):
+        lean = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=24)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        generous = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=24, memory="16Gi")
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        assert lean == generous
+
+    def test_kind_edit_changes_the_hash(self, hash_of):
+        python_kind = hash_of("""\
+            from ginkgo import task
+
+            @task(kind="python", threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        shell_kind = hash_of("""\
+            from ginkgo import task
+
+            @task(kind="shell", threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        assert python_kind != shell_kind
+
+    def test_body_edit_changes_the_hash(self, hash_of):
+        original = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        edited = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=2)
+            def compute(x: int) -> int:
+                return x + 2
+            """)
+        assert original != edited
+
+    def test_non_task_decorator_text_still_changes_the_hash(self, hash_of):
+        """Only ``@task`` resource kwargs are filtered; user decorators are opaque."""
+        original = hash_of("""\
+            from ginkgo import task
+
+            def tag(**kwargs):
+                def wrap(fn):
+                    return fn
+                return wrap
+
+            @task(threads=2)
+            @tag(threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        edited = hash_of("""\
+            from ginkgo import task
+
+            def tag(**kwargs):
+                def wrap(fn):
+                    return fn
+                return wrap
+
+            @task(threads=2)
+            @tag(threads=8)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        assert original != edited
+
+    def test_version_edit_changes_the_hash(self, hash_of):
+        first = hash_of("""\
+            from ginkgo import task
+
+            @task(version=1, threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        second = hash_of("""\
+            from ginkgo import task
+
+            @task(version=2, threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        assert first != second
 
 
 class TestSourceHashCacheInvalidation:
