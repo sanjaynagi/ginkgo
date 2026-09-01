@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 
 from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.events import task_id_for_node
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
@@ -30,6 +31,10 @@ class PlanDiagnostic:
 
     Parameters
     ----------
+    task_id : str
+        Stable task id (``task_0007``), for event-stream consumers.
+    task_name : str
+        Full task name (``module.task``), for event-stream consumers.
     label : str
         Display label of the task that would fail.
     message : str
@@ -37,6 +42,8 @@ class PlanDiagnostic:
         value's kind, and the remedy.
     """
 
+    task_id: str
+    task_name: str
     label: str
     message: str
 
@@ -314,8 +321,23 @@ def _probe_node(
     try:
         evaluator.validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
     except TypeError as exc:
-        diagnostics.append(PlanDiagnostic(label=label, message=str(exc)))
-        return "will_run"
+        diagnostics.append(
+            PlanDiagnostic(
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                label=label,
+                message=str(exc),
+            )
+        )
+        # A diagnosed driver task still never reached a cache key, so it
+        # keeps the status the probe can actually stand behind.
+        return "unknown" if node.task_def.kind in _DRIVER_KINDS else "will_run"
+    except (FileNotFoundError, ValueError):
+        # The same errors NodeCache._is_valid_cached_result treats as "not
+        # really cached": typically a working-tree path the live run would
+        # restore from the artifact store before validating. The probe must
+        # not materialise anything, so it cannot tell — no claim.
+        return "unknown"
 
     # Notebook/script cache keys fold in a source hash obtained by evaluating
     # the task body; skip them rather than run user code during a dry run.

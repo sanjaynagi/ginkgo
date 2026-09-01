@@ -43,7 +43,6 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
     if plan.task_count == 0:
         console.print(Text("  no tasks in workflow", style="dim"))
         _render_dropped(plan=plan, console=console)
-        _render_problems(plan=plan, console=console)
         return
 
     label_width = min(

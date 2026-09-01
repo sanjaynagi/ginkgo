@@ -70,6 +70,7 @@ from ginkgo.runtime.events import (
     RunResourcesSampled,
     RunStarted,
     RunValidated,
+    TaskNotice,
 )
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
@@ -367,11 +368,25 @@ def run_workflow(
                     env_count=env_count,
                 )
             )
-            bus.emit(
-                RunCompleted(
-                    run_id=run_id, status="success", task_counts={"validated": task_count}
+            # The same warm-cache probe the plan preview runs: a provable
+            # input-contract violation must fail the scripted preflight too.
+            plan = build_dry_run_plan(evaluator=evaluator, workflow_label=workflow_path.name)
+            for diagnostic in plan.diagnostics:
+                bus.emit(
+                    TaskNotice(
+                        run_id=run_id,
+                        task_id=diagnostic.task_id,
+                        task_name=diagnostic.task_name,
+                        display_label=diagnostic.label,
+                        message=diagnostic.message,
+                    )
                 )
+            status = "failed" if plan.diagnostics else "success"
+            bus.emit(
+                RunCompleted(run_id=run_id, status=status, task_counts={"validated": task_count})
             )
+            if plan.diagnostics:
+                return 1
         elif plan_preview:
             plan = build_dry_run_plan(
                 evaluator=evaluator,

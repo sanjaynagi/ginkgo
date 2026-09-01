@@ -50,6 +50,21 @@ def consume_in_script(summary: file, output_path: str) -> file:
     return ginkgo.script(path="analyse.py", output=output_path)
 
 
+@task()
+def produce_file(output_path: str) -> file:
+    """Write a plain file output."""
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("payload")
+    return output_path
+
+
+@task()
+def consume_path(src: file) -> str:
+    """A valid file consumer."""
+    return Path(src).read_text()
+
+
 def _plan_for(build):
     """Build the dry-run plan for a flow body's expression."""
     with record_constructed_calls() as calls:
@@ -96,6 +111,50 @@ class TestWarmCacheDryRunValidation:
 
         assert len(plan.diagnostics) == 1
         assert plan.diagnostics[0].label.startswith("consume_in_script")
+        statuses = {
+            task.base_name: task.cache_status for wave in plan.waves for task in wave.tasks
+        }
+        # A diagnosed driver task never reached a cache key, so it keeps the
+        # status the probe can stand behind.
+        assert statuses["consume_in_script"] == "unknown"
+
+    def test_each_failing_task_gets_its_own_diagnostic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(produce_summary(output_path="results/summary.csv"))
+
+        def build():
+            summary = produce_summary(output_path="results/summary.csv")
+            return [
+                consume_as_file(summary=summary),
+                consume_in_script(summary=summary, output_path="out.txt"),
+            ]
+
+        plan = _plan_for(build)
+
+        assert sorted(d.label.split("(")[0] for d in plan.diagnostics) == [
+            "consume_as_file",
+            "consume_in_script",
+        ]
+
+    def test_a_deleted_but_restorable_output_degrades_instead_of_crashing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live run restores the file before validating; the probe cannot
+        materialise anything, so it makes no claim — and must not abort the
+        preview with the validator's FileNotFoundError."""
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(consume_path(src=produce_file(output_path="results/out.txt")))
+        Path("results/out.txt").unlink()
+
+        plan = _plan_for(lambda: consume_path(src=produce_file(output_path="results/out.txt")))
+
+        assert plan.diagnostics == ()
+        statuses = {
+            task.base_name: task.cache_status for wave in plan.waves for task in wave.tasks
+        }
+        assert statuses["consume_path"] == "unknown"
 
     def test_a_cold_cache_proves_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -197,3 +256,19 @@ class TestCliExitCode:
         Path("wf.py").write_text(SWITCHED_WORKFLOW.strip() + "\n", encoding="utf-8")
 
         assert cli_main(["run", "wf.py", "--dry-run", "--mode", "full"]) == 0
+
+    def test_agent_output_dry_run_fails_the_same_preflight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The scripted mode must not report success on a run the plan refuses."""
+        monkeypatch.chdir(tmp_path)
+        Path("wf.py").write_text(SWITCHED_WORKFLOW.strip() + "\n", encoding="utf-8")
+        assert cli_main(["run", "wf.py"]) == 0
+        capsys.readouterr()
+
+        status = cli_main(["run", "wf.py", "--dry-run", "--mode", "full", "--agent-output"])
+
+        out = capsys.readouterr().out
+        assert status == 1, out
+        assert "task_notice" in out
+        assert '"status": "failed"' in out or '"status":"failed"' in out
