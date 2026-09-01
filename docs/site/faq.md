@@ -448,11 +448,21 @@ this way; bump `version=` on the task when those change.
 
 ### Does changing a task's threads or memory invalidate its cache?
 
-No. The `source_hash` starts at the `def` line, so the `@task(...)` decorator is
-not hashed: raising `threads=`, adding `memory=`, or changing `retries=` leaves
-the cache key untouched and cached results stay valid. The decorator arguments
-that do matter to identity — `env=` and `version=` — go into the key directly
-rather than through the source hash.
+No. Before any source text is hashed — the task definition itself, and every
+file in its import closure — Ginkgo deletes the resource-only arguments of each
+`@task(...)` call from that text. `threads`, `memory`, `gpu`, `gpu_type`,
+`memory_retry_multiplier`, `resources`, `priority` and the `retry*` family are
+all filtered, so retuning them leaves the cache key untouched and cached results
+stay valid.
+
+Nothing else about the source is normalised. `kind=`, `env=` and `version=` all
+keep invalidating, as does a decorator of your own stacked on the task: Ginkgo
+cannot know which arguments of an unfamiliar decorator are safe to ignore, so it
+hashes them. The same goes for `@task` reached under an alias
+(`from ginkgo import task as run`), and for a task nested inside another
+function whose body holds an unindented line inside a triple-quoted string —
+both fall back to hashing the decorator text, which invalidates more often than
+strictly needed but never less.
 
 ### How do warm runs skip work?
 

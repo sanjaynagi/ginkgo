@@ -95,13 +95,33 @@ are pinned by environment identity instead. Without that boundary a project
 that keeps its environment in its own tree (`.pixi/envs/`, `.venv/`) would walk
 the whole interpreter for every task.
 
-The hash starts at the `def` line, so the `@task(...)` decorator itself is
-excluded. Its cache-relevant arguments — `env` and `version` — are already
-first-class in the key payload, while resources (`threads`, `memory`, `gpu`,
-`retries`) are deliberately absent from it; hashing the decorator text let a
-resource edit invalidate every cached result anyway (issue #192). Everything
-from the `def` onwards is hashed as its original bytes, not a regenerated form,
-so signature, body, comment and docstring edits all still invalidate.
+A task module that is itself installed has no project tree to separate from the
+environment, so its own package supplies the bound: the outermost ancestor
+directory carrying an `__init__.py`. A package with no `__init__.py` at all — a
+PEP 420 namespace package, or one shipped as stubs — is bounded instead by the
+top-level directory of the distribution that `importlib.metadata.packages_distributions()`
+maps its top-level name to. When neither resolves, the bound falls back to the
+install root and the installed-module filter stays off, which over-hashes; a
+narrower guess would silently stop the module's own helpers invalidating it
+(issue #235).
+
+Before any of that text is hashed — the task definition and each closure file
+alike — the resource-only keyword arguments of every `@task(...)` call in it are
+deleted (`_RESOURCE_ONLY_KWARGS` in `core/source_hash.py`: `threads`, `memory`,
+`gpu`, `gpu_type`, `memory_retry_multiplier`, `resources`, `priority` and the
+`retry*` family). These are absent from the key payload by design, so hashing
+their text let a resource edit invalidate every cached result anyway (issue
+#192). Filtering the closure files matters as much as filtering the definition:
+the task's own module is a closure member, so decorator text would otherwise
+re-enter the digest through it.
+
+The deletion works on AST location spans over the original source, not
+`ast.unparse`, so only the argument list of a matching call is rewritten. Every
+other byte survives, and signature, body, comment and docstring edits all still
+invalidate — as do `kind`, `env`, `version`, and the arguments of a user's own
+stacked decorators, which the filter deliberately does not interpret. Source
+that will not parse is hashed unchanged: over-invalidation is the safe
+direction.
 
 ## Environment identity
 
