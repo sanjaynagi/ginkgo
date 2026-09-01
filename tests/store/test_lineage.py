@@ -200,6 +200,57 @@ class TestWhy:
         assert [entry["param"] for entry in provenance.inputs] == ["frame"]
         assert provenance.to_payload()["artifact_id"] == c.artifact_id
 
+    def test_a_fan_in_parameter_reports_one_input_entry_per_asset(self, db_path: Path) -> None:
+        """`why` lists a row per consumed asset, so one param can repeat.
+
+        The rendered argument, its type and its digest describe the whole
+        argument rather than one asset inside it, so they stay on position 0
+        and the later entries carry only the asset that sat there (#264).
+        """
+        a, b, c = _chain(db_path)
+
+        with open_store(db_path, readonly=False) as store, store.transaction():
+            store.apply(
+                [
+                    ProjectionOp(
+                        sql="INSERT INTO tasks (run_id, task_id, node_id, name, kind, "
+                        "execution_mode, status) VALUES "
+                        "('run-2', 'task_0002', 2, 'build_c', 'python', 'local', 'succeeded')",
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO task_inputs (run_id, task_id, param, position, "
+                        "value_type, value_summary, digest, remote_uri, asset_key, "
+                        "asset_version_id) VALUES "
+                        "('run-2', 'task_0002', 'frames', 0, 'list', '[]', 'b3:1234', "
+                        "'s3://bucket/key', 'table:a', ?)",
+                        params=(a.version_id,),
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO task_inputs (run_id, task_id, param, position, "
+                        "asset_key, asset_version_id) VALUES "
+                        "('run-2', 'task_0002', 'frames', 1, 'table:b', ?)",
+                        params=(b.version_id,),
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO artifacts (artifact_id, kind, digest_algorithm, "
+                        "digest_hex, created_at) VALUES (?, 'file', 'blake3', 'x', 'now')",
+                        params=(c.artifact_id,),
+                    ),
+                ]
+            )
+
+        with _reader(db_path) as reader:
+            inputs = reader.why(c.artifact_id).inputs
+
+        assert [(entry["param"], entry["asset_key"]) for entry in inputs] == [
+            ("frames", "table:a"),
+            ("frames", "table:b"),
+        ]
+        assert all(
+            inputs[1][column] is None
+            for column in ("value_type", "value_summary", "digest", "remote_uri")
+        )
+
     def test_a_materialized_path_resolves_to_its_artifact(self, db_path: Path) -> None:
         _, _, c = _chain(db_path)
         materialized = db_path.parent / "outputs" / "figure.png"

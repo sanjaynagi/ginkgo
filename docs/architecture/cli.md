@@ -55,7 +55,11 @@ materialized file path or an artifact id in place of an asset key, it answers a
 different question with the same verb: which run and task produced those bytes,
 through which cache entry, and what that task consumed. Both readings are
 `ginkgo.query.Query.lineage` and `.why` underneath, and both open the database
-read-only.
+read-only. The consumed list prints one line per recorded input row, so a
+parameter handed several assets at once repeats its name down the list with a
+different asset each time; only its first line carries the rendered argument,
+its type and its digest, because those describe the whole argument rather than
+one asset inside it.
 
 `ginkgo runs` is where a recorded run is read. `runs ls` lists the run index
 with `--workflow`, `--status`, `--since` and `--limit` filters; `runs show`

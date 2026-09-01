@@ -684,9 +684,15 @@ def _declared_assets(raw: Any) -> dict[str, list[dict[str, Any]]]:
     This is the one place the two recorded shapes meet. A ``task_planned``
     event written before ``v=2`` maps each parameter to a single identity
     mapping; from ``v=2`` it maps to the list of every asset the parameter was
-    handed (issue #264). Events are kept forever, so the old shape is read
-    rather than migrated — normalising here means nothing downstream of this
-    function has to know either shape existed.
+    handed (issue #264). The old shape is accepted rather than migrated:
+    normalising here means nothing downstream of this function has to know
+    either shape existed.
+
+    Nothing re-projects stored events, so this is not a replay path — the rows
+    a ``v=1`` event caused were written when it was recorded. It is defensive
+    against a payload in the old shape still arriving, from an old remote
+    worker say. ``TaskPlanned.v`` is informational: nothing dispatches on it,
+    and this reads the value's shape instead.
     """
     if not isinstance(raw, dict):
         return {}
