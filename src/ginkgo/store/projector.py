@@ -262,50 +262,56 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
         if isinstance(entry, dict)
     }
     inputs = payload.get("inputs") or {}
-    declared_assets = payload.get("asset_inputs") or {}
+    declared_assets = _declared_assets(payload.get("asset_inputs"))
     # Every parameter that was hashed gets a row, including one the rendered
     # arguments do not name (a tmp_dir, say): the digest is the fact worth
     # keeping, and a missing summary is not a reason to drop it.
     parameters = {str(param): inputs.get(param, _ABSENT) for param in {**inputs, **hashes}}
     for param, value in parameters.items():
         entry = hashes.get(str(param), {})
-        asset = _asset_identity(declared=declared_assets.get(str(param)), entry=entry, value=value)
-        ops.append(
-            ProjectionOp(
-                sql="""
-                INSERT INTO task_inputs (
-                  run_id, task_id, param, position, value_type, value_summary,
-                  digest, artifact_id, asset_key, asset_version_id, remote_uri
-                ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (run_id, task_id, param, position) DO UPDATE SET
-                  value_type=excluded.value_type, value_summary=excluded.value_summary,
-                  digest=excluded.digest, artifact_id=excluded.artifact_id,
-                  asset_key=excluded.asset_key,
-                  asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri
-                """,
-                params=(
-                    event.run_id,
-                    task_id,
-                    str(param),
-                    entry.get("type"),
-                    None if value is _ABSENT else dumps(value),
-                    _digest_of(entry),
-                    asset.get("artifact_id"),
-                    asset.get("asset"),
-                    asset.get("version_id"),
-                    _remote_uri(entry),
-                ),
-            )
-        )
-        if asset.get("asset"):
+        # A parameter handed N assets gets N rows, one per position. Only
+        # position 0 carries the rendered value, its type and its digest:
+        # those describe the whole argument, not one asset inside it, and
+        # repeating them per position would read as N separate arguments.
+        assets = _asset_identities(declared=declared_assets.get(param), entry=entry, value=value)
+        for position, asset in enumerate(assets):
             ops.append(
-                _edge(
-                    run_id=event.run_id,
-                    src=("asset_version", str(asset.get("version_id") or asset["asset"])),
-                    dst=("task", task_id),
-                    edge="consumed",
+                ProjectionOp(
+                    sql="""
+                    INSERT INTO task_inputs (
+                      run_id, task_id, param, position, value_type, value_summary,
+                      digest, artifact_id, asset_key, asset_version_id, remote_uri
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (run_id, task_id, param, position) DO UPDATE SET
+                      value_type=excluded.value_type, value_summary=excluded.value_summary,
+                      digest=excluded.digest, artifact_id=excluded.artifact_id,
+                      asset_key=excluded.asset_key,
+                      asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri
+                    """,
+                    params=(
+                        event.run_id,
+                        task_id,
+                        param,
+                        position,
+                        entry.get("type") if position == 0 else None,
+                        None if (position or value is _ABSENT) else dumps(value),
+                        _digest_of(entry) if position == 0 else None,
+                        asset.get("artifact_id"),
+                        asset.get("asset"),
+                        asset.get("version_id"),
+                        _remote_uri(entry) if position == 0 else None,
+                    ),
                 )
             )
+            if asset.get("asset"):
+                ops.append(
+                    _edge(
+                        run_id=event.run_id,
+                        src=("asset_version", str(asset.get("version_id") or asset["asset"])),
+                        dst=("task", task_id),
+                        edge="consumed",
+                    )
+                )
 
     for dependency in payload.get("dependency_ids") or []:
         ops.append(
@@ -672,29 +678,66 @@ def accumulate_seconds(
     )
 
 
-def _asset_identity(
-    *, declared: dict[str, Any] | None, entry: dict[str, Any], value: Any
-) -> dict[str, Any]:
-    """Return the asset an input names, from whichever half recorded it.
+def _declared_assets(raw: Any) -> dict[str, list[dict[str, Any]]]:
+    """Return a ``task_planned`` payload's ``asset_inputs`` as a list per parameter.
+
+    This is the one place the two recorded shapes meet. A ``task_planned``
+    event written before ``v=2`` maps each parameter to a single identity
+    mapping; from ``v=2`` it maps to the list of every asset the parameter was
+    handed (issue #264). Events are kept forever, so the old shape is read
+    rather than migrated — normalising here means nothing downstream of this
+    function has to know either shape existed.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    declared: dict[str, list[dict[str, Any]]] = {}
+    for param, recorded in raw.items():
+        entries = recorded if isinstance(recorded, list) else [recorded]
+        kept = [entry for entry in entries if isinstance(entry, dict) and entry]
+        if kept:
+            declared[str(param)] = kept
+    return declared
+
+
+def _asset_identities(
+    *, declared: list[dict[str, Any]] | None, entry: dict[str, Any], value: Any
+) -> list[dict[str, Any]]:
+    """Return the assets an input names, one per row the parameter earns.
+
+    Always at least one entry, empty when the parameter named no asset at all,
+    so the caller writes the parameter's position-0 row either way.
 
     The evaluator knows the answer at resolution time and puts it on the event
     as ``asset_inputs``; that is the authority, and the only source for a
     parameter typed as the payload rather than as a file — by the time such an
     argument reaches the task the ref has become a DataFrame, and neither the
-    hash entry nor the rendered value can say where it came from.
+    hash entry nor the rendered value can say where it came from. A fan-in
+    parameter declares several, and each of them earns a row (issue #264).
 
-    The other two remain because the event predates them. A task that declares
-    a parameter as ``file`` and is handed an ``AssetRef`` is hashed as the file
-    it resolves to, because the cache keys on content and changing that payload
-    would invalidate every entry; the hash entry names the artifact, and the
-    rendered argument still describes the ref.
+    The other two fallbacks remain because the event predates them, and each
+    can only ever name one asset. A task that declares a parameter as ``file``
+    and is handed an ``AssetRef`` is hashed as the file it resolves to, because
+    the cache keys on content and changing that payload would invalidate every
+    entry; the hash entry names the artifact, and the rendered argument still
+    describes the ref.
     """
-    if declared and declared.get("asset_key"):
-        return {
-            "asset": declared["asset_key"],
-            "version_id": declared.get("version_id"),
-            "artifact_id": declared.get("artifact_id"),
-        }
+    if declared:
+        recorded = [
+            {
+                "asset": item["asset_key"],
+                "version_id": item.get("version_id"),
+                "artifact_id": item.get("artifact_id"),
+            }
+            for item in declared
+            if item.get("asset_key")
+        ]
+        if recorded:
+            return recorded
+    return [_fallback_asset_identity(entry=entry, value=value)]
+
+
+def _fallback_asset_identity(*, entry: dict[str, Any], value: Any) -> dict[str, Any]:
+    """Return the asset an input-hash entry or a rendered argument names."""
     if entry.get("asset"):
         return {
             "asset": entry["asset"],

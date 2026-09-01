@@ -97,6 +97,14 @@ Notes on the fields:
   parameter annotated as the payload (`enriched: pd.DataFrame`) has had its
   `AssetRef` rehydrated by the time the task sees it, so neither the digest nor
   the rendered value could say where it came from (issue #253).
+- A parameter handed several assets at once holds one `task_inputs` row per
+  position, each naming the asset that sat there, and each writing its own
+  `consumed` edge (issue #264). Only position 0 carries `value_type`,
+  `value_summary`, `digest` and `remote_uri`: those describe the whole
+  argument, not one asset inside it. `TaskPlanned.asset_inputs` maps a
+  parameter to a *list* from `v=2`; the projector's `_declared_assets` is the
+  one place the older single-mapping shape is read, so nothing below it has to
+  know both shapes exist.
 
 ## Sub-workflows
 

@@ -388,6 +388,10 @@ class AssetRegistrar:
         survives only on ``node.asset_inputs`` — recorded at resolution time
         for exactly this reason (issue #253). Both are read, so lineage does
         not depend on how a consumer chose to annotate its parameter.
+
+        A parameter can bind several assets at once — the fan-in shape — and
+        every one of them is a parent, so each parameter's whole list is read
+        rather than its first entry (issue #264).
         """
         if node.resolved_args is None:
             return []
@@ -395,32 +399,44 @@ class AssetRegistrar:
         for asset_ref in collect_asset_refs(node.resolved_args):
             unique[(asset_ref.namespace, asset_ref.name, asset_ref.version_id)] = asset_ref
         for param, declared in node.asset_inputs.items():
-            version_id = declared["version_id"]
-            version = self.asset_store.version_by_id(version_id)
-            if version is None:
-                # The catalog has no row for a version the evaluator resolved
-                # moments ago. Nothing downstream can be traced through it, and
-                # that is a registration bug rather than a shape lineage should
-                # quietly accept.
-                logger.warning(
-                    "Task %s consumed asset version %s through %r, "
-                    "which the catalog has no row for; lineage will not record it",
-                    node.task_def.name,
-                    version_id,
-                    param,
-                )
-                continue
-            key = (version.key.namespace, version.key.name, version.version_id)
-            unique.setdefault(
-                key,
-                asset_ref_from_version(
-                    version=version,
-                    artifact_path=self.cache_store.artifact_store_view.artifact_path(
-                        artifact_id=version.artifact_id
-                    ),
-                ),
-            )
+            for entry in declared:
+                self._add_declared_parent(unique=unique, param=param, node=node, declared=entry)
         return list(unique.values())
+
+    def _add_declared_parent(
+        self,
+        *,
+        unique: dict[tuple[str, str, str], AssetRef],
+        param: str,
+        node: Any,
+        declared: dict[str, Any],
+    ) -> None:
+        """Add one ``asset_inputs`` entry to the collected parents, if the catalog knows it."""
+        version_id = declared["version_id"]
+        version = self.asset_store.version_by_id(version_id)
+        if version is None:
+            # The catalog has no row for a version the evaluator resolved
+            # moments ago. Nothing downstream can be traced through it, and
+            # that is a registration bug rather than a shape lineage should
+            # quietly accept.
+            logger.warning(
+                "Task %s consumed asset version %s through %r, "
+                "which the catalog has no row for; lineage will not record it",
+                node.task_def.name,
+                version_id,
+                param,
+            )
+            return
+        key = (version.key.namespace, version.key.name, version.version_id)
+        unique.setdefault(
+            key,
+            asset_ref_from_version(
+                version=version,
+                artifact_path=self.cache_store.artifact_store_view.artifact_path(
+                    artifact_id=version.artifact_id
+                ),
+            ),
+        )
 
 
 def _current_index_for(

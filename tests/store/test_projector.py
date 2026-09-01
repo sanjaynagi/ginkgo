@@ -228,10 +228,56 @@ def test_replanning_replaces_the_inputs_rather_than_adding_to_them(
     _apply(started, _fixture("task_planned"))
     _apply(started, _fixture("task_planned", inputs={"columns": 4}))
 
-    rows = started.query("SELECT param FROM task_inputs ORDER BY param")
+    rows = started.query("SELECT param FROM task_inputs ORDER BY param, position")
     # "rows" came from the first plan and is gone; "table" is the hashed input
-    # the fixture carries either way.
-    assert [row["param"] for row in rows] == ["columns", "table"]
+    # the fixture carries either way, and it binds two assets so it holds two
+    # positions.
+    assert [row["param"] for row in rows] == ["columns", "table", "table"]
+
+
+def test_a_fan_in_parameter_gets_a_row_and_an_edge_per_asset(started: SqliteStore) -> None:
+    """Every asset bound to one parameter is recorded, not just the first (#264)."""
+    _apply(started, _fixture("task_planned"))
+
+    rows = started.query(
+        "SELECT position, asset_key, asset_version_id, value_summary FROM task_inputs "
+        "WHERE param = 'table' ORDER BY position"
+    )
+    edges = started.query("SELECT src_id FROM edges WHERE edge = 'consumed' ORDER BY src_id")
+
+    assert [(row["position"], row["asset_key"]) for row in rows] == [
+        (0, "table:rows"),
+        (1, "table:more_rows"),
+    ]
+    assert [row["src_id"] for row in edges] == ["v-abcdef", "v-bcdefa"]
+
+
+def test_an_event_recorded_before_the_list_shape_still_projects(started: SqliteStore) -> None:
+    """A ``task_planned`` written at ``v=1`` maps each parameter to one mapping.
+
+    Events are kept forever, so the projector reads the old shape rather than
+    the ledger being migrated to the new one.
+    """
+    _apply(
+        started,
+        _fixture(
+            "task_planned",
+            v=1,
+            asset_inputs={
+                "table": {
+                    "asset_key": "table:rows",
+                    "version_id": "v-abcdef",
+                    "artifact_id": "artifact-abcdef",
+                }
+            },
+        ),
+    )
+
+    rows = started.query("SELECT position, asset_key FROM task_inputs WHERE param = 'table'")
+    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
+
+    assert [(row["position"], row["asset_key"]) for row in rows] == [(0, "table:rows")]
+    assert edge["src_id"] == "v-abcdef"
 
 
 def test_task_started_opens_an_attempt(started: SqliteStore) -> None:
