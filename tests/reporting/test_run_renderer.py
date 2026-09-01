@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -150,10 +153,9 @@ def test_ledger_only_events_are_ignored_silently() -> None:
 def test_preparing_env_is_an_active_status() -> None:
     state = _seeded_state()
 
-    refresh_status = state.handle_event_line(_event_line("preparing env", env="analysis"))
+    state.handle_event_line(_event_line("preparing env", env="analysis"))
 
     assert state.rows[0].status == "preparing env"
-    assert refresh_status == "preparing env"
 
 
 def test_preparation_does_not_start_the_task_clock() -> None:
@@ -169,21 +171,48 @@ def test_preparation_does_not_start_the_task_clock() -> None:
     assert state.rows[0].started_at is not None
 
 
-def test_leaving_preparation_triggers_a_live_refresh() -> None:
+def test_leaving_preparation_returns_the_row_to_waiting() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    refresh_status = state.handle_event_line(_event_line("waiting", env="analysis"))
+    state.handle_event_line(_event_line("waiting", env="analysis"))
 
-    assert refresh_status == "waiting"
     assert state.rows[0].status == "waiting"
     assert state.prepared_envs == ["analysis"]
 
 
-def test_unrelated_waiting_event_does_not_trigger_a_refresh() -> None:
+def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
     state = _seeded_state()
 
-    assert state.handle_event_line(_event_line("waiting")) == ""
+    state.handle_event_line(_event_line("waiting"))
+
+    assert state.env_prepare_seconds == 0.0
+    assert state.prepared_envs == []
+
+
+def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
+    """Events change state only; the Live display owns the repaint cadence.
+
+    Repainting per event stacks erase-and-redraw bursts on top of Rich's own
+    refresh thread, which is what the terminal shows as flicker.
+    """
+    live = MagicMock()
+    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
+    console = Console(file=StringIO(), width=120, force_terminal=True)
+    renderer = CliRunRenderer(console=console, summary=summary)
+    with patch("ginkgo.cli.renderers.run._SynchronisedLive", return_value=live):
+        renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", "local")])
+
+    for status in ("preparing env", "waiting", "running", "succeeded"):
+        renderer.write(_event_line(status, env="analysis") + "\n")
+
+    assert live.refresh.call_count == 0
+
+    renderer.finish(elapsed=1.0, success=True)
+
+    # Stopping the display paints the final frame; nothing else asks for one.
+    assert live.refresh.call_count == 0
+    assert live.stop.call_count == 1
 
 
 def test_env_prepare_time_accumulates_on_transition_out() -> None:
@@ -205,6 +234,147 @@ def test_failed_preparation_still_reports_its_time() -> None:
 
     assert state.rows[0].status == "failed"
     assert state.env_prepare_seconds == pytest.approx(25.0, abs=0.05)
+
+
+@contextmanager
+def _wide_renderer(
+    tmp_path: Path, *, rows: int, height: int, width: int = 120
+) -> Iterator[tuple[CliRunRenderer, Console]]:
+    """Yield a live renderer with *rows* distinctly named planned tasks.
+
+    The console is a terminal, because the window over the task rows exists
+    for a display that repaints in place.
+    """
+    console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
+    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=8)
+    renderer = CliRunRenderer(console=console, summary=summary)
+    renderer.start(
+        planned_tasks=[(i, f"mod.step_{i:02d}", f"step_{i:02d}", "local") for i in range(rows)]
+    )
+    try:
+        yield renderer, console
+    finally:
+        if renderer._live is not None and renderer._live.is_started:
+            renderer._live.stop()
+
+
+def _live_lines(renderer: CliRunRenderer, console: Console) -> list[str]:
+    """Return the live layout's rendered lines, uncropped."""
+    return [
+        "".join(segment.text for segment in line)
+        for line in console.render_lines(renderer.__rich__(), console.options, pad=False)
+    ]
+
+
+def test_the_live_block_stays_inside_the_terminal(tmp_path: Path) -> None:
+    """A block as tall as the terminal scrolls, and a scrolled block flickers."""
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        lines = _live_lines(renderer, console)
+
+    assert len(lines) < console.height
+    assert any("below" in line for line in lines)
+
+
+def test_a_wrapping_notice_costs_the_lines_it_wraps_to(tmp_path: Path) -> None:
+    """Counting a notice as one line is how a sized block overflows anyway."""
+    notice = (
+        "Task read a path that ginkgo does not track, so a change to it will not "
+        "invalidate the cache and the next run will replay a stale result instead "
+        "of recomputing it: /very/long/path/to/an/untracked/input/file.csv"
+    )
+    with _wide_renderer(tmp_path, rows=42, height=30, width=60) as (renderer, console):
+        renderer.write(
+            json.dumps(
+                {"task": "mod.step_00", "status": "notice", "node_id": 0, "message": notice}
+            )
+            + "\n"
+        )
+        lines = _live_lines(renderer, console)
+
+    assert len(lines) < console.height
+
+
+def test_a_table_that_fits_shows_every_row(tmp_path: Path) -> None:
+    with _wide_renderer(tmp_path, rows=5, height=30) as (renderer, console):
+        lines = _live_lines(renderer, console)
+
+    assert all(f"step_{i:02d}" in "".join(lines) for i in range(5))
+    assert not any("above" in line or "below" in line for line in lines)
+
+
+def test_the_live_window_follows_the_tasks_in_flight(tmp_path: Path) -> None:
+    """Finished rows scroll off the top rather than hiding the running ones."""
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        for node_id in range(30):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "running", "node_id": node_id}
+                )
+                + "\n"
+            )
+        rendered = "".join(_live_lines(renderer, console))
+
+    assert "step_29" in rendered
+    assert "step_00" not in rendered
+    assert "above" in rendered
+    assert "below" in rendered
+
+
+def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
+    """A width read off the visible rows moves the status line and progress bar."""
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        renderer._state.rows[0].label = "a_task_with_a_very_long_label_indeed"
+        width_at_the_top = renderer._layout.task_table_width(now=0.0)
+        for node_id in range(30):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "running", "node_id": node_id}
+                )
+                + "\n"
+            )
+        width_once_scrolled = renderer._layout.task_table_width(now=0.0)
+
+    assert width_once_scrolled == width_at_the_top
+
+
+def test_the_finished_table_shows_every_row(tmp_path: Path) -> None:
+    """Nothing repaints after the run, so the last frame need not be windowed."""
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        renderer.finish(elapsed=1.0, success=True)
+        lines = _live_lines(renderer, console)
+
+    assert all(f"step_{i:02d}" in "".join(lines) for i in range(42))
+    assert not any("above" in line or "below" in line for line in lines)
+
+
+def test_a_piped_run_prints_every_row(tmp_path: Path) -> None:
+    """Nothing repaints into a pipe, so nothing there is worth windowing."""
+    output = StringIO()
+    console = Console(file=output, width=120, height=30, force_terminal=False)
+    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=8)
+    renderer = CliRunRenderer(console=console, summary=summary)
+    renderer.start(
+        planned_tasks=[(i, f"mod.step_{i:02d}", f"step_{i:02d}", "local") for i in range(42)]
+    )
+
+    renderer.finish(elapsed=1.0, success=True)
+
+    assert all(f"step_{i:02d}" in output.getvalue() for i in range(42))
+
+
+def test_each_repaint_is_bracketed_as_one_terminal_update(tmp_path: Path) -> None:
+    """DEC 2026 keeps the terminal from drawing a half-erased frame."""
+    output = StringIO()
+    console = Console(file=output, width=120, height=30, force_terminal=True)
+    summary = CliRunSummary(run_id="r1", mode="default", run_dir=tmp_path, cores=1)
+    renderer = CliRunRenderer(console=console, summary=summary)
+    renderer.start(planned_tasks=[(0, "mod.task_a", "task_a", "local")])
+    renderer.finish(elapsed=1.0, success=True)
+
+    painted = output.getvalue()
+
+    assert painted.count("\x1b[?2026h") == painted.count("\x1b[?2026l") > 0
+    assert painted.index("\x1b[?2026h") < painted.index("\x1b[?2026l")
 
 
 def test_summary_explains_slow_environment_preparation(tmp_path: Path) -> None:
