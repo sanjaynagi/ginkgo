@@ -111,9 +111,20 @@ annotated `[cached]`, `[will run]`, or `[unknown]`, with static `.map()`
 fan-out fully expanded and a peak-resource summary. Cache status is resolved
 by a leaf-anchored cascade — a task is checkable only while every upstream
 dependency is a confirmed cache hit — so a fully warm rerun previews as all
-`[cached]`. The plan builder (`runtime/dry_run.py`) is read-only: no task
-runs, no environment is prepared, and no cached output is materialised. Large
-fan-out groups collapse unless `--verbose` is passed.
+`[cached]`. Probing a checkable task also validates its resolved arguments
+through the run's own `TaskValidator.validate_inputs` — cached upstream
+outputs included, so a kind/path mismatch such as a `table` asset bound to a
+`file` parameter is provable before anything runs (#232). Each refusal is
+collected as a `PlanDiagnostic`, rendered under a red **Problems** section,
+and makes the command exit non-zero — in `--agent-output` mode each
+diagnostic is a `task_notice` event and the synthetic `run_completed` says
+`failed`. A cold cache cannot resolve those arguments and so reports
+nothing. Probe errors the live run would repair before validating (a
+deleted output the artifact store can restore) degrade the node to
+`[unknown]` rather than aborting the preview: the probe materialises
+nothing, so it makes no claim it cannot stand behind. The plan builder (`runtime/dry_run.py`) is
+read-only: no task runs, no environment is prepared, and no cached output is
+materialised. Large fan-out groups collapse unless `--verbose` is passed.
 
 There is no separate command for a project's validation workflows. `ginkgo test`
 used to discover every `*.py` under `tests/workflows/` (or a legacy `.tests/`)

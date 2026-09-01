@@ -495,6 +495,11 @@ class ConcurrentEvaluator:
         )
 
     @property
+    def validator(self) -> TaskValidator:
+        """The run's input/contract validator, shared with dry-run probing."""
+        return self._validator
+
+    @property
     def cache_store(self) -> CacheStore:
         """The cache store backing this evaluator."""
         return self._cache_store
