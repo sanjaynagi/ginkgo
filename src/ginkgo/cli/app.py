@@ -32,6 +32,20 @@ from ginkgo.cli.errors import report_failure, report_interrupt, traceback_reques
 from ginkgo.params import looks_like_flag
 from ginkgo.query import SQL_ROW_LIMIT
 from ginkgo.project import project_root
+from ginkgo.core.resources import parse_memory
+
+
+def _memory_arg(value: str) -> int:
+    """Parse a --memory value, accepting a bare GiB integer or Kubernetes notation."""
+    if value.isdigit():
+        return int(value)
+    try:
+        return parse_memory(value)
+    except ValueError as exc:
+        # argparse reports a bare "invalid value" for ValueError; this keeps
+        # parse_memory's message, which names the accepted notation.
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
 
 _MISSING_ARGS_PREFIX = "the following arguments are required: "
 
@@ -322,7 +336,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     run_parser.add_argument("--config", action="append", default=[])
     run_parser.add_argument("--jobs", type=int, default=None)
     run_parser.add_argument("--cores", type=int, default=None)
-    run_parser.add_argument("--memory", type=int, default=None)
+    run_parser.add_argument(
+        "--memory",
+        type=_memory_arg,
+        default=None,
+        metavar="GIB|K8S",
+        help="Memory budget, in GiB or Kubernetes notation (e.g. 80, 80Gi, 512Mi).",
+    )
     run_parser.add_argument("--gpus", type=int, default=None)
     run_parser.add_argument(
         "--resource",
