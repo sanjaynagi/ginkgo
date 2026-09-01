@@ -1,7 +1,9 @@
 """Unit tests for LocalArtifactStore."""
 
 import stat
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -358,6 +360,22 @@ class TestStorageLayout:
         assert (root / "trees").is_dir()
 
 
+@contextmanager
+def _spy_share_bytes():
+    """Record every share_bytes call the artifact store makes."""
+    import ginkgo.runtime.artifacts.artifact_store as module
+
+    calls: list[dict] = []
+    real = module.share_bytes
+
+    def recorder(*, src, dst, allow_hardlink=False):
+        calls.append({"src": src, "dst": dst, "allow_hardlink": allow_hardlink})
+        return real(src=src, dst=dst, allow_hardlink=allow_hardlink)
+
+    with mock.patch.object(module, "share_bytes", recorder):
+        yield calls
+
+
 class TestBlobExtensions:
     """A recorded blob's store filename carries its extension (#231)."""
 
@@ -420,6 +438,60 @@ class TestBlobExtensions:
         assert r2.extension == ".csv"
         assert [p.name for p in store._blobs_dir.iterdir()] == [f"{r1.digest_hex}.csv"]
         assert store.integrity_problems() == []
+
+    def test_standalone_blob_adopts_a_tree_member_file(self, store, tmp_path):
+        """The second store filename for the same bytes shares from the first.
+
+        share_bytes reflinks or hardlinks, so the observable is its source:
+        the second store must read from the sibling blob, not the user file.
+        """
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "member.csv").write_text("shared bytes")
+        solo = tmp_path / "solo.csv"
+        solo.write_text("shared bytes")
+
+        store.store(src_path=src_dir)
+        with _spy_share_bytes() as calls:
+            record = store.store(src_path=solo)
+
+        bare = store._blobs_dir / record.digest_hex
+        extended = store.artifact_path(artifact_id=record.artifact_id)
+        assert bare.exists() and extended.exists()
+        assert extended.read_text() == "shared bytes"
+        assert [c for c in calls if c["dst"] == extended] == [
+            {"src": bare, "dst": extended, "allow_hardlink": True}
+        ]
+        assert store.integrity_problems() == []
+
+    def test_tree_member_adopts_an_already_recorded_blob(self, store, tmp_path):
+        """Same dedup in the other order: standalone first, folder second."""
+        solo = tmp_path / "solo.csv"
+        solo.write_text("shared bytes")
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "member.csv").write_text("shared bytes")
+
+        record = store.store(src_path=solo)
+        with _spy_share_bytes() as calls:
+            store.store(src_path=src_dir)
+
+        bare = store._blobs_dir / record.digest_hex
+        extended = store.artifact_path(artifact_id=record.artifact_id)
+        assert bare.read_text() == "shared bytes"
+        assert [c for c in calls if c["dst"] == bare] == [
+            {"src": extended, "dst": bare, "allow_hardlink": True}
+        ]
+        assert store.integrity_problems() == []
+
+    def test_an_absurd_suffix_is_not_an_extension(self, store, tmp_path):
+        src = tmp_path / ("data." + "x" * 200)
+        src.write_text("bytes")
+
+        record = store.store(src_path=src)
+
+        assert record.extension == ""
+        assert store.artifact_path(artifact_id=record.artifact_id).exists()
 
     def test_tree_member_blobs_stay_bare_digests(self, store, tmp_path):
         src_dir = tmp_path / "mydir"

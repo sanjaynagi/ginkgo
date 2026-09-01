@@ -202,7 +202,10 @@ class RemoteArtifactStore:
         """
         blob_path = self.local._blobs_dir / f"{digest_hex}{extension}"
         if not blob_path.exists():
-            return
+            # Returning silently here would let _publish upload the ref JSON
+            # and stamp the row as published for bytes that never left this
+            # machine — a 404 every worker then trusts forever.
+            raise FileNotFoundError(f"Cannot publish blob missing from local store: {digest_hex}")
         remote_key = f"{self.prefix}blobs/{digest_hex}"
         try:
             self.backend.head(bucket=self.bucket, key=remote_key)
@@ -225,7 +228,9 @@ class RemoteArtifactStore:
         """
         tree_path = self.local._trees_dir / f"{digest_hex}.json"
         if not tree_path.exists():
-            return
+            # Same refusal as _upload_blob: a stamped ref for an absent tree
+            # is a permanent 404 nothing retries.
+            raise FileNotFoundError(f"Cannot publish tree missing from local store: {digest_hex}")
 
         remote_tree_key = f"{self.prefix}trees/{digest_hex}.json"
         try:

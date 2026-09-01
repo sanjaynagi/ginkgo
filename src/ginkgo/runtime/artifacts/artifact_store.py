@@ -48,6 +48,10 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 DIGEST_ALGORITHM = "blake3"
 
+# Longer than any real file extension; the digest already spends 64 of the
+# filename's 255 bytes, so an unbounded suffix could make store() fail.
+_MAX_EXTENSION_LEN = 32
+
 
 @runtime_checkable
 class ArtifactStore(Protocol):
@@ -425,7 +429,8 @@ class LocalArtifactStore:
         blob_path = self._blob_path(record)
 
         if not blob_path.exists():
-            blob_path.write_bytes(data)
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                blob_path.write_bytes(data)
             blob_path.chmod(_READ_ONLY_FILE)
 
         self.put_record(record)
@@ -472,11 +477,12 @@ class LocalArtifactStore:
             # that is intentional when ``src_is_readonly`` is set — the
             # caller has promised immutability — and enforces the
             # store's read-only invariant on the shared inode.
-            share_bytes(
-                src=src_path,
-                dst=blob_path,
-                allow_hardlink=src_is_readonly,
-            )
+            if not self._share_from_sibling(digest=digest, dst=blob_path):
+                share_bytes(
+                    src=src_path,
+                    dst=blob_path,
+                    allow_hardlink=src_is_readonly,
+                )
             blob_path.chmod(_READ_ONLY_FILE)
 
         self.put_record(record)
@@ -499,7 +505,8 @@ class LocalArtifactStore:
             # Store the blob.
             blob_path = self._blobs_dir / entry.blob_digest
             if not blob_path.exists():
-                share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
+                if not self._share_from_sibling(digest=entry.blob_digest, dst=blob_path):
+                    share_bytes(src=child, dst=blob_path, allow_hardlink=src_is_readonly)
                 blob_path.chmod(_READ_ONLY_FILE)
 
         tree_path = self._trees_dir / f"{tree_ref.digest_hex}.json"
@@ -523,6 +530,24 @@ class LocalArtifactStore:
         """Return the store path for a blob record: its digest plus extension."""
         return self._blobs_dir / f"{record.digest_hex}{record.extension}"
 
+    def _share_from_sibling(self, *, digest: str, dst: Path) -> bool:
+        """Populate *dst* from another store filename the same bytes live under.
+
+        A recorded blob (``<digest><ext>``) and a tree member (``<digest>``)
+        name the same content differently, so storing one after the other
+        would otherwise write the bytes to disk twice. Blobs are immutable,
+        so the copies can share an inode via hardlink instead.
+        """
+        candidates = [self._blobs_dir / digest]
+        existing = self._index.artifact(digest)
+        if existing is not None and existing.kind == "blob":
+            candidates.append(self._blob_path(existing))
+        for src in candidates:
+            if src != dst and src.exists():
+                share_bytes(src=src, dst=dst, allow_hardlink=True)
+                return True
+        return False
+
     def _existing_blob_record(self, *, digest: str, extension: str, size: int) -> ArtifactRecord:
         """Return the record a blob store should write bytes against.
 
@@ -530,10 +555,17 @@ class LocalArtifactStore:
         extension is only the filename's label. When the same bytes arrive
         twice under two names, the first record wins — re-labelling would
         strand the earlier file as an orphan the integrity check then flags.
+        The check is in-process only: two processes storing the same bytes
+        under different names can still each write their own file, and the
+        later record wins.
         """
         existing = self._index.artifact(digest)
         if existing is not None and existing.kind == "blob":
             return existing
+        if len(extension) > _MAX_EXTENSION_LEN:
+            # A "suffix" this long is not an extension, and the digest
+            # already spends 64 of the filename's 255 bytes.
+            extension = ""
         return ArtifactRecord(
             artifact_id=digest,
             kind="blob",

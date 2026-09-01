@@ -779,9 +779,10 @@ class TestExport:
         ]
 
     def test_single_file_inlines_figures_with_an_image_mime_type(self, tmp_path: Path) -> None:
-        # Figure sources are extensionless CAS blobs, so the MIME type has to
-        # come from the bundle path. A generic octet-stream URI renders only by
-        # browser content sniffing and breaks under a strict CSP.
+        # The MIME type comes from the bundle path (which, like the CAS
+        # source filename since #231, carries the record's extension). A
+        # generic octet-stream URI renders only by browser content sniffing
+        # and breaks under a strict CSP.
         run = _make_run(tmp_path=tmp_path, run_id="run-fig", fail=False)
         _register_asset(
             run=run,
