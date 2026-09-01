@@ -415,8 +415,10 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
     """Build the ordered task list, with its inputs, outputs and edges."""
     inputs: dict[str, dict[str, Any]] = {}
     for row in store.query(
+        # Position 0 is the row that carries the rendered argument; a fan-in
+        # parameter's later positions record only which asset sat at each one.
         "SELECT task_id, param, value_summary FROM task_inputs WHERE run_id = ? "
-        "ORDER BY task_id, param, position",
+        "AND position = 0 ORDER BY task_id, param",
         (run_id,),
     ):
         inputs.setdefault(row["task_id"], {})[row["param"]] = loads(row["value_summary"])

@@ -305,7 +305,7 @@ class NodeRun:
     driver_directive: Any = None
     extra_source_hash: str | None = None
     asset_versions: list[AssetVersion] = field(default_factory=list)
-    asset_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    asset_inputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
@@ -1234,14 +1234,14 @@ class ConcurrentEvaluator:
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
-        asset_inputs: dict[str, dict[str, Any]] | None = None,
+        asset_inputs: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """Resolve concrete arguments for a task call.
 
         *asset_inputs* is filled in as arguments resolve, with the identity of
-        the asset each parameter was handed. This is the only moment it is
+        every asset each parameter was handed. This is the only moment it is
         knowable for a semantically typed parameter: the next line rehydrates
-        the ref into the payload the task asked for, and the identity is gone.
+        the refs into the payload the task asked for, and the identity is gone.
         """
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
@@ -1264,14 +1264,17 @@ class ConcurrentEvaluator:
                 if asset_inputs is not None:
                     refs = collect_asset_refs(materialised)
                     if refs:
-                        # One row per parameter is what task_inputs holds, so
-                        # the first ref is the one recorded — see the
-                        # ``asset_inputs`` docstring on TaskPlanned.
-                        asset_inputs[name] = {
-                            "asset_key": str(refs[0].key),
-                            "version_id": refs[0].version_id,
-                            "artifact_id": refs[0].artifact_id,
-                        }
+                        # Every ref, not just the first: a fan-in consumer
+                        # binds N assets to one parameter and each is a
+                        # lineage parent — see TaskPlanned.asset_inputs.
+                        asset_inputs[name] = [
+                            {
+                                "asset_key": str(ref.key),
+                                "version_id": ref.version_id,
+                                "artifact_id": ref.artifact_id,
+                            }
+                            for ref in refs
+                        ]
                 # A path-shaped annotation binds a filesystem path at every
                 # depth, so the whole value — including any nested containers
                 # — keeps its ``AssetRef`` entries rather than becoming live
@@ -2081,7 +2084,9 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
-                asset_inputs=dict(node.asset_inputs),
+                asset_inputs={
+                    param: list(declared) for param, declared in node.asset_inputs.items()
+                },
                 cache_key=node.cache_key,
                 source_hash=node.task_def.cache_source_hash,
                 version=node.task_def.version,

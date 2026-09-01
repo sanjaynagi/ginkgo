@@ -1044,7 +1044,12 @@ class Query:
     def _task_inputs(
         self, *, run_id: str | None, task_id: str | None
     ) -> tuple[dict[str, Any], ...]:
-        """Return the recorded inputs of one task, one mapping per parameter."""
+        """Return the recorded inputs of one task, one mapping per input row.
+
+        A parameter handed several assets at once has a row per position; only
+        its position-0 row carries the rendered value, type and digest, the
+        rest naming the asset that sat at that position.
+        """
         if run_id is None or task_id is None:
             return ()
         rows = self._store.query(

@@ -78,11 +78,18 @@ def _events() -> list[GinkgoEvent]:
             inputs={"rows": 10},
             input_hashes=[{"param": "table", "digest": "b3:1234"}],
             asset_inputs={
-                "table": {
-                    "asset_key": "table:rows",
-                    "version_id": "v-abcdef",
-                    "artifact_id": "artifact-abcdef",
-                }
+                "table": [
+                    {
+                        "asset_key": "table:rows",
+                        "version_id": "v-abcdef",
+                        "artifact_id": "artifact-abcdef",
+                    },
+                    {
+                        "asset_key": "table:more_rows",
+                        "version_id": "v-bcdefa",
+                        "artifact_id": "artifact-bcdefa",
+                    },
+                ]
             },
             cache_key="cache_abcdef",
             source_hash="src_abcdef",

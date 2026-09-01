@@ -342,7 +342,10 @@ every nested `AssetResult`, and replaces it with a resolved `AssetRef`:
    before the task ran, and its identity is read from
    `NodeRun.asset_inputs`, captured at resolution time for exactly this reason
    (issue #253). Both sources feed the same `derived_from` edges, so lineage
-   does not depend on how a consumer chose to write its signature.
+   does not depend on how a consumer chose to write its signature. A parameter
+   handed several assets at once — the fan-in shape — records every one of
+   them, so a summary asset names all N parents rather than the first
+   (issue #264).
 6. For kinds flagged as `rehydrate_on_receive` (all except `file` and
    `fig`), the producer's live Python object is stashed in the
    per-evaluator `LivePayloadRegistry` keyed by `artifact_id`, so a

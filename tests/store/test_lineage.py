@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ginkgo import query, table, task
+from ginkgo import query, table, task, text
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
 from ginkgo.query import Query
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -200,6 +200,57 @@ class TestWhy:
         assert [entry["param"] for entry in provenance.inputs] == ["frame"]
         assert provenance.to_payload()["artifact_id"] == c.artifact_id
 
+    def test_a_fan_in_parameter_reports_one_input_entry_per_asset(self, db_path: Path) -> None:
+        """`why` lists a row per consumed asset, so one param can repeat.
+
+        The rendered argument, its type and its digest describe the whole
+        argument rather than one asset inside it, so they stay on position 0
+        and the later entries carry only the asset that sat there (#264).
+        """
+        a, b, c = _chain(db_path)
+
+        with open_store(db_path, readonly=False) as store, store.transaction():
+            store.apply(
+                [
+                    ProjectionOp(
+                        sql="INSERT INTO tasks (run_id, task_id, node_id, name, kind, "
+                        "execution_mode, status) VALUES "
+                        "('run-2', 'task_0002', 2, 'build_c', 'python', 'local', 'succeeded')",
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO task_inputs (run_id, task_id, param, position, "
+                        "value_type, value_summary, digest, remote_uri, asset_key, "
+                        "asset_version_id) VALUES "
+                        "('run-2', 'task_0002', 'frames', 0, 'list', '[]', 'b3:1234', "
+                        "'s3://bucket/key', 'table:a', ?)",
+                        params=(a.version_id,),
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO task_inputs (run_id, task_id, param, position, "
+                        "asset_key, asset_version_id) VALUES "
+                        "('run-2', 'task_0002', 'frames', 1, 'table:b', ?)",
+                        params=(b.version_id,),
+                    ),
+                    ProjectionOp(
+                        sql="INSERT INTO artifacts (artifact_id, kind, digest_algorithm, "
+                        "digest_hex, created_at) VALUES (?, 'file', 'blake3', 'x', 'now')",
+                        params=(c.artifact_id,),
+                    ),
+                ]
+            )
+
+        with _reader(db_path) as reader:
+            inputs = reader.why(c.artifact_id).inputs
+
+        assert [(entry["param"], entry["asset_key"]) for entry in inputs] == [
+            ("frames", "table:a"),
+            ("frames", "table:b"),
+        ]
+        assert all(
+            inputs[1][column] is None
+            for column in ("value_type", "value_summary", "digest", "remote_uri")
+        )
+
     def test_a_materialized_path_resolves_to_its_artifact(self, db_path: Path) -> None:
         _, _, c = _chain(db_path)
         materialized = db_path.parent / "outputs" / "figure.png"
@@ -288,3 +339,103 @@ class TestPlainValueConsumption:
             graph = reader.lineage("table:a", direction="downstream")
 
         assert "table:b" in {str(version.key) for version in graph.versions.values()}
+
+
+# ---------------------------------------------------------------------------
+# Fan-in: one parameter handed several assets at once (#264)
+# ---------------------------------------------------------------------------
+
+
+@task()
+def _produce_text(label: str) -> object:
+    return text(f"contents of {label}", name=label)
+
+
+@task()
+def _produce_table(label: str) -> object:
+    return table(pd.DataFrame({"n": [len(label)]}), name=label)
+
+
+@task()
+def _summarise_fan_in(digests: list[str], frames: list[pd.DataFrame]) -> object:
+    """Aggregate N per-sample assets into one summary, the fan-in shape."""
+    assert all(isinstance(item, str) for item in digests)
+    assert all(isinstance(item, pd.DataFrame) for item in frames)
+    return text(f"{len(digests)}+{len(frames)}", name="summary")
+
+
+class TestFanInConsumption:
+    """Every asset bound to one parameter is a parent, not just the first.
+
+    A parameter typed as the payload loses its refs the moment they are
+    rehydrated, so ``asset_inputs`` is the only record of what it was handed.
+    Keeping one entry per parameter dropped every asset but the first, which
+    is most of the lineage of exactly the tasks lineage is for (#264).
+    """
+
+    @pytest.fixture
+    def fan_in_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(tmp_path)
+        ledger = Ledger.start(root=tmp_path)
+        evaluator = ConcurrentEvaluator(
+            run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1
+        )
+        evaluator.evaluate(
+            _summarise_fan_in(
+                digests=[_produce_text(label=label) for label in ("a", "b", "c")],
+                frames=[_produce_table(label=label) for label in ("d", "e")],
+            )
+        )
+        ledger.finish()
+        return ledger.db
+
+    def test_every_consumed_asset_becomes_a_parent(self, fan_in_run: Path) -> None:
+        with query.open(WorkspaceLayout(root=fan_in_run.parent)) as reader:
+            graph = reader.lineage("text:summary")
+            summary = graph.root.version_id
+            parents = [
+                str(graph.versions[parent].key)
+                for parent, child in graph.edges
+                if child == summary
+            ]
+
+        assert set(parents) == {"text:a", "text:b", "text:c", "table:d", "table:e"}
+
+    def test_lineage_returns_every_parent(self, fan_in_run: Path) -> None:
+        with query.open(WorkspaceLayout(root=fan_in_run.parent)) as reader:
+            graph = reader.lineage("text:summary")
+
+        assert {str(version.key) for version in graph.versions.values()} == {
+            "text:summary",
+            "text:a",
+            "text:b",
+            "text:c",
+            "table:d",
+            "table:e",
+        }
+
+    def test_the_input_rows_carry_one_position_per_asset(self, fan_in_run: Path) -> None:
+        with open_store(fan_in_run, readonly=True) as store:
+            rows = store.query(
+                "SELECT param, position, asset_key FROM task_inputs "
+                "WHERE asset_key IS NOT NULL ORDER BY param, position"
+            )
+
+        assert [(row["param"], row["position"], row["asset_key"]) for row in rows] == [
+            ("digests", 0, "text:a"),
+            ("digests", 1, "text:b"),
+            ("digests", 2, "text:c"),
+            ("frames", 0, "table:d"),
+            ("frames", 1, "table:e"),
+        ]
+
+    def test_the_rendered_argument_stays_on_position_zero(self, fan_in_run: Path) -> None:
+        """One argument was rendered, so one row describes it — the rest name assets."""
+        with open_store(fan_in_run, readonly=True) as store:
+            rows = store.query(
+                "SELECT position, value_type, value_summary FROM task_inputs "
+                "WHERE param = 'digests' ORDER BY position"
+            )
+
+        assert rows[0]["value_summary"] is not None
+        assert all(row["value_summary"] is None and row["value_type"] is None for row in rows[1:])

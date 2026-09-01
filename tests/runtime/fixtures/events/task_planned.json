@@ -1,10 +1,17 @@
 {
   "asset_inputs": {
-    "table": {
-      "artifact_id": "artifact-abcdef",
-      "asset_key": "table:rows",
-      "version_id": "v-abcdef"
-    }
+    "table": [
+      {
+        "artifact_id": "artifact-abcdef",
+        "asset_key": "table:rows",
+        "version_id": "v-abcdef"
+      },
+      {
+        "artifact_id": "artifact-bcdefa",
+        "asset_key": "table:more_rows",
+        "version_id": "v-bcdefa"
+      }
+    ]
   },
   "attempt": 0,
   "cache_key": "cache_abcdef",
@@ -32,6 +39,6 @@
   "task_id": "task_0007",
   "task_name": "analysis.fit",
   "ts": "2026-08-28T09:00:00+00:00",
-  "v": 1,
+  "v": 2,
   "version": 3
 }

@@ -97,6 +97,23 @@ Notes on the fields:
   parameter annotated as the payload (`enriched: pd.DataFrame`) has had its
   `AssetRef` rehydrated by the time the task sees it, so neither the digest nor
   the rendered value could say where it came from (issue #253).
+- A parameter handed several assets at once holds one `task_inputs` row per
+  position, each naming the asset that sat there, and each writing its own
+  `consumed` edge (issue #264). `position` counts the refs `collect_asset_refs`
+  yields for that parameter, not the elements of the argument: for a list
+  mixing assets with plain values, position 1 is the second *asset*.
+- Only position 0 carries `value_type`, `value_summary`, `digest` and
+  `remote_uri`: those describe the whole argument, not one asset inside it.
+  `lineage why` prints a line per row, so a fan-in parameter's name repeats
+  down the input list with only its asset key varying.
+- `TaskPlanned.asset_inputs` maps a parameter to a *list* from `v=2`, and to a
+  single mapping before it. The projector's `_declared_assets` accepts either,
+  which is the one place the difference is known. Nothing dispatches on
+  `TaskPlanned.v` — it records which shape was written and is otherwise
+  informational — and nothing re-projects stored events: a `v=1` event wrote
+  its rows when it was recorded, and the rows already in the database are not
+  rebuilt. The old shape is accepted because a payload can still reach the
+  projector from an old remote worker, not because anything replays one.
 
 ## Sub-workflows
 
