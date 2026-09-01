@@ -1,7 +1,10 @@
 """Integration tests for cache integrity and working-tree materialization."""
 
+import importlib
 import stat
+import sys
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -246,6 +249,133 @@ class TestSourceHash:
             sys.modules.pop("pkg.helpers", None)
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)
+
+
+@contextmanager
+def _imported_from(install_root: Path, name: str):
+    """Import ``name`` from ``install_root``, then unload it and its siblings."""
+    sys.path.insert(0, str(install_root))
+    try:
+        yield importlib.import_module(name)
+    finally:
+        sys.path.remove(str(install_root))
+        for loaded in list(sys.modules):
+            module = sys.modules[loaded]
+            path = getattr(module, "__file__", None)
+            if path is not None and Path(path).is_relative_to(install_root):
+                sys.modules.pop(loaded, None)
+
+
+def _write_module(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+class TestInstalledTaskModuleClosure:
+    """A task module living in site-packages is bounded by its own package."""
+
+    def test_own_helpers_stay_in_closure_and_other_distributions_stay_out(
+        self, tmp_path, monkeypatch
+    ):
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "mypkg" / "__init__.py", "")
+        _write_module(
+            install_root / "mypkg" / "tasks.py",
+            """\
+            import vendorlib
+
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return vendorlib.scale(helpers.compute(x))
+            """,
+        )
+        _write_module(
+            install_root / "mypkg" / "helpers.py",
+            "def compute(x: int) -> int:\n    return x + 1\n",
+        )
+        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "mypkg.tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "mypkg",
+                "mypkg.tasks",
+                "mypkg.helpers",
+            }
+
+    def test_bare_installed_module_holds_only_itself(self, tmp_path, monkeypatch):
+        """A module installed at the root has no package dir to bound it."""
+        install_root = tmp_path / "site-packages"
+        _write_module(
+            install_root / "solo_tasks.py",
+            """\
+            import vendorlib
+
+            def compute(x: int) -> int:
+                return vendorlib.scale(x)
+            """,
+        )
+        _write_module(install_root / "vendorlib" / "__init__.py", "def scale(x): return x * 2\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "solo_tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {"solo_tasks"}
+
+    def test_namespace_portion_bounds_at_the_own_regular_package(self, tmp_path, monkeypatch):
+        """Sibling portions of a shared namespace belong to other distributions."""
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "ns" / "inner" / "__init__.py", "")
+        _write_module(
+            install_root / "ns" / "inner" / "tasks.py",
+            """\
+            from ns import other
+
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return other.scale(helpers.compute(x))
+            """,
+        )
+        _write_module(
+            install_root / "ns" / "inner" / "helpers.py",
+            "def compute(x: int) -> int:\n    return x + 1\n",
+        )
+        _write_module(
+            install_root / "ns" / "other" / "__init__.py", "def scale(x): return x * 2\n"
+        )
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "ns.inner.tasks") as tasks:
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "ns.inner",
+                "ns.inner.tasks",
+                "ns.inner.helpers",
+            }
+
+    def test_changed_helper_changes_the_hash(self, tmp_path, monkeypatch):
+        """The point of the closure: an installed helper still invalidates."""
+        install_root = tmp_path / "site-packages"
+        _write_module(install_root / "mypkg" / "__init__.py", "")
+        _write_module(
+            install_root / "mypkg" / "tasks.py",
+            """\
+            from . import helpers
+
+            def compute(x: int) -> int:
+                return helpers.compute(x)
+            """,
+        )
+        helpers_path = install_root / "mypkg" / "helpers.py"
+        _write_module(helpers_path, "def compute(x: int) -> int:\n    return x + 1\n")
+
+        monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
+        with _imported_from(install_root, "mypkg.tasks") as tasks:
+            before = source_hash.compute_source_hash(tasks.compute)
+            helpers_path.write_text(
+                "def compute(x: int) -> int:\n    return x + 100\n", encoding="utf-8"
+            )
+            assert source_hash.compute_source_hash(tasks.compute) != before
 
 
 class TestSourceHashCacheInvalidation:

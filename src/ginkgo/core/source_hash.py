@@ -8,7 +8,8 @@ single digest.
 The closure covers the project's own source only. Installed distributions and
 the standard library are pinned by the environment lock instead, and a virtual
 environment nested inside the project root (``.pixi/envs/``, ``.venv/``) would
-otherwise put the whole interpreter inside the closure.
+otherwise put the whole interpreter inside the closure. When the task module is
+itself installed, its own package stands in for that project tree.
 
 It lives in ``core`` rather than ``runtime.caching`` so that ``core.task`` can
 import it without inverting the layer dependency, alongside the primitives in
@@ -108,11 +109,16 @@ def _local_import_closure(module: ModuleType) -> dict[str, Path]:
     if source_path is None:
         return {}
 
-    source_root = _module_source_root(module=module, source_path=source_path)
-    # A task module that is itself installed has no project tree to separate
-    # from the environment, so excluding installed modules would empty its
-    # closure and stop its helpers from invalidating the cache.
-    skip_installed = not _is_installed_module(source_path)
+    # An installed task module's own package is its project tree: helpers
+    # beside it must keep invalidating the cache, while the other
+    # distributions sharing its install root must stay out. That package
+    # bound does the separating, so the installed-module filter — which would
+    # empty the closure — is switched off for it.
+    installed = _is_installed_module(source_path)
+    if installed:
+        closure_root = _installed_closure_root(module=module, source_path=source_path)
+    else:
+        closure_root = _module_source_root(module=module, source_path=source_path)
     pending = [module]
     sources: dict[str, Path] = {}
 
@@ -122,9 +128,9 @@ def _local_import_closure(module: ModuleType) -> dict[str, Path]:
             continue
 
         current_path = _module_source_path(current)
-        if current_path is None or not current_path.is_relative_to(source_root):
+        if current_path is None or not current_path.is_relative_to(closure_root):
             continue
-        if skip_installed and _is_installed_module(current_path):
+        if not installed and _is_installed_module(current_path):
             continue
 
         sources[current.__name__] = current_path
@@ -171,6 +177,24 @@ def _module_source_root(*, module: ModuleType, source_path: Path) -> Path:
     for _ in range(package_depth):
         source_root = source_root.parent
     return source_root
+
+
+def _installed_closure_root(*, module: ModuleType, source_path: Path) -> Path:
+    """Return the closure bound for a task module that is itself installed.
+
+    The bound is the module's own outermost regular package — the shallowest
+    ancestor directory carrying an ``__init__.py``. Namespace portions are
+    walked past, because unrelated distributions can contribute packages under
+    one namespace directory. A module installed directly at the install root
+    has no package directory at all, so the closure holds that module alone.
+    """
+    import_root = _module_source_root(module=module, source_path=source_path)
+    candidate = import_root
+    for part in source_path.parent.relative_to(import_root).parts:
+        candidate = candidate / part
+        if (candidate / "__init__.py").is_file():
+            return candidate
+    return source_path
 
 
 def _imported_modules(*, module: ModuleType, source_path: Path) -> list[ModuleType]:
