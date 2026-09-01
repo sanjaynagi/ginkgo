@@ -54,12 +54,13 @@ often that happens. This is the only cadence — events update state and wait
 for the next frame rather than painting one of their own.
 """
 
-_LIVE_CHROME_LINES = 9
-"""Lines the live layout spends on everything except task rows.
+_LIVE_FIXED_CHROME_LINES = 7
+"""Lines of the live layout whose height cannot change.
 
-The resource line, the blank line under it, one notice line, the status
-line, the task table's four frame lines (top border, header, header rule,
-bottom border), and the progress bar.
+The blank line under the resource line, the status line, the task table's
+four frame lines (top border, header, header rule, bottom border), and the
+progress bar. The resource line and the notices wrap, so ``chrome_lines``
+measures those instead of counting them.
 """
 
 _MIN_LIVE_ROWS = 3
@@ -283,17 +284,20 @@ class _RunLayoutRenderer:
         self._state = state
         self._activity_spinner = activity_spinner
         self._time_spinner = time_spinner
-        self.repainting = True
-        """False once the display has stopped repainting and can print in full."""
 
-    def render_run_layout(self, *, now: float) -> Group:
-        """Return the full live layout: resource line, notices, table, progress."""
+    def render_run_layout(self, *, now: float, windowed: bool) -> Group:
+        """Return the full live layout: resource line, notices, table, progress.
+
+        A *windowed* layout is one that will be repainted in place, so it has
+        to fit the screen. The final layout is printed once and may scroll,
+        so it shows every row.
+        """
         return Group(
             self.render_resource_info_line(),
             Text(""),
             self.render_notice_lines(),
             self.render_status_line(now=now),
-            self.render_task_table(now=now),
+            self.render_task_table(now=now, windowed=windowed),
             self.render_progress_section(),
         )
 
@@ -342,6 +346,21 @@ class _RunLayoutRenderer:
         text.append(")", style="dim")
         return text
 
+    def chrome_lines(self) -> int:
+        """Return the lines the layout spends on everything except task rows.
+
+        The resource line and the notices are measured rather than counted:
+        both are prose at the console's width, and a long notice or a run
+        with pinned executors wraps to several lines. Counting them as one
+        each is how a block overflows the screen it was sized to fit.
+        """
+        options = self._console.options
+        wrapped = len(
+            self._console.render_lines(self.render_resource_info_line(), options, pad=False)
+        )
+        wrapped += len(self._console.render_lines(self.render_notice_lines(), options, pad=False))
+        return wrapped + _LIVE_FIXED_CHROME_LINES
+
     def row_budget(self) -> int:
         """Return how many task rows the terminal has room for.
 
@@ -350,11 +369,7 @@ class _RunLayoutRenderer:
         repaint redraws the whole screen instead of the lines that changed.
         One spare line keeps the block inside the screen.
         """
-        extra_notices = max(0, len(self._state.notices) - 1)
-        return max(
-            _MIN_LIVE_ROWS,
-            self._console.height - _LIVE_CHROME_LINES - extra_notices - 1,
-        )
+        return max(_MIN_LIVE_ROWS, self._console.height - self.chrome_lines() - 1)
 
     def visible_items(self) -> tuple[list[_TaskGroup | _TaskRow], int, int]:
         """Return the rows to show, and how many are hidden above and below.
@@ -366,7 +381,7 @@ class _RunLayoutRenderer:
         """
         items = self._state.display_items()
         budget = self.row_budget()
-        if not self.repainting or len(items) <= budget:
+        if len(items) <= budget:
             return items, 0, 0
         window = budget - 1
         start = self._window_start(items=items, window=window)
@@ -383,7 +398,7 @@ class _RunLayoutRenderer:
         )
         return min(max(0, frontier - window + 2), len(items) - window)
 
-    def render_task_table(self, *, now: float) -> Table:
+    def render_task_table(self, *, now: float, windowed: bool = True) -> Table:
         table = Table(
             box=box.SQUARE,
             border_style="#0f766e",
@@ -395,7 +410,9 @@ class _RunLayoutRenderer:
         table.add_column("Environment", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
         max_label = _task_label_width(self._console)
-        items, above, below = self.visible_items()
+        items, above, below = (
+            self.visible_items() if windowed else (self._state.display_items(), 0, 0)
+        )
         if above:
             table.add_row(*_hidden_row_cells(count=above, where="above"))
         for item in items:
@@ -598,9 +615,10 @@ class _RunLayoutRenderer:
         return max(len("Status"), *(len(_status_label(row.status)) for row in rows), 30)
 
     def task_table_width(self, *, now: float | None = None) -> int:
-        # The rows the window leaves out are the rows the table does not
-        # measure: the status line is centred over what is on screen.
-        items, _above, _below = self.visible_items()
+        # Measured over every row, not the windowed ones: a width that
+        # depended on which rows the window held would move the centred
+        # status line and the progress bar as the window scrolled.
+        items = self._state.display_items()
         if not items:
             return len("Task") + len("Status") + len("Environment") + len("Time") + 13
 
@@ -625,6 +643,11 @@ class _RunLayoutRenderer:
                 status_widths.append(len(_status_label(item.status)))
                 env_widths.append(len(item.env_label))
                 time_widths.append(len(_task_duration_plain(item, now=clock)))
+
+        # The widest a window marker can get, whether or not one is drawn
+        # right now: a marker that grew the table as its count changed would
+        # move the status line and progress bar with it.
+        status_widths.append(len(_hidden_row_label(count=len(items), where="above")))
 
         column_padding = 8
         separators = 5
@@ -672,6 +695,14 @@ class _SynchronisedLive(Live):
     That is the flicker. DEC private mode 2026 asks the terminal to hold its
     screen until the frame is complete; a terminal that does not know the mode
     ignores it and is left exactly as it was.
+
+    The bracket covers ``refresh`` and nothing else. ``stop`` buffers its final
+    frame inside its own ``with self.console`` block, so that one frame lands
+    outside the bracket, and output printed through a running display
+    (``Live.process_renderables``) is not bracketed at all. Both are harmless
+    here — the final frame is the last thing painted, and nothing in a run
+    prints through the display, since tasks run in subprocesses and their
+    notices arrive as events.
     """
 
     def refresh(self) -> None:
@@ -772,12 +803,9 @@ class CliRunRenderer:
 
         self._final_elapsed = elapsed
         self._success = success
-        # The window over the task rows exists to keep repaints inside the
-        # screen. Nothing will be repainted now, so the last frame — the one
-        # that stays in the scrollback — shows every row and may scroll.
-        self._layout.repainting = False
         if self._live is not None:
-            # ``stop`` paints the final frame itself, at full height.
+            # ``stop`` paints the final frame itself, at full height, and the
+            # window is gone by then: it clears ``is_started`` first.
             self._live.stop()
         elif self._started:
             self._console.print(self)
@@ -821,7 +849,20 @@ class CliRunRenderer:
         return self._state.label_for_node(node_id)
 
     def __rich__(self):
-        return self._layout.render_run_layout(now=self._elapsed_clock())
+        return self._layout.render_run_layout(
+            now=self._elapsed_clock(),
+            windowed=self._repainting_in_place(),
+        )
+
+    def _repainting_in_place(self) -> bool:
+        """Return True while a frame will be repainted over rather than kept.
+
+        Asked of the display itself rather than tracked alongside it. Rich
+        clears ``is_started`` under the live's lock before it paints its last
+        frame, so the frame that ends the run is the first unwindowed one and
+        no in-flight repaint can race ahead of the change.
+        """
+        return self._live is not None and self._live.is_started
 
     def _elapsed_clock(self) -> float:
         if self._final_elapsed is not None and self._run_started_at is not None:
@@ -829,11 +870,16 @@ class CliRunRenderer:
         return time.perf_counter()
 
 
+def _hidden_row_label(*, count: int, where: str) -> str:
+    """Return the status text standing in for rows the window does not show."""
+    return f"{count} {where}"
+
+
 def _hidden_row_cells(*, count: int, where: str) -> tuple[Text, Text, Text, Text]:
     """Return the table cells standing in for rows the window does not show."""
     return (
         Text("…", style="dim"),
-        Text(f"{count} {where}", style="dim"),
+        Text(_hidden_row_label(count=count, where=where), style="dim"),
         Text(""),
         Text(""),
     )

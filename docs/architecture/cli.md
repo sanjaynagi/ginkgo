@@ -201,11 +201,17 @@ cheaply, and invisibly.
 - **The block fits the screen.** A live block as tall as the terminal cannot be
   overwritten in place — the terminal scrolls to fit the last line, so the next
   repaint redraws everything. `row_budget` sizes the task rows from the console
-  height and `_LIVE_CHROME_LINES`, leaving a spare line, and `visible_items`
-  keeps a contiguous window over the rows that follows the frontier, so the
-  tasks in flight stay on screen while finished ones scroll off the top. The
-  window is a repaint concern only: `finish` clears `repainting`, and the final
-  frame — the one that stays in the scrollback — shows every row.
+  height less `chrome_lines`, leaving a spare line, and `visible_items` keeps a
+  contiguous window over the rows that follows the frontier, so the tasks in
+  flight stay on screen while finished ones scroll off the top. `chrome_lines`
+  measures the resource line and the notices rather than counting them: both
+  are prose at the console's width, and a long notice wraps. The window is a
+  repaint concern only, asked of the display itself — `_repainting_in_place`
+  reads Rich's `is_started`, which `stop` clears before painting the final
+  frame, so the frame that stays in the scrollback shows every row, and a run
+  whose output is a pipe is never windowed at all. Windowing is also what keeps
+  a frame cheap: rendering every row of a 5000-task run takes ten times the
+  refresh period, so an unwindowed live display could not keep up with itself.
 - **Each repaint is one update.** `_SynchronisedLive` brackets a repaint in DEC
   private mode 2026, which asks the terminal to hold its screen until the frame
   is complete. Terminals that do not know the mode ignore it.
