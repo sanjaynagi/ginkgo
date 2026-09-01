@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
+import subprocess
+import sys
+import textwrap
+import types
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +30,37 @@ from ginkgo.runtime.artifacts.remote_arg_transfer import (
     stage_result_for_remote,
 )
 from ginkgo.runtime.artifacts.value_codec import CodecError, decode_value, encode_value
+
+
+FLOW_MODULE_NAME = "ginkgo_user_wf_9f0f3043f1"
+
+
+class FlowEstimator:
+    """Stand-in for a class a user defines in their flow script."""
+
+    def __init__(self, coef: float = 1.5) -> None:
+        self.coef = coef
+
+
+@contextlib.contextmanager
+def flow_defined_class() -> Iterator[type]:
+    """Yield a class that lives only in a synthetic single-file-flow module.
+
+    Ginkgo loads a single-file flow under a ``ginkgo_user_*`` module name
+    unique to the process and the file path, so a class defined there pickles
+    (the module is in ``sys.modules`` during the run) but can never be
+    unpickled anywhere else. Reproducing that here needs a real module entry,
+    not just a rewritten ``__module__``, or pickling would fail for the
+    unrelated reason that the class cannot be looked up.
+    """
+    module = types.ModuleType(FLOW_MODULE_NAME)
+    cls = type("FlowEstimator", (FlowEstimator,), {"__module__": FLOW_MODULE_NAME})
+    module.FlowEstimator = cls  # type: ignore[attr-defined]
+    sys.modules[FLOW_MODULE_NAME] = module
+    try:
+        yield cls
+    finally:
+        del sys.modules[FLOW_MODULE_NAME]
 
 
 def has_rows(payload: Any) -> bool:
@@ -207,9 +244,58 @@ class TestFactories:
         with pytest.raises(ValueError):
             model(clf, framework="onnx")
 
-    def test_model_rejects_unsupported_type(self) -> None:
-        with pytest.raises(TypeError):
-            model(object())
+    def test_model_generic_framework_override(self) -> None:
+        sklearn = pytest.importorskip("sklearn.dummy")
+        clf = sklearn.DummyClassifier()
+        wrapper = model(clf, framework="pickle")
+        assert wrapper.sub_kind == "pickle"
+        assert wrapper.kind_fields["framework"] == "pickle"
+
+    def test_model_unrecognised_payload_falls_back_to_pickle(self) -> None:
+        wrapper = model({"weights": [0.1, 0.2], "bias": 0.5}, metrics={"acc": 0.9})
+        assert wrapper.kind == "model"
+        assert wrapper.sub_kind == "pickle"
+        assert wrapper.kind_fields["framework"] == "pickle"
+        assert wrapper.kind_fields["metrics"] == {"acc": 0.9}
+
+    def test_model_rejects_unpicklable_payload(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            model(lambda x: x)
+        message = str(excinfo.value)
+        assert "picklable" in message
+        # The failing exception is named, so a broken __reduce__ is not
+        # reported as if the payload were merely unpicklable.
+        assert "Error" in message or "Exception" in message
+
+    def test_model_rejects_path_string(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            model("outputs/model.pkl")
+        message = str(excinfo.value)
+        assert "does not accept a path" in message
+        assert "file(path)" in message
+
+    def test_model_rejects_path_object(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            model(Path("outputs/model.pkl"))
+        assert "file(path)" in str(excinfo.value)
+
+    def test_model_rejects_flow_defined_class(self) -> None:
+        with flow_defined_class() as estimator_cls:
+            with pytest.raises(TypeError) as excinfo:
+                model(estimator_cls())
+        message = str(excinfo.value)
+        assert FLOW_MODULE_NAME in message
+        assert "importable module" in message
+
+    def test_model_rejects_flow_defined_class_inside_a_dict(self) -> None:
+        with flow_defined_class() as estimator_cls:
+            with pytest.raises(TypeError) as excinfo:
+                model({"estimator": estimator_cls(), "bias": 0.5})
+        assert FLOW_MODULE_NAME in str(excinfo.value)
+
+    def test_model_accepts_plain_values_in_a_dict(self) -> None:
+        wrapper = model({"weights": [0.1, 0.2], "notes": "linear"})
+        assert wrapper.sub_kind == "pickle"
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +418,58 @@ class TestSerializers:
 
         restored = joblib.load(io.BytesIO(result.data))
         assert list(restored.predict([[0.5], [2.5]])) == [0, 1]
+
+    def test_serialize_pickle_model_roundtrip(self) -> None:
+        from ginkgo.runtime.artifacts.asset_loaders import load_model_bytes
+
+        payload = {"weights": [0.1, -0.4], "bias": 0.25}
+        wrapper = model(payload, name="hand_rolled", metrics={"accuracy": 1.0})
+        result = serialize_asset(result=wrapper, index=0)
+        assert result.extension == "pkl"
+        assert result.metadata["sub_kind"] == "pickle"
+        assert result.metadata["framework"] == "pickle"
+        assert result.metadata["metrics"] == {"accuracy": 1.0}
+        assert result.metadata["byte_size"] == len(result.data)
+
+        class _Store:
+            def read_bytes(self, *, artifact_id: str) -> bytes:  # noqa: ARG002
+                return result.data
+
+        restored = load_model_bytes(
+            artifact_store=_Store(),  # type: ignore[arg-type]
+            artifact_id="stub",
+            metadata=dict(result.metadata),
+        )
+        assert restored == payload
+
+    def test_pickle_model_blob_loads_in_a_fresh_process(self, tmp_path: Path) -> None:
+        """The stored blob must survive the process that wrote it.
+
+        A pickle whose classes come from an unimportable module unpickles
+        happily in the writing process and fails everywhere else, so an
+        in-process round trip cannot pin this. The blob is read back by a bare
+        interpreter that never imported Ginkgo.
+        """
+        wrapper = model({"weights": [0.1, -0.4], "bias": 0.25})
+        result = serialize_asset(result=wrapper, index=0)
+        blob = tmp_path / "model.pkl"
+        blob.write_bytes(result.data)
+
+        script = textwrap.dedent(
+            f"""
+            import pickle
+            with open({str(blob)!r}, "rb") as handle:
+                print(pickle.load(handle))
+            """
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "'bias': 0.25" in completed.stdout
 
     def test_serialization_error_wraps_underlying_failure(self) -> None:
         class Exploding:

@@ -33,7 +33,7 @@ The typed helpers each map to an asset **kind**:
 | `array(payload)` | `array` | a NumPy / array payload | `object` |
 | `fig(payload)` | `fig` | a matplotlib figure, or a path to an image | `object` |
 | `text(payload)` | `text` | plain, markdown, or JSON text | `object` |
-| `model(payload)` | `model` | a trained model object | `object` |
+| `model(payload)` | `model` | a trained model object — any picklable payload | `object` |
 
 The return annotation follows the kind, not the payload. Only `asset(path)` —
 the `file` kind — may be returned from a task annotated `-> file`. Every other
@@ -104,6 +104,60 @@ def train_classifier(features: file | AssetRef) -> object:
     )
 ```
 
+### What `model()` accepts
+
+Five frameworks have a native serializer, chosen from the payload's top-level
+module:
+
+| Payload's module | Sub-kind (`framework`) | Stored as |
+|---|---|---|
+| `sklearn` | `sklearn` | joblib blob |
+| `xgboost` | `xgboost` | joblib blob |
+| `lightgbm` | `lightgbm` | joblib blob |
+| `torch` | `pytorch` | `torch.save` |
+| `keras`, `tensorflow` | `keras` | native `.keras` archive |
+
+Any other payload — a dict of weights, a statsmodels result, a JAX pytree, an
+estimator class of your own — is stored with `pickle` under the sub-kind
+`pickle`, and shows as `framework=pickle` in `ginkgo models`. So a hand-rolled
+model is a first-class model asset with metrics, versioning, and a report card,
+with no dependency beyond the standard library. A payload that cannot be
+pickled — a lambda, a closure, an open file handle, a live database
+connection — raises `TypeError` at the `model()` call itself, naming the type
+and the pickle error.
+
+**Your own classes must live in an importable module.** Pickle stores an
+instance by its class's *module name* and re-imports that module on load. A
+class defined in the flow script itself has no durable module name: Ginkgo
+loads a single-file flow under a synthetic `ginkgo_user_…` name unique to that
+run and that file path, so the stored bytes would raise `ModuleNotFoundError`
+in every other process — including `ginkgo asset show` and any later run of the
+same file from a different directory. `model()` refuses such a payload at the
+call site, and refuses it too when the class only appears one level down, in
+the values of a dict or the items of a list. The fix is to move the class into
+a module beside the flow and import it (`from workflow.modules.estimators
+import MyEstimator`); the [canonical `workflow/`
+layout](tasks-and-flows.md#keep-flows-thin) gives your classes real importable
+names for free. Payloads built from library and built-in types are unaffected.
+
+`model()` takes the model *object*, never a path: `model("out/model.pkl")`
+would otherwise store the string. Use `file("out/model.pkl")` to register a
+model file a command has already written to disk.
+
+Reloading a `pickle` model asset unpickles the stored bytes, which executes code
+held in the blob; you accept that contract when you save it, the same way the
+PyTorch path does.
+
+Passing `framework=` overrides module detection. It takes a **sub-kind** name,
+not a module name — `"sklearn"`, `"xgboost"`, `"lightgbm"`, `"pytorch"`,
+`"keras"`, or `"pickle"` — so a `torch` payload is `framework="pytorch"` and a
+`tensorflow` one is `framework="keras"`. Any other string is rejected with a
+`ValueError` listing the valid set.
+
+For a payload that is configuration rather than a model — a hyper-parameter
+sweep, a metrics dump — `text(json.dumps(...))` or `file(path)` is the better
+fit; `model()` is for things you intend to load back and predict with.
+
 Assets with the same `group` are rendered together under a named heading in
 HTML reports. Assets without a group appear under "Ungrouped assets". Captions
 are rendered as short subtitles on each asset card and are also shown by
@@ -172,7 +226,7 @@ It depends on what the kind's artifact holds:
 | `text` | raw UTF-8 | yes |
 | `table` | Parquet | no |
 | `array` | a zipped zarr store or `.npy` blob | no |
-| `model` | a framework-specific serialized model | no |
+| `model` | a serialized model — framework-native, or pickle | no |
 
 The first three are the file they appear to be, so a command can read them. The
 last three are Ginkgo's *encoding* of a Python object: `table("data.csv")`

@@ -12,12 +12,21 @@ from types import ModuleType
 from ginkgo.project import find_project_root
 
 
+USER_MODULE_PREFIX = "ginkgo_user_"
+"""Prefix of the synthetic module name a single-file flow is loaded under.
+
+The name is unique to this process and this absolute path, so nothing outside
+the run can import it. Anything that records a class by module name — pickle,
+above all — must treat such a name as unresolvable rather than durable.
+"""
+
+
 def module_name_for_path(path: str | Path) -> str:
     """Return a stable synthetic module name for a source file."""
     source_path = Path(path).resolve()
     digest = hashlib.sha1(str(source_path).encode("utf-8")).hexdigest()[:10]
     stem = "".join(ch if ch.isalnum() else "_" for ch in source_path.stem) or "workflow"
-    return f"ginkgo_user_{stem}_{digest}"
+    return f"{USER_MODULE_PREFIX}{stem}_{digest}"
 
 
 def import_roots_for_path(path: str | Path) -> list[str]:

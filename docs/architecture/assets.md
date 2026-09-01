@@ -145,10 +145,30 @@ downstream behaviour.
   document. Format is `{plain, markdown, json}`. Shorthand:
   `text(payload, name=..., group=..., caption=..., format=...,
   metadata=...)`.
-- **`model`** — trained ML models. Supports scikit-learn estimators,
-  xgboost/lightgbm sklearn wrappers (via `joblib`), PyTorch
+- **`model`** — trained ML models. Five frameworks have a native
+  serialiser, keyed on the payload's top-level module: scikit-learn
+  estimators, xgboost/lightgbm sklearn wrappers (via `joblib`), PyTorch
   `nn.Module` (via `torch.save`), and Keras/TensorFlow (via the native
-  `.keras` archive). `metrics` is a first-class `dict[str, float]`
+  `.keras` archive). Every other payload takes the generic `pickle`
+  sub-kind, stored with stdlib `pickle` — the model kind is open to
+  hand-rolled estimators, weight dicts and statsmodels results, not
+  just the frameworks that happen to have a native format. Detection
+  pickles such a payload at `model()` call time so an unpicklable one
+  (a lambda, an open handle) fails with a `TypeError` at the user's own
+  call site rather than at serialisation. Two payloads pickle cleanly
+  but must still be refused there: a `str`/`os.PathLike`, which would
+  store a *path* posing as a model (`file(path)` is the right kind for a
+  model file on disk), and a value whose class lives in `__main__` or in
+  the synthetic `ginkgo_user_*` module a single-file flow is loaded
+  under — pickle records the class by that module name, which no reader
+  can import, so the blob would fail on every later load. The check
+  covers the payload's own class and one level of dict values or
+  list/tuple/set items; deeper graph walking is deliberately not done.
+  `framework=` overrides
+  detection and takes a sub-kind name (`sklearn`, `xgboost`,
+  `lightgbm`, `pytorch`, `keras`, `pickle`), which differs from the
+  module roots — `torch` maps to `pytorch`, `tensorflow` to `keras`.
+  `metrics` is a first-class `dict[str, float]`
   field stored on the asset version so the UI and `ginkgo models` can
   render training metrics without walking free-form metadata. All ML
   backends are user-managed dependencies, lazy-imported at
