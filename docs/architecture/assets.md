@@ -401,6 +401,12 @@ argument and a notebook parameter file carry text rather than Python objects.
 Before that branch existed a ref reached `json.dumps` and failed as "Object of
 type AssetRef is not JSON serializable", naming neither task nor parameter.
 
+The remedy the message offers a driver consumer is upstream conversion, not an
+`object` annotation, because a rehydrated payload has no text form at that
+boundary either: a DataFrame bound to `object` in a script or notebook task is
+refused by the same function, naming the parameter, the type, and the task
+kind. See [Task Model](task-model.md) for that rule and where it is checked.
+
 CAS blobs carry no file extension, so a consumer that dispatches on suffix can
 still be surprised by a `fig` artifact. That is an argument for recording the
 already-stored `record.extension` in the blob name, tracked separately, not for

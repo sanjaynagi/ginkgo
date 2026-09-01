@@ -179,6 +179,30 @@ Implemented script behavior includes:
 Script tasks, like notebook tasks, run on the driver-side execution path and
 preserve full scheduler semantics.
 
+## What a Script or Notebook Argument May Be
+
+Script and notebook tasks are the two kinds whose runners forward resolved
+arguments to another process — a script task as `--arg-name value` options, a
+notebook task through a parameter file. Both go through
+`serialize_cli_argument_value` in `task_runners/shell.py`, which is the single
+home for what that boundary accepts: `None`, booleans, numbers, strings, path
+types, dates and times (as ISO text), an `AssetRef` whose artifact holds
+readable bytes (see [Assets](assets.md)), and lists, tuples, and dicts of
+those.
+
+A live Python payload has no text form there, so it is refused by name rather
+than reaching `json.dumps` or `yaml.safe_dump` and failing with only its type
+named. The refusal names the parameter, the type received, and the task kind,
+and points at writing the payload to a file in a Python task first. It is
+reachable by following the "annotate it `object`" advice for a consumer of a
+semantic asset in a task kind that cannot receive one.
+
+Shell tasks never reach that function: their runner passes the command the
+body returned straight to the shell rather than forwarding resolved
+arguments, so a shell task can take a live payload and write the format its
+command expects. The exclusion is structural, not a list of kinds to keep in
+step.
+
 ## Special Types
 
 Ginkgo currently ships three path-oriented marker types:

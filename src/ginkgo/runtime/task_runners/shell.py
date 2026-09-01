@@ -8,6 +8,7 @@ notebook runner reuse the logged-command machinery.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shutil
@@ -157,11 +158,19 @@ def _asset_result_path(result: AssetResult) -> Path:
     )
 
 
-def serialize_cli_argument_value(value: Any) -> Any:
+def serialize_cli_argument_value(
+    value: Any,
+    *,
+    label: str = "A task argument",
+    task_kind: str | None = None,
+) -> Any:
     """Convert one resolved task argument into a YAML/JSON-safe value.
 
-    Shared by every driver task kind that forwards resolved arguments to an
-    external process (script, notebook parameter files).
+    Shared by the two driver task kinds that forward resolved arguments to an
+    external process: a script task renders each one as a CLI option, a
+    notebook task writes them to a parameter file. A shell task never reaches
+    here — its body is Python and runs before the command is built, so it can
+    legitimately take a live payload and write the format its command expects.
 
     An :class:`AssetRef` crosses that boundary as the path to its stored
     bytes, since a CLI argument and a parameter file carry text rather than
@@ -170,6 +179,13 @@ def serialize_cli_argument_value(value: Any) -> Any:
     here instead of reaching ``json.dumps`` and failing as "not JSON
     serializable". Every caller is a driver task kind, so the refusal names
     the remedies that work for one.
+
+    A live Python payload — a DataFrame handed to a parameter annotated
+    ``object``, say — has no text form either, and is refused for the same
+    reason rather than falling through to ``json.dumps`` or ``yaml.safe_dump``
+    and naming only its type. ``label`` names the parameter in that refusal,
+    e.g. ``"summarise.scores"``; nested values extend it with their index or
+    key, so a payload inside a list reports ``summarise.scores[1]``.
     """
     if isinstance(value, AssetRef):
         return str(value.as_file(execution_mode="driver"))
@@ -177,21 +193,44 @@ def serialize_cli_argument_value(value: Any) -> Any:
         return str(value)
     if value is None or isinstance(value, bool | int | float | str):
         return value
-    if isinstance(value, list):
-        return [serialize_cli_argument_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [serialize_cli_argument_value(item) for item in value]
+    # ``datetime`` subclasses ``date``. Both have a text form, which is what
+    # this boundary carries; ``json.dumps`` would refuse the object itself.
+    if isinstance(value, datetime.date | datetime.time):
+        return value.isoformat()
+    if isinstance(value, list | tuple):
+        return [
+            serialize_cli_argument_value(item, label=f"{label}[{index}]", task_kind=task_kind)
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, dict):
+        # A JSON object or YAML mapping keys by text, so keys stringify rather
+        # than serialize: only the values can carry a payload worth refusing.
         return {
-            str(serialize_cli_argument_value(key)): serialize_cli_argument_value(item)
+            str(key): serialize_cli_argument_value(
+                item, label=f"{label}[{key!r}]", task_kind=task_kind
+            )
             for key, item in value.items()
         }
-    return value
+
+    received = f"{type(value).__module__}.{type(value).__name__}"
+    carrier = f"a `{task_kind}` task" if task_kind is not None else "a script or notebook task"
+    raise TypeError(
+        f"{label} is a {received}. The arguments of {carrier} cross to another "
+        "process as CLI options and parameter-file entries, which carry text rather "
+        "than Python objects. Write the payload to a file in a Python task first and "
+        "pass that path (with `asset(path)` to track it), or do the work in a "
+        "`python` task."
+    )
 
 
-def stringify_cli_argument(value: Any) -> str:
+def stringify_cli_argument(
+    value: Any,
+    *,
+    label: str = "A task argument",
+    task_kind: str | None = None,
+) -> str:
     """Render one resolved task argument for a CLI invocation."""
-    serialized = serialize_cli_argument_value(value)
+    serialized = serialize_cli_argument_value(value, label=label, task_kind=task_kind)
     if isinstance(serialized, str):
         return serialized
     return json.dumps(serialized, sort_keys=True)

@@ -131,7 +131,10 @@ What arrives is decided by the **consuming parameter's annotation**:
   `array`, `text`, or `model` ref is rehydrated into the live Python payload
   before the task body runs, so the task takes the DataFrame, array, or model
   object directly. `file` and `fig` refs stay as an `AssetRef`, since they
-  carry paths and binary blobs rather than objects worth loading.
+  carry paths and binary blobs rather than objects worth loading. Annotate
+  `object` only in a `python` or `shell` task, whose body is Python: a `script`
+  or `notebook` task hands its arguments to another process as text, so a live
+  payload cannot reach it and is refused by name.
 
 So a consumer of a file asset receives an `AssetRef`, not the path its `file`
 annotation suggests. Widen the annotation and branch on the type:
@@ -186,10 +189,12 @@ So a `table`, `array`, or `model` asset does not bind a path:
 - `as_file()` on such a ref fails the same way, rather than wrapping the encoded
   blob in a `file` marker.
 - Passing one to a `script` or `notebook` task fails by kind too, since those
-  forward arguments to another process as text.
+  forward arguments to another process as text. Annotating the parameter
+  `object` does not help there: the rehydrated payload has no text form either,
+  and is refused with the parameter, the type, and the task kind named.
 
-To feed one of those kinds to a shell, script, or notebook task, take the
-payload in Python and write the format the command expects:
+To feed one of those kinds to a shell task, take the payload in Python and write
+the format the command expects — the body runs before the command is built:
 
 ```python
 import pandas as pd
@@ -204,9 +209,12 @@ def count_rows(scores: object, csv_path: str, output_path: str) -> file:
     return shell(cmd=f"wc -l < {csv_path} > {output_path}", output=output_path)
 ```
 
-Alternatively, have the producer return a `file` asset — `asset(csv_path)` —
-when the bytes on disk, rather than the typed payload, are what downstream
-tasks need.
+Writing the file inside a `script` or `notebook` task body does not help: those
+runners forward *every* resolved argument to the other process, so the payload
+still reaches the text boundary and is refused. Do the writing in a separate
+`python` task and pass that task's path — or, better, have the producer return a
+`file` asset with `asset(csv_path)` when the bytes on disk, rather than the typed
+payload, are what downstream tasks need.
 
 The path such a kind binds is content-addressed but keeps the artifact's
 file extension (`blobs/<digest>.png`), so a command that switches behaviour

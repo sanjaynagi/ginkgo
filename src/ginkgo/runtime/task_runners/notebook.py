@@ -290,6 +290,7 @@ class NotebookRunner(DriverTaskRunner):
                 executed_path=artifacts.executed_path,
                 params_path=artifacts.params_path,
                 resolved_args=node.execution_args,
+                task_name=node.task_def.name,
                 kernel_name=kernel_spec.name if kernel_spec is not None else "",
                 jupyter_path=kernel_spec.jupyter_path if kernel_spec is not None else Path(),
             )
@@ -298,6 +299,7 @@ class NotebookRunner(DriverTaskRunner):
             command = self._build_marimo_execute_command(
                 notebook_path=notebook_path,
                 resolved_args=node.execution_args,
+                task_name=node.task_def.name,
             )
             executed_artifact = None
 
@@ -517,17 +519,21 @@ class NotebookRunner(DriverTaskRunner):
         executed_path: Path | None,
         params_path: Path,
         resolved_args: dict[str, Any],
+        task_name: str,
         kernel_name: str,
         jupyter_path: Path,
     ) -> str:
         """Build the Papermill execution command for one Jupyter notebook."""
         if executed_path is None:
             raise RuntimeError("ipynb notebooks require an executed output path")
+        params = {
+            name: serialize_cli_argument_value(
+                value, label=f"{task_name}.{name}", task_kind="notebook"
+            )
+            for name, value in resolved_args.items()
+        }
         params_path.write_text(
-            yaml.safe_dump(
-                serialize_cli_argument_value(resolved_args),
-                sort_keys=True,
-            ),
+            yaml.safe_dump(params, sort_keys=True),
             encoding="utf-8",
         )
         return " ".join(
@@ -550,12 +556,16 @@ class NotebookRunner(DriverTaskRunner):
         *,
         notebook_path: Path,
         resolved_args: dict[str, Any],
+        task_name: str,
     ) -> str:
         """Build the command used to execute one marimo notebook script."""
         args: list[str] = [shlex.quote(sys.executable), shlex.quote(str(notebook_path))]
         for name, value in resolved_args.items():
             option = f"--{name.replace('_', '-')}"
-            args.extend([shlex.quote(option), shlex.quote(stringify_cli_argument(value))])
+            rendered = stringify_cli_argument(
+                value, label=f"{task_name}.{name}", task_kind="notebook"
+            )
+            args.extend([shlex.quote(option), shlex.quote(rendered)])
         return " ".join(args)
 
     def _build_notebook_render_command(
