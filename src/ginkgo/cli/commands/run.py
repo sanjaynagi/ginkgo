@@ -609,6 +609,10 @@ def run_workflow(
                             success=False,
                             resources=resource_summary,
                             failure_details=failure_details,
+                            skipped=_load_skip_details(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                            ),
                             remote_summary=evaluator.remote_stats.summary(),
                         )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)

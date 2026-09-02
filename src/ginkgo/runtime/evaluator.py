@@ -1481,7 +1481,14 @@ class ConcurrentEvaluator:
         dependents collapses within a single scheduler pass rather than one
         level per pass. Nodes whose work is already in flight are left alone;
         their own completion decides what happens to them.
+
+        An ignored failure is the only thing that can block a node while the
+        scheduler is still dispatching — fail-fast stops it instead — so a run
+        without one has nothing to sweep.
         """
+        if not self._ignored_failures:
+            return
+
         while True:
             progressed = False
             for node in self._nodes.values():
