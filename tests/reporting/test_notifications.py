@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from ginkgo.runtime.notifications.notifications import parse_notification_config
+from ginkgo.runtime.notifications.slack import build_run_failed_payload
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -116,6 +117,23 @@ class TestNotificationConfig:
 
 
 @pytest.mark.integration
+class TestFailedRunCard:
+    def test_the_card_counts_the_tasks_a_failure_left_unrun(self) -> None:
+        """Three failures beside five thousand skips is a different run."""
+        payload = build_run_failed_payload(
+            workflow_label="flow.py",
+            run_id="run_1",
+            ts="2026-09-02T09:00:00+00:00",
+            task_counts={"succeeded": 4997, "failed": 3, "skipped": 4997},
+            failed_tasks=[],
+            error="3 tasks failed; the run continued under its failure policy.",
+        )
+
+        text = _payload_text(payload)
+        assert "failed=3" in text
+        assert "skipped=4997" in text
+
+
 class TestSlackNotifications:
     def test_cli_run_sends_start_and_success_notifications(self, monkeypatch) -> None:
         with _WebhookServer() as server:

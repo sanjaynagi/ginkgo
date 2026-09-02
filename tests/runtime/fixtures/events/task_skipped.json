@@ -1,0 +1,12 @@
+{
+  "attempt": 0,
+  "blocked_by_task_id": "task_0001",
+  "blocked_by_task_name": "analysis.load",
+  "display_label": null,
+  "event": "task_skipped",
+  "run_id": "run_20260828_090000",
+  "task_id": "task_0007",
+  "task_name": "analysis.fit",
+  "ts": "2026-08-28T09:00:00+00:00",
+  "v": 1
+}

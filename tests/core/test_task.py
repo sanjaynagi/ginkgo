@@ -48,6 +48,25 @@ class TestTaskDecorator:
         assert my_fn.version == 1
         assert my_fn.kind == "python"
 
+    def test_task_declares_its_failure_policy(self):
+        @task(on_failure="ignore")
+        def my_fn(x: int) -> int:
+            return x
+
+        @task()
+        def other_fn(x: int) -> int:
+            return x
+
+        assert my_fn.on_failure == "ignore"
+        assert other_fn.on_failure == "fail_fast"
+
+    def test_task_rejects_an_unknown_failure_policy(self):
+        with pytest.raises(ValueError, match="on_failure must be one of"):
+
+            @task(on_failure="carry_on")
+            def my_fn(x: int) -> int:
+                return x
+
     def test_task_rejects_unknown_kind(self):
         with pytest.raises(ValueError, match="kind must be one of"):
 

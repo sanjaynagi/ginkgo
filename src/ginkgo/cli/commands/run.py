@@ -17,16 +17,18 @@ from rich.markup import escape
 
 from ginkgo import query
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
-from ginkgo.cli.renderers.common import environment_label
+from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
+from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE
 from ginkgo.cli.renderers.models import (
     CliAssetSummary,
     FailureDetails,
     CliNotebookSummary,
     ResourceRenderState,
     CliRunSummary,
+    SkipDetails,
 )
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import CliRunRenderer
@@ -54,7 +56,7 @@ from ginkgo.params import ParamContext, format_param_help
 from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
@@ -74,7 +76,7 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
-from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -107,6 +109,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         dry_run=args.dry_run,
         output_mode=output_mode,
         trust_mtimes=getattr(args, "trust_mtimes", False),
+        keep_going=getattr(args, "keep_going", False),
         profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
@@ -192,6 +195,7 @@ def run_workflow(
     dry_run: bool,
     output_mode: RunMode = "default",
     trust_mtimes: bool = False,
+    keep_going: bool = False,
     profile: bool = False,
     executor: str = "local",
     plan_preview: bool = True,
@@ -289,6 +293,7 @@ def run_workflow(
         "secret_resolver": secret_resolver,
         "profiler": profiler,
         "param_context": param_context,
+        "keep_going": keep_going,
     }
     evaluator = ConcurrentEvaluator(
         constructed_calls=tuple(constructed_calls),
@@ -549,8 +554,13 @@ def run_workflow(
                 resource_monitor.start()
             run_started = time.perf_counter()
             failure: BaseException | None = None
+            root_skipped: RootSkippedError | None = None
             try:
                 evaluator.evaluate(expr)
+            except RootSkippedError as exc:
+                # An expected outcome of a non-fatal failure policy, not a
+                # crash: the run drained, it just has no result to show.
+                root_skipped = exc
             except BaseException as exc:
                 failure = exc
 
@@ -566,13 +576,21 @@ def run_workflow(
             # The counts describe the tasks, which are already in the ledger;
             # flushing is what makes them readable rather than merely queued.
             recorder.flush()
+            # A failure the policy let pass is still a failure: the run is
+            # recorded failed whether or not it stopped dispatching.
+            ignored_failures = len(evaluator.ignored_failures)
+            run_failed = failure is not None or root_skipped is not None or ignored_failures > 0
             bus.emit(
                 RunCompleted(
                     run_id=run_id,
-                    status="failed" if failure is not None else "success",
+                    status="failed" if run_failed else "success",
                     task_counts=reader.task_status_counts(run_id),
                     resources=resource_summary,
-                    error=str(failure) if failure is not None else None,
+                    error=_run_error_message(
+                        failure=failure,
+                        root_skipped=root_skipped,
+                        ignored_failures=ignored_failures,
+                    ),
                 )
             )
             with profiler.timed("run_summary_load"):
@@ -591,12 +609,47 @@ def run_workflow(
                             success=False,
                             resources=resource_summary,
                             failure_details=failure_details,
+                            skipped=_load_skip_details(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                            ),
                             remote_summary=evaluator.remote_stats.summary(),
                         )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
                     _print_profile_table(console=rich_console, profile=profiler.snapshot())
                 raise failure
+
+            if run_failed:
+                # Nothing stopped the run, so it is reported like any other
+                # finished run: the failures and what they cost, and also the
+                # notebooks and assets the surviving branches really did
+                # produce. Only the summary line differs from a success.
+                if renderer is not None:
+                    with profiler.timed("renderer_finish"):
+                        renderer.finish(
+                            elapsed=time.perf_counter() - run_started,
+                            success=False,
+                            resources=resource_summary,
+                            failure_details=_load_failure_details(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                                verbose=output_mode == "verbose",
+                            ),
+                            skipped=_load_skip_details(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                            ),
+                            notebooks=_render_notebooks(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                            ),
+                            assets=_render_assets(run_summary=run_summary),
+                            remote_summary=evaluator.remote_stats.summary(),
+                        )
+                if profiler.enabled:
+                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
+                return IGNORED_FAILURES_EXIT_CODE
 
             if renderer is not None:
                 with profiler.timed("renderer_finish"):
@@ -637,6 +690,59 @@ def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str
     )
 
 
+def _run_error_message(
+    *,
+    failure: BaseException | None,
+    root_skipped: RootSkippedError | None,
+    ignored_failures: int,
+) -> str | None:
+    """Return the one line the ledger records as the run's error."""
+    if failure is not None:
+        return str(failure)
+    if root_skipped is not None:
+        return str(root_skipped)
+    if ignored_failures:
+        plural = "task" if ignored_failures == 1 else "tasks"
+        return f"{ignored_failures} {plural} failed; the run continued under its failure policy."
+    return None
+
+
+def _load_skip_details(
+    *,
+    run_summary: RunSummary,
+    renderer: CliRunRenderer,
+) -> list[SkipDetails]:
+    """Load the tasks a failure left without a result.
+
+    A blocking task is named by the label the run gave it, the same way the
+    skipped task itself is. Base names alone would count two same-named tasks
+    from different modules — or two branches of one fan-out — as one.
+    """
+    labels = {
+        task.task_key: _task_label(task=task, renderer=renderer) for task in run_summary.tasks
+    }
+    details: list[SkipDetails] = []
+    for task in run_summary.tasks:
+        if task.status != "skipped":
+            continue
+        blocker = task.skipped_because or {}
+        blocker_name = blocker.get("task_name")
+        blocker_label = labels.get(str(blocker.get("task_id"))) or (
+            task_base_name(blocker_name)
+            if isinstance(blocker_name, str) and blocker_name
+            else "a failed task"
+        )
+        details.append(SkipDetails(task_label=labels[task.task_key], blocker_label=blocker_label))
+    return details
+
+
+def _task_label(*, task: TaskSummary, renderer: CliRunRenderer) -> str:
+    """Return the label this run showed for a task, or its base name."""
+    return renderer.label_for_node(task.node_id if task.node_id is not None else -1) or (
+        task.base_name
+    )
+
+
 def _load_failure_details(
     *,
     run_summary: RunSummary,
@@ -648,10 +754,7 @@ def _load_failure_details(
     tail_lines = 20 if verbose else 10
     return [
         FailureDetails(
-            task_label=(
-                renderer.label_for_node(task.node_id if task.node_id is not None else -1)
-                or task.name
-            ),
+            task_label=_task_label(task=task, renderer=renderer),
             exit_code=task.exit_code,
             log_path=run_dir / task.stderr_log if task.stderr_log is not None else None,
             log_tail=combined_log_tail(
@@ -665,6 +768,7 @@ def _load_failure_details(
             inputs=task.inputs if verbose else None,
             task_kind=task.kind,
             env_label=task.env or "local",
+            ignored=task.ignored,
         )
         for task in run_summary.failed_tasks
     ]

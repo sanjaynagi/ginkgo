@@ -38,6 +38,10 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
     summary.add_column(style="bold #7f1d1d", no_wrap=True)
     summary.add_column()
     summary.add_row("Task", details.task_label)
+    if details.ignored:
+        # Both kinds of failure are worth debugging, but only one of them
+        # ended the run, and the reader is owed which one this was.
+        summary.add_row("Policy", "ignored - the run continued past this failure")
     summary.add_row("Exit code", str(details.exit_code) if details.exit_code is not None else "?")
     if details.error:
         summary.add_row("Error", details.error)

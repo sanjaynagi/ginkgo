@@ -105,14 +105,21 @@ def build_run_failed_payload(
     workflow_label: str,
     run_id: str,
     ts: str,
+    task_counts: dict[str, int],
     failed_tasks: list[SlackTaskFailure],
     error: str | None,
 ) -> dict[str, Any]:
-    """Build a Slack payload for failed run completion."""
+    """Build a Slack payload for failed run completion.
+
+    The counts are as much use here as on a success, and more so under a
+    non-fatal failure policy: a card naming three failures without saying
+    that five thousand tasks went unrun describes a different run.
+    """
     summary_lines = [
         f"*Workflow*: `{workflow_label}`",
         f"*Run*: `{run_id}`",
         f"*Failed*: `{ts}`",
+        f"*Task counts*: {_format_task_counts(task_counts)}",
     ]
     if error:
         summary_lines.append(f"*Error*: `{_truncate(error, limit=180)}`")
@@ -188,6 +195,7 @@ def _format_task_counts(task_counts: dict[str, int]) -> str:
             ("succeeded", task_counts.get("succeeded", 0)),
             ("cached", task_counts.get("cached", 0)),
             ("failed", task_counts.get("failed", 0)),
+            ("skipped", task_counts.get("skipped", 0)),
             ("running", task_counts.get("running", 0)),
             ("pending", task_counts.get("pending", 0)),
         )

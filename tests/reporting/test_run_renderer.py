@@ -15,7 +15,14 @@ from rich.console import Console
 
 from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
-from ginkgo.cli.renderers.models import CliRunSummary
+from ginkgo.cli.renderers.common import _status_icon
+from ginkgo.cli.renderers.models import (
+    CliAssetSummary,
+    CliNotebookSummary,
+    CliRunSummary,
+    FailureDetails,
+    SkipDetails,
+)
 from ginkgo.envs.pixi import PixiEnvPrepareError, PixiRegistry
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import (
@@ -34,7 +41,9 @@ from ginkgo.runtime.events import (
     PhaseTimed,
     RunResourcesSampled,
     TaskAnnotated,
+    TaskFailed,
     TaskPlanned,
+    TaskSkipped,
     TaskStarted,
 )
 
@@ -320,6 +329,38 @@ def test_the_live_window_follows_the_tasks_in_flight(tmp_path: Path) -> None:
     assert "below" in rendered
 
 
+def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(tmp_path: Path) -> None:
+    """The shape an ignored failure makes: a little work, then thousands of skips.
+
+    A skipped task never dispatched, so it must not drag the window away from
+    the tasks that did, and the block must still fit the terminal.
+    """
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        for node_id in range(3):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "failed", "node_id": node_id}
+                )
+                + "\n"
+            )
+        for node_id in range(3, 42):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "skipped", "node_id": node_id}
+                )
+                + "\n"
+            )
+        lines = _live_lines(renderer, console)
+        rendered = "".join(lines)
+
+    assert len(lines) < console.height
+    assert "step_00" in rendered
+    assert "step_41" not in rendered
+    assert "above" not in rendered
+    assert "below" in rendered
+    assert renderer._state.terminal_count() == 42
+
+
 def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
     """A width read off the visible rows moves the status line and progress bar."""
     with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
@@ -429,6 +470,112 @@ def test_evaluator_reports_a_failed_environment_preparation() -> None:
     assert not [event for event in events if isinstance(event, EnvPrepareCompleted)]
 
 
+def test_task_skipped_maps_to_a_skipped_row() -> None:
+    sink = _RecordingRenderer()
+    adapter = RichEventRenderer(renderer=sink)
+
+    adapter(
+        TaskSkipped(
+            run_id="r1",
+            task_id="task_0",
+            task_name="mod.task_a",
+            blocked_by_task_id="task_1",
+            blocked_by_task_name="mod.upstream",
+        )
+    )
+
+    assert sink.lines[0]["status"] == "skipped"
+    assert sink.lines[0]["blocked_by_task_name"] == "mod.upstream"
+
+
+def test_an_ignored_failure_says_so_on_the_wire() -> None:
+    sink = _RecordingRenderer()
+    adapter = RichEventRenderer(renderer=sink)
+
+    adapter(TaskFailed(run_id="r1", task_id="task_0", task_name="mod.task_a", ignored=True))
+
+    assert sink.lines[0]["status"] == "failed"
+    assert sink.lines[0]["ignored"] is True
+
+
+def test_a_skipped_task_is_terminal_without_a_duration() -> None:
+    state = _seeded_state()
+
+    state.handle_event_line(_event_line("skipped"))
+
+    assert state.rows[0].status == "skipped"
+    assert state.rows[0].started_at is None
+    assert state.terminal_count() == 1
+    assert _status_icon("skipped") == "⊘"
+
+
+def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
+    renderer, output = _renderer(tmp_path)
+    renderer._state.seed(planned_tasks=[(1, "mod.task_b", "task_b", "local")])
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.write(json.dumps({"task": "mod.task_b", "status": "skipped", "node_id": 1}) + "\n")
+    renderer.finish(
+        elapsed=1.0,
+        success=False,
+        failure_details=[
+            FailureDetails(
+                task_label="task_a",
+                exit_code=1,
+                log_path=None,
+                log_tail=[],
+                error="bad input",
+                ignored=True,
+            )
+        ],
+        skipped=[SkipDetails(task_label="task_b", blocker_label="task_a")],
+    )
+
+    text = output.getvalue()
+    assert "1 failed (1 ignored), 1 skipped" in text
+    assert "Failed, run continued (1)" in text
+    assert "Left unrun by a failure (1)" in text
+    assert "task_b" in text and "blocked by task_a" in text
+
+
+def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    details = [
+        FailureDetails(
+            task_label=f"branch[{index}]",
+            exit_code=1,
+            log_path=None,
+            log_tail=[],
+            error="bad input",
+            failure_kind="user_code_error",
+            ignored=True,
+        )
+        for index in range(30)
+    ]
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_details(details))
+    text = console.file.getvalue()
+
+    assert "Failed, run continued (30)" in text
+    assert "user_code_error×30" in text
+    assert "and 20 more" in text
+    assert "branch[9]" in text
+    assert "branch[10]" not in text
+
+
+def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    skipped = [
+        SkipDetails(task_label=f"branch[{index}]", blocker_label="load") for index in range(50)
+    ]
+
+    report = renderer._layout.render_skip_report(skipped)
+
+    assert "50 blocked by load" in report.plain
+    assert "branch[0]" not in report.plain
+
+
 def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
@@ -515,3 +662,45 @@ def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
     evaluator = _validated_evaluator((first, second), tuple(calls))
 
     assert sorted(_seeded_labels(evaluator).values()) == ["audit_site", "audit_site[2]"]
+
+
+def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
+    """Exit 3 is a finished run: its notebooks, assets and directory are real."""
+    renderer, output = _renderer(tmp_path)
+    html = tmp_path / "report.html"
+    html.write_text("<html></html>", encoding="utf-8")
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.finish(
+        elapsed=1.0,
+        success=False,
+        failure_details=[
+            FailureDetails(
+                task_label="task_a",
+                exit_code=1,
+                log_path=None,
+                log_tail=[],
+                error="bad input",
+                ignored=True,
+            )
+        ],
+        notebooks=[CliNotebookSummary(task_label="survey", html_path=html)],
+        assets=[CliAssetSummary(name="table:rows")],
+    )
+
+    text = output.getvalue()
+    assert "Notebooks materialised (1)" in text
+    assert "survey" in text
+    assert "Assets materialised (1)" in text
+    assert "table:rows" in text
+    assert "Run directory" in text
+
+
+def test_a_run_a_failure_ended_lists_no_products(tmp_path: Path) -> None:
+    """The fatal path reports its directory on stderr, not here."""
+    renderer, output = _renderer(tmp_path)
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.finish(elapsed=1.0, success=False)
+
+    assert "Run directory" not in output.getvalue()

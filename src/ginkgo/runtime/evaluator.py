@@ -69,6 +69,7 @@ from ginkgo.runtime.events import (
     TaskPlanned,
     TaskReady,
     TaskRetrying,
+    TaskSkipped,
     TaskStaging,
     TaskStarted,
     task_id_for_node,
@@ -137,6 +138,24 @@ class CycleError(GinkgoError, RuntimeError):
         self.cycle = cycle
         rendered = " -> ".join(cycle)
         super().__init__(f"Detected cycle in workflow graph: {rendered}")
+
+
+class RootSkippedError(GinkgoError, RuntimeError):
+    """Raised when the run drained but the workflow result was never produced.
+
+    Only reachable under a failure policy that keeps dispatching: a task the
+    result depends on failed and was ignored, so every task between it and
+    the root was skipped and there is no value to return. The run drained
+    normally, so this is an outcome rather than a crash.
+    """
+
+    def __init__(self, *, task_name: str, task_id: str) -> None:
+        self.task_name = task_name
+        self.task_id = task_id
+        super().__init__(
+            f"The workflow result depends on {task_name} ({task_id}), which failed. "
+            "No result was produced."
+        )
 
 
 def _reconstruct_worker_error(error_payload: dict[str, Any]) -> BaseException:
@@ -227,6 +246,8 @@ def evaluate(
 # - transport_path is non-None only in "running" when the task executes via
 #   the process pool or a remote executor (never for driver tasks); cleared
 #   by _cleanup_transport on completion, failure, and retry.
+# - blocked_by_task_id / blocked_by_task_name are non-None only in
+#   "skipped", naming the failed task the skip is attributed to.
 _NodeState = Literal[
     "pending",
     "ready",
@@ -237,7 +258,14 @@ _NodeState = Literal[
     "waiting_retry",
     "completed",
     "failed",
+    "skipped",
 ]
+
+_TERMINAL_NODE_STATES = frozenset({"completed", "failed", "skipped"})
+"""Node states no scheduler pass can move a node out of."""
+
+_IN_FLIGHT_NODE_STATES = frozenset({"staging", "running", "running_shell"})
+"""Node states held by work the scheduler has already handed to an executor."""
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -309,6 +337,8 @@ class NodeRun:
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
+    blocked_by_task_id: str | None = None
+    blocked_by_task_name: str | None = None
 
     @property
     def remote(self) -> bool:
@@ -358,6 +388,7 @@ class ConcurrentEvaluator:
     secret_resolver: SecretResolver | None = None
     event_bus: EventBus | None = None
     trust_mtimes: bool = False
+    keep_going: bool = False
     profiler: ProfileRecorder | None = None
     constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
@@ -373,6 +404,9 @@ class ConcurrentEvaluator:
     _root_template: Any = field(default=None, init=False, repr=False)
     _root_dependency_ids: set[int] = field(default_factory=set, init=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, repr=False)
+    _ignored_failures: list[tuple[NodeRun, BaseException]] = field(
+        default_factory=list, init=False, repr=False
+    )
     _executors: Executors | None = field(default=None, init=False, repr=False)
     _log_drain: LogDrain = field(init=False, repr=False)
     _staging_jobs: int = field(default=0, init=False, repr=False)
@@ -545,7 +579,23 @@ class ConcurrentEvaluator:
         )
 
     def evaluate(self, expr: Any) -> Any:
-        """Resolve a root expression or nested container concurrently."""
+        """Resolve a root expression or nested container concurrently.
+
+        Two failure policies drive the scheduler loop. Under the default,
+        fail-fast, the first failure a task's retries cannot absorb is kept
+        as ``_failure``: no further node is prepared or dispatched, in-flight
+        work drains, and the failure is re-raised. Under ``--keep-going`` or
+        ``on_failure="ignore"`` on the failing task, the failure is recorded
+        in :attr:`ignored_failures` instead, tasks downstream of it are
+        marked ``skipped``, and dispatch continues for every branch that is
+        still viable. An interrupt always stops the run, either way.
+
+        Raises
+        ------
+        RootSkippedError
+            If the run drained but an ignored failure left the workflow
+            result unproducible.
+        """
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
         if not self._root_dependency_ids:
@@ -571,6 +621,7 @@ class ConcurrentEvaluator:
 
                     if self._failure is None:
                         self._promote_due_retries()
+                        self._skip_blocked_nodes()
                         with self.profiler.timed("scheduler_prepare"):
                             self._prepare_pending_nodes()
                             self._finalize_dynamic_nodes()
@@ -609,6 +660,11 @@ class ConcurrentEvaluator:
 
                     if self._can_make_scheduler_progress():
                         continue
+
+                    if self._is_drained():
+                        root_skipped = self._root_skipped_error()
+                        if root_skipped is not None:
+                            raise root_skipped
 
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             finally:
@@ -1082,9 +1138,19 @@ class ConcurrentEvaluator:
             self._schedule_retry(node=node, exc=sanitized_exc)
             return
 
+        # "ignore" is about scheduling only: the task is recorded as failed
+        # either way, and the run still ends up failed. Once the run is
+        # stopping — a fatal failure, or an interrupt — nothing is ignored any
+        # more: the policy could not carry a run on that has already ended, so
+        # every failure draining out behind it is reported as what it is.
+        ignore = self._failure is None and (
+            self.keep_going or node.task_def.on_failure == "ignore"
+        )
         node.state = "failed"
         self._cleanup_transport(node)
-        if self._failure is None:
+        if ignore:
+            self._ignored_failures.append((node, sanitized_exc))
+        elif self._failure is None:
             self._failure = sanitized_exc
             self._cancel_pending_futures()
         # Usage measured before the failure helps right-size OOM-prone tasks.
@@ -1104,6 +1170,7 @@ class ConcurrentEvaluator:
                 exit_code=getattr(sanitized_exc, "exit_code", None),
                 failure=classify_failure(exc=sanitized_exc),
                 remote_job_id=node.remote_job_id,
+                ignored=ignore,
             )
         )
 
@@ -1403,6 +1470,105 @@ class ConcurrentEvaluator:
             if node.state == "waiting_retry":
                 return True
         return False
+
+    def _is_drained(self) -> bool:
+        """Return whether every node has reached a terminal state."""
+        if self._running_futures:
+            return False
+        return all(node.state in _TERMINAL_NODE_STATES for node in self._nodes.values())
+
+    def _skip_blocked_nodes(self) -> None:
+        """Mark every node an ignored failure has made unrunnable as skipped.
+
+        A node is unrunnable once any task it waits on has failed or been
+        skipped: phase 1 has no partial fan-in, so one missing input skips
+        the task outright. Iterated to a fixed point, so a chain of
+        dependents collapses within a single scheduler pass rather than one
+        level per pass. Nodes whose work is already in flight are left alone;
+        their own completion decides what happens to them.
+
+        An ignored failure is the only thing that can block a node while the
+        scheduler is still dispatching — fail-fast stops it instead — so a run
+        without one has nothing to sweep.
+        """
+        if not self._ignored_failures:
+            return
+
+        while True:
+            progressed = False
+            for node in self._nodes.values():
+                if node.state in _TERMINAL_NODE_STATES or node.state in _IN_FLIGHT_NODE_STATES:
+                    continue
+                blocker = self._blocking_dependency(node=node)
+                if blocker is None:
+                    continue
+                self._mark_node_skipped(node=node, blocker=blocker)
+                progressed = True
+
+            if not progressed:
+                return
+
+    def _blocking_dependency(self, *, node: NodeRun) -> NodeRun | None:
+        """Return a dependency of *node* that has failed or been skipped."""
+        for node_id in sorted(node.dependency_ids | node.dynamic_dependency_ids):
+            dependency = self._nodes[node_id]
+            if dependency.state in {"failed", "skipped"}:
+                return dependency
+        return None
+
+    def _mark_node_skipped(self, *, node: NodeRun, blocker: NodeRun) -> None:
+        """Record one node as skipped, attributed to the failure behind it.
+
+        Nothing about the attempt the node may already have made is cleared:
+        a node waiting on its own dynamic expansion has run its body, and the
+        record of that work is true whatever the outcome.
+        """
+        if blocker.state == "skipped":
+            blocked_by_id = blocker.blocked_by_task_id
+            blocked_by_name = blocker.blocked_by_task_name
+        else:
+            blocked_by_id = task_id_for_node(blocker.node_id)
+            blocked_by_name = blocker.task_def.name
+
+        node.state = "skipped"
+        node.blocked_by_task_id = blocked_by_id
+        node.blocked_by_task_name = blocked_by_name
+        self._emit_event(
+            TaskSkipped(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                blocked_by_task_id=blocked_by_id or "",
+                blocked_by_task_name=blocked_by_name or "",
+            )
+        )
+
+    def _root_skipped_error(self) -> RootSkippedError | None:
+        """Return the error naming why the run produced no result, if it is that.
+
+        ``None`` when no root dependency is failed or skipped, which means
+        the graph stalled for some other reason and the caller should say so.
+        """
+        for node_id in sorted(self._root_dependency_ids):
+            node = self._nodes[node_id]
+            if node.state == "skipped":
+                return RootSkippedError(
+                    task_name=node.blocked_by_task_name or node.task_def.name,
+                    task_id=node.blocked_by_task_id or task_id_for_node(node.node_id),
+                )
+            if node.state == "failed":
+                return RootSkippedError(
+                    task_name=node.task_def.name,
+                    task_id=task_id_for_node(node.node_id),
+                )
+        return None
+
+    @property
+    def ignored_failures(self) -> tuple[tuple[NodeRun, BaseException], ...]:
+        """Failures the run's policy let pass, in the order they happened."""
+        return tuple(self._ignored_failures)
 
     def _promote_due_retries(self) -> None:
         """Transition retry-delayed nodes back to pending once their deadline passes."""

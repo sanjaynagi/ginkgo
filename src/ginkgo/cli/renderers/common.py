@@ -25,6 +25,7 @@ def _status_style(status: str) -> str:
         "cached": "bold green",
         "succeeded": "green",
         "failed": "bold red",
+        "skipped": "dim",
     }.get(status, "white")
 
 
@@ -39,6 +40,7 @@ def _status_icon(status: str) -> str:
         "cached": "↺",
         "succeeded": "✓",
         "failed": "✖",
+        "skipped": "⊘",
     }.get(status, "?")
 
 
@@ -140,6 +142,7 @@ _SEGMENT_ORDER = (
     "staging",
     "preparing env",
     "waiting",
+    "skipped",
     "failed",
 )
 """Display order for multi-state bar segments (left-to-right)."""

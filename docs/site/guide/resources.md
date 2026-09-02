@@ -169,6 +169,46 @@ state for a computed delay before the scheduler picks it up again. The delay
 grows by `retry_backoff_multiplier` on each attempt and is capped at
 `retry_backoff_max`.
 
+## When a Failure Should Not Stop the Run
+
+Retries cannot help with a malformed input: it fails identically every time.
+By default the first failure a task's retries cannot absorb stops the run —
+in-flight tasks finish, nothing new is dispatched. In a wide fan-out that
+throws away the work of every healthy branch.
+
+```python
+# One bad sample must not cost the other 4,999.
+@task(retries=2, on_failure="ignore")
+def load_sample(sample: str) -> file: ...
+```
+
+`on_failure="ignore"` applies after retries are exhausted. The failed task's
+siblings keep running, and so does everything that does not depend on it.
+`ginkgo run --keep-going` says the same thing about every task in the run,
+without editing the workflow.
+
+Two things this does *not* do:
+
+- **It does not make the run pass.** The task is recorded `failed`, the run is
+  recorded `failed`, and `ginkgo run` exits **3** rather than 0 — a status of
+  its own, so a script can tell "stopped at the first failure" (1) from "ran
+  everything it could, and some of it failed" (3).
+- **It does not run the tasks downstream.** A task missing an input cannot run,
+  so every task below the failure is reported `skipped`, naming the failure it
+  is waiting on. An aggregator over a fan-out is downstream of every branch, so
+  one ignored branch failure skips it — including when the aggregator is what
+  the flow returns, in which case the run produces no result and says so —
+  which, since a flow's return value usually sits downstream of everything, is
+  how most such runs end today. The successful branches are still cached, and
+  the notebooks and assets they produced are still listed and still there, so
+  fixing the input and re-running does only the work that is left.
+
+Anything ginkgo itself rejects about a task attempt — a return value that
+breaks the task's declared contract, say — is ignored on the same terms as an
+error the task body raised. `--keep-going` is a statement about the whole run,
+so use it when you want the run carried past every kind of per-task failure,
+and `on_failure="ignore"` on the one task whose failure you expect.
+
 ## See Also
 
 - [Tasks and Flows](tasks-and-flows.md) &mdash; the task authoring model.

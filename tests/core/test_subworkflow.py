@@ -14,7 +14,7 @@ import yaml
 
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
 from ginkgo.runtime.rundir import make_run_id
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.task_runners.subworkflow import (
     DEPTH_ENV,
     PARENT_RUN_ID_ENV,
@@ -52,6 +52,11 @@ def call_child_task(*, workflow_path: str, region: str) -> SubWorkflowResult:
 
 @task(kind="subworkflow")
 def call_child_no_params_task(*, workflow_path: str) -> SubWorkflowResult:
+    return subworkflow(workflow_path)
+
+
+@task(kind="subworkflow", on_failure="ignore")
+def call_optional_child_task(*, workflow_path: str) -> SubWorkflowResult:
     return subworkflow(workflow_path)
 
 
@@ -212,6 +217,42 @@ class TestEvaluatorDispatch:
         task_entry = recorder.task()
         assert task_entry["status"] == "failed"
         assert task_entry["sub_run_id"] == "child_fail_id"
+
+    def test_an_ignored_child_failure_still_records_the_child_run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``on_failure="ignore"`` costs nothing in discoverability."""
+        child_path = tmp_path / "child.py"
+        child_path.write_text("", encoding="utf-8")
+
+        recorder = self._make_recorder(tmp_path)
+
+        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+            _record_child_run(
+                root=tmp_path, run_id="child_ignored_id", parent_run_id=recorder.run_id
+            )
+            return subprocess.CompletedProcess(
+                args=kwargs.get("argv", ""),
+                returncode=2,
+                stdout="",
+                stderr="something broke\n",
+            )
+
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
+
+        with pytest.raises(RootSkippedError, match="call_optional_child_task"):
+            evaluator.evaluate(call_optional_child_task(workflow_path=str(child_path)))
+
+        assert len(evaluator.ignored_failures) == 1
+        task_entry = recorder.task()
+        assert task_entry["status"] == "failed"
+        assert task_entry["ignored"] is True
+        assert task_entry["sub_run_id"] == "child_ignored_id"
 
     def test_wrong_return_type_rejected(self, tmp_path: Path) -> None:
         child_path = tmp_path / "child.py"

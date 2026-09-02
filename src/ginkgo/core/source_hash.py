@@ -13,8 +13,9 @@ itself installed, its own package stands in for that project tree.
 
 Every source text folded into the digest — the task definition and each file in
 the closure — first has the resource-only keyword arguments of its ``@task(...)``
-decorators deleted, so that retuning ``threads`` or ``memory`` mid-run does not
-discard completed results. Nothing else about the text is normalised.
+decorators deleted, so that retuning ``threads`` or ``memory`` — or changing
+what a failure stops, with ``on_failure`` — mid-run does not discard completed
+results. Nothing else about the text is normalised.
 
 It lives in ``core`` rather than ``runtime.caching`` so that ``core.task`` can
 import it without inverting the layer dependency, alongside the primitives in
@@ -40,18 +41,19 @@ from ginkgo.core.hashing import hash_file, hash_str
 
 __all__ = ["compute_source_hash"]
 
-#: ``task()`` keyword arguments that steer scheduling and placement only. None
-#: of them can change what a task produces, and none reaches the cache-key
-#: payload, so their text must not reach the source digest either. Everything
-#: else the decorator accepts — ``kind``, ``env``, ``version`` and any argument
-#: added later — keeps invalidating: ``kind`` in particular is absent from the
-#: payload, so flipping it would otherwise hit a stale entry.
+#: ``task()`` keyword arguments that steer scheduling, placement, and what a
+#: failure stops — never what a task produces. None of them reaches the
+#: cache-key payload, so their text must not reach the source digest either.
+#: Everything else the decorator accepts — ``kind``, ``env``, ``version`` and
+#: any argument added later — keeps invalidating: ``kind`` in particular is
+#: absent from the payload, so flipping it would otherwise hit a stale entry.
 _RESOURCE_ONLY_KWARGS = frozenset(
     {
         "gpu",
         "gpu_type",
         "memory",
         "memory_retry_multiplier",
+        "on_failure",
         "priority",
         "resources",
         "retries",
@@ -69,7 +71,7 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     """Return the BLAKE3 digest of task source and local imports.
 
     The resource-only keyword arguments of ``@task(...)`` — ``threads``,
-    ``memory``, ``gpu``, ``retries`` and their siblings in
+    ``memory``, ``gpu``, ``retries``, ``on_failure`` and their siblings in
     :data:`_RESOURCE_ONLY_KWARGS` — are deleted from every source text before
     it is hashed, so retuning them leaves the cache key untouched. The digest
     covers both the task definition and each file in its local import closure,

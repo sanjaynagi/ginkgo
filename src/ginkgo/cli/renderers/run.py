@@ -40,6 +40,7 @@ from ginkgo.cli.renderers.models import (
     CliNotebookSummary,
     ResourceRenderState,
     CliRunSummary,
+    SkipDetails,
     _TaskGroup,
     _TaskRow,
 )
@@ -76,6 +77,12 @@ _ENV_PREPARE_STATUS = "preparing env"
 
 _ENV_PREPARE_REPORT_THRESHOLD_SECONDS = 1.0
 """Minimum total environment preparation time worth explaining in the summary."""
+
+_SKIP_REPORT_LIST_LIMIT = 12
+"""Most skipped tasks to name individually before counting them by blocker."""
+
+_IGNORED_PANEL_LIMIT = 10
+"""Most ignored failures to give a diagnostic panel before counting the rest."""
 
 
 class _RunEventState:
@@ -154,6 +161,11 @@ class _RunEventState:
         if status in {"staging", "submitted", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
+        elif status == "skipped":
+            # The clock is not started here: a task the run never reached has
+            # no duration to report, while one that ran its body and then
+            # waited on a failed expansion keeps the duration it earned.
+            row.finished_at = event_time
         elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
@@ -257,7 +269,7 @@ class _RunEventState:
     def status_counts(self) -> Counter[str]:
         """Return the count of task rows in each status."""
         counts: Counter[str] = Counter(row.status for row in self.rows.values())
-        for status in ("waiting", "running", "cached", "succeeded", "failed"):
+        for status in ("waiting", "running", "cached", "succeeded", "failed", "skipped"):
             counts.setdefault(status, 0)
         return counts
 
@@ -534,6 +546,20 @@ class _RunLayoutRenderer:
         return text
 
     def render_failure_details(self, details: list[FailureDetails]):
+        """Render the failure section, fatal failures first.
+
+        A failure the run's policy let pass is diagnosed exactly like a fatal
+        one, but under its own heading: what stopped the run and what merely
+        cost it a branch are different questions. A fatal failure always gets
+        its panel; ignored ones are panelled up to a limit, because a
+        keep-going run over a wide fan-out can collect hundreds and the
+        category summary above already counts them all. The failure carrying
+        the environment hint is panelled wherever it sits in that list: the
+        hint is the most actionable thing on the screen, and dropping it with
+        the panel it hangs off would lose it for the whole run.
+        """
+        fatal = [item for item in details if not item.ignored]
+        ignored = [item for item in details if item.ignored]
         parts: list[object] = []
         category_summary = self.render_failure_category_summary(details)
         if category_summary is not None:
@@ -541,9 +567,40 @@ class _RunLayoutRenderer:
         hinted, hint = _interpreter_hint(details)
         parts.extend(
             self.render_failure_panel(item, hint=hint if item is hinted else None)
-            for item in details
+            for item in fatal
         )
+        if ignored:
+            parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
+            panelled = _panelled_with(items=ignored, kept=hinted, limit=_IGNORED_PANEL_LIMIT)
+            parts.extend(
+                self.render_failure_panel(item, hint=hint if item is hinted else None)
+                for item in panelled
+            )
+            remaining = len(ignored) - len(panelled)
+            if remaining > 0:
+                parts.append(
+                    Text(f"  ... and {remaining} more, in the run record", style="#7f1d1d")
+                )
         return Group(*parts)
+
+    def render_skip_report(self, skipped: list[SkipDetails]) -> Text:
+        """Name the tasks a failure left without a result.
+
+        Listed one per line while that stays readable; beyond that, counted
+        per blocking failure, because a handful of failures at the head of a
+        wide fan-out costs thousands of branches.
+        """
+        text = Text()
+        text.append(f"\n⊘ Left unrun by a failure ({len(skipped)})\n", style="bold")
+        if len(skipped) <= _SKIP_REPORT_LIST_LIMIT:
+            for item in skipped:
+                text.append(f"  {item.task_label}", style="dim")
+                text.append(f"  ← blocked by {item.blocker_label}\n", style="dim")
+            return text
+        counts = Counter(item.blocker_label for item in skipped)
+        for blocker, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            text.append(f"  {count} blocked by {blocker}\n", style="dim")
+        return text
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
         """Return a one-line summary grouping failures by category, if any."""
@@ -806,6 +863,7 @@ class CliRunRenderer:
         success: bool,
         resources: dict[str, object] | None = None,
         failure_details: list[FailureDetails] | None = None,
+        skipped: list[SkipDetails] | None = None,
         notebooks: list[CliNotebookSummary] | None = None,
         assets: list[CliAssetSummary] | None = None,
         remote_summary: str | None = None,
@@ -827,16 +885,20 @@ class CliRunRenderer:
         counts = self._state.status_counts()
         cached = counts["cached"]
         executed = counts["succeeded"] + counts["failed"]
+        skipped_suffix = f", {counts['skipped']} skipped" if counts["skipped"] else ""
         if success:
             self._console.print(
                 f"\n[bold cyan]⏱[/] Completed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached"
+                f"{executed} tasks executed, {cached} cached{skipped_suffix}"
             )
         else:
             failed = counts["failed"]
+            ignored = sum(1 for item in failure_details or () if item.ignored)
+            ignored_suffix = f" ({ignored} ignored)" if ignored else ""
             self._console.print(
                 f"\n[bold red]✖[/] Failed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached, {failed} failed"
+                f"{executed} tasks executed, {cached} cached, "
+                f"{failed} failed{ignored_suffix}{skipped_suffix}"
             )
         env_prepare_summary = self._layout.render_env_prepare_summary()
         if env_prepare_summary is not None:
@@ -851,7 +913,13 @@ class CliRunRenderer:
         if not success and failure_details:
             self._console.print(self._layout.render_failure_separator())
             self._console.print(self._layout.render_failure_details(failure_details))
-        if success:
+        if skipped:
+            self._console.print(self._layout.render_skip_report(skipped))
+        # A run that failed under its failure policy still produced whatever
+        # its surviving branches produced, and its reader still wants the run
+        # directory. A run a failure ended passes neither, and reports its
+        # directory on stderr beside the traceback instead.
+        if success or notebooks is not None or assets is not None:
             if notebooks:
                 self._console.print(self._layout.render_notebooks(notebooks))
             if assets:
@@ -925,6 +993,26 @@ def _format_count(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.1f}"
     return "--"
+
+
+def _panelled_with(
+    *,
+    items: list[FailureDetails],
+    kept: FailureDetails | None,
+    limit: int,
+) -> list[FailureDetails]:
+    """Return the first *limit* of *items*, with *kept* among them either way.
+
+    Display order otherwise: a failure hoisted past the cap takes the last
+    slot rather than jumping the queue, so the first failures still read
+    first.
+    """
+    head = items[:limit]
+    if kept is None or not any(item is kept for item in items):
+        return head
+    if any(item is kept for item in head):
+        return head
+    return [*head[: limit - 1], kept]
 
 
 def _interpreter_hint(

@@ -56,6 +56,8 @@ class FailureDetails:
     """The task's declared kind (``"python"``, ``"shell"``, ...), when known."""
     env_label: str = "local"
     """The environment the task ran in; ``"local"`` is the CLI's own."""
+    ignored: bool = False
+    """Whether the run's failure policy let this failure pass."""
 
     @property
     def ran_in_cli_interpreter(self) -> bool:
@@ -66,6 +68,19 @@ class FailureDetails:
         advice about *this* interpreter would not touch what failed there.
         """
         return self.task_kind == "python" and self.env_label == "local"
+
+
+@dataclass(frozen=True, kw_only=True)
+class SkipDetails:
+    """One task a failure left without a result, and the failure itself.
+
+    Both labels are read the same way — the run's own label for a task, or
+    its base name — so that two tasks are counted together only when they
+    really are the same task.
+    """
+
+    task_label: str
+    blocker_label: str
 
 
 @dataclass

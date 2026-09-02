@@ -108,8 +108,9 @@ narrower guess would silently stop the module's own helpers invalidating it
 Before any of that text is hashed — the task definition and each closure file
 alike — the resource-only keyword arguments of every `@task(...)` call in it are
 deleted (`_RESOURCE_ONLY_KWARGS` in `core/source_hash.py`: `threads`, `memory`,
-`gpu`, `gpu_type`, `memory_retry_multiplier`, `resources`, `priority` and the
-`retry*` family). These are absent from the key payload by design, so hashing
+`gpu`, `gpu_type`, `memory_retry_multiplier`, `resources`, `priority`,
+`on_failure` and the `retry*` family). These are absent from the key payload by
+design, so hashing
 their text let a resource edit invalidate every cached result anyway (issue
 #192). Filtering the closure files matters as much as filtering the definition:
 the task's own module is a closure member, so decorator text would otherwise

@@ -451,9 +451,9 @@ this way; bump `version=` on the task when those change.
 No. Before any source text is hashed — the task definition itself, and every
 file in its import closure — Ginkgo deletes the resource-only arguments of each
 `@task(...)` call from that text. `threads`, `memory`, `gpu`, `gpu_type`,
-`memory_retry_multiplier`, `resources`, `priority` and the `retry*` family are
-all filtered, so retuning them leaves the cache key untouched and cached results
-stay valid.
+`memory_retry_multiplier`, `resources`, `priority`, `on_failure` and the
+`retry*` family are all filtered, so retuning them leaves the cache key
+untouched and cached results stay valid.
 
 Nothing else about the source is normalised. `kind=`, `env=` and `version=` all
 keep invalidating, as does a decorator of your own stacked on the task: Ginkgo
@@ -647,9 +647,18 @@ running. On the first unretryable failure the evaluator records the failure and
 cancels only the futures that are still queued and have not started. The main
 loop then keeps waiting on the already-running futures until they complete — it
 simply stops dispatching new tasks — after which it re-raises the stored failure
-and the run ends with status `failed`. An external interrupt such as Ctrl-C is
-different: it terminates subprocesses, cancels remote job handles, and shuts down
-the executor pools.
+and the run ends with status `failed`.
+
+That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
+whole run, makes a failure non-fatal: dispatch continues, only the tasks
+downstream of the failure are skipped, and `ginkgo run` exits 3 — see
+[When a Failure Should Not Stop the Run](guide/resources.md#when-a-failure-should-not-stop-the-run).
+
+An external interrupt such as Ctrl-C is different whatever the policy: it
+terminates subprocesses, cancels remote job handles, and shuts down the
+executor pools. Failures that drain out behind it, or behind a fatal failure,
+are recorded as the failures they are rather than as ignored ones: the policy
+cannot carry on a run that has already ended.
 
 ### How do retry policies and exponential backoff work, and which failures are retried?
 

@@ -134,6 +134,7 @@ class NotificationService:
             workflow_label=self._workflow_label,
             run_id=event.run_id,
             ts=event.ts,
+            task_counts=event.task_counts,
             failed_tasks=self._failed_tasks(),
             error=event.error,
         )
