@@ -31,13 +31,19 @@ from ginkgo import (
 )
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalEnvironment
-from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator
+from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.store.sqlite import open_store
-from ginkgo.runtime.events import EventBus, TaskNotice
+from ginkgo.runtime.events import (
+    EventBus,
+    TaskCompleted,
+    TaskFailed,
+    TaskNotice,
+    TaskSkipped,
+)
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.rundir import make_run_id
 
@@ -186,6 +192,30 @@ def always_fail_retry_task(log_path: str) -> str:
 def always_fail_once_task(log_path: str) -> str:
     append_line(log_path, "attempt")
     raise RuntimeError("no retry configured")
+
+
+@task(on_failure="ignore")
+def ignored_failure_task(log_path: str) -> int:
+    append_line(log_path, "ignored-attempt")
+    raise RuntimeError("bad input")
+
+
+@task(on_failure="ignore", retries=2)
+def ignored_failure_with_retries_task(log_path: str) -> int:
+    append_line(log_path, "attempt")
+    raise RuntimeError("still broken")
+
+
+@task()
+def double_task(value: int, log_path: str) -> int:
+    append_line(log_path, f"double:{value}")
+    return value * 2
+
+
+@task()
+def join_pair_task(left: int, right: int, log_path: str) -> int:
+    append_line(log_path, "joined")
+    return left + right
 
 
 @task(retries=2, retry_on=IOError)
@@ -1281,6 +1311,140 @@ class TestEvaluate:
         # Three tasks (left, right, and the parent) should each report a cache hit.
         cache_hits = [e for e in event_collector.events if type(e).__name__ == "TaskCacheHit"]
         assert len(cache_hits) == 3
+
+
+class TestFailurePolicy:
+    """``on_failure="ignore"`` and ``keep_going``: what a failure stops."""
+
+    def _lines(self, log_path: str) -> list[str]:
+        return Path(log_path).read_text(encoding="utf-8").splitlines()
+
+    def test_fail_fast_stops_the_tasks_downstream_of_the_failure(self) -> None:
+        log_path = "fail-fast-downstream.log"
+
+        with pytest.raises(RuntimeError, match="no retry configured"):
+            evaluate(
+                read_text_task(path=always_fail_once_task(log_path=log_path)),
+            )
+
+        assert self._lines(log_path) == ["attempt"]
+
+    def test_an_ignored_failure_lets_sibling_branches_finish(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "ignore-siblings.log"
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, event_bus=event_collector.bus)
+
+        with pytest.raises(RootSkippedError, match="ignored_failure_task"):
+            evaluator.evaluate(
+                [
+                    ignored_failure_task(log_path=log_path),
+                    logged_work_task(x=1, log_path=log_path),
+                    logged_work_task(x=2, log_path=log_path),
+                ]
+            )
+
+        assert sorted(self._lines(log_path)) == ["ignored-attempt", "work:1", "work:2"]
+        assert [node.task_def.name for node, _ in evaluator.ignored_failures] == [
+            ignored_failure_task.name
+        ]
+        failed = [event for event in event_collector.events if isinstance(event, TaskFailed)]
+        assert [event.ignored for event in failed] == [True]
+
+    def test_dependents_of_an_ignored_failure_are_skipped(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "ignore-downstream.log"
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, event_bus=event_collector.bus)
+
+        with pytest.raises(RootSkippedError, match="ignored_failure_task"):
+            evaluator.evaluate(
+                double_task(
+                    value=ignored_failure_task(log_path=log_path),
+                    log_path=log_path,
+                )
+            )
+
+        assert self._lines(log_path) == ["ignored-attempt"]
+        states = {node.task_def.name: node.state for node in evaluator.task_nodes.values()}
+        assert states == {
+            ignored_failure_task.name: "failed",
+            double_task.name: "skipped",
+        }
+        skipped = [event for event in event_collector.events if isinstance(event, TaskSkipped)]
+        assert [event.ancestor_task_name for event in skipped] == [ignored_failure_task.name]
+        assert not [
+            event
+            for event in event_collector.events
+            if isinstance(event, TaskCompleted) and event.task_name == double_task.name
+        ]
+
+    def test_a_skip_names_the_failure_behind_the_skips_above_it(self) -> None:
+        log_path = "ignore-cascade.log"
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+
+        with pytest.raises(RootSkippedError, match="ignored_failure_task"):
+            evaluator.evaluate(
+                double_task(
+                    value=double_task(
+                        value=ignored_failure_task(log_path=log_path),
+                        log_path=log_path,
+                    ),
+                    log_path=log_path,
+                )
+            )
+
+        skipped = [node for node in evaluator.task_nodes.values() if node.state == "skipped"]
+        assert len(skipped) == 2
+        assert {node.skip_ancestor_name for node in skipped} == {ignored_failure_task.name}
+
+    def test_a_diamond_skips_only_the_join_below_the_failure(self) -> None:
+        log_path = "ignore-diamond.log"
+        evaluator = ConcurrentEvaluator(jobs=2, cores=2)
+
+        with pytest.raises(RootSkippedError, match="ignored_failure_task"):
+            evaluator.evaluate(
+                join_pair_task(
+                    left=ignored_failure_task(log_path=log_path),
+                    right=logged_work_task(x=1, log_path=log_path),
+                    log_path=log_path,
+                )
+            )
+
+        assert sorted(self._lines(log_path)) == ["ignored-attempt", "work:1"]
+        states = {node.task_def.name: node.state for node in evaluator.task_nodes.values()}
+        assert states == {
+            ignored_failure_task.name: "failed",
+            logged_work_task.name: "completed",
+            join_pair_task.name: "skipped",
+        }
+
+    def test_retries_are_exhausted_before_a_failure_is_ignored(self) -> None:
+        log_path = "ignore-retries.log"
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+
+        with pytest.raises(RootSkippedError, match="ignored_failure_with_retries_task"):
+            evaluator.evaluate(ignored_failure_with_retries_task(log_path=log_path))
+
+        assert self._lines(log_path) == ["attempt", "attempt", "attempt"]
+        assert len(evaluator.ignored_failures) == 1
+
+    def test_keep_going_ignores_a_fail_fast_task(self) -> None:
+        log_path = "keep-going.log"
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, keep_going=True)
+
+        with pytest.raises(RootSkippedError, match="always_fail_once_task"):
+            evaluator.evaluate(
+                [
+                    read_text_task(path=always_fail_once_task(log_path=log_path)),
+                    logged_work_task(x=1, log_path=log_path),
+                ]
+            )
+
+        assert sorted(self._lines(log_path)) == ["attempt", "work:1"]
+        assert len(evaluator.ignored_failures) == 1
 
 
 class TestEnvBackedCaching:

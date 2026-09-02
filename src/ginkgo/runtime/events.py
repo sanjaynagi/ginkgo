@@ -265,12 +265,34 @@ class TaskAnnotated(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class TaskFailed(TaskEvent):
-    """Task failure event."""
+    """Task failure event.
+
+    ``ignored`` marks a failure the run's failure policy let pass —
+    ``on_failure="ignore"`` on the task or ``--keep-going`` on the run. The
+    task failed either way; only whether it stopped new dispatch differs.
+    """
 
     event: str = "task_failed"
+    v: int = 2
     exit_code: int | None = None
     failure: dict[str, Any] = field(default_factory=dict)
     remote_job_id: str | None = None
+    ignored: bool = False
+
+
+@dataclass(kw_only=True, frozen=True)
+class TaskSkipped(TaskEvent):
+    """A task the run will never attempt, because an ancestor of it failed.
+
+    Terminal, like completion and failure: the task never started and
+    produced nothing. ``ancestor_task_id`` / ``ancestor_task_name`` name the
+    failed task the skip is attributed to, found by walking up through any
+    intervening skipped tasks.
+    """
+
+    event: str = "task_skipped"
+    ancestor_task_id: str = ""
+    ancestor_task_name: str = ""
 
 
 @dataclass(kw_only=True, frozen=True)

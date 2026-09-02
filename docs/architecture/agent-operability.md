@@ -11,7 +11,7 @@ The evaluator emits typed runtime events through an in-process event bus in
 - run lifecycle — `RunStarted`, `RunValidated`, `RunResourcesSampled`,
   `RunCompleted`
 - task lifecycle — `TaskPlanned`, `TaskStarted`, `TaskRunning`, `TaskRetrying`,
-  `TaskCompleted`, `TaskFailed`
+  `TaskCompleted`, `TaskFailed`, `TaskSkipped`
 - cache hits and misses — `TaskCacheHit`, `TaskCacheMiss`
 - environment preparation — `EnvPrepare*`
 - dynamic graph expansion — `GraphNodeRegistered`, `GraphExpanded`
@@ -21,6 +21,13 @@ The evaluator emits typed runtime events through an in-process event bus in
   with no lifecycle of their own: a container image digest, a copied lockfile,
   remote access statistics, notebook artefact pointers, a sub-run id
 - assets materialised — `AssetMaterialized`
+
+A task reaches exactly one of three terminal events: `task_completed`,
+`task_failed`, or `task_skipped`. `TaskFailed` (v2) carries `ignored`, true
+when the run's failure policy let the failure pass — `on_failure="ignore"` on
+the task or `--keep-going` on the run. `TaskSkipped` carries
+`ancestor_task_id` / `ancestor_task_name`, the failed task the skip is
+attributed to; such a task never started and produced nothing.
 
 This keeps runtime state changes explicit and lets multiple consumers observe
 the same execution facts without duplicating scheduler logic.

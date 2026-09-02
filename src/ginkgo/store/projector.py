@@ -27,7 +27,7 @@ from ginkgo.store.protocol import ProjectionOp, StoredEvent
 __all__ = ["TERMINAL_EVENTS", "accumulate_seconds", "projection_ops"]
 
 
-TERMINAL_EVENTS = frozenset({"task_completed", "task_failed", "run_completed"})
+TERMINAL_EVENTS = frozenset({"task_completed", "task_failed", "task_skipped", "run_completed"})
 """Events after which the writer commits, so a reader can see them at once."""
 
 _ABSENT = object()
@@ -546,12 +546,17 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
 def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
     failure = payload.get("failure") or {}
     attempt = int(payload.get("attempt") or 0)
+    # A v1 payload has no ``ignored`` key, and a run that predates the failure
+    # policy had no ignored failures to record: an empty patch replays it
+    # unchanged rather than claiming the failure was fatal.
+    extra = {"ignored": True} if payload.get("ignored") else {}
     return [
         ProjectionOp(
             sql="""
             UPDATE tasks SET
               status = 'failed', cached = 0, finished_at = ?, exit_code = ?,
-              failure = ?, attempts = max(attempts, ?)
+              failure = ?, attempts = max(attempts, ?),
+              extra = json_patch(coalesce(extra, '{}'), ?)
             WHERE run_id = ? AND task_id = ?
             """,
             params=(
@@ -559,6 +564,7 @@ def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
                 payload.get("exit_code"),
                 dumps(failure),
                 attempt,
+                dumps(extra),
                 event.run_id,
                 event.task_id,
             ),
@@ -581,6 +587,34 @@ def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
                 dumps(failure),
             ),
         ),
+    ]
+
+
+def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
+    # No attempts row: a skipped task never started one. ``status`` is free
+    # text, so the new terminal state needs no schema change.
+    return [
+        ProjectionOp(
+            sql="""
+            UPDATE tasks SET
+              status = 'skipped', cached = 0, finished_at = ?,
+              extra = json_patch(coalesce(extra, '{}'), ?)
+            WHERE run_id = ? AND task_id = ?
+            """,
+            params=(
+                event.ts,
+                dumps(
+                    {
+                        "skipped_because": {
+                            "task_id": payload.get("ancestor_task_id"),
+                            "task_name": payload.get("ancestor_task_name"),
+                        }
+                    }
+                ),
+                event.run_id,
+                event.task_id,
+            ),
+        )
     ]
 
 
@@ -788,5 +822,6 @@ _HANDLERS: dict[str, Callable[[StoredEvent, dict[str, Any]], list[ProjectionOp]]
     "task_retrying": _task_retrying,
     "task_completed": _task_completed,
     "task_failed": _task_failed,
+    "task_skipped": _task_skipped,
     "task_annotated": _task_annotated,
 }

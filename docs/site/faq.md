@@ -647,9 +647,16 @@ running. On the first unretryable failure the evaluator records the failure and
 cancels only the futures that are still queued and have not started. The main
 loop then keeps waiting on the already-running futures until they complete — it
 simply stops dispatching new tasks — after which it re-raises the stored failure
-and the run ends with status `failed`. An external interrupt such as Ctrl-C is
-different: it terminates subprocesses, cancels remote job handles, and shuts down
-the executor pools.
+and the run ends with status `failed`.
+
+That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
+whole run, makes a failure non-fatal: dispatch continues, only the tasks
+downstream of the failure are skipped, and `ginkgo run` exits 3 — see
+[When a Failure Should Not Stop the Run](guide/resources.md#when-a-failure-should-not-stop-the-run).
+
+An external interrupt such as Ctrl-C is different whatever the policy: it
+terminates subprocesses, cancels remote job handles, and shuts down the
+executor pools.
 
 ### How do retry policies and exponential backoff work, and which failures are retried?
 

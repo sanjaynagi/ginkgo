@@ -40,6 +40,7 @@ from ginkgo.cli.renderers.models import (
     CliNotebookSummary,
     ResourceRenderState,
     CliRunSummary,
+    SkipDetails,
     _TaskGroup,
     _TaskRow,
 )
@@ -76,6 +77,9 @@ _ENV_PREPARE_STATUS = "preparing env"
 
 _ENV_PREPARE_REPORT_THRESHOLD_SECONDS = 1.0
 """Minimum total environment preparation time worth explaining in the summary."""
+
+_SKIP_REPORT_LIST_LIMIT = 12
+"""Most skipped tasks to name individually before counting them by ancestor."""
 
 
 class _RunEventState:
@@ -154,6 +158,9 @@ class _RunEventState:
         if status in {"staging", "submitted", "running"}:
             row.started_at = row.started_at or event_time
             row.finished_at = None
+        elif status == "skipped":
+            # A skipped task never started, so it has no duration to report.
+            row.finished_at = event_time
         elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
@@ -257,7 +264,7 @@ class _RunEventState:
     def status_counts(self) -> Counter[str]:
         """Return the count of task rows in each status."""
         counts: Counter[str] = Counter(row.status for row in self.rows.values())
-        for status in ("waiting", "running", "cached", "succeeded", "failed"):
+        for status in ("waiting", "running", "cached", "succeeded", "failed", "skipped"):
             counts.setdefault(status, 0)
         return counts
 
@@ -534,6 +541,14 @@ class _RunLayoutRenderer:
         return text
 
     def render_failure_details(self, details: list[FailureDetails]):
+        """Render the failure section, fatal failures first.
+
+        A failure the run's policy let pass is diagnosed exactly like a fatal
+        one, but under its own heading: what stopped the run and what merely
+        cost it a branch are different questions.
+        """
+        fatal = [item for item in details if not item.ignored]
+        ignored = [item for item in details if item.ignored]
         parts: list[object] = []
         category_summary = self.render_failure_category_summary(details)
         if category_summary is not None:
@@ -541,9 +556,34 @@ class _RunLayoutRenderer:
         hinted, hint = _interpreter_hint(details)
         parts.extend(
             self.render_failure_panel(item, hint=hint if item is hinted else None)
-            for item in details
+            for item in fatal
         )
+        if ignored:
+            parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
+            parts.extend(
+                self.render_failure_panel(item, hint=hint if item is hinted else None)
+                for item in ignored
+            )
         return Group(*parts)
+
+    def render_skip_report(self, skipped: list[SkipDetails]) -> Text:
+        """Name the tasks an ancestor's failure cost this run.
+
+        Listed one per line while that stays readable; beyond that, counted
+        per failed ancestor, because a handful of failures at the head of a
+        wide fan-out skips thousands of branches.
+        """
+        text = Text()
+        text.append(f"\n⊘ Skipped after an upstream failure ({len(skipped)})\n", style="bold")
+        if len(skipped) <= _SKIP_REPORT_LIST_LIMIT:
+            for item in skipped:
+                text.append(f"  {item.task_label}", style="dim")
+                text.append(f"  ← {item.ancestor_label} failed\n", style="dim")
+            return text
+        counts = Counter(item.ancestor_label for item in skipped)
+        for ancestor, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            text.append(f"  {count} after {ancestor} failed\n", style="dim")
+        return text
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
         """Return a one-line summary grouping failures by category, if any."""
@@ -806,6 +846,7 @@ class CliRunRenderer:
         success: bool,
         resources: dict[str, object] | None = None,
         failure_details: list[FailureDetails] | None = None,
+        skipped: list[SkipDetails] | None = None,
         notebooks: list[CliNotebookSummary] | None = None,
         assets: list[CliAssetSummary] | None = None,
         remote_summary: str | None = None,
@@ -827,16 +868,20 @@ class CliRunRenderer:
         counts = self._state.status_counts()
         cached = counts["cached"]
         executed = counts["succeeded"] + counts["failed"]
+        skipped_suffix = f", {counts['skipped']} skipped" if counts["skipped"] else ""
         if success:
             self._console.print(
                 f"\n[bold cyan]⏱[/] Completed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached"
+                f"{executed} tasks executed, {cached} cached{skipped_suffix}"
             )
         else:
             failed = counts["failed"]
+            ignored = sum(1 for item in failure_details or () if item.ignored)
+            ignored_suffix = f" ({ignored} ignored)" if ignored else ""
             self._console.print(
                 f"\n[bold red]✖[/] Failed in [bold]{format_duration(elapsed)}[/] - "
-                f"{executed} tasks executed, {cached} cached, {failed} failed"
+                f"{executed} tasks executed, {cached} cached, "
+                f"{failed} failed{ignored_suffix}{skipped_suffix}"
             )
         env_prepare_summary = self._layout.render_env_prepare_summary()
         if env_prepare_summary is not None:
@@ -851,6 +896,8 @@ class CliRunRenderer:
         if not success and failure_details:
             self._console.print(self._layout.render_failure_separator())
             self._console.print(self._layout.render_failure_details(failure_details))
+        if skipped:
+            self._console.print(self._layout.render_skip_report(skipped))
         if success:
             if notebooks:
                 self._console.print(self._layout.render_notebooks(notebooks))

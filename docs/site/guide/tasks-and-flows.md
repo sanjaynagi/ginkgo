@@ -469,7 +469,7 @@ result.
 ## See Also
 
 - [Resources and Scheduling](resources.md) &mdash; declaring CPU, memory, GPU,
-  priority, and retries.
+  priority, retries, and what a failure stops (`on_failure`).
 - [Environments](environments.md) &mdash; how shell, script, and notebook tasks
   resolve Pixi and container environments.
 - [Caching and Provenance](caching-and-provenance.md) &mdash; how task

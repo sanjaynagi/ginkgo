@@ -15,7 +15,9 @@ from ginkgo.runtime.events import (
     PhaseTimed,
     RunResourcesSampled,
     TaskCompleted,
+    TaskFailed,
     TaskPlanned,
+    TaskSkipped,
 )
 
 from tests.conftest import Ledger
@@ -143,6 +145,57 @@ def test_timings_are_recorded_and_exposed_via_inspect(ledger: Ledger) -> None:
     payload = summary.to_payload()
     assert payload["timings"]["workflow_load_seconds"] == 1.25
     assert payload["tasks"][0]["timings"]["cache_lookup_seconds"] == 0.5
+
+
+def test_the_payload_carries_skipped_tasks_and_ignored_failures(ledger: Ledger) -> None:
+    _register(ledger)
+    ledger.bus.emit(
+        GraphNodeRegistered(
+            run_id=ledger.run_id,
+            task_id="task_0001",
+            node_id=1,
+            task_name="demo.downstream",
+            kind="python",
+            execution_mode="worker",
+            dependency_ids=["task_0000"],
+        )
+    )
+    ledger.bus.emit(
+        TaskFailed(
+            run_id=ledger.run_id,
+            task_id="task_0000",
+            task_name="demo.task",
+            attempt=1,
+            exit_code=1,
+            failure={"kind": "exception", "message": "bad input"},
+            ignored=True,
+        )
+    )
+    ledger.bus.emit(
+        TaskSkipped(
+            run_id=ledger.run_id,
+            task_id="task_0001",
+            task_name="demo.downstream",
+            ancestor_task_id="task_0000",
+            ancestor_task_name="demo.task",
+        )
+    )
+    summary = ledger.finish(status="failed")
+
+    failed, skipped = summary.tasks
+    assert (failed.status, failed.ignored) == ("failed", True)
+    assert skipped.status == "skipped"
+    assert skipped.skipped_because == {"task_id": "task_0000", "task_name": "demo.task"}
+    assert skipped.cache_label == "—"
+    assert summary.skipped_count == 1
+    assert summary.ignored_failure_count == 1
+    assert summary.failed_tasks == (failed,)
+
+    payload = summary.to_payload()
+    assert payload["tasks"][0]["ignored"] is True
+    assert payload["tasks"][1]["status"] == "skipped"
+    assert payload["tasks"][1]["skipped_because"]["task_name"] == "demo.task"
+    assert "ignored" not in payload["tasks"][1]
 
 
 def test_a_running_task_is_visible_before_the_run_finishes(ledger: Ledger) -> None:

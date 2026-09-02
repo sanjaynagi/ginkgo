@@ -40,6 +40,9 @@ The repository currently implements:
   module loader for non-canonical layouts
 - An example-driven benchmark harness with generated benchmark inputs, checked-
   in baselines, and a separate CI lane for slowdown detection
+- Non-fatal task failures: `@task(on_failure="ignore")` and
+  `ginkgo run --keep-going` keep dispatching after a failure, skipping only
+  what depended on it and exiting 3 rather than 1
 - Selective retry policies with exponential backoff, size- and count-based
   cache eviction, task-level scheduling priority as a strict tiebreaker, and
   end-of-run failure classification that groups diagnostics by category

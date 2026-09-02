@@ -110,9 +110,25 @@ run applies, so a kind/path mismatch (say, a `table` asset wired into a
 and the command exits non-zero, so a scripted preflight fails loudly. A
 first, cold dry run cannot resolve those arguments and so makes no claim.
 
+`--keep-going` stops a task failure from ending the run: every task is treated
+as `on_failure="ignore"`, so each branch that does not depend on the failure
+still runs, and the tasks that do depend on it are reported `skipped`. The run
+is still recorded as failed &mdash; see
+[When a Failure Should Not Stop the Run](resources.md#when-a-failure-should-not-stop-the-run).
+
 `--agent-output` swaps the live terminal UI for a stream of newline-delimited JSON
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
+
+### Exit Statuses
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 1 | A failure ended the run. |
+| 2 | The command line was rejected. |
+| 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
+| 130 | Interrupted with Ctrl-C. |
 
 ## Workflow Parameters
 

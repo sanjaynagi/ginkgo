@@ -22,6 +22,7 @@ from ginkgo.core.types import tmp_dir
 from ginkgo.wildcards import ExpandedTemplate, PerBranch
 
 _TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
+_ON_FAILURE_POLICIES = frozenset({"fail_fast", "ignore"})
 _FanOutMode = Literal["zip", "product"]
 
 
@@ -54,6 +55,12 @@ class TaskDef:
     retry_on_exit_codes : tuple[int, ...] | None
         Shell-task only. When set, only retry failures whose exit code is
         in this tuple. Ignored for non-shell tasks.
+    on_failure : str
+        Failure policy: ``"fail_fast"`` (default) stops new dispatch on the
+        first failure. ``"ignore"`` means a failure of this task, after its
+        retries are exhausted, does not stop new dispatch; the task is still
+        recorded as failed, tasks downstream of it are skipped, and the run
+        still exits non-zero.
     priority : int
         Relative scheduling priority. When several tasks are ready at the
         same time, higher-priority tasks are dispatched first. Range is
@@ -89,6 +96,7 @@ class TaskDef:
     retry_backoff_multiplier: float = 2.0
     retry_backoff_max: float = 60.0
     retry_on_exit_codes: tuple[int, ...] | None = None
+    on_failure: str = "fail_fast"
     priority: int = 0
     kind: str = "python"
     resources: Resources = field(default_factory=Resources)
@@ -109,6 +117,9 @@ class TaskDef:
         if self.kind not in _TASK_KINDS:
             supported = ", ".join(sorted(_TASK_KINDS))
             raise ValueError(f"kind must be one of {{{supported}}}, got {self.kind!r}")
+        if self.on_failure not in _ON_FAILURE_POLICIES:
+            supported = ", ".join(sorted(_ON_FAILURE_POLICIES))
+            raise ValueError(f"on_failure must be one of {{{supported}}}, got {self.on_failure!r}")
         if self.retry_backoff < 0:
             raise ValueError(f"retry_backoff must be at least 0, got {self.retry_backoff}")
         if self.retry_backoff_multiplier < 1:
@@ -835,6 +846,7 @@ def task(
     retry_backoff_multiplier: float = 2.0,
     retry_backoff_max: float = 60.0,
     retry_on_exit_codes: tuple[int, ...] | None = None,
+    on_failure: str = "fail_fast",
     priority: int = 0,
     kind: str = "python",
     threads: int = 1,
@@ -879,6 +891,12 @@ def task(
         Upper bound on the computed delay, in seconds.
     retry_on_exit_codes : tuple[int, ...] | None
         Shell-task only. Narrow retries to specific exit codes.
+    on_failure : str
+        ``"fail_fast"`` (default) or ``"ignore"``. Under ``"ignore"`` a
+        failure of this task, once its retries are exhausted, no longer stops
+        the rest of the graph: sibling branches keep running and tasks
+        downstream of it are skipped rather than run. The task is still
+        recorded as failed and the run still exits non-zero.
     priority : int
         Relative scheduling priority. Higher runs first among ready tasks.
         Range ``[-1000, 1000]``; default ``0``.
@@ -962,6 +980,7 @@ def task(
             retry_backoff_multiplier=retry_backoff_multiplier,
             retry_backoff_max=retry_backoff_max,
             retry_on_exit_codes=retry_on_exit_codes,
+            on_failure=on_failure,
             priority=priority,
             kind=resolved_kind,
             resources=Resources(

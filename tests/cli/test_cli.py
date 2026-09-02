@@ -2523,3 +2523,96 @@ def main():
         result = _run_cli("run", "workflow.py", "--config", "override.toml", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert Path("result.txt").read_text(encoding="utf-8") == "a=9 b=2"
+
+
+_FAILURE_POLICY_WORKFLOW = (
+    """
+from pathlib import Path
+
+from ginkgo import flow, task
+
+@task(on_failure="ignore")
+def load(sample: str) -> str:
+    if sample == "bad":
+        raise RuntimeError("malformed input")
+    return sample
+
+@task()
+def analyse(sample: str) -> str:
+    Path(f"{sample}.done").write_text("analysed", encoding="utf-8")
+    return sample
+
+@flow
+def main():
+    return [analyse(sample=load(sample=name)) for name in ("good", "bad")]
+""".strip()
+    + "\n"
+)
+
+
+_FAIL_FAST_WORKFLOW = (
+    """
+from ginkgo import flow, task
+
+@task()
+def load(sample: str) -> str:
+    raise RuntimeError("malformed input")
+
+@task()
+def analyse(sample: str) -> str:
+    return sample
+
+@flow
+def main():
+    return analyse(sample=load(sample="bad"))
+""".strip()
+    + "\n"
+)
+
+
+class TestCliFailurePolicy:
+    def test_an_ignored_failure_exits_three_and_reports_the_skips(self) -> None:
+        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 3, result.stderr
+        assert Path("good.done").exists()
+        combined = result.stdout + result.stderr
+        assert "1 failed (1 ignored), 1 skipped" in combined
+        assert "Failed, run continued (1)" in combined
+        assert "Skipped after an upstream failure (1)" in combined
+
+    def test_keep_going_is_a_ginkgo_flag_not_a_workflow_parameter(self) -> None:
+        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", "--keep-going", cwd=Path.cwd())
+
+        assert result.returncode == 3, result.stderr
+        combined = result.stdout + result.stderr
+        assert "unrecognized arguments" not in combined
+        assert "1 failed (1 ignored), 1 skipped" in combined
+
+    def test_a_fatal_failure_still_exits_one(self) -> None:
+        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert "malformed input" in result.stdout + result.stderr
+
+    def test_the_manifest_records_what_was_skipped_and_ignored(self) -> None:
+        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 3, result.stderr
+
+        run_dir = _extract_run_dir(result.stdout + result.stderr)
+        manifest = _manifest(run_dir)
+        statuses = Counter(task["status"] for task in manifest["tasks"].values())
+        assert manifest["status"] == "failed"
+        assert statuses == Counter({"succeeded": 2, "failed": 1, "skipped": 1})
+        skipped = next(task for task in manifest["tasks"].values() if task["status"] == "skipped")
+        ignored = next(task for task in manifest["tasks"].values() if task["status"] == "failed")
+        assert skipped["skipped_because"]["task_name"].endswith(".load")
+        assert ignored["ignored"] is True

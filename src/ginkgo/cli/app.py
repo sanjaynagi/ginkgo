@@ -368,6 +368,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
     run_parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue dispatching after task failures; every task is treated as on_failure='ignore'",
+    )
+    run_parser.add_argument(
         "--profile",
         action="store_true",
         help="Record a coarse runtime phase profile and print it at run end",

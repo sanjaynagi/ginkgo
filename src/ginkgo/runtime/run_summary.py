@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Statuses that mark a task as finished; shared by every consumer that
 # needs to decide terminality (see TaskSummary.is_terminal and the CLI
 # renderers).
-TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed"})
+TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed", "skipped"})
 
 
 def _base_name(value: Any) -> str:
@@ -87,6 +87,10 @@ class TaskSummary:
     outputs: tuple[dict[str, Any], ...]
     assets: tuple[dict[str, Any], ...]
     resource_usage: dict[str, Any] | None
+    skipped_because: dict[str, Any] | None
+    """The failed task this one was skipped after, when it was skipped."""
+    ignored: bool
+    """Whether the run's failure policy let this task's failure pass."""
     timings: dict[str, float] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
@@ -113,7 +117,10 @@ class TaskSummary:
 
     @property
     def cache_label(self) -> str:
-        """Return ``"hit"``, ``"miss"``, or ``"—"`` for the cache outcome."""
+        """Return ``"hit"``, ``"miss"``, or ``"—"`` for the cache outcome.
+
+        A skipped task never reached the cache, so it claims neither.
+        """
         if self.cached or self.status == "cached":
             return "hit"
         if self.status in {"succeeded", "failed"}:
@@ -123,7 +130,7 @@ class TaskSummary:
     @property
     def attempts_label(self) -> str:
         """Return ``"N"`` or ``"N / M"`` for attempts / max_attempts."""
-        if self.status == "cached":
+        if self.status in {"cached", "skipped"}:
             return "—"
         if self.max_attempts is not None and self.max_attempts > 1:
             return f"{self.attempts + 1} / {self.max_attempts}"
@@ -307,6 +314,12 @@ class RunSummary:
         prints this as JSON and the run directory keeps it as YAML, so the file
         and the command cannot disagree about what a run was.
 
+        A task's ``status`` carries ``"skipped"`` for one an ancestor's failure
+        made unrunnable, and such a task also carries ``skipped_because``, the
+        ``task_id``/``task_name`` of that failure. A failure the run's policy
+        let pass carries ``ignored: true``. All three keys are present only
+        where they mean something.
+
         Returns
         -------
         dict[str, Any]
@@ -348,6 +361,8 @@ class RunSummary:
                 ("execution_backend", task.execution_backend),
                 ("resource_usage", task.resource_usage),
                 ("sub_run_id", task.sub_run_id),
+                ("skipped_because", task.skipped_because),
+                ("ignored", True if task.ignored else None),
             ):
                 if value is not None:
                     row[key] = value
@@ -401,8 +416,22 @@ class RunSummary:
         return sum(1 for task in self.tasks if task.cached or task.status == "cached")
 
     @property
+    def skipped_count(self) -> int:
+        """Return the number of tasks skipped after an ancestor failed."""
+        return sum(1 for task in self.tasks if task.status == "skipped")
+
+    @property
+    def ignored_failure_count(self) -> int:
+        """Return how many of the failed tasks the failure policy let pass."""
+        return sum(1 for task in self.tasks if task.status == "failed" and task.ignored)
+
+    @property
     def failed_tasks(self) -> tuple[TaskSummary, ...]:
-        """Return failed tasks ordered by node id."""
+        """Return failed tasks ordered by node id, ignored ones included.
+
+        A failure the policy let pass is still a failure; ``TaskSummary.ignored``
+        is what tells the two apart.
+        """
         return tuple(task for task in self.tasks if task.status == "failed")
 
     @property
@@ -518,6 +547,8 @@ def _build_task_summary(
         outputs=tuple(item for item in outputs if isinstance(item, dict)),
         assets=assets,
         resource_usage=_mapping(row.get("resource_usage")) or None,
+        skipped_because=_mapping(extra.get("skipped_because")) or None,
+        ignored=bool(extra.get("ignored")),
         timings=_mapping(row.get("timings")),
     )
 

@@ -15,6 +15,7 @@ from ginkgo.envs.interpreter import explain_import_failure
 from ginkgo.errors import GinkgoError, failure_location
 
 __all__ = [
+    "IGNORED_FAILURES_EXIT_CODE",
     "INTERRUPT_EXIT_CODE",
     "report_failure",
     "report_interrupt",
@@ -26,6 +27,12 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 #: Exit status conventionally used for termination by SIGINT (128 + 2).
 INTERRUPT_EXIT_CODE = 130
+
+#: Exit status for a run that drained under a non-fatal failure policy with
+#: failures in it: ``on_failure="ignore"`` or ``--keep-going``. Distinct from
+#: 1 so a caller can tell "stopped at the first failure" from "ran everything
+#: it could, and some of it failed".
+IGNORED_FAILURES_EXIT_CODE = 3
 
 
 def traceback_requested(args: argparse.Namespace | None = None) -> bool:

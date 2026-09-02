@@ -212,6 +212,14 @@ writes the run's manifest when it completes. `store/projector.py` is the whole
 of the event-to-rows mapping, one pure function per event type. See
 [Provenance and Run State](provenance.md) for the shape of that path.
 
+`tasks.status` is free text, so a new terminal state costs no migration:
+`task_skipped` writes `'skipped'` and merges `skipped_because` — the failed
+task the skip is attributed to — into `tasks.extra`. `task_failed` merges
+`ignored: true` there when the run's failure policy let the failure pass; a v1
+payload has no such key and replays unchanged. `task_skipped` is in
+`TERMINAL_EVENTS`, so the writer commits after it and a reader sees it at
+once.
+
 The direct indexes are the other writer, and they hold their own connection. A
 cache save is synchronous — the `load` that follows it must see the row — while
 the writer's queue is asynchronous and its connection belongs to its thread;

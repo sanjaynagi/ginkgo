@@ -6,7 +6,7 @@ import io
 import json
 
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
-from ginkgo.runtime.events import PhaseTimed, TaskPlanned, TaskStaging
+from ginkgo.runtime.events import PhaseTimed, TaskFailed, TaskPlanned, TaskSkipped, TaskStaging
 
 
 def test_jsonl_renderer_emits_task_staging_event() -> None:
@@ -50,3 +50,33 @@ def test_jsonl_renderer_emits_the_ledger_event_types() -> None:
     assert [payload["event"] for payload in payloads] == ["task_planned", "phase_timed"]
     assert payloads[0]["cache_key"] == "cache_abc"
     assert payloads[1]["seconds"] == 0.5
+
+
+def test_jsonl_renderer_carries_the_failure_policy_outcomes() -> None:
+    """An agent reads which failures were ignored, and what they skipped."""
+    stream = io.StringIO()
+    renderer = JsonlEventRenderer(stream=stream)
+
+    renderer(
+        TaskFailed(
+            run_id="run_123",
+            task_id="task_0001",
+            task_name="example.load",
+            failure={"kind": "exception", "message": "bad input"},
+            ignored=True,
+        )
+    )
+    renderer(
+        TaskSkipped(
+            run_id="run_123",
+            task_id="task_0002",
+            task_name="example.analyse",
+            ancestor_task_id="task_0001",
+            ancestor_task_name="example.load",
+        )
+    )
+
+    payloads = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert [payload["event"] for payload in payloads] == ["task_failed", "task_skipped"]
+    assert (payloads[0]["ignored"], payloads[0]["v"]) == (True, 2)
+    assert payloads[1]["ancestor_task_name"] == "example.load"

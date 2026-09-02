@@ -17,6 +17,7 @@ from ginkgo.runtime.events import (
     TaskNotice,
     TaskRetrying,
     TaskRunning,
+    TaskSkipped,
     TaskStaging,
     TaskStarted,
 )
@@ -125,6 +126,19 @@ class RichEventRenderer:
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
                 "exit_code": event.exit_code,
+                "ignored": event.ignored,
+            }
+            if event.display_label is not None:
+                payload["display_label"] = event.display_label
+            return payload
+
+        if isinstance(event, TaskSkipped):
+            payload = {
+                "task": event.task_name,
+                "status": "skipped",
+                "node_id": _node_id_from_task_id(event.task_id),
+                "attempt": event.attempt,
+                "ancestor_task_name": event.ancestor_task_name,
             }
             if event.display_label is not None:
                 payload["display_label"] = event.display_label

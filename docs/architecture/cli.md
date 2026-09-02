@@ -244,6 +244,27 @@ one-line messages stay one line; the escape hatch itself always works.
 
 `KeyboardInterrupt` prints `⨯ Interrupted` and exits 130; `SystemExit`
 propagates untouched, so argparse and `--version` keep the status they chose.
+
+Exit statuses, all of them:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | The command succeeded. |
+| 1 | A failure reached the top level, and the run stopped at it. |
+| 2 | Argparse rejected the command line, or no command was given. |
+| 3 | The run drained under a non-fatal failure policy — `@task(on_failure="ignore")` or `ginkgo run --keep-going` — with failures in it. The run is recorded `failed`; the tasks that could run, ran. |
+| 130 | Interrupted (SIGINT). |
+
+The named constants are `IGNORED_FAILURES_EXIT_CODE` and
+`INTERRUPT_EXIT_CODE` in `cli/errors.py`.
+
+`ginkgo run --keep-going` treats every task as `on_failure="ignore"`: a task
+failure stops nothing but the branch below it. Tasks downstream of a failure
+are reported `skipped`, with the failed task that cost them named — one line
+each while that stays readable, counted per ancestor beyond that, so a
+handful of failures at the head of a wide fan-out cannot print thousands of
+lines. Failures the policy let pass are diagnosed under their own heading,
+apart from the one that would otherwise have stopped the run.
 `ginkgo doctor` reports the same user-code location under each diagnostic.
 
 Run-time failure diagnostics classify each task failure into one of a small

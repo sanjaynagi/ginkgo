@@ -323,6 +323,53 @@ def test_task_failed_records_the_failure_and_closes_the_attempt(started: SqliteS
     assert attempt["status"] == "failed"
 
 
+def test_task_failed_records_a_failure_the_policy_let_pass(started: SqliteStore) -> None:
+    _apply(started, _fixture("task_started"), _fixture("task_failed", attempt=1))
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert task["status"] == "failed"
+    assert json.loads(task["extra"])["ignored"] is True
+
+
+def test_a_v1_task_failed_payload_projects_without_an_ignored_flag(
+    started: SqliteStore,
+) -> None:
+    """A run recorded before the failure policy existed replays unchanged."""
+    payload = json.loads((FIXTURES / "task_failed.json").read_text(encoding="utf-8"))
+    del payload["ignored"]
+    _apply(
+        started,
+        _fixture("task_started"),
+        StoredEvent(
+            run_id=payload["run_id"],
+            ts=payload["ts"],
+            type="task_failed",
+            v=1,
+            task_id=payload["task_id"],
+            attempt=1,
+            payload=json.dumps({**payload, "v": 1, "attempt": 1}, sort_keys=True),
+        ),
+    )
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert task["status"] == "failed"
+    assert "ignored" not in json.loads(task["extra"])
+
+
+def test_task_skipped_closes_the_task_and_names_the_failure(started: SqliteStore) -> None:
+    _apply(started, _fixture("task_skipped"))
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert task["status"] == "skipped"
+    assert task["cached"] == 0
+    assert task["finished_at"] == "2026-08-28T09:00:00+00:00"
+    assert json.loads(task["extra"])["skipped_because"] == {
+        "task_id": "task_0001",
+        "task_name": "analysis.load",
+    }
+    assert not started.query("SELECT * FROM attempts")
+
+
 def test_task_retrying_reopens_the_task_and_closes_the_attempt(started: SqliteStore) -> None:
     _apply(started, _fixture("task_started"), _fixture("task_retrying"))
 

@@ -15,7 +15,8 @@ from rich.console import Console
 
 from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
-from ginkgo.cli.renderers.models import CliRunSummary
+from ginkgo.cli.renderers.common import _status_icon
+from ginkgo.cli.renderers.models import CliRunSummary, FailureDetails, SkipDetails
 from ginkgo.envs.pixi import PixiEnvPrepareError, PixiRegistry
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import (
@@ -34,7 +35,9 @@ from ginkgo.runtime.events import (
     PhaseTimed,
     RunResourcesSampled,
     TaskAnnotated,
+    TaskFailed,
     TaskPlanned,
+    TaskSkipped,
     TaskStarted,
 )
 
@@ -427,6 +430,86 @@ def test_evaluator_reports_a_failed_environment_preparation() -> None:
     assert failed[0].env == _TEST_ENV_NAME
     assert "install failed" in (failed[0].error or "")
     assert not [event for event in events if isinstance(event, EnvPrepareCompleted)]
+
+
+def test_task_skipped_maps_to_a_skipped_row() -> None:
+    sink = _RecordingRenderer()
+    adapter = RichEventRenderer(renderer=sink)
+
+    adapter(
+        TaskSkipped(
+            run_id="r1",
+            task_id="task_0",
+            task_name="mod.task_a",
+            ancestor_task_id="task_1",
+            ancestor_task_name="mod.upstream",
+        )
+    )
+
+    assert sink.lines[0]["status"] == "skipped"
+    assert sink.lines[0]["ancestor_task_name"] == "mod.upstream"
+
+
+def test_an_ignored_failure_says_so_on_the_wire() -> None:
+    sink = _RecordingRenderer()
+    adapter = RichEventRenderer(renderer=sink)
+
+    adapter(TaskFailed(run_id="r1", task_id="task_0", task_name="mod.task_a", ignored=True))
+
+    assert sink.lines[0]["status"] == "failed"
+    assert sink.lines[0]["ignored"] is True
+
+
+def test_a_skipped_task_is_terminal_without_a_duration() -> None:
+    state = _seeded_state()
+
+    state.handle_event_line(_event_line("skipped"))
+
+    assert state.rows[0].status == "skipped"
+    assert state.rows[0].started_at is None
+    assert state.terminal_count() == 1
+    assert _status_icon("skipped") == "⊘"
+
+
+def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
+    renderer, output = _renderer(tmp_path)
+    renderer._state.seed(planned_tasks=[(1, "mod.task_b", "task_b", "local")])
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.write(json.dumps({"task": "mod.task_b", "status": "skipped", "node_id": 1}) + "\n")
+    renderer.finish(
+        elapsed=1.0,
+        success=False,
+        failure_details=[
+            FailureDetails(
+                task_label="task_a",
+                exit_code=1,
+                log_path=None,
+                log_tail=[],
+                error="bad input",
+                ignored=True,
+            )
+        ],
+        skipped=[SkipDetails(task_label="task_b", ancestor_label="task_a")],
+    )
+
+    text = output.getvalue()
+    assert "1 failed (1 ignored), 1 skipped" in text
+    assert "Failed, run continued (1)" in text
+    assert "Skipped after an upstream failure (1)" in text
+    assert "task_b" in text and "task_a failed" in text
+
+
+def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    skipped = [
+        SkipDetails(task_label=f"branch[{index}]", ancestor_label="load") for index in range(50)
+    ]
+
+    report = renderer._layout.render_skip_report(skipped)
+
+    assert "50 after load failed" in report.plain
+    assert "branch[0]" not in report.plain
 
 
 def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
