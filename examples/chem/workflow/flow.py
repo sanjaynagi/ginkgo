@@ -35,10 +35,10 @@ def main() -> file:
     compounds = load_compound_panel(panel_path=cfg["paths"]["compound_panel_csv"])
     annotated = annotate_compounds(
         compounds=compounds,
-        potency_floor_nM=float(cfg["screening"]["potency_floor_nM"]),
-        solubility_floor_uM=float(cfg["screening"]["solubility_floor_uM"]),
-        permeability_floor=float(cfg["screening"]["permeability_floor"]),
-        max_clearance=float(cfg["screening"]["max_clearance"]),
+        potency_floor_nM=cfg["screening"]["potency_floor_nM"],
+        solubility_floor_uM=cfg["screening"]["solubility_floor_uM"],
+        permeability_floor=cfg["screening"]["permeability_floor"],
+        max_clearance=cfg["screening"]["max_clearance"],
     )
     developability_matrix = write_developability_matrix(compounds=annotated)
     series_packets = plan_series_packets(compounds=annotated)

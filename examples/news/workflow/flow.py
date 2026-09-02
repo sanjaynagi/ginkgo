@@ -35,7 +35,7 @@ def main() -> file:
     publication_schedule = write_publication_schedule(stories=scored_stories)
     flagged_report = write_flagged_story_report(
         stories=scored_stories,
-        flagged_priority=int(cfg["editorial"]["flagged_priority"]),
+        flagged_priority=cfg["editorial"]["flagged_priority"],
     )
     budget_summary = write_budget_summary(stories=scored_stories)
     desk_packets = plan_desk_packets(stories=scored_stories)

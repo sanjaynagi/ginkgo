@@ -58,7 +58,7 @@ def main() -> file:
     hotspots = write_inventory_hotspots(
         enriched_orders=enriched_orders,
         region_reports=region_reports,
-        hotspot_threshold=float(cfg["reporting"]["hotspot_threshold"]),
+        hotspot_threshold=cfg["reporting"]["hotspot_threshold"],
     )
     executive_report = build_executive_report(
         channel_metrics=channel_metrics,
