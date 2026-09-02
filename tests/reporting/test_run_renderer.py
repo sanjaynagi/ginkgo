@@ -16,7 +16,13 @@ from rich.console import Console
 from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
 from ginkgo.cli.renderers.common import _status_icon
-from ginkgo.cli.renderers.models import CliRunSummary, FailureDetails, SkipDetails
+from ginkgo.cli.renderers.models import (
+    CliAssetSummary,
+    CliNotebookSummary,
+    CliRunSummary,
+    FailureDetails,
+    SkipDetails,
+)
 from ginkgo.envs.pixi import PixiEnvPrepareError, PixiRegistry
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import (
@@ -473,13 +479,13 @@ def test_task_skipped_maps_to_a_skipped_row() -> None:
             run_id="r1",
             task_id="task_0",
             task_name="mod.task_a",
-            ancestor_task_id="task_1",
-            ancestor_task_name="mod.upstream",
+            blocked_by_task_id="task_1",
+            blocked_by_task_name="mod.upstream",
         )
     )
 
     assert sink.lines[0]["status"] == "skipped"
-    assert sink.lines[0]["ancestor_task_name"] == "mod.upstream"
+    assert sink.lines[0]["blocked_by_task_name"] == "mod.upstream"
 
 
 def test_an_ignored_failure_says_so_on_the_wire() -> None:
@@ -522,14 +528,14 @@ def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
                 ignored=True,
             )
         ],
-        skipped=[SkipDetails(task_label="task_b", ancestor_label="task_a")],
+        skipped=[SkipDetails(task_label="task_b", blocker_label="task_a")],
     )
 
     text = output.getvalue()
     assert "1 failed (1 ignored), 1 skipped" in text
     assert "Failed, run continued (1)" in text
-    assert "Skipped after an upstream failure (1)" in text
-    assert "task_b" in text and "task_a failed" in text
+    assert "Left unrun by a failure (1)" in text
+    assert "task_b" in text and "blocked by task_a" in text
 
 
 def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> None:
@@ -561,12 +567,12 @@ def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> Non
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     skipped = [
-        SkipDetails(task_label=f"branch[{index}]", ancestor_label="load") for index in range(50)
+        SkipDetails(task_label=f"branch[{index}]", blocker_label="load") for index in range(50)
     ]
 
     report = renderer._layout.render_skip_report(skipped)
 
-    assert "50 after load failed" in report.plain
+    assert "50 blocked by load" in report.plain
     assert "branch[0]" not in report.plain
 
 
@@ -656,3 +662,45 @@ def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
     evaluator = _validated_evaluator((first, second), tuple(calls))
 
     assert sorted(_seeded_labels(evaluator).values()) == ["audit_site", "audit_site[2]"]
+
+
+def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
+    """Exit 3 is a finished run: its notebooks, assets and directory are real."""
+    renderer, output = _renderer(tmp_path)
+    html = tmp_path / "report.html"
+    html.write_text("<html></html>", encoding="utf-8")
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.finish(
+        elapsed=1.0,
+        success=False,
+        failure_details=[
+            FailureDetails(
+                task_label="task_a",
+                exit_code=1,
+                log_path=None,
+                log_tail=[],
+                error="bad input",
+                ignored=True,
+            )
+        ],
+        notebooks=[CliNotebookSummary(task_label="survey", html_path=html)],
+        assets=[CliAssetSummary(name="table:rows")],
+    )
+
+    text = output.getvalue()
+    assert "Notebooks materialised (1)" in text
+    assert "survey" in text
+    assert "Assets materialised (1)" in text
+    assert "table:rows" in text
+    assert "Run directory" in text
+
+
+def test_a_run_a_failure_ended_lists_no_products(tmp_path: Path) -> None:
+    """The fatal path reports its directory on stderr, not here."""
+    renderer, output = _renderer(tmp_path)
+
+    renderer.write(_event_line("failed") + "\n")
+    renderer.finish(elapsed=1.0, success=False)
+
+    assert "Run directory" not in output.getvalue()

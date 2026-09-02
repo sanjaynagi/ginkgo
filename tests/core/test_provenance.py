@@ -176,8 +176,8 @@ def test_the_payload_carries_skipped_tasks_and_ignored_failures(ledger: Ledger) 
             run_id=ledger.run_id,
             task_id="task_0001",
             task_name="demo.downstream",
-            ancestor_task_id="task_0000",
-            ancestor_task_name="demo.task",
+            blocked_by_task_id="task_0000",
+            blocked_by_task_name="demo.task",
         )
     )
     summary = ledger.finish(status="failed")

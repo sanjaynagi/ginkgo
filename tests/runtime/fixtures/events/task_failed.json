@@ -7,7 +7,7 @@
     "kind": "exception",
     "message": "boom"
   },
-  "ignored": true,
+  "ignored": false,
   "remote_job_id": "job-1",
   "run_id": "run_20260828_090000",
   "task_id": "task_0007",

@@ -386,10 +386,17 @@ def _renderer() -> _RunLayoutRenderer:
     )
 
 
-def _failure(*, error: str, kind: str = "python", env_label: str = "local") -> FailureDetails:
+def _failure(
+    *,
+    error: str,
+    kind: str = "python",
+    env_label: str = "local",
+    label: str = "load_frame",
+    ignored: bool = False,
+) -> FailureDetails:
     """One failed task, defaulting to the in-process case."""
     return FailureDetails(
-        task_label="load_frame",
+        task_label=label,
         exit_code=1,
         log_path=None,
         log_tail=[],
@@ -397,6 +404,7 @@ def _failure(*, error: str, kind: str = "python", env_label: str = "local") -> F
         failure_kind="import_error",
         task_kind=kind,
         env_label=env_label,
+        ignored=ignored,
     )
 
 
@@ -452,6 +460,25 @@ class TestRenderedFailure:
         text = _failures_text([_failure(error=f"No module named '{ABSENT}'") for _ in range(3)])
 
         assert text.count("Try: pixi run run") == 1
+
+    def test_the_hinted_failure_keeps_its_panel_past_the_ignored_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A keep-going run caps its panels; the hint must not be capped away."""
+        _outside_project_env(monkeypatch)
+        _manifest()
+        shell_failures = [
+            _failure(error="exit status 1", kind="shell", label=f"step_{index}", ignored=True)
+            for index in range(11)
+        ]
+
+        text = _failures_text(
+            [*shell_failures, _failure(error=f"No module named '{ABSENT}'", ignored=True)]
+        )
+
+        assert "Failure Details: load_frame" in text
+        assert "cannot import: " + ABSENT in text
+        assert "and 2 more" in text
 
     def test_no_manifest_leaves_the_failure_panel_alone(self) -> None:
         text = _failures_text([_failure(error=f"No module named '{ABSENT}'")])

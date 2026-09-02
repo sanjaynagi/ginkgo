@@ -246,8 +246,8 @@ def evaluate(
 # - transport_path is non-None only in "running" when the task executes via
 #   the process pool or a remote executor (never for driver tasks); cleared
 #   by _cleanup_transport on completion, failure, and retry.
-# - skip_ancestor_id / skip_ancestor_name are non-None only in "skipped",
-#   naming the failed task the skip is attributed to.
+# - blocked_by_task_id / blocked_by_task_name are non-None only in
+#   "skipped", naming the failed task the skip is attributed to.
 _NodeState = Literal[
     "pending",
     "ready",
@@ -337,8 +337,8 @@ class NodeRun:
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
-    skip_ancestor_id: str | None = None
-    skip_ancestor_name: str | None = None
+    blocked_by_task_id: str | None = None
+    blocked_by_task_name: str | None = None
 
     @property
     def remote(self) -> bool:
@@ -1139,8 +1139,13 @@ class ConcurrentEvaluator:
             return
 
         # "ignore" is about scheduling only: the task is recorded as failed
-        # either way, and the run still ends up failed.
-        ignore = self.keep_going or node.task_def.on_failure == "ignore"
+        # either way, and the run still ends up failed. Once the run is
+        # stopping — a fatal failure, or an interrupt — nothing is ignored any
+        # more: the policy could not carry a run on that has already ended, so
+        # every failure draining out behind it is reported as what it is.
+        ignore = self._failure is None and (
+            self.keep_going or node.task_def.on_failure == "ignore"
+        )
         node.state = "failed"
         self._cleanup_transport(node)
         if ignore:
@@ -1512,17 +1517,22 @@ class ConcurrentEvaluator:
         return None
 
     def _mark_node_skipped(self, *, node: NodeRun, blocker: NodeRun) -> None:
-        """Record one node as skipped, attributed to the failure behind it."""
+        """Record one node as skipped, attributed to the failure behind it.
+
+        Nothing about the attempt the node may already have made is cleared:
+        a node waiting on its own dynamic expansion has run its body, and the
+        record of that work is true whatever the outcome.
+        """
         if blocker.state == "skipped":
-            ancestor_id = blocker.skip_ancestor_id
-            ancestor_name = blocker.skip_ancestor_name
+            blocked_by_id = blocker.blocked_by_task_id
+            blocked_by_name = blocker.blocked_by_task_name
         else:
-            ancestor_id = task_id_for_node(blocker.node_id)
-            ancestor_name = blocker.task_def.name
+            blocked_by_id = task_id_for_node(blocker.node_id)
+            blocked_by_name = blocker.task_def.name
 
         node.state = "skipped"
-        node.skip_ancestor_id = ancestor_id
-        node.skip_ancestor_name = ancestor_name
+        node.blocked_by_task_id = blocked_by_id
+        node.blocked_by_task_name = blocked_by_name
         self._emit_event(
             TaskSkipped(
                 run_id=self._run_id,
@@ -1530,8 +1540,8 @@ class ConcurrentEvaluator:
                 task_name=node.task_def.name,
                 attempt=node.attempt,
                 display_label=node.display_label,
-                ancestor_task_id=ancestor_id or "",
-                ancestor_task_name=ancestor_name or "",
+                blocked_by_task_id=blocked_by_id or "",
+                blocked_by_task_name=blocked_by_name or "",
             )
         )
 
@@ -1545,8 +1555,8 @@ class ConcurrentEvaluator:
             node = self._nodes[node_id]
             if node.state == "skipped":
                 return RootSkippedError(
-                    task_name=node.skip_ancestor_name or node.task_def.name,
-                    task_id=node.skip_ancestor_id or task_id_for_node(node.node_id),
+                    task_name=node.blocked_by_task_name or node.task_def.name,
+                    task_id=node.blocked_by_task_id or task_id_for_node(node.node_id),
                 )
             if node.state == "failed":
                 return RootSkippedError(

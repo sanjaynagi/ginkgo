@@ -72,10 +72,15 @@ class FailureDetails:
 
 @dataclass(frozen=True, kw_only=True)
 class SkipDetails:
-    """One task the run never attempted, and the failure that cost it."""
+    """One task a failure left without a result, and the failure itself.
+
+    Both labels are read the same way — the run's own label for a task, or
+    its base name — so that two tasks are counted together only when they
+    really are the same task.
+    """
 
     task_label: str
-    ancestor_label: str
+    blocker_label: str
 
 
 @dataclass

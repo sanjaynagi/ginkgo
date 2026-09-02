@@ -656,7 +656,9 @@ downstream of the failure are skipped, and `ginkgo run` exits 3 — see
 
 An external interrupt such as Ctrl-C is different whatever the policy: it
 terminates subprocesses, cancels remote job handles, and shuts down the
-executor pools.
+executor pools. Failures that drain out behind it, or behind a fatal failure,
+are recorded as the failures they are rather than as ignored ones: the policy
+cannot carry on a run that has already ended.
 
 ### How do retry policies and exponential backoff work, and which failures are retried?
 

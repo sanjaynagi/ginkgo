@@ -591,8 +591,11 @@ def _task_failed(event: StoredEvent, payload: dict[str, Any]) -> list[Projection
 
 
 def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
-    # No attempts row: a skipped task never started one. ``status`` is free
-    # text, so the new terminal state needs no schema change.
+    # The outcome is all that changes. No attempts row is written, and
+    # ``started_at`` and ``attempts`` are left as they stand: most skipped
+    # tasks never started and have neither, while a task waiting on its own
+    # expansion ran its body and has both. ``status`` is free text, so the new
+    # terminal state needs no schema change.
     return [
         ProjectionOp(
             sql="""
@@ -606,8 +609,8 @@ def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                 dumps(
                     {
                         "skipped_because": {
-                            "task_id": payload.get("ancestor_task_id"),
-                            "task_name": payload.get("ancestor_task_name"),
+                            "task_id": payload.get("blocked_by_task_id"),
+                            "task_name": payload.get("blocked_by_task_name"),
                         }
                     }
                 ),

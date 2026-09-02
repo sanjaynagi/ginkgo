@@ -24,10 +24,14 @@ The evaluator emits typed runtime events through an in-process event bus in
 
 A task reaches exactly one of three terminal events: `task_completed`,
 `task_failed`, or `task_skipped`. `TaskFailed` (v2) carries `ignored`, true
-when the run's failure policy let the failure pass — `on_failure="ignore"` on
-the task or `--keep-going` on the run. `TaskSkipped` carries
-`ancestor_task_id` / `ancestor_task_name`, the failed task the skip is
-attributed to; such a task never started and produced nothing.
+when the run's failure policy let the failure pass and the run went on —
+`on_failure="ignore"` on the task or `--keep-going` on the run. It is false
+for a failure that lands after something has already stopped the run, because
+by then nothing was ignored. `TaskSkipped` carries `blocked_by_task_id` /
+`blocked_by_task_name`, the failed task it was waiting on. Most skipped tasks
+never started; one kind did, and its `task_started` event and attempt stand:
+a task whose body returned further task expressions runs, then waits on them,
+so a failure inside its own expansion leaves it started and resultless.
 
 This keeps runtime state changes explicit and lets multiple consumers observe
 the same execution facts without duplicating scheduler logic.

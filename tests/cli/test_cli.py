@@ -2581,7 +2581,8 @@ class TestCliFailurePolicy:
         combined = result.stdout + result.stderr
         assert "1 failed (1 ignored), 1 skipped" in combined
         assert "Failed, run continued (1)" in combined
-        assert "Skipped after an upstream failure (1)" in combined
+        assert "Left unrun by a failure (1)" in combined
+        assert "blocked by load" in combined
 
     def test_keep_going_is_a_ginkgo_flag_not_a_workflow_parameter(self) -> None:
         Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
@@ -2592,6 +2593,18 @@ class TestCliFailurePolicy:
         combined = result.stdout + result.stderr
         assert "unrecognized arguments" not in combined
         assert "1 failed (1 ignored), 1 skipped" in combined
+
+    def test_debug_says_which_failure_the_policy_let_pass(self) -> None:
+        Path("workflow.py").write_text(_FAILURE_POLICY_WORKFLOW, encoding="utf-8")
+
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 3, run.stderr
+        run_dir = _extract_run_dir(run.stdout + run.stderr)
+
+        debug = _run_cli("debug", run_dir.name, cwd=Path.cwd())
+
+        assert debug.returncode == 0, debug.stderr
+        assert "the run continued past this failure" in debug.stdout
 
     def test_a_fatal_failure_still_exits_one(self) -> None:
         Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")

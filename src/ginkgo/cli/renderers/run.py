@@ -79,7 +79,7 @@ _ENV_PREPARE_REPORT_THRESHOLD_SECONDS = 1.0
 """Minimum total environment preparation time worth explaining in the summary."""
 
 _SKIP_REPORT_LIST_LIMIT = 12
-"""Most skipped tasks to name individually before counting them by ancestor."""
+"""Most skipped tasks to name individually before counting them by blocker."""
 
 _IGNORED_PANEL_LIMIT = 10
 """Most ignored failures to give a diagnostic panel before counting the rest."""
@@ -162,7 +162,9 @@ class _RunEventState:
             row.started_at = row.started_at or event_time
             row.finished_at = None
         elif status == "skipped":
-            # A skipped task never started, so it has no duration to report.
+            # The clock is not started here: a task the run never reached has
+            # no duration to report, while one that ran its body and then
+            # waited on a failed expansion keeps the duration it earned.
             row.finished_at = event_time
         elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
@@ -551,7 +553,10 @@ class _RunLayoutRenderer:
         cost it a branch are different questions. A fatal failure always gets
         its panel; ignored ones are panelled up to a limit, because a
         keep-going run over a wide fan-out can collect hundreds and the
-        category summary above already counts them all.
+        category summary above already counts them all. The failure carrying
+        the environment hint is panelled wherever it sits in that list: the
+        hint is the most actionable thing on the screen, and dropping it with
+        the panel it hangs off would lose it for the whole run.
         """
         fatal = [item for item in details if not item.ignored]
         ignored = [item for item in details if item.ignored]
@@ -566,11 +571,12 @@ class _RunLayoutRenderer:
         )
         if ignored:
             parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
+            panelled = _panelled_with(items=ignored, kept=hinted, limit=_IGNORED_PANEL_LIMIT)
             parts.extend(
                 self.render_failure_panel(item, hint=hint if item is hinted else None)
-                for item in ignored[:_IGNORED_PANEL_LIMIT]
+                for item in panelled
             )
-            remaining = len(ignored) - _IGNORED_PANEL_LIMIT
+            remaining = len(ignored) - len(panelled)
             if remaining > 0:
                 parts.append(
                     Text(f"  ... and {remaining} more, in the run record", style="#7f1d1d")
@@ -578,22 +584,22 @@ class _RunLayoutRenderer:
         return Group(*parts)
 
     def render_skip_report(self, skipped: list[SkipDetails]) -> Text:
-        """Name the tasks an ancestor's failure cost this run.
+        """Name the tasks a failure left without a result.
 
         Listed one per line while that stays readable; beyond that, counted
-        per failed ancestor, because a handful of failures at the head of a
-        wide fan-out skips thousands of branches.
+        per blocking failure, because a handful of failures at the head of a
+        wide fan-out costs thousands of branches.
         """
         text = Text()
-        text.append(f"\n⊘ Skipped after an upstream failure ({len(skipped)})\n", style="bold")
+        text.append(f"\n⊘ Left unrun by a failure ({len(skipped)})\n", style="bold")
         if len(skipped) <= _SKIP_REPORT_LIST_LIMIT:
             for item in skipped:
                 text.append(f"  {item.task_label}", style="dim")
-                text.append(f"  ← {item.ancestor_label} failed\n", style="dim")
+                text.append(f"  ← blocked by {item.blocker_label}\n", style="dim")
             return text
-        counts = Counter(item.ancestor_label for item in skipped)
-        for ancestor, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-            text.append(f"  {count} after {ancestor} failed\n", style="dim")
+        counts = Counter(item.blocker_label for item in skipped)
+        for blocker, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            text.append(f"  {count} blocked by {blocker}\n", style="dim")
         return text
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
@@ -909,7 +915,11 @@ class CliRunRenderer:
             self._console.print(self._layout.render_failure_details(failure_details))
         if skipped:
             self._console.print(self._layout.render_skip_report(skipped))
-        if success:
+        # A run that failed under its failure policy still produced whatever
+        # its surviving branches produced, and its reader still wants the run
+        # directory. A run a failure ended passes neither, and reports its
+        # directory on stderr beside the traceback instead.
+        if success or notebooks is not None or assets is not None:
             if notebooks:
                 self._console.print(self._layout.render_notebooks(notebooks))
             if assets:
@@ -983,6 +993,26 @@ def _format_count(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.1f}"
     return "--"
+
+
+def _panelled_with(
+    *,
+    items: list[FailureDetails],
+    kept: FailureDetails | None,
+    limit: int,
+) -> list[FailureDetails]:
+    """Return the first *limit* of *items*, with *kept* among them either way.
+
+    Display order otherwise: a failure hoisted past the cap takes the last
+    slot rather than jumping the queue, so the first failures still read
+    first.
+    """
+    head = items[:limit]
+    if kept is None or not any(item is kept for item in items):
+        return head
+    if any(item is kept for item in head):
+        return head
+    return [*head[: limit - 1], kept]
 
 
 def _interpreter_hint(

@@ -252,19 +252,23 @@ Exit statuses, all of them:
 | 0 | The command succeeded. |
 | 1 | A failure reached the top level, and the run stopped at it. |
 | 2 | Argparse rejected the command line, or no command was given. |
-| 3 | The run drained under a non-fatal failure policy — `@task(on_failure="ignore")` or `ginkgo run --keep-going` — with failures in it. The run is recorded `failed`; the tasks that could run, ran. |
+| 3 | The run drained under a non-fatal failure policy — `@task(on_failure="ignore")` or `ginkgo run --keep-going` — with failures in it. The run is recorded `failed`; the tasks that could run, ran. In phase 1 such a run ends without a result, because the workflow's own return value is downstream of everything: the code path for a run whose root survives its ignored failures exists, and phase 2's partial fan-in is what reaches it. |
 | 130 | Interrupted (SIGINT). |
 
 The named constants are `IGNORED_FAILURES_EXIT_CODE` and
 `INTERRUPT_EXIT_CODE` in `cli/errors.py`.
 
 `ginkgo run --keep-going` treats every task as `on_failure="ignore"`: a task
-failure stops nothing but the branch below it. Tasks downstream of a failure
-are reported `skipped`, with the failed task that cost them named — one line
-each while that stays readable, counted per ancestor beyond that, so a
-handful of failures at the head of a wide fan-out cannot print thousands of
-lines. Failures the policy let pass are diagnosed under their own heading,
-apart from the one that would otherwise have stopped the run.
+failure stops nothing but the branch below it. Tasks left resultless by a
+failure are reported `skipped`, each naming the failure that blocked it — one
+line each while that stays readable, counted per blocking failure beyond that,
+so a handful of failures at the head of a wide fan-out cannot print thousands
+of lines. Failures the policy let pass are diagnosed under their own heading,
+apart from the one that would otherwise have stopped the run, and are panelled
+up to a cap of ten with the rest counted — except the failure carrying the
+environment hint, which keeps its panel wherever it falls in that list. A run
+that ends this way still lists the notebooks and assets its surviving branches
+produced: only the summary line differs from a success.
 `ginkgo doctor` reports the same user-code location under each diagnostic.
 
 Run-time failure diagnostics classify each task failure into one of a small

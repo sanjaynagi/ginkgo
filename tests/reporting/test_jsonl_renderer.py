@@ -71,12 +71,12 @@ def test_jsonl_renderer_carries_the_failure_policy_outcomes() -> None:
             run_id="run_123",
             task_id="task_0002",
             task_name="example.analyse",
-            ancestor_task_id="task_0001",
-            ancestor_task_name="example.load",
+            blocked_by_task_id="task_0001",
+            blocked_by_task_name="example.load",
         )
     )
 
     payloads = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert [payload["event"] for payload in payloads] == ["task_failed", "task_skipped"]
     assert (payloads[0]["ignored"], payloads[0]["v"]) == (True, 2)
-    assert payloads[1]["ancestor_task_name"] == "example.load"
+    assert payloads[1]["blocked_by_task_name"] == "example.load"

@@ -88,7 +88,7 @@ class TaskSummary:
     assets: tuple[dict[str, Any], ...]
     resource_usage: dict[str, Any] | None
     skipped_because: dict[str, Any] | None
-    """The failed task this one was skipped after, when it was skipped."""
+    """The failed task this one was waiting on, when it was skipped."""
     ignored: bool
     """Whether the run's failure policy let this task's failure pass."""
     timings: dict[str, float] = field(default_factory=dict)
@@ -116,21 +116,33 @@ class TaskSummary:
         return "task"
 
     @property
+    def started(self) -> bool:
+        """Whether the task started an attempt of its own.
+
+        The one question behind both labels below, and the one that separates
+        the two kinds of skipped task: one the run never reached, and one that
+        ran its body and then waited on an expansion that failed.
+        """
+        return self.started_at is not None
+
+    @property
     def cache_label(self) -> str:
         """Return ``"hit"``, ``"miss"``, or ``"—"`` for the cache outcome.
 
-        A skipped task never reached the cache, so it claims neither.
+        Anything that started missed: a hit completes a task where it stands,
+        so a task that went on to run had already missed. A task the run never
+        started never asked, and claims neither.
         """
         if self.cached or self.status == "cached":
             return "hit"
-        if self.status in {"succeeded", "failed"}:
+        if self.status in {"succeeded", "failed"} or self.started:
             return "miss"
         return "—"
 
     @property
     def attempts_label(self) -> str:
-        """Return ``"N"`` or ``"N / M"`` for attempts / max_attempts."""
-        if self.status in {"cached", "skipped"}:
+        """Return ``"N"``, ``"N / M"``, or ``"—"`` when nothing was attempted."""
+        if self.status == "cached" or (self.status == "skipped" and not self.started):
             return "—"
         if self.max_attempts is not None and self.max_attempts > 1:
             return f"{self.attempts + 1} / {self.max_attempts}"
@@ -314,11 +326,11 @@ class RunSummary:
         prints this as JSON and the run directory keeps it as YAML, so the file
         and the command cannot disagree about what a run was.
 
-        A task's ``status`` carries ``"skipped"`` for one an ancestor's failure
-        made unrunnable, and such a task also carries ``skipped_because``, the
-        ``task_id``/``task_name`` of that failure. A failure the run's policy
-        let pass carries ``ignored: true``. All three keys are present only
-        where they mean something.
+        A task's ``status`` carries ``"skipped"`` for one left resultless by a
+        failure it was waiting on, and such a task also carries
+        ``skipped_because``, the ``task_id``/``task_name`` of that failure. A
+        failure the run's policy let pass carries ``ignored: true``. All three
+        keys are present only where they mean something.
 
         Returns
         -------
@@ -417,7 +429,7 @@ class RunSummary:
 
     @property
     def skipped_count(self) -> int:
-        """Return the number of tasks skipped after an ancestor failed."""
+        """Return the number of tasks left resultless by a failure."""
         return sum(1 for task in self.tasks if task.status == "skipped")
 
     @property

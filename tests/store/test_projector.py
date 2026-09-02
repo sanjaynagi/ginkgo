@@ -324,11 +324,23 @@ def test_task_failed_records_the_failure_and_closes_the_attempt(started: SqliteS
 
 
 def test_task_failed_records_a_failure_the_policy_let_pass(started: SqliteStore) -> None:
-    _apply(started, _fixture("task_started"), _fixture("task_failed", attempt=1))
+    _apply(
+        started,
+        _fixture("task_started"),
+        _fixture("task_failed", attempt=1, ignored=True),
+    )
 
     task = _row(started, "SELECT * FROM tasks")
     assert task["status"] == "failed"
     assert json.loads(task["extra"])["ignored"] is True
+
+
+def test_a_fatal_failure_claims_nothing_about_the_policy(started: SqliteStore) -> None:
+    _apply(started, _fixture("task_started"), _fixture("task_failed", attempt=1))
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert task["status"] == "failed"
+    assert "ignored" not in json.loads(task["extra"])
 
 
 def test_a_v1_task_failed_payload_projects_without_an_ignored_flag(
@@ -337,6 +349,7 @@ def test_a_v1_task_failed_payload_projects_without_an_ignored_flag(
     """A run recorded before the failure policy existed replays unchanged."""
     payload = json.loads((FIXTURES / "task_failed.json").read_text(encoding="utf-8"))
     del payload["ignored"]
+    assert "ignored" not in payload
     _apply(
         started,
         _fixture("task_started"),
@@ -368,6 +381,18 @@ def test_task_skipped_closes_the_task_and_names_the_failure(started: SqliteStore
         "task_name": "analysis.load",
     }
     assert not started.query("SELECT * FROM attempts")
+
+
+def test_a_skipped_task_keeps_the_attempt_it_really_made(started: SqliteStore) -> None:
+    """A task waiting on its own expansion ran; the skip must not erase that."""
+    _apply(started, _fixture("task_started"), _fixture("task_skipped"))
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert task["status"] == "skipped"
+    assert task["started_at"] == "2026-08-28T09:00:00+00:00"
+    assert task["attempts"] == 1
+    attempt = _row(started, "SELECT * FROM attempts")
+    assert attempt["status"] == "running"
 
 
 def test_task_retrying_reopens_the_task_and_closes_the_attempt(started: SqliteStore) -> None:

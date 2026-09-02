@@ -197,9 +197,17 @@ Two things this does *not* do:
   so every task below the failure is reported `skipped`, naming the failure it
   is waiting on. An aggregator over a fan-out is downstream of every branch, so
   one ignored branch failure skips it — including when the aggregator is what
-  the flow returns, in which case the run produces no result and says so. The
-  successful branches are still cached, so fixing the input and re-running does
-  only the work that is left.
+  the flow returns, in which case the run produces no result and says so —
+  which, since a flow's return value usually sits downstream of everything, is
+  how most such runs end today. The successful branches are still cached, and
+  the notebooks and assets they produced are still listed and still there, so
+  fixing the input and re-running does only the work that is left.
+
+Anything ginkgo itself rejects about a task attempt — a return value that
+breaks the task's declared contract, say — is ignored on the same terms as an
+error the task body raised. `--keep-going` is a statement about the whole run,
+so use it when you want the run carried past every kind of per-task failure,
+and `on_failure="ignore"` on the one task whose failure you expect.
 
 ## See Also
 

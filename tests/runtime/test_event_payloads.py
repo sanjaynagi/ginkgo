@@ -166,12 +166,11 @@ def _events() -> list[GinkgoEvent]:
             exit_code=1,
             failure={"kind": "exception", "message": "boom"},
             remote_job_id="job-1",
-            ignored=True,
         ),
         TaskSkipped(
             **TASK,
-            ancestor_task_id="task_0001",
-            ancestor_task_name="analysis.load",
+            blocked_by_task_id="task_0001",
+            blocked_by_task_name="analysis.load",
         ),
         EnvPrepareStarted(**TASK, env="analysis"),
         EnvPrepareCompleted(**TASK, env="analysis"),
@@ -236,3 +235,19 @@ def test_payload_is_json_serialisable(name: str) -> None:
     payload = EVENTS[name].to_payload()
 
     assert json.loads(json.dumps(payload, sort_keys=True)) == payload
+
+
+def test_an_ignored_failure_is_the_same_payload_plus_one_flag() -> None:
+    """The golden ``task_failed`` is the fatal shape; ``ignored`` is the variant."""
+    fatal = EVENTS["task_failed"].to_payload()
+    ignored = TaskFailed(
+        **TASK,
+        attempt=2,
+        exit_code=1,
+        failure={"kind": "exception", "message": "boom"},
+        remote_job_id="job-1",
+        ignored=True,
+    ).to_payload()
+
+    assert fatal["ignored"] is False
+    assert ignored == {**fatal, "ignored": True}

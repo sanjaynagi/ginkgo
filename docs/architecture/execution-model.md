@@ -119,9 +119,28 @@ so every branch that does not depend on the failed task still runs. Tasks that
 do depend on it reach the terminal `skipped` state — phase 1 has no partial
 fan-in, so one missing input skips the task outright — and the skip sweep
 runs to a fixed point per scheduler pass, so a chain of dependents collapses
-at once. Each skipped task records the failed task it is attributed to, found
-by walking up through any intervening skips, and emits `task_skipped` naming
-it.
+at once. Each skipped task records the failure it was waiting on, reached
+through any intervening skips, and emits `task_skipped` naming it as
+`blocked_by_task_*`.
+
+Most skipped tasks never started. One kind did: a task whose body returns
+further task expressions has already run by the time it waits on them, so a
+failure inside its own expansion leaves it started, attempted, logged and
+resultless. Nothing about that attempt is rewritten — the `task_started`
+event, the attempt row, the duration and the logs are the run's record of
+work that really happened — and the task it names as its blocker is the
+member of its own expansion that failed. Hence `blocked_by`, which claims no
+direction: the blocking task may sit upstream of the skipped one or inside it.
+
+The policy is about a task attempt's outcome, not about where the failure came
+from, so it covers a framework-detected failure — a return value that breaks
+the task's declared contract, a value the process pool cannot carry, a cache
+write that fails — exactly as it covers an exception from the task body. Each
+is attributed to the task whose attempt raised it, keeps the category the
+failure classifier gave it, and is ignored on the same terms. A run using
+`--keep-going` to survive bad inputs therefore also survives these, which is
+accepted for phase 1: the failures are all recorded, classified and counted,
+and the run still exits non-zero.
 
 An ignored failure does not make the run a success. The task is recorded
 `failed` (with `ignored: true` in `tasks.extra`), `RunCompleted` carries
@@ -129,9 +148,16 @@ An ignored failure does not make the run a success. The task is recorded
 "stopped at the first failure" from "ran everything it could, and some of it
 failed". When the ignored failure leaves the workflow result unproducible, the
 evaluator raises `RootSkippedError` after the loop has drained; that is an
-outcome, not a crash, so the CLI reports the run normally and still exits 3.
+outcome, not a crash, so the CLI reports the run normally — its notebooks and
+assets included, because they are real — and still exits 3. In phase 1 that is
+how a keep-going run with failures ends, since a flow's return value is
+downstream of its whole graph; the other limb, a run whose root outlives its
+ignored failures, is what phase 2's partial fan-in reaches.
 
 An interrupt is not a task failure: Ctrl-C stops the run whatever the policy.
+Nor is a failure that lands once the run is already stopping counted as
+ignored — by then the policy has nothing left to carry on, so `TaskFailed`
+reports it as the plain failure it is.
 
 **Per-task thread declaration.** A task's CPU footprint is declared on the
 decorator (`@task(threads=4)`) and may be overridden per site via the

@@ -76,7 +76,7 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
-from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -622,7 +622,9 @@ def run_workflow(
 
             if run_failed:
                 # Nothing stopped the run, so it is reported like any other
-                # finished run — with the failures and the tasks they cost.
+                # finished run: the failures and what they cost, and also the
+                # notebooks and assets the surviving branches really did
+                # produce. Only the summary line differs from a success.
                 if renderer is not None:
                     with profiler.timed("renderer_finish"):
                         renderer.finish(
@@ -638,9 +640,13 @@ def run_workflow(
                                 run_summary=run_summary,
                                 renderer=renderer,
                             ),
+                            notebooks=_render_notebooks(
+                                run_summary=run_summary,
+                                renderer=renderer,
+                            ),
+                            assets=_render_assets(run_summary=run_summary),
                             remote_summary=evaluator.remote_stats.summary(),
                         )
-                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
                     _print_profile_table(console=rich_console, profile=profiler.snapshot())
                 return IGNORED_FAILURES_EXIT_CODE
@@ -706,24 +712,38 @@ def _load_skip_details(
     run_summary: RunSummary,
     renderer: CliRunRenderer,
 ) -> list[SkipDetails]:
-    """Load the tasks an ancestor's failure cost this run."""
-    return [
-        SkipDetails(
-            task_label=(
-                renderer.label_for_node(task.node_id if task.node_id is not None else -1)
-                or task.name
-            ),
-            ancestor_label=_base_task_name(
-                (task.skipped_because or {}).get("task_name") or "an earlier task"
-            ),
+    """Load the tasks a failure left without a result.
+
+    A blocking task is named by the label the run gave it, the same way the
+    skipped task itself is. Base names alone would count two same-named tasks
+    from different modules — or two branches of one fan-out — as one.
+    """
+    labels = {
+        task.task_key: _task_label(task=task, renderer=renderer) for task in run_summary.tasks
+    }
+    details: list[SkipDetails] = []
+    for task in run_summary.tasks:
+        if task.status != "skipped":
+            continue
+        blocker = task.skipped_because or {}
+        blocker_label = labels.get(str(blocker.get("task_id"))) or _base_name(
+            blocker.get("task_name")
         )
-        for task in run_summary.tasks
-        if task.status == "skipped"
-    ]
+        details.append(SkipDetails(task_label=labels[task.task_key], blocker_label=blocker_label))
+    return details
 
 
-def _base_task_name(name: str) -> str:
-    """Return a task's name without its module prefix."""
+def _task_label(*, task: TaskSummary, renderer: CliRunRenderer) -> str:
+    """Return the label this run showed for a task, or its base name."""
+    return renderer.label_for_node(task.node_id if task.node_id is not None else -1) or (
+        task.base_name
+    )
+
+
+def _base_name(name: object) -> str:
+    """Return a task name without its module prefix, for a name off the ledger."""
+    if not isinstance(name, str) or not name:
+        return "a failed task"
     return name.rsplit(".", 1)[-1]
 
 
@@ -738,10 +758,7 @@ def _load_failure_details(
     tail_lines = 20 if verbose else 10
     return [
         FailureDetails(
-            task_label=(
-                renderer.label_for_node(task.node_id if task.node_id is not None else -1)
-                or task.name
-            ),
+            task_label=_task_label(task=task, renderer=renderer),
             exit_code=task.exit_code,
             log_path=run_dir / task.stderr_log if task.stderr_log is not None else None,
             log_tail=combined_log_tail(

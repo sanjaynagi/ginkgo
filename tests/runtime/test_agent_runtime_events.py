@@ -80,7 +80,7 @@ def main():
     skipped = [event for event in events if event["event"] == "task_skipped"]
     completed = [event for event in events if event["event"] == "task_completed"]
     assert [event["ignored"] for event in failed] == [True]
-    assert [event["ancestor_task_name"].rsplit(".", 1)[-1] for event in skipped] == ["load"]
+    assert [event["blocked_by_task_name"].rsplit(".", 1)[-1] for event in skipped] == ["load"]
     assert any(event["task_name"].endswith(".analyse") for event in completed)
     run_completed = [event for event in events if event["event"] == "run_completed"][-1]
     assert run_completed["status"] == "failed"
