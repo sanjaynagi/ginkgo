@@ -77,6 +77,7 @@ def _debug_failure_details(
             error=task.error,
             failure_kind=task.failure_kind,
             inputs=task.inputs,
+            ignored=task.ignored,
         )
         for task in failed_tasks
     ]
@@ -95,6 +96,7 @@ def _debug_failure_payload(
             "exit_code": task.exit_code,
             "error": task.error,
             "failure": task.failure,
+            "ignored": task.ignored,
             "inputs": task.inputs,
             "stderr_log": task.stderr_log,
             "log_tail": _log_tail(run_dir=summary.run_dir, task=task),
