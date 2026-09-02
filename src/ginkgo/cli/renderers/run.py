@@ -81,6 +81,9 @@ _ENV_PREPARE_REPORT_THRESHOLD_SECONDS = 1.0
 _SKIP_REPORT_LIST_LIMIT = 12
 """Most skipped tasks to name individually before counting them by ancestor."""
 
+_IGNORED_PANEL_LIMIT = 10
+"""Most ignored failures to give a diagnostic panel before counting the rest."""
+
 
 class _RunEventState:
     """Track per-node task status as JSON event lines arrive from the evaluator."""
@@ -545,7 +548,10 @@ class _RunLayoutRenderer:
 
         A failure the run's policy let pass is diagnosed exactly like a fatal
         one, but under its own heading: what stopped the run and what merely
-        cost it a branch are different questions.
+        cost it a branch are different questions. A fatal failure always gets
+        its panel; ignored ones are panelled up to a limit, because a
+        keep-going run over a wide fan-out can collect hundreds and the
+        category summary above already counts them all.
         """
         fatal = [item for item in details if not item.ignored]
         ignored = [item for item in details if item.ignored]
@@ -562,8 +568,13 @@ class _RunLayoutRenderer:
             parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
             parts.extend(
                 self.render_failure_panel(item, hint=hint if item is hinted else None)
-                for item in ignored
+                for item in ignored[:_IGNORED_PANEL_LIMIT]
             )
+            remaining = len(ignored) - _IGNORED_PANEL_LIMIT
+            if remaining > 0:
+                parts.append(
+                    Text(f"  ... and {remaining} more, in the run record", style="#7f1d1d")
+                )
         return Group(*parts)
 
     def render_skip_report(self, skipped: list[SkipDetails]) -> Text:

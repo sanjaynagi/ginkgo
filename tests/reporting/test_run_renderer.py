@@ -500,6 +500,32 @@ def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
     assert "task_b" in text and "task_a failed" in text
 
 
+def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    details = [
+        FailureDetails(
+            task_label=f"branch[{index}]",
+            exit_code=1,
+            log_path=None,
+            log_tail=[],
+            error="bad input",
+            failure_kind="user_code_error",
+            ignored=True,
+        )
+        for index in range(30)
+    ]
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_details(details))
+    text = console.file.getvalue()
+
+    assert "Failed, run continued (30)" in text
+    assert "user_code_error×30" in text
+    assert "and 20 more" in text
+    assert "branch[9]" in text
+    assert "branch[10]" not in text
+
+
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     skipped = [
