@@ -17,7 +17,7 @@ from rich.markup import escape
 
 from ginkgo import query
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
-from ginkgo.cli.renderers.common import environment_label
+from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
@@ -726,8 +726,11 @@ def _load_skip_details(
         if task.status != "skipped":
             continue
         blocker = task.skipped_because or {}
-        blocker_label = labels.get(str(blocker.get("task_id"))) or _base_name(
-            blocker.get("task_name")
+        blocker_name = blocker.get("task_name")
+        blocker_label = labels.get(str(blocker.get("task_id"))) or (
+            task_base_name(blocker_name)
+            if isinstance(blocker_name, str) and blocker_name
+            else "a failed task"
         )
         details.append(SkipDetails(task_label=labels[task.task_key], blocker_label=blocker_label))
     return details
@@ -738,13 +741,6 @@ def _task_label(*, task: TaskSummary, renderer: CliRunRenderer) -> str:
     return renderer.label_for_node(task.node_id if task.node_id is not None else -1) or (
         task.base_name
     )
-
-
-def _base_name(name: object) -> str:
-    """Return a task name without its module prefix, for a name off the ledger."""
-    if not isinstance(name, str) or not name:
-        return "a failed task"
-    return name.rsplit(".", 1)[-1]
 
 
 def _load_failure_details(
