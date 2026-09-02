@@ -1,7 +1,5 @@
 """Reporting and delivery tasks for the supply chain example."""
 
-from __future__ import annotations
-
 from pathlib import Path
 import shlex
 

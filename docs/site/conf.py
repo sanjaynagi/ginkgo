@@ -1,7 +1,5 @@
 """Sphinx configuration for the end-user documentation site."""
 
-from __future__ import annotations
-
 from pathlib import Path
 import sys
 

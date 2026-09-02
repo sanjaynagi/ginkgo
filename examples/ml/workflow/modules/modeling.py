@@ -8,8 +8,6 @@ automatically registered in the local asset catalog and listable via
 ``ginkgo models``.
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any

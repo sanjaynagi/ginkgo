@@ -1,7 +1,5 @@
 """Input loading and baseline-planning tasks for the supply chain example."""
 
-from __future__ import annotations
-
 import pandas as pd
 
 from ginkgo import file, task

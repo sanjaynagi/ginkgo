@@ -1,7 +1,5 @@
 """Input loading and normalization tasks for the retail analytics example."""
 
-from __future__ import annotations
-
 import pandas as pd
 
 from ginkgo import file, table, task
