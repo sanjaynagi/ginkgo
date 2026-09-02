@@ -1,7 +1,5 @@
 """Delivery tasks for the ML model ops example."""
 
-from __future__ import annotations
-
 import shlex
 
 from ginkgo import file, shell, task

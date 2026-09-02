@@ -1,7 +1,5 @@
 """Canonical workflow entrypoint for the retail analytics example."""
 
-from __future__ import annotations
-
 import ginkgo
 import pandas as pd
 from ginkgo import file, flow

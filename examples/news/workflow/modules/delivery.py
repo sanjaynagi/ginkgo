@@ -1,7 +1,5 @@
 """Delivery tasks for the newsroom example."""
 
-from __future__ import annotations
-
 import shlex
 
 from ginkgo import file, shell, task

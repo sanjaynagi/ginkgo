@@ -5,8 +5,6 @@ bioinformatics tools, a Docker container shell task for basic Unix
 processing, and local Python tasks for data aggregation.
 """
 
-from __future__ import annotations
-
 import shlex
 from pathlib import Path
 

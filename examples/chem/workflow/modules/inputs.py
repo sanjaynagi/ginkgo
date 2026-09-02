@@ -1,7 +1,5 @@
 """Input and scoring tasks for the chemistry screening example."""
 
-from __future__ import annotations
-
 import math
 from pathlib import Path
 

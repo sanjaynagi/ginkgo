@@ -1,7 +1,5 @@
 """Input preparation tasks for the ML model ops example."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pandas as pd

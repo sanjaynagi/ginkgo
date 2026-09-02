@@ -1,7 +1,5 @@
 """Canonical workflow entrypoint for the ML model ops example."""
 
-from __future__ import annotations
-
 import ginkgo
 from ginkgo import file, flow
 

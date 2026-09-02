@@ -1,7 +1,5 @@
 """Canonical workflow entrypoint for the chemistry screening example."""
 
-from __future__ import annotations
-
 import ginkgo
 from ginkgo import file, flow
 
