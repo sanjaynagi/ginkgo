@@ -151,7 +151,7 @@ def build_summary(
 @flow
 def main():
     """Filter FASTQs (Pixi), compute stats (Pixi), count reads (Docker), merge (local)."""
-    filtered_pairs = filter_fastq(min_length=int(cfg["qc"]["min_length"])).map(
+    filtered_pairs = filter_fastq(min_length=cfg["qc"]["min_length"]).map(
         sample_id=samples["sample_id"],
         fastq_1=samples["fastq_1"],
         fastq_2=samples["fastq_2"],
