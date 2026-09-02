@@ -553,6 +553,65 @@ class TestSourceHashEndToEnd:
             """)
         assert lean == generous
 
+    def test_failure_policy_edit_leaves_the_hash_untouched(self, hash_of):
+        """``on_failure`` decides what a failure stops, never what a task makes."""
+        fail_fast = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=2)
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        ignoring = hash_of("""\
+            from ginkgo import task
+
+            @task(threads=2, on_failure="ignore")
+            def compute(x: int) -> int:
+                return x + 1
+            """)
+        assert fail_fast == ignoring
+
+    def test_failure_policy_edit_in_the_import_closure_leaves_the_hash_untouched(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A helper module's decorator text is filtered like the task's own."""
+        monkeypatch.syspath_prepend(str(tmp_path))
+        helper_path = tmp_path / "policy_helpers.py"
+        task_body = """\
+            import policy_helpers
+            from ginkgo import task
+
+            @task(threads=2)
+            def compute(x: int) -> int:
+                return policy_helpers.widen(x)
+            """
+
+        def _helper(policy: str) -> str:
+            return f"""\
+                from ginkgo import task
+
+                @task(threads=4, on_failure="{policy}")
+                def widen(x: int) -> int:
+                    return x * 2
+                """
+
+        try:
+            _write_module(helper_path, _helper("fail_fast"))
+            fail_fast = _hash_module_task(
+                tmp_path / "policy_tasks.py", task_body, module_name="policy_tasks"
+            )
+            _write_module(helper_path, _helper("ignore"))
+            ignoring = _hash_module_task(
+                tmp_path / "policy_tasks.py", task_body, module_name="policy_tasks"
+            )
+        finally:
+            sys.modules.pop("policy_tasks", None)
+            sys.modules.pop("policy_helpers", None)
+
+        assert fail_fast == ignoring
+
     def test_kind_edit_changes_the_hash(self, hash_of):
         python_kind = hash_of("""\
             from ginkgo import task

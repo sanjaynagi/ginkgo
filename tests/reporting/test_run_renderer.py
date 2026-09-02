@@ -323,6 +323,38 @@ def test_the_live_window_follows_the_tasks_in_flight(tmp_path: Path) -> None:
     assert "below" in rendered
 
 
+def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(tmp_path: Path) -> None:
+    """The shape an ignored failure makes: a little work, then thousands of skips.
+
+    A skipped task never dispatched, so it must not drag the window away from
+    the tasks that did, and the block must still fit the terminal.
+    """
+    with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):
+        for node_id in range(3):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "failed", "node_id": node_id}
+                )
+                + "\n"
+            )
+        for node_id in range(3, 42):
+            renderer.write(
+                json.dumps(
+                    {"task": f"mod.step_{node_id:02d}", "status": "skipped", "node_id": node_id}
+                )
+                + "\n"
+            )
+        lines = _live_lines(renderer, console)
+        rendered = "".join(lines)
+
+    assert len(lines) < console.height
+    assert "step_00" in rendered
+    assert "step_41" not in rendered
+    assert "above" not in rendered
+    assert "below" in rendered
+    assert renderer._state.terminal_count() == 42
+
+
 def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
     """A width read off the visible rows moves the status line and progress bar."""
     with _wide_renderer(tmp_path, rows=42, height=30) as (renderer, console):

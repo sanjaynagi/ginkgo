@@ -451,9 +451,9 @@ this way; bump `version=` on the task when those change.
 No. Before any source text is hashed — the task definition itself, and every
 file in its import closure — Ginkgo deletes the resource-only arguments of each
 `@task(...)` call from that text. `threads`, `memory`, `gpu`, `gpu_type`,
-`memory_retry_multiplier`, `resources`, `priority` and the `retry*` family are
-all filtered, so retuning them leaves the cache key untouched and cached results
-stay valid.
+`memory_retry_multiplier`, `resources`, `priority`, `on_failure` and the
+`retry*` family are all filtered, so retuning them leaves the cache key
+untouched and cached results stay valid.
 
 Nothing else about the source is normalised. `kind=`, `env=` and `version=` all
 keep invalidating, as does a decorator of your own stacked on the task: Ginkgo
