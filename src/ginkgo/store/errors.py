@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ginkgo.errors import GinkgoError
 
-__all__ = ["SchemaVersionError", "StoreError", "StoreLockedError"]
+__all__ = ["SchemaVersionError", "StaleWorkspaceError", "StoreError", "StoreLockedError"]
 
 
 class StoreError(GinkgoError):
@@ -28,6 +28,26 @@ class SchemaVersionError(StoreError):
         super().__init__(
             f"{path} is at schema version {found}, but this ginkgo expects "
             f"{expected}. Run `ginkgo db migrate` to bring it up to date."
+        )
+        self.path = path
+        self.found = found
+        self.expected = expected
+
+
+class StaleWorkspaceError(StoreError):
+    """The database was written by a schema this ginkgo no longer knows.
+
+    Before 1.0 the schema is edited in place rather than migrated, so there is
+    no path from an older database to this one. Deleting the workspace is the
+    upgrade: it holds derived data, and the runs it describes can be re-run.
+    """
+
+    def __init__(self, *, path: Path, found: int, expected: int) -> None:
+        super().__init__(
+            f"{path} was written by schema version {found}, and this ginkgo uses "
+            f"{expected}. Pre-1.0 ginkgo does not migrate between schema versions. "
+            f"Delete the workspace ({path.parent}) and run again — it holds "
+            "provenance for past runs, not results you cannot rebuild."
         )
         self.path = path
         self.found = found

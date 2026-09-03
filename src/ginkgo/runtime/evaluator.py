@@ -316,6 +316,7 @@ class NodeRun:
     input_hashes: dict[str, Any] | None = None
     threads: int = 1
     memory_gb: int = 0
+    declared_memory_gb: int = 0
     gpu: int = 0
     custom_resources: dict[str, int] = field(default_factory=dict)
     executor_name: str | None = None
@@ -860,6 +861,9 @@ class ConcurrentEvaluator:
         resources = self.effective_resources(task_def=node.task_def)
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
+        # Kept across escalation: node.memory_gb becomes the retry's budget,
+        # so without this the declaration a user would edit is lost.
+        node.declared_memory_gb = resources.memory_gb
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
         node.executor_name = self._resolve_placement(task_def=node.task_def)
@@ -2312,7 +2316,11 @@ class ConcurrentEvaluator:
         if node.measured_resources is None:
             return {}
         return {
-            "declared": {"threads": node.threads, "memory_gb": node.memory_gb},
+            "declared": {
+                "threads": node.threads,
+                "memory_gb": node.declared_memory_gb,
+                "effective_memory_gb": node.memory_gb,
+            },
             "measured": dict(node.measured_resources),
         }
 

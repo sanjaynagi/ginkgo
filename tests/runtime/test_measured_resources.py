@@ -111,7 +111,32 @@ class TestManifestRecording:
         assert usage["measured"]["source"] == "rusage"
         assert usage["measured"]["peak_rss_bytes"] > 0
         assert usage["measured"]["cpu_seconds"] >= 0.0
-        assert usage["declared"] == {"threads": 1, "memory_gb": 1}
+        assert usage["declared"] == {
+            "threads": 1,
+            "memory_gb": 1,
+            "effective_memory_gb": 1,
+        }
+
+    def test_an_escalated_retry_records_both_budgets(self, tmp_path: Path) -> None:
+        """A retry runs against a budget the declaration never named.
+
+        ``node.memory_gb`` is raised in place by escalation, so recording only
+        it would lose the number a user edits; recording only the declaration
+        would call a 30 GiB peak an overrun of 16 when the attempt was given 32
+        and fitted.
+        """
+        from ginkgo.runtime.evaluator import NodeRun
+
+        node = NodeRun.__new__(NodeRun)
+        node.threads = 4
+        node.memory_gb = 32  # after escalation
+        node.declared_memory_gb = 16  # what the task asked for
+        node.measured_resources = {"peak_rss_bytes": 30_000, "cpu_seconds": 1.0}
+
+        usage = ConcurrentEvaluator(jobs=1)._resource_usage_for(node=node)
+
+        assert usage["declared"]["memory_gb"] == 16
+        assert usage["declared"]["effective_memory_gb"] == 32
 
     def test_shell_task_records_sampled_usage(self, tmp_path: Path) -> None:
         out = tmp_path / "shell-out.txt"

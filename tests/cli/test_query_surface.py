@@ -181,6 +181,58 @@ class TestRunsAndHistory:
 
         assert "report[central]" in console.export_text()
 
+    def test_history_resources_summarises_across_runs(self, workspace: Path) -> None:
+        """The workspace ran twice: once for real, once from the cache."""
+        result = _run_cli("history", "greet", "--resources", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert "Peak RSS over 1 execution" in result.stdout
+        assert "(2 runs, 1 cached)" in result.stdout
+
+    def test_history_resources_json_carries_the_aggregate_beside_the_rows(
+        self, workspace: Path, run_ids
+    ) -> None:
+        result = _run_cli("history", "greet", "--resources", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["task"] == "greet"
+        assert [row["run_id"] for row in payload["runs"]] == run_ids
+        summary = payload["resources"][0]
+        assert summary["n"] == 1
+        assert summary["cached"] == 1
+        assert summary["runs"] == 2
+        assert summary["peak_rss_bytes"]["max"] > 0
+
+    def test_a_cache_hit_carries_no_measurement(self, workspace: Path) -> None:
+        """The cached run's row is present, and null where it measured nothing."""
+        result = _run_cli("history", "greet", "--json", cwd=workspace)
+
+        payload = json.loads(result.stdout)
+        cached_row, executed_row = payload[0], payload[1]
+        assert cached_row["cached"] is True
+        assert cached_row["peak_rss_bytes"] is None
+        assert cached_row["cpu_seconds"] is None
+        assert executed_row["peak_rss_bytes"] > 0
+
+    def test_history_json_without_resources_is_still_a_bare_list(self, workspace: Path) -> None:
+        """The aggregate is opt-in; existing consumers keep their array."""
+        result = _run_cli("history", "greet", "--json", cwd=workspace)
+
+        assert isinstance(json.loads(result.stdout), list)
+
+    def test_the_aggregate_covers_all_history_not_the_printed_window(
+        self, workspace: Path
+    ) -> None:
+        """A p95 that moved with --limit would be a p95 of nothing in particular."""
+        result = _run_cli(
+            "history", "greet", "--resources", "--limit", "1", "--json", cwd=workspace
+        )
+
+        payload = json.loads(result.stdout)
+        assert len(payload["runs"]) == 1
+        assert payload["resources"][0]["runs"] == 2
+
     def test_a_like_wildcard_is_matched_literally(self, workspace: Path) -> None:
         """`history "%"` asks for a task called `%`, not for every task."""
         result = _run_cli("history", "%", "--json", cwd=workspace)

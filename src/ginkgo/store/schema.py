@@ -5,10 +5,16 @@ from it. Every table exists from version 1 even though later phases are what
 populate most of them: one migration is easier to reason about than eight, and
 an empty table costs nothing.
 
-A migration step is either a SQL script or a callable taking the connection —
-the latter for the rare change that needs Python. Steps are applied in order,
-inside one transaction, and the resulting version is recorded in
-``schema_version``. Never edit a shipped step: add another one.
+Before 1.0 the schema is edited in place rather than migrated. Ginkgo has a
+handful of users and a workspace is derived data — the events it holds describe
+runs that can be re-run — so carrying migration steps for every column change
+buys less than it costs in schema that has to be read as archaeology. A database
+written by an older schema is refused with an error telling the user to delete
+the workspace, which is the whole upgrade procedure.
+
+The machinery for stepped migrations is still here, and this becomes the usual
+"never edit a shipped step; add another one" once there is history worth
+preserving.
 """
 
 from __future__ import annotations
@@ -18,12 +24,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection
 
-from ginkgo.store.errors import SchemaVersionError
+from ginkgo.store.errors import SchemaVersionError, StaleWorkspaceError
 
 __all__ = ["MIGRATIONS", "SCHEMA_VERSION", "migrate", "schema_version"]
 
 
-_V1 = """
+_SCHEMA = """
 CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
 
 -- ledger
@@ -63,10 +69,19 @@ CREATE TABLE tasks (
   started_at TEXT, finished_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER,
   exit_code INTEGER, failure TEXT, output_summary TEXT, resource_usage TEXT, timings TEXT, extra TEXT, -- JSON
   stdout_log TEXT, stderr_log TEXT, execution_backend TEXT, remote_job_id TEXT,
+  -- Projected out of resource_usage so asking what a task typically needs is a
+  -- query rather than JSON unpacking. Null for anything unmeasured: a cache
+  -- hit, or a task that never started. Declared and effective memory differ
+  -- when memory_retry_multiplier escalated a retry, and comparing a measured
+  -- peak against the declaration alone would call that attempt an overrun.
+  peak_rss_bytes INTEGER, cpu_seconds REAL,
+  declared_threads INTEGER, declared_memory_gb REAL, effective_memory_gb REAL,
   PRIMARY KEY (run_id, task_id)
 );
 CREATE INDEX tasks_name      ON tasks(name, started_at);
 CREATE INDEX tasks_cache_key ON tasks(cache_key) WHERE cache_key IS NOT NULL;
+-- history --resources reads every measured execution of one task name.
+CREATE INDEX tasks_measured  ON tasks(name) WHERE peak_rss_bytes IS NOT NULL;
 
 CREATE TABLE attempts (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt INTEGER NOT NULL,
@@ -94,6 +109,8 @@ CREATE TABLE edges (
   PRIMARY KEY (run_id, src_kind, src_id, dst_kind, dst_id, edge)
 );
 CREATE INDEX edges_dst ON edges(dst_kind, dst_id);
+-- `lineage --downstream` walks the other end of the same rows.
+CREATE INDEX edges_src ON edges(src_kind, src_id);
 -- kinds: task | artifact | asset_version | run
 -- edges: depends_on | dynamic_depends_on | produced | consumed | derived_from | child_of
 
@@ -107,38 +124,35 @@ CREATE TABLE cache_entries (
   hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT
 );
 CREATE INDEX cache_function ON cache_entries(function, created_at);
-CREATE TABLE cache_key_components (cache_key TEXT NOT NULL, component TEXT NOT NULL, value TEXT,
-  PRIMARY KEY (cache_key, component));
 CREATE TABLE cache_artifacts (cache_key TEXT NOT NULL, path TEXT NOT NULL, artifact_id TEXT NOT NULL,
   PRIMARY KEY (cache_key, path));
 CREATE INDEX cache_artifacts_artifact ON cache_artifacts(artifact_id);
 CREATE TABLE stat_index (stat_key TEXT PRIMARY KEY, cache_key TEXT NOT NULL);
 CREATE TABLE digest_memo (
   kind TEXT NOT NULL, fingerprint TEXT NOT NULL, digest TEXT NOT NULL,
-  path TEXT, size INTEGER, mtime_ns INTEGER, last_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
   PRIMARY KEY (kind, fingerprint)
 );
 
 -- artifacts, assets, remote inputs (Phases 2-3)
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY, kind TEXT NOT NULL, digest_algorithm TEXT NOT NULL,
+  digest_hex TEXT NOT NULL DEFAULT '',
   extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
 );
 CREATE TABLE materializations (path TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, size INTEGER, mtime_ns INTEGER);
-CREATE TABLE asset_keys (
-  asset_key TEXT PRIMARY KEY, namespace TEXT NOT NULL, name TEXT NOT NULL,
-  latest_version_id TEXT, version_count INTEGER NOT NULL DEFAULT 0, last_materialized_at TEXT,
-  group_name TEXT, caption TEXT
-);
 CREATE TABLE asset_versions (
-  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL, sub_kind TEXT,
+  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL,
   artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
   run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
   code_version TEXT, data_version TEXT,
-  metadata TEXT, metrics TEXT, checks TEXT,                 -- JSON
+  metadata TEXT,                                            -- JSON
   PRIMARY KEY (asset_key, version_id)
 );
 CREATE INDEX asset_versions_created ON asset_versions(asset_key, created_at);
+-- Lineage edges name a version and not the asset it belongs to, so resolving
+-- one back to its row is a lookup by version id alone.
+CREATE INDEX asset_versions_version ON asset_versions(version_id);
 CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
   PRIMARY KEY (asset_key, alias));
 CREATE TABLE staging_entries (uri TEXT PRIMARY KEY, digest TEXT, etag TEXT, version_id TEXT,
@@ -148,56 +162,15 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-_V2 = """
--- An artifact's content digest is not always its id: a record published to a
--- remote store keeps the digest of the bytes, and #231 will give blobs an
--- extension. Recovering it by assuming id == digest was a guess.
-ALTER TABLE artifacts ADD COLUMN digest_hex TEXT NOT NULL DEFAULT '';
-
--- cache_key_components held what cache_entries already holds as columns and
--- input_hashes JSON. One fact, one home: key_components() derives the labels
--- from the entry row instead.
-DROP TABLE cache_key_components;
-
--- Only the digest is ever read back out of the memo; the rest was written and
--- never looked at.
-ALTER TABLE digest_memo DROP COLUMN path;
-ALTER TABLE digest_memo DROP COLUMN size;
-ALTER TABLE digest_memo DROP COLUMN mtime_ns;
-"""
-
-_V3 = """
--- An asset key is the set of versions carrying it. asset_keys held a latest
--- pointer, a version count and presentation labels that asset_versions and its
--- metadata already answer; a summary row could only drift from them.
-DROP TABLE asset_keys;
-
--- Asset metrics and checks are metadata the version carries, written once by
--- whoever produced the asset and read back whole; columns for them were a
--- second home for the same JSON.
-ALTER TABLE asset_versions DROP COLUMN metrics;
-ALTER TABLE asset_versions DROP COLUMN checks;
-ALTER TABLE asset_versions DROP COLUMN sub_kind;
-
--- Lineage edges name a version and not the asset it belongs to, so resolving
--- one back to its row is a lookup by version id alone.
-CREATE INDEX asset_versions_version ON asset_versions(version_id);
-"""
-
-_V4 = """
--- edges was indexed for arrivals only (edges_dst). Walking lineage forwards —
--- `lineage --downstream` asking what was derived from a version — reads the
--- other end of the same rows, and scanned the table to do it.
-CREATE INDEX edges_src ON edges(src_kind, src_id);
-"""
-
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
-    (1, _V1),
-    (2, _V2),
-    (3, _V3),
-    (4, _V4),
+    (1, _SCHEMA),
 ]
-"""Every schema step, in the order they are applied, keyed by resulting version."""
+"""Every schema step, in the order they are applied, keyed by resulting version.
+
+One step, while the schema is still edited in place. A database written by a
+different version of the schema is not migrated to this one: it is refused, and
+the user deletes the workspace.
+"""
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 """The version a freshly migrated database ends up at."""
@@ -256,8 +229,20 @@ def migrate(conn: Connection) -> int:
     -------
     int
         The schema version after migrating.
+
+    Raises
+    ------
+    StaleWorkspaceError
+        If the database is at a version this schema has no step for. Pre-1.0
+        the schema is edited in place, so an older database cannot be brought
+        forward: without this check it would open cleanly and then fail on the
+        first query naming a column it does not have.
     """
     current = schema_version(conn)
+    if current not in (0, SCHEMA_VERSION):
+        raise StaleWorkspaceError(
+            path=_database_path(conn), found=current, expected=SCHEMA_VERSION
+        )
     if not [version for version, _ in MIGRATIONS if version > current]:
         return current
 

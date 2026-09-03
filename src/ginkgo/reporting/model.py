@@ -659,8 +659,11 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
 def _memory_label(task: TaskSummary) -> str:
     """Return ``measured / declared`` peak memory for the task ledger.
 
-    Shows the measured peak RSS alone when the task declared no memory, and
-    an em dash when nothing was measured (cached or never-ran tasks).
+    The denominator is the budget the task actually ran against, so an
+    escalated retry is not shown as having exceeded a declaration it was no
+    longer bound by. Shows the measured peak RSS alone when the task declared
+    no memory, and an em dash when nothing was measured (cached or never-ran
+    tasks).
     """
     usage = task.resource_usage or {}
     measured = usage.get("measured")
@@ -670,8 +673,8 @@ def _memory_label(task: TaskSummary) -> str:
     if not isinstance(peak, int) or peak <= 0:
         return "—"
     label = format_bytes(peak)
-    declared = usage.get("declared")
-    declared_gb = declared.get("memory_gb") if isinstance(declared, dict) else None
+    declared = usage.get("declared") if isinstance(usage.get("declared"), dict) else {}
+    declared_gb = declared.get("effective_memory_gb") or declared.get("memory_gb")
     if isinstance(declared_gb, int) and declared_gb > 0:
         return f"{label} / {declared_gb} GiB"
     return label
