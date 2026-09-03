@@ -485,3 +485,122 @@ def test_events_with_no_projection_leave_the_tables_alone(started: SqliteStore, 
     assert [dict(row) for row in started.query("SELECT * FROM tasks")] == [
         dict(row) for row in before
     ]
+
+
+class TestResourceProjection:
+    """Measured usage becomes columns, so asking about it is a query."""
+
+    def test_a_completed_task_projects_its_measurements(self, started: SqliteStore) -> None:
+        _apply(
+            started,
+            _fixture(
+                "task_completed",
+                resource_usage={
+                    "declared": {"threads": 4, "memory_gb": 16, "effective_memory_gb": 16},
+                    "measured": {"peak_rss_bytes": 3_400_000_000, "cpu_seconds": 252.5},
+                },
+            ),
+        )
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["peak_rss_bytes"] == 3_400_000_000
+        assert task["cpu_seconds"] == 252.5
+        assert task["declared_threads"] == 4
+        assert task["declared_memory_gb"] == 16
+        assert task["effective_memory_gb"] == 16
+
+    def test_a_run_with_no_measurement_leaves_the_columns_null(self, started: SqliteStore) -> None:
+        """A cache hit measures nothing, and null is how it says so."""
+        _apply(started, _fixture("task_completed", status="cached", resource_usage=None))
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["cached"] == 1
+        assert task["peak_rss_bytes"] is None
+        assert task["cpu_seconds"] is None
+        assert task["declared_memory_gb"] is None
+
+    def test_an_escalated_retry_keeps_both_budgets(self, started: SqliteStore) -> None:
+        """The declaration and what the attempt ran against are different facts.
+
+        Comparing a 30 GiB peak against the 16 GiB declaration would call this
+        attempt an overrun; it ran against 32 after escalation and fitted.
+        """
+        _apply(
+            started,
+            _fixture(
+                "task_completed",
+                resource_usage={
+                    "declared": {"threads": 4, "memory_gb": 16, "effective_memory_gb": 32},
+                    "measured": {"peak_rss_bytes": 30_000_000_000, "cpu_seconds": 900.0},
+                },
+            ),
+        )
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["declared_memory_gb"] == 16
+        assert task["effective_memory_gb"] == 32
+
+    def test_an_old_record_reads_as_having_run_against_its_declaration(
+        self, started: SqliteStore
+    ) -> None:
+        """A record predating escalation tracking names one budget, not two."""
+        _apply(
+            started,
+            _fixture(
+                "task_completed",
+                resource_usage={
+                    "declared": {"threads": 1, "memory_gb": 8},
+                    "measured": {"peak_rss_bytes": 1_000, "cpu_seconds": 1.0},
+                },
+            ),
+        )
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["declared_memory_gb"] == 8
+        assert task["effective_memory_gb"] == 8
+
+    def test_a_failed_task_projects_the_usage_it_managed_to_record(
+        self, started: SqliteStore
+    ) -> None:
+        """Usage arrives by annotation when the task failed, and still lands.
+
+        The measurement taken right before an OOM kill is the one worth having.
+        """
+        _apply(
+            started,
+            _fixture(
+                "task_annotated",
+                fields={
+                    "resource_usage": {
+                        "declared": {"threads": 2, "memory_gb": 16},
+                        "measured": {"peak_rss_bytes": 16_800_000_000, "cpu_seconds": 61.0},
+                    }
+                },
+            ),
+        )
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["peak_rss_bytes"] == 16_800_000_000
+        assert json.loads(task["resource_usage"])["measured"]["cpu_seconds"] == 61.0
+
+    def test_a_completion_without_usage_keeps_what_an_annotation_recorded(
+        self, started: SqliteStore
+    ) -> None:
+        """A retry that succeeds must not erase the peak of the attempt before it."""
+        _apply(
+            started,
+            _fixture(
+                "task_annotated",
+                fields={
+                    "resource_usage": {
+                        "declared": {"threads": 1, "memory_gb": 4},
+                        "measured": {"peak_rss_bytes": 4_000, "cpu_seconds": 2.0},
+                    }
+                },
+            ),
+            _fixture("task_completed", resource_usage=None),
+        )
+
+        task = _row(started, "SELECT * FROM tasks")
+        assert task["peak_rss_bytes"] == 4_000
+        assert task["status"] == "succeeded"

@@ -1,8 +1,9 @@
 table artifacts
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY, kind TEXT NOT NULL, digest_algorithm TEXT NOT NULL,
+  digest_hex TEXT NOT NULL DEFAULT '',
   extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
-, digest_hex TEXT NOT NULL DEFAULT '')
+)
 
 table asset_aliases
 CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
@@ -10,7 +11,8 @@ CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, versio
 
 table asset_versions
 CREATE TABLE asset_versions (
-  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL,
+  artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
   run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
   code_version TEXT, data_version TEXT,
   metadata TEXT,
@@ -151,11 +153,21 @@ CREATE TABLE tasks (
   started_at TEXT, finished_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER,
   exit_code INTEGER, failure TEXT, output_summary TEXT, resource_usage TEXT, timings TEXT, extra TEXT,
   stdout_log TEXT, stderr_log TEXT, execution_backend TEXT, remote_job_id TEXT,
+
+
+
+
+
+  peak_rss_bytes INTEGER, cpu_seconds REAL,
+  declared_threads INTEGER, declared_memory_gb REAL, effective_memory_gb REAL,
   PRIMARY KEY (run_id, task_id)
 )
 
 index tasks_cache_key
 CREATE INDEX tasks_cache_key ON tasks(cache_key) WHERE cache_key IS NOT NULL
+
+index tasks_measured
+CREATE INDEX tasks_measured  ON tasks(name) WHERE peak_rss_bytes IS NOT NULL
 
 index tasks_name
 CREATE INDEX tasks_name      ON tasks(name, started_at)

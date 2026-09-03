@@ -133,6 +133,21 @@ class TaskRow:
         Wall-clock seconds, when both timestamps are present.
     attempts : int
         How many times it was tried, retries included.
+    peak_rss_bytes : int | None
+        Highest resident set size measured across the task's attempts, or
+        ``None`` when nothing was measured — a cache hit, a task that never
+        ran, or a run predating the measurement.
+    cpu_seconds : float | None
+        CPU time summed over the task's attempts and subprocesses.
+    declared_threads : int | None
+        Threads the task declared, after site overrides.
+    declared_memory_gb : float | None
+        Memory the task declared, after site overrides and before any retry
+        escalation. This is the number a user would edit.
+    effective_memory_gb : float | None
+        Memory the last attempt actually ran against. Higher than
+        :attr:`declared_memory_gb` when ``memory_retry_multiplier`` escalated a
+        retry, and the honest denominator for a measured peak.
     """
 
     run_id: str
@@ -146,6 +161,11 @@ class TaskRow:
     finished_at: str | None
     duration_s: float | None
     attempts: int
+    peak_rss_bytes: int | None = None
+    cpu_seconds: float | None = None
+    declared_threads: int | None = None
+    declared_memory_gb: float | None = None
+    effective_memory_gb: float | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Return the row as JSON-ready data."""
@@ -161,6 +181,11 @@ class TaskRow:
             "finished_at": self.finished_at,
             "duration_s": self.duration_s,
             "attempts": self.attempts,
+            "peak_rss_bytes": self.peak_rss_bytes,
+            "cpu_seconds": self.cpu_seconds,
+            "declared_threads": self.declared_threads,
+            "declared_memory_gb": self.declared_memory_gb,
+            "effective_memory_gb": self.effective_memory_gb,
         }
 
 
@@ -570,29 +595,41 @@ class Query:
         # started, so its own timestamp is null and would sort it out of the
         # history it belongs to.
         rows = self._store.query(
-            "SELECT t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
-            "t.cache_key, t.started_at, t.finished_at, t.attempts "
+            f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            "WHERE t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\' "
+            f"WHERE {_TASK_MATCH} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
             (name, name, _like_suffix(f".{name}"), limit),
         )
-        return [
-            TaskRow(
-                run_id=str(row["run_id"]),
-                task_id=str(row["task_id"]),
-                name=str(row["name"]),
-                display_label=row["display_label"],
-                status=str(row["status"]),
-                cached=bool(row["cached"]),
-                cache_key=row["cache_key"],
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-                duration_s=duration_seconds(row["started_at"], row["finished_at"]),
-                attempts=int(row["attempts"] or 0),
-            )
-            for row in rows
-        ]
+        return [_task_row(row) for row in rows]
+
+    def task_resource_history(self, name: str) -> list[TaskRow]:
+        """Return every run of one task, newest first and unlimited.
+
+        The distribution ``ginkgo history --resources`` reports is computed
+        over all of a task's history, not over the window the table happens to
+        print: a p95 that quietly depended on ``--limit`` would move whenever
+        someone changed how many rows they wanted to look at.
+
+        Parameters
+        ----------
+        name : str
+            The task's name, its base name, or the display label of one branch.
+
+        Returns
+        -------
+        list[TaskRow]
+            Every recorded run, measured or not. Cache hits are included so a
+            caller can report how much of the history measured nothing.
+        """
+        rows = self._store.query(
+            f"SELECT {_TASK_COLUMNS} "
+            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            f"WHERE {_TASK_MATCH} "
+            "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id",
+            (name, name, _like_suffix(f".{name}")),
+        )
+        return [_task_row(row) for row in rows]
 
     def events(
         self,
@@ -1242,6 +1279,40 @@ def _unique_columns(columns: Sequence[str]) -> tuple[str, ...]:
         seen[column] = seen.get(column, 0) + 1
         unique.append(column if seen[column] == 1 else f"{column}_{seen[column]}")
     return tuple(unique)
+
+
+_TASK_COLUMNS = (
+    "t.run_id, t.task_id, t.name, t.display_label, t.status, t.cached, "
+    "t.cache_key, t.started_at, t.finished_at, t.attempts, "
+    "t.peak_rss_bytes, t.cpu_seconds, t.declared_threads, "
+    "t.declared_memory_gb, t.effective_memory_gb"
+)
+"""The projection behind :class:`TaskRow`, shared by every reader of it."""
+
+_TASK_MATCH = "t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\'"
+"""Matches a task by name, by base name, or by one fan-out branch's label."""
+
+
+def _task_row(row: Any) -> TaskRow:
+    """Build a :class:`TaskRow` from one ``_TASK_COLUMNS`` result row."""
+    return TaskRow(
+        run_id=str(row["run_id"]),
+        task_id=str(row["task_id"]),
+        name=str(row["name"]),
+        display_label=row["display_label"],
+        status=str(row["status"]),
+        cached=bool(row["cached"]),
+        cache_key=row["cache_key"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        duration_s=duration_seconds(row["started_at"], row["finished_at"]),
+        attempts=int(row["attempts"] or 0),
+        peak_rss_bytes=row["peak_rss_bytes"],
+        cpu_seconds=row["cpu_seconds"],
+        declared_threads=row["declared_threads"],
+        declared_memory_gb=row["declared_memory_gb"],
+        effective_memory_gb=row["effective_memory_gb"],
+    )
 
 
 def _like_suffix(value: str) -> str:

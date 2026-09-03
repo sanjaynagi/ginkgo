@@ -12,12 +12,16 @@ import pytest
 
 from ginkgo.store import open_store
 from ginkgo.store import sqlite as sqlite_module
-from ginkgo.store.errors import SchemaVersionError, StoreError, StoreLockedError
+from ginkgo.store.errors import (
+    SchemaVersionError,
+    StaleWorkspaceError,
+    StoreError,
+    StoreLockedError,
+)
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
 from ginkgo.store.schema import (
     MIGRATIONS,
     SCHEMA_VERSION,
-    _statements,
     migrate,
     schema_version,
 )
@@ -162,79 +166,41 @@ class TestMigrations:
 
     def test_every_object_in_the_schema_is_created(self, tmp_path):
         """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
-        expected = (Path(__file__).parent / "fixtures" / "schema_v4.txt").read_text(
-            encoding="utf-8"
-        )
+        expected = (Path(__file__).parent / "fixtures" / "schema.txt").read_text(encoding="utf-8")
 
         with open_store(tmp_path / "ginkgo.db") as store:
             assert _schema_snapshot(store) == expected
 
-    def test_a_version_1_database_migrates_forward(self, tmp_path):
-        """The step runs on an existing database, not only on a fresh one."""
-        connection = sqlite3.connect(tmp_path / "ginkgo.db")
+    def test_a_database_from_another_schema_version_is_refused(self, tmp_path):
+        """Pre-1.0 there is no path forward from an older schema, so say so.
+
+        Without this the stale database opens cleanly and dies later on the
+        first query naming a column it does not have, which reads as a ginkgo
+        bug rather than as a workspace to delete.
+        """
+        path = tmp_path / "ginkgo.db"
+        connection = sqlite3.connect(path)
         connection.isolation_level = None
-        first_version, first_step = MIGRATIONS[0]
-        assert isinstance(first_step, str)
-        connection.execute("BEGIN IMMEDIATE")
-        for statement in _statements(first_step):
-            connection.execute(statement)
+        migrate(connection)
         connection.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?, '2026-08-28')",
-            (first_version,),
-        )
-        connection.execute("COMMIT")
-        connection.execute(
-            "INSERT INTO artifacts (artifact_id, kind, digest_algorithm, created_at) "
-            "VALUES ('a1', 'blob', 'blake3', '2026-08-28')"
-        )
-        # A v1 asset key and one of its versions, to see what v3 does to each.
-        connection.execute(
-            "INSERT INTO asset_keys (asset_key, namespace, name, latest_version_id) "
-            "VALUES ('table:rows', 'table', 'rows', 'v1')"
-        )
-        connection.execute(
-            "INSERT INTO asset_versions (asset_key, version_id, kind, sub_kind, artifact_id, "
-            "content_hash, run_id, producer_task, created_at, metadata, metrics, checks) "
-            "VALUES ('table:rows', 'v1', 'table', 'parquet', 'a1', 'b3:1', 'run-1', "
-            "'pkg.build', '2026-08-28', '{\"columns\": 3}', '{}', '[]')"
+            (SCHEMA_VERSION + 1,),
         )
 
-        assert migrate(connection) == SCHEMA_VERSION
+        with pytest.raises(StaleWorkspaceError, match="Delete the workspace") as caught:
+            migrate(connection)
 
-        # v2: artifacts gained a digest, cache_key_components went, the memo
-        # kept only what is read back.
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts)")}
-        assert "digest_hex" in columns
-        assert connection.execute("SELECT digest_hex FROM artifacts").fetchone()[0] == ""
-        assert not connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'cache_key_components'"
-        ).fetchall()
-        memo_columns = {row[1] for row in connection.execute("PRAGMA table_info(digest_memo)")}
-        assert memo_columns == {"kind", "fingerprint", "digest", "last_seen"}
+        assert caught.value.found == SCHEMA_VERSION + 1
+        assert caught.value.expected == SCHEMA_VERSION
 
-        # v3: asset_keys is gone — and with it the summary row this database
-        # held, which is the point: nothing is migrated out of it, because
-        # asset_versions already answers every question it answered.
-        assert not connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'asset_keys'"
-        ).fetchall()
-        # The version itself survives the dropped columns intact.
-        version_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(asset_versions)")
-        }
-        assert {"metrics", "checks", "sub_kind"}.isdisjoint(version_columns)
-        assert {"code_version", "data_version", "metadata"} <= version_columns
-        row = connection.execute(
-            "SELECT asset_key, version_id, artifact_id, metadata FROM asset_versions"
-        ).fetchone()
-        assert row == ("table:rows", "v1", "a1", '{"columns": 3}')
+    def test_a_refused_database_names_the_directory_to_delete(self):
+        """The message has to carry the whole fix: which workspace, and why."""
+        error = StaleWorkspaceError(
+            path=Path("/tmp/project/.ginkgo/ginkgo.db"), found=4, expected=SCHEMA_VERSION
+        )
 
-        # v4: walking lineage forwards has an index of its own.
-        indexes = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
-        }
-        assert {"edges_src", "edges_dst"} <= indexes
+        assert "/tmp/project/.ginkgo" in str(error)
+        assert "rebuild" in str(error)
 
 
 class TestWriting:

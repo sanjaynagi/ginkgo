@@ -533,6 +533,16 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     history_parser.add_argument("task", help="Task name, base name, or fan-out display label.")
     history_parser.add_argument("--limit", type=int, default=20, help="Most runs to list.")
     history_parser.add_argument(
+        "--resources",
+        action="store_true",
+        help="Summarise measured memory and CPU across every run of the task.",
+    )
+    history_parser.add_argument(
+        "--by-label",
+        action="store_true",
+        help="With --resources, summarise each fan-out branch separately.",
+    )
+    history_parser.add_argument(
         "--json", action="store_true", help="Emit JSON instead of a table."
     )
 

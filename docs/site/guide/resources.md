@@ -93,6 +93,56 @@ need to size the retry.
 includes the raw `resource_usage` record per task. See
 [Assets and Reports](assets.md#html-reports).
 
+### Across Runs
+
+One run tells you what a task used that time. The question worth asking is
+what it needs *in general*, which is a question about many runs:
+
+```console
+$ ginkgo history align_reads --resources
+
+Peak RSS over 12 executions (28 runs, 16 cached)
+  p50 3.1 GiB   p95 4.8 GiB   max 5.2 GiB
+  declared 16 GiB  ·  p95 is 30% of declared
+CPU time
+  p50 4m 12s   p95 5m 30s   total 52m
+  declared 4 threads
+```
+
+The distribution covers every execution on record; `--limit` bounds only the
+per-run table printed underneath it. `--by-label` splits a fanned-out task into
+one summary per branch, widest peak first — one branch of a fan-out over
+chromosomes is not like another, and the widest is the one that has to size the
+declaration. `--json` returns the aggregate alongside the rows.
+
+Three things in that output are there to stop the numbers overstating
+themselves:
+
+- **The sample count.** Only real executions measure anything, so a task with
+  28 runs and 16 cache hits has 12 samples. `n` travels with the percentiles so
+  a small sample is visible rather than implied.
+- **Failed attempts are excluded, and counted.** A task killed at its 16 GiB
+  ceiling used *more than* 16 GiB — that peak is a lower bound, not a
+  measurement, and averaging it in would drag the distribution towards the
+  value that already failed. Those samples are reported separately, with the
+  floor they establish (`3 failed attempts excluded (peak ≥ 16 GiB)`).
+- **Percentiles are nearest-rank.** Every figure printed is a value some run
+  actually reached. Interpolating between two samples would report a peak no
+  run ever hit, from a sampler whose resolution is a periodic `ps` of the
+  process tree — a short spike can be missed entirely.
+
+Where a retry escalated under `memory_retry_multiplier`, the declaration and
+the budget the attempt ran against are recorded separately, and the summary
+says so (`declared 16 GiB · ran against 32 GiB after escalation`). Comparing a
+30 GiB peak against the 16 GiB declaration would call an attempt an overrun
+when it fitted the budget it was actually given.
+
+The same numbers are columns on the `tasks` table — `peak_rss_bytes`,
+`cpu_seconds`, `declared_threads`, `declared_memory_gb`, `effective_memory_gb`
+— so `ginkgo query` can ask its own questions of them without unpacking JSON.
+They are null for anything unmeasured: a cache hit, or a task that never
+started.
+
 ## Site Overrides
 
 The same workflow file can run on a laptop, an HPC node, and the cloud with

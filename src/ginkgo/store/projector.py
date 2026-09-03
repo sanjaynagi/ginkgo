@@ -462,7 +462,6 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
               cache_key = coalesce(?, cache_key),
               remote_job_id = coalesce(?, remote_job_id),
               output_summary = ?,
-              resource_usage = coalesce(?, resource_usage),
               extra = json_patch(coalesce(extra, '{}'), ?)
             WHERE run_id = ? AND task_id = ?
             """,
@@ -474,11 +473,16 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                 payload.get("cache_key"),
                 payload.get("remote_job_id"),
                 dumps(outputs),
-                dumps_or_none(resource_usage),
                 dumps({"assets": assets} if assets else {}),
                 event.run_id,
                 task_id,
             ),
+        ),
+        _set_resource_usage(
+            resource_usage=resource_usage,
+            run_id=event.run_id,
+            task_id=task_id,
+            coalesce=True,
         ),
         ProjectionOp(
             sql="""
@@ -622,9 +626,9 @@ def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
 
 
 # Fields a reader filters or joins on get a column of their own; the rest stay
-# in ``tasks.extra``.
+# in ``tasks.extra``. ``resource_usage`` is handled separately: it fans out into
+# the scalar columns as well as its own blob.
 _PROMOTED_ANNOTATIONS = {
-    "resource_usage": "resource_usage",
     "remote_job_id": "remote_job_id",
     "execution_backend": "execution_backend",
 }
@@ -636,6 +640,15 @@ def _task_annotated(event: StoredEvent, payload: dict[str, Any]) -> list[Project
         return []
     ops: list[ProjectionOp] = []
     remaining = dict(fields)
+    if "resource_usage" in remaining:
+        ops.append(
+            _set_resource_usage(
+                resource_usage=remaining.pop("resource_usage"),
+                run_id=event.run_id,
+                task_id=event.task_id or "",
+                coalesce=False,
+            )
+        )
     for name, column in _PROMOTED_ANNOTATIONS.items():
         if name not in remaining:
             continue
@@ -666,6 +679,70 @@ def _task_annotated(event: StoredEvent, payload: dict[str, Any]) -> list[Project
 
 
 # ------------------------------------------------------------------- helpers
+
+
+def _resource_scalars(resource_usage: Any) -> tuple[Any, Any, Any, Any, Any]:
+    """Pull the aggregated columns out of one ``resource_usage`` record.
+
+    Returns ``(peak_rss_bytes, cpu_seconds, declared_threads,
+    declared_memory_gb, effective_memory_gb)``, each null when the record does
+    not carry it. A task that was never measured — a cache hit, or one that
+    never started — yields all nulls, which is what keeps it out of the
+    distribution ``history --resources`` reports.
+
+    ``effective_memory_gb`` falls back to the declaration for a record written
+    before escalation was tracked separately, so an old event replays as a task
+    that ran against exactly what it declared.
+    """
+    if not isinstance(resource_usage, dict):
+        return (None, None, None, None, None)
+    measured = resource_usage.get("measured")
+    measured = measured if isinstance(measured, dict) else {}
+    declared = resource_usage.get("declared")
+    declared = declared if isinstance(declared, dict) else {}
+    declared_memory = declared.get("memory_gb")
+    return (
+        measured.get("peak_rss_bytes"),
+        measured.get("cpu_seconds"),
+        declared.get("threads"),
+        declared_memory,
+        declared.get("effective_memory_gb", declared_memory),
+    )
+
+
+def _set_resource_usage(
+    *, resource_usage: Any, run_id: str, task_id: str, coalesce: bool
+) -> ProjectionOp:
+    """Write one task's resource record and the columns projected out of it.
+
+    Parameters
+    ----------
+    coalesce : bool
+        Whether an absent record leaves what is already stored in place. The
+        completion event carries no usage for a cache hit and must not erase
+        the measurement an earlier annotation wrote; a task annotation is
+        itself the measurement and always wins.
+    """
+    scalars = _resource_scalars(resource_usage)
+    blob = dumps_or_none(resource_usage)
+    if coalesce:
+        assignments = (
+            "resource_usage = coalesce(?, resource_usage), "
+            "peak_rss_bytes = coalesce(?, peak_rss_bytes), "
+            "cpu_seconds = coalesce(?, cpu_seconds), "
+            "declared_threads = coalesce(?, declared_threads), "
+            "declared_memory_gb = coalesce(?, declared_memory_gb), "
+            "effective_memory_gb = coalesce(?, effective_memory_gb)"
+        )
+    else:
+        assignments = (
+            "resource_usage = ?, peak_rss_bytes = ?, cpu_seconds = ?, "
+            "declared_threads = ?, declared_memory_gb = ?, effective_memory_gb = ?"
+        )
+    return ProjectionOp(
+        sql=f"UPDATE tasks SET {assignments} WHERE run_id = ? AND task_id = ?",
+        params=(blob, *scalars, run_id, task_id),
+    )
 
 
 def _set_cached(event: StoredEvent, payload: dict[str, Any], *, cached: int) -> ProjectionOp:
