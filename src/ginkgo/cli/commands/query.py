@@ -17,10 +17,21 @@ __all__ = ["command_query"]
 def command_query(args) -> int:
     """Handle ``ginkgo query`` — run one SELECT and print what it selected.
 
+    ``--schema`` answers the question that comes before the first statement:
+    which tables are there, and what is in them.
+
     A statement the ledger refuses raises :class:`~ginkgo.store.errors.StoreError`,
     which the CLI's top-level handler prints as a single line; there is nothing
     for this command to add to it.
     """
+    if getattr(args, "schema", False):
+        return _print_schema(args)
+    if not args.sql:
+        console(sys.stderr).print(
+            "Give `ginkgo query` one SELECT, or --schema for the tables and their columns."
+        )
+        return 2
+
     with ledger.open(missing_ok=True) as reader:
         result = reader.sql(args.sql, limit=getattr(args, "limit", ledger.SQL_ROW_LIMIT))
 
@@ -32,6 +43,41 @@ def command_query(args) -> int:
         return 0
 
     return _render_table(stdout_console(), result=result)
+
+
+def _print_schema(args) -> int:
+    """Print every table and its columns, in whichever output mode was asked for.
+
+    An empty workspace answers the same as a populated one: the schema is what
+    ginkgo would write, not what has been written.
+    """
+    with ledger.open(missing_ok=True) as reader:
+        schema = reader.schema()
+
+    if getattr(args, "json", False):
+        print(json.dumps({table: list(columns) for table, columns in schema.items()}, indent=2))
+        return 0
+    if getattr(args, "csv", False):
+        writer = csv.writer(sys.stdout)
+        writer.writerow(("table", "column"))
+        writer.writerows(
+            (table, column) for table, columns in schema.items() for column in columns
+        )
+        return 0
+
+    rich_console = stdout_console()
+    rich_console.print("[bold green]🌿 ginkgo query --schema[/]\n")
+    table = new_table()
+    table.add_column("Table", overflow="fold")
+    table.add_column("Columns", overflow="fold")
+    for name, columns in schema.items():
+        table.add_row(name, ", ".join(columns))
+    rich_console.print(table)
+    rich_console.print(
+        "\n[dim]The schema is versioned but not stable: a query written against it "
+        "may need rewriting after an upgrade.[/]"
+    )
+    return 0
 
 
 def _write_csv(result: SqlResult) -> None:

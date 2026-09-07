@@ -119,6 +119,54 @@ def test_an_unknown_column_is_reported_readably(reader) -> None:
         reader.sql("SELECT nope FROM runs")
 
 
+def test_an_unknown_column_is_answered_with_the_table_s_columns(reader) -> None:
+    """The answer comes to the terminal the user is standing at."""
+    with pytest.raises(StoreError) as raised:
+        reader.sql("SELECT task_name FROM tasks")
+
+    message = str(raised.value)
+    assert "tasks has run_id, task_id" in message
+    assert "display_label" in message
+    assert "`ginkgo query --schema`" in message
+    # Never again at documentation the user cannot open from here.
+    assert "documentation" not in message
+
+
+def test_an_unknown_table_is_answered_with_the_tables_there_are(reader) -> None:
+    with pytest.raises(StoreError) as raised:
+        reader.sql("SELECT name FROM task_runs")
+
+    message = str(raised.value)
+    assert "no such table: task_runs" in message
+    assert "The tables are" in message
+    assert "tasks" in message
+    assert "documentation" not in message
+
+
+def test_a_table_named_in_the_statement_is_matched_whole(reader) -> None:
+    """``task_runs`` is not a mention of ``tasks``, so the table list is the answer."""
+    with pytest.raises(StoreError) as raised:
+        reader.sql("SELECT name FROM task_runs")
+
+    assert "tasks has run_id" not in str(raised.value)
+
+
+def test_schema_names_every_table_and_its_columns(reader) -> None:
+    schema = reader.schema()
+
+    assert schema["runs"][:3] == ("run_id", "workflow", "status")
+    assert "name" in schema["tasks"]
+    assert {"events", "cache_entries", "asset_versions", "edges"} <= set(schema)
+    assert not [table for table in schema if table.startswith("sqlite_")]
+
+
+def test_an_empty_workspace_has_the_same_schema(tmp_path: Path, reader) -> None:
+    layout = WorkspaceLayout(root=tmp_path / "empty" / ".ginkgo")
+
+    with query.open(layout, missing_ok=True) as empty:
+        assert empty.schema() == reader.schema()
+
+
 def test_empty_sql_is_refused(reader) -> None:
     with pytest.raises(StoreError, match="No SQL to run"):
         reader.sql("   ")

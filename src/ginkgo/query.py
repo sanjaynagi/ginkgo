@@ -11,8 +11,8 @@ Every method returns either a core type ginkgo already models — a
 here for a shape that has no model elsewhere.
 
 The database schema is versioned but **not stable**. :meth:`Query.sql` hands
-out raw SQL over the tables described in ``docs/architecture/store.md``, and
-those tables change between ginkgo versions without a deprecation period; a
+out raw SQL over the tables :meth:`Query.schema` names — they are also described
+in ``docs/architecture/store.md`` — and those tables change between ginkgo versions without a deprecation period; a
 query written against them may need rewriting after an upgrade. The methods on
 :class:`Query` are the surface that is kept working.
 """
@@ -20,6 +20,7 @@ query written against them may need rewriting after an upgrade. The methods on
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -859,9 +860,9 @@ class Query:
     ) -> SqlResult:
         """Run one read-only statement against the ledger.
 
-        For the question no method here answers. The tables are described in
-        ``docs/architecture/store.md``; they are versioned but not stable, so a
-        query written against them may need rewriting after an upgrade.
+        For the question no method here answers. :meth:`schema` names the tables
+        and their columns; they are versioned but not stable, so a query written
+        against them may need rewriting after an upgrade.
 
         Three things are refused, so that a mistake is reported rather than
         performed: a statement that is not a read, more than one statement, and
@@ -904,16 +905,54 @@ class Query:
                 "the SELECT you want and drop the rest."
             ) from exc
         except sqlite3.Error as exc:
-            raise StoreError(
-                f"SQLite rejected the query: {exc}. The table and column names are "
-                "listed in the provenance store documentation."
-            ) from exc
+            hint = self._schema_hint(statement)
+            raise StoreError(f"SQLite rejected the query: {exc}. {hint}") from exc
         return SqlResult(
             columns=columns,
             rows=rows[:limit],
             truncated=len(rows) > limit,
             limit=limit,
         )
+
+    def schema(self) -> dict[str, tuple[str, ...]]:
+        """Return the ledger's tables, each with its columns in declared order.
+
+        The answer to "what can I select?", read out of the database in front of
+        the caller rather than out of prose that can fall behind it. What
+        ``ginkgo query --schema`` prints, and what a rejected statement quotes
+        back at whoever wrote it.
+
+        Returns
+        -------
+        dict[str, tuple[str, ...]]
+            Table name to column names. Tables in alphabetical order; SQLite's
+            own ``sqlite_*`` tables are left out, since no user query wants them.
+        """
+        rows = self._store.query(
+            "SELECT m.name AS table_name, c.name AS column_name "
+            "FROM sqlite_master AS m JOIN pragma_table_info(m.name) AS c "
+            "WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
+            "ORDER BY m.name, c.cid"
+        )
+        tables: dict[str, list[str]] = {}
+        for row in rows:
+            tables.setdefault(row["table_name"], []).append(row["column_name"])
+        return {table: tuple(columns) for table, columns in tables.items()}
+
+    def _schema_hint(self, statement: str) -> str:
+        """Return the sentence a rejected *statement* is answered with.
+
+        The user is standing at their terminal, not in the documentation, so the
+        columns come to them. A statement that names a table ginkgo has gets that
+        table's columns; one that names none — a table typo, a syntax error —
+        gets the list of tables to choose from.
+        """
+        schema = self.schema()
+        named = [table for table in schema if _mentions(statement, table)]
+        if named:
+            listed = " ".join(f"{table} has {', '.join(schema[table])}." for table in named)
+            return f"{listed} `ginkgo query --schema` lists every table."
+        return f"The tables are {', '.join(schema)}. `ginkgo query --schema` lists their columns."
 
     # -- assets and lineage --------------------------------------------------
 
@@ -1194,6 +1233,16 @@ def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
     if any(name.startswith("inputs") for name in moved):
         reasons.append("input_changed")
     return reasons or ["cache_key_changed"]
+
+
+def _mentions(statement: str, table: str) -> bool:
+    """Return whether *statement* names *table* as a whole identifier.
+
+    A substring test would find ``runs`` inside ``FROM task_runs`` and answer
+    about a table the statement never named. Underscores count as word
+    characters, so the boundaries hold either way round.
+    """
+    return re.search(rf"\b{re.escape(table)}\b", statement, re.IGNORECASE) is not None
 
 
 def _top_level_words(statement: str) -> Iterator[str]:

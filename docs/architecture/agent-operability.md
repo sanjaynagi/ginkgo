@@ -80,8 +80,10 @@ Ginkgo exposes machine-readable post-hoc inspection and diagnostics:
   run index, filterable by workflow, status and start time.
 - `ginkgo history <task-name> --json` returns every run of one task across runs.
 - `ginkgo query "<sql>" --json|--csv` returns the result of one read-only SQL
-  statement, for the question no verb answers. The tables are versioned but not
-  stable; the methods on `ginkgo.query.Query` are what is kept working.
+  statement, for the question no verb answers. `ginkgo query --schema --json`
+  returns the tables and their columns, which is how an agent learns what it can
+  select. The tables are versioned but not stable; the methods on
+  `ginkgo.query.Query` are what is kept working.
 - `ginkgo export events <run_id>` returns a finished run's ledger as JSONL in
   the same shape `--agent-output` streams live, so an agent that parses the live
   stream parses the export unchanged. `ginkgo export manifest <run_id>` returns
