@@ -12,10 +12,13 @@ python = ">=3.11"
 numpy = ">=2.0"
 pandas = ">=2.0"
 
-# Pinned to the ginkgo `ginkgo init` ran from, so this project's orchestrator is
-# reproducible. Change `rev` to move to a different ginkgo.
+# This project tracks ginkgo's `main` branch. `pixi install` resolves that
+# branch to one commit and records it in `pixi.lock`, so the lock — not this
+# manifest — is what says which ginkgo the project runs. Commit `pixi.lock`.
+# `pixi update ginkgo` moves to the current `main`; swap `branch` for `rev` or
+# `tag` to hold this project on a specific ginkgo instead.
 [pypi-dependencies]
-ginkgo = { git = "https://github.com/sanjaynagi/ginkgo.git", rev = "{{ ginkgo_rev }}", extras = ["notebooks"] }
+ginkgo = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}", extras = ["notebooks"] }
 
 [tasks]
 run = "ginkgo run"
