@@ -178,6 +178,13 @@ fan-out may run simultaneously, independent of the global `--jobs` and
 fan-out and enforces the limit in the CP-SAT selection model alongside
 cores, jobs, and memory constraints.
 
+**Interrupt handling around CP-SAT.** CP-SAT installs an interrupt handler
+for the duration of a solve and restores `SIG_DFL` afterwards rather than what
+it found, so every dispatch used to disarm the scheduler's own `SignalMonitor`.
+`_select_with_cp_sat` puts the previous `SIGINT`/`SIGTERM` handlers back around
+the solve; without that, a Ctrl-C after the first wave terminated the process
+outright and the run stayed `running` in the ledger forever.
+
 **Task priority.** `@task(priority=N)` declares a relative dispatch priority
 (range `[-1000, 1000]`, default `0`). When several tasks are ready
 simultaneously and contend for the same resources, the CP-SAT selection

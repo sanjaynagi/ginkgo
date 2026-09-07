@@ -2,11 +2,47 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import signal
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from threading import current_thread, main_thread
 from typing import Iterable
 
 from ortools.sat.python import cp_model
+
+_GUARDED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+@contextmanager
+def _signal_handlers_preserved() -> Iterator[None]:
+    """Restore this process's signal handlers after CP-SAT has solved.
+
+    CP-SAT installs its own interrupt handler for the duration of a solve and
+    puts back ``SIG_DFL`` rather than what it found. Every solve therefore
+    disarms whatever handler the caller installed, and the scheduler solves on
+    every dispatch — so an interrupt arriving after the first wave killed the
+    process outright, before the run could record that it was cancelled.
+
+    Only meaningful on the main thread: :func:`signal.signal` refuses to run
+    anywhere else, and there is nothing to restore there anyway.
+    """
+    if current_thread() is not main_thread():
+        yield
+        return
+
+    previous = {signum: signal.getsignal(signum) for signum in _GUARDED_SIGNALS}
+    try:
+        yield
+    finally:
+        # Re-installed unconditionally. CP-SAT reaches past the ``signal``
+        # module to change the disposition, so Python's own record of the
+        # handler still names it and comparing the two would see no change
+        # to undo. ``getsignal`` returns None only for a handler installed
+        # from C, which there is no way to put back.
+        for signum, handler in previous.items():
+            if handler is not None:
+                signal.signal(signum, handler)
 
 
 @dataclass(frozen=True)
@@ -163,7 +199,8 @@ def _select_with_cp_sat(
     )
 
     solver = cp_model.CpSolver()
-    status = solver.Solve(model)
+    with _signal_handlers_preserved():
+        status = solver.Solve(model)
     if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
         return []
 

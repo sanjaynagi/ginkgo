@@ -378,11 +378,16 @@ class RunResourcesSampled(RunEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class RunCompleted(RunEvent):
-    """Run completion event."""
+    """Run completion event.
+
+    ``cancelled`` is the terminal status of a run an interrupt ended. It is
+    kept apart from ``failed`` because the two are different events: one is
+    the workflow going wrong, the other is a person changing their mind.
+    """
 
     event: str = "run_completed"
     v: int = 2
-    status: Literal["success", "failed"] = "success"
+    status: Literal["success", "failed", "cancelled"] = "success"
     task_counts: dict[str, int] = field(default_factory=dict)
     finished_at: str | None = None
     resources: dict[str, Any] = field(default_factory=dict)

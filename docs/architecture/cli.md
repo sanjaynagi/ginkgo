@@ -244,6 +244,11 @@ one-line messages stay one line; the escape hatch itself always works.
 
 `KeyboardInterrupt` prints `⨯ Interrupted` and exits 130; `SystemExit`
 propagates untouched, so argparse and `--version` keep the status they chose.
+An interrupt during `ginkgo run` closes the run in the ledger under the
+terminal status `cancelled` — distinct from `failed`, because stopping a run
+on purpose is not the workflow going wrong — carrying the task counts as they
+stood at the interrupt. `_close_unfinished_run` records the same status for an
+interrupt arriving outside the scheduler loop.
 
 Exit statuses, all of them:
 
@@ -253,7 +258,7 @@ Exit statuses, all of them:
 | 1 | A failure reached the top level, and the run stopped at it. |
 | 2 | Argparse rejected the command line, or no command was given. |
 | 3 | The run drained under a non-fatal failure policy — `@task(on_failure="ignore")` or `ginkgo run --keep-going` — with failures in it. The run is recorded `failed`; the tasks that could run, ran. In phase 1 such a run ends without a result, because the workflow's own return value is downstream of everything: the code path for a run whose root survives its ignored failures exists, and phase 2's partial fan-in is what reaches it. |
-| 130 | Interrupted (SIGINT). |
+| 130 | Interrupted (SIGINT). The run is recorded `cancelled`. |
 
 The named constants are `IGNORED_FAILURES_EXIT_CODE` and
 `INTERRUPT_EXIT_CODE` in `cli/errors.py`.

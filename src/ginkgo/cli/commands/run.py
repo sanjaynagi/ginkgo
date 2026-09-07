@@ -580,10 +580,19 @@ def run_workflow(
             # recorded failed whether or not it stopped dispatching.
             ignored_failures = len(evaluator.ignored_failures)
             run_failed = failure is not None or root_skipped is not None or ignored_failures > 0
+            # An interrupt is not a failure. It gets its own terminal status so
+            # that the ledger can tell "someone pressed Ctrl-C" apart from
+            # "the workflow broke" — and so the row closes at all, which is
+            # what a run left at 'running' forever never did.
+            interrupt = failure if isinstance(failure, KeyboardInterrupt) else None
             bus.emit(
                 RunCompleted(
                     run_id=run_id,
-                    status="failed" if run_failed else "success",
+                    status=(
+                        "cancelled"
+                        if interrupt is not None
+                        else ("failed" if run_failed else "success")
+                    ),
                     task_counts=reader.task_status_counts(run_id),
                     resources=resource_summary,
                     error=_run_error_message(
@@ -595,6 +604,26 @@ def run_workflow(
             )
             with profiler.timed("run_summary_load"):
                 run_summary = reader.run(run_id)
+
+            if interrupt is not None:
+                # No failure panel: nothing went wrong, the run was stopped.
+                # The tally still prints, because what did finish before the
+                # interrupt is the one thing worth knowing here.
+                if renderer is not None:
+                    with profiler.timed("renderer_finish"):
+                        renderer.finish(
+                            elapsed=time.perf_counter() - run_started,
+                            success=False,
+                            cancelled=True,
+                            resources=resource_summary,
+                            remote_summary=evaluator.remote_stats.summary(),
+                        )
+                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
+                if profiler.enabled:
+                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
+                # Re-raised so the top level prints its interrupt line and
+                # exits 130, as it does for an interrupt anywhere else.
+                raise interrupt
 
             if failure is not None:
                 if renderer is not None:
@@ -672,7 +701,7 @@ def run_workflow(
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:
-    """Fail the run in the ledger if it is unwinding without having completed.
+    """Close the run in the ledger if it is unwinding without having completed.
 
     Registered on the exit stack rather than written into one exception
     handler, so it covers every way out of the run — including the ones nobody
@@ -681,10 +710,14 @@ def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str
     if recorder.completed:
         return
     exc = sys.exception()
+    # An interrupt reaching here — one raised before or after the scheduler
+    # loop, where the run's own handling would have caught it — is still an
+    # interrupt, and is recorded as one rather than as a failure.
+    cancelled = isinstance(exc, KeyboardInterrupt)
     bus.emit(
         RunCompleted(
             run_id=run_id,
-            status="failed",
+            status="cancelled" if cancelled else "failed",
             error=str(exc) if exc is not None else "The run ended before it completed.",
         )
     )

@@ -25,8 +25,8 @@ The implementation lives in `ginkgo/reporting/` and is wired into the CLI as
 ## Scope
 
 Reports are for **terminal runs** only. `build_report_data` raises
-`ValueError` when the manifest status is not `succeeded` or `failed`. The
-exporter does not render running / pending runs.
+`ValueError` when the manifest status is not `succeeded`, `failed` or
+`cancelled`. The exporter does not render running / pending runs.
 
 Live streaming, multi-run comparison, upload to remote storage, and
 report-side interactivity beyond sort/collapse/scrollspy are explicitly

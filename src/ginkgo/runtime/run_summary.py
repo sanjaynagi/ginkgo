@@ -199,7 +199,9 @@ class RunSummary:
     workflow_label : str
         Display name for the workflow (its basename).
     status : str
-        Run status: ``"succeeded"``, ``"failed"``, ``"running"``, or ``"unknown"``.
+        Run status: ``"succeeded"``, ``"failed"``, ``"cancelled"``,
+        ``"running"``, or ``"unknown"``. ``"cancelled"`` is a run an
+        interrupt ended.
     started_at : datetime | None
         Run start timestamp.
     finished_at : datetime | None

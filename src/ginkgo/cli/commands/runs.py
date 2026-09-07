@@ -78,7 +78,12 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
     rich_console.print(f"Duration: {format_duration(summary.duration_s)}")
     rich_console.print(f"Run directory: {summary.run_dir}")
     if summary.error:
-        rich_console.print(f"Error: [red]{summary.error}[/]")
+        # A cancelled run has no error to report — the recorded line says which
+        # signal stopped it, which is a reason, not a fault.
+        if summary.status == "cancelled":
+            rich_console.print(f"Ended by: [yellow]{summary.error}[/]")
+        else:
+            rich_console.print(f"Error: [red]{summary.error}[/]")
 
     if not summary.tasks:
         rich_console.print("\n[dim]This run recorded no tasks.[/]")

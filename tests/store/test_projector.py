@@ -470,6 +470,19 @@ def test_a_failed_run_records_its_error(started: SqliteStore) -> None:
     assert (run["status"], run["error"]) == ("failed", "boom")
 
 
+def test_a_cancelled_run_keeps_its_own_status(started: SqliteStore) -> None:
+    _apply(started, _fixture("run_completed", status="cancelled", error="Interrupted by SIGINT"))
+
+    run = _row(started, "SELECT * FROM runs")
+    assert (run["status"], run["error"]) == ("cancelled", "Interrupted by SIGINT")
+
+
+def test_an_unrecognised_run_status_projects_as_failed(started: SqliteStore) -> None:
+    _apply(started, _fixture("run_completed", status="who-knows"))
+
+    assert _row(started, "SELECT * FROM runs")["status"] == "failed"
+
+
 def test_graph_expansion_records_dynamic_dependencies(started: SqliteStore) -> None:
     _apply(started, _fixture("graph_expanded"))
 
