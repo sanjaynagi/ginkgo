@@ -23,7 +23,10 @@ import pytest
 import ginkgo
 from ginkgo import evaluate, file, flow, task, tmp_dir
 from ginkgo.core.asset import AssetKey, AssetRef
+from ginkgo.cli.commands.init import write_starter_project
+from ginkgo.config import config_session
 from ginkgo.core.expr import record_constructed_calls
+from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.diagnostics import (
     SHARED_LITERAL_PATH_CODE,
     UNREACHABLE_CALL_CODE,
@@ -33,7 +36,13 @@ from ginkgo.runtime.diagnostics import (
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, UndeclaredPathDependencyError
 from ginkgo.runtime.events import TaskNotice
-from ginkgo.runtime.path_hazards import shared_literal_path_findings
+from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.path_hazards import (
+    ancestor_ids,
+    are_ordered,
+    literal_path_arguments,
+    shared_literal_path_findings,
+)
 from ginkgo.runtime.task_validation import is_untracked_path_value
 from tests.conftest import EventCollector
 
@@ -126,6 +135,16 @@ def join_labels(*, left: str, right: str) -> str:
 
 def _notices(collector: EventCollector) -> list[str]:
     return [event.message for event in collector.events if isinstance(event, TaskNotice)]
+
+
+def _literal_path_sites(nodes: Any) -> dict[str, set[int]]:
+    """Map each path-shaped literal in a graph to the nodes it is passed to."""
+    sites: dict[str, set[int]] = {}
+    for node_id, node in nodes.items():
+        for argument in node.expr.args.values():
+            for path in literal_path_arguments(argument):
+                sites.setdefault(path, set()).add(node_id)
+    return sites
 
 
 class TestUntrackedPathBoundary:
@@ -683,3 +702,152 @@ class TestSharedLiteralPath:
 
         assert plan.wave_count == 1, "the two tasks share a wave — that is the race"
         assert any(AGG_PATH in diagnostic.message for diagnostic in plan.diagnostics)
+
+
+class TestAssetLogicalFilename:
+    """#289 — an asset knows where its producer wrote it, not just its blob."""
+
+    def test_source_path_survives_a_cache_hit(self) -> None:
+        """Cold and warm must agree, or a warm rerun loses the produced path.
+
+        The detector reads produced paths from completed nodes, and a cache
+        hit completes a node without running it. If the ref came back without
+        its declared path, every output path in a warm run would look like a
+        path no task produced.
+        """
+        cold = evaluate(produce_file_asset(output_path="rows.csv"))
+        assert isinstance(cold, AssetRef)
+        assert cold.source_path == "rows.csv"
+        assert cold.filename == "rows.csv"
+
+        warm = evaluate(produce_file_asset(output_path="rows.csv"))
+        assert isinstance(warm, AssetRef)
+        assert warm.source_path == "rows.csv"
+
+    def test_artifact_path_is_not_the_logical_name(self) -> None:
+        """The distinction the issue is about: blob path versus filename."""
+        ref = evaluate(produce_file_asset(output_path="nested/rows.csv"))
+
+        assert isinstance(ref, AssetRef)
+        assert "artifacts" in ref.artifact_path
+        assert ref.filename == "rows.csv"
+        assert ref.source_path == "nested/rows.csv"
+
+    def test_in_memory_payload_has_no_declared_path(self) -> None:
+        """A table built from a DataFrame never had a path to declare."""
+        ref = AssetRef(
+            key=AssetKey(namespace="table", name="t"),
+            version_id="v",
+            kind="table",
+            artifact_id="a",
+            content_hash="h",
+            artifact_path="/store/blobs/a.parquet",
+        )
+
+        assert ref.source_path is None
+        assert ref.filename is None
+
+    def test_round_trips_through_serialization(self) -> None:
+        ref = evaluate(produce_file_asset(output_path="rows.csv"))
+        assert isinstance(ref, AssetRef)
+
+        assert AssetRef.from_dict(ref.to_dict()).source_path == "rows.csv"
+
+    def test_entry_written_before_the_field_still_loads(self) -> None:
+        """An older cache entry has no ``source_path`` key at all."""
+        payload = {
+            "key": {"namespace": "file", "name": "old"},
+            "version_id": "v",
+            "kind": "file",
+            "artifact_id": "a",
+            "content_hash": "h",
+            "artifact_path": "/store/blobs/a.csv",
+        }
+
+        assert AssetRef.from_dict(payload).source_path is None
+
+
+class TestStarterTemplateStaysSilent:
+    """The property most likely to regress: no findings on the shipped scaffold.
+
+    Every check here has to be silent on what ``ginkgo init`` gives a user.
+    The template's dominant idiom is an output path passed as a literal
+    ``str`` argument, which exists on disk from the second run onward — so a
+    naive "literal path that exists" rule would fire on all of it.
+    """
+
+    @pytest.fixture
+    def scaffold_nodes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """Build the real ``ginkgo init`` graph, without running it."""
+        root = write_starter_project(root=tmp_path / "starter")
+        monkeypatch.chdir(root)
+
+        with config_session(
+            override_paths=[], param_config={}, cli_extras=(), require_params=False
+        ):
+            module = load_module_from_path(Path("workflow/flow.py"))
+            with record_constructed_calls() as constructed_calls:
+                expr = discover_flow(module)()
+        evaluator = ConcurrentEvaluator(constructed_calls=tuple(constructed_calls))
+        evaluator.build_and_validate(expr)
+        return evaluator.task_nodes
+
+    def test_shares_paths_but_always_in_order(self, scaffold_nodes: Any) -> None:
+        """The template does share literal paths — that is what makes it a test.
+
+        ``write_summary`` reads the seed paths ``write_seed_card`` wrote. If
+        no path were shared, silence would prove nothing.
+        """
+        shared = [
+            path
+            for path, node_ids in _literal_path_sites(scaffold_nodes).items()
+            if len(node_ids) > 1
+        ]
+
+        assert shared, "template no longer shares a literal path; this test is now vacuous"
+
+    def test_static_check_is_silent(self, scaffold_nodes: Any) -> None:
+        assert shared_literal_path_findings(scaffold_nodes) == []
+
+    def test_doctor_is_silent(self, scaffold_nodes: Any) -> None:
+        assert shared_literal_path_diagnostics(nodes=scaffold_nodes) == []
+
+    def test_all_nodes_sharing_a_path_are_ordered(self, scaffold_nodes: Any) -> None:
+        """Spelled out as the property, not just the absence of findings.
+
+        Silence could also come from the walk finding no literal paths at
+        all. This says what actually holds: wherever the template hands one
+        path to more than one task, a dependency path runs between them.
+        """
+        ancestors = ancestor_ids(scaffold_nodes)
+        for path, node_ids in _literal_path_sites(scaffold_nodes).items():
+            ordered = sorted(node_ids)
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1 :]:
+                    assert are_ordered(ancestors=ancestors, left=left, right=right), (
+                        f"{path} reaches two tasks with nothing ordering them"
+                    )
+
+
+class TestStarterTemplateShapeAtRuntime:
+    """The template's idiom, reduced to something a test can actually run.
+
+    Running the real scaffold needs Pixi environments and Docker, so its
+    runtime verdict is out of reach here. This mirrors the shape that matters:
+    an ``asset()``-returning producer handed its output path as a literal
+    ``str``, and a consumer reading that same literal, ordered behind it.
+
+    It is the interaction most likely to break — the producer's declared path
+    reaches the detector only through ``AssetRef.source_path``, so losing that
+    field turns every template output path into an untracked input.
+    """
+
+    def test_no_notice_cold_or_warm(self, event_collector: EventCollector) -> None:
+        def build():
+            produced = produce_file_asset(output_path="rows.csv")
+            return receive_as_str(incoming=produced, output_path="summary.csv")
+
+        evaluate(build())
+        evaluate(build(), event_bus=event_collector.bus)
+
+        assert [message for message in _notices(event_collector) if "rows.csv" in message] == []
