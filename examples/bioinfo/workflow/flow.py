@@ -22,6 +22,23 @@ def _summary_has_records(payload: object) -> bool:
     return isinstance(payload, pd.DataFrame) and not payload.empty
 
 
+def _logical_names(*asset_lists: list) -> dict[str, str]:
+    """Map each stored artifact path to the filename its producer declared.
+
+    A tool reads an asset's bytes from the artifact store, so what it echoes
+    into its own output is the content-addressed blob path
+    (``.ginkgo/artifacts/blobs/<hash>.gz``). That is storage internals, not
+    something to show a reader. ``AssetRef.filename`` is the name the
+    producing task gave the file, which is what belongs in a results table.
+    """
+    return {
+        ref.artifact_path: ref.filename or Path(ref.artifact_path).name
+        for refs in asset_lists
+        for ref in refs
+        if isinstance(ref, AssetRef) and ref.filename is not None
+    }
+
+
 @task(env="bioinfo_tools", kind="shell")
 def filter_fastq(sample_id: str, fastq_1: file, fastq_2: file, min_length: int) -> list[file]:
     """Filter paired-end reads shorter than ``min_length`` with seqkit."""
@@ -97,6 +114,8 @@ def build_summary(
     sample_ids: list[str],
     stats_tables: list[file | AssetRef],
     count_tables: list[file | AssetRef],
+    filtered_r1: list[file | AssetRef],
+    filtered_r2: list[file | AssetRef],
 ) -> pd.DataFrame:
     """Merge per-sample QC tables and read counts into a single summary table.
 
@@ -108,6 +127,12 @@ def build_summary(
         Per-sample seqkit statistics TSVs.
     count_tables : list[file]
         Per-sample read count TSVs from the container task.
+    filtered_r1 : list[file]
+        Filtered forward-read FASTQs, carried in so the summary can show the
+        filename each producer declared rather than the artifact-store path
+        seqkit echoed into its stats table.
+    filtered_r2 : list[file]
+        Filtered reverse-read FASTQs, for the same reason.
 
     Returns
     -------
@@ -127,6 +152,14 @@ def build_summary(
         frames.append(frame)
 
     summary = pd.concat(frames, ignore_index=True)
+
+    # seqkit's "file" column repeats the path it was handed, which is the
+    # artifact store's blob. Show the name the filtering task declared.
+    logical_names = _logical_names(filtered_r1, filtered_r2)
+    if "file" in summary.columns:
+        summary["file"] = summary["file"].map(
+            lambda path: logical_names.get(path, Path(path).name)
+        )
 
     # Merge container-produced read counts.
     count_frames = [
@@ -171,4 +204,6 @@ def main():
         sample_ids=samples["sample_id"].tolist(),
         stats_tables=qc_tables,
         count_tables=read_counts,
+        filtered_r1=filtered_pairs.output[0],
+        filtered_r2=filtered_pairs.output[1],
     )

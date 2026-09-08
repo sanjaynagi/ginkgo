@@ -743,6 +743,92 @@ class TestEvaluate:
         assert any("JUPYTER_PATH=" in call and "papermill" in call for call in calls)
         assert any("nbconvert" in call for call in calls)
 
+    def test_notebook_own_path_is_not_reported_as_untracked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A notebook's own path is content-tracked, so the notice would lie.
+
+        ``_prepare_node`` folds the directive's ``source_hash`` into the cache
+        key as ``extra_source_hash``, so editing the notebook *does* re-run the
+        task. Reporting its path as an untracked input would tell the user the
+        opposite and push them to annotate a parameter that needs nothing.
+        """
+        nb_path = tmp_path / "report.ipynb"
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
+            encoding="utf-8",
+        )
+
+        bus = EventBus()
+        events: list[object] = []
+        bus.subscribe(events.append)
+        recorder = Ledger.start(
+            root=tmp_path,
+            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            bus=bus,
+        )
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
+        monkeypatch.setattr(
+            evaluator._shell_runner,
+            "run_subprocess",
+            _notebook_subprocess_stub(tmp_path=tmp_path, run_dir=recorder.path),
+        )
+
+        evaluator.evaluate(notebook_ipynb_task(notebook_path=str(nb_path), value=7))
+
+        assert [
+            event.message
+            for event in events
+            if isinstance(event, TaskNotice) and "notebook_path" in event.message
+        ] == []
+
+    def test_editing_the_notebook_re_runs_the_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property that makes the exemption above correct.
+
+        Silence is only right because the content really is tracked. If this
+        ever stops holding, the exemption becomes the bug it was added to
+        prevent, so assert the cache behaviour rather than only the silence.
+        """
+        nb_path = tmp_path / "report.ipynb"
+
+        def run_once() -> str:
+            recorder = Ledger.start(
+                root=tmp_path,
+                run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
+            )
+            evaluator = ConcurrentEvaluator(
+                run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+            )
+            monkeypatch.setattr(
+                evaluator._shell_runner,
+                "run_subprocess",
+                _notebook_subprocess_stub(tmp_path=tmp_path, run_dir=recorder.path),
+            )
+            evaluator.evaluate(notebook_ipynb_task(notebook_path=str(nb_path), value=7))
+            status = recorder.task()["status"]
+            recorder.close()
+            return status
+
+        nb_path.write_text(
+            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
+            encoding="utf-8",
+        )
+        assert run_once() == "succeeded"
+        assert run_once() == "cached"
+
+        # Same parameters, different notebook body.
+        nb_path.write_text(
+            '{"cells": [{"cell_type": "code", "source": "x = 1", "metadata": {},'
+            ' "outputs": [], "execution_count": null}],'
+            ' "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
+            encoding="utf-8",
+        )
+        assert run_once() == "succeeded"
+
     def test_ipynb_notebook_task_emits_kernel_install_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

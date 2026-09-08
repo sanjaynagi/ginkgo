@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal
 from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
 from ginkgo.runtime.events import task_id_for_node
+from ginkgo.runtime.path_hazards import shared_literal_path_findings
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
@@ -204,6 +205,20 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     cache_status, diagnostics = _resolve_cache_status(
         evaluator=evaluator, topo_order=topo_order, labels=labels
     )
+    # Two tasks handed one literal path with nothing ordering them will be
+    # placed in the same wave below, which is exactly the race. Report it
+    # here, where the plan the user is reading shows them sharing a wave.
+    node_by_task = {node.task_def.name: node_id for node_id, node in nodes.items()}
+    for finding in shared_literal_path_findings(nodes):
+        node_id = node_by_task.get(finding.first_task, topo_order[0])
+        diagnostics.append(
+            PlanDiagnostic(
+                task_id=task_id_for_node(node_id),
+                task_name=finding.first_task,
+                label=labels.get(node_id, finding.first_task),
+                message=f"{finding.message()} {finding.suggestion()}",
+            )
+        )
 
     planned: dict[int, PlannedTask] = {}
     for node_id in topo_order:

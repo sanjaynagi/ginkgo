@@ -27,7 +27,7 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
-from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore, make_writable_recursive
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
@@ -586,6 +586,33 @@ class CacheStore:
         whether an entry's bytes are there rather than rebuilding the path.
         """
         return self._entry_dir(cache_key) / "output.json"
+
+    def forget_entry(self, cache_key: str) -> None:
+        """Remove one entry's bytes, then its rows — in that order.
+
+        A row without bytes is a miss the next run pays for once; bytes
+        without a row are an orphan nothing collects. Doing it the other way
+        round leaves the worse of the two behind if the process dies between
+        the halves.
+
+        Both halves matter to a caller trying to make an entry unusable:
+        ``has_entry`` reads the bytes on disk, not the row, so dropping only
+        the row leaves the entry still serving.
+
+        Parameters
+        ----------
+        cache_key : str
+            The entry to remove.
+        """
+        entry_dir = self.output_path(cache_key).parent
+        if entry_dir.exists():
+            try:
+                shutil.rmtree(entry_dir)
+            except PermissionError:
+                # Stored artifacts are written read-only.
+                make_writable_recursive(entry_dir)
+                shutil.rmtree(entry_dir)
+        self.index.forget_entries([cache_key])
 
     def orphan_entry_dirs(self) -> list[Path]:
         """Return entry directories the index has no row for.

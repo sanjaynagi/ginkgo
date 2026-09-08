@@ -79,6 +79,10 @@ def _present_output_summary(
                 "version_id": value.version_id,
                 "artifact_id": value.artifact_id,
                 "path": value.artifact_path,
+                # Where the task actually wrote it. ``path`` names the
+                # content-addressed blob, which is the wrong thing to show a
+                # person and the wrong thing to match a declared path against.
+                "source_path": value.source_path,
             }
         ]
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -16,9 +16,11 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.path_hazards import shared_literal_path_findings
 from ginkgo.runtime.environment.secrets import SecretResolver
 
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
+SHARED_LITERAL_PATH_CODE = "shared_literal_path"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -119,11 +121,43 @@ def collect_workflow_diagnostics(
             )
         ]
         diagnostics.extend(unreachable_call_diagnostics(calls=evaluator.unreachable_calls))
+        diagnostics.extend(shared_literal_path_diagnostics(nodes=evaluator.task_nodes))
         return diagnostics
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
         # interrupts doctor wants it to stop, not to be told about a diagnostic.
         return [_diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
+
+
+def shared_literal_path_diagnostics(*, nodes: Mapping[int, Any]) -> list[WorkflowDiagnostic]:
+    """Build one warning per literal path two unordered tasks both receive.
+
+    Reported as a warning rather than an error: two tasks deliberately
+    appending to one shared sink is a legitimate pattern, and this check has
+    no way to tell that apart from a race. The wording therefore has to carry
+    what severity does not — it names both tasks, the path, and why unordered
+    access is the defect.
+
+    Parameters
+    ----------
+    nodes : Mapping[int, Any]
+        The built graph, from ``ConcurrentEvaluator.task_nodes``.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per unordered pair.
+    """
+    return [
+        WorkflowDiagnostic(
+            severity="warning",
+            code=SHARED_LITERAL_PATH_CODE,
+            message=finding.message(),
+            location=finding.first_task,
+            suggestion=finding.suggestion(),
+        )
+        for finding in shared_literal_path_findings(nodes)
+    ]
 
 
 def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[WorkflowDiagnostic]:

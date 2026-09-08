@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from types import SimpleNamespace
 import sys
 import textwrap
 from pathlib import Path
@@ -23,6 +24,7 @@ from ginkgo.runtime.task_runners.subworkflow import (
     SubWorkflowRecursionError,
 )
 
+from ginkgo.runtime.events import GraphNodeRegistered, TaskCompleted
 from tests.conftest import Ledger
 
 
@@ -443,3 +445,90 @@ class TestSubworkflowParams:
         assert isinstance(result, SubWorkflowResult)
         assert result.status == "success"
         assert (workspace / "child-result.txt").read_text(encoding="utf-8") == "2L:1-100/42"
+
+
+@task()
+def read_child_output(*, report_path: str, child: SubWorkflowResult) -> str:
+    """Read a path the child workflow wrote, ordered behind the child."""
+    assert child.status == "success"
+    return Path(report_path).read_text(encoding="utf-8")
+
+
+def _record_child_output(*, root: Path, run_id: str, parent_run_id: str, output: Path) -> None:
+    """Record the run and the produced output a real child would leave behind."""
+    child = Ledger.start(
+        root=root,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        parent_task_id="task_0001",
+    )
+    # A ``tasks`` row is inserted by registration; completion only updates it.
+    child.bus.emit(
+        GraphNodeRegistered(
+            run_id=run_id, task_id="task_0000", node_id=0, task_name="write_report"
+        )
+    )
+    child.bus.emit(
+        TaskCompleted(
+            run_id=run_id,
+            task_id="task_0000",
+            task_name="write_report",
+            outputs=[{"name": "return", "type": "file", "path": str(output)}],
+        )
+    )
+    child.finish()
+    child.close()
+
+
+class TestSubWorkflowOutputsAreNotUntracked:
+    """A child run's outputs are recorded facts, not untracked inputs.
+
+    A sub-workflow runs as an opaque ``ginkgo run`` subprocess, so the paths
+    it wrote are invisible to the parent's graph. Without consulting the
+    ledger, a parent task reading one by literal path would be told its input
+    is untracked — true of the parent's own graph, and useless to the reader.
+    """
+
+    def test_ledger_supplies_the_child_run_output_paths(self, tmp_path: Path) -> None:
+        report = tmp_path / "child_report.txt"
+        _record_child_output(
+            root=tmp_path,
+            run_id="child_run_id",
+            parent_run_id="parent_run_id",
+            output=report,
+        )
+
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+
+        assert evaluator._subworkflow_output_paths(run_id="child_run_id") == [str(report)]
+
+    def test_unknown_child_run_is_not_an_error(self, tmp_path: Path) -> None:
+        """A child whose rows are missing costs a warning, never the run."""
+        Ledger.start(root=tmp_path, run_id="parent_run_id").close()
+
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+
+        assert evaluator._subworkflow_output_paths(run_id="no_such_run") == []
+
+    def test_completion_records_the_child_output_as_produced(self, tmp_path: Path) -> None:
+        """The wiring: completing a sub-workflow node adopts its child's paths.
+
+        Without this, a parent task reading one of those paths by literal
+        string would be reported as reading an untracked input, because
+        nothing in the parent's own graph produced it.
+        """
+        report = tmp_path / "child_report.txt"
+        _record_child_output(
+            root=tmp_path,
+            run_id="child_run_id",
+            parent_run_id="parent_run_id",
+            output=report,
+        )
+
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+        evaluator._record_produced_paths(
+            node=SimpleNamespace(node_id=7),
+            value=SubWorkflowResult(run_id="child_run_id", status="success"),
+        )
+
+        assert evaluator._produced_paths[str(report.resolve())] == 7
