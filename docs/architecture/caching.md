@@ -273,9 +273,48 @@ looks inside `list[file]` for it. A dict key that is itself an expression
 resolves to a different key, so its value is skipped rather than mispaired.
 
 Warnings are deduplicated per producer/consumer/parameter, so a fan-out reports
-once. Literal path arguments never trigger it — the signal is the graph edge,
-not the shape of the string. Detection is inherently runtime: it needs a
-resolved value, so `ginkgo doctor` does not report it.
+once.
+
+A literal path argument has no producer expression, so none of the above
+reaches it. It is classified instead at the end of the run, by
+`ConcurrentEvaluator._report_literal_path_findings`, against two facts the
+evaluator collects as it goes: whether the path was on disk before
+`run_started_at`, and whether any node in the graph produced it. Those two
+facts split the two failure modes apart.
+
+- Produced by nobody, present before the run started: an **untracked input**
+  (issue #281). Editing it does not invalidate the consumer, so it warns with
+  the same `TaskNotice` and the run continues — reading a path deliberately
+  left untracked is supported.
+- Produced by a node with no dependency path to the consumer: an **undeclared
+  dependency** (issue #280). The two ran concurrently, so the consumer may have
+  read the file half-written. `UndeclaredPathDependencyError` fails the run and
+  the consumer's cache entry is dropped through `CacheStore.forget_entry`;
+  leaving it would serve the corrupt result as a permanent hit.
+- Produced by a node the consumer depends on: the ordinary output-path idiom,
+  or a task re-reading its own prior output. Silent.
+
+The produced-path set is written by both completion routes, so a cache hit
+contributes its outputs exactly as an execution does. That symmetry is what
+keeps a warm rerun quiet: on a warm run the producer never touches the file, so
+its mtime predates the run and the existence test alone would call every output
+path an untracked input. An `asset()` output reaches the set through
+`AssetRef.source_path` — its `artifact_path` names the content-addressed blob,
+not the location the task wrote (issue #289). A sub-workflow contributes the
+paths its child run recorded in the ledger, its graph being opaque to the
+parent's.
+
+Classification is inherently runtime: it needs a resolved value, a filesystem
+probe, and the set of paths tasks produced. What `ginkgo doctor` can decide is
+the subset that needs none of those — one literal path reaching two nodes with
+no dependency path between them, reported as `shared_literal_path`. That is
+unordered concurrent access to one file whichever node writes, so direction
+never has to be known. It is a warning rather than an error because two tasks
+deliberately appending to one sink is a legitimate pattern this check cannot
+tell apart from a race. `--dry-run` reports it too, beside the wave that shows
+the two tasks sharing a slot. Ordering is decided by transitive reachability,
+not adjacency: the starter template's `write_summary` reads seed paths
+`write_seed_card` wrote, connected only through the chain between them.
 
 The runtime hashes the top-level task function source and the statically
 imported closure of already-loaded local Python modules during task
