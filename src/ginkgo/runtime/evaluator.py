@@ -916,7 +916,6 @@ class ConcurrentEvaluator:
             stage_remote_refs=False,
             asset_inputs=node.asset_inputs,
         )
-        self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
         self._validator.validate_task_preconditions(
             task_def=node.task_def,
@@ -926,10 +925,22 @@ class ConcurrentEvaluator:
         # For notebook/script tasks, eagerly evaluate the body to capture the
         # source hash of the underlying file and fold it into the cache key.
         extra_source_hash: str | None = None
+        directive_path: Path | None = None
         if node.task_def.kind in {"notebook", "script"}:
             directive = node.task_def.fn(**resolved_args)
             node.driver_directive = directive
             extra_source_hash = directive.source_hash
+            directive_path = directive.path
+
+        # After the directive, so the path it hashes is known. A notebook or
+        # script task's own path is content-tracked through
+        # ``extra_source_hash``, so warning that editing the file will not
+        # re-run the task would state the opposite of what happens.
+        self._warn_on_untracked_path_inputs(
+            node=node,
+            resolved_args=resolved_args,
+            exempt_path=directive_path,
+        )
 
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash
@@ -2091,11 +2102,16 @@ class ConcurrentEvaluator:
         parameter: str,
         annotation: Any,
         resolved: Any,
+        exempt_path: Path | None = None,
     ) -> None:
         """Note one path-shaped literal for classification at end of run."""
         if not looks_like_path_string(resolved):
             return
         text = str(resolved)
+        # A path this task's own cache key content-hashes is not untracked,
+        # and it cannot be raced either: the task reads its own source.
+        if exempt_path is not None and _absolute_path(text) == _absolute_path(str(exempt_path)):
+            return
         try:
             existed_before_run = os.stat(text).st_mtime < self.run_started_at
         except OSError:
@@ -2305,6 +2321,7 @@ class ConcurrentEvaluator:
         *,
         node: NodeRun,
         resolved_args: dict[str, Any],
+        exempt_path: Path | None = None,
     ) -> None:
         """Warn when a path crosses a task boundary without content tracking.
 
@@ -2314,6 +2331,18 @@ class ConcurrentEvaluator:
         Deduplicated per producer/consumer/parameter so fan-out branches report
         once. Runs before the cache-hit branch so the warning appears on the
         run that serves the stale result.
+
+        Parameters
+        ----------
+        node : NodeRun
+            The consuming node.
+        resolved_args : dict[str, Any]
+            Its resolved arguments, walked in step with the unresolved ones.
+        exempt_path : Path | None
+            A path this task's cache key already tracks by content, and which
+            must therefore not be reported. Notebook and script tasks pass the
+            path their directive hashes into ``extra_source_hash``: editing
+            that file does re-run the task, so the notice would be false.
         """
         for name, unresolved in node.expr.args.items():
             self._scan_untracked_path_argument(
@@ -2322,6 +2351,7 @@ class ConcurrentEvaluator:
                 annotation=node.task_def.type_hints.get(name),
                 unresolved=unresolved,
                 resolved=resolved_args.get(name),
+                exempt_path=exempt_path,
             )
 
     def _scan_untracked_path_argument(
@@ -2332,6 +2362,7 @@ class ConcurrentEvaluator:
         annotation: Any,
         unresolved: Any,
         resolved: Any,
+        exempt_path: Path | None = None,
     ) -> None:
         """Warn for each upstream path one argument carries, at any depth.
 
@@ -2352,6 +2383,7 @@ class ConcurrentEvaluator:
                     annotation=annotation,
                     unresolved=item,
                     resolved=item_resolved,
+                    exempt_path=exempt_path,
                 )
             return
 
@@ -2367,6 +2399,7 @@ class ConcurrentEvaluator:
                     annotation=annotation,
                     unresolved=item,
                     resolved=resolved[key],
+                    exempt_path=exempt_path,
                 )
             return
 
@@ -2382,6 +2415,7 @@ class ConcurrentEvaluator:
                 parameter=parameter,
                 annotation=annotation,
                 resolved=resolved,
+                exempt_path=exempt_path,
             )
             return
 
