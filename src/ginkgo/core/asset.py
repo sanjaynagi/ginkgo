@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
@@ -263,6 +263,12 @@ class AssetRef:
         Content hash of the stored bytes.
     artifact_path : str
         Absolute filesystem path to the immutable stored artifact.
+    source_path : str | None
+        The path the producing task declared as its output, as declared. This
+        is the asset's logical location — what a person calls the file — as
+        opposed to ``artifact_path``, which names the content-addressed blob
+        the store keeps. ``None`` for an asset built from an in-memory payload
+        (a ``table`` from a DataFrame, say), which never had a declared path.
     metadata : dict[str, Any]
         Asset metadata copied from the registered version.
     """
@@ -273,6 +279,7 @@ class AssetRef:
     artifact_id: str
     content_hash: str
     artifact_path: str
+    source_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -284,6 +291,26 @@ class AssetRef:
     def name(self) -> str:
         """Return the asset name."""
         return self.key.name
+
+    @property
+    def filename(self) -> str | None:
+        """Return the logical filename a reader expects to see.
+
+        The basename of :attr:`source_path` — what the producing task called
+        the file. Render this, not :attr:`artifact_path`, wherever a person
+        reads the result: the artifact path names a content-addressed blob
+        (``.ginkgo/artifacts/blobs/<hash>.gz``) and leaks storage internals
+        into user-facing output.
+
+        Returns
+        -------
+        str | None
+            The logical filename, or ``None`` for an asset built from an
+            in-memory payload, which never had a declared path.
+        """
+        if self.source_path is None:
+            return None
+        return PurePath(self.source_path).name
 
     def as_file(self, *, execution_mode: str | None = None) -> file:
         """Return the artifact path as a ``ginkgo.file`` marker.
@@ -330,6 +357,7 @@ class AssetRef:
             "artifact_id": self.artifact_id,
             "content_hash": self.content_hash,
             "artifact_path": self.artifact_path,
+            "source_path": self.source_path,
             "metadata": dict(self.metadata),
         }
 
@@ -353,6 +381,9 @@ class AssetRef:
             artifact_id=str(data["artifact_id"]),
             content_hash=str(data["content_hash"]),
             artifact_path=str(data["artifact_path"]),
+            # Absent from entries written before assets carried a logical
+            # filename, so a pre-existing cache entry stays loadable.
+            source_path=(None if data.get("source_path") is None else str(data["source_path"])),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -754,7 +785,12 @@ def make_asset_version(
     )
 
 
-def asset_ref_from_version(*, version: AssetVersion, artifact_path: str | Path) -> AssetRef:
+def asset_ref_from_version(
+    *,
+    version: AssetVersion,
+    artifact_path: str | Path,
+    source_path: str | Path | None = None,
+) -> AssetRef:
     """Create an :class:`AssetRef` from one registered version.
 
     Parameters
@@ -763,6 +799,10 @@ def asset_ref_from_version(*, version: AssetVersion, artifact_path: str | Path) 
         Registered asset version.
     artifact_path : str | Path
         Absolute immutable artifact path.
+    source_path : str | Path | None
+        The path the producing task declared as its output, when it declared
+        one. Carried so downstream code has a logical filename to render
+        instead of the content-addressed artifact path.
 
     Returns
     -------
@@ -775,6 +815,7 @@ def asset_ref_from_version(*, version: AssetVersion, artifact_path: str | Path) 
         artifact_id=version.artifact_id,
         content_hash=version.content_hash,
         artifact_path=str(artifact_path),
+        source_path=None if source_path is None else str(source_path),
         metadata=dict(version.metadata),
     )
 

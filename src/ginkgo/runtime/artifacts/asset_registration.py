@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from ginkgo.core.asset import (
@@ -89,6 +90,7 @@ def render_asset_ref(*, asset_ref: AssetRef) -> dict[str, Any]:
         "metadata": dict(asset_ref.metadata),
         "name": asset_ref.name,
         "namespace": asset_ref.namespace,
+        "source_path": asset_ref.source_path,
         "version_id": asset_ref.version_id,
     }
 
@@ -318,6 +320,7 @@ class AssetRegistrar:
             artifact_path=self.cache_store._artifact_store.artifact_path(
                 artifact_id=record.artifact_id
             ),
+            source_path=declared_source_path(result=result),
         )
         self._announce(node=node, version=version, parents=parent_refs)
 
@@ -572,6 +575,43 @@ def _code_version(*, node: Any) -> str | None:
     return hash_str(f"{source_hash}\n{extra}") if extra else str(source_hash)
 
 
+def declared_source_path(*, result: AssetResult) -> str | None:
+    """Return the output path an asset result declared, if it declared one.
+
+    A path-backed payload — a ``file`` asset, or a path-backed sub-kind such
+    as a CSV handed to ``table()`` — names a location the producing task
+    wrote. That path is the asset's logical identity, and is what user-facing
+    output should render in place of the content-addressed artifact path.
+    An in-memory payload never had one.
+
+    Parameters
+    ----------
+    result : AssetResult
+        The task-return sentinel being registered.
+
+    Returns
+    -------
+    str | None
+        The declared output path, or ``None`` for an in-memory payload.
+    """
+    # A ``file`` asset's payload is always a declared path — ``str`` included,
+    # which ``is_path_backed_payload`` does not recognise on its own because it
+    # cannot tell a bare string path from an inline ``text`` body. Kind settles
+    # it here; for every other kind the shared predicate decides.
+    path_backed = (
+        isinstance(result.payload, (str, Path))
+        if result.kind == "file"
+        else is_path_backed_payload(
+            kind=result.kind,
+            sub_kind=result.sub_kind,
+            payload=result.payload,
+        )
+    )
+    if not path_backed:
+        return None
+    return str(result.path)
+
+
 def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> dict[str, Any]:
     """Return version metadata including report presentation labels."""
     version_metadata = dict(metadata)
@@ -620,5 +660,6 @@ __all__ = [
     "AssetSerializationError",
     "asset_index_for",
     "asset_key_for_result",
+    "declared_source_path",
     "render_asset_ref",
 ]
