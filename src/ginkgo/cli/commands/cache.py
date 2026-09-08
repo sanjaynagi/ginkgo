@@ -112,7 +112,7 @@ def command_cache(args) -> int:
         if entries or _database_exists():
             with _cache_store() as cache_store:
                 for entry in entries:
-                    _remove_entry(cache_store, entry.cache_key)
+                    cache_store.forget_entry(entry.cache_key)
                 # Clean up orphaned artifacts after pruning.
                 _gc_orphan_artifacts(cache_store)
 
@@ -178,7 +178,7 @@ def _clear(args, rich_console) -> int:
     if not (CACHE_ROOT / args.cache_key).is_dir():
         raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
     with _cache_store() as cache_store:
-        _remove_entry(cache_store, args.cache_key)
+        cache_store.forget_entry(args.cache_key)
         _gc_orphan_artifacts(cache_store)
 
     message = Text()
@@ -258,17 +258,6 @@ def _cache_store() -> Iterator[CacheStore]:
     layout = WorkspaceLayout.relative()
     with CacheIndex.open(path=layout.db) as index:
         yield CacheStore(index=index, root=layout.cache)
-
-
-def _remove_entry(cache_store: CacheStore, cache_key: str) -> None:
-    """Remove one entry's bytes, then its rows — in that order.
-
-    A row without bytes is a miss the next run pays for once; bytes without a
-    row are an orphan nothing collects. Doing it the other way round leaves the
-    worse of the two behind if the process dies between the halves.
-    """
-    _safe_rmtree(cache_store.output_path(cache_key).parent)
-    cache_store.index.forget_entries([cache_key])
 
 
 def _database_exists() -> bool:

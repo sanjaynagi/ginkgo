@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 
+import json
+import logging
 import os
 import shutil
 import tempfile
 import time
 import builtins
-from collections.abc import Mapping, Set as AbstractSet
+from collections.abc import Iterator, Mapping, Set as AbstractSet
 from contextlib import ExitStack
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -34,10 +36,11 @@ from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
+from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
+from ginkgo.runtime.path_hazards import ancestor_ids, are_ordered, looks_like_path_string
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
@@ -129,6 +132,73 @@ if _unregistered:
         + ", ".join(sorted(t.__name__ for t in _unregistered))
     )
 del _unregistered
+
+
+logger = logging.getLogger(__name__)
+
+
+def _absolute_path(text: str) -> str:
+    """Return a comparable absolute form of a path string.
+
+    Two spellings of one location — ``results/agg.csv`` at a call site and
+    the same path returned by its producer — have to compare equal for the
+    detector to pair them. Symlinks are resolved so a staged path and its
+    target do not read as two different files.
+    """
+    return os.path.realpath(os.path.abspath(text))
+
+
+@dataclass(frozen=True, kw_only=True)
+class _LiteralPathCandidate:
+    """One path-shaped literal handed to a task, awaiting classification.
+
+    Parameters
+    ----------
+    node_id : int
+        The consuming node.
+    task_name : str
+        Fully-qualified name of the consuming task.
+    parameter : str
+        The parameter the literal arrived on.
+    display_label : str | None
+        The consuming node's label, for the notice.
+    attempt : int
+        The consuming node's attempt at the time the argument was resolved.
+    annotation : Any
+        The declared annotation of ``parameter``.
+    value : Any
+        The resolved argument value, kept so the untracked-input predicate
+        can be applied to it later.
+    absolute_path : str
+        Comparable absolute form of the path.
+    existed_before_run : bool
+        Whether the path was on disk, unmodified, when the run started.
+    """
+
+    node_id: int
+    task_name: str
+    parameter: str
+    display_label: str | None
+    attempt: int
+    annotation: Any
+    value: Any
+    absolute_path: str
+    existed_before_run: bool
+
+
+class UndeclaredPathDependencyError(GinkgoError, RuntimeError):
+    """Raised when a task read a path another task in the run wrote.
+
+    The two nodes had no dependency path between them, so the scheduler was
+    free to run them at the same time and the reader may have observed the
+    file half-written or missing. The result is not reproducible whether or
+    not this particular run happened to sequence them correctly, so it must
+    not stay in the cache: the run fails and the consumer's entry is dropped.
+    """
+
+    def __init__(self, findings: list[str]) -> None:
+        self.findings = findings
+        super().__init__("\n".join(findings))
 
 
 class CycleError(GinkgoError, RuntimeError):
@@ -418,6 +488,22 @@ class ConcurrentEvaluator:
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
+    # Literal path arguments cannot be classified when they are seen: whether
+    # a path is an input or an output is not known until every task that
+    # might write it has completed. Collected during prepare, judged at the
+    # end of the run by ``_report_literal_path_findings``.
+    _literal_path_candidates: list[_LiteralPathCandidate] = field(
+        default_factory=list, init=False, repr=False
+    )
+    # Absolute path -> id of the node that produced it. Written by both
+    # completion routes, so a cache hit contributes its outputs exactly as an
+    # execution does; without that a warm rerun would call every output path
+    # an untracked input.
+    _produced_paths: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    # Seconds since the epoch, captured before any task runs. A path whose
+    # mtime predates this was on disk when the run began, rather than being
+    # written by the run itself.
+    run_started_at: float = field(default_factory=time.time, init=False, repr=False)
     _effective_resources_cache: dict[str, Resources] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -633,6 +719,7 @@ class ConcurrentEvaluator:
                             )
 
                         if self._is_root_resolved() and not self._running_futures:
+                            self._report_literal_path_findings()
                             return self._materialize(self._root_template)
 
                     if self._running_futures:
@@ -651,6 +738,7 @@ class ConcurrentEvaluator:
                         break
 
                     if self._is_root_resolved():
+                        self._report_literal_path_findings()
                         return self._materialize(self._root_template)
 
                     retry_wait = self._earliest_retry_wait()
@@ -1265,6 +1353,7 @@ class ConcurrentEvaluator:
         for path in tmp_paths:
             shutil.rmtree(path)
 
+        self._record_produced_paths(node=node, value=value)
         node.result = value
         node.state = "completed"
         node.tmp_paths = []
@@ -1995,6 +2084,222 @@ class ConcurrentEvaluator:
             return self.run_dir.root.parent
         return WorkspaceLayout.for_cwd().root
 
+    def _record_literal_path_candidate(
+        self,
+        *,
+        node: NodeRun,
+        parameter: str,
+        annotation: Any,
+        resolved: Any,
+    ) -> None:
+        """Note one path-shaped literal for classification at end of run."""
+        if not looks_like_path_string(resolved):
+            return
+        text = str(resolved)
+        try:
+            existed_before_run = os.stat(text).st_mtime < self.run_started_at
+        except OSError:
+            # Absent, unreadable, or not a usable path at all. Not something
+            # that was here before the run, which is all this asks.
+            existed_before_run = False
+        self._literal_path_candidates.append(
+            _LiteralPathCandidate(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                parameter=parameter,
+                display_label=node.display_label,
+                attempt=node.attempt,
+                annotation=annotation,
+                value=resolved,
+                absolute_path=_absolute_path(text),
+                existed_before_run=existed_before_run,
+            )
+        )
+
+    def _record_produced_paths(self, *, node: NodeRun, value: Any) -> None:
+        """Record every workspace path one completed node produced.
+
+        Called from both completion routes so a cache hit contributes its
+        outputs exactly as an execution does. That symmetry is what lets a
+        task legitimately re-read its own prior output without being reported
+        as an untracked input on a warm run: the producer is cached, the file
+        is untouched and predates the run, but the path is still known to be
+        an output.
+
+        A sub-workflow contributes the paths its child run recorded in the
+        ledger: the child's graph is opaque to this one, so without that its
+        outputs would look like paths nobody in the run produced.
+        """
+        for path in self._produced_paths_in(value):
+            self._produced_paths.setdefault(_absolute_path(path), node.node_id)
+        if isinstance(value, SubWorkflowResult):
+            for path in self._subworkflow_output_paths(run_id=value.run_id):
+                self._produced_paths.setdefault(_absolute_path(path), node.node_id)
+
+    def _produced_paths_in(self, value: Any) -> Iterator[str]:
+        """Yield the workspace paths a task result names, at any depth."""
+        if isinstance(value, AssetRef):
+            # The artifact path names a content-addressed blob; the declared
+            # output path is the location the task actually wrote.
+            if value.source_path is not None:
+                yield value.source_path
+            return
+        if isinstance(value, (file, folder, tmp_dir)):
+            yield str(value)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                yield from self._produced_paths_in(item)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from self._produced_paths_in(item)
+            return
+        if isinstance(value, Path):
+            yield str(value)
+            return
+        # A task declared ``-> str`` that returns its own output path is the
+        # shape #121 warns about, and it still produced the file. Require the
+        # path to exist so an ordinary string result cannot claim one.
+        if looks_like_path_string(value) and os.path.exists(str(value)):
+            yield str(value)
+
+    def _subworkflow_output_paths(self, *, run_id: str) -> list[str]:
+        """Return the output paths a child run recorded, best effort.
+
+        A child run's outputs are facts in the shared ledger, so the parent
+        can treat them as produced rather than untracked. Failure to read
+        them is not worth failing the parent over: the cost is a warning the
+        user did not need, not a wrong result.
+        """
+        try:
+            rows = self._cache_index._store.query(
+                "SELECT output_summary FROM tasks WHERE run_id = ?",
+                (run_id,),
+            )
+        except Exception:  # pragma: no cover - ledger shape is not this check's contract
+            logger.debug("could not read sub-workflow outputs for run %s", run_id, exc_info=True)
+            return []
+
+        paths: list[str] = []
+        for row in rows:
+            summary = row["output_summary"] if "output_summary" in row.keys() else None
+            if not summary:
+                continue
+            try:
+                entries = json.loads(summary)
+            except ValueError:  # pragma: no cover - defensive
+                continue
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                # ``source_path`` is the declared location for an asset, whose
+                # ``path`` names the blob instead.
+                for key in ("source_path", "path"):
+                    candidate = entry.get(key)
+                    if isinstance(candidate, str) and candidate:
+                        paths.append(candidate)
+                        break
+        return paths
+
+    def _report_literal_path_findings(self) -> None:
+        """Classify every literal path argument now that the graph is complete.
+
+        Two verdicts fall out of the same two facts — whether the path was on
+        disk before the run, and whether a task in this graph produced it:
+
+        - produced by an unordered node: the consumer raced its producer, so
+          the result is not reproducible. The run fails and the consumer's
+          cache entry is dropped, because leaving it would serve the corrupt
+          result forever.
+        - produced by nobody, and present before the run started: an
+          untracked input. Editing it will not invalidate the consumer, so
+          the run warns and continues — reading a path deliberately left
+          untracked is a supported thing to do.
+        """
+        if not self._literal_path_candidates:
+            return
+
+        ancestors = ancestor_ids(self._nodes)
+        raced: list[str] = []
+        raced_cache_keys: list[str] = []
+        seen_races: set[tuple[str, int, int]] = set()
+
+        for candidate in self._literal_path_candidates:
+            producer_id = self._produced_paths.get(candidate.absolute_path)
+            if producer_id is not None and producer_id != candidate.node_id:
+                if are_ordered(ancestors=ancestors, left=producer_id, right=candidate.node_id):
+                    continue
+                pair = (
+                    candidate.absolute_path,
+                    min(producer_id, candidate.node_id),
+                    max(producer_id, candidate.node_id),
+                )
+                if pair in seen_races:
+                    continue
+                seen_races.add(pair)
+                producer = self._nodes[producer_id]
+                raced.append(self._race_message(candidate=candidate, producer=producer))
+                node = self._nodes[candidate.node_id]
+                if node.cache_key:
+                    raced_cache_keys.append(node.cache_key)
+                continue
+
+            if producer_id is not None:
+                continue
+            if not candidate.existed_before_run:
+                continue
+            if not is_untracked_path_value(annotation=candidate.annotation, value=candidate.value):
+                continue
+            self._emit_untracked_input_notice(candidate=candidate)
+
+        if raced:
+            # Dropped before raising: the run is failing either way, and an
+            # entry built from a raced read must not survive to be served as
+            # a hit on the next run.
+            for cache_key in raced_cache_keys:
+                self._cache_store.forget_entry(cache_key)
+            raise UndeclaredPathDependencyError(raced)
+
+    def _race_message(self, *, candidate: _LiteralPathCandidate, producer: NodeRun) -> str:
+        """Phrase one race so the reader sees why ordering is the defect."""
+        producer_base = producer.task_def.name.rsplit(".", 1)[-1]
+        consumer_base = candidate.task_name.rsplit(".", 1)[-1]
+        return (
+            f"{consumer_base}.{candidate.parameter} was given the path "
+            f"{str(candidate.value)!r} as a literal, and {producer_base} wrote that same "
+            "path during this run. Nothing orders the two tasks, so they ran at the same "
+            f"time and {consumer_base} may have read the file half-written or missing. "
+            f"Have {producer_base} return the path as `-> file` and pass that value to "
+            f"{consumer_base} instead of the path string, so the edge exists. "
+            f"{consumer_base}'s cache entry has been dropped, because the result it "
+            "returned cannot be trusted."
+        )
+
+    def _emit_untracked_input_notice(self, *, candidate: _LiteralPathCandidate) -> None:
+        """Warn that a literal input path is invisible to the cache key."""
+        key = ("", candidate.task_name, candidate.parameter)
+        if key in self._untracked_path_warnings:
+            return
+        self._untracked_path_warnings.add(key)
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=task_id_for_node(candidate.node_id),
+                task_name=candidate.task_name,
+                attempt=candidate.attempt,
+                display_label=candidate.display_label,
+                message=(
+                    f"'{candidate.parameter}' is the path {str(candidate.value)!r}, which "
+                    "no task in this workflow produces, and its annotation is not "
+                    "path-shaped. The cache key records the path string only, so editing "
+                    f"the file will not re-run {candidate.task_name.rsplit('.', 1)[-1]} — "
+                    f"it will serve the old result. Annotate '{candidate.parameter}: file' "
+                    "to have its contents tracked."
+                ),
+            )
+        )
+
     def _warn_on_untracked_path_inputs(
         self,
         *,
@@ -2067,6 +2372,17 @@ class ConcurrentEvaluator:
 
         producer = _producer_task_name(unresolved)
         if producer is None:
+            # A literal names a path with no provenance at all. Whether that
+            # is an input the cache does not track or an output another task
+            # is writing right now cannot be decided here — neither answer is
+            # known until every task has completed — so it is recorded and
+            # judged by ``_report_literal_path_findings``.
+            self._record_literal_path_candidate(
+                node=node,
+                parameter=parameter,
+                annotation=annotation,
+                resolved=resolved,
+            )
             return
 
         # Checked before the filesystem probe below, so a fan-out costs one
@@ -2201,6 +2517,7 @@ class ConcurrentEvaluator:
         # Best-effort by contract — the registrar contains and logs its own
         # failures, so a repair cannot cost the task its cache hit.
         self._asset_registrar.reassert_cached_versions(value=value, cache_key=cache_key)
+        self._record_produced_paths(node=node, value=value)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
