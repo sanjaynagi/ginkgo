@@ -10,7 +10,8 @@ level, Ginkgo hashes:
 
 - task identity
 - task version
-- task source and its statically imported local Python modules
+- task source, the module the task is defined in, and the local Python modules
+  that module statically imports
 - notebook source for notebook tasks
 - resolved input values
 - environment identity for foreign execution
@@ -18,6 +19,18 @@ level, Ginkgo hashes:
 Inputs annotated `file` or `folder` are hashed by content; everything else is
 hashed from its `repr`. See [Cache Correctness](#cache-correctness) for why that
 distinction decides whether the cache stays correct.
+
+The import walk starts at the task's own module, so the unit of cache identity
+is one file plus the local modules that file imports — not one function. Two
+`@task` functions in the same `flow.py` are therefore coupled even though
+neither imports the other: editing either one invalidates both, and a task can
+re-run when nothing inside it changed. That is deliberate. Module-level state —
+a constant, a lookup table, a helper the task calls — reaches the cache key
+only through this hash, so hashing function bodies alone would serve stale
+results whenever such state changed. When a task is expensive and the code
+beside it is under active edit, move it into its own module; that is the only
+way to decouple them. `ginkgo cache explain <run_id>` reports
+`source_hash_changed` for a task invalidated this way.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.

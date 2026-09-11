@@ -79,7 +79,9 @@ ginkgo run
 
 Ginkgo should reuse cached results where the cache key still matches. The cache
 identity includes task source, resolved inputs, and execution-environment
-identity where relevant.
+identity where relevant. Task source means the whole module a task is defined
+in, so tasks sharing a file are invalidated together — see
+[Cache identity](../guide/caching-and-provenance.md#cache-identity).
 
 ```{raw} html
 <div class="section-note">
