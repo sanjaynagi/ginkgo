@@ -128,10 +128,10 @@ workflow in it says so and succeeds.
 
 If the database is gone but `.ginkgo/runs/` still holds run directories, it
 says that instead — how many runs are stranded, and that their provenance
-cannot be read until the ledger is restored. `ginkgo runs ls` and `ginkgo
-doctor` report the same thing. It is a warning rather than a failure, so all
-three still exit 0: nothing is corrupt, and the fix is to restore the file
-(or delete the directories if the history is not wanted).
+cannot be read until the ledger is restored. `ginkgo runs ls` and
+`ginkgo doctor` report the same thing. It is a warning rather than a failure,
+so all three still exit 0: nothing is corrupt, and the fix is to restore the
+file (or delete the directories if the history is not wanted).
 
 ### Upgrading from a pre-ledger workspace
 

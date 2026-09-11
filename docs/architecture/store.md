@@ -170,9 +170,9 @@ provenance never degrades silently.
   The run check is `rundir.run_directory_problems`, beside everything else
   about a run directory; the rest are `integrity_problems()` on the class that
   owns the bytes. The ledgerless-workspace question is asked once, by
-  `rundir.runs_without_ledger_warning`, and answered the same way by `db
-  check`, `runs ls` and `doctor` — three surfaces that disagreed about what an
-  absent ledger meant is what made issue #282.
+  `rundir.runs_without_ledger_warning`, and answered the same way by
+  `db check`, `runs ls` and `doctor` — three surfaces that disagreed about what
+  an absent ledger meant is what made issue #282.
 
   It reports; it never repairs. Exit status is 1 if anything was reported.
 - `ginkgo db prune --events-older-than <30d|12h|45m> [--dry-run]` — delete the
