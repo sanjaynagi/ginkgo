@@ -145,7 +145,7 @@ still degrades to `[unknown]`, because a dry run must never crash on a
 workflow that would run fine, but the error is recorded as a `ProbeFailure`
 naming the task, the probe step, and the exception (#294). The renderer counts
 them under a separate yellow heading and prints each one under `--verbose`,
-apart from **Problems** and without failing the command &mdash; "Ginkgo could
+apart from **Problems** and without failing the command — "Ginkgo could
 not work this out" is a different claim from "your workflow is broken". The
 plan builder (`runtime/dry_run.py`) is
 read-only: no task runs, no environment is prepared, and no cached output is
