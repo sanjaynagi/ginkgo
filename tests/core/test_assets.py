@@ -1596,6 +1596,11 @@ class TestKindVersusPathAnnotation:
         assert "`object`" not in driver_message
         assert "asset(path)" in driver_message
         assert "the format the command expects" in driver_message
+        # The worked example is named, and the improvisation it displaces is
+        # ruled out here rather than left to be discovered by a stale rerun.
+        assert "Staging a `table`, `array`, or `model` asset for a notebook" in driver_message
+        assert "plain `str` is not a safe substitute" in driver_message
+        assert "no dependency edge" in driver_message
 
         with pytest.raises(TypeError) as worker:
             require_path_value(

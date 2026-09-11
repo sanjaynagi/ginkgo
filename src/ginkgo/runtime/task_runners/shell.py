@@ -24,7 +24,13 @@ from typing import Any, Callable, Sequence
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
-from ginkgo.core.types import file, folder, is_path_shaped_annotation, tmp_dir
+from ginkgo.core.types import (
+    STAGING_TASK_GUIDANCE,
+    file,
+    folder,
+    is_path_shaped_annotation,
+    tmp_dir,
+)
 from ginkgo.envs.mounts import Mount, MountMode, mount
 from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
@@ -228,9 +234,9 @@ def serialize_cli_argument_value(
     raise TypeError(
         f"{label} is a {received}. The arguments of {carrier} cross to another "
         "process as CLI options and parameter-file entries, which carry text rather "
-        "than Python objects. Write the payload to a file in a Python task first and "
-        "pass that path (with `asset(path)` to track it), or do the work in a "
-        "`python` task."
+        "than Python objects. Write the payload to a file in a separate `python` task "
+        "and pass that path (with `asset(path)` to track it), or do the work in a "
+        f"`python` task instead. {STAGING_TASK_GUIDANCE}"
     )
 
 
