@@ -2,12 +2,28 @@
 
 ## Configuration
 
-`ginkgo.config(path)` loads a TOML or YAML file and returns a plain dict. Files
+`ginkgo.config(path)` loads a TOML or YAML file and returns a dict. Files
 given with `--config` layer over the file the workflow asks for, so supplying one
 value does not require restating every other value. Later `--config` paths win
 over earlier ones, and all of them win over the workflow's own file. The base
 file is optional when overrides are given: overrides alone may define the whole
 config.
+
+The dict is a `ConfigMapping`, a `dict` subclass whose `__missing__` explains a
+mistyped key instead of raising a bare `KeyError`:
+
+```
+✖ 'min_lenght' is not a key in [qc] of ginkgo.toml. Did you mean 'min_length'? Available: min_length, min_quality, threads
+```
+
+Every nested table is wrapped too, each carrying the section it came from, so a
+miss deep in the file still names `[qc.thresholds]` rather than the key alone. A
+table inside an array of tables borrows the section of the array that holds it.
+The failure it raises, `ConfigKeyError`, subclasses `KeyError`, so a workflow
+that guards a lookup keeps working and the CLI still prints the `file:line` of
+the lookup beneath the message. Being a `dict` subclass, it survives the paths
+a loaded config takes: `deepcopy` into the config session, merging across
+layers, JSON serialisation into the ledger, and equality with plain dicts.
 
 ## Parameters
 

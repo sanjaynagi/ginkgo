@@ -2434,6 +2434,41 @@ def main():
         assert result.returncode == 1
         assert "typo.toml" in result.stdout + result.stderr
 
+    def test_mistyped_config_key_reports_the_file_keys_and_location(self) -> None:
+        """The report must name the section and the keys, and keep the file:line."""
+        Path("ginkgo.toml").write_text(
+            "[qc]\nmin_length = 50\nmin_quality = 20\n", encoding="utf-8"
+        )
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from pathlib import Path
+from ginkgo import file, flow, task
+
+cfg = ginkgo.config("ginkgo.toml")
+
+@task()
+def write_it(value: int, output_path: str) -> file:
+    out = Path(output_path)
+    out.write_text(str(value), encoding="utf-8")
+    return out
+
+@flow
+def main():
+    return write_it(value=cfg["qc"]["min_lenght"], output_path="result.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 1
+        output = _unwrapped(result.stdout + result.stderr)
+        assert "'min_lenght' is not a key in [qc] of ginkgo.toml" in output
+        assert "Available: min_length, min_quality" in output
+        assert "ConfigKeyError at" in output
+        assert "workflow.py:15 in main" in output
+        assert "Traceback" not in output
+
     def test_autodiscovered_workflow_accepts_parameter_flags(self) -> None:
         """A parameter value must not be captured by the optional workflow positional."""
         Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")

@@ -1,11 +1,13 @@
 """Workflow configuration loading.
 
-Loads TOML or YAML config files and returns plain dicts. Schema validation and
-multi-file layering are deferred to a later phase.
+Loads TOML or YAML config files and returns dicts that say which file and which
+section a missed key was looked for in. Schema validation and multi-file
+layering are deferred to a later phase.
 """
 
 from __future__ import annotations
 
+import difflib
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -22,6 +24,100 @@ if TYPE_CHECKING:
 
 PARAMS_CONFIG_KEY = "params"
 """Config table holding declared workflow parameter values."""
+
+
+class ConfigKeyError(KeyError):
+    """A key that is not in the config file, reported with the keys that are.
+
+    A subclass of :class:`KeyError` so that a workflow already guarding a lookup
+    with ``except KeyError`` keeps working, and so the CLI still prints the
+    ``file:line`` of the lookup beneath the message — the half of the old report
+    that was worth keeping. ``__str__`` is overridden because ``KeyError``
+    repr-quotes its argument, which would wrap the whole sentence in quotes.
+    """
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else ""
+
+
+class ConfigMapping(dict[str, Any]):
+    """A config table that names its file and its keys when a lookup misses.
+
+    :func:`config` wraps every table it returns, nested ones included, each
+    carrying the section it came from. A miss then reads
+
+    ``'min_lenght' is not a key in [qc] of ginkgo.toml. Available: min_length, ...``
+
+    rather than the bare ``'min_lenght'`` a plain dict raises. It is a ``dict``
+    subclass rather than a bare ``Mapping`` so that everything downstream keeps
+    treating it as the dict it is: deepcopy into the config session, merging,
+    JSON serialisation, and equality with plain dicts all still work.
+
+    Parameters
+    ----------
+    values : dict[str, Any] | None, optional
+        The table's entries. Nested tables are wrapped by :func:`_wrap_value`,
+        not here, so a mapping constructed directly holds what it is given.
+    source : str, optional
+        The config file to name, spelled as the workflow spelled it.
+    section : tuple[str, ...], optional
+        The table's path from the top of the file: ``()`` at the top level,
+        ``("qc",)`` for ``[qc]``, ``("qc", "thresholds")`` for ``[qc.thresholds]``.
+    """
+
+    def __init__(
+        self,
+        values: dict[str, Any] | None = None,
+        *,
+        source: str = "",
+        section: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(values or {})
+        self.source = source
+        self.section = section
+
+    def __missing__(self, key: Any) -> Any:
+        raise ConfigKeyError(
+            _missing_key_message(
+                key, source=self.source, section=self.section, available=list(self)
+            )
+        )
+
+
+def _missing_key_message(
+    key: Any,
+    *,
+    source: str,
+    section: tuple[str, ...],
+    available: list[Any],
+) -> str:
+    """Say where the key was looked for, and what is there instead."""
+    where = f"[{'.'.join(section)}] of {source}" if section else source
+    names = [str(name) for name in available]
+    close = difflib.get_close_matches(str(key), names, n=1)
+    suggestion = f" Did you mean {close[0]!r}?" if close else ""
+    listing = f" Available: {', '.join(names)}" if names else " It has no keys."
+    return f"{key!r} is not a key in {where}.{suggestion}{listing}"
+
+
+def _wrap_value(value: Any, *, source: str, section: tuple[str, ...]) -> Any:
+    """Wrap *value* and any tables within it so each knows its own section.
+
+    Tables nested in a list are wrapped too, but keep the section of the list
+    that holds them: an array of tables has no name of its own to report.
+    """
+    if isinstance(value, dict):
+        return ConfigMapping(
+            {
+                key: _wrap_value(item, source=source, section=(*section, str(key)))
+                for key, item in value.items()
+            },
+            source=source,
+            section=section,
+        )
+    if isinstance(value, list):
+        return [_wrap_value(item, source=source, section=section) for item in value]
+    return value
 
 
 @dataclass
@@ -153,7 +249,9 @@ def config(path: str | Path) -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        The parsed configuration as a nested dict.
+        The parsed configuration as a nested :class:`ConfigMapping`, which is a
+        ``dict`` that reports a missed key with the file, the section, and the
+        keys that are there.
 
     Raises
     ------
@@ -174,7 +272,7 @@ def config(path: str | Path) -> dict[str, Any]:
     if session is not None:
         session.loaded_values.append(deepcopy(data))
 
-    return data
+    return _wrap_value(data, source=str(path), section=())
 
 
 def load_runtime_config_layers(

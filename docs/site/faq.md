@@ -877,7 +877,10 @@ runs no longer show up.
 
 Load a config file inside the workflow module with
 `ginkgo.config("ginkgo.toml")` (TOML and YAML are both supported); it returns a
-plain nested dict you use to shape the graph. At the CLI, `--config <path>`
+nested dict you use to shape the graph. A mistyped key raises a `KeyError` whose
+message names the file, the section, and the keys that are there — `'min_lenght'
+is not a key in [qc] of ginkgo.toml. Available: min_length, min_quality,
+threads` — rather than the key alone. At the CLI, `--config <path>`
 supplies override paths — when overrides are given for a session they define the
 runtime config, otherwise the canonical project config is loaded, and multiple
 mappings are merged at the top level. Config values do **not** feed into cache
