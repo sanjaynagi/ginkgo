@@ -511,6 +511,24 @@ class TestEmptyWorkspace:
         assert result.returncode == 1
         assert "No runs recorded" in result.stderr
 
+    def test_runs_ls_says_nothing_has_run(self, empty: Path) -> None:
+        """The reassuring answer, for the workspace it is true of."""
+        result = _run_cli("runs", "ls", cwd=empty)
+
+        assert result.returncode == 0, result.stderr
+        assert "No runs recorded in this workspace." in result.stdout
+        assert "no database" not in result.stdout
+
+    def test_runs_ls_warns_when_run_directories_outlived_the_ledger(self, empty: Path) -> None:
+        """An empty listing must not affirm an empty workspace (issue #282)."""
+        (empty / ".ginkgo" / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
+
+        result = _run_cli("runs", "ls", cwd=empty)
+
+        assert result.returncode == 0, result.stderr
+        assert "1 run directory under .ginkgo/runs but no database" in result.stdout
+        assert not (empty / ".ginkgo" / "ginkgo.db").exists()
+
     def test_no_read_verb_created_a_database(self, empty: Path) -> None:
         for args in (
             ("runs", "ls"),

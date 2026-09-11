@@ -195,8 +195,15 @@ and the bytes it names disagree — the cache, the artifact store in both
 directions, runs against run directories, the staging cache, and an environment
 recorded as materializing two different ways across hosts — and exits 1 if it
 found anything. Like every other read path it opens the database read-only and
-never creates one; an empty workspace reports that and exits 0. Creating the
-database is `db migrate`'s job.
+never creates one; an empty workspace reports that and exits 0. A workspace
+with run directories but no database is warned about rather than called empty,
+still at exit 0. Creating the database is `db migrate`'s job.
+
+`runs ls` and `doctor` report that same condition, from the one place that
+computes it (`rundir.runs_without_ledger_warning`): an empty run listing says
+so, and adds the warning when `.ginkgo/runs/` says otherwise; `doctor` reports
+it as a `runs_without_ledger` warning diagnostic, which leaves its exit status
+at 0.
 
 `db prune` takes three cutoffs, at least one required.
 `--events-older-than <duration>` deletes the raw events of runs that finished

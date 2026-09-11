@@ -12,6 +12,8 @@ from ginkgo.cli.common import open_run, stdout_console, new_table
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.rundir import runs_without_ledger_warning
+from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = ["command_runs"]
 
@@ -37,7 +39,13 @@ def command_runs(args) -> int:
 
 
 def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
-    """Print the run index as JSON or as a table."""
+    """Print the run index as JSON or as a table.
+
+    An empty index is two different workspaces: one nothing has run in, and
+    one whose ledger is gone from under the runs it recorded. The second gets
+    the warning that says so, so that the listing never affirms an empty
+    workspace over one holding runs.
+    """
     if as_json:
         print(json.dumps([row.to_payload() for row in rows], indent=2, sort_keys=True))
         return 0
@@ -45,6 +53,9 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
     rich_console.print("[bold green]🌿 ginkgo runs[/] [bold]ls[/]\n")
     if not rows:
         rich_console.print("[dim]No runs recorded in this workspace.[/]")
+        warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+        if warning is not None:
+            rich_console.print(f"[yellow]⚠[/] {warning}")
         return 0
 
     table = new_table()

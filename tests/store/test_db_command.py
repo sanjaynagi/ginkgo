@@ -250,6 +250,38 @@ class TestDbCommands:
         assert "nothing has run in this workspace" in capsys.readouterr().out
         assert not (tmp_path / ".ginkgo").exists()
 
+    def test_check_on_a_workspace_that_has_not_run_yet_stays_reassuring(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """An initialized workspace with no runs in it is not a fault."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".ginkgo" / "runs").mkdir(parents=True)
+
+        assert main(["db", "check"]) == 0
+        assert "nothing has run in this workspace" in capsys.readouterr().out
+
+    def test_check_warns_when_run_directories_outlived_the_database(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A ledger gone from under real runs is a warning, not an empty workspace."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".ginkgo" / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
+
+        assert main(["db", "check"]) == 0
+
+        output = capsys.readouterr().out
+        assert "1 run directory under .ginkgo/runs but no database" in output
+        assert "nothing has run in this workspace" not in output
+        assert not (tmp_path / ".ginkgo" / "ginkgo.db").exists()
+
+    def test_check_counts_every_orphaned_run_directory(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        for run_id in ("run-1", "run-2"):
+            (tmp_path / ".ginkgo" / "runs" / run_id).mkdir(parents=True)
+
+        assert main(["db", "check"]) == 0
+        assert "2 run directories under .ginkgo/runs" in capsys.readouterr().out
+
     def test_check_never_opens_a_write_connection(self, tmp_path, monkeypatch):
         """A read path must not be able to migrate a database out from under a run."""
         monkeypatch.chdir(tmp_path)
