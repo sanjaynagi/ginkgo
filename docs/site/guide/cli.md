@@ -196,7 +196,9 @@ ginkgo debug <run_id>
 `ginkgo run --dry-run` previews the plan for the entrypoint you actually run,
 and is the quickest way to confirm a workflow you just wrote is wired correctly.
 It reports the waves tasks fall into, which would run and which would serve from
-cache, and the resources they declare.
+cache, and the resources they declare. Where it cannot work out a task's cache
+status it says so and counts the tasks affected; `--verbose` names each one and
+the error behind it.
 
 ### Validation workflows
 

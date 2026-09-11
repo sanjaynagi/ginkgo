@@ -36,7 +36,7 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
         Destination Rich console.
     verbose : bool
         When ``True``, expand every fan-out branch instead of collapsing
-        large groups.
+        large groups, and report the errors the cache probe hit.
     """
     console.print(_header(plan))
 
@@ -55,6 +55,7 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
 
     _render_dropped(plan=plan, console=console)
     _render_problems(plan=plan, console=console)
+    _render_probe_failures(plan=plan, console=console, verbose=verbose)
 
     console.print()
     console.print(_summary(plan))
@@ -81,6 +82,33 @@ def _render_problems(*, plan: DryRunPlan, console: Console) -> None:
     for diagnostic in plan.diagnostics:
         console.print(Text(f"  ✗ {diagnostic.label}", style="red"))
         console.print(Text(f"    {diagnostic.message}", style="dim"))
+
+
+def _render_probe_failures(*, plan: DryRunPlan, console: Console, verbose: bool) -> None:
+    """Print the errors the cache probe hit, under ``--verbose``.
+
+    These say nothing about the workflow — only that Ginkgo could not work out
+    a task's cache status, which is why they read separately from
+    **Problems** and never fail the command. The count still shows without
+    ``--verbose``, so a silent probe failure cannot hide behind ``[unknown]``
+    (#294).
+    """
+    if not plan.probe_failures:
+        return
+
+    console.print()
+    count = len(plan.probe_failures)
+    tasks = "task" if count == 1 else "tasks"
+    console.print(
+        Text(f"Cache status could not be determined for {count} {tasks}", style="yellow")
+    )
+    if not verbose:
+        console.print(Text("  (--verbose for details)", style="dim"))
+        return
+
+    for failure in plan.probe_failures:
+        console.print(Text(f"  ? {failure.label}  ·  {failure.stage}", style="yellow"))
+        console.print(Text(f"    {failure.exception_type}: {failure.message}", style="dim"))
 
 
 def _header(plan: DryRunPlan) -> Text:

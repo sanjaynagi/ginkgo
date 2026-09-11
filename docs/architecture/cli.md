@@ -137,7 +137,17 @@ diagnostic is a `task_notice` event and the synthetic `run_completed` says
 nothing. Probe errors the live run would repair before validating (a
 deleted output the artifact store can restore) degrade the node to
 `[unknown]` rather than aborting the preview: the probe materialises
-nothing, so it makes no claim it cannot stand behind. The plan builder (`runtime/dry_run.py`) is
+nothing, so it makes no claim it cannot stand behind. Those honest unknowns
+are a narrow set — `FileNotFoundError` and `ValueError` out of argument
+resolution or cache-key hashing, the same pair `NodeCache` treats as "not
+really cached". Any other exception is a probe defect, not an answer: the node
+still degrades to `[unknown]`, because a dry run must never crash on a
+workflow that would run fine, but the error is recorded as a `ProbeFailure`
+naming the task, the probe step, and the exception (#294). The renderer counts
+them under a separate yellow heading and prints each one under `--verbose`,
+apart from **Problems** and without failing the command — "Ginkgo could
+not work this out" is a different claim from "your workflow is broken". The
+plan builder (`runtime/dry_run.py`) is
 read-only: no task runs, no environment is prepared, and no cached output is
 materialised. Large fan-out groups collapse unless `--verbose` is passed.
 
