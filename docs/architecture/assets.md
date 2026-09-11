@@ -446,6 +446,19 @@ threaded from `validate_inputs` down to `path_binding_remedy`, because
 DataFrame interpolated into a command. A `driver` consumer is pointed at
 `asset(path)` upstream or converting the payload in Python first.
 
+That driver remedy, and the live-payload refusal in
+`serialize_cli_argument_value`, both end with `STAGING_TASK_GUIDANCE` from
+`core/types.py`: one string, so the two messages cannot drift. It names where
+the staging-task example is written out — "Staging A `table`, `array`, Or
+`model` Asset For A Notebook" in the tasks-and-flows guide, quoted verbatim so
+the string the error gives matches the heading — and rules out the
+improvisation the refusal otherwise invites, passing the output path as a plain
+`str`. A literal path is not an expression, so it binds no dependency edge and
+joins no cache key: the consumer can run before the file exists and stays
+cached after it changes. Two testers reached for it independently rather than
+find the sanctioned pattern, which is why the warning sits in the message and
+not only in the guide.
+
 `AssetRef.as_file` reads the same per-kind fact for the accessor: an encoded
 kind raises rather than wrapping the blob in a `file` marker. Driver task kinds
 route through it — `serialize_cli_argument_value` in `task_runners/shell.py`

@@ -172,6 +172,17 @@ def is_path_like(value: Any) -> bool:
     return isinstance(value, (str, Path, os.PathLike))
 
 
+#: Where the staging-task pattern is written out, and why the obvious
+#: improvisation is worse than the refusal. Shared by every message that sends
+#: a user to that pattern, so they say the same thing.
+STAGING_TASK_GUIDANCE = (
+    'A worked example is in the guide under Notebook Tasks, "Staging A `table`, '
+    '`array`, Or `model` Asset For A Notebook". Passing the path as a plain `str` '
+    "is not a safe substitute: a literal path creates no dependency edge, so the "
+    "task can run before the file is written and stays cached after it changes."
+)
+
+
 def path_binding_remedy(*, annotation_label: str, execution_mode: str | None) -> str:
     """Return the way out of a kind/path mismatch, for this kind of consumer.
 
@@ -197,8 +208,8 @@ def path_binding_remedy(*, annotation_label: str, execution_mode: str | None) ->
     if execution_mode == "driver":
         return (
             f"Produce a `{annotation_label}` asset upstream with `asset(path)`, or write "
-            "the payload to the format the command expects in Python first and pass that "
-            "path."
+            "the payload to the format the command expects in a separate `python` task "
+            f"and pass that path. {STAGING_TASK_GUIDANCE}"
         )
     return (
         "Annotate it `object` (or the payload type) to receive the asset payload in a "

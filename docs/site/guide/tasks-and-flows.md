@@ -230,6 +230,77 @@ What happens to the task depends on whether that page would be its result:
   task caches as usual, so a later run that hits the cache reuses that
   placeholder page — and emits the notice again to say so.
 
+### Staging A `table`, `array`, Or `model` Asset For A Notebook
+
+A notebook task's arguments cross into another process as text, so a `table`,
+`array`, or `model` asset cannot bind to one of its parameters: the payload has
+no text form, and the asset's artifact holds Ginkgo's encoding (Parquet, zarr, a
+model dump) rather than the file the parameter's name implies. Binding one is
+refused by name when the notebook task's inputs are resolved.
+
+Do not reach for the path as a plain `str` instead. A literal path is just a
+string to Ginkgo: it creates no dependency edge, so the notebook can run before
+the file exists, and it stays out of the cache key, so the notebook serves a
+stale render after the upstream data changes.
+
+Put a small `python` task in between. It takes the payload — annotated `object`,
+so the ref is rehydrated into the live payload — writes the format the notebook
+expects, and returns that path as a `file` asset. The notebook task then
+consumes a real `file`, with the edge and the cache key that come with it:
+
+```python
+from pathlib import Path
+
+import pandas as pd
+
+from ginkgo import asset, file, flow, notebook, table, task
+
+
+@task()
+def differential_expression() -> object:
+    """Fit contrasts and register the result as a `table` asset."""
+    frame = fit_contrasts()
+    return table(frame, name="rnaseq/differential_expression")
+
+
+@task()
+def stage_de_csv(de_table: object, output_path: str) -> file:
+    """Write the `table` payload as the CSV the notebook reads."""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(de_table).to_csv(output, index=False)
+    return asset(output, name="rnaseq/de_csv")
+
+
+@task("notebook")
+def render_rnaseq_report(de_csv_path: file, lfc_threshold: float) -> file:
+    """Render the report notebook against the staged CSV."""
+    return notebook("notebooks/rnaseq_report.ipynb")
+
+
+@flow
+def main():
+    de_table = differential_expression()
+    de_csv = stage_de_csv(de_table=de_table, output_path="results/de.csv")
+    return render_rnaseq_report(de_csv_path=de_csv, lfc_threshold=1.0)
+```
+
+The `output_path` string is the staging task declaring where its own output
+goes, which is not the same move as handing a path from one task to another:
+what the notebook depends on is `de_csv`, the value the staging task returns.
+
+`de_csv_path` arrives in the notebook as the staged CSV's artifact path, so the
+notebook's `parameters` cell can keep a hand-run default such as
+`de_csv_path = "results/de.csv"` and still read the tracked copy during a run.
+
+Writing the CSV inside the notebook task's own body does not work: the runner
+forwards *every* resolved argument to the notebook process, so the `table` still
+reaches the text boundary and is refused. If the bytes on disk, rather than the
+typed payload, are what downstream tasks want in the first place, skip the
+staging task and have the producer return `asset(csv_path)` directly. See
+[Consuming Assets Downstream](assets.md#consuming-assets-downstream) for which
+kinds bind a path.
+
 ## Subworkflow Tasks
 
 Use `@task("subworkflow")` to run another workflow as a single task. The body

@@ -269,6 +269,8 @@ still reaches the text boundary and is refused. Do the writing in a separate
 `python` task and pass that task's path — or, better, have the producer return a
 `file` asset with `asset(csv_path)` when the bytes on disk, rather than the typed
 payload, are what downstream tasks need.
+[Staging A `table`, `array`, Or `model` Asset For A Notebook](tasks-and-flows.md#staging-a-table-array-or-model-asset-for-a-notebook)
+works that staging task through end to end.
 
 The path such a kind binds is content-addressed but keeps the artifact's
 file extension (`blobs/<digest>.png`), so a command that switches behaviour
