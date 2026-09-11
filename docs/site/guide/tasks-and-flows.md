@@ -285,6 +285,10 @@ def main():
     return render_rnaseq_report(de_csv_path=de_csv, lfc_threshold=1.0)
 ```
 
+The `output_path` string is the staging task declaring where its own output
+goes, which is not the same move as handing a path from one task to another:
+what the notebook depends on is `de_csv`, the value the staging task returns.
+
 `de_csv_path` arrives in the notebook as the staged CSV's artifact path, so the
 notebook's `parameters` cell can keep a hand-run default such as
 `de_csv_path = "results/de.csv"` and still read the tracked copy during a run.

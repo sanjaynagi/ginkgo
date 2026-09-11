@@ -241,7 +241,7 @@ class TestLivePythonPayloadArguments:
         assert "JSON serializable" not in message
         # Same guidance as the path-binding refusal: where the worked example
         # is, and that a bare path string is not the way round this.
-        assert "Staging a `table`, `array`, or `model` asset for a notebook" in message
+        assert "Staging A `table`, `array`, Or `model` Asset For A Notebook" in message
         assert "plain `str` is not a safe substitute" in message
         assert "no dependency edge" in message
 

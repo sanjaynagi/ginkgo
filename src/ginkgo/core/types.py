@@ -176,8 +176,8 @@ def is_path_like(value: Any) -> bool:
 #: improvisation is worse than the refusal. Shared by every message that sends
 #: a user to that pattern, so they say the same thing.
 STAGING_TASK_GUIDANCE = (
-    'A worked example is in the guide under Notebook Tasks, "Staging a `table`, '
-    '`array`, or `model` asset for a notebook". Passing the path as a plain `str` '
+    'A worked example is in the guide under Notebook Tasks, "Staging A `table`, '
+    '`array`, Or `model` Asset For A Notebook". Passing the path as a plain `str` '
     "is not a safe substitute: a literal path creates no dependency edge, so the "
     "task can run before the file is written and stays cached after it changes."
 )

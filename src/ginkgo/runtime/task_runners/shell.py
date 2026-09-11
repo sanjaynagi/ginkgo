@@ -235,8 +235,8 @@ def serialize_cli_argument_value(
         f"{label} is a {received}. The arguments of {carrier} cross to another "
         "process as CLI options and parameter-file entries, which carry text rather "
         "than Python objects. Write the payload to a file in a separate `python` task "
-        "and pass that path (with `asset(path)` to track it), or do the work in a "
-        f"`python` task instead. {STAGING_TASK_GUIDANCE}"
+        "and pass that path (with `asset(path)` to track it), or keep the payload out "
+        f"of another process by making this task a `python` one. {STAGING_TASK_GUIDANCE}"
     )
 
 

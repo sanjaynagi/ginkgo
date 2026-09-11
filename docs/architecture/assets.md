@@ -449,8 +449,9 @@ DataFrame interpolated into a command. A `driver` consumer is pointed at
 That driver remedy, and the live-payload refusal in
 `serialize_cli_argument_value`, both end with `STAGING_TASK_GUIDANCE` from
 `core/types.py`: one string, so the two messages cannot drift. It names where
-the staging-task example is written out — "Staging a `table`, `array`, or
-`model` asset for a notebook" in the tasks-and-flows guide — and rules out the
+the staging-task example is written out — "Staging A `table`, `array`, Or
+`model` Asset For A Notebook" in the tasks-and-flows guide, quoted verbatim so
+the string the error gives matches the heading — and rules out the
 improvisation the refusal otherwise invites, passing the output path as a plain
 `str`. A literal path is not an expression, so it binds no dependency edge and
 joins no cache key: the consumer can run before the file exists and stays
