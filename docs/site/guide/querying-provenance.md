@@ -52,9 +52,24 @@ same code that wrote the run's own, so the two are byte-identical.
 ### Raw SQL
 
 ```bash
+ginkgo query --schema                   # every table and its columns
 ginkgo query "SELECT name, status, count(*) AS n FROM tasks GROUP BY name, status"
 ginkgo query "SELECT cache_key, function, size_bytes FROM cache_entries" --csv
 ginkgo query "SELECT * FROM runs" --json --limit 5
+```
+
+`--schema` reads the tables out of the database in front of you, so it is the
+answer to "what can I select?" whether or not anything has been run yet. It
+takes `--json` and `--csv` like a result does.
+
+A statement that names a column or a table the ledger has not got is answered
+with the ones it has:
+
+```
+$ ginkgo query "SELECT task_name FROM tasks LIMIT 10"
+✖ SQLite rejected the query: no such column: task_name. tasks has run_id,
+task_id, node_id, name, display_label, kind, execution_mode, env, status, …
+`ginkgo query --schema` lists every table.
 ```
 
 One `SELECT` at a time. At most 1000 rows come back unless `--limit` says
@@ -157,8 +172,8 @@ against them may need rewriting after an upgrade.
 The methods on `ginkgo.query.Query` are the surface that is kept working. Reach
 for SQL when they cannot answer your question, and expect to revisit it.
 
-The tables themselves are described in `docs/architecture/store.md`. The ones
-you will want most often:
+`ginkgo query --schema` prints the tables and their columns as they stand in
+your workspace. The ones you will want most often:
 
 | Table | One row per |
 |---|---|

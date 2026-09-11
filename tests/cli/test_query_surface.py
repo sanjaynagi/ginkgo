@@ -342,6 +342,46 @@ class TestQueryVerb:
         assert result.returncode == 1
         assert "no such column: nope" in result.stderr
 
+    def test_a_rejected_query_lists_the_columns_it_could_have_had(self, workspace: Path) -> None:
+        result = _run_cli("query", "SELECT task_name FROM tasks", cwd=workspace)
+
+        assert result.returncode == 1
+        message = " ".join(result.stderr.split())
+        assert "tasks has run_id, task_id" in message
+        assert "`ginkgo query --schema` lists every table." in message
+        # The old error sent people to docs that are not published.
+        assert "documentation" not in message
+
+    def test_a_rejected_table_lists_the_tables_there_are(self, workspace: Path) -> None:
+        result = _run_cli("query", "SELECT name FROM task_runs", cwd=workspace)
+
+        assert result.returncode == 1
+        message = " ".join(result.stderr.split())
+        assert "no such table: task_runs" in message
+        assert "The tables are" in message and "tasks" in message
+
+    def test_schema_prints_the_tables_and_their_columns(self, workspace: Path) -> None:
+        result = _run_cli("query", "--schema", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        printed = " ".join(result.stdout.split())
+        assert "tasks" in printed and "display_label" in printed
+        assert "runs" in printed and "parent_run_id" in printed
+
+    def test_schema_as_json_maps_tables_to_columns(self, workspace: Path) -> None:
+        result = _run_cli("query", "--schema", "--json", cwd=workspace)
+
+        assert result.returncode == 0, result.stderr
+        schema = json.loads(result.stdout)
+        assert schema["runs"][0] == "run_id"
+        assert "name" in schema["tasks"]
+
+    def test_no_statement_and_no_schema_says_what_to_pass(self, workspace: Path) -> None:
+        result = _run_cli("query", cwd=workspace)
+
+        assert result.returncode == 2
+        assert "--schema" in result.stderr
+
     def test_values_without_a_space_is_a_read(self, workspace: Path) -> None:
         result = _run_cli("query", "VALUES(1),(2)", "--json", cwd=workspace)
 
@@ -453,6 +493,12 @@ class TestEmptyWorkspace:
         assert payload["rows"] == []
         assert payload["columns"] == ["run_id"]
 
+    def test_schema_answers_before_anything_has_been_run(self, empty: Path) -> None:
+        result = _run_cli("query", "--schema", "--json", cwd=empty)
+
+        assert result.returncode == 0, result.stderr
+        assert "name" in json.loads(result.stdout)["tasks"]
+
     def test_a_write_is_refused_the_same_way_as_on_a_real_ledger(self, empty: Path) -> None:
         result = _run_cli("query", "WITH t AS (SELECT 1) DELETE FROM runs", cwd=empty)
 
@@ -471,6 +517,7 @@ class TestEmptyWorkspace:
             ("runs", "show"),
             ("history", "greet"),
             ("query", "SELECT 1"),
+            ("query", "--schema"),
             ("export", "events"),
             ("export", "manifest"),
         ):

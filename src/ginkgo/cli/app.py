@@ -549,7 +549,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     query_parser = subparsers.add_parser(
         "query", help="Run one read-only SQL statement against the provenance database"
     )
-    query_parser.add_argument("sql", help="One SELECT. Table names are in the store docs.")
+    query_parser.add_argument(
+        "sql", nargs="?", help="One SELECT. Run --schema to see what there is to select."
+    )
+    query_parser.add_argument(
+        "--schema",
+        action="store_true",
+        help="Print the tables and their columns instead of running a statement.",
+    )
     query_parser.add_argument(
         "--limit", type=int, default=SQL_ROW_LIMIT, help="Most rows to return."
     )

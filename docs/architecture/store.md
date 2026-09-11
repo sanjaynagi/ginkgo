@@ -258,8 +258,13 @@ that runs is the SQL the user wrote.
 The tables here are versioned but not stable. `Query.sql` hands them out
 directly, and they change between releases without a deprecation period; the
 methods on `Query` are the surface that is kept working. This is stated in the
-`ginkgo.query` module docstring and on the Querying Provenance guide page, so a
-user meets it before writing SQL rather than after an upgrade.
+`ginkgo.query` module docstring, on the Querying Provenance guide page, and in
+the footer `ginkgo query --schema` prints, so a user meets it before writing SQL
+rather than after an upgrade.
+
+`Query.schema` reads the tables and their columns back out of the database, so
+what `ginkgo query --schema` prints and what a rejected statement quotes are the
+schema in front of the user rather than a copy of it kept here.
 
 Two `ginkgo run` processes in one workspace are supported and tested
 (`tests/store/test_concurrent_runs.py`). WAL keeps readers off the writer's

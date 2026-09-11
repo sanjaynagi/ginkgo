@@ -101,6 +101,17 @@ recognise still fails inside the engine.
 whether it `truncated`. Every output mode reports truncation: `--json` in the
 envelope, `--csv` on stderr so stdout stays openable, the table in a footer.
 
+The schema is discoverable from the terminal, because the terminal is where the
+user is standing. `ginkgo query --schema` prints every table with its columns,
+read out of the database by `Query.schema` (`sqlite_master` joined to
+`pragma_table_info`) rather than out of prose that can fall behind it, and takes
+`--json` and `--csv` like a result does. A statement SQLite rejects is answered
+the same way: `Query._schema_hint` names the columns of whichever table the
+statement mentioned, or lists the tables when it mentioned none — a table typo
+or a syntax error. An error that points at documentation instead is a bug
+(#290): the architecture docs it named are not published, and the user cannot
+reach them from where the error found them.
+
 `ginkgo export events <run_id>` replays a finished run's ledger as JSONL in the
 `--agent-output` wire shape, and `ginkgo export manifest <run_id>` re-exports
 the run's manifest as YAML. Both print to stdout unless `--out` names a file.
