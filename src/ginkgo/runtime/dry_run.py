@@ -49,6 +49,39 @@ class PlanDiagnostic:
 
 
 @dataclass(kw_only=True)
+class ProbeFailure:
+    """An unexpected error the cache probe hit while examining one task.
+
+    Distinct from :class:`PlanDiagnostic`: a diagnostic says the *workflow*
+    would fail, while a probe failure says *Ginkgo* could not work out the
+    task's cache status. The node degrades to ``unknown`` either way, but the
+    two must not read as the same thing.
+
+    Parameters
+    ----------
+    task_id : str
+        Stable task id (``task_0007``).
+    task_name : str
+        Full task name (``module.task``).
+    label : str
+        Display label of the task being probed.
+    stage : str
+        The probe step that raised (``resolve_args`` or ``cache_key``).
+    exception_type : str
+        Class name of the exception, e.g. ``KeyError``.
+    message : str
+        The exception's message.
+    """
+
+    task_id: str
+    task_name: str
+    label: str
+    stage: str
+    exception_type: str
+    message: str
+
+
+@dataclass(kw_only=True)
 class PlannedTask:
     """One task in the dry-run plan.
 
@@ -164,6 +197,11 @@ class DryRunPlan:
         warm cache — a task downstream of anything un-cached cannot be
         resolved, so an empty tuple is "nothing provable", not "nothing
         wrong". The run command exits non-zero when any are present.
+    probe_failures : tuple[ProbeFailure, ...]
+        Unexpected errors raised while probing the cache. Each one turned a
+        task ``unknown``; none of them says anything about whether the
+        workflow itself is sound, so they neither fail the command nor show
+        in the default output.
     """
 
     workflow_label: str
@@ -176,6 +214,7 @@ class DryRunPlan:
     unknown_count: int
     dropped_labels: tuple[str, ...] = ()
     diagnostics: tuple[PlanDiagnostic, ...] = ()
+    probe_failures: tuple[ProbeFailure, ...] = ()
 
 
 def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
@@ -201,7 +240,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     waves_by_node = _assign_waves(nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
     labels = display_labels({node_id: node.expr for node_id, node in nodes.items()})
-    cache_status, diagnostics = _resolve_cache_status(
+    cache_status, diagnostics, probe_failures = _resolve_cache_status(
         evaluator=evaluator, topo_order=topo_order, labels=labels
     )
 
@@ -245,6 +284,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         unknown_count=statuses.count("unknown"),
         dropped_labels=tuple(call.label for call in evaluator.unreachable_calls),
         diagnostics=tuple(diagnostics),
+        probe_failures=tuple(probe_failures),
     )
 
 
@@ -270,7 +310,7 @@ def _assign_waves(nodes: Mapping[int, NodeRun]) -> dict[int, int]:
 
 def _resolve_cache_status(
     *, evaluator: ConcurrentEvaluator, topo_order: list[int], labels: Mapping[int, str]
-) -> tuple[dict[int, CacheStatus], list[PlanDiagnostic]]:
+) -> tuple[dict[int, CacheStatus], list[PlanDiagnostic], list[ProbeFailure]]:
     """Resolve cache status for every node via a leaf-anchored cascade.
 
     Nodes are visited in topological order. A node is checkable only while
@@ -278,10 +318,13 @@ def _resolve_cache_status(
     and everything below it is ``unknown``. Probing a checkable node also
     validates its resolved arguments — the run's own input check, brought
     forward — and collects each refusal as a :class:`PlanDiagnostic` (#232).
+    Anything the probe did not expect is collected as a
+    :class:`ProbeFailure` rather than discarded (#294).
     """
     nodes = evaluator.task_nodes
     status: dict[int, CacheStatus] = {}
     diagnostics: list[PlanDiagnostic] = []
+    probe_failures: list[ProbeFailure] = []
     for node_id in topo_order:
         status[node_id] = _probe_node(
             evaluator=evaluator,
@@ -289,8 +332,9 @@ def _resolve_cache_status(
             status=status,
             label=labels[node_id],
             diagnostics=diagnostics,
+            probe_failures=probe_failures,
         )
-    return status, diagnostics
+    return status, diagnostics, probe_failures
 
 
 def _probe_node(
@@ -300,6 +344,7 @@ def _probe_node(
     status: dict[int, CacheStatus],
     label: str,
     diagnostics: list[PlanDiagnostic],
+    probe_failures: list[ProbeFailure],
 ) -> CacheStatus:
     """Return the cache status of one node, given resolved upstream statuses."""
     # Downstream of anything not known-cached: the cache key cannot be
@@ -309,9 +354,18 @@ def _probe_node(
 
     try:
         resolved_args = evaluator.resolve_probe_args(node=node)
-    except Exception:
-        # Cache status is best-effort: any resolution failure degrades the
-        # node to "unknown" rather than aborting the preview.
+    except (FileNotFoundError, ValueError):
+        # The honest unknowns: a working-tree path the live run would restore
+        # from the artifact store before touching it, or a value the probe
+        # cannot stage because staging is a side effect. No claim, no noise.
+        return "unknown"
+    except Exception as exc:
+        # Anything else is a probe defect, not an honest unknown. The preview
+        # still degrades to "unknown" rather than aborting a dry run of a
+        # workflow that may well execute fine — but it says so (#294).
+        probe_failures.append(
+            _probe_failure(node=node, label=label, stage="resolve_args", exc=exc)
+        )
         return "unknown"
 
     # With the real arguments in hand — cached upstream outputs included —
@@ -350,7 +404,14 @@ def _probe_node(
             task_def=node.task_def,
             resolved_args=resolved_args,
         )
-    except Exception:
+    except (FileNotFoundError, ValueError):
+        # Hashing a file input the live run would restore first, or a remote
+        # ref the probe deliberately left unstaged (``_hash_value`` refuses a
+        # ``RemoteRef`` without a ``version_id``). Cannot know without
+        # executing — the same reasoning as the block above.
+        return "unknown"
+    except Exception as exc:
+        probe_failures.append(_probe_failure(node=node, label=label, stage="cache_key", exc=exc))
         return "unknown"
 
     if not cache_store.has_entry(cache_key=cache_key, task_def=node.task_def):
@@ -366,6 +427,18 @@ def _probe_node(
     node.result = cached_value
     node.state = "completed"
     return "cached"
+
+
+def _probe_failure(*, node: NodeRun, label: str, stage: str, exc: Exception) -> ProbeFailure:
+    """Record one unexpected probe error against the node it was probing."""
+    return ProbeFailure(
+        task_id=task_id_for_node(node.node_id),
+        task_name=node.task_def.name,
+        label=label,
+        stage=stage,
+        exception_type=type(exc).__name__,
+        message=str(exc),
+    )
 
 
 def _summarise_resources(waves: list[PlanWave]) -> ResourceSummary:
