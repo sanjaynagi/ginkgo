@@ -12,6 +12,8 @@ not a contract" and "Discovery" below for exactly what is and is not enforced.
 ```text
 <project-root>/
 ├── pixi.toml
+├── pixi.lock           # committed: see "Which ginkgo a scaffold runs"
+├── .gitignore
 ├── ginkgo.toml
 ├── workflow/           # fixed package name
 │   ├── __init__.py
@@ -47,6 +49,31 @@ materialises one with `write_starter_project` in `cli/commands/init.py` rather
 than keeping a checked-in duplicate under `examples/`. A duplicate silently
 drifted from the templates once already (#217), and nothing in CI compared the
 two trees.
+
+## Which ginkgo a scaffold runs
+
+A scaffolded project runs its Python tasks in the interpreter its own Pixi
+environment provides, so that environment installs ginkgo itself. The scaffolded
+`pixi.toml` declares that requirement against ginkgo's `main` branch
+(`GINKGO_BRANCH` in `cli/commands/init.py`), not against a commit.
+
+Reproducibility therefore lives in `pixi.lock`, which `pixi install` writes with
+the one commit the branch resolved to. The scaffold ships a `.gitignore` that
+ignores the generated paths and leaves the lock tracked, and the scaffolded
+`README.md` says why.
+
+The manifest named a commit until #284. Deriving one is impossible for the
+installs that most need it — editable and local installs record a directory,
+not a commit, in `direct_url.json` — so the value came from a hard-coded
+constant that went 141 commits stale and pinned every contributor's scaffold to
+a ginkgo predating the SQLite ledger.
+
+What a fixed pin bought was the guarantee that the pinned ginkgo could actually
+run the templates. That guarantee now applies to the working tree instead:
+`test_templates_only_use_ginkgo_names_this_source_exports` fails if the
+templates reach for a ginkgo name this source does not export, so `main` is
+never a commit that scaffolds a project which installs and then fails at run
+time.
 
 ## The project root
 

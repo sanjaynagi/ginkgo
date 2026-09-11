@@ -1,0 +1,22 @@
+# pixi.lock is deliberately absent from this file. pixi.toml tracks ginkgo's
+# `main` branch, so the lock is the only record of which ginkgo commit this
+# project actually runs — and of every other resolved dependency. Commit it.
+
+# Pixi's materialised environments, rebuilt from pixi.lock by `pixi install`.
+.pixi/
+
+# Ginkgo runtime state: run records, event logs, and the local cache.
+.ginkgo/
+
+# Task outputs and logs, reproduced by re-running the workflow.
+results/
+logs/
+
+# Python bytecode and tool caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# OS noise.
+.DS_Store

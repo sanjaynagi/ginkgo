@@ -18,6 +18,7 @@ import pytest
 import yaml
 from rich.console import Console
 
+import ginkgo
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.artifacts.asset_store import AssetStore
@@ -27,7 +28,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
-from ginkgo.cli.commands.init import FALLBACK_GINKGO_REV, GINKGO_REPO_URL
+from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL
 from ginkgo.cli.renderers.common import _MultiStateBar
 from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
@@ -1166,7 +1167,6 @@ def main():
 
 
 _TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
-_EXPORTED_NAME_PATTERN = re.compile(r'"([A-Za-z_]\w*)"')
 
 
 def _template_ginkgo_symbols() -> set[str]:
@@ -1187,17 +1187,6 @@ def _template_ginkgo_symbols() -> set[str]:
             ):
                 symbols.add(node.attr)
     return symbols
-
-
-def _git_show(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run one read-only git command against this repository."""
-    return subprocess.run(
-        ["git", *args],
-        cwd=REPO_ROOT,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
 
 
 def _scaffold_notebook(*, project_dir: Path) -> dict:
@@ -1299,12 +1288,14 @@ class TestCliInit:
         assert _third_party_imports(project_dir=project_dir) <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
 
-    def test_init_pins_the_ginkgo_dependency_to_a_concrete_revision(self) -> None:
-        """A scaffolded project must not float on a branch.
+    def test_init_tracks_the_ginkgo_branch_the_lock_will_pin(self) -> None:
+        """The manifest names ginkgo's branch, and the lock records the commit.
 
-        Ginkgo orchestrates the project, so an unpinned git requirement would
-        hand two users scaffolding a week apart different orchestrators with
-        nothing in the manifest recording which.
+        A commit in the manifest is a second, hand-maintained record of which
+        ginkgo the project runs, and it is the one that goes stale (#284). A
+        branch delegates that record to ``pixi.lock``, which ``pixi install``
+        resolves to one concrete commit and which the scaffolded ``.gitignore``
+        deliberately does not ignore.
         """
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -1313,33 +1304,49 @@ class TestCliInit:
         requirement = manifest["pypi-dependencies"]["ginkgo"]
 
         assert requirement["git"] == GINKGO_REPO_URL
-        assert "branch" not in requirement
-        pin = requirement.get("rev") or requirement.get("tag")
-        assert pin, f"ginkgo requirement is unpinned: {requirement}"
-        assert re.fullmatch(r"[0-9a-f]{40}|v\d+\.\d+\.\d+.*", pin)
+        assert requirement["branch"] == GINKGO_BRANCH
+        assert "rev" not in requirement and "tag" not in requirement
 
-    def test_fallback_pin_can_still_run_the_scaffold_it_pins(self) -> None:
-        """The fallback commit must carry every ginkgo name the templates use.
+    def test_init_gitignore_keeps_the_lock_and_drops_the_generated_paths(self) -> None:
+        """The scaffold's reproducibility now rests on a committed ``pixi.lock``.
 
-        A pin that predates a template's requirements installs cleanly and then
-        fails at run time on a user's machine — which is exactly why neither
-        v0.1.0 nor v0.2.0 could serve as the pin, since both lack
-        ``ginkgo.param``. Nothing else makes that staleness fail, so it fails
-        here, offline, against the local object database.
+        The manifest tracks a branch, so the lock is the only record of which
+        ginkgo commit the project runs. A scaffold that ignored it, or that
+        shipped no ``.gitignore`` and let a user reach for a stock Python one,
+        would lose that record.
         """
-        rev = FALLBACK_GINKGO_REV
-        if _git_show("cat-file", "-e", f"{rev}^{{commit}}").returncode != 0:
-            pytest.skip(f"pinned rev {rev} is not in this clone's object database")
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
 
-        exports = _git_show("show", f"{rev}:src/ginkgo/__init__.py")
-        assert exports.returncode == 0, exports.stderr
+        patterns = {
+            line.strip()
+            for line in (Path("demo-project") / ".gitignore")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
 
-        exported = set(_EXPORTED_NAME_PATTERN.findall(exports.stdout))
+        assert {".pixi/", ".ginkgo/", "results/", "logs/", "__pycache__/"} <= patterns
+        assert not any("lock" in pattern for pattern in patterns)
+
+    def test_templates_only_use_ginkgo_names_this_source_exports(self) -> None:
+        """The templates must run against the ginkgo a scaffold will install.
+
+        The manifest tracks ``main``, so a scaffolded project installs whatever
+        ``main`` is. This is what keeps ``main`` from ever being a commit that
+        scaffolds a project which installs cleanly and then fails at run time —
+        the same guarantee the old fallback-pin test gave against a fixed
+        commit, now made against the working tree, before such a commit can
+        land.
+        """
         required = _template_ginkgo_symbols()
         assert required, "no ginkgo symbols found in the templates — the scan is broken"
-        assert required <= exported, (
-            f"FALLBACK_GINKGO_REV {rev} is too old for the current templates: "
-            f"{sorted(required - exported)} missing. Bump it to a commit that has them."
+
+        missing = sorted(name for name in required if not hasattr(ginkgo, name))
+        assert not missing, (
+            f"the starter templates use ginkgo names this source does not export: {missing}. "
+            "A scaffolded project installs ginkgo from `main`, so merging this would "
+            "scaffold projects that install cleanly and then fail at run time."
         )
 
     def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
