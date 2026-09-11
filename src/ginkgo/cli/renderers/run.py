@@ -861,6 +861,7 @@ class CliRunRenderer:
         *,
         elapsed: float,
         success: bool,
+        cancelled: bool = False,
         resources: dict[str, object] | None = None,
         failure_details: list[FailureDetails] | None = None,
         skipped: list[SkipDetails] | None = None,
@@ -889,6 +890,11 @@ class CliRunRenderer:
         if success:
             self._console.print(
                 f"\n[bold cyan]⏱[/] Completed in [bold]{format_duration(elapsed)}[/] - "
+                f"{executed} tasks executed, {cached} cached{skipped_suffix}"
+            )
+        elif cancelled:
+            self._console.print(
+                f"\n[bold yellow]⨯[/] Cancelled after [bold]{format_duration(elapsed)}[/] - "
                 f"{executed} tasks executed, {cached} cached{skipped_suffix}"
             )
         else:

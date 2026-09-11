@@ -115,6 +115,12 @@ class NotificationService:
         self._submit(payload=payload)
 
     def _handle_run_completed(self, *, event: RunCompleted) -> None:
+        # A run someone interrupted needs no announcement: the person who
+        # stopped it is watching the terminal it stopped in, and posting it as
+        # a failure would report a deliberate act as an incident.
+        if event.status == "cancelled":
+            return
+
         if event.status == "success":
             if "run_succeeded" not in self.config.slack.events:
                 return

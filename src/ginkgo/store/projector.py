@@ -114,6 +114,12 @@ def _run_resources_sampled(event: StoredEvent, payload: dict[str, Any]) -> list[
     ]
 
 
+#: Run statuses the projection writes, by the status the event carried.
+#: Anything unrecognised projects as ``failed``: a run that ended some way
+#: this ledger does not know about did not end well.
+_RUN_STATUS = {"success": "succeeded", "cancelled": "cancelled"}
+
+
 def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[ProjectionOp]:
     resources = payload.get("resources")
     return [
@@ -125,7 +131,7 @@ def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Projecti
             WHERE run_id = ?
             """,
             params=(
-                "succeeded" if payload.get("status") == "success" else "failed",
+                _RUN_STATUS.get(str(payload.get("status")), "failed"),
                 payload.get("finished_at") or event.ts,
                 payload.get("error"),
                 dumps(resources) if resources else None,

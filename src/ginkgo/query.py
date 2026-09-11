@@ -76,7 +76,7 @@ class RunRow:
     workflow : str | None
         Path of the workflow module it ran.
     status : str
-        ``running``, ``succeeded``, ``failed``, or ``interrupted``.
+        ``running``, ``succeeded``, ``failed``, or ``cancelled``.
     started_at, finished_at : str | None
         ISO-8601 UTC timestamps; ``finished_at`` is ``None`` while it runs.
     duration_s : float | None

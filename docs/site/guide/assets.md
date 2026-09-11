@@ -294,9 +294,9 @@ the latest version.
 
 ## HTML Reports
 
-`ginkgo report` renders a **completed** run (status `succeeded` or `failed`) as
-an HTML report. By default this produces a directory bundle (`index.html`
-plus an `assets/` folder); pass `--single-file` to emit a single
+`ginkgo report` renders a **completed** run (status `succeeded`, `failed` or
+`cancelled`) as an HTML report. By default this produces a directory bundle
+(`index.html` plus an `assets/` folder); pass `--single-file` to emit a single
 self-contained HTML file instead. Running or pending runs are rejected with an
 error.
 

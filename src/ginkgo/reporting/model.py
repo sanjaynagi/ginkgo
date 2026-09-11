@@ -385,6 +385,7 @@ _STATUS_TONE: dict[str, str] = {
     "succeeded": "ok",
     "cached": "ok",
     "failed": "fail",
+    "cancelled": "neutral",
     "skipped": "neutral",
     "running": "warn",
     "pending": "warn",
@@ -404,6 +405,7 @@ _STATUS_LABEL: dict[str, str] = {
 _RUN_STATUS_LABEL: dict[str, str] = {
     "succeeded": "completed",
     "failed": "completed_with_errors",
+    "cancelled": "cancelled",
     "running": "running",
     "pending": "pending",
 }
@@ -474,7 +476,7 @@ def build_report_data(
     run_dir = summary.run_dir.resolve()
 
     # Terminal runs only — fail fast if the run is still live.
-    if summary.status not in {"succeeded", "failed"}:
+    if summary.status not in {"succeeded", "failed", "cancelled"}:
         raise ValueError(
             f"Run {summary.run_id!r} is not terminal (status={summary.status!r}); "
             "reports can only be exported for completed runs."

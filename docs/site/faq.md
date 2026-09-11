@@ -617,10 +617,10 @@ downstream task loads a version through the `AssetRef` it receives. Separately,
 
 ### What's in the exported HTML report, and how is it structured/bundled?
 
-`ginkgo report` renders a completed run (status `succeeded` or `failed`) into an
-HTML report. By default this produces a directory bundle (`index.html` plus
-an `assets/` folder); pass `--single-file` to emit a single self-contained
-HTML file instead. Running or pending runs are rejected.
+`ginkgo report` renders a completed run (status `succeeded`, `failed` or
+`cancelled`) into an HTML report. By default this produces a directory bundle
+(`index.html` plus an `assets/` folder); pass `--single-file` to emit a single
+self-contained HTML file instead. Running or pending runs are rejected.
 
 ```bash
 ginkgo report                   # the most recent run

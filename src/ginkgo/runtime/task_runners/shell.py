@@ -483,7 +483,11 @@ class SignalMonitor:
 
     def _handler(self, signum: int, _frame: FrameType | None) -> None:
         if self.exception is None:
-            self.exception = KeyboardInterrupt(f"Received signal {signum}")
+            # Names the signal rather than numbering it: this string is what
+            # the ledger records as why a cancelled run ended, and a reader
+            # of `ginkgo runs show` should not have to look up "2".
+            name = signal.Signals(signum).name
+            self.exception = KeyboardInterrupt(f"Interrupted by {name}")
 
 
 # ----- Shell runner ---------------------------------------------------------
