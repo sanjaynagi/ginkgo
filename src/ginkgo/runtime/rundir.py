@@ -28,9 +28,14 @@ from typing import Any
 
 import yaml
 
+from ginkgo.workspace_layout import WorkspaceLayout
+
 __all__ = [
     "RunDir",
+    "RUNS_WITHOUT_LEDGER_CODE",
+    "orphaned_run_directories",
     "run_directory_problems",
+    "runs_without_ledger_warning",
     "combined_log_tail",
     "make_run_id",
     "manifest_text",
@@ -38,6 +43,69 @@ __all__ = [
     "write_atomic",
     "write_manifest",
 ]
+
+RUNS_WITHOUT_LEDGER_CODE = "runs_without_ledger"
+"""The diagnostic code for run directories whose ledger is gone."""
+
+
+def orphaned_run_directories(*, recorded_run_ids: set[str], root: Path) -> list[str]:
+    """Return the names of run directories under *root* the ledger has no row for.
+
+    Parameters
+    ----------
+    recorded_run_ids : set[str]
+        Every run the ledger has a row for.
+    root : Path
+        The runs root, normally ``WorkspaceLayout.runs``.
+
+    Returns
+    -------
+    list[str]
+        Directory names, sorted.
+    """
+    if not root.is_dir():
+        return []
+    return [
+        entry.name
+        for entry in sorted(root.iterdir())
+        if entry.is_dir() and entry.name not in recorded_run_ids
+    ]
+
+
+def runs_without_ledger_warning(*, layout: WorkspaceLayout) -> str | None:
+    """Return the warning for a workspace holding runs whose ledger is gone.
+
+    The ledger is what every read surface reads, so a workspace missing one
+    answers "no runs" to all of them. That is the truth for a fresh project
+    and a falsehood for a workspace whose database was deleted, filtered out
+    of a backup, or copied without ``ginkgo.db`` — the run directories, their
+    logs and their notebooks are all still there. The two cases differ only by
+    what is under ``layout.runs``, so the question is asked once here and the
+    answer is what ``db check``, ``runs ls`` and ``doctor`` all report.
+
+    Parameters
+    ----------
+    layout : WorkspaceLayout
+        The workspace to inspect. Nothing is created or opened: both halves
+        of the question are answered by stat'ing paths.
+
+    Returns
+    -------
+    str | None
+        One sentence naming how many run directories have no ledger, or
+        ``None`` when there is a ledger or there are no run directories.
+    """
+    if layout.db.is_file():
+        return None
+    orphaned = orphaned_run_directories(recorded_run_ids=set(), root=layout.runs)
+    if not orphaned:
+        return None
+    noun = "directory" if len(orphaned) == 1 else "directories"
+    return (
+        f"{len(orphaned)} run {noun} under {layout.runs} but no database at "
+        f"{layout.db}: this workspace has run, and its provenance cannot be read "
+        "until the ledger is restored"
+    )
 
 
 def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[str]:
@@ -67,12 +135,9 @@ def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[st
         for run_id in sorted(recorded_run_ids)
         if not (root / run_id).is_dir()
     ]
-    if not root.is_dir():
-        return problems
     problems += [
-        f"run directory {entry.name} has no row (orphan)"
-        for entry in sorted(root.iterdir())
-        if entry.is_dir() and entry.name not in recorded_run_ids
+        f"run directory {name} has no row (orphan)"
+        for name in orphaned_run_directories(recorded_run_ids=recorded_run_ids, root=root)
     ]
     return problems
 

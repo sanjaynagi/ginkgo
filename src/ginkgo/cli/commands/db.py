@@ -24,7 +24,7 @@ from ginkgo.remote.staging import StagingCache
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.rundir import run_directory_problems
+from ginkgo.runtime.rundir import run_directory_problems, runs_without_ledger_warning
 from ginkgo.store.maintenance import prune_digest_memo, prune_events, vacuum
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -142,13 +142,20 @@ def _check(layout, *, rich_console) -> int:
     """Report every way the ledger and the bytes beside it disagree.
 
     A read path throughout: it opens the database read-only and never creates
-    one. A workspace with no database is not a fault — nothing has run there —
-    so it says so and succeeds. Creating the database is ``db migrate``'s job,
-    and ``ginkgo run``'s.
+    one. A workspace with no database is usually not a fault — nothing has run
+    there — so it says so and succeeds. It only says that once the run
+    directories agree: a workspace holding runs whose ledger is gone gets the
+    warning instead, and still exits 0, because nothing here is corrupt and a
+    missing ledger is not something ``db`` can repair. Creating the database
+    is ``db migrate``'s job, and ``ginkgo run``'s.
     """
     rich_console.print("[bold green]🌿 ginkgo db check[/]\n")
     path = layout.db
     if not path.is_file():
+        warning = runs_without_ledger_warning(layout=layout)
+        if warning is not None:
+            rich_console.print(f"[yellow]⚠[/] {warning}")
+            return 0
         rich_console.print(f"[green]✓[/] no database at {path}: nothing has run in this workspace")
         return 0
 

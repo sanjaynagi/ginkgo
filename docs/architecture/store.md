@@ -144,8 +144,13 @@ provenance never degrades silently.
 - `ginkgo db check` — schema version, `PRAGMA integrity_check`, and every way
   an index and the bytes it names can disagree. A read path: it opens the
   database read-only and never creates one, so a workspace nobody has run
-  anything in reports that and succeeds. Each owner answers for its own half,
-  in both directions:
+  anything in reports that and succeeds. A workspace with no database but with
+  run directories under `.ginkgo/runs/` is not that workspace, and gets a
+  warning naming how many instead of the green line — the ledger was deleted,
+  filtered out of a backup, or copied without `ginkgo.db`, while the logs and
+  notebooks of those runs are still on disk. It stays exit 0: nothing is
+  corrupt, and no `db` subcommand can bring the ledger back. Each owner answers
+  for its own half, in both directions:
   - the cache — an entry row whose `output.json` is gone, an entry directory
     with no row, a `cache_artifacts` row whose blob the artifact store lost;
   - the artifact store — a row whose blob or tree manifest is missing, and a
@@ -164,7 +169,10 @@ provenance never degrades silently.
 
   The run check is `rundir.run_directory_problems`, beside everything else
   about a run directory; the rest are `integrity_problems()` on the class that
-  owns the bytes.
+  owns the bytes. The ledgerless-workspace question is asked once, by
+  `rundir.runs_without_ledger_warning`, and answered the same way by `db
+  check`, `runs ls` and `doctor` — three surfaces that disagreed about what an
+  absent ledger meant is what made issue #282.
 
   It reports; it never repairs. Exit status is 1 if anything was reported.
 - `ginkgo db prune --events-older-than <30d|12h|45m> [--dry-run]` — delete the

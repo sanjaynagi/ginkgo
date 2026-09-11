@@ -134,6 +134,42 @@ def main():
         assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
 
 
+class TestDoctorWorkspaceLedger:
+    """The workspace doctor runs in is reported on, not only the workflow."""
+
+    def test_run_directories_without_a_ledger_are_reported(self) -> None:
+        """Doctor names the mismatch every read surface otherwise hides (issue #282)."""
+        _write_workflow(env=None)
+        (Path(".ginkgo") / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "runs_without_ledger" in result.stdout
+        assert "1 run directory under .ginkgo/runs but no database" in result.stdout
+
+    def test_the_missing_ledger_is_a_warning_in_json_not_a_failure(self) -> None:
+        _write_workflow(env=None)
+        (Path(".ginkgo") / "runs" / "20260101_000000_000000_deadbeef").mkdir(parents=True)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert [item["code"] for item in payload["diagnostics"]] == ["runs_without_ledger"]
+        assert payload["diagnostics"][0]["severity"] == "warning"
+
+    def test_a_workspace_that_has_not_run_yet_is_not_reported(self) -> None:
+        _write_workflow(env=None)
+        (Path(".ginkgo") / "runs").mkdir(parents=True)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"ok": True, "diagnostics": []}
+
+
 class TestDoctorEnvValidation:
     def test_nonexistent_env_produces_a_diagnostic(self) -> None:
         _write_workflow(env="not_a_real_env")

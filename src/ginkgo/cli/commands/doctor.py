@@ -17,8 +17,10 @@ from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
 from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
-from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
+from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
+from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 def command_doctor(args) -> int:
@@ -36,6 +38,14 @@ def command_doctor(args) -> int:
         project_root=Path.cwd(),
         override_paths=[Path(path).resolve() for path in args.config],
     )
+
+    # The workflow is only half of what doctor is asked about: the workspace it
+    # runs in can be broken too. A ledger gone from under the run directories
+    # it recorded makes every read surface answer "no runs", so doctor says
+    # what is actually wrong instead. Asked here, before the workflow
+    # diagnostics below, because collecting those builds the run machinery,
+    # which creates the ledger the question is about.
+    ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -65,6 +75,19 @@ def command_doctor(args) -> int:
         backend_factory=build_backend,
         param_extras=getattr(args, "param_extras", ()),
     )
+
+    # A warning, not an error: nothing is corrupt, and the workflow is still
+    # runnable.
+    if ledger_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=RUNS_WITHOUT_LEDGER_CODE,
+                message=ledger_warning,
+                suggestion="Restore .ginkgo/ginkgo.db, or delete the run directories "
+                "if their history is not wanted.",
+            )
+        )
 
     # Additional FUSE-streaming probes. These produce their own diagnostic
     # shape; normalise into the workflow diagnostic format for rendering.
