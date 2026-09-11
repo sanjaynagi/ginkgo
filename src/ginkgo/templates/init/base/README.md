@@ -78,7 +78,11 @@ patterns in one small workflow:
 ## Project Layout
 
 - `workflow/flow.py` contains the top-level flow wiring.
-- `workflow/modules/` contains the reusable task implementations.
+- `workflow/modules/` contains the reusable task implementations, split into
+  `prep.py`, `analysis.py` and `reporting.py`. That split is a caching
+  decision, not a tidiness one: a task's cache identity covers the whole module
+  it is defined in, so tasks that share a file are invalidated together when
+  any of them is edited. Keep an expensive task in a module of its own.
 - `workflow/envs/analysis_tools/` contains a task-local Pixi env.
 - `workflow/scripts/` contains the script used by the script task.
 - `workflow/notebooks/` contains the report notebook.

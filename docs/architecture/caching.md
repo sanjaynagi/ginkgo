@@ -89,7 +89,15 @@ them is true past the end of it.
 
 The task source hash covers the task body and the local helper modules it
 statically imports, so editing a helper invalidates the tasks that use it. The
-closure stops at the project's own source: modules under the interpreter's
+closure walk is seeded with the task's own module (`pending = [module]`), so
+the granularity is one file plus its import closure, never one function: tasks
+sharing a file are invalidated together even when neither references the other.
+That is load-bearing rather than incidental — module-level state reaches the
+key payload only through this digest, so a body-only hash would serve stale
+results when a module-level constant changed. The user-facing consequence is
+documented under "Cache identity" in `docs/site/guide/caching-and-provenance.md`.
+
+The closure stops at the project's own source: modules under the interpreter's
 prefix or its installed-package directories are excluded, because dependencies
 are pinned by environment identity instead. Without that boundary a project
 that keeps its environment in its own tree (`.pixi/envs/`, `.venv/`) would walk

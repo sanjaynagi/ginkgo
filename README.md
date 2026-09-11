@@ -138,6 +138,13 @@ Run it with:
 ginkgo run flow.py
 ```
 
+All three tasks above share one file, and a task's cache identity covers the
+whole module it is defined in — so editing any one of them invalidates the
+cached results of all three. That is what makes an edit to module-level state
+such as `POPULATIONS` invalidate the tasks that read it. Once a step is
+expensive enough that you mind re-running it, give it its own module; see the
+[caching guide](docs/site/guide/caching-and-provenance.md).
+
 ## Canonical Example
 
 The docs and examples are centered on
