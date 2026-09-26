@@ -369,7 +369,9 @@ class TestCacheNameIsPathIndependent:
     def test_byte_identical_workflows_share_a_cache_name_across_paths(
         self, tmp_path: Path
     ) -> None:
-        source = "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
+        source = (
+            "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
+        )
 
         first_dir = tmp_path / "a"
         first_dir.mkdir()
