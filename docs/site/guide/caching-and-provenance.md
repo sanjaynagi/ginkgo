@@ -50,8 +50,10 @@ only the branches whose values changed are invalidated.
 
 ### Annotate Path Boundaries `file` Or `folder`, Not `str`
 
-A path that flows between tasks must be annotated `file` (or `folder`) at both
-ends — the producer's return and the consumer's parameter. Content hashing is
+Any path a task *reads* must be annotated `file` (or `folder`) — whether that
+path is produced by another task's return value or written down as a literal
+input path in the flow. When it does come from another task, annotate both
+ends: the producer's return and the consumer's parameter. Content hashing is
 dispatched on that annotation.
 
 **A `str`-annotated path boundary makes the cache key path-identity only.** The
