@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import textwrap
@@ -30,6 +31,7 @@ from ginkgo.runtime.artifacts.remote_arg_transfer import (
     stage_result_for_remote,
 )
 from ginkgo.runtime.artifacts.value_codec import CodecError, decode_value, encode_value
+from tests.conftest import EventCollector
 
 
 FLOW_MODULE_NAME = "ginkgo_user_wf_9f0f3043f1"
@@ -569,11 +571,50 @@ def make_raising_check_task() -> object:
 
 @task()
 def consumer_task(upstream: object) -> int:
-    # Wrapped ``AssetRef`` inputs are rehydrated to the live payload at
-    # arg-binding time, so downstream tasks observe the canonical
-    # deserialised object rather than the reference.
+    # Wrapped ``AssetRef`` inputs are rehydrated to the live payload only
+    # once execution args are resolved (a confirmed cache miss), so the task
+    # body still observes the canonical deserialised object rather than the
+    # reference.
     assert isinstance(upstream, pd.DataFrame)
     assert list(upstream.columns) == ["a", "b"]
+    return 1
+
+
+class NoisyModel:
+    """A model-like payload whose pickled bytes differ on every pickle.
+
+    Stands in for a real model (e.g. an sklearn estimator) whose
+    serialised representation is not byte-stable. If a consumer's cache
+    key were ever computed from this rehydrated *payload* rather than
+    from the ``AssetRef`` identity, ``build_cache_key`` would re-pickle it
+    and land on a different digest on every run — turning the cache key
+    itself into a source of guaranteed non-determinism (issue #283).
+    """
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Every pickle embeds fresh random bytes, so two pickles of an
+        # otherwise-identical instance never produce the same bytes.
+        return (_rebuild_noisy_model, (self.value, os.urandom(16)))
+
+
+def _rebuild_noisy_model(value: int, _noise: bytes) -> NoisyModel:
+    return NoisyModel(value)
+
+
+@task()
+def make_noisy_model_task() -> object:
+    return model(NoisyModel(7), name="noisy-model")
+
+
+@task()
+def noisy_model_consumer_task(upstream: object, log_path: str) -> int:
+    assert isinstance(upstream, NoisyModel)
+    assert upstream.value == 7
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write("ran\n")
     return 1
 
 
@@ -703,14 +744,42 @@ class TestEvaluatorIntegration:
         assert second_result.artifact_id == first_result.artifact_id
 
     def test_consumer_downstream_cache(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        event_collector: EventCollector,
     ) -> None:
         monkeypatch.chdir(tmp_path)
 
         expr = consumer_task(upstream=make_table_task())
         assert ginkgo.evaluate(expr) == 1
         # Second call must also succeed, keyed on artifact id rather than payload.
+        assert ginkgo.evaluate(expr, event_bus=event_collector.bus) == 1
+        assert event_collector.cached()
+
+    def test_model_consumer_cache_hits_despite_nondeterministic_pickle(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        event_collector: EventCollector,
+    ) -> None:
+        """Issue #283: a ``model()`` consumer's cache key must not depend on
+        the rehydrated live payload, whose pickled bytes are not guaranteed
+        to be stable from one cache-key computation to the next.
+        """
+        monkeypatch.chdir(tmp_path)
+        log_path = str(tmp_path / "noisy-model-consumer.log")
+
+        expr = noisy_model_consumer_task(
+            upstream=make_noisy_model_task(),
+            log_path=log_path,
+        )
         assert ginkgo.evaluate(expr) == 1
+        assert ginkgo.evaluate(expr, event_bus=event_collector.bus) == 1
+
+        # The consumer ran exactly once; the second evaluate() was a cache hit.
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["ran"]
+        assert event_collector.cached()
 
 
 # ---------------------------------------------------------------------------
