@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 from importlib import import_module
-from pathlib import Path
 from types import ModuleType
 from typing import Any
 
