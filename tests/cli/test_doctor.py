@@ -199,6 +199,44 @@ class TestDoctorEnvValidation:
         assert result.returncode == 0, result.stderr
         assert "Workflow validation passed" in result.stdout
 
+
+class TestDoctorContainerImageValidation:
+    """Cover for issue #288: a container image that cannot possibly run is
+    caught by ``doctor`` rather than surfacing mid-run.
+
+    ``pull_policy = "never"`` keeps this deterministic and network-free: the
+    image is certain to be absent (no daemon is available here) and no
+    pull/registry attempt will ever be made, so the diagnostic follows from
+    the local check alone.
+    """
+
+    def _write_never_pull_config(self) -> None:
+        Path("ginkgo.toml").write_text(
+            '[container]\npull_policy = "never"\n',
+            encoding="utf-8",
+        )
+
+    def test_bogus_image_produces_a_diagnostic(self) -> None:
+        self._write_never_pull_config()
+        _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert "MISSING_IMAGE" in result.stderr
+        assert "nope-this-image-does-not-exist:99.99" in result.stderr
+
+    def test_bogus_image_is_reported_in_json(self) -> None:
+        self._write_never_pull_config()
+        _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
+
     def test_doctor_does_not_build_the_environment(self) -> None:
         env_dir = _write_env(name="probe_env")
         _write_workflow(env="probe_env")

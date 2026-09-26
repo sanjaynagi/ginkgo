@@ -102,6 +102,23 @@ class ContainerPrepareError(GinkgoError, RuntimeError):
         super().__init__(f"Failed to pull container image {image!r}: {details}")
 
 
+class ContainerImageNotFoundError(GinkgoError, RuntimeError):
+    """Raised at validation time when a declared image will certainly fail.
+
+    Two situations are certain enough to fail a run before it starts: the
+    image is absent from the local image store and ``pull_policy`` is
+    ``"never"`` (so nothing will ever fetch it), or the image's own registry
+    positively reports that it does not exist or cannot be accessed. A probe
+    that merely timed out, hit a network error, or returned something this
+    backend does not recognise never raises this — it must not block a run
+    that would otherwise have succeeded.
+    """
+
+    def __init__(self, *, image: str, reason: str) -> None:
+        self.image = image
+        super().__init__(reason)
+
+
 # Markers the *runtime* itself emits when it cannot exec the entry binary, as
 # distinct from anything the command may print once it is running. A shell that
 # started and then failed to find a file reports "no such file or directory"
@@ -118,6 +135,28 @@ _RUNTIME_EXIT_CODES = (125, 126, 127)
 
 # Shells to suggest, in order, when the configured one is missing.
 _FALLBACK_SHELLS = ("sh", "bash", "ash")
+
+# Runtimes whose "manifest inspect" subcommand this backend knows how to read.
+# A registry probe is skipped for anything else rather than guessed at.
+_MANIFEST_INSPECT_RUNTIMES = frozenset({"docker", "podman"})
+
+# Ceiling on a registry round trip during validation. Validation runs at the
+# start of every real run, not just doctor/dry-run, so a hung registry or slow
+# DNS must not stall it — bounded, it still beats discovering a bad image name
+# mid-run after other tasks have already spent time.
+_MANIFEST_INSPECT_TIMEOUT_SECONDS = 15
+
+# Substrings a registry's own error text uses to say an image (or tag) does
+# not exist, as opposed to a transient or unrecognised failure. Matched
+# case-insensitively against combined stdout+stderr.
+_IMAGE_MISSING_MARKERS = (
+    "manifest unknown",
+    "not found",
+    "no such manifest",
+    "denied",
+    "unauthorized",
+    "does not exist",
+)
 
 
 # ------------------------------------------------------------------
@@ -164,6 +203,10 @@ class ContainerBackend:
     extra_mounts: tuple[str, ...] = ()
     _pulled_images: set[str] = field(default_factory=set, init=False, repr=False)
     _digest_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    # Images `validate_envs` has already cleared, so a workflow that declares
+    # the same image on several tasks (or is validated more than once, e.g.
+    # doctor then run) does not repeat a local-store or registry probe for it.
+    _validated_images: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Resolved once, so the path mounted and the path mounts are compared
@@ -177,9 +220,19 @@ class ContainerBackend:
     # ------------------------------------------------------------------
 
     def validate_envs(self, *, env_names: set[str]) -> None:
-        """Validate container env URIs, config, and runtime availability."""
-        for env in sorted(env_names):
-            parse_container_uri(env)
+        """Validate container env URIs, config, runtime availability, and images.
+
+        A run is certain to fail if a declared image is neither present
+        locally nor ever going to be pulled (``pull_policy = "never"``), so
+        that case is raised here rather than left to be discovered mid-run.
+        When pulling is allowed and the image is not local, its registry is
+        given one best-effort, bounded, cached check (``manifest inspect``);
+        only a registry that positively reports the image missing or
+        inaccessible raises — a timeout, network error, or unrecognised
+        response is never treated as failure, since it must not block a run
+        that would otherwise have succeeded.
+        """
+        refs = [parse_container_uri(env) for env in sorted(env_names)]
 
         # Fail on a malformed [container] table before any image is pulled.
         for spec in self.extra_mounts:
@@ -187,6 +240,47 @@ class ContainerBackend:
         self._user_argv()
 
         _require_container_runtime(self.runtime)
+
+        for ref in refs:
+            self._validate_image_available(ref.image)
+
+    def _validate_image_available(self, image: str) -> None:
+        """Raise if *image* is certain to make a run using it fail.
+
+        Cached per image so repeated validation (several tasks on the same
+        image, or several validation passes) never repeats a probe.
+        """
+        if image in self._validated_images:
+            return
+
+        if self._image_exists_locally(image):
+            self._validated_images.add(image)
+            return
+
+        if self.pull_policy == "never":
+            raise ContainerImageNotFoundError(
+                image=image,
+                reason=(
+                    f"Container image {image!r} is not present locally, and "
+                    '[container] pull_policy is "never", so a task using it '
+                    "would fail. Pull it first "
+                    f"(`{self.runtime} pull {image}`), or set pull_policy to "
+                    '"if-not-present" or "always".'
+                ),
+            )
+
+        if self._registry_reports_missing(image):
+            raise ContainerImageNotFoundError(
+                image=image,
+                reason=(
+                    f"Container image {image!r} was not found in its registry "
+                    f"(checked via `{self.runtime} manifest inspect`). Check "
+                    "the image name and tag, and that you are authenticated "
+                    "to its registry if it is private."
+                ),
+            )
+
+        self._validated_images.add(image)
 
     def prepare(self, *, env: str) -> None:
         """Pull the container image according to the pull policy."""
@@ -405,6 +499,34 @@ class ContainerBackend:
             capture_output=True,
         )
         return completed.returncode == 0
+
+    def _registry_reports_missing(self, image: str) -> bool:
+        """Return whether *image*'s registry positively reports it missing.
+
+        Best-effort only: a runtime this backend does not know how to query,
+        a timeout, a network error, or output that does not match a known
+        "missing" phrasing all read as "cannot tell" (``False``), since a
+        false positive here would block a run that would have succeeded.
+        """
+        if self.runtime not in _MANIFEST_INSPECT_RUNTIMES:
+            return False
+
+        try:
+            completed = subprocess.run(
+                [self.runtime, "manifest", "inspect", image],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=_MANIFEST_INSPECT_TIMEOUT_SECONDS,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+        if completed.returncode == 0:
+            return False
+
+        output = ((completed.stdout or "") + (completed.stderr or "")).lower()
+        return any(marker in output for marker in _IMAGE_MISSING_MARKERS)
 
     def _resolve_digest(self, image: str) -> str | None:
         """Return the image ID via ``docker image inspect``.
