@@ -11,7 +11,10 @@ payload becomes there: a refusal naming the parameter and the task kind.
 from __future__ import annotations
 
 import datetime
+import json
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +25,7 @@ from ginkgo import AssetRef, asset, file, script, table, task, text
 from ginkgo.core.asset import AssetKey
 from ginkgo.runtime.task_runners.shell import (
     render_cli_tokens,
+    render_repeated_cli_tokens,
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
@@ -306,6 +310,85 @@ if args.verbose:
     lines.append("verbose")
 Path(args.output_path).write_text("\\n".join(lines) + "\\n", encoding="utf-8")
 """
+
+
+class TestRenderRepeatedCliTokens:
+    """Pin the ``mo.cli_args()``-friendly rendering a marimo notebook gets.
+
+    ``mo.cli_args()`` joins the tokens after an option into one string but
+    collects a repeated option into a list, so a list must repeat its option.
+    """
+
+    def test_list_of_paths_repeats_the_option_per_item(self) -> None:
+        tokens = render_repeated_cli_tokens(
+            option="--clusters", value=["results/a.tsv", "results/b.tsv"]
+        )
+        assert tokens == ["--clusters", "results/a.tsv", "--clusters", "results/b.tsv"]
+
+    def test_empty_list_omits_the_option(self) -> None:
+        assert render_repeated_cli_tokens(option="--clusters", value=[]) == []
+
+    def test_items_with_spaces_and_glob_characters_are_individually_quoted(self) -> None:
+        tokens = render_repeated_cli_tokens(
+            option="--clusters", value=["results/a b.tsv", "results/*.tsv"]
+        )
+        assert shlex.split(" ".join(tokens)) == [
+            "--clusters",
+            "results/a b.tsv",
+            "--clusters",
+            "results/*.tsv",
+        ]
+
+    def test_nested_list_keeps_json(self) -> None:
+        tokens = render_repeated_cli_tokens(option="--grid", value=[[1, 2], [3]])
+        assert tokens == ["--grid", shlex.quote("[[1, 2], [3]]")]
+
+    @pytest.mark.parametrize(("value", "rendered"), [(True, "true"), (False, "false")])
+    def test_bool_keeps_a_literal_value(self, value: bool, rendered: str) -> None:
+        # ``mo.cli_args()`` turns "true"/"false" into a bool; a bare flag
+        # would come back as an empty string.
+        assert render_repeated_cli_tokens(option="--flag", value=value) == ["--flag", rendered]
+
+    def test_mo_cli_args_reads_the_rendering_back(self, tmp_path: Path) -> None:
+        pytest.importorskip("marimo")
+        reader = tmp_path / "reader.py"
+        # ``mo.cli_args()`` only works inside a marimo app, which is exactly
+        # how a marimo notebook task runs: ``python notebook.py --name value``.
+        reader.write_text(
+            "import marimo\n"
+            "app = marimo.App()\n"
+            "@app.cell\n"
+            "def _():\n"
+            "    import json\n"
+            "    import marimo as mo\n"
+            "    args = mo.cli_args()\n"
+            "    print(json.dumps({\n"
+            "        'one': args.get_all('one'),\n"
+            "        'many': args.get_all('many'),\n"
+            "        'none': args.get_all('none'),\n"
+            "        'flag': args.get('flag'),\n"
+            "    }))\n"
+            "    return\n"
+            "if __name__ == '__main__':\n"
+            "    app.run()\n",
+            encoding="utf-8",
+        )
+        tokens = [
+            *render_repeated_cli_tokens(option="--one", value=["only.tsv"]),
+            *render_repeated_cli_tokens(option="--many", value=["a b.tsv", "c.tsv"]),
+            *render_repeated_cli_tokens(option="--none", value=[]),
+            *render_repeated_cli_tokens(option="--flag", value=True),
+        ]
+        cmd = " ".join([shlex.quote(sys.executable), shlex.quote(str(reader)), *tokens])
+        completed = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, check=True, cwd=tmp_path
+        )
+        assert json.loads(completed.stdout.strip().splitlines()[-1]) == {
+            "one": ["only.tsv"],
+            "many": ["a b.tsv", "c.tsv"],
+            "none": [],
+            "flag": True,
+        }
 
 
 @task()

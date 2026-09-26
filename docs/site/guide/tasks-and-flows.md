@@ -152,7 +152,8 @@ are forwarded to the script as `--param-name value` command-line arguments.
 Underscores in a parameter name become hyphens on the command line: a task
 parameter `normalized_card` arrives as `--normalized-card`, so the script's
 argument parser must declare the hyphenated form. The same conversion applies to
-marimo notebook tasks, which are also executed as scripts with `--flags`;
+marimo notebook tasks, which are also executed as scripts with `--flags` (see
+[Notebook Tasks](#notebook-tasks) for how they receive lists and booleans);
 Jupyter notebooks receive parameters through Papermill under their original
 names.
 
@@ -238,6 +239,19 @@ Notebook tasks support `.ipynb` execution through Papermill as well as marimo
 notebooks. The HTML export is recorded in provenance and appears in the
 [run report](assets.md). A notebook task can declare an `env` so the notebook
 runs against that environment's kernel.
+
+A marimo notebook reads its parameters with `mo.cli_args()`, which collects a
+repeated option into a list but joins space-separated values into one string.
+So a `list`/`tuple` parameter of scalars or paths arrives as the option repeated
+once per item (`--clusters a.tsv --clusters b.tsv`), and an empty list omits the
+option. Read it with `get_all`, which returns a list whatever the length:
+
+```python
+clusters = mo.cli_args().get_all("clusters")  # [] when the fan-in is empty
+```
+
+A `bool` parameter arrives as `--flag true` or `--flag false`, which
+`mo.cli_args()` converts back to a boolean.
 
 If the notebook executes but the HTML export fails, Ginkgo writes a placeholder
 page carrying the export error, records `render_status: failed` in the manifest,

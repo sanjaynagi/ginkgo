@@ -40,8 +40,8 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
+    render_repeated_cli_tokens,
     serialize_cli_argument_value,
-    stringify_cli_argument,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -561,11 +561,14 @@ class NotebookRunner(DriverTaskRunner):
         """Build the command used to execute one marimo notebook script."""
         args: list[str] = [shlex.quote(sys.executable), shlex.quote(str(notebook_path))]
         for name, value in resolved_args.items():
-            option = f"--{name.replace('_', '-')}"
-            rendered = stringify_cli_argument(
-                value, label=f"{task_name}.{name}", task_kind="notebook"
+            args.extend(
+                render_repeated_cli_tokens(
+                    option=f"--{name.replace('_', '-')}",
+                    value=value,
+                    label=f"{task_name}.{name}",
+                    task_kind="notebook",
+                )
             )
-            args.extend([shlex.quote(option), shlex.quote(rendered)])
         return " ".join(args)
 
     def _build_notebook_render_command(

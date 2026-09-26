@@ -179,7 +179,11 @@ Implemented script behavior includes:
   forwards as a flag pairing with `action="store_true"`: `True` is the bare
   option, `False` omits it. Anything else a list can hold — `None`, a `bool`,
   a nested list, a dict — has no positional form and forwards as a single
-  JSON-encoded token, same as a dict always does.
+  JSON-encoded token, same as a dict always does. A marimo notebook task
+  builds its command line the same way except for what `mo.cli_args()` can
+  read back: a flat list repeats the option per item (`--arg-name item1
+  --arg-name item2`, read with `get_all`), an empty list omits it, and a
+  `bool` keeps its literal `true`/`false` value.
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional)
 - source file hashing folded into cache identity so script edits invalidate cache
 

@@ -318,6 +318,49 @@ def render_cli_tokens(
     return [quoted_option, shlex.quote(rendered)]
 
 
+def render_repeated_cli_tokens(
+    *,
+    option: str,
+    value: Any,
+    label: str = "A task argument",
+    task_kind: str | None = None,
+) -> list[str]:
+    """Render one resolved task argument for a marimo notebook's command line.
+
+    A marimo notebook runs as ``python notebook.py --name value ...`` and reads
+    its arguments with ``mo.cli_args()``, which joins the space-separated
+    tokens after an option into one string but collects a *repeated* option
+    into a list. So a ``list``/``tuple`` whose items are all scalars or paths
+    renders as the option repeated once per item (``--clusters a.tsv
+    --clusters b.tsv``), which ``mo.cli_args().get_all("clusters")`` reads
+    back as a list — and argparse as ``action="append"``. An empty list omits
+    the option, which ``get_all`` reads back as ``[]``. A list holding
+    anything else keeps the single-token JSON rendering.
+
+    Every other value, ``bool`` included, keeps the single-token rendering
+    :func:`stringify_cli_argument` gives it: ``mo.cli_args()`` converts
+    ``--flag true``/``--flag false`` into a real boolean, while a bare
+    ``--flag`` would come back as an empty string.
+
+    Returns
+    -------
+    list[str]
+        Zero or more shell-quoted tokens to append to the command line.
+    """
+    quoted_option = shlex.quote(option)
+
+    if isinstance(value, (list, tuple)):
+        serialized = serialize_cli_argument_value(value, label=label, task_kind=task_kind)
+        if all(_is_flat_cli_token(item) for item in serialized):
+            tokens: list[str] = []
+            for item in serialized:
+                tokens.extend([quoted_option, shlex.quote(str(item))])
+            return tokens
+
+    rendered = stringify_cli_argument(value, label=label, task_kind=task_kind)
+    return [quoted_option, shlex.quote(rendered)]
+
+
 def _declared_item_path(item: Any) -> Path:
     """Return the filesystem path declared by one output item."""
     if isinstance(item, OptionalOutput):
