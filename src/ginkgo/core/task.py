@@ -168,6 +168,35 @@ class TaskDef:
         return f"{module}.{self.fn.__qualname__}"
 
     @property
+    def cache_name(self) -> str:
+        """Location-independent task identity used in the cache key.
+
+        A task defined inside a real package already has a stable dotted
+        name — :attr:`name` — that does not depend on where the project
+        checkout lives. A single-file workflow's module, by contrast, is
+        loaded under a synthetic name unique to the *absolute path* of that
+        file (see ``USER_MODULE_PREFIX``), so :attr:`name` for such a task
+        changes whenever the workflow file is renamed, moved or copied to
+        another checkout — even byte-for-byte — which would otherwise
+        cold-start its entire cache. That synthetic module segment is
+        replaced here with a fixed placeholder, so identically named tasks
+        loaded from single-file workflows share a cache identity regardless
+        of path. Two different workflows defining a same-named task can then
+        still collide only if :attr:`cache_source_hash` also agrees, i.e.
+        their code is identical too — which is the correct, content-addressed
+        outcome, not a false collision.
+        """
+        # Imported lazily: ``core`` must not depend on ``runtime`` at module
+        # load time, only inside this property body (see similar lazy imports
+        # in ``ginkgo.core.asset`` and ``ginkgo.core.types``).
+        from ginkgo.runtime.module_loader import USER_MODULE_PREFIX
+
+        module = getattr(self.fn, "__module__", None) or ""
+        if module.startswith(USER_MODULE_PREFIX):
+            module = "<workflow>"
+        return f"{module}.{self.fn.__qualname__}"
+
+    @property
     def required_params(self) -> frozenset[str]:
         """Parameter names that have no default value."""
         return self._required_params

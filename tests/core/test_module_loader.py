@@ -357,6 +357,71 @@ class TestPackageQualifiedLoading:
         assert second.VALUE == 22222
 
 
+class TestCacheNameIsPathIndependent:
+    """A single-file workflow's cache identity must not depend on its path.
+
+    Regression coverage for issue #291: renaming, moving, or copying a
+    byte-identical single-file workflow used to cold-start its entire cache,
+    because the synthetic per-path module name (``ginkgo_user_<stem>_<hash of
+    absolute path>``) leaked into the task's cache-key identity.
+    """
+
+    def test_byte_identical_workflows_share_a_cache_name_across_paths(
+        self, tmp_path: Path
+    ) -> None:
+        source = "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
+
+        first_dir = tmp_path / "a"
+        first_dir.mkdir()
+        first_path = first_dir / "workflow.py"
+        first_path.write_text(source, encoding="utf-8")
+
+        second_dir = tmp_path / "b"
+        second_dir.mkdir()
+        second_path = second_dir / "renamed.py"
+        second_path.write_text(source, encoding="utf-8")
+
+        original_sys_path = list(sys.path)
+        try:
+            first_module = load_module_from_path(first_path)
+            second_module = load_module_from_path(second_path)
+        finally:
+            sys.path[:] = original_sys_path
+
+        # The synthetic module names themselves still differ per path/name...
+        assert first_module.__name__ != second_module.__name__
+        assert first_module.greet.name != second_module.greet.name
+
+        # ...but the cache identity used for the cache key must agree.
+        assert first_module.greet.cache_name == second_module.greet.cache_name
+        assert first_module.greet.cache_name == "<workflow>.greet"
+
+        # The source hash folds in the entry module's own name as part of its
+        # local import closure; that must be path-independent too, or an
+        # identical cache_name still lands on a different cache key.
+        assert first_module.greet.cache_source_hash == second_module.greet.cache_source_hash
+
+    def test_dotted_package_tasks_keep_their_real_name(self, tmp_path: Path) -> None:
+        package_dir = tmp_path / "workflow"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        entry_path = package_dir / "flow.py"
+        entry_path.write_text(
+            "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n",
+            encoding="utf-8",
+        )
+
+        original_sys_path = list(sys.path)
+        try:
+            module = load_module_from_path(entry_path)
+        finally:
+            sys.path[:] = original_sys_path
+            _forget_workflow_package()
+
+        assert module.greet.name == "workflow.flow.greet"
+        assert module.greet.cache_name == module.greet.name
+
+
 class TestRelativeImportGuidance:
     def test_relative_import_without_a_package_names_the_missing_init(
         self, tmp_path: Path
