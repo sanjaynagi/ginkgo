@@ -257,6 +257,55 @@ def main():
         assert result.returncode == 0, result.stderr + result.stdout
         assert "Workflow validation passed" in result.stdout
 
+    def test_envs_still_resolve_when_the_canonical_package_is_ambiguous(self) -> None:
+        """Regression test for issue #309.
+
+        The documented, ``ginkgo init``-scaffolded layout -- ``workflow/envs/``
+        beside ``workflow/flow.py`` -- must resolve its envs even when a
+        second candidate entry file elsewhere makes canonical-package
+        discovery ambiguous. Checking the workflow by its own explicit,
+        unambiguous path must not lose the envs directory that sits right
+        beside it.
+        """
+        package_dir = Path("workflow")
+        (package_dir / "envs" / "probe_env").mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "envs" / "probe_env" / "pixi.toml").write_text(
+            '[project]\nname = "probe"\nchannels = ["conda-forge"]\nplatforms = ["osx-arm64"]\n',
+            encoding="utf-8",
+        )
+        (package_dir / "flow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task("shell", env="probe_env")
+def greet() -> str:
+    return "echo hello"
+
+@flow
+def main():
+    return greet()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # A second top-level entry file makes canonical discovery ambiguous.
+        other_dir = Path("other")
+        other_dir.mkdir()
+        (other_dir / "flow.py").write_text("", encoding="utf-8")
+
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "doctor", "workflow/flow.py"],
+            cwd=Path.cwd(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Workflow validation passed" in result.stdout
+
 
 class TestDoctorExecutorSelection:
     """Which executor settings the FUSE probes are diagnosed against."""

@@ -23,6 +23,13 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
+# Static redirect stubs, copied verbatim into the build output. The
+# Resources guide's title ("Resources And Scheduling") slugifies to
+# guide/resources-and-scheduling/, which 404s since the page actually lives
+# at guide/resources/ -- a title-derived guess visitors are likely to make.
+# _extra/guide/resources-and-scheduling/index.html sends them on.
+html_extra_path = ["_extra"]
+
 # The landing page intentionally leads with a raw-HTML hero (its own <h1>),
 # so MyST's "headings start at H1" check does not apply to it.
 suppress_warnings = ["myst.header"]

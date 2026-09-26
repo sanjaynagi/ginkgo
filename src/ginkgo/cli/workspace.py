@@ -98,27 +98,41 @@ def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
     return candidates
 
 
-def resolve_envs_workflow_root(*, project_root: Path) -> Path | None:
+def resolve_envs_workflow_root(
+    *, project_root: Path, fallback: Path | None = None
+) -> Path | None:
     """Resolve the directory Pixi environment discovery should anchor on.
 
     Environments live beside the discovered entry file, under
     ``<workflow_root>/envs``. This is independent of which workflow file is
     actually being executed, so a test workflow under ``tests/workflows/`` and
     an ad-hoc entry file elsewhere both resolve the same envs root as the
-    project's own ``workflow/flow.py``.
+    project's own ``workflow/flow.py`` -- as long as that canonical entry can
+    be found unambiguously.
+
+    When it cannot -- no ``flow.py`` sits at the project root or in one of its
+    immediate subdirectories, or more than one does -- there is no canonical
+    package to anchor on. *fallback* (typically the directory of whichever
+    workflow file is actually being run) is returned instead, so a project
+    laid out exactly as the docs describe -- ``<workflow_dir>/envs/`` beside
+    the entry file -- still resolves its envs even when it does not also
+    happen to be the sole canonical candidate.
 
     Parameters
     ----------
     project_root : Path
         Root of the project being run.
+    fallback : Path | None
+        Directory to use when the canonical entry file cannot be uniquely
+        discovered.
 
     Returns
     -------
     Path | None
-        The discovered workflow's parent directory, or ``None`` when no
-        workflow can be discovered.
+        The discovered workflow's parent directory, *fallback* when discovery
+        fails, or ``None`` when neither is available.
     """
     try:
         return discover_default_workflow(project_root=project_root).parent
     except (FileNotFoundError, RuntimeError):
-        return None
+        return fallback

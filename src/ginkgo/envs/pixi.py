@@ -29,16 +29,21 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
     ----------
     env : str
         The environment name or path that was not found.
-    searched : Path
-        The directory that was searched (for named envs).
+    searched : Path | tuple[Path, ...] | None
+        The directory (or directories, in discovery order) that were
+        searched for a named env. A bare ``Path`` is accepted for backwards
+        compatibility and treated as a single-directory search.
     """
 
-    def __init__(self, *, env: str, searched: Path | None = None) -> None:
+    def __init__(self, *, env: str, searched: Path | tuple[Path, ...] | None = None) -> None:
         if searched is not None:
+            searched_dirs = (searched,) if isinstance(searched, Path) else tuple(searched)
+            expected = "\n".join(
+                f"  - {envs_dir / env / 'pixi.toml'} (available: {_list_envs(envs_dir)})"
+                for envs_dir in searched_dirs
+            )
             msg = (
-                f"Pixi environment {env!r} not found. "
-                f"Expected a pixi.toml at {searched / env / 'pixi.toml'}. "
-                f"Available environments: {_list_envs(searched)}"
+                f"Pixi environment {env!r} not found. Looked for a pixi.toml at:\n{expected}"
             )
         else:
             msg = f"Pixi environment path {env!r} does not point to a pixi.toml file."
@@ -215,8 +220,7 @@ class PixiRegistry:
             if manifest is not None:
                 return manifest.resolve()
 
-        searched = self._envs_dirs[0] if self._envs_dirs else None
-        raise PixiEnvNotFoundError(env=env, searched=searched)
+        raise PixiEnvNotFoundError(env=env, searched=self._envs_dirs or None)
 
     @property
     def env_directories(self) -> tuple[Path, ...]:
