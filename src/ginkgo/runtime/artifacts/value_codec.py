@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import pandas as pd
 
-from ginkgo.core.asset import AssetKind, AssetRef, AssetResult
+from ginkgo.core.asset import AssetKind, AssetRef, AssetResult, is_picklable_by_reference
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.errors import GinkgoError
 
@@ -277,7 +277,23 @@ def encoded_asset_refs(payload: Any) -> list[AssetRef]:
 
 
 def _encode_asset_checks(*, checks: tuple[Any, ...]) -> str:
-    """Encode asset checks for process and remote-result transport."""
+    """Encode asset checks for process and remote-result transport.
+
+    ``asset()`` already rejects a non-importable check before a task body
+    returns (see :func:`ginkgo.core.asset.is_picklable_by_reference`), so this
+    is normally unreachable for results built that way. It stays as a second
+    line of defense — e.g. an ``AssetResult`` built by hand rather than
+    through ``asset()`` — and names the offending check when it can.
+    """
+    for check in checks:
+        if callable(check) and not is_picklable_by_reference(check):
+            check_name = getattr(check, "__name__", type(check).__name__)
+            raise CodecError(
+                f"Asset check {check_name!r} is not an importable module-level "
+                "function. Asset checks must be importable module-level functions "
+                "when a task runs in a worker or remote executor: define "
+                f"{check_name!r} as a module-level function and pass it by name."
+            )
     try:
         data = pickle.dumps(checks, protocol=5)
     except Exception as exc:
