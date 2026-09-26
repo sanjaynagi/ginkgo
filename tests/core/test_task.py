@@ -433,6 +433,53 @@ class TestPartialCallMap:
         assert result[0].display_label_parts == ("alpha",)
         assert result[1].display_label_parts == ("beta",)
 
+    def test_map_two_scalar_axes_labels_every_branch_distinctly(self):
+        """Issue #286: zipping two varying axes must not collapse every
+        branch's label down to the first axis alone."""
+
+        @task()
+        def fit_site_species_trend(site: str, species: str) -> str:
+            return f"{site}:{species}"
+
+        sites = ["north_fen", "north_fen", "south_bog", "south_bog"]
+        species = ["sedge", "sphagnum", "sedge", "sphagnum"]
+        result = fit_site_species_trend().map(site=sites, species=species)
+
+        labels = [expr.display_label for expr in result]
+        assert labels == [
+            "fit_site_species_trend[north_fen,sedge]",
+            "fit_site_species_trend[north_fen,sphagnum]",
+            "fit_site_species_trend[south_bog,sedge]",
+            "fit_site_species_trend[south_bog,sphagnum]",
+        ]
+        # Every branch gets a distinct label even though "site" repeats.
+        assert len(set(labels)) == 4
+
+    def test_chained_map_composes_two_axis_zip_labels(self):
+        """A zip .map() chained onto an existing ExprList keeps every part."""
+
+        @task()
+        def process(batch: str, site: str, species: str) -> str:
+            return f"{batch}:{site}:{species}"
+
+        result = (
+            process()
+            .map(batch=["b1", "b2"])
+            .map(
+                site=["north_fen", "south_bog"],
+                species=["sedge", "sphagnum"],
+            )
+        )
+        # Each of the 2 base branches (from the first .map()) is crossed with
+        # each of the 2 new rows (from the second), giving 4 branches total,
+        # each carrying every part in order: batch, then site, then species.
+        assert [expr.display_label_parts for expr in result] == [
+            ("b1", "north_fen", "sedge"),
+            ("b1", "south_bog", "sphagnum"),
+            ("b2", "north_fen", "sedge"),
+            ("b2", "south_bog", "sphagnum"),
+        ]
+
 
 class TestFanOutDerivedArguments:
     """Per-branch derived values must never become a grid axis (issue #198)."""

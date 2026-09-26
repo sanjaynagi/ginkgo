@@ -790,19 +790,25 @@ def _zip_label_parts_for_row(
     row: dict[str, Any],
     varying_keys: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """Pick the most distinguishing label for one zip fan-out row.
+    """Build the label for one zip fan-out row from every scalar axis.
 
-    Prefers the first varying value that renders as a short, non-path
-    scalar. When every varying value is an ``Expr``/``ExprList`` (the
-    normal shape for a chained downstream task), inherit the label of
-    the upstream branch that produced it, since the zip position ties
-    each row back to exactly one producing branch. Falls back to the
-    first key's rendered value, matching the previous behaviour.
+    Includes every varying value, in varying-key order, that renders as a
+    short, non-path scalar — so a two-axis ``.map(site=..., species=...)``
+    labels each branch distinctly instead of repeating just the first axis.
+    When no varying value renders as a short scalar (every value is an
+    ``Expr``/``ExprList``, the normal shape for a chained downstream task),
+    inherit the label of the upstream branch that produced it, since the zip
+    position ties each row back to exactly one producing branch. Falls back
+    to the first key's rendered value, matching the previous behaviour.
     """
-    for key in varying_keys:
-        rendered = _render_label_value(row.get(key))
-        if rendered is not None and _is_short_scalar_label(rendered):
-            return (rendered,)
+    parts = [
+        rendered
+        for key in varying_keys
+        if (rendered := _render_label_value(row.get(key))) is not None
+        and _is_short_scalar_label(rendered)
+    ]
+    if parts:
+        return tuple(parts)
 
     for key in varying_keys:
         value = row.get(key)
