@@ -199,6 +199,17 @@ class TestDoctorEnvValidation:
         assert result.returncode == 0, result.stderr
         assert "Workflow validation passed" in result.stdout
 
+    def test_doctor_does_not_build_the_environment(self) -> None:
+        env_dir = _write_env(name="probe_env")
+        _write_workflow(env="probe_env")
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert not (env_dir / ".pixi").exists()
+        assert not (env_dir / "pixi.lock").exists()
+        assert sorted(path.name for path in env_dir.iterdir()) == ["pixi.toml"]
+
 
 class TestDoctorContainerImageValidation:
     """Cover for issue #288: a container image that cannot possibly run is
@@ -236,17 +247,6 @@ class TestDoctorContainerImageValidation:
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
         assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
-
-    def test_doctor_does_not_build_the_environment(self) -> None:
-        env_dir = _write_env(name="probe_env")
-        _write_workflow(env="probe_env")
-
-        result = _run_doctor(cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert not (env_dir / ".pixi").exists()
-        assert not (env_dir / "pixi.lock").exists()
-        assert sorted(path.name for path in env_dir.iterdir()) == ["pixi.toml"]
 
 
 class TestDoctorEnvRootMatchesRun:
