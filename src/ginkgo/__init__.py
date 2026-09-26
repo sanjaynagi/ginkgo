@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 from importlib import import_module
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -17,6 +17,8 @@ _EXPORTS = {
     "Expr": ("ginkgo.core.expr", "Expr"),
     "ExprList": ("ginkgo.core.expr", "ExprList"),
     "FlowDef": ("ginkgo.core.flow", "FlowDef"),
+    "KeyedExprList": ("ginkgo.core.keyed", "KeyedExprList"),
+    "KeyedGroups": ("ginkgo.core.keyed", "KeyedGroups"),
     "NotebookDirective": ("ginkgo.core.notebook", "NotebookDirective"),
     "OptionalOutput": ("ginkgo.core.optional", "OptionalOutput"),
     "PartialCall": ("ginkgo.core.task", "PartialCall"),
@@ -39,6 +41,7 @@ _EXPORTS = {
     "file": ("ginkgo.core.types", "file"),
     "flow": ("ginkgo.core.flow", "flow"),
     "folder": ("ginkgo.core.types", "folder"),
+    "keyed": ("ginkgo.core.keyed", "keyed"),
     "notebook": ("ginkgo.core.notebook", "notebook"),
     "optional": ("ginkgo.core.optional", "optional"),
     "param": ("ginkgo.params", "param"),

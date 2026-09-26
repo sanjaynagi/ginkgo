@@ -7,13 +7,14 @@ than executing. The evaluator recursively resolves these nodes.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
+    from ginkgo.core.keyed import KeyedExprList
     from ginkgo.core.task import TaskDef
 
 T = TypeVar("T")
@@ -278,6 +279,26 @@ class ExprList(Generic[T]):
             mode="product",
             max_concurrent=max_concurrent,
         )
+
+    def with_keys(self, keys: Sequence[Mapping[str, Hashable]]) -> KeyedExprList[T]:
+        """Pair this ``ExprList`` with metadata keys, aligned 1:1 by position.
+
+        Convenience for ``keyed(this_list, keys)`` — see
+        :func:`ginkgo.core.keyed.keyed`.
+
+        Parameters
+        ----------
+        keys : Sequence[Mapping[str, Hashable]]
+            One metadata mapping per element, in this list's order.
+
+        Returns
+        -------
+        KeyedExprList[T]
+            The keyed collection.
+        """
+        from ginkgo.core.keyed import keyed
+
+        return keyed(self, keys)
 
 
 @dataclass(frozen=True, kw_only=True)

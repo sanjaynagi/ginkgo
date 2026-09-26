@@ -477,6 +477,70 @@ You can chain fan-out calls. Chaining always returns a flat `ExprList`, with
 existing branches treated as the outer loop and newly introduced rows as the
 inner loop.
 
+## Keyed Grouping And Joins (New, Experimental)
+
+`.map()` zips columns by position. Metadata-aware workflows — a samplesheet
+with `sample`, `library`, `lane`, `treatment` columns — instead need to
+*group* fan-out branches by shared metadata (merge every lane of a library)
+or *join* two keyed collections on shared fields (attach a QC report back
+onto its sample). `ginkgo.keyed()` adds this on top of `ExprList`, without
+changing how the graph is evaluated: every call it builds is an ordinary
+`Expr`, so caching, provenance, resources, and retries work exactly as they
+do for hand-written fan-out.
+
+This is a first, static-keys slice of a larger design (see issue #97).
+Keys must be known when the flow is built — there is no support yet for
+grouping by keys a task discovers at runtime.
+
+```python
+from ginkgo import evaluate, flow, keyed, task
+
+
+@task()
+def filter_fastq(sample: str, library: str, lane: str) -> str: ...
+
+
+@task()
+def merge_lanes(sample: str, library: str, parts: list) -> str: ...
+
+
+@flow
+def main():
+    rows = [
+        {"sample": "S1", "library": "L1", "lane": "lane1"},
+        {"sample": "S1", "library": "L1", "lane": "lane2"},
+        {"sample": "S2", "library": "L1", "lane": "lane1"},
+    ]
+    reads = filter_fastq().map(
+        sample=[r["sample"] for r in rows],
+        library=[r["library"] for r in rows],
+        lane=[r["lane"] for r in rows],
+    )
+
+    # Pair the fan-out with its metadata, then group by library.
+    merged = keyed(reads, rows).group_by("sample", "library").map_groups(
+        merge_lanes, param="parts"
+    )
+    return merged.unkey()
+```
+
+`merge_lanes` runs once per `(sample, library)` group, receiving that
+group's members as a plain list in `parts`. Because `merge_lanes` also
+declares a `sample` parameter, each call's `sample` key value is passed
+through automatically — useful for naming outputs after the group. Run
+tables and dry-run output show the group in the branch label, e.g.
+`merge_lanes[sample=S1,library=L1]`.
+
+`KeyedExprList` also supports:
+
+- `.map(task, *, param, **fixed)` — one call per element, keys retained.
+- `.join(other, *, on="sample")` — a strict inner join: a key duplicated or
+  missing on either side is a `ValueError` naming it, never a silent drop.
+- `.unkey()` — drop back to a plain `ExprList` for a normal fan-in task.
+- `.keys` — the current metadata, as a list of plain dicts.
+
+See `ginkgo.core.keyed` for the full API.
+
 ## Returning Expressions From Tasks
 
 Tasks can return:
