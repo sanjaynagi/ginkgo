@@ -420,6 +420,7 @@ def _fan_out_partial_call(
     columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
     group_id = (
         _next_concurrency_group_id(partial_call.task_def) if max_concurrent is not None else None
     )
@@ -439,6 +440,7 @@ def _fan_out_partial_call(
                 row=row,
                 mode=mode,
                 varying_keys=varying_keys,
+                label_keys=label_keys,
             ),
             concurrency_group=group_id,
             concurrency_group_limit=max_concurrent,
@@ -470,6 +472,7 @@ def _fan_out_expr_list(
     columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
     group_id = _next_concurrency_group_id(task_def) if max_concurrent is not None else None
     exprs = [
         Expr(
@@ -489,6 +492,7 @@ def _fan_out_expr_list(
                     row=row,
                     mode=mode,
                     varying_keys=varying_keys,
+                    label_keys=label_keys,
                 ),
             ),
             concurrency_group=(
@@ -765,13 +769,14 @@ def _label_parts_for_row(
     row: dict[str, Any],
     mode: _FanOutMode,
     varying_keys: tuple[str, ...],
+    label_keys: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Return display-label fragments for one fan-out row."""
     if not varying_keys:
         return ()
 
     if mode == "zip":
-        return _zip_label_parts_for_row(row=row, varying_keys=varying_keys)
+        return _zip_label_parts_for_row(row=row, varying_keys=varying_keys, label_keys=label_keys)
 
     parts: list[str] = []
     valid_params = set(task_def.all_params.keys())
@@ -785,17 +790,52 @@ def _label_parts_for_row(
     return tuple(parts)
 
 
+def _short_scalar_label(value: Any) -> str | None:
+    """Render one zip label value, or ``None`` when it is not a short scalar."""
+    rendered = _render_label_value(value)
+    if rendered is None or not _is_short_scalar_label(rendered):
+        return None
+    return rendered
+
+
+def _zip_label_keys(
+    *,
+    rows: list[dict[str, Any]],
+    varying_keys: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Choose which varying keys label the branches of one zip fan-out.
+
+    Takes scalar-valued keys in varying-key order until the labels they
+    produce tell every branch apart. A single distinguishing axis therefore
+    labels exactly as before (``fastq_stats[sample_a]``), while a zip over
+    several axes whose first axis repeats — ``.map(site=..., species=...)``
+    with the grid crossed by hand — adds the next axis rather than giving
+    many branches the same label.
+    """
+    chosen: list[str] = []
+    for key in varying_keys:
+        if all(_short_scalar_label(row.get(key)) is None for row in rows):
+            continue
+        chosen.append(key)
+        labels = {
+            tuple(_short_scalar_label(row.get(label_key)) for label_key in chosen) for row in rows
+        }
+        if len(labels) == len(rows):
+            break
+    return tuple(chosen)
+
+
 def _zip_label_parts_for_row(
     *,
     row: dict[str, Any],
     varying_keys: tuple[str, ...],
+    label_keys: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """Build the label for one zip fan-out row from every scalar axis.
+    """Build the label for one zip fan-out row.
 
-    Includes every varying value, in varying-key order, that renders as a
-    short, non-path scalar — so a two-axis ``.map(site=..., species=...)``
-    labels each branch distinctly instead of repeating just the first axis.
-    When no varying value renders as a short scalar (every value is an
+    Uses the short, non-path scalar values of ``label_keys`` — the axes
+    :func:`_zip_label_keys` found are needed to tell the fan-out's branches
+    apart. When none renders as a short scalar (every value is an
     ``Expr``/``ExprList``, the normal shape for a chained downstream task),
     inherit the label of the upstream branch that produced it, since the zip
     position ties each row back to exactly one producing branch. Falls back
@@ -803,9 +843,8 @@ def _zip_label_parts_for_row(
     """
     parts = [
         rendered
-        for key in varying_keys
-        if (rendered := _render_label_value(row.get(key))) is not None
-        and _is_short_scalar_label(rendered)
+        for key in label_keys
+        if (rendered := _short_scalar_label(row.get(key))) is not None
     ]
     if parts:
         return tuple(parts)

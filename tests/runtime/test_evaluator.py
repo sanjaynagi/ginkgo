@@ -583,9 +583,11 @@ class TestEvaluate:
         recorder = Ledger.start(
             root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
+        # The grid is crossed by hand, so the first axis repeats and cannot
+        # tell the branches apart on its own.
         expr_list = fit_site_species_trend_task().map(
-            site=["north_fen", "south_bog"],
-            species=["sedge", "sphagnum"],
+            site=["north_fen", "north_fen", "south_bog", "south_bog"],
+            species=["sedge", "sphagnum", "sedge", "sphagnum"],
         )
         evaluator = ConcurrentEvaluator(
             jobs=1,
@@ -596,12 +598,19 @@ class TestEvaluate:
         result = evaluator.evaluate(expr_list)
         summary = recorder.finish()
 
-        assert result == ["north_fen:sedge", "south_bog:sphagnum"]
-        labels = {task.display_label for task in summary.tasks}
-        assert labels == {
+        assert result == [
+            "north_fen:sedge",
+            "north_fen:sphagnum",
+            "south_bog:sedge",
+            "south_bog:sphagnum",
+        ]
+        expected = [
             "fit_site_species_trend_task[north_fen,sedge]",
+            "fit_site_species_trend_task[north_fen,sphagnum]",
+            "fit_site_species_trend_task[south_bog,sedge]",
             "fit_site_species_trend_task[south_bog,sphagnum]",
-        }
+        ]
+        assert {task.display_label for task in summary.tasks} == set(expected)
 
         with open_store(recorder.db, readonly=True) as store:
             rows = store.query(
@@ -609,10 +618,7 @@ class TestEvaluate:
                 (recorder.run_id,),
             )
         stored_labels = [row["display_label"] for row in rows]
-        assert stored_labels == [
-            "fit_site_species_trend_task[north_fen,sedge]",
-            "fit_site_species_trend_task[south_bog,sphagnum]",
-        ]
+        assert stored_labels == expected
         assert all(label is not None for label in stored_labels)
 
     def test_second_run_is_served_from_cache(self) -> None:

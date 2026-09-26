@@ -466,18 +466,34 @@ class TestPartialCallMap:
             process()
             .map(batch=["b1", "b2"])
             .map(
-                site=["north_fen", "south_bog"],
-                species=["sedge", "sphagnum"],
+                site=["north_fen", "north_fen", "south_bog"],
+                species=["sedge", "sphagnum", "sedge"],
             )
         )
         # Each of the 2 base branches (from the first .map()) is crossed with
-        # each of the 2 new rows (from the second), giving 4 branches total,
-        # each carrying every part in order: batch, then site, then species.
+        # each of the 3 new rows (from the second). The site axis repeats, so
+        # the species axis joins the label after the inherited batch part.
         assert [expr.display_label_parts for expr in result] == [
             ("b1", "north_fen", "sedge"),
-            ("b1", "south_bog", "sphagnum"),
+            ("b1", "north_fen", "sphagnum"),
+            ("b1", "south_bog", "sedge"),
             ("b2", "north_fen", "sedge"),
-            ("b2", "south_bog", "sphagnum"),
+            ("b2", "north_fen", "sphagnum"),
+            ("b2", "south_bog", "sedge"),
+        ]
+
+    def test_zip_map_labels_by_first_axis_when_it_is_distinct(self):
+        """An axis that already tells branches apart keeps the short label."""
+
+        @task()
+        def fastq_stats(sample_id: str, read_count: int) -> str:
+            return f"{sample_id}:{read_count}"
+
+        result = fastq_stats().map(sample_id=["sample_a", "sample_b"], read_count=[10, 20])
+
+        assert [expr.display_label for expr in result] == [
+            "fastq_stats[sample_a]",
+            "fastq_stats[sample_b]",
         ]
 
 
