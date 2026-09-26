@@ -84,3 +84,14 @@ def test_a_later_cell_marker_wins_over_an_earlier_one() -> None:
         notebook_failure_headline(output)
         == "papermill failed executing cell 9: RuntimeError: final failure"
     )
+
+
+def test_a_hint_appended_after_the_traceback_is_not_the_headline() -> None:
+    # ``NotebookTaskError`` appends a failure hint after the captured output,
+    # so the exception line is not necessarily the last line of the error.
+    output = _CELL_FAILURE_OUTPUT + "Hint: the task ran out of memory; raise its mem resource.\n"
+
+    assert (
+        notebook_failure_headline(output)
+        == "papermill failed executing cell 7: KeyError: 'slope_per_year'"
+    )

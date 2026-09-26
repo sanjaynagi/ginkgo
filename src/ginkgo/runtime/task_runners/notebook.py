@@ -129,7 +129,11 @@ def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-_CELL_MARKER_RE = re.compile(r"[Ii]n \[(\d+)\]")
+_CELL_MARKER_RE = re.compile(r"encountered at [\"']?In \[(\d+)\]")
+# The terminal line of a Python traceback: an exception class name, optionally
+# dotted, followed by its message. Anchored so that ordinary prose — such as a
+# failure hint appended after the traceback — is not mistaken for it.
+_EXCEPTION_LINE_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)\b:?")
 
 
 def notebook_failure_headline(output: str) -> str | None:
@@ -155,7 +159,9 @@ def notebook_failure_headline(output: str) -> str | None:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return None
-    exception_line = lines[-1]
+    exception_line = next(
+        (line for line in reversed(lines) if _EXCEPTION_LINE_RE.match(line)), lines[-1]
+    )
     cell_index: str | None = None
     for line in lines:
         match = _CELL_MARKER_RE.search(line)
