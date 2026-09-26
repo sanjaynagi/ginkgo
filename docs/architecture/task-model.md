@@ -173,6 +173,13 @@ Implemented script behavior includes:
 - automatic interpreter detection: `.py` → `python`, `.R` or `.r` → `rscript`
 - optional explicit interpreter override via `interpreter=` parameter
 - resolved task inputs forwarded as CLI arguments (`--arg-name value`)
+- a `list`/`tuple` of scalars or paths forwards as the option followed by each
+  item as its own token (`--arg-name item1 item2 ...`), pairing with
+  `nargs="*"`/`"+"`; an empty list forwards as the bare option. A `bool`
+  forwards as a flag pairing with `action="store_true"`: `True` is the bare
+  option, `False` omits it. Anything else a list can hold — `None`, a `bool`,
+  a nested list, a dict — has no positional form and forwards as a single
+  JSON-encoded token, same as a dict always does.
 - explicit `output=` parameter for declaring and validating post-execution outputs (optional)
 - source file hashing folded into cache identity so script edits invalidate cache
 

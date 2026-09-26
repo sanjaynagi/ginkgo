@@ -21,6 +21,7 @@ import ginkgo
 from ginkgo import AssetRef, asset, file, script, table, task, text
 from ginkgo.core.asset import AssetKey
 from ginkgo.runtime.task_runners.shell import (
+    render_cli_tokens,
     serialize_cli_argument_value,
     stringify_cli_argument,
 )
@@ -212,6 +213,173 @@ class TestScriptTaskAssetArguments:
 
         # Header plus one data row, read as text rather than as a Parquet blob.
         assert Path(produced).read_text(encoding="utf-8").strip() == "2"
+
+
+# ---------------------------------------------------------------------------
+# Script CLI argument rendering: lists as separate tokens, bools as flags
+# (issue #308, #309)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderCliTokens:
+    """Pin the argparse-friendly rendering ``render_cli_tokens`` produces.
+
+    A script's own parser is expected to declare the matching idiom:
+    ``nargs="*"``/``"+"`` for a scalar/path list, ``action="store_true"`` for
+    a bool.
+    """
+
+    def test_list_of_paths_renders_as_separate_tokens(self) -> None:
+        tokens = render_cli_tokens(option="--clusters", value=["results/a.tsv", "results/b.tsv"])
+        assert tokens == ["--clusters", "results/a.tsv", "results/b.tsv"]
+
+    def test_empty_list_renders_as_the_bare_option(self) -> None:
+        assert render_cli_tokens(option="--clusters", value=[]) == ["--clusters"]
+
+    def test_tuple_of_paths_renders_the_same_as_a_list(self) -> None:
+        tokens = render_cli_tokens(option="--clusters", value=("results/a.tsv", "results/b.tsv"))
+        assert tokens == ["--clusters", "results/a.tsv", "results/b.tsv"]
+
+    def test_items_with_spaces_and_glob_characters_are_individually_quoted(self) -> None:
+        tokens = render_cli_tokens(
+            option="--clusters", value=["results/a b.tsv", "results/[c].tsv", "results/*.tsv"]
+        )
+        assert tokens[0] == "--clusters"
+        # Each item is its own shell-quoted token, so re-parsing the joined
+        # command line recovers the original strings verbatim rather than
+        # letting the shell glob or word-split them.
+        assert shlex.split(" ".join(tokens[1:])) == [
+            "results/a b.tsv",
+            "results/[c].tsv",
+            "results/*.tsv",
+        ]
+
+    def test_nested_list_keeps_json_rendering(self) -> None:
+        tokens = render_cli_tokens(option="--groups", value=[["a", "b"], ["c"]])
+        assert tokens == ["--groups", shlex.quote('[["a", "b"], ["c"]]')]
+
+    def test_list_containing_a_dict_keeps_json_rendering(self) -> None:
+        tokens = render_cli_tokens(option="--rows", value=[{"a": 1}])
+        assert tokens == ["--rows", shlex.quote('[{"a": 1}]')]
+
+    def test_list_containing_none_keeps_json_rendering(self) -> None:
+        """None has no positional CLI form, so a list holding one stays JSON."""
+        tokens = render_cli_tokens(option="--items", value=["a", None])
+        assert tokens == ["--items", shlex.quote('["a", null]')]
+
+    def test_list_containing_a_bool_keeps_json_rendering(self) -> None:
+        """A bool inside a list has no store_true idiom, so it stays JSON too."""
+        tokens = render_cli_tokens(option="--flags", value=[True, False])
+        assert tokens == ["--flags", shlex.quote("[true, false]")]
+
+    def test_true_renders_as_the_bare_option(self) -> None:
+        assert render_cli_tokens(option="--verbose", value=True) == ["--verbose"]
+
+    def test_false_omits_the_option_entirely(self) -> None:
+        assert render_cli_tokens(option="--verbose", value=False) == []
+
+    def test_none_keeps_its_current_single_token_rendering(self) -> None:
+        assert render_cli_tokens(option="--label", value=None) == ["--label", "null"]
+
+    def test_scalar_still_renders_as_a_single_token(self) -> None:
+        assert render_cli_tokens(option="--name", value="north") == ["--name", "north"]
+        assert render_cli_tokens(option="--count", value=3) == ["--count", "3"]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: a fan-in list[file] argument on a script task (issue #308)
+# ---------------------------------------------------------------------------
+
+_COMBINE_SCRIPT = """
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--clusters", nargs="*", default=[])
+parser.add_argument("--verbose", action="store_true")
+parser.add_argument("--script-path", required=True)
+parser.add_argument("--output-path", required=True)
+args = parser.parse_args()
+
+lines = [Path(p).read_text(encoding="utf-8").strip() for p in args.clusters]
+if args.verbose:
+    lines.append("verbose")
+Path(args.output_path).write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+"""
+
+
+@task()
+def write_cluster_file(label: str, output_path: str) -> file:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(label, encoding="utf-8")
+    return file(str(out))
+
+
+@task(kind="script")
+def combine_clusters(
+    clusters: list[file], script_path: str, output_path: str, verbose: bool = False
+) -> file:
+    return script(script_path, output=output_path)
+
+
+class TestScriptTaskFanInListArgument:
+    def test_map_fan_in_list_of_files_reaches_an_nargs_star_parser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``.map()`` fan-in of file paths survives the shell as separate tokens."""
+        monkeypatch.chdir(tmp_path)
+        script_path = tmp_path / "combine.py"
+        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
+
+        cluster_a = write_cluster_file(label="north", output_path="results/a.tsv")
+        cluster_b = write_cluster_file(label="south", output_path="results/b.tsv")
+
+        produced = ginkgo.evaluate(
+            combine_clusters(
+                clusters=[cluster_a, cluster_b],
+                script_path=str(script_path),
+                output_path="results/combined.txt",
+            )
+        )
+
+        assert Path(produced).read_text(encoding="utf-8").splitlines() == ["north", "south"]
+
+    def test_empty_fan_in_reaches_the_parser_as_no_clusters(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty fan-out renders the bare option, matching nargs="*" default []."""
+        monkeypatch.chdir(tmp_path)
+        script_path = tmp_path / "combine.py"
+        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
+
+        produced = ginkgo.evaluate(
+            combine_clusters(
+                clusters=[],
+                script_path=str(script_path),
+                output_path="results/combined.txt",
+            )
+        )
+
+        assert Path(produced).read_text(encoding="utf-8") == "\n"
+
+    def test_bool_flag_renders_as_store_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        script_path = tmp_path / "combine.py"
+        script_path.write_text(_COMBINE_SCRIPT, encoding="utf-8")
+
+        produced = ginkgo.evaluate(
+            combine_clusters(
+                clusters=[],
+                script_path=str(script_path),
+                output_path="results/combined.txt",
+                verbose=True,
+            )
+        )
+
+        assert Path(produced).read_text(encoding="utf-8").splitlines() == ["verbose"]
 
 
 # ---------------------------------------------------------------------------

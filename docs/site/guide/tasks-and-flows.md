@@ -156,6 +156,28 @@ marimo notebook tasks, which are also executed as scripts with `--flags`;
 Jupyter notebooks receive parameters through Papermill under their original
 names.
 
+A `list`/`tuple` parameter whose items are scalars or paths (a fan-in from
+`.map()`, say) is forwarded as the option followed by each item as its own
+token — declare it with `nargs="*"` (or `"+"` to require at least one):
+
+```python
+parser.add_argument("--clusters", nargs="*", default=[])
+```
+
+An empty list arrives as the bare option, which is exactly what `nargs="*"`
+leaves as `[]`. A `bool` parameter is forwarded as a flag: `True` arrives as
+the bare option and `False` omits it entirely, so declare it with
+`action="store_true"`:
+
+```python
+parser.add_argument("--verbose", action="store_true")
+```
+
+A list holding anything other than scalars or paths — `None`, a `bool`, a
+nested list, a dict — has no positional command-line form and is forwarded
+as a single JSON-encoded token instead, the same as a dict parameter always
+is; parse it with `json.loads(args.name)`.
+
 ```python
 from pathlib import Path
 
