@@ -12,6 +12,7 @@ from __future__ import annotations
 
 
 import inspect
+import re
 import shlex
 import subprocess
 import sys
@@ -126,6 +127,43 @@ def relativize_to_run_dir(*, run_dir: Path, path: Path) -> str:
 def escape_html(value: str) -> str:
     """Escape plain text for a tiny fallback HTML page."""
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+_CELL_MARKER_RE = re.compile(r"[Ii]n \[(\d+)\]")
+
+
+def notebook_failure_headline(output: str) -> str | None:
+    """Return a one-line root-cause headline for a failed papermill execution.
+
+    Parameters
+    ----------
+    output
+        Captured stdout/stderr from the papermill execution subprocess (or
+        any text ending in a Python traceback).
+
+    Returns
+    -------
+    str | None
+        ``None`` when ``output`` is blank. Otherwise the terminal exception
+        line of the traceback — papermill always prints the underlying
+        Python traceback verbatim, whatever cell or CLI stage raised it —
+        prefixed with the failing cell index when papermill named one
+        (``Exception encountered at "In [7]"``), or with a plain
+        ``notebook failed`` prefix for a failure with no cell to blame, such
+        as a notebook that fails to load before execution starts.
+    """
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return None
+    exception_line = lines[-1]
+    cell_index: str | None = None
+    for line in lines:
+        match = _CELL_MARKER_RE.search(line)
+        if match is not None:
+            cell_index = match.group(1)
+    if cell_index is not None:
+        return f"papermill failed executing cell {cell_index}: {exception_line}"
+    return f"notebook failed: {exception_line}"
 
 
 def first_label_param_name(*, task_def: TaskDef) -> str | None:

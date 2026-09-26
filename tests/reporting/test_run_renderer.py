@@ -704,3 +704,54 @@ def test_a_run_a_failure_ended_lists_no_products(tmp_path: Path) -> None:
     renderer.finish(elapsed=1.0, success=False)
 
     assert "Run directory" not in output.getvalue()
+
+
+def test_a_notebook_failures_reason_is_a_headline_not_the_full_traceback(
+    tmp_path: Path,
+) -> None:
+    """The Reason row names the root cause once; the traceback lives only in the tail."""
+    renderer, _ = _renderer(tmp_path)
+    traceback_text = (
+        "Notebook task survey failed during execute with exit code 1: papermill ...\n"
+        'Exception encountered at "In [7]":\n'
+        "KeyError                                 Traceback (most recent call last)\n"
+        "KeyError: 'slope_per_year'"
+    )
+    details = FailureDetails(
+        task_label="survey",
+        exit_code=1,
+        log_path=None,
+        log_tail=traceback_text.splitlines(),
+        error=traceback_text,
+        task_kind="notebook",
+    )
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_panel(details))
+    text = console.file.getvalue()
+
+    assert "papermill failed executing cell 7: KeyError: 'slope_per_year'" in text
+    # The full traceback line appears once, under "Log tail" - not again in "Reason".
+    assert text.count("Traceback (most recent call last)") == 1
+
+
+def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line(
+    tmp_path: Path,
+) -> None:
+    """The general dedupe applies beyond notebooks, whenever error duplicates the tail."""
+    renderer, _ = _renderer(tmp_path)
+    details = FailureDetails(
+        task_label="task_a",
+        exit_code=1,
+        log_path=None,
+        log_tail=["Traceback (most recent call last):", "ValueError: bad value"],
+        error="Traceback (most recent call last):\nValueError: bad value",
+        task_kind="shell",
+    )
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_panel(details))
+    text = console.file.getvalue()
+
+    assert "ValueError: bad value" in text
+    assert text.count("Traceback (most recent call last):") == 1

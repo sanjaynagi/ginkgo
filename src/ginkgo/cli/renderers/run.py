@@ -631,7 +631,7 @@ class _RunLayoutRenderer:
             "Exit code", str(details.exit_code) if details.exit_code is not None else "?"
         )
         if details.error:
-            summary.add_row("Reason", Text(details.error, style="#7f1d1d"))
+            summary.add_row("Reason", Text(details.reason_headline, style="#7f1d1d"))
         if details.log_path is not None:
             summary.add_row("Log", str(details.log_path))
 
