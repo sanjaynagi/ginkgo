@@ -42,9 +42,7 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
                 f"  - {envs_dir / env / 'pixi.toml'} (available: {_list_envs(envs_dir)})"
                 for envs_dir in searched_dirs
             )
-            msg = (
-                f"Pixi environment {env!r} not found. Looked for a pixi.toml at:\n{expected}"
-            )
+            msg = f"Pixi environment {env!r} not found. Looked for a pixi.toml at:\n{expected}"
         else:
             msg = f"Pixi environment path {env!r} does not point to a pixi.toml file."
         super().__init__(msg)

@@ -104,9 +104,7 @@ class TestResolveEnvsWorkflowRoot:
     def test_uses_the_canonical_package_when_it_is_unambiguous(self, tmp_path: Path) -> None:
         entry_path = _package(tmp_path, name="workflow", entry="flow.py")
 
-        root = resolve_envs_workflow_root(
-            project_root=tmp_path, fallback=tmp_path / "elsewhere"
-        )
+        root = resolve_envs_workflow_root(project_root=tmp_path, fallback=tmp_path / "elsewhere")
 
         assert root == entry_path.parent
 
@@ -125,9 +123,7 @@ class TestResolveEnvsWorkflowRoot:
         _package(tmp_path, name="workflow", entry="flow.py")
         other_entry = _package(tmp_path, name="other", entry="flow.py")
 
-        root = resolve_envs_workflow_root(
-            project_root=tmp_path, fallback=other_entry.parent
-        )
+        root = resolve_envs_workflow_root(project_root=tmp_path, fallback=other_entry.parent)
 
         assert root == other_entry.parent
 

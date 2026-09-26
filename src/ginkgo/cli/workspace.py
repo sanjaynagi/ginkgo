@@ -98,9 +98,7 @@ def canonical_workflow_candidates(*, project_root: Path) -> list[Path]:
     return candidates
 
 
-def resolve_envs_workflow_root(
-    *, project_root: Path, fallback: Path | None = None
-) -> Path | None:
+def resolve_envs_workflow_root(*, project_root: Path, fallback: Path | None = None) -> Path | None:
     """Resolve the directory Pixi environment discovery should anchor on.
 
     Environments live beside the discovered entry file, under
