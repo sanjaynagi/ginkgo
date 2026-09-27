@@ -414,6 +414,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         default=None,
         help="Deprecated alias for the positional run id.",
     )
+    explain_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of formatted text."
+    )
     prune_parser = cache_subparsers.add_parser(
         "prune", help="Prune cached artifacts by age or size"
     )

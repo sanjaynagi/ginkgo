@@ -641,6 +641,9 @@ def run_workflow(
                             cancelled=True,
                             resources=resource_summary,
                             remote_summary=evaluator.remote_stats.summary(),
+                            path_tracked_inputs=_count_path_tracked_inputs(
+                                run_summary=run_summary
+                            ),
                         )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
@@ -667,6 +670,9 @@ def run_workflow(
                                 renderer=renderer,
                             ),
                             remote_summary=evaluator.remote_stats.summary(),
+                            path_tracked_inputs=_count_path_tracked_inputs(
+                                run_summary=run_summary
+                            ),
                         )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)
                 if profiler.enabled:
@@ -699,6 +705,9 @@ def run_workflow(
                             ),
                             assets=_render_assets(run_summary=run_summary),
                             remote_summary=evaluator.remote_stats.summary(),
+                            path_tracked_inputs=_count_path_tracked_inputs(
+                                run_summary=run_summary
+                            ),
                         )
                 if profiler.enabled:
                     _print_profile_table(console=rich_console, profile=profiler.snapshot())
@@ -716,6 +725,7 @@ def run_workflow(
                         ),
                         assets=_render_assets(run_summary=run_summary),
                         remote_summary=evaluator.remote_stats.summary(),
+                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
                     )
             if profiler.enabled:
                 _print_profile_table(console=rich_console, profile=profiler.snapshot())
@@ -900,3 +910,22 @@ def _render_notebooks(
 def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
     """Build CLI-renderer asset rows from a run summary."""
     return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
+
+
+def _count_path_tracked_inputs(*, run_summary: RunSummary) -> int:
+    """Count inputs of executed or cached tasks tracked by path string only.
+
+    Counts every ``(task, parameter)`` pair labelled ``"path"`` — the
+    silent-staleness trap of issues #121/#281, where a task input names an
+    existing path but is annotated as a plain scalar, so the cache key
+    tracks the string rather than the bytes it points at. A task the run
+    never started or that only failed or was skipped contributes nothing:
+    the label only matters for a task whose result the cache now holds.
+    """
+    return sum(
+        1
+        for task in run_summary.tasks
+        if task.status in {"succeeded", "cached"} and task.input_trackings
+        for label in task.input_trackings.values()
+        if label == "path"
+    )

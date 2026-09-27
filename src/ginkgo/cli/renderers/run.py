@@ -868,6 +868,7 @@ class CliRunRenderer:
         notebooks: list[CliNotebookSummary] | None = None,
         assets: list[CliAssetSummary] | None = None,
         remote_summary: str | None = None,
+        path_tracked_inputs: int = 0,
     ) -> None:
         """Print the final run summary."""
         if self._buffer.strip():
@@ -916,6 +917,12 @@ class CliRunRenderer:
                 self._console.print(resource_footer)
         if remote_summary is not None:
             self._console.print(f"[dim]☁️  {remote_summary}[/dim]")
+        if path_tracked_inputs:
+            plural = "is" if path_tracked_inputs == 1 else "are"
+            self._console.print(
+                f"[dim]{path_tracked_inputs} input{'' if path_tracked_inputs == 1 else 's'} "
+                f"{plural} tracked by path only; see `ginkgo cache explain`[/dim]"
+            )
         if not success and failure_details:
             self._console.print(self._layout.render_failure_separator())
             self._console.print(self._layout.render_failure_details(failure_details))

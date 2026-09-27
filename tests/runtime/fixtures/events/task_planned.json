@@ -31,6 +31,10 @@
       "param": "table"
     }
   ],
+  "input_labels": {
+    "rows": "value",
+    "table": "asset"
+  },
   "inputs": {
     "rows": 10
   },

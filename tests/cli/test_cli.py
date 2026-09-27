@@ -2026,7 +2026,7 @@ def main():
         assert second.returncode == 0, second.stderr
         run_dir = _extract_run_dir(second.stdout)
 
-        explain = _run_cli("cache", "explain", "--run", run_dir.name, cwd=Path.cwd())
+        explain = _run_cli("cache", "explain", "--run", run_dir.name, "--json", cwd=Path.cwd())
         assert explain.returncode == 0, explain.stderr
         payload = json.loads(explain.stdout)
         assert payload["tasks"][0]["reason"] in {
@@ -2055,11 +2055,11 @@ def main():
         assert run.returncode == 0, run.stderr
         run_dir = _extract_run_dir(run.stdout)
 
-        positional = _run_cli("cache", "explain", run_dir.name, cwd=Path.cwd())
+        positional = _run_cli("cache", "explain", run_dir.name, "--json", cwd=Path.cwd())
         assert positional.returncode == 0, positional.stderr
         assert json.loads(positional.stdout)["run_id"] == run_dir.name
 
-        flag = _run_cli("cache", "explain", "--run", run_dir.name, cwd=Path.cwd())
+        flag = _run_cli("cache", "explain", "--run", run_dir.name, "--json", cwd=Path.cwd())
         assert flag.returncode == 0, flag.stderr
         assert json.loads(flag.stdout) == json.loads(positional.stdout)
 

@@ -312,6 +312,13 @@ class RerunExplanation:
         when there was nothing to compare with.
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
+    input_labels : dict[str, str]
+        Each input parameter's cache-tracking label (``content``, ``asset``,
+        ``path``, ``value``, ``output``, ``untracked`` — see
+        ``ginkgo.runtime.task_validation.label_input_value``), read from this
+        task's own ``task_inputs`` row. Empty for a task run before this label
+        existed; ``ginkgo cache explain`` shows nothing for those rather than
+        guessing.
     """
 
     task_id: str | None
@@ -322,6 +329,7 @@ class RerunExplanation:
     details: list[str]
     compared_with: dict[str, str] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
+    input_labels: dict[str, str] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         """Return the JSON shape ``ginkgo cache explain`` prints."""
@@ -332,6 +340,8 @@ class RerunExplanation:
             "cache_key": self.cache_key,
             "reason": self.reason,
         }
+        if self.input_labels:
+            payload["input_labels"] = self.input_labels
         if self.compared_with is None and not self.components:
             return payload
         return payload | {
@@ -829,16 +839,23 @@ class Query:
             "display_label": task["display_label"],
             "cache_key": cache_key,
         }
+        input_labels = self._task_input_labels(run_id=run_id, task_id=task_id)
         if task["status"] == "cached":
-            return RerunExplanation(**identity, reason="all_inputs_match", details=[])
+            return RerunExplanation(
+                **identity, reason="all_inputs_match", details=[], input_labels=input_labels
+            )
 
         current = self._cache_key_components(cache_key) if isinstance(cache_key, str) else {}
         if not current:
-            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+            return RerunExplanation(
+                **identity, reason="no_entry_for_key", details=[], input_labels=input_labels
+            )
 
         prior = self._previous_cache_key(run_id=run_id, task_id=task_id)
         if prior is None:
-            return RerunExplanation(**identity, reason="no_prior_entry", details=[])
+            return RerunExplanation(
+                **identity, reason="no_prior_entry", details=[], input_labels=input_labels
+            )
 
         prior_key, strategy = prior
         components = _diff_key_components(
@@ -851,7 +868,26 @@ class Query:
             details=details,
             compared_with={"cache_key": prior_key, "strategy": strategy},
             components=components,
+            input_labels=input_labels,
         )
+
+    def _task_input_labels(self, *, run_id: str, task_id: str) -> dict[str, str]:
+        """Return one task's per-parameter cache-tracking labels.
+
+        Read from ``task_inputs.tracking`` (position 0, one row per
+        parameter). A run recorded before the column existed reads back
+        ``None`` for every row, so the result is empty rather than a dict of
+        placeholders — ``ginkgo cache explain`` shows nothing for those,
+        never a guess.
+        """
+        rows = self._store.query(
+            "SELECT param, tracking FROM task_inputs WHERE run_id = ? AND task_id = ? "
+            "AND position = 0",
+            (run_id, task_id),
+        )
+        return {
+            str(row["param"]): str(row["tracking"]) for row in rows if row["tracking"] is not None
+        }
 
     # -- raw SQL -------------------------------------------------------------
 
@@ -1130,8 +1166,8 @@ class Query:
             return ()
         rows = self._store.query(
             "SELECT param, value_type, value_summary, digest, artifact_id, asset_key, "
-            "asset_version_id, remote_uri FROM task_inputs WHERE run_id = ? AND task_id = ? "
-            "ORDER BY param, position",
+            "asset_version_id, remote_uri, tracking FROM task_inputs "
+            "WHERE run_id = ? AND task_id = ? ORDER BY param, position",
             (run_id, task_id),
         )
         return tuple(dict(row) for row in rows)

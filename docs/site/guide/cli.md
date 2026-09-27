@@ -243,6 +243,7 @@ navigating `.ginkgo/runs/`.
 ginkgo cache ls                          # list cached task results
 ginkgo cache stats                       # size, hit counts, biggest tasks
 ginkgo cache explain <run_id>            # explain cache decisions for a run
+ginkgo cache explain <run_id> --json     # same, as JSON
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
@@ -257,14 +258,23 @@ ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 
 ### Why Did This Task Run Again?
 
-`ginkgo cache explain <run_id>` prints JSON with one entry per task. For a task
-that re-ran, it names the components of the cache key that moved, so the answer
-is a specific fact rather than "the key changed":
+`ginkgo cache explain <run_id>` prints formatted text by default, one entry per
+task, naming each input's cache-tracking label (`content`, `asset`, `path`,
+`value`, `output`, `untracked` — see
+[Caching and Provenance](caching-and-provenance.md#how-is-each-input-tracked)) alongside
+it, with a `path` label highlighted since it names the silent-staleness trap
+of annotating a path boundary `str` rather than `file`/`folder`. Pass `--json`
+for the same data as JSON.
+
+For a task that re-ran, it also names the components of the cache key that
+moved, so the answer is a specific fact rather than "the key changed". The
+JSON shape (`--json`):
 
 ```json
 {
   "task_name": "produce",
   "cache_key": "fddb71a9…",
+  "input_labels": {"samples": "path", "threads": "value"},
   "compared_with": {"cache_key": "4388619b…", "strategy": "same_node"},
   "reason": "input_changed",
   "details": ["input_changed"],
