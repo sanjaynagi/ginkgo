@@ -9,6 +9,7 @@ from typing import Callable
 
 from ginkgo.cli.common import RunMode
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
+from ginkgo.runtime.task_runners.notebook import notebook_failure_headline
 
 
 @dataclass(kw_only=True)
@@ -68,6 +69,33 @@ class FailureDetails:
         advice about *this* interpreter would not touch what failed there.
         """
         return self.task_kind == "python" and self.env_label == "local"
+
+    @property
+    def reason_headline(self) -> str | None:
+        """Return the one-line root cause to show in the failure panel.
+
+        ``error`` is often the same multi-line traceback the log tail
+        already renders in full — repeating it in the Reason row buries the
+        one line that actually names the failure and doubles up on a long
+        traceback. This picks a concise headline instead: a notebook-aware
+        one when the error looks like a failed papermill execution, or,
+        more generally, the error's own final line whenever the rest of it
+        duplicates what the log tail already shows. A single-line error, or
+        one the log tail does not repeat, is returned unchanged.
+        """
+        if self.error is None:
+            return None
+        if self.task_kind == "notebook":
+            headline = notebook_failure_headline(self.error)
+            if headline is not None:
+                return headline
+        lines = [line.strip() for line in self.error.splitlines() if line.strip()]
+        if len(lines) <= 1:
+            return self.error
+        last_line = lines[-1]
+        if any(last_line in tail_line for tail_line in self.log_tail):
+            return last_line
+        return self.error
 
 
 @dataclass(frozen=True, kw_only=True)

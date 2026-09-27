@@ -44,7 +44,7 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
         summary.add_row("Policy", "ignored - the run continued past this failure")
     summary.add_row("Exit code", str(details.exit_code) if details.exit_code is not None else "?")
     if details.error:
-        summary.add_row("Error", details.error)
+        summary.add_row("Error", details.reason_headline)
     if details.log_path is not None:
         summary.add_row("Log", str(details.log_path))
 
