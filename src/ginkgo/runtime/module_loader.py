@@ -21,6 +21,22 @@ above all — must treat such a name as unresolvable rather than durable.
 """
 
 
+CACHE_IDENTITY_MODULE = "<workflow>"
+"""Location-independent stand-in for a ``USER_MODULE_PREFIX`` module name."""
+
+
+def cache_identity_module_name(name: str) -> str:
+    """Return *name* with a single-file workflow's synthetic module replaced.
+
+    A single-file workflow's module name is unique to the *absolute path* it
+    was loaded from, so anything folded into a cache key under that name
+    would change whenever the file is renamed, moved or copied, even
+    byte-for-byte. It is replaced with :data:`CACHE_IDENTITY_MODULE`; a real
+    package module keeps its stable dotted name.
+    """
+    return CACHE_IDENTITY_MODULE if name.startswith(USER_MODULE_PREFIX) else name
+
+
 def module_name_for_path(path: str | Path) -> str:
     """Return a stable synthetic module name for a source file."""
     source_path = Path(path).resolve()

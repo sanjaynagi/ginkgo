@@ -110,9 +110,15 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     if not isinstance(module, ModuleType):
         return hash_str(source)
 
+    # Imported lazily: ``core`` must not depend on ``runtime`` at module load
+    # time (see the similar imports in ``ginkgo.core.asset`` and
+    # ``ginkgo.core.types``).
+    from ginkgo.runtime.module_loader import cache_identity_module_name
+
     modules = _local_import_closure(module)
     module_hashes = [
-        f"{name}:{_hash_module_source(path)}" for name, path in sorted(modules.items())
+        f"{cache_identity_module_name(name)}:{_hash_module_source(path)}"
+        for name, path in sorted(modules.items())
     ]
     return hash_str("\n".join((source, *module_hashes)))
 
