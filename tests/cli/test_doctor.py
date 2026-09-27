@@ -211,6 +211,44 @@ class TestDoctorEnvValidation:
         assert sorted(path.name for path in env_dir.iterdir()) == ["pixi.toml"]
 
 
+class TestDoctorContainerImageValidation:
+    """Cover for issue #288: a container image that cannot possibly run is
+    caught by ``doctor`` rather than surfacing mid-run.
+
+    ``pull_policy = "never"`` keeps this deterministic and network-free: the
+    image is certain to be absent (no daemon is available here) and no
+    pull/registry attempt will ever be made, so the diagnostic follows from
+    the local check alone.
+    """
+
+    def _write_never_pull_config(self) -> None:
+        Path("ginkgo.toml").write_text(
+            '[container]\npull_policy = "never"\n',
+            encoding="utf-8",
+        )
+
+    def test_bogus_image_produces_a_diagnostic(self) -> None:
+        self._write_never_pull_config()
+        _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert "MISSING_IMAGE" in result.stderr
+        assert "nope-this-image-does-not-exist:99.99" in result.stderr
+
+    def test_bogus_image_is_reported_in_json(self) -> None:
+        self._write_never_pull_config()
+        _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
+
+
 class TestDoctorEnvRootMatchesRun:
     def test_envs_resolve_from_the_canonical_package_not_the_checked_file(self) -> None:
         """``run`` anchors Pixi discovery on the canonical package; doctor must agree.

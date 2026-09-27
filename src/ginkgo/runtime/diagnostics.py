@@ -10,6 +10,7 @@ from typing import Any
 from ginkgo.config import config_session
 from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
+from ginkgo.envs.container import ContainerImageNotFoundError
 from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
@@ -175,6 +176,9 @@ def _diagnostic_from_exception(
     if isinstance(exc, PixiEnvNotFoundError):
         code = "MISSING_ENV"
         suggestion = "Create the environment manifest, or correct the env= name on the task."
+    elif isinstance(exc, ContainerImageNotFoundError):
+        code = "MISSING_IMAGE"
+        suggestion = "Pull the image, correct its name/tag, or adjust [container] pull_policy."
     elif isinstance(exc, RuntimeError) and "Missing secrets:" in message:
         code = "MISSING_SECRET"
         suggestion = "Provide the referenced secret through the configured resolver."
