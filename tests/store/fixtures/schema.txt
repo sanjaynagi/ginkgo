@@ -133,9 +133,7 @@ table task_inputs
 CREATE TABLE task_inputs (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
   value_type TEXT, value_summary TEXT, digest TEXT,
-  artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT,
-
-  tracking TEXT,
+  artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT, tracking TEXT,
   PRIMARY KEY (run_id, task_id, param, position)
 )
 

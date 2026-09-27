@@ -171,6 +171,22 @@ class TestMigrations:
         with open_store(tmp_path / "ginkgo.db") as store:
             assert _schema_snapshot(store) == expected
 
+    def test_a_version_one_database_gains_the_input_tracking_column(self, tmp_path):
+        """Step 2 is additive, so a v1 workspace is stepped forward, not refused."""
+        from ginkgo.store.schema import _SCHEMA, _statements
+
+        path = tmp_path / "ginkgo.db"
+        connection = sqlite3.connect(path)
+        connection.isolation_level = None
+        # A workspace written before step 2 existed: the v1 schema, at version 1.
+        for statement in _statements(_SCHEMA):
+            connection.execute(statement)
+        connection.execute("INSERT INTO schema_version VALUES (1, '2026-09-01')")
+
+        assert migrate(connection) == SCHEMA_VERSION
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(task_inputs)")]
+        assert "tracking" in columns
+
     def test_a_database_from_another_schema_version_is_refused(self, tmp_path):
         """Pre-1.0 there is no path forward from an older schema, so say so.
 

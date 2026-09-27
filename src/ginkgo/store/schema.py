@@ -10,7 +10,9 @@ handful of users and a workspace is derived data — the events it holds describ
 runs that can be re-run — so carrying migration steps for every column change
 buys less than it costs in schema that has to be read as archaeology. A database
 written by an older schema is refused with an error telling the user to delete
-the workspace, which is the whole upgrade procedure.
+the workspace, which is the whole upgrade procedure. The exception is a purely
+additive change (a nullable column), which is cheap to step forward and not
+worth a cold cache: those get a migration step of their own.
 
 The machinery for stepped migrations is still here, and this becomes the usual
 "never edit a shipped step; add another one" once there is history worth
@@ -94,8 +96,6 @@ CREATE TABLE task_inputs (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
   value_type TEXT, value_summary TEXT, digest TEXT,
   artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT,
-  -- How the cache key tracks this input: content|asset|path|value|output|untracked (issue #307). Position-0 rows only; NULL before this column existed. Metadata only.
-  tracking TEXT,
   PRIMARY KEY (run_id, task_id, param, position)
 );
 CREATE TABLE task_outputs (
@@ -164,13 +164,23 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
+_V2_INPUT_TRACKING = """
+-- How the cache key tracks each input: content|asset|path|value|output|untracked
+-- (issue #307). Position-0 rows only; NULL for rows written before this step.
+-- Metadata only: nothing reads it to decide a cache hit.
+ALTER TABLE task_inputs ADD COLUMN tracking TEXT;
+"""
+
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
     (1, _SCHEMA),
+    (2, _V2_INPUT_TRACKING),
 ]
 """Every schema step, in the order they are applied, keyed by resulting version.
 
-One step, while the schema is still edited in place. A database written by a
-different version of the schema is not migrated to this one: it is refused, and
+Step 2 is additive — a nullable column — so a version-1 workspace is stepped
+forward rather than refused: deleting it would throw away its cache index for
+the sake of a metadata column. A database at a version with no step here (one
+written by a newer ginkgo, or by an older in-place edit) is still refused, and
 the user deletes the workspace.
 """
 
@@ -235,13 +245,13 @@ def migrate(conn: Connection) -> int:
     Raises
     ------
     StaleWorkspaceError
-        If the database is at a version this schema has no step for. Pre-1.0
-        the schema is edited in place, so an older database cannot be brought
-        forward: without this check it would open cleanly and then fail on the
+        If the database is at a version this schema has no step for — a
+        newer ginkgo's, or one from before the schema was last edited in
+        place. Without this check it would open cleanly and then fail on the
         first query naming a column it does not have.
     """
     current = schema_version(conn)
-    if current not in (0, SCHEMA_VERSION):
+    if current != 0 and current not in {version for version, _ in MIGRATIONS}:
         raise StaleWorkspaceError(
             path=_database_path(conn), found=current, expected=SCHEMA_VERSION
         )
