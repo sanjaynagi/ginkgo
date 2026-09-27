@@ -66,7 +66,7 @@ def package_brief(brief: file, output_path: Out[file]) -> file:
 @task()
 def write_summary(
     items: list[str],
-    seed_locations: list[str],
+    seed_cards: list[file],
     normalized_cards: list[file],
     checksums: list[file],
     briefs: list[file],
@@ -78,10 +78,9 @@ def write_summary(
     ----------
     items : list[str]
         Item identifiers for each fan-out branch.
-    seed_locations : list[str]
-        Seed artifact locations, recorded for display only — the seed
-        artifacts themselves are tracked via ``seed_card`` upstream, so this
-        is not annotated ``Out[...]`` or ``file``.
+    seed_cards : list[file]
+        Seed card assets. Each arrives as a path to the asset's bytes, with
+        the asset itself on ``.asset``.
     normalized_cards : list[file]
         Normalized text artifacts.
     checksums : list[file]
@@ -97,9 +96,9 @@ def write_summary(
         JSON summary path.
     """
     rows = []
-    for item, seed_location, normalized_card, checksum, brief, package in zip(
+    for item, seed_card, normalized_card, checksum, brief, package in zip(
         items,
-        seed_locations,
+        seed_cards,
         normalized_cards,
         checksums,
         briefs,
@@ -109,7 +108,7 @@ def write_summary(
         rows.append(
             {
                 "item": item,
-                "seed_card": seed_location,
+                "seed_card": seed_card.asset.key.name if seed_card.asset else str(seed_card),
                 "normalized_card": str(normalized_card),
                 "checksum": str(checksum),
                 "brief": str(brief),
