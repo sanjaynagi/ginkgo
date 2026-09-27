@@ -786,6 +786,18 @@ class TestOutAnnotation:
         assert maybe_write.output_params == frozenset({"bam"})
         assert maybe_write.type_hints["bam"] == (file | None)
 
+    def test_return_annotation_is_kept_in_type_hints(self):
+        @task()
+        def plain(reads: file) -> tuple[file, file | None]:
+            return (reads, None)
+
+        @task()
+        def with_out(reads: file, bam: Out[file]) -> file:
+            return reads
+
+        assert plain.type_hints["return"] == tuple[file, file | None]
+        assert with_out.type_hints["return"] is file
+
     def test_non_output_params_are_not_in_output_params(self):
         @task()
         def align(reads: file, bam: Out[file]) -> file:
