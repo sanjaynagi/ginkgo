@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from rich.markup import escape
 from rich.text import Text
@@ -505,7 +506,7 @@ _REASON_TEXT = {
 }
 
 
-def _render_explain_text(rich_console, payload: dict[str, object]) -> None:
+def _render_explain_text(rich_console, payload: dict[str, Any]) -> None:
     """Render ``ginkgo cache explain``'s payload as formatted text.
 
     The JSON form (``--json``) is the same data; this is the other reading of
@@ -529,7 +530,7 @@ def _render_explain_text(rich_console, payload: dict[str, object]) -> None:
         _render_task_explanation(rich_console, task)
 
 
-def _render_task_explanation(rich_console, task: dict[str, object]) -> None:
+def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
     """Render one task's cache explanation: identity, reason, inputs, diff."""
     name = str(task.get("display_label") or task.get("task_name") or "unknown")
     task_id = task.get("task_id")
