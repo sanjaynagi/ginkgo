@@ -1392,6 +1392,41 @@ def consume_table_as_file(summary: file) -> str:
 
 
 @task()
+def consume_plain_file(summary: file, output_path: str) -> file:
+    """Consume an upstream asset through a bare ``file`` annotation (#307).
+
+    No ``| AssetRef`` union, no ``isinstance`` branch: ``summary`` is a
+    ``file`` value whose text is the artifact path, and ``summary.asset`` is
+    the ``AssetRef`` for a task that also wants the metadata.
+    """
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    asset_ref = summary.asset
+    out.write_text(
+        f"{type(summary).__name__}\n{asset_ref.version_id if asset_ref is not None else ''}\n",
+        encoding="utf-8",
+    )
+    return file(str(out))
+
+
+@task()
+def consume_plain_file_list(summaries: list[file]) -> list[str]:
+    """A bare ``list[file]`` annotation over several asset inputs."""
+    return [
+        f"{type(item).__name__}:{item.asset.version_id if item.asset else 'none'}"
+        for item in summaries
+    ]
+
+
+@task(kind="shell")
+def consume_plain_file_in_shell(summary: file, output_path: str) -> file:
+    """A shell task consuming an upstream asset via a bare ``file`` param."""
+    from ginkgo import shell
+
+    return shell(cmd=f"printf '%s' {summary} > {output_path}", output=output_path)
+
+
+@task()
 def consume_model_predict(trained: object) -> list[int]:
     # Rehydration should hand us back the trained sklearn estimator.
     predictions = trained.predict(np.array([[0.5], [2.5]]))
@@ -1603,6 +1638,70 @@ class TestKindVersusPathAnnotation:
         assert Path(cold).read_text(encoding="utf-8").strip() == "AssetRef"
         assert warm == cold
 
+    def test_plain_file_consumer_receives_a_path_with_asset_attached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare ``file`` consumer (#307) gets a path, not a raw ``AssetRef``.
+
+        The value is a ``file`` — a ``str`` subclass, so it drops straight
+        into an f-string or ``open()`` — and its ``.asset`` attribute carries
+        the producing ``AssetRef`` for a task that also wants the metadata.
+        Cold and warm runs behave the same way.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        def build() -> Any:
+            return consume_plain_file(
+                summary=produce_file_asset(output_path="results/summary.csv"),
+                output_path="results/report.txt",
+            )
+
+        cold = ginkgo.evaluate(build())
+        warm = ginkgo.evaluate(build())
+
+        lines = Path(cold).read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "file"
+        assert lines[1]  # a non-empty version_id was recorded via .asset
+        assert warm == cold
+
+    def test_plain_file_list_consumer_receives_paths_with_asset_attached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``list[file]`` of assets: each element converts, ``.asset`` included."""
+        monkeypatch.chdir(tmp_path)
+
+        observed = ginkgo.evaluate(
+            consume_plain_file_list(
+                summaries=[
+                    produce_file_asset(output_path="results/one.csv"),
+                    produce_file_asset(output_path="results/two.csv"),
+                ]
+            )
+        )
+        assert len(observed) == 2
+        for entry in observed:
+            kind, _, version_id = entry.partition(":")
+            assert kind == "file"
+            assert version_id and version_id != "none"
+
+    def test_plain_file_consumer_in_shell_task_gets_the_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shell task's command line sees the asset's path, not a repr."""
+        monkeypatch.chdir(tmp_path)
+
+        summary_path = ginkgo.evaluate(
+            consume_plain_file_in_shell(
+                summary=produce_file_asset(output_path="results/summary.csv"),
+                output_path="results/echoed.txt",
+            )
+        )
+        echoed_path = Path(str(summary_path)).read_text(encoding="utf-8").strip()
+        # The command echoed the interpolated ``summary`` value: a real,
+        # existing path to the asset's bytes, not an ``AssetRef`` repr.
+        assert "AssetRef" not in echoed_path
+        assert Path(echoed_path).read_text(encoding="utf-8") == "site,count\nnorth,10\n"
+
     def test_file_union_consumer_rejects_table_asset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1711,6 +1810,72 @@ class TestKindVersusPathAnnotation:
             message = str(excinfo.value)
             assert f"is a `{kind}` asset, so it has no readable file path" in message
             assert encoding in message
+
+    def test_as_execution_value_converts_a_bare_file_annotation(self) -> None:
+        """``AssetRef.as_execution_value`` is the conversion #307 hangs off.
+
+        Only for the execution-arg view: it never touches ``resolved_args``,
+        the cache key, or lineage, which is why the evaluator calls it from
+        ``_rehydrate_execution_args`` and nowhere earlier.
+        """
+        ref = _ref_of_kind("file")
+
+        converted = ref.as_execution_value(annotation=file)
+        assert isinstance(converted, file)
+        assert converted == ref.artifact_path
+        assert converted.asset is ref
+
+        # ``file | AssetRef`` opts back into the raw reference, unchanged.
+        unchanged = ref.as_execution_value(annotation=file | AssetRef)
+        assert unchanged is ref
+
+        # A serialized kind is left alone: `require_path_value` already
+        # refused this combination during input validation, before execution
+        # gets here, so there is nothing safe to convert.
+        table_ref = _ref_of_kind("table")
+        assert table_ref.as_execution_value(annotation=file) is table_ref
+
+        # An annotation that is not path-shaped at all (rehydration handles
+        # it separately) is left alone too.
+        assert ref.as_execution_value(annotation=object) is ref
+
+    def test_stat_fingerprint_handles_an_asset_ref_bound_to_bare_file(
+        self, tmp_path: Path
+    ) -> None:
+        """``--trust-mtimes`` stat indexing must not stat an ``AssetRef`` repr.
+
+        Before #307, a bare ``file`` annotation binding a native-kind asset
+        was already legal (``require_path_value`` allows it), but
+        ``resolved_args`` keeps the ``AssetRef`` unconverted — the stat
+        fingerprint used to build ``Path(str(value))`` from the ref's
+        ``repr()``, which crashes (or silently stats the wrong thing) rather
+        than fingerprinting the artifact.
+        """
+        from ginkgo.runtime.caching.cache import CacheStore
+        from ginkgo.runtime.caching.index import CacheIndex
+
+        @task()
+        def fingerprint_target(summary: file) -> str:
+            return str(summary)
+
+        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache", index=CacheIndex.in_memory())
+        ref = _ref_of_kind("file")
+
+        stat_key = cache.stat_fingerprint(
+            task_def=fingerprint_target,
+            resolved_args={"summary": ref},
+        )
+        assert stat_key
+
+        # Changing only the version id changes the fingerprint: it is keyed
+        # by the ref's stable identity, not by stat-ing a bogus path.
+        other_ref = _ref_of_kind("file")
+        object.__setattr__(other_ref, "version_id", "different-version")
+        other_key = cache.stat_fingerprint(
+            task_def=fingerprint_target,
+            resolved_args={"summary": other_ref},
+        )
+        assert other_key != stat_key
 
     def test_refusal_offers_remedies_the_consuming_task_can_use(self) -> None:
         """A driver task is not told to annotate ``object``; a Python task is."""
