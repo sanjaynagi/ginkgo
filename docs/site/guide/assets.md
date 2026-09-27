@@ -14,11 +14,11 @@ Return an asset from a task with `asset()` or one of the typed helpers:
 ```python
 from pathlib import Path
 
-from ginkgo import asset, file, task
+from ginkgo import Out, asset, file, task
 
 
 @task()
-def write_seed_card(item: str, output_path: str) -> file:
+def write_seed_card(item: str, output_path: Out[file]) -> file:
     output = Path(output_path)
     output.write_text(f"item={item}\n", encoding="utf-8")
     return asset(output, name=f"starter/seed_cards/{item}")
@@ -201,11 +201,11 @@ annotation**:
 So a consumer of a file asset just takes `file` — no union, no branching:
 
 ```python
-from ginkgo import file, task
+from ginkgo import Out, file, task
 
 
 @task()
-def normalize_seed_card(seed_card: file, output_path: str) -> file:
+def normalize_seed_card(seed_card: file, output_path: Out[file]) -> file:
     # seed_card is a path — a str — whether it came from asset(...) upstream
     # or a plain file(...); seed_card.asset is the AssetRef if you need
     # its metadata (key, version_id, content_hash, ...), and None otherwise.
@@ -261,14 +261,16 @@ the format the command expects — the body runs before the command is built:
 ```python
 import pandas as pd
 
-from ginkgo import file, shell, task
+from ginkgo import Out, file, shell, task
 
 
 @task(kind="shell")
-def count_rows(scores: object, csv_path: str, output_path: str) -> file:
-    # `scores` arrives as the live DataFrame, not a path.
+def count_rows(scores: object, csv_path: str, output_path: Out[file]) -> file:
+    # `scores` arrives as the live DataFrame, not a path. `csv_path` is a
+    # same-task scratch file — written and read here, never by another
+    # task — so it stays a plain path rather than `Out[file]`.
     pd.DataFrame(scores).to_csv(csv_path, index=False)
-    return shell(cmd=f"wc -l < {csv_path} > {output_path}", output=output_path)
+    return shell(cmd=f"wc -l < {csv_path} > {output_path}")
 ```
 
 Writing the file inside a `script` or `notebook` task body does not help: those

@@ -60,6 +60,7 @@ Side by side, the five bodies look like this:
 
 ```python
 from ginkgo import (
+    Out,
     SubWorkflowResult,
     file,
     notebook,
@@ -79,8 +80,8 @@ def filter_fastq(fastq: file) -> file:
     return shell(cmd="seqkit seq ...", output="results/filtered.fastq")
 
 @task("script", env="analysis_tools")       # script
-def build_brief(normalized_card: file, output_path: str) -> file:
-    return script("scripts/build_brief.py", output=output_path)
+def build_brief(normalized_card: file, output_path: Out[file]) -> file:
+    return script("scripts/build_brief.py")
 
 @task("notebook", env="analysis_tools")     # notebook
 def render_overview(summary_path: file) -> file:
@@ -207,14 +208,14 @@ is; parse it with `json.loads(args.name)`.
 ```python
 from pathlib import Path
 
-from ginkgo import file, script, task
+from ginkgo import Out, file, script, task
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 
 @task("script", env="analysis_tools")
-def build_brief(item: str, normalized_card: file, output_path: str) -> file:
-    return script(_SCRIPTS_DIR / "build_brief.py", output=output_path)
+def build_brief(item: str, normalized_card: file, output_path: Out[file]) -> file:
+    return script(_SCRIPTS_DIR / "build_brief.py")
 ```
 
 The interpreter is inferred from the file extension (`.py` → `python`,
@@ -314,7 +315,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import asset, file, flow, notebook, table, task
+from ginkgo import Out, asset, file, flow, notebook, table, task
 
 
 @task()
@@ -325,10 +326,9 @@ def differential_expression() -> object:
 
 
 @task()
-def stage_de_csv(de_table: object, output_path: str) -> file:
+def stage_de_csv(de_table: object, output_path: Out[file]) -> file:
     """Write the `table` payload as the CSV the notebook reads."""
     output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(de_table).to_csv(output, index=False)
     return asset(output, name="rnaseq/de_csv")
 
@@ -346,9 +346,10 @@ def main():
     return render_rnaseq_report(de_csv_path=de_csv, lfc_threshold=1.0)
 ```
 
-The `output_path` string is the staging task declaring where its own output
-goes, which is not the same move as handing a path from one task to another:
-what the notebook depends on is `de_csv`, the value the staging task returns.
+The `output_path: Out[file]` parameter is the staging task declaring where its
+own output goes, which is not the same move as handing a path from one task to
+another: what the notebook depends on is `de_csv`, the value the staging task
+returns.
 
 `de_csv_path` arrives in the notebook as the staged CSV's artifact path, so the
 notebook's `parameters` cell can keep a hand-run default such as
@@ -437,11 +438,11 @@ values. Pass that argument as a `per_branch()` template whose placeholders name
 the call's own arguments; it is rendered once per cell, from that cell's values:
 
 ```python
-from ginkgo import file, flow, per_branch, task
+from ginkgo import Out, file, flow, per_branch, task
 
 
 @task()
-def simulate(temperature: float, defect_density: float, output_path: str) -> file:
+def simulate(temperature: float, defect_density: float, output_path: Out[file]) -> file:
     ...
 
 
@@ -558,12 +559,14 @@ one of those outputs into a downstream task, index into the result with the
 `.output` proxy:
 
 ```python
-from ginkgo import file, shell, task
+from ginkgo import Out, file, shell, task
 
 
 @task("shell")
-def normalize_seed_card(seed_card: file, output_path: str, check_path: str) -> list[file]:
-    return shell(cmd=..., output=[output_path, check_path])
+def normalize_seed_card(
+    seed_card: file, output_path: Out[file], check_path: Out[file]
+) -> list[file]:
+    return shell(cmd=...)
 ```
 
 `seed_card` stays plain `file` even though the upstream task returns an asset:

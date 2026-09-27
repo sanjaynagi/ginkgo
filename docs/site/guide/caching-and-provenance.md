@@ -63,15 +63,15 @@ old key: it reports `↺ cached` and serves a stale result as current. Nothing
 warns, because from the cache's point of view nothing changed.
 
 ```python
-from ginkgo import file, task
+from ginkgo import Out, file, task
 
 # WRONG — coords is keyed on the path string, so a rewritten file still hits
 @task()
 def analyze(coords: str, output_path: str) -> str: ...
 
-# CORRECT — coords is keyed on the file's contents
+# CORRECT — coords is keyed on the file's contents, output_path is declared a write
 @task()
-def analyze(coords: file, output_path: str) -> file: ...
+def analyze(coords: file, output_path: Out[file]) -> file: ...
 ```
 
 The producer's annotation matters as much as the consumer's: a task declared
@@ -80,11 +80,10 @@ consumer asks for `file`. Note that `file` and `folder` are `str` subclasses, so
 a `str` annotation is indistinguishable from the correct one at the type level
 while behaving oppositely at the cache level — no type checker will catch this.
 
-An output path can stay `str` — the file does not exist when the key is
-computed, so there is nothing to hash — and annotating the return `file`
-content-tracks and stores the produced path as an artifact regardless of how
-the parameter that named it was annotated. `Out[file]` (below) is the other
-option: annotating the *parameter* itself, rather than leaving it `str`.
+Never leave an output path `str`: annotate the parameter `Out[file]` /
+`Out[folder]` (below), naming it as a write rather than a read. Annotating the
+return `file` on top of that content-tracks and stores the produced path as an
+artifact.
 
 `pathlib.Path` is rejected outright on a task parameter, since it is neither
 path- nor content-tracked: it is hashed as an opaque pickled object. Use

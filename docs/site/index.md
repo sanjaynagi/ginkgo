@@ -38,14 +38,13 @@ straight to the [Quickstart](getting-started/quickstart/).
 ### A Minimal Workflow
 
 ```python
-from ginkgo import flow, task
+from ginkgo import Out, file, flow, task
 
 
 @task()
-def write_text(message: str, output_path: str) -> str:
+def write_text(message: str, output_path: Out[file]):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(message)
-    return output_path
 
 
 @flow
