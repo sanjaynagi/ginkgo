@@ -84,6 +84,10 @@ class TaskSummary:
     dependency_ids: tuple[int, ...]
     dynamic_dependency_ids: tuple[int, ...]
     inputs: dict[str, Any] | None
+    input_trackings: dict[str, str] | None
+    """Each input parameter's cache-tracking label (``content``, ``asset``,
+    ``path``, ``value``, ``output``, ``untracked``), when recorded (issue
+    #307 phase 1). ``None`` for a run recorded before the label existed."""
     outputs: tuple[dict[str, Any], ...]
     assets: tuple[dict[str, Any], ...]
     resource_usage: dict[str, Any] | None
@@ -457,14 +461,17 @@ class RunSummary:
 def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ...]:
     """Build the ordered task list, with its inputs, outputs and edges."""
     inputs: dict[str, dict[str, Any]] = {}
+    trackings: dict[str, dict[str, str]] = {}
     for row in store.query(
         # Position 0 is the row that carries the rendered argument; a fan-in
         # parameter's later positions record only which asset sat at each one.
-        "SELECT task_id, param, value_summary FROM task_inputs WHERE run_id = ? "
+        "SELECT task_id, param, value_summary, tracking FROM task_inputs WHERE run_id = ? "
         "AND position = 0 ORDER BY task_id, param",
         (run_id,),
     ):
         inputs.setdefault(row["task_id"], {})[row["param"]] = loads(row["value_summary"])
+        if row["tracking"] is not None:
+            trackings.setdefault(row["task_id"], {})[row["param"]] = str(row["tracking"])
 
     tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     node_ids = {row["task_id"]: row["node_id"] for row in tasks}
@@ -496,6 +503,7 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         _build_task_summary(
             row=dict(row),
             inputs=inputs.get(row["task_id"]),
+            input_trackings=trackings.get(row["task_id"]),
             dependency_ids=dependencies.get((row["task_id"], "depends_on"), []),
             dynamic_dependency_ids=dependencies.get(
                 (row["task_id"], "dynamic_depends_on"),
@@ -510,6 +518,7 @@ def _build_task_summary(
     *,
     row: dict[str, Any],
     inputs: dict[str, Any] | None,
+    input_trackings: dict[str, str] | None,
     dependency_ids: list[int],
     dynamic_dependency_ids: list[int],
 ) -> TaskSummary:
@@ -558,6 +567,7 @@ def _build_task_summary(
         dependency_ids=tuple(sorted(dependency_ids)),
         dynamic_dependency_ids=tuple(sorted(dynamic_dependency_ids)),
         inputs=inputs,
+        input_trackings=input_trackings,
         outputs=tuple(item for item in outputs if isinstance(item, dict)),
         assets=assets,
         resource_usage=_mapping(row.get("resource_usage")) or None,

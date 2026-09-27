@@ -18,7 +18,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from rich.markup import escape
 from rich.text import Text
 
 from ginkgo import query
@@ -142,7 +144,10 @@ def command_cache(args) -> int:
 
         with open_run(run_id) as (reader, resolved):
             payload = explain_run_cache(reader=reader, run_id=resolved)
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            _render_explain_text(rich_console, payload)
         return 0
 
     return _clear(args, rich_console)
@@ -470,6 +475,113 @@ def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
     for artifact_id in store.list_artifact_ids():
         if artifact_id not in referenced:
             store.delete(artifact_id=artifact_id)
+
+
+#: Rich style for each tracking label ``cache explain`` prints, chosen to
+#: draw the eye to ``path`` — the one label that names a silent-staleness
+#: risk (issues #121/#281) rather than a deliberate design choice.
+_TRACKING_STYLES = {
+    "path": "yellow",
+    "content": "green",
+    "asset": "cyan",
+    "output": "blue",
+    "value": "dim",
+    "untracked": "dim",
+}
+
+#: A short hint printed next to a label that names a real tracking gap.
+_TRACKING_HINTS = {
+    "path": "tracked by path string only — annotate `file`/`folder` to track contents",
+}
+
+_REASON_TEXT = {
+    "all_inputs_match": "cache hit — every input matched the stored entry",
+    "no_entry_for_key": "no cache entry exists for this key",
+    "no_prior_entry": "no earlier entry to compare against",
+    "source_hash_changed": "the task's source changed",
+    "version_bump": "the task's declared version changed",
+    "env_changed": "the declared environment changed",
+    "input_changed": "one or more inputs changed",
+    "cache_key_changed": "the cache key changed",
+}
+
+
+def _render_explain_text(rich_console, payload: dict[str, Any]) -> None:
+    """Render ``ginkgo cache explain``'s payload as formatted text.
+
+    The JSON form (``--json``) is the same data; this is the other reading of
+    it, one task at a time, with each input's tracking label named and a
+    ``path`` label highlighted — the trap of issues #121/#281, where a task
+    input names an existing path but is annotated as a plain scalar, so the
+    cache key tracks the string, never the bytes it points at.
+    """
+    run_id = str(payload.get("run_id") or "")
+    workflow = payload.get("workflow")
+    header = f"[bold green]🌿 ginkgo cache[/] [bold]explain[/] [dim]{escape(run_id)}[/]"
+    if workflow:
+        header += f" [dim]({escape(str(workflow))})[/]"
+    rich_console.print(header + "\n")
+
+    tasks = [task for task in (payload.get("tasks") or []) if isinstance(task, dict)]
+    if not tasks:
+        rich_console.print("[dim]No tasks found for this run.[/]")
+        return
+    for task in tasks:
+        _render_task_explanation(rich_console, task)
+
+
+def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
+    """Render one task's cache explanation: identity, reason, inputs, diff."""
+    name = str(task.get("display_label") or task.get("task_name") or "unknown")
+    task_id = task.get("task_id")
+    header = f"[bold]{escape(name)}[/]"
+    if task_id:
+        header += f" [dim]({escape(str(task_id))})[/]"
+    rich_console.print(header)
+
+    cache_key = task.get("cache_key")
+    if cache_key:
+        rich_console.print(f"  cache key: [bold]{escape(str(cache_key))}[/]")
+
+    reason = str(task.get("reason") or "")
+    rich_console.print(f"  reason: {_REASON_TEXT.get(reason, escape(reason))}")
+
+    input_labels = task.get("input_labels")
+    if isinstance(input_labels, dict) and input_labels:
+        rich_console.print("  inputs:")
+        for param, label in sorted(input_labels.items()):
+            rich_console.print(f"    {_render_tracking_label(param=param, label=label)}")
+
+    compared_with = task.get("compared_with")
+    components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
+    if isinstance(compared_with, dict):
+        rich_console.print(
+            f"  compared with [bold]{escape(str(compared_with.get('cache_key')))}[/] "
+            f"[dim]({escape(str(compared_with.get('strategy')))})[/]"
+        )
+        for component in components:
+            rich_console.print(
+                f"    {escape(str(component.get('component')))} "
+                f"[dim]({escape(str(component.get('status')))})[/]"
+            )
+    rich_console.print()
+
+
+def _render_tracking_label(*, param: object, label: object) -> str:
+    """Return one ``  param: label`` line, styled and escaped for Rich.
+
+    ``escape`` guards against a param name or value that happens to look
+    like Rich markup (``[file]``, say) being swallowed as a tag rather than
+    printed.
+    """
+    label_str = str(label)
+    style = _TRACKING_STYLES.get(label_str)
+    text = f"[{style}]{escape(label_str)}[/{style}]" if style else escape(label_str)
+    line = f"[bold]{escape(str(param))}[/]: {text}"
+    hint = _TRACKING_HINTS.get(label_str)
+    if hint:
+        line += f" [dim]({hint})[/dim]"
+    return line
 
 
 def explain_run_cache(*, reader: Query, run_id: str) -> dict[str, object]:

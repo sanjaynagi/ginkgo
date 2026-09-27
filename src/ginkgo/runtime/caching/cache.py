@@ -29,6 +29,7 @@ from ginkgo.core.types import (
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
+from ginkgo.runtime.task_validation import label_input_value
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.caching.index import CacheIndex
@@ -200,6 +201,38 @@ class CacheStore:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded), input_hashes
+
+    def label_inputs(
+        self,
+        *,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any],
+    ) -> dict[str, str]:
+        """Return each input parameter's cache-tracking label.
+
+        Metadata only, for every parameter :meth:`build_cache_key` considers —
+        ``tmp_dir`` included, labelled ``"untracked"`` there exactly as it is
+        excluded from the key — but never folded into the key itself, so
+        computing or storing it cannot perturb it. ``ginkgo cache explain`` and
+        the run summary read this to name *how* an input is tracked: by
+        file/folder content, by an asset's version id, by its path string only
+        (the silent-staleness trap of issues #121/#281), by its own value, by
+        an ``Out[...]`` parameter's declared path (by design), or not at all.
+        See :func:`~ginkgo.runtime.task_validation.label_input_value` for the
+        categories.
+        """
+        labels: dict[str, str] = {}
+        for name, parameter in task_def.signature.parameters.items():
+            annotation = task_def.type_hints.get(name, parameter.annotation)
+            if annotation is tmp_dir:
+                labels[name] = "untracked"
+                continue
+            labels[name] = label_input_value(
+                annotation=annotation,
+                value=resolved_args[name],
+                is_output=name in task_def.output_params,
+            )
+        return labels
 
     def load(self, *, cache_key: str, task_def: TaskDef) -> Any:
         """Load a cached result if present and still valid for its environment."""
