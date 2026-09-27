@@ -34,7 +34,12 @@ from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import is_path_shaped_annotation, tmp_dir
+from ginkgo.core.types import (
+    is_path_shaped_annotation,
+    pair_elements_with_annotations,
+    tmp_dir,
+    unwrap_optional_annotation,
+)
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
@@ -1417,7 +1422,9 @@ class ConcurrentEvaluator:
 
         Mirrors the path-shaped check in ``_resolve_task_args``: a
         path-shaped annotation binds a filesystem path, so its ``AssetRef``
-        entries are left alone; every other parameter is rehydrated into the
+        entries are converted to the ``file``/``folder`` value the path
+        implies (see ``_convert_path_shaped_refs``) rather than rehydrated
+        into a live object; every other parameter is rehydrated into the
         live object the task body asked for.
         """
         rehydrated: dict[str, Any] = {}
@@ -1428,11 +1435,39 @@ class ConcurrentEvaluator:
                 parameter.annotation if parameter is not None else Any,
             )
             rehydrated[name] = (
-                value
+                self._convert_path_shaped_refs(annotation=annotation, value=value)
                 if is_path_shaped_annotation(annotation)
                 else self._rehydrate_wrapped_refs(value=value)
             )
         return rehydrated
+
+    def _convert_path_shaped_refs(self, *, annotation: Any, value: Any) -> Any:
+        """Convert ``AssetRef`` values bound to a ``file``/``folder`` annotation.
+
+        Walks the same container shapes ``validate_annotated_value`` walks —
+        ``| None``, then ``list[...]``/``tuple[...]`` element-wise via
+        ``pair_elements_with_annotations`` — so every ``AssetRef`` that passed
+        validation there reaches :meth:`AssetRef.as_execution_value` here with
+        the same per-element annotation. A value that is not an ``AssetRef``
+        (a literal path, ``None``, a ``file``/``folder`` marker already) is
+        returned unchanged.
+        """
+        annotation, _ = unwrap_optional_annotation(annotation)
+        if value is None:
+            return None
+
+        if isinstance(value, AssetRef):
+            return value.as_execution_value(annotation=annotation)
+
+        if isinstance(value, (list, tuple)):
+            paired = pair_elements_with_annotations(annotation=annotation, value=value)
+            converted = [
+                self._convert_path_shaped_refs(annotation=item_annotation, value=item)
+                for item_annotation, item in paired
+            ]
+            return tuple(converted) if isinstance(value, tuple) else converted
+
+        return value
 
     def _materialize(self, value: Any) -> Any:
         """Materialize a nested value using completed task-node results."""

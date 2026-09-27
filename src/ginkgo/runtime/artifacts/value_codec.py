@@ -54,10 +54,10 @@ def encode_value(
     # before the generic str branch below short-circuits them into bare
     # strings.
     if isinstance(value, file):
-        return {"__ginkgo_type__": "file", "value": str(value)}
+        return _encode_path_marker(kind="file", value=value)
 
     if isinstance(value, folder):
-        return {"__ginkgo_type__": "folder", "value": str(value)}
+        return _encode_path_marker(kind="folder", value=value)
 
     if isinstance(value, tmp_dir):
         return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
@@ -193,9 +193,9 @@ def decode_value(
 
     kind = payload.get("__ginkgo_type__")
     if kind == "file":
-        return file(payload["value"])
+        return _decode_path_marker(marker_cls=file, payload=payload)
     if kind == "folder":
-        return folder(payload["value"])
+        return _decode_path_marker(marker_cls=folder, payload=payload)
     if kind == "asset_ref":
         return AssetRef.from_dict(payload["value"])
     if kind == "asset_result":
@@ -250,6 +250,32 @@ def decode_value(
             payload=payload, base_dir=base_dir, artifact_store=artifact_store
         )
     return payload
+
+
+def _encode_path_marker(*, kind: str, value: file | folder) -> dict[str, Any]:
+    """Encode a ``file``/``folder`` marker, carrying its ``.asset`` if set.
+
+    A ``file``/``folder`` value bound to an asset upstream (rule #307)
+    carries the producing :class:`AssetRef` on ``.asset``; that attribute is
+    a plain Python instance attribute (``file``/``folder`` have no
+    ``__slots__``), which survives an in-process handoff for free but not a
+    pickle-free process-pool transport unless the codec carries it across
+    explicitly, which is what this does.
+    """
+    encoded: dict[str, Any] = {"__ginkgo_type__": kind, "value": str(value)}
+    asset_ref = getattr(value, "asset", None)
+    if asset_ref is not None:
+        encoded["asset"] = asset_ref.to_dict()
+    return encoded
+
+
+def _decode_path_marker(*, marker_cls: type[file] | type[folder], payload: dict[str, Any]) -> Any:
+    """Decode a ``file``/``folder`` marker, restoring its ``.asset`` if present."""
+    marker = marker_cls(payload["value"])
+    asset_data = payload.get("asset")
+    if asset_data is not None:
+        marker.asset = AssetRef.from_dict(asset_data)
+    return marker
 
 
 def encoded_asset_refs(payload: Any) -> list[AssetRef]:

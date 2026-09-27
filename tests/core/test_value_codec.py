@@ -6,7 +6,66 @@ import numpy as np
 import pandas as pd
 
 from ginkgo.core.asset import AssetKey, AssetRef, table
+from ginkgo.core.types import file, folder
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value, hash_value_bytes
+
+
+def _make_ref(*, kind: str = "file") -> AssetRef:
+    return AssetRef(
+        key=AssetKey(namespace=kind, name="prepared"),
+        version_id="version-123",
+        kind=kind,
+        artifact_id="artifact-123",
+        content_hash="content-123",
+        artifact_path="/artifacts/prepared",
+        metadata={},
+    )
+
+
+class TestPathMarkerAssetRoundtrip:
+    """A ``file``/``folder`` value's ``.asset`` survives the transport codec.
+
+    Rule #307: a ``file``/``folder`` execution-arg value carries the
+    producing ``AssetRef`` on ``.asset`` (a plain instance attribute, since
+    neither marker declares ``__slots__``). That attribute crosses a
+    process-pool worker transport only if the codec carries it across
+    explicitly — this is what ``value_codec`` does for both markers.
+    """
+
+    def test_file_asset_attribute_survives_the_codec(self, tmp_path) -> None:
+        ref = _make_ref(kind="file")
+        value = file(ref.artifact_path)
+        value.asset = ref
+
+        encoded = encode_value(value, base_dir=tmp_path)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert isinstance(decoded, file)
+        assert str(decoded) == ref.artifact_path
+        assert decoded.asset == ref
+
+    def test_folder_asset_attribute_survives_the_codec(self, tmp_path) -> None:
+        ref = _make_ref(kind="folder")
+        value = folder(ref.artifact_path)
+        value.asset = ref
+
+        encoded = encode_value(value, base_dir=tmp_path)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert isinstance(decoded, folder)
+        assert str(decoded) == ref.artifact_path
+        assert decoded.asset == ref
+
+    def test_file_without_an_asset_decodes_with_asset_none(self, tmp_path) -> None:
+        """A plain ``file(...)`` with no upstream asset round-trips as before."""
+        value = file("/some/path")
+
+        encoded = encode_value(value, base_dir=tmp_path)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert isinstance(decoded, file)
+        assert str(decoded) == "/some/path"
+        assert decoded.asset is None
 
 
 class TestHashValueBytes:

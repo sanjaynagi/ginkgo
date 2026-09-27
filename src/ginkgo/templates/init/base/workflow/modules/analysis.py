@@ -6,7 +6,7 @@ import json
 import shlex
 from pathlib import Path
 
-from ginkgo import AssetRef, file, script, shell, task
+from ginkgo import file, script, shell, task
 
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -38,7 +38,7 @@ def build_brief(
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def package_brief(brief: file | AssetRef, output_path: str) -> file:
+def package_brief(brief: file, output_path: str) -> file:
     """Package one Markdown brief in a Docker-backed shell task.
 
     Parameters
@@ -55,8 +55,7 @@ def package_brief(brief: file | AssetRef, output_path: str) -> file:
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    brief_path = Path(brief.artifact_path) if isinstance(brief, AssetRef) else Path(str(brief))
-    quoted_brief = shlex.quote(str(brief_path))
+    quoted_brief = shlex.quote(str(brief))
     quoted_output = shlex.quote(str(output))
     cmd = (
         f"printf 'brief={quoted_brief}\\n' > {quoted_output} && "
