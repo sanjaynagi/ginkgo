@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +10,8 @@ from typing import Any
 from ginkgo.config import config_session
 from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
+from ginkgo.core.task import TaskDef
+from ginkgo.core.types import is_str_path_annotation, looks_path_like_param_name
 from ginkgo.envs.container import ContainerImageNotFoundError
 from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.errors import failure_location
@@ -20,6 +22,7 @@ from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
 
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
+PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -120,6 +123,11 @@ def collect_workflow_diagnostics(
             )
         ]
         diagnostics.extend(unreachable_call_diagnostics(calls=evaluator.unreachable_calls))
+        diagnostics.extend(
+            path_like_str_param_diagnostics(
+                task_defs=(node.task_def for node in evaluator.task_nodes.values())
+            )
+        )
         return diagnostics
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
@@ -157,6 +165,66 @@ def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[Wo
         )
         for call in calls
     ]
+
+
+def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
+    """Build one warning per path-shaped ``str`` parameter across the graph.
+
+    A parameter named like a path (``path``, ``output_dir``, ``report_files``,
+    ...) but annotated a bare ``str`` shape (``str``, ``str | None``,
+    ``list[str]``, ``tuple[str, ...]``) is tracked by the cache only as a
+    string: editing the file it names does not invalidate the task, and
+    referencing it from another task's output creates no dependency edge —
+    this is issue #307. Purely static and name-based, so it flags every task
+    definition in the graph once, regardless of how many calls or branches
+    reach it.
+
+    Parameters
+    ----------
+    task_defs : Iterable[TaskDef]
+        Task definitions to check, typically one per node in the built graph
+        (``evaluator.task_nodes.values()``'s ``task_def``s). Deduplicated
+        internally by :attr:`TaskDef.name`, since the same task definition can
+        back many call sites.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per matching parameter, ordered by
+        first encounter.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen_task_names: set[str] = set()
+    for task_def in task_defs:
+        if task_def.name in seen_task_names:
+            continue
+        seen_task_names.add(task_def.name)
+        for param_name, annotation in task_def.type_hints.items():
+            if param_name == "return":
+                continue
+            if not looks_path_like_param_name(param_name):
+                continue
+            if not is_str_path_annotation(annotation):
+                continue
+            diagnostics.append(
+                WorkflowDiagnostic(
+                    severity="warning",
+                    code=PATH_LIKE_STR_PARAM_CODE,
+                    message=(
+                        f"{task_def.name}'s `{param_name}` parameter is annotated `str`, so it "
+                        "is cache-tracked by its path string alone: editing the file it names "
+                        "won't re-run the task, and no dependency edge is created when it comes "
+                        "from another task's output. Annotate it `file`/`folder` if the task "
+                        "reads that path, or `Out[file]`/`Out[folder]` if it writes to it."
+                    ),
+                    location=task_def.name,
+                    suggestion=(
+                        f"Annotate `{param_name}` `file`/`folder` if {task_def.name} reads it, "
+                        "or `Out[file]`/`Out[folder]` if it writes it."
+                    ),
+                )
+            )
+    return diagnostics
 
 
 def _diagnostic_from_exception(

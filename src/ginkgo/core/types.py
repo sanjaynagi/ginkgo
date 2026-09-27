@@ -156,6 +156,82 @@ def pair_elements_with_annotations(*, annotation: Any, value: Any) -> list[tuple
     return [(inner_annotation, item) for item in value]
 
 
+#: Exact parameter names that read as a path regardless of any suffix.
+_PATH_LIKE_PARAM_NAMES = frozenset({"path", "file", "dir"})
+
+#: Suffixes that mark a parameter name as path-like (``output_path``,
+#: ``report_files``, ``scratch_dir``, ``assets_folder``, ...).
+_PATH_LIKE_PARAM_SUFFIXES = (
+    "_path",
+    "_paths",
+    "_file",
+    "_files",
+    "_dir",
+    "_dirs",
+    "_folder",
+    "_folders",
+)
+
+
+def looks_path_like_param_name(name: str) -> bool:
+    """Return whether a parameter name reads as naming a filesystem path.
+
+    A purely lexical heuristic, deliberately name-only: it has no access to
+    the value a parameter receives, only its declared name. Used to decide
+    which ``str``-annotated parameters are worth warning about for issue
+    #307 — a ``str`` path is legitimate (e.g. a URL, a label), but one named
+    ``output_path`` or ``input_dir`` is very likely meant to be a real
+    filesystem path that should be content-tracked instead.
+
+    Parameters
+    ----------
+    name : str
+        The parameter name, as it appears in the task's signature.
+
+    Returns
+    -------
+    bool
+        ``True`` when the name is exactly ``path``/``file``/``dir`` or ends
+        with a path-like suffix such as ``_path`` or ``_folders``, matched
+        case-insensitively.
+    """
+    lowered = name.lower()
+    return lowered in _PATH_LIKE_PARAM_NAMES or lowered.endswith(_PATH_LIKE_PARAM_SUFFIXES)
+
+
+def is_str_path_annotation(annotation: Any) -> bool:
+    """Return whether an annotation is a bare ``str`` shape carrying no path tracking.
+
+    Matches ``str``, ``str | None``, ``list[str]``, and ``tuple[str, ...]`` —
+    the shapes a path-like parameter (see :func:`looks_path_like_param_name`)
+    would plausibly be declared with when its author reached for the built-in
+    ``str`` instead of :class:`file` / :class:`folder`. Anything else,
+    including ``file``/``folder`` themselves (``str`` subclasses) and a fixed
+    heterogeneous tuple, is left alone.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly a union or generic alias.
+
+    Returns
+    -------
+    bool
+        ``True`` when the annotation is exactly one of the ``str`` shapes
+        above.
+    """
+    unwrapped, _ = unwrap_optional_annotation(annotation)
+    if unwrapped is str:
+        return True
+    origin = get_origin(unwrapped)
+    args = get_args(unwrapped)
+    if origin is list:
+        return args == (str,)
+    if origin is tuple:
+        return args == (str, Ellipsis)
+    return False
+
+
 def is_path_like(value: Any) -> bool:
     """Return whether a value can be interpreted as a filesystem path.
 

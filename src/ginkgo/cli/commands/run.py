@@ -61,7 +61,10 @@ from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
-from ginkgo.runtime.diagnostics import unreachable_call_diagnostics
+from ginkgo.runtime.diagnostics import (
+    path_like_str_param_diagnostics,
+    unreachable_call_diagnostics,
+)
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.event_values import render_value
@@ -329,6 +332,18 @@ def run_workflow(
     )
     if not plan_reports_dropped:
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
+            console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
+
+    # A parameter named like a path but annotated a bare `str` is tracked by
+    # its path string alone: no content hash, no dependency edge (issue #307).
+    # Purely static and name-based, so it is cheap to check every time, but
+    # only printed on --dry-run: unlike the two warnings above it fires once
+    # per task definition regardless of how the graph is shaped, so a real
+    # run would otherwise repeat it on every invocation.
+    if dry_run:
+        for diagnostic in path_like_str_param_diagnostics(
+            task_defs=(node.task_def for node in evaluator.task_nodes.values())
+        ):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
     # Executors named by tasks themselves, which dispatch there regardless of

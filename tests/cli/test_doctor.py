@@ -134,6 +134,47 @@ def main():
         assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
 
 
+class TestDoctorPathLikeStrParam:
+    """Cover for issue #307: a ``str`` path parameter is a warning, not a failure."""
+
+    def _write_workflow_with_path_like_str_param(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def write_report(output_path: str) -> str:
+    return output_path
+
+@flow
+def main():
+    return write_report(output_path="report.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_path_like_str_param_is_a_warning_not_a_failure(self) -> None:
+        self._write_workflow_with_path_like_str_param()
+
+        result = _run_doctor(cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "path_like_str_param" in result.stdout
+        assert "output_path" in result.stdout
+
+    def test_path_like_str_param_is_reported_in_json_as_ok(self) -> None:
+        self._write_workflow_with_path_like_str_param()
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert payload["diagnostics"][0]["severity"] == "warning"
+        assert payload["diagnostics"][0]["code"] == "path_like_str_param"
+
+
 class TestDoctorWorkspaceLedger:
     """The workspace doctor runs in is reported on, not only the workflow."""
 
