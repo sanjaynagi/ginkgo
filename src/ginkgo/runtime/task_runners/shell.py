@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -251,6 +252,113 @@ def stringify_cli_argument(
     if isinstance(serialized, str):
         return serialized
     return json.dumps(serialized, sort_keys=True)
+
+
+def _is_flat_cli_token(value: Any) -> bool:
+    """Return whether a serialized list item renders as its own CLI token.
+
+    A path-shaped or plain scalar (str, int, float — an ``AssetRef``, ``Path``,
+    ``file``, ``folder`` or date/time has already become one of these by
+    :func:`serialize_cli_argument_value`) has an unambiguous single-token
+    text form. ``bool`` is excluded even though it subclasses ``int``: a list
+    of booleans has no positional CLI idiom, so it falls back to JSON like
+    ``None``, nested lists, and dicts do.
+    """
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
+def render_cli_tokens(
+    *,
+    option: str,
+    value: Any,
+    label: str = "A task argument",
+    task_kind: str | None = None,
+) -> list[str]:
+    """Render one resolved task argument as shell-quoted ``--option`` tokens.
+
+    Used by the script runner, where each resolved argument becomes one or
+    more literal command-line tokens (unlike a notebook's parameter file,
+    which keeps real JSON/YAML values via :func:`serialize_cli_argument_value`
+    directly). The rendering follows the conventional argparse idioms so a
+    script's own parser can declare the matching option:
+
+    - A ``list``/``tuple`` whose items are all scalars or paths (str, int,
+      float, ``Path``, ``file``, ``folder``, an ``AssetRef`` resolving to a
+      path) renders as the option followed by each item as its own token —
+      pairs with ``nargs="*"``/``"+"``. An empty list renders as the bare
+      option, matching what ``nargs="*"`` gives back: ``[]``. A list holding
+      anything else (``None``, a ``bool``, a nested list, a dict) has no flat
+      positional form and keeps the previous single-token JSON rendering.
+    - ``True`` renders as the bare option — pairs with
+      ``action="store_true"``. ``False`` omits the option entirely, rather
+      than emitting ``--flag false`` which ``store_true`` cannot parse back.
+    - Every other value (including ``None``) keeps the single-token
+      rendering :func:`stringify_cli_argument` already gave it.
+
+    Returns
+    -------
+    list[str]
+        Zero or more shell-quoted tokens to append to the command line —
+        empty for ``False``, the bare quoted option alone for ``True`` or an
+        empty list, or the option followed by one or more value tokens
+        otherwise.
+    """
+    quoted_option = shlex.quote(option)
+
+    if isinstance(value, bool):
+        return [quoted_option] if value else []
+
+    if isinstance(value, (list, tuple)):
+        serialized = serialize_cli_argument_value(value, label=label, task_kind=task_kind)
+        if all(_is_flat_cli_token(item) for item in serialized):
+            return [quoted_option, *(shlex.quote(str(item)) for item in serialized)]
+        return [quoted_option, shlex.quote(json.dumps(serialized, sort_keys=True))]
+
+    rendered = stringify_cli_argument(value, label=label, task_kind=task_kind)
+    return [quoted_option, shlex.quote(rendered)]
+
+
+def render_repeated_cli_tokens(
+    *,
+    option: str,
+    value: Any,
+    label: str = "A task argument",
+    task_kind: str | None = None,
+) -> list[str]:
+    """Render one resolved task argument for a marimo notebook's command line.
+
+    A marimo notebook runs as ``python notebook.py --name value ...`` and reads
+    its arguments with ``mo.cli_args()``, which joins the space-separated
+    tokens after an option into one string but collects a *repeated* option
+    into a list. So a ``list``/``tuple`` whose items are all scalars or paths
+    renders as the option repeated once per item (``--clusters a.tsv
+    --clusters b.tsv``), which ``mo.cli_args().get_all("clusters")`` reads
+    back as a list — and argparse as ``action="append"``. An empty list omits
+    the option, which ``get_all`` reads back as ``[]``. A list holding
+    anything else keeps the single-token JSON rendering.
+
+    Every other value, ``bool`` included, keeps the single-token rendering
+    :func:`stringify_cli_argument` gives it: ``mo.cli_args()`` converts
+    ``--flag true``/``--flag false`` into a real boolean, while a bare
+    ``--flag`` would come back as an empty string.
+
+    Returns
+    -------
+    list[str]
+        Zero or more shell-quoted tokens to append to the command line.
+    """
+    quoted_option = shlex.quote(option)
+
+    if isinstance(value, (list, tuple)):
+        serialized = serialize_cli_argument_value(value, label=label, task_kind=task_kind)
+        if all(_is_flat_cli_token(item) for item in serialized):
+            tokens: list[str] = []
+            for item in serialized:
+                tokens.extend([quoted_option, shlex.quote(str(item))])
+            return tokens
+
+    rendered = stringify_cli_argument(value, label=label, task_kind=task_kind)
+    return [quoted_option, shlex.quote(rendered)]
 
 
 def _declared_item_path(item: Any) -> Path:

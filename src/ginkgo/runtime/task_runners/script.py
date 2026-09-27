@@ -21,7 +21,7 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
-    stringify_cli_argument,
+    render_cli_tokens,
 )
 
 
@@ -56,15 +56,17 @@ class ScriptRunner(DriverTaskRunner):
         cmd_parts = [interpreter_cmd, shlex.quote(str(directive.path))]
         for name, value in node.execution_args.items():
             option = f"--{name.replace('_', '-')}"
-            rendered = stringify_cli_argument(
-                value,
-                label=f"{node.task_def.name}.{name}",
-                # This runner *is* the script boundary: a task declared
-                # ``kind="shell"`` whose body returns ``script(...)`` lands here
-                # too, and its arguments cross the same way.
-                task_kind="script",
+            cmd_parts.extend(
+                render_cli_tokens(
+                    option=option,
+                    value=value,
+                    label=f"{node.task_def.name}.{name}",
+                    # This runner *is* the script boundary: a task declared
+                    # ``kind="shell"`` whose body returns ``script(...)`` lands
+                    # here too, and its arguments cross the same way.
+                    task_kind="script",
+                )
             )
-            cmd_parts.extend([shlex.quote(option), shlex.quote(rendered)])
         cmd = " ".join(cmd_parts)
 
         completed = self.shell_runner.run_logged_command(

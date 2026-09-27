@@ -65,7 +65,13 @@ def script(
 
     Called from inside a ``@task("script")`` body with fully resolved
     argument values. Resolved task inputs are forwarded to the script as
-    ``--param-name value`` CLI arguments.
+    ``--param-name value`` CLI arguments. A ``list``/``tuple`` of scalars or
+    paths forwards as the option followed by each item as its own token
+    (``nargs="*"``/``"+"``); an empty list forwards as the bare option. A
+    ``bool`` forwards as a flag (``action="store_true"``): ``True`` is the
+    bare option, ``False`` omits it. A list holding anything else — ``None``,
+    a ``bool``, a nested list, a dict — has no positional form and forwards
+    as a single JSON-encoded token, the same as a dict always does.
 
     Parameters
     ----------
