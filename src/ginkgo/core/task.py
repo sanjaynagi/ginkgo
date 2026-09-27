@@ -1229,6 +1229,11 @@ def _resolve_type_hints(
             )
         resolved[name] = plain_hints.get(name, hint)
 
+    # The return annotation drives return coercion, validation and output
+    # restoration on a cache hit, so it must survive the unwrapping above.
+    if "return" in plain_hints:
+        resolved["return"] = plain_hints["return"]
+
     return resolved, frozenset(output_params)
 
 
