@@ -1470,9 +1470,9 @@ class ConcurrentEvaluator:
         the existing file coercion path, and the latter carry binary
         payloads that users rarely consume as live Python objects.
 
-        Callers decide whether to rehydrate at all: ``_resolve_task_args``
-        skips this entirely for a path-shaped annotation, which binds a
-        filesystem path rather than a live object.
+        Callers decide whether to rehydrate at all:
+        ``_rehydrate_execution_args`` skips this entirely for a path-shaped
+        annotation, which binds a filesystem path rather than a live object.
 
         Parameters
         ----------
