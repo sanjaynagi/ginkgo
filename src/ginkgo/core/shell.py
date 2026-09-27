@@ -27,19 +27,24 @@ class ShellDirective(ExecutionDirective):
     ----------
     cmd : str
         The shell command (already interpolated with resolved values).
-    output : str | list[str] | tuple[str, ...]
+    output : str | list[str] | tuple[str, ...] | None
         Expected output path or paths. Used for cache checking and post-
-        execution validation.
+        execution validation. May be omitted (``None``) when the task
+        declares ``Out[...]`` parameters — the runner infers it from their
+        declared paths; a task with no ``Out[...]`` parameters must still
+        declare it.
     log : str | None
         Optional path to capture stdout/stderr.
     """
 
     cmd: str
-    output: ShellOutput
+    output: ShellOutput | None = None
     log: str | None = None
 
 
-def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellDirective:
+def shell(
+    *, cmd: str, output: ShellOutput | None = None, log: str | None = None
+) -> ShellDirective:
     """Create a shell command expression.
 
     Called from inside a ``@task(kind="shell")`` body with fully resolved
@@ -50,8 +55,11 @@ def shell(*, cmd: str, output: ShellOutput, log: str | None = None) -> ShellDire
     ----------
     cmd : str
         The shell command to run.
-    output : str | list[str] | tuple[str, ...]
-        The expected output path or paths.
+    output : str | list[str] | tuple[str, ...] | None
+        The expected output path or paths. May be omitted when the task
+        declares ``Out[...]`` parameters, in which case the runner infers
+        it from their declared paths; the runner still requires it when the
+        task declares none.
     log : str | None
         Optional path to capture stdout/stderr.
 

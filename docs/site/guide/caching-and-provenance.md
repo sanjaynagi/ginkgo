@@ -123,12 +123,64 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   re-runs.
 - Not yet supported for remote tasks (`remote=True` / `executor=`) — routing
   an `Out[...]`-declared task remotely raises at dispatch.
+- The parent directory of every declared `Out[...]` path is created
+  automatically before the task body runs (`mkdir(parents=True)`), so a task
+  writing into a fresh subdirectory needs no boilerplate of its own. For
+  `Out[folder]` only the *parent* is created, not the folder itself — tools
+  differ on whether they want the target directory to already exist.
 
 `Out[...]` does not (yet) infer a dependency edge to a downstream consumer of
-the same path, or content-track the produced file the way `-> file` does —
-those are tracked separately; for now, still annotate the *return* `file` /
-`folder` when the produced path should be content-addressed and stored as an
-artifact.
+the same path — that is tracked separately.
+
+### Inferring the return from `Out[...]`
+
+A task with at least one `Out[...]` parameter and *no return annotation at
+all* has its return value inferred, so `return file(output_path)` is no
+longer needed just to make an output content-tracked, cached, and restorable:
+
+```python
+@task()
+def align(reads: file, bam: Out[file], qc_dir: Out[folder]):
+    ...  # writes bam and qc_dir; no return statement needed
+```
+
+- One `Out[...]` parameter infers that parameter's own value (`file` /
+  `folder`, or a list/tuple of them for a container `Out`, `None` for an
+  absent optional one).
+- Several infer a tuple of their values, in parameter declaration order —
+  effectively `-> tuple[file, folder]` for the example above.
+- An explicit `-> None` is not inferred — it means what it says. A python
+  task body that returns anything other than `None` under inference is a
+  clear error: add an explicit return annotation if the task needs to return
+  something else.
+- For a `shell`/`script`/`notebook` task, the directive's own executed result
+  becomes the inferred value the same way — see below.
+
+Once inferred, the value goes through the same machinery an explicit `->
+file` return does: content tracking, artifact storage, cache restoration,
+and dependency edges to downstream consumers.
+
+### Selecting one output: `.output["name"]`
+
+A call whose task declares `Out[...]` parameters can select one of them by
+name, in addition to the existing positional `.output[i]`:
+
+```python
+@task(kind="shell")
+def normalize(src: file, dest: Out[file], check: Out[file]):
+    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+
+norm = normalize(src="in.txt", dest="out.txt", check="out.sha")
+normalized = norm.output["dest"]
+```
+
+`.output["name"]` resolves to that `Out[...]` parameter's own resolved
+argument (coerced to `file`/`folder`) — not the task's return value — so it
+works whether the return is explicit or inferred, and creates a real
+dependency edge on the producing node, same as integer indexing. It works on
+a `.map()` result too, yielding the per-branch list. A name that is not one
+of the task's `Out[...]` parameters is a clear error at flow-construction
+time, naming the task's actual `Out[...]` parameters.
 
 ## Artifact Storage
 

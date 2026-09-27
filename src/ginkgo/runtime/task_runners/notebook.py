@@ -43,6 +43,7 @@ from ginkgo.runtime.task_runners.shell import (
     iter_output_values,
     remove_declared_output,
     render_repeated_cli_tokens,
+    resolve_declared_output,
     serialize_cli_argument_value,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -306,15 +307,19 @@ class NotebookRunner(DriverTaskRunner):
         the export failure.
         """
         assert node.execution_args is not None
+        assert node.resolved_args is not None
         notebook_path = directive.path
         notebook_kind = "ipynb" if notebook_path.suffix.lower() == ".ipynb" else "marimo"
         user_log_path = Path(directive.log) if directive.log is not None else None
         description = fn_description(node.task_def.fn)
+        output = resolve_declared_output(
+            task_def=node.task_def, resolved_args=node.resolved_args, given=directive.output
+        )
 
         artifacts = self._notebook_artifacts(node=node, notebook_kind=notebook_kind)
         self._prepare_notebook_artifacts(artifacts=artifacts)
-        if directive.output is not None:
-            for output_path in iter_output_values(directive.output):
+        if output is not None:
+            for output_path in iter_output_values(output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
         kernel_spec = (
@@ -356,7 +361,7 @@ class NotebookRunner(DriverTaskRunner):
             node=node,
             cmd=command,
             user_log_path=user_log_path,
-            mounts=declared_output_mounts(output=directive.output),
+            mounts=declared_output_mounts(output=output),
         )
         if completed.returncode != 0:
             self._record_notebook_manifest(
@@ -413,7 +418,7 @@ class NotebookRunner(DriverTaskRunner):
                 f"HTML export failed; {artifacts.html_path} holds the export error "
                 "instead of the rendered notebook.",
             )
-            if self._html_is_task_result(directive=directive, html_path=artifacts.html_path):
+            if self._html_is_task_result(output=output, html_path=artifacts.html_path):
                 hint = "The notebook executed successfully; only the HTML export failed."
                 if artifacts.executed_path is not None:
                     hint = f"{hint} The executed notebook is at {artifacts.executed_path}."
@@ -439,18 +444,18 @@ class NotebookRunner(DriverTaskRunner):
             )
 
         # Validate and return declared outputs, or fall back to HTML artifact.
-        if directive.output is None:
+        if output is None:
             return self.validator.coerce_return_value(
                 task_def=node.task_def, value=str(artifacts.html_path)
             )
         return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            output=directive.output,
+            output=output,
         )
 
     @staticmethod
-    def _html_is_task_result(*, directive: NotebookDirective, html_path: Path) -> bool:
+    def _html_is_task_result(*, output: Any, html_path: Path) -> bool:
         """Report whether the rendered HTML is what this task hands downstream.
 
         With no declared output the HTML path *is* the task's return value; a
@@ -458,10 +463,10 @@ class NotebookRunner(DriverTaskRunner):
         the deliverable, so a failed export leaves the task with nothing to
         return but the placeholder failure page.
         """
-        if directive.output is None:
+        if output is None:
             return True
         resolved = html_path.resolve()
-        return any(value.resolve() == resolved for value in iter_output_values(directive.output))
+        return any(value.resolve() == resolved for value in iter_output_values(output))
 
     # Cache replay -----------------------------------------------------------
 

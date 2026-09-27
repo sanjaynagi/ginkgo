@@ -348,7 +348,7 @@ class CacheStore:
             store. ``False`` if the cached artifact metadata is incomplete or
             a restore fails.
         """
-        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        return_annotation = task_def.effective_return_annotation
         artifact_ids = self.load_artifact_ids(cache_key=cache_key)
         if artifact_ids is None:
             return False
@@ -477,7 +477,7 @@ class CacheStore:
             Mapping from output path strings to the records stored for them.
         """
         records: dict[str, ArtifactRecord] = {}
-        return_annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        return_annotation = task_def.effective_return_annotation
         self._collect_output_artifacts(
             annotation=return_annotation,
             value=result,
