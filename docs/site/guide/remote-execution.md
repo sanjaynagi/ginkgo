@@ -17,11 +17,11 @@ before dispatching, so only tasks that genuinely need to execute are sent to the
 cloud.
 
 ```python
-from ginkgo import task
+from ginkgo import file, task
 
 # Runs locally (default).
 @task()
-def preprocess(data_path: str) -> str:
+def preprocess(data_path: file) -> str:
     ...
 
 # Runs locally if --gpus covers the request; otherwise dispatched to the
@@ -32,7 +32,7 @@ def train_model(dataset: str) -> str:
 
 # Explicitly remote, on whichever executor --executor names.
 @task(remote=True, memory="32Gi")
-def large_computation(input_path: str) -> str:
+def large_computation(input_path: file) -> str:
     ...
 
 # Always on this executor, whatever the run default is.

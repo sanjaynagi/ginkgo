@@ -3,84 +3,98 @@
 Use normal Python tasks for orchestration and Python logic:
 
 ```python
-from ginkgo import file, task
+from ginkgo import Out, file, task
 
 @task()
-def summarize(input_path: file, output_path: str) -> file:
+def summarize(input_path: file, output_path: Out[file]) -> file:
     ...
 ```
 
 Use shell tasks when the real unit of work is a command with declared outputs:
 
 ```python
-from ginkgo import file, shell, task
+from ginkgo import Out, file, shell, task
 
 @task(kind="shell")
-def normalize(input_path: file, output_path: str):
-    return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}", output=output_path)
+def normalize(input_path: file, output_path: Out[file]):
+    return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}")
 ```
 
 Use script tasks when a standalone script should run in a task-local Pixi env:
 
 ```python
-from pathlib import Path
-from ginkgo import script, task
+from ginkgo import Out, file, script, task
 
 @task("script", env="analysis_tools")
-def build_report(output_path: str):
-    return script(path="scripts/build_report.py", output=output_path)
+def build_report(output_path: Out[file]):
+    return script(path="scripts/build_report.py")
 ```
 
 Use notebook tasks when the notebook is part of the workflow output:
 
 ```python
-from pathlib import Path
-from ginkgo import notebook, task
+from ginkgo import Out, file, notebook, task
 
 @task("notebook")
-def render_report(sample_id: str):
-    output=f"report_summary_{sample_id}.csv"
-    return notebook(path=f"notebooks/report_{sample_id}.ipynb", output=output)
+def render_report(sample_id: str, output_path: Out[file]):
+    return notebook(path=f"notebooks/report_{sample_id}.ipynb")
 ```
 
 ## Ginkgo types and cache correctness
 
-Annotate any path a task reads with `file` / `folder` instead of `str` — whether
-that path comes from an upstream task's return value or is written down as a
-raw input path in the flow — so that ginkgo hashes the **contents** of the path
-when building the cache key. A plain `str` annotation hashes only the path
-string — if the file at that path changes after the cache key is computed (an
-upstream task overwriting it, or someone editing a raw input path by hand), a
-task whose input is typed `str` will see a spurious cache hit and silently
-return stale output.
+Every path a task touches is either read or written, and the annotation says
+which:
+
+- A path the task **reads** — whether it comes from an upstream task's
+  return value or is written down as a raw input path in the flow — is
+  `file` or `folder`. Ginkgo hashes its **contents** into the cache key, so
+  the task reruns when the file changes, not only when the path string does.
+- A path the task **writes** is `Out[file]` or `Out[folder]`. It need not
+  exist before the task runs — Ginkgo creates its parent directory
+  automatically — and it is cached by path only, since its contents *are*
+  this run's output. Ginkgo checks the path exists (with the right kind)
+  after the task runs, and registers it as produced by this task so a
+  downstream task that reads the same path gets a real dependency edge.
 
 ```python
-from ginkgo import file, folder, task
+from ginkgo import Out, file, folder, task
 
-# CORRECT — cache invalidates when file content changes
 @task()
-def analyse(manifest: file, output_dir: folder) -> file:
-    ...
-
-# WRONG — cache key depends only on the path string, not the file contents
-@task()
-def analyse(manifest: str, output_dir: str) -> str:
+def analyse(manifest: file, output_dir: Out[folder]) -> file:
     ...
 ```
 
-Use `file` for any single-file path a task reads — whether it is produced by
-another task or is a raw path written into the flow. Use `folder` the same way
-for directories. Leave a task's *output* path typed `str`: `file`/`folder`
-require the path to already exist when the cache key is computed, which an
-output path does not yet. Ginkgo uses these types to:
+Never annotate a path parameter `str`, on either side — `str` carries no
+content tracking and no dependency edge, so `ginkgo doctor` and
+`--dry-run` warn on a `str` parameter whose name looks path-like (`path`,
+`output_dir`, `report_files`, ...).
 
-1. Hash file/folder contents into the cache key, so the cache correctly
-   invalidates when upstream outputs change.
-2. Copy outputs into the artifact store for provenance and remote caching.
+A task with `Out[...]` parameters and no return annotation has its return
+value inferred from them — one `Out[...]` parameter becomes the return
+value, several become a tuple in declaration order — so a task that only
+writes its declared outputs and returns nothing else needs no `return`
+statement at all:
+
+```python
+@task()
+def summarize(input_path: file, output_path: Out[file]):
+    Path(output_path).write_text(summarize_contents(input_path))
+    # No return: output_path is inferred as this task's `file` result.
+```
+
+Call `.output["name"]` on a task call (or a `.map()`/`.product_map()`
+result) to select one `Out[...]` parameter by name, independent of what the
+task returns:
+
+```python
+results = normalize().map(input_path=inputs, output_path=out_paths, check_path=check_paths)
+normalized = results.output["output_path"]
+checks = results.output["check_path"]
+```
 
 The type annotation on the *return value* matters too — a task returning a
-`file`-typed path will have its output stored as an artifact; a task returning
-`str` will not.
+`file`-typed path will have its output stored as an artifact; a task
+returning `str` will not.
 
 Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
 should flow through Ginkgo task inputs. Let the runtime stage them locally;

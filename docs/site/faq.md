@@ -62,14 +62,13 @@ path. An explicit path accepts any file name, anywhere.
 A single task plus a flow that returns its deferred call:
 
 ```python
-from ginkgo import flow, task
+from ginkgo import Out, file, flow, task
 
 
 @task()
-def write_text(message: str, output_path: str) -> str:
+def write_text(message: str, output_path: Out[file]):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(message)
-    return output_path
 
 
 @flow
@@ -97,14 +96,13 @@ returns the resulting `Expr` / `ExprList` tree, which the evaluator walks to
 build the DAG.
 
 ```python
-from ginkgo import flow, task
+from ginkgo import Out, file, flow, task
 
 
 @task()
-def write_text(message: str, output_path: str) -> str:
+def write_text(message: str, output_path: Out[file]):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(message)
-    return output_path
 
 
 @flow
@@ -229,7 +227,7 @@ or by keyword (`@task(kind="shell")`); `python` is the default.
   self-contained child `ginkgo run`, yielding a `SubWorkflowResult`.
 
 ```python
-from ginkgo import notebook, script, shell, subworkflow, task
+from ginkgo import Out, file, notebook, script, shell, subworkflow, task
 
 
 @task("shell", env="bioinfo_tools")
@@ -238,8 +236,8 @@ def filter_reads(reads: file) -> file:
 
 
 @task("script")
-def build_brief(card: file, output_path: str) -> file:
-    return script("scripts/build_brief.py", output=output_path)
+def build_brief(card: file, output_path: Out[file]) -> file:
+    return script("scripts/build_brief.py")
 ```
 
 ### Are there path-oriented input/output types?
@@ -273,12 +271,14 @@ difference: if an argument resolved from an upstream task arrives as a plain
 `str` naming an existing path, the run prints a notice naming both ends and
 the annotation to add.
 
-For a path a task only *writes* — an output location or a log sink — `str`
-still works, but `Out[file]` / `Out[folder]` is now the declared alternative:
-`Out[...]` marks the parameter itself as a write rather than a read, so it is
-validated for writability (not existence) before execution, contributes only
-its path string to the cache key, and is checked to exist — with the right
-kind — after execution. See
+For a path a task only *writes* — an output location or a log sink —
+annotate it `Out[file]` / `Out[folder]` rather than `str`: `Out[...]` marks
+the parameter itself as a write rather than a read, so it is validated for
+writability (not existence) before execution, contributes only its path
+string to the cache key, and is checked to exist — with the right kind —
+after execution. Ginkgo also creates the parent directory for you, and a
+task whose only outputs are its declared `Out[...]` parameters needs no
+return statement at all — see
 [Reads vs. Writes: `file` vs. `Out[file]`](guide/caching-and-provenance.md#reads-vs-writes-file-vs-outfile).
 
 That runtime check only fires once a value has actually crossed a task
@@ -736,10 +736,10 @@ and an executor is configured, and is a build error otherwise. Everything
 else runs in the local process pool as usual.
 
 ```python
-from ginkgo import task
+from ginkgo import file, task
 
 @task(remote=True, memory="32Gi")
-def large_computation(input_path: str) -> str:
+def large_computation(input_path: file) -> str:
     ...
 
 @task(gpu=1, threads=8)          # remote only if --gpus can't satisfy it

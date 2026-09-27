@@ -39,15 +39,15 @@ def main():
         output_path=seed_paths,
     )
 
-    # normalize_seed_card returns tuple[file, file]: (normalized_card, checksum).
-    # Use .output[i] to select individual elements from the tuple result.
+    # normalize_seed_card writes two Out[file] paths: output_path and check_path.
+    # Use .output["name"] to select one by its parameter name.
     norm_results = normalize_seed_card().map(
         seed_card=seed_cards,
         output_path=normalized_paths,
         check_path=check_paths,
     )
-    normalized_cards = norm_results.output[0]
-    checksums = norm_results.output[1]
+    normalized_cards = norm_results.output["output_path"]
+    checksums = norm_results.output["check_path"]
 
     briefs = build_brief().map(
         item=items,
@@ -61,7 +61,7 @@ def main():
 
     summary = write_summary(
         items=items,
-        seed_paths=seed_paths,
+        seed_locations=seed_paths,
         normalized_cards=normalized_cards,
         checksums=checksums,
         briefs=briefs,

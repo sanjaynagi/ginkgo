@@ -6,7 +6,7 @@ import json
 import shlex
 from pathlib import Path
 
-from ginkgo import file, script, shell, task
+from ginkgo import Out, file, script, shell, task
 
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -16,7 +16,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 def build_brief(
     item: str,
     normalized_card: file,
-    output_path: str,
+    output_path: Out[file],
 ) -> file:
     """Build one Markdown brief in a Pixi-backed script task.
 
@@ -26,7 +26,7 @@ def build_brief(
         Synthetic item identifier.
     normalized_card : file
         Normalized text artifact.
-    output_path : str
+    output_path : Out[file]
         Destination path for the Markdown brief.
 
     Returns
@@ -34,18 +34,18 @@ def build_brief(
     file
         Markdown brief written by the script.
     """
-    return script(_SCRIPTS_DIR / "build_brief.py", output=output_path)
+    return script(_SCRIPTS_DIR / "build_brief.py")
 
 
 @task(kind="shell", env="docker://ubuntu:24.04")
-def package_brief(brief: file, output_path: str) -> file:
+def package_brief(brief: file, output_path: Out[file]) -> file:
     """Package one Markdown brief in a Docker-backed shell task.
 
     Parameters
     ----------
     brief : file
         Markdown brief to package.
-    output_path : str
+    output_path : Out[file]
         Destination path for the packaging report.
 
     Returns
@@ -53,22 +53,20 @@ def package_brief(brief: file, output_path: str) -> file:
     file
         Text packaging report.
     """
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
     quoted_brief = shlex.quote(str(brief))
-    quoted_output = shlex.quote(str(output))
+    quoted_output = shlex.quote(str(output_path))
     cmd = (
         f"printf 'brief={quoted_brief}\\n' > {quoted_output} && "
         f"printf 'word_count=' >> {quoted_output} && "
         f"wc -w < {quoted_brief} >> {quoted_output}"
     )
-    return shell(cmd=cmd, output=str(output))
+    return shell(cmd=cmd)
 
 
 @task()
 def write_summary(
     items: list[str],
-    seed_paths: list[str],
+    seed_locations: list[str],
     normalized_cards: list[file],
     checksums: list[file],
     briefs: list[file],
@@ -80,8 +78,10 @@ def write_summary(
     ----------
     items : list[str]
         Item identifiers for each fan-out branch.
-    seed_paths : list[str]
-        Seed text artifact paths.
+    seed_locations : list[str]
+        Seed artifact locations, recorded for display only — the seed
+        artifacts themselves are tracked via ``seed_card`` upstream, so this
+        is not annotated ``Out[...]`` or ``file``.
     normalized_cards : list[file]
         Normalized text artifacts.
     checksums : list[file]
@@ -97,9 +97,9 @@ def write_summary(
         JSON summary path.
     """
     rows = []
-    for item, seed_path, normalized_card, checksum, brief, package in zip(
+    for item, seed_location, normalized_card, checksum, brief, package in zip(
         items,
-        seed_paths,
+        seed_locations,
         normalized_cards,
         checksums,
         briefs,
@@ -109,7 +109,7 @@ def write_summary(
         rows.append(
             {
                 "item": item,
-                "seed_card": seed_path,
+                "seed_card": seed_location,
                 "normalized_card": str(normalized_card),
                 "checksum": str(checksum),
                 "brief": str(brief),
