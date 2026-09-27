@@ -189,12 +189,10 @@ class TaskDef:
         # Imported lazily: ``core`` must not depend on ``runtime`` at module
         # load time, only inside this property body (see similar lazy imports
         # in ``ginkgo.core.asset`` and ``ginkgo.core.types``).
-        from ginkgo.runtime.module_loader import USER_MODULE_PREFIX
+        from ginkgo.runtime.module_loader import cache_identity_module_name
 
         module = getattr(self.fn, "__module__", None) or ""
-        if module.startswith(USER_MODULE_PREFIX):
-            module = "<workflow>"
-        return f"{module}.{self.fn.__qualname__}"
+        return f"{cache_identity_module_name(module)}.{self.fn.__qualname__}"
 
     @property
     def required_params(self) -> frozenset[str]:

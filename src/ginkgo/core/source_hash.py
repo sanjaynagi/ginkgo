@@ -110,30 +110,17 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     if not isinstance(module, ModuleType):
         return hash_str(source)
 
+    # Imported lazily: ``core`` must not depend on ``runtime`` at module load
+    # time (see the similar imports in ``ginkgo.core.asset`` and
+    # ``ginkgo.core.types``).
+    from ginkgo.runtime.module_loader import cache_identity_module_name
+
     modules = _local_import_closure(module)
     module_hashes = [
-        f"{_cache_identity_module_name(name)}:{_hash_module_source(path)}"
+        f"{cache_identity_module_name(name)}:{_hash_module_source(path)}"
         for name, path in sorted(modules.items())
     ]
     return hash_str("\n".join((source, *module_hashes)))
-
-
-def _cache_identity_module_name(name: str) -> str:
-    """Return *name* with a single-file workflow's synthetic module dropped.
-
-    Such a module's name is unique to the *absolute path* the workflow file
-    was loaded from (see ``USER_MODULE_PREFIX``), so folding it verbatim into
-    the digest would make the digest path-dependent too, even though the text
-    it labels is identical byte-for-byte. Replaced with a fixed placeholder so
-    that renaming, moving, or copying a single-file workflow leaves its
-    source hash unchanged. Real package modules keep their stable dotted name.
-    """
-    # Imported lazily: ``core`` must not depend on ``runtime`` at module load
-    # time, only inside this function body (see similar lazy imports in
-    # ``ginkgo.core.asset`` and ``ginkgo.core.types``).
-    from ginkgo.runtime.module_loader import USER_MODULE_PREFIX
-
-    return "<workflow>" if name.startswith(USER_MODULE_PREFIX) else name
 
 
 def _hash_module_source(path: Path) -> str:
