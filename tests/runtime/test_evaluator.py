@@ -167,6 +167,11 @@ def logged_work_task(x: int, log_path: str) -> int:
 
 
 @task()
+def fit_site_species_trend_task(site: str, species: str) -> str:
+    return f"{site}:{species}"
+
+
+@task()
 def sum_keyword_pair_task(*, left: int, right: int) -> int:
     return left + right
 
@@ -571,6 +576,50 @@ class TestEvaluate:
             )
         )
         assert result == [10 + 100, 20 + 200, 30 + 300]
+
+    def test_two_axis_zip_map_display_label_reaches_the_store(self, tmp_path: Path) -> None:
+        """Issue #286: a two-axis zip fan-out's per-branch label must land in
+        the ledger's ``tasks.display_label`` column, distinct per branch."""
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
+        )
+        # The grid is crossed by hand, so the first axis repeats and cannot
+        # tell the branches apart on its own.
+        expr_list = fit_site_species_trend_task().map(
+            site=["north_fen", "north_fen", "south_bog", "south_bog"],
+            species=["sedge", "sphagnum", "sedge", "sphagnum"],
+        )
+        evaluator = ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
+        )
+        result = evaluator.evaluate(expr_list)
+        summary = recorder.finish()
+
+        assert result == [
+            "north_fen:sedge",
+            "north_fen:sphagnum",
+            "south_bog:sedge",
+            "south_bog:sphagnum",
+        ]
+        expected = [
+            "fit_site_species_trend_task[north_fen,sedge]",
+            "fit_site_species_trend_task[north_fen,sphagnum]",
+            "fit_site_species_trend_task[south_bog,sedge]",
+            "fit_site_species_trend_task[south_bog,sphagnum]",
+        ]
+        assert {task.display_label for task in summary.tasks} == set(expected)
+
+        with open_store(recorder.db, readonly=True) as store:
+            rows = store.query(
+                "SELECT display_label FROM tasks WHERE run_id = ? ORDER BY task_id",
+                (recorder.run_id,),
+            )
+        stored_labels = [row["display_label"] for row in rows]
+        assert stored_labels == expected
+        assert all(label is not None for label in stored_labels)
 
     def test_second_run_is_served_from_cache(self) -> None:
         log_path = "work-events.log"

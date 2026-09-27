@@ -433,6 +433,69 @@ class TestPartialCallMap:
         assert result[0].display_label_parts == ("alpha",)
         assert result[1].display_label_parts == ("beta",)
 
+    def test_map_two_scalar_axes_labels_every_branch_distinctly(self):
+        """Issue #286: zipping two varying axes must not collapse every
+        branch's label down to the first axis alone."""
+
+        @task()
+        def fit_site_species_trend(site: str, species: str) -> str:
+            return f"{site}:{species}"
+
+        sites = ["north_fen", "north_fen", "south_bog", "south_bog"]
+        species = ["sedge", "sphagnum", "sedge", "sphagnum"]
+        result = fit_site_species_trend().map(site=sites, species=species)
+
+        labels = [expr.display_label for expr in result]
+        assert labels == [
+            "fit_site_species_trend[north_fen,sedge]",
+            "fit_site_species_trend[north_fen,sphagnum]",
+            "fit_site_species_trend[south_bog,sedge]",
+            "fit_site_species_trend[south_bog,sphagnum]",
+        ]
+        # Every branch gets a distinct label even though "site" repeats.
+        assert len(set(labels)) == 4
+
+    def test_chained_map_composes_two_axis_zip_labels(self):
+        """A zip .map() chained onto an existing ExprList keeps every part."""
+
+        @task()
+        def process(batch: str, site: str, species: str) -> str:
+            return f"{batch}:{site}:{species}"
+
+        result = (
+            process()
+            .map(batch=["b1", "b2"])
+            .map(
+                site=["north_fen", "north_fen", "south_bog"],
+                species=["sedge", "sphagnum", "sedge"],
+            )
+        )
+        # Each of the 2 base branches (from the first .map()) is crossed with
+        # each of the 3 new rows (from the second). The site axis repeats, so
+        # the species axis joins the label after the inherited batch part.
+        assert [expr.display_label_parts for expr in result] == [
+            ("b1", "north_fen", "sedge"),
+            ("b1", "north_fen", "sphagnum"),
+            ("b1", "south_bog", "sedge"),
+            ("b2", "north_fen", "sedge"),
+            ("b2", "north_fen", "sphagnum"),
+            ("b2", "south_bog", "sedge"),
+        ]
+
+    def test_zip_map_labels_by_first_axis_when_it_is_distinct(self):
+        """An axis that already tells branches apart keeps the short label."""
+
+        @task()
+        def fastq_stats(sample_id: str, read_count: int) -> str:
+            return f"{sample_id}:{read_count}"
+
+        result = fastq_stats().map(sample_id=["sample_a", "sample_b"], read_count=[10, 20])
+
+        assert [expr.display_label for expr in result] == [
+            "fastq_stats[sample_a]",
+            "fastq_stats[sample_b]",
+        ]
+
 
 class TestFanOutDerivedArguments:
     """Per-branch derived values must never become a grid axis (issue #198)."""
