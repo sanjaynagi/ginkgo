@@ -258,7 +258,10 @@ def run_workflow(
 
     registry = PixiRegistry(
         project_root=Path.cwd(),
-        workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
+        workflow_root=resolve_envs_workflow_root(
+            project_root=Path.cwd(),
+            fallback=workflow_path.parent,
+        ),
     )
     secret_resolver = build_secret_resolver(
         project_root=Path.cwd(),

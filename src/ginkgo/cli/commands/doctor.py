@@ -49,16 +49,21 @@ def command_doctor(args) -> int:
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
-    # the canonical package's, not those beside whichever file is being checked.
-    # Validation only resolves manifests and probes PATH; nothing is built or
-    # installed. Built inside collect_workflow_diagnostics's try/except so
-    # construction failures surface as a diagnostic, not a crash.
+    # the canonical package's when one can be found unambiguously, falling
+    # back to the checked file's own directory otherwise (see
+    # resolve_envs_workflow_root). Validation only resolves manifests and
+    # probes PATH; nothing is built or installed. Built inside
+    # collect_workflow_diagnostics's try/except so construction failures
+    # surface as a diagnostic, not a crash.
     def build_backend() -> CompositeEnvironment:
         return CompositeEnvironment(
             local=LocalEnvironment(
                 pixi_registry=PixiRegistry(
                     project_root=Path.cwd(),
-                    workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
+                    workflow_root=resolve_envs_workflow_root(
+                        project_root=Path.cwd(),
+                        fallback=workflow_path.parent,
+                    ),
                 )
             ),
             container=container_backend_from_config(

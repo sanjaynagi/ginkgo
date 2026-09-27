@@ -68,6 +68,33 @@ Ginkgo resolves the environment, installs it if it is not installed yet, execute
 the shell payload inside it, and folds the environment lock identity into the
 cache key.
 
+### How A Named Environment Is Resolved
+
+`env="<name>"` is looked up (as `<name>/pixi.toml`, or `<name>/pyproject.toml`
+carrying a `[tool.pixi]` table) in these directories, in order, and the first
+match wins:
+
+1. **The workflow's own package.** Ginkgo discovers the project's canonical
+   workflow entry — a `flow.py` at the project root, or in exactly one of its
+   immediate subdirectories, however the command was invoked — and searches
+   `<that directory>/envs/`. This is what makes `workflow/envs/<env_name>/` (the
+   layout `ginkgo init` scaffolds) work, since `workflow/` is that directory.
+2. **The project root.** `<project_root>/envs/`, where `project_root` is the
+   directory the command was run from.
+
+Step 1 is skipped, and resolution falls back to the workflow file actually
+being run — not the project root — when no single canonical `flow.py` can be
+found: none exists, or more than one does (for example a leftover prototype
+entry file alongside the real one). Either way, an environment declared beside
+whichever `flow.py` you are actually running is always found; only a project
+with *no* discoverable `flow.py` at all falls back to the project root alone.
+
+An explicit path (`env="envs/genomics/pixi.toml"`, containing a `/`) bypasses
+this search entirely and is resolved directly against the project root.
+
+If the environment cannot be found anywhere, the error lists every directory
+that was searched, and what each one holds.
+
 ## Conda Environment Files
 
 If you already maintain a Conda `environment.yml`, you can point a task straight
