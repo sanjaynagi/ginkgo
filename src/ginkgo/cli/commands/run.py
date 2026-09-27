@@ -267,7 +267,11 @@ def run_workflow(
     )
     backend = CompositeEnvironment(
         local=LocalEnvironment(pixi_registry=registry),
-        container=container_backend_from_config(project_root=Path.cwd(), config=runtime_config),
+        # Only a dry run asks registries about missing images: a real run
+        # pulls them anyway, and its pull reports a missing one.
+        container=container_backend_from_config(
+            project_root=Path.cwd(), config=runtime_config, probe_registry=dry_run
+        ),
     )
 
     # Named executors: --executor picks the run default, and tasks may pin

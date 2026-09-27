@@ -192,6 +192,11 @@ class ContainerBackend:
     extra_mounts : tuple[str, ...]
         Escape hatch for paths that cannot be declared task inputs, as
         ``"/path"``, ``"/path:rw"``, or ``"/host:/container:rw"``.
+    probe_registry : bool
+        Whether validation may ask an image's registry if an image that is
+        not present locally exists. On for ``doctor`` and ``--dry-run``,
+        which pull nothing; off for a real run, whose own pull reports a
+        missing image without first paying for an extra registry round trip.
     """
 
     runtime: str = "docker"
@@ -201,6 +206,7 @@ class ContainerBackend:
     shell: str = "bash"
     auto_mount: bool = True
     extra_mounts: tuple[str, ...] = ()
+    probe_registry: bool = False
     _pulled_images: set[str] = field(default_factory=set, init=False, repr=False)
     _digest_cache: dict[str, str] = field(default_factory=dict, init=False, repr=False)
     # Images `validate_envs` has already cleared, so a workflow that declares
@@ -225,9 +231,9 @@ class ContainerBackend:
         A run is certain to fail if a declared image is neither present
         locally nor ever going to be pulled (``pull_policy = "never"``), so
         that case is raised here rather than left to be discovered mid-run.
-        When pulling is allowed and the image is not local, its registry is
-        given one best-effort, bounded, cached check (``manifest inspect``);
-        only a registry that positively reports the image missing or
+        When pulling is allowed, the image is not local and
+        ``probe_registry`` is set, its registry is given one best-effort,
+        bounded, cached check (``manifest inspect``); only a registry that positively reports the image missing or
         inaccessible raises — a timeout, network error, or unrecognised
         response is never treated as failure, since it must not block a run
         that would otherwise have succeeded.
@@ -269,7 +275,7 @@ class ContainerBackend:
                 ),
             )
 
-        if self._registry_reports_missing(image):
+        if self.probe_registry and self._registry_reports_missing(image):
             raise ContainerImageNotFoundError(
                 image=image,
                 reason=(
@@ -586,6 +592,7 @@ def container_backend_from_config(
     *,
     project_root: Path,
     config: dict[str, Any] | None = None,
+    probe_registry: bool = False,
 ) -> ContainerBackend:
     """Build a ``ContainerBackend`` from the ``[container]`` config table.
 
@@ -600,6 +607,9 @@ def container_backend_from_config(
     config : dict[str, Any] | None
         Merged runtime config.  A missing ``[container]`` table yields backend
         defaults.
+    probe_registry : bool
+        Let validation ask a registry about images missing locally; see
+        :class:`ContainerBackend`.
 
     Returns
     -------
@@ -630,6 +640,7 @@ def container_backend_from_config(
         shell=_config_str(table, "shell", "bash"),
         auto_mount=_config_bool(table, "auto_mount", True),
         extra_mounts=_config_mounts(table),
+        probe_registry=probe_registry,
     )
 
 

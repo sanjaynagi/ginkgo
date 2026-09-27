@@ -61,7 +61,9 @@ def command_doctor(args) -> int:
                     workflow_root=resolve_envs_workflow_root(project_root=Path.cwd()),
                 )
             ),
-            container=container_backend_from_config(project_root=Path.cwd(), config=config),
+            container=container_backend_from_config(
+                project_root=Path.cwd(), config=config, probe_registry=True
+            ),
         )
 
     diagnostics = collect_workflow_diagnostics(

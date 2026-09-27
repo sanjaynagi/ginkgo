@@ -241,7 +241,9 @@ class TestContainerBackendValidateImageAvailability:
         assert "not present locally" in str(excinfo.value)
 
     def test_missing_locally_registry_confirms_missing_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        backend = ContainerBackend(
+            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
+        )
         completed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="manifest unknown: manifest not found"
         )
@@ -255,7 +257,9 @@ class TestContainerBackendValidateImageAvailability:
         assert mock_run.call_args[0][0][:3] == ["docker", "manifest", "inspect"]
 
     def test_registry_timeout_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        backend = ContainerBackend(
+            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
+        )
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
@@ -269,7 +273,9 @@ class TestContainerBackendValidateImageAvailability:
             backend.validate_envs(env_names={"docker://img:1"})
 
     def test_registry_unrecognised_error_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        backend = ContainerBackend(
+            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
+        )
         completed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="some transient network hiccup"
         )
@@ -282,7 +288,10 @@ class TestContainerBackendValidateImageAvailability:
 
     def test_unsupported_runtime_skips_registry_probe(self, tmp_path: Path):
         backend = ContainerBackend(
-            project_root=tmp_path, runtime="custom-runtime", pull_policy="if-not-present"
+            project_root=tmp_path,
+            runtime="custom-runtime",
+            pull_policy="if-not-present",
+            probe_registry=True,
         )
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
@@ -293,7 +302,9 @@ class TestContainerBackendValidateImageAvailability:
         mock_run.assert_not_called()
 
     def test_probe_is_cached_across_validate_envs_calls(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        backend = ContainerBackend(
+            project_root=tmp_path, pull_policy="if-not-present", probe_registry=True
+        )
         completed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="some transient network hiccup"
         )
@@ -307,6 +318,18 @@ class TestContainerBackendValidateImageAvailability:
             # Two envs resolving to the same image only probe it once too.
             backend.validate_envs(env_names={"docker://img:1", "oci://img:1"})
         mock_run.assert_called_once()
+
+    def test_real_run_does_not_ask_the_registry(self, tmp_path: Path):
+        # A real run leaves probe_registry off: its own pull reports a missing
+        # image, so an extra registry round trip would only delay it.
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run") as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        mock_run.assert_not_called()
 
 
 class TestContainerBackendPrepare:
