@@ -68,6 +68,14 @@ def has_rows(payload: Any) -> bool:
     return len(payload) > 0
 
 
+class RowChecks:
+    """Checks defined as methods: they pickle by reference like functions."""
+
+    @classmethod
+    def has_rows(cls, payload: Any) -> bool:
+        return len(payload) > 0
+
+
 def always_fails(payload: Any) -> bool:
     """Return a deterministic failed asset check outcome."""
     del payload
@@ -950,6 +958,14 @@ class TestAssetCheckTransport:
 
         with pytest.raises(ValueError, match="importable module-level functions"):
             table(pd.DataFrame({"a": [1]}), checks=[nested_check])
+
+    def test_classmethod_check_is_accepted_and_encodes(self, tmp_path: Path) -> None:
+        # A bound method is a new object on each access, so an identity check
+        # against the name it resolves to must compare the underlying function.
+        result = table(pd.DataFrame({"a": [1]}), checks=[RowChecks.has_rows])
+
+        assert result.checks == (RowChecks.has_rows,)
+        encode_value(result, base_dir=tmp_path)
 
     def test_encode_still_rejects_a_hand_built_result_with_a_nested_check(
         self, tmp_path: Path

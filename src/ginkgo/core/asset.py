@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import types
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -402,6 +403,12 @@ def is_picklable_by_reference(fn: Callable[..., Any]) -> bool:
         obj = getattr(obj, part, None)
         if obj is None:
             return False
+    if isinstance(fn, types.MethodType):
+        # A bound method (a classmethod, or a method of an instance) is a new
+        # object on every attribute access, so it can never be ``is`` the one
+        # the qualified name resolves to. Pickle stores its ``__self__`` and
+        # function name, so what must resolve is the underlying function.
+        return getattr(obj, "__func__", obj) is fn.__func__
     return obj is fn
 
 
