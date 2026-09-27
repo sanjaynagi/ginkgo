@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from ginkgo import AssetRef, asset, file, shell, task
+from ginkgo import asset, file, shell, task
 
 
 def _seed_card_has_content(payload: object) -> bool:
@@ -44,9 +44,7 @@ def write_seed_card(item: str, output_path: str) -> file:
 
 
 @task(kind="shell")
-def normalize_seed_card(
-    seed_card: file | AssetRef, output_path: str, check_path: str
-) -> list[file]:
+def normalize_seed_card(seed_card: file, output_path: str, check_path: str) -> list[file]:
     """Normalize one seed artifact and produce a validation checksum.
 
     Parameters
@@ -67,10 +65,7 @@ def normalize_seed_card(
     output.parent.mkdir(parents=True, exist_ok=True)
     check = Path(check_path)
     check.parent.mkdir(parents=True, exist_ok=True)
-    input_path = (
-        Path(seed_card.artifact_path) if isinstance(seed_card, AssetRef) else Path(str(seed_card))
-    )
-    quoted_input = shlex.quote(str(input_path))
+    quoted_input = shlex.quote(str(seed_card))
     quoted_output = shlex.quote(str(output))
     quoted_check = shlex.quote(str(check))
     cmd = (

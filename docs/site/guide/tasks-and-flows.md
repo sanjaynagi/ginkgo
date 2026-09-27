@@ -558,20 +558,20 @@ one of those outputs into a downstream task, index into the result with the
 `.output` proxy:
 
 ```python
-from ginkgo import AssetRef, file, shell, task
+from ginkgo import file, shell, task
 
 
 @task("shell")
-def normalize_seed_card(
-    seed_card: file | AssetRef, output_path: str, check_path: str
-) -> list[file]:
+def normalize_seed_card(seed_card: file, output_path: str, check_path: str) -> list[file]:
     return shell(cmd=..., output=[output_path, check_path])
 ```
 
-`seed_card` is widened to `file | AssetRef` because the upstream task returns an
-asset — see
-[Consuming Assets Downstream](assets.md#consuming-assets-downstream). A task fed
-by plain `file` returns needs only `file`.
+`seed_card` stays plain `file` even though the upstream task returns an asset:
+a `file`/`folder` parameter receives the asset's bytes as a path (with the
+`AssetRef` reachable on `.asset`) — see
+[Consuming Assets Downstream](assets.md#consuming-assets-downstream). Widen it
+to `file | AssetRef` only to opt back into receiving the raw `AssetRef`
+itself.
 
 ```python
 norm_results = normalize_seed_card().map(

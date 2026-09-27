@@ -1157,6 +1157,17 @@ class CacheStore:
                 stat_entry["version_id"] = value["version_id"]
             return stat_entry
 
+        if isinstance(value, AssetRef):
+            # An ``AssetRef`` bound to a path-shaped annotation (rule #307:
+            # a bare ``file``/``folder`` param may receive one directly, not
+            # just the ``file | AssetRef`` union) is not a filesystem path to
+            # stat — ``str(value)`` is the ref's ``repr()``, not a path, so
+            # falling through to the branches below would try to stat a path
+            # built from that repr. The ref's own identity is already a
+            # stable, cheap fingerprint: it changes exactly when the content
+            # the artifact holds changes (see ``hash_value_bytes``).
+            return {"type": "asset_ref", "version_id": value.version_id}
+
         if annotation is file or isinstance(value, file):
             path = Path(str(value)).resolve()
             if path.is_file():

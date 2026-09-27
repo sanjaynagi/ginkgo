@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import UnionType
-from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, Union, get_args, get_origin
+
+if TYPE_CHECKING:
+    from ginkgo.core.asset import AssetRef
 
 
 class file(str):
@@ -19,7 +22,15 @@ class file(str):
     Validated to exist on disk before task execution.  Return values declared
     as ``file`` are validated to exist after execution.  Cache key contribution
     is the BLAKE3 digest of file contents.
+
+    A ``file``-annotated parameter that receives an asset produced upstream
+    gets this marker pointing at the artifact's bytes rather than the
+    ``AssetRef`` itself — see ``AssetRef.as_execution_value``. ``asset``
+    carries that reference for callers that still want its metadata; it is
+    ``None`` for a plain path that names no asset.
     """
+
+    asset: "AssetRef | None" = None
 
 
 class folder(str):
@@ -27,7 +38,12 @@ class folder(str):
 
     Validated to exist and be a directory before execution.  Cache key
     contribution is the BLAKE3 digest of sorted recursive contents.
+
+    See ``file.asset``: a ``folder``-annotated parameter bound to an asset
+    carries the same ``.asset`` reference.
     """
+
+    asset: "AssetRef | None" = None
 
 
 class tmp_dir(str):

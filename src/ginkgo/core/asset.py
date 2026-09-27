@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
-from ginkgo.core.types import file, path_binding_remedy
+from ginkgo.core.types import (
+    annotation_includes,
+    file,
+    folder,
+    is_path_shaped_annotation,
+    path_binding_remedy,
+)
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
 
@@ -322,6 +328,64 @@ class AssetRef:
                 f"path: its artifact holds {encoding}. {remedy}"
             )
         return file(self.artifact_path)
+
+    def as_execution_value(self, *, annotation: Any, execution_mode: str | None = None) -> Any:
+        """Return what a task body receives for this ref bound to *annotation*.
+
+        Rule #307: a parameter annotated plain ``file``/``folder`` no longer
+        needs a ``file | AssetRef`` union to receive an upstream asset — it
+        receives a ``file``/``folder`` value pointing at the artifact's
+        bytes, with this reference still reachable as ``.asset``. Naming
+        ``AssetRef`` in the annotation (``file | AssetRef``) opts back into
+        the raw reference unchanged, for backward compatibility.
+
+        Only for kinds whose artifact holds the payload's own bytes — the
+        same rule :func:`require_path_value` already enforces during input
+        validation. A serialized kind (``table``/``array``/``model``) or a
+        ``folder`` annotation bound to a non-``folder`` kind would already
+        have failed that validation before execution reaches here, so this
+        returns the ref unconverted rather than guessing.
+
+        Called only on execution args, never on ``resolved_args`` — the
+        cache key, lineage, and ``asset_inputs`` all keep this ``AssetRef``
+        as-is (see ``ConcurrentEvaluator._rehydrate_execution_args``).
+
+        Parameters
+        ----------
+        annotation : Any
+            The consuming parameter's declared annotation (already unwrapped
+            of ``| None`` and paired down to one container element by the
+            caller, when the parameter is a container).
+        execution_mode : str | None
+            ``TaskDef.execution_mode`` of the consuming task, unused here but
+            accepted for symmetry with :meth:`as_file`.
+
+        Returns
+        -------
+        Any
+            ``self`` unchanged, or a ``file``/``folder`` marker carrying
+            ``self`` on ``.asset``.
+        """
+        if annotation_includes(annotation=annotation, expected=AssetRef):
+            return self
+        if not is_path_shaped_annotation(annotation):
+            return self
+
+        from ginkgo.runtime.artifacts.asset_kinds import artifact_encoding_for
+
+        if artifact_encoding_for(self.kind) is not None:
+            return self
+
+        annotation_label = (
+            "folder" if annotation_includes(annotation=annotation, expected=folder) else "file"
+        )
+        if annotation_label == "folder" and self.kind != "folder":
+            return self
+
+        marker_cls = folder if annotation_label == "folder" else file
+        converted = marker_cls(self.artifact_path)
+        converted.asset = self
+        return converted
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-safe mapping."""

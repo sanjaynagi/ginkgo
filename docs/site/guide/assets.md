@@ -89,11 +89,11 @@ cards. Checks are not rerun for cached assets.
 `model()` also takes `framework` and `metrics`:
 
 ```python
-from ginkgo import AssetRef, file, model, task
+from ginkgo import file, model, task
 
 
 @task()
-def train_classifier(features: file | AssetRef) -> object:
+def train_classifier(features: file) -> object:
     clf = fit_model(features)
     return model(
         clf,
@@ -170,17 +170,25 @@ bytes, so an asset key gives you a stable handle with full version history.
 
 ### Consuming Assets Downstream
 
-A task that depends on an asset-producing task does not receive a plain path.
-What arrives is decided by the **consuming parameter's annotation**:
+A task that depends on an asset-producing task does not receive a bare
+`AssetRef`. What arrives is decided by the **consuming parameter's
+annotation**:
 
-- Annotated `file`, `folder`, or a union including one of them (`file |
-  AssetRef`) — the parameter binds a filesystem path, so a **`file`, `fig`, or
-  `text` asset** passes through as an `AssetRef`: a record carrying the asset
-  `key`, `version_id`, `kind`, `content_hash`, `metadata`, and `artifact_path`
-  (the path to the immutable stored bytes). This holds on cache hits as well as
+- Annotated `file`, `folder`, or a container of one (`list[file]`), and not
+  itself mentioning `AssetRef` — the parameter binds a filesystem path, so a
+  **`file`, `fig`, or `text` asset** arrives as a `file` (or `folder`) value:
+  a `str` subclass whose text *is* the path to the immutable stored bytes, so
+  it drops straight into an f-string, `open()`, or a shell command. The full
+  `AssetRef` — its `key`, `version_id`, `kind`, `content_hash`, and
+  `metadata` — is still there on its `.asset` attribute, for a task that
+  wants both the path and the metadata. This holds on cache hits as well as
   cold runs. A `table`, `array`, or `model` asset bound to such a parameter is
   an error, named at the consuming task before it runs — see [Which assets have
   a path](#which-assets-have-a-path).
+- Annotated `file | AssetRef` (or `folder | AssetRef`) — naming `AssetRef` in
+  the annotation opts back into the raw reference: the parameter receives the
+  `AssetRef` itself, unconverted. This is what older code written before the
+  `file`/`.asset` split still does, and it keeps working unchanged.
 - Annotated `object` or the payload's own type (`pd.DataFrame`) — a `table`,
   `array`, `text`, or `model` ref is rehydrated into the live Python payload
   before the task body runs, so the task takes the DataFrame, array, or model
@@ -190,30 +198,30 @@ What arrives is decided by the **consuming parameter's annotation**:
   or `notebook` task hands its arguments to another process as text, so a live
   payload cannot reach it and is refused by name.
 
-So a consumer of a file asset receives an `AssetRef`, not the path its `file`
-annotation suggests. Widen the annotation and branch on the type:
+So a consumer of a file asset just takes `file` — no union, no branching:
 
 ```python
-from pathlib import Path
-
-from ginkgo import AssetRef, file, task
+from ginkgo import file, task
 
 
 @task()
-def normalize_seed_card(seed_card: file | AssetRef, output_path: str) -> file:
-    input_path = (
-        Path(seed_card.artifact_path)
-        if isinstance(seed_card, AssetRef)
-        else Path(str(seed_card))
-    )
+def normalize_seed_card(seed_card: file, output_path: str) -> file:
+    # seed_card is a path — a str — whether it came from asset(...) upstream
+    # or a plain file(...); seed_card.asset is the AssetRef if you need
+    # its metadata (key, version_id, content_hash, ...), and None otherwise.
     ...
 ```
 
-Both branches are kept because the same task also works when called with a plain
-`file` path, from a producer that returns `file(...)` rather than `asset(...)`.
+The same task works whether it is called with an asset produced upstream or a
+plain `file` path from a producer that returns `file(...)` rather than
+`asset(...)` — both arrive as a `file` value, so there is nothing to branch on.
+`.asset` is only ever set by Ginkgo's own rehydration, so a task never needs to
+construct it: read it, or leave it alone.
 
-Instead of reading `artifact_path` directly you can call `as_file()`, which
-returns the same path wrapped as a `ginkgo.file` marker.
+An older task still annotated `file | AssetRef` keeps receiving the raw
+`AssetRef` — nothing about that annotation changes. Reading `artifact_path`
+directly, or calling `as_file()` to get the same path wrapped as a
+`ginkgo.file` marker, both still work there.
 
 ### Which assets have a path
 

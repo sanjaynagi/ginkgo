@@ -418,10 +418,28 @@ Rehydration is annotation-aware. A parameter whose annotation is or includes
 `file` or `folder` (`is_path_shaped_annotation` in `core/types.py`) binds a
 filesystem path at every depth, so `_resolve_task_args` skips rehydration for
 that argument entirely — the decision is made once, before the recursive walk,
-and nested `AssetRef` entries survive too. This keeps the documented
-`file | AssetRef` idiom stable: the consumer sees an `AssetRef` on both the
-cold run and the cache hit, and the cache key comes from
-`AssetRef.content_hash` without touching the filesystem.
+and nested `AssetRef` entries survive too. `resolved_args` — the cache key,
+lineage, and `asset_inputs` — keeps every such `AssetRef` unconverted: the
+cache key still comes from `AssetRef.content_hash` (by way of `version_id`)
+without touching the filesystem, whatever the consuming annotation says.
+
+What the task body actually receives is decided later, only for execution args
+(`ConcurrentEvaluator._rehydrate_execution_args`, on a confirmed cache miss). A
+path-shaped `AssetRef` there is converted through `AssetRef.as_execution_value`
+into a `file`/`folder` marker — a `str` subclass — pointing at
+`artifact_path`, with the `AssetRef` itself attached on the marker's `.asset`
+attribute. This is what lets a plain `file` annotation (no union) receive an
+asset produced upstream: `seed_card: file` gets a path string usable directly
+in an f-string or `open()`, and `seed_card.asset` for a task that also wants
+the key/version/metadata. A parameter that instead names `AssetRef` in its
+annotation (`file | AssetRef`) opts out of the conversion — `as_execution_value`
+checks `annotation_includes(..., expected=AssetRef)` first and returns the ref
+unchanged, which is the older, still-supported idiom. `.asset` is a plain
+instance attribute (`file`/`folder` carry no `__slots__`), so it survives an
+in-process handoff for free; the process-pool transport codec
+(`value_codec.encode_value`/`decode_value`) carries it across explicitly as an
+extra `"asset"` field alongside the path, so a python task run in a worker
+still sees `.asset` on the far side.
 
 Only kinds whose artifact holds the payload's own bytes may bind that way, and
 each kind declares which side it is on via `AssetKindSpec.artifact_encoding`:
@@ -438,7 +456,10 @@ on Parquet input. `require_path_value` therefore admits an `AssetRef` only when
 routes every path-shaped annotation — bare `file` *and* unions such as
 `file | AssetRef` — through it, so the union arm is not an escape hatch from
 the kind rule. The refusal happens in `_prepare_node`, at the consuming task,
-before its body or command runs.
+before its body or command runs, on `resolved_args` — well before
+`as_execution_value` would otherwise have to decide what to convert, so it
+never has to re-derive or repeat that refusal: it only converts what
+validation already allowed through.
 
 The remedies in the message depend on the consumer: `TaskDef.execution_mode` is
 threaded from `validate_inputs` down to `path_binding_remedy`, because
