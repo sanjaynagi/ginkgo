@@ -314,6 +314,7 @@ class NodeRun:
     execution_args: dict[str, Any] | None = None
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
+    input_labels: dict[str, str] | None = None
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
@@ -1215,6 +1216,7 @@ class ConcurrentEvaluator:
         node.execution_args = None
         node.cache_key = None
         node.input_hashes = None
+        node.input_labels = None
         node.threads = 1
         node.memory_gb = 0
         node.gpu = 0
@@ -2334,6 +2336,7 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
+                input_labels=dict(node.input_labels or {}),
                 asset_inputs={
                     param: list(declared) for param, declared in node.asset_inputs.items()
                 },

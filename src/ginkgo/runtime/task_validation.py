@@ -83,6 +83,138 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     return os.path.exists(text)
 
 
+#: The tracking labels ``label_input_value`` returns, in the order a mixed
+#: container's label is chosen from (see its docstring).
+INPUT_TRACKING_LABELS = ("path", "output", "value", "asset", "content", "untracked")
+
+
+def _combine_container_labels(labels: list[str]) -> str:
+    """Return the one label that stands for a whole container's elements.
+
+    The container is only as reliable as its least-tracked element, so the
+    label chosen is the first of :data:`INPUT_TRACKING_LABELS` present among
+    the elements — a path buried inside ``inputs=[a, b]`` is exactly the
+    silent-staleness trap this label exists to surface, so it wins over a
+    sibling element that is fully content-tracked.
+    """
+    present = set(labels)
+    for label in INPUT_TRACKING_LABELS:
+        if label in present:
+            return label
+    return "value"
+
+
+def label_input_value(
+    *,
+    annotation: Any,
+    value: Any,
+    is_output: bool = False,
+) -> str:
+    """Return how :meth:`CacheStore.build_cache_key` tracks *value* in the cache key.
+
+    One of ``"content"`` (file/folder bytes are hashed), ``"asset"`` (an
+    ``AssetRef``, ``RemoteRef``, or fuse-streamed ref — tracked by version
+    id), ``"path"`` (a plain value that happens to name an existing path, but
+    is annotated as an ordinary scalar — tracked by its path *string* only,
+    the silent-staleness trap of issues #121/#281), ``"output"`` (an
+    ``Out[...]`` parameter — tracked by path string only, by design, since it
+    names what the task is about to write), ``"value"`` (an ordinary scalar
+    or object, tracked by its own repr/pickle digest), or ``"untracked"``
+    (``tmp_dir``, excluded from the key entirely).
+
+    Mirrors :meth:`CacheStore._hash_value`'s dispatch order exactly — same
+    branches, same order — so the label always describes what that method
+    actually did, without hashing anything itself. It is metadata only: it
+    is never folded into the cache key, so computing or storing it must
+    never change one.
+
+    A container (``list``, ``tuple``, or ``dict``) is labelled by combining
+    its elements' labels; see :func:`_combine_container_labels` for the rule.
+
+    Parameters
+    ----------
+    annotation : Any
+        The parameter's declared annotation (or the container element's, on
+        recursive calls).
+    value : Any
+        The resolved argument value.
+    is_output : bool
+        Whether this is an ``Out[...]`` parameter. Only meaningful at the
+        top level: ``build_cache_key`` never passes it down into containers,
+        so recursive calls omit it.
+
+    Returns
+    -------
+    str
+        One of ``"content"``, ``"asset"``, ``"path"``, ``"value"``,
+        ``"output"``, ``"untracked"``.
+    """
+    if annotation is tmp_dir or isinstance(value, tmp_dir):
+        return "untracked"
+
+    annotation, admits_none = unwrap_optional_annotation(annotation)
+    if value is None and admits_none:
+        return "value"
+    if is_output:
+        return "output"
+    if isinstance(value, AssetRef):
+        return "asset"
+    if isinstance(value, RemoteRef):
+        return "asset"
+
+    from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
+
+    if isinstance(value, dict) and value.get("__ginkgo_type__") in {
+        FUSE_FILE_TYPE,
+        FUSE_FOLDER_TYPE,
+    }:
+        return "asset"
+    if isinstance(value, SecretRef):
+        return "value"
+
+    origin = get_origin(annotation)
+    if origin in {list, tuple}:
+        labels = [
+            label_input_value(annotation=item_annotation, value=item)
+            for item_annotation, item in pair_elements_with_annotations(
+                annotation=annotation, value=value
+            )
+        ]
+        return _combine_container_labels(labels) if labels else "value"
+
+    if origin is dict:
+        args = get_args(annotation)
+        key_annotation, value_annotation = (args[0], args[1]) if len(args) == 2 else (Any, Any)
+        labels = []
+        for key, item in value.items():
+            labels.append(label_input_value(annotation=key_annotation, value=key))
+            labels.append(label_input_value(annotation=value_annotation, value=item))
+        return _combine_container_labels(labels) if labels else "value"
+
+    if isinstance(value, (list, tuple)):
+        labels = [label_input_value(annotation=annotation, value=item) for item in value]
+        return _combine_container_labels(labels) if labels else "value"
+
+    if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
+        return "content"
+    if annotation_includes(annotation=annotation, expected=folder) or isinstance(value, folder):
+        return "content"
+
+    if isinstance(value, dict):
+        labels = []
+        for key, item in value.items():
+            labels.append(label_input_value(annotation=Any, value=key))
+            labels.append(label_input_value(annotation=Any, value=item))
+        return _combine_container_labels(labels) if labels else "value"
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        if is_untracked_path_value(annotation=annotation, value=value):
+            return "path"
+        return "value"
+
+    return "value"
+
+
 def is_remote_path_value(value: Any) -> bool:
     """Return whether a value is a remote reference or supported remote URI.
 

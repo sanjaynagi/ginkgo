@@ -219,6 +219,11 @@ class TaskPlanned(TaskEvent):
     v: int = 2
     inputs: dict[str, Any] = field(default_factory=dict)
     input_hashes: list[dict[str, Any]] = field(default_factory=list)
+    input_labels: dict[str, str] = field(default_factory=dict)
+    """Per-parameter cache-tracking label (``content``, ``asset``, ``path``,
+    ``value``, ``output``, ``untracked``) — see
+    ``ginkgo.runtime.task_validation.label_input_value``. Metadata only: it
+    never contributed to ``cache_key`` and cannot change it."""
     asset_inputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     cache_key: str | None = None
     source_hash: str | None = None

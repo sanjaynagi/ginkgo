@@ -267,6 +267,11 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
         for entry in payload.get("input_hashes") or []
         if isinstance(entry, dict)
     }
+    labels = {
+        str(param): label
+        for param, label in (payload.get("input_labels") or {}).items()
+        if isinstance(label, str)
+    }
     inputs = payload.get("inputs") or {}
     declared_assets = _declared_assets(payload.get("asset_inputs"))
     # Every parameter that was hashed gets a row, including one the rendered
@@ -286,13 +291,14 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                     sql="""
                     INSERT INTO task_inputs (
                       run_id, task_id, param, position, value_type, value_summary,
-                      digest, artifact_id, asset_key, asset_version_id, remote_uri
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      digest, artifact_id, asset_key, asset_version_id, remote_uri, tracking
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (run_id, task_id, param, position) DO UPDATE SET
                       value_type=excluded.value_type, value_summary=excluded.value_summary,
                       digest=excluded.digest, artifact_id=excluded.artifact_id,
                       asset_key=excluded.asset_key,
-                      asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri
+                      asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri,
+                      tracking=excluded.tracking
                     """,
                     params=(
                         event.run_id,
@@ -306,6 +312,7 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                         asset.get("asset"),
                         asset.get("version_id"),
                         _remote_uri(entry) if position == 0 else None,
+                        labels.get(param) if position == 0 else None,
                     ),
                 )
             )

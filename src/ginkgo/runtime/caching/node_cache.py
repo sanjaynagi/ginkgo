@@ -75,6 +75,10 @@ class NodeCache:
             )
             node.cache_key = cache_key
             node.input_hashes = input_hashes
+            node.input_labels = self.cache_store.label_inputs(
+                task_def=node.task_def,
+                resolved_args=node.resolved_args,
+            )
 
         cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
         if cached_result is MISSING or not self._is_valid_cached_result(
@@ -116,6 +120,10 @@ class NodeCache:
 
         node.cache_key = content_key
         node.input_hashes = {}
+        node.input_labels = self.cache_store.label_inputs(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+        )
         return CacheHit(value=cached_result, cache_key=content_key)
 
     def record_stat_index_entry(self, *, node: NodeRun, cache_key: str) -> None:
