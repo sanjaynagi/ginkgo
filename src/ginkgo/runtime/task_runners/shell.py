@@ -402,21 +402,35 @@ def declared_input_mounts(*, node: Any) -> list[Mount]:
 
     Inputs that do not exist are skipped rather than mounted: the runtime would
     create the host path to satisfy the mount, and a missing declared input is
-    better reported by the command that needs it.
+    better reported by the command that needs it. An ``Out[...]`` parameter is
+    the exception: it names a path the task is about to *write*, so it is
+    mounted read-write (its parent directory, like an ``output=`` directive)
+    even though nothing exists there yet.
     """
     resolved_args = getattr(node, "resolved_args", None) or {}
     type_hints = getattr(node.task_def, "type_hints", None) or {}
+    output_params = getattr(node.task_def, "output_params", None) or frozenset()
 
     mounts: list[Mount] = []
     for name, value in resolved_args.items():
         annotation = type_hints.get(name)
-        if annotation is tmp_dir:
+        is_output = name in output_params
+        if is_output:
             mode: MountMode = "rw"
+        elif annotation is tmp_dir:
+            mode = "rw"
         elif annotation is not None and is_path_shaped_annotation(annotation):
             mode = "ro"
         else:
             continue
         for path in _iter_declared_paths(value):
+            if is_output and not path.exists():
+                # Not written yet: mount the parent unconditionally, the same
+                # way a shell ``output=`` directive does — the caller is
+                # responsible for the parent existing by the time the
+                # container starts.
+                mounts.append(mount(path.parent, mode=mode))
+                continue
             if not path.exists():
                 continue
             mounts.append(mount(path if path.is_dir() else path.parent, mode=mode))

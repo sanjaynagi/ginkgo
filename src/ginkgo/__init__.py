@@ -19,6 +19,7 @@ _EXPORTS = {
     "FlowDef": ("ginkgo.core.flow", "FlowDef"),
     "NotebookDirective": ("ginkgo.core.notebook", "NotebookDirective"),
     "OptionalOutput": ("ginkgo.core.optional", "OptionalOutput"),
+    "Out": ("ginkgo.core.types", "Out"),
     "PartialCall": ("ginkgo.core.task", "PartialCall"),
     "Resources": ("ginkgo.core.resources", "Resources"),
     "ScriptDirective": ("ginkgo.core.script", "ScriptDirective"),

@@ -244,32 +244,42 @@ def build_brief(card: file, output_path: str) -> file:
 
 ### Are there path-oriented input/output types?
 
-The task model uses three marker types (`ginkgo.file`, `ginkgo.folder`,
-`ginkgo.tmp_dir`, all `str` subclasses) to give paths special handling rather
-than treating them as opaque strings. A parameter or return annotated `file` is
-validated to exist (before execution for inputs, after for outputs) and
-contributes its BLAKE3 **content** digest to the cache key; `folder` behaves the
-same over a directory's sorted recursive contents. A `tmp_dir` parameter is a
+The task model uses marker types (`ginkgo.file`, `ginkgo.folder`,
+`ginkgo.tmp_dir`, all `str` subclasses, plus the `ginkgo.Out[...]` wrapper
+below) to give paths special handling rather than treating them as opaque
+strings. A parameter or return annotated `file` is validated to exist (before
+execution for inputs, after for outputs) and contributes its BLAKE3
+**content** digest to the cache key; `folder` behaves the same over a
+directory's sorted recursive contents. A `tmp_dir` parameter is a
 Ginkgo-managed scratch directory, created fresh per task execution, auto-deleted
 on success (kept on failure for debugging), and deliberately excluded from the
 cache key — you do not pass it yourself; it is auto-injected from the
-annotation.
+annotation. `pathlib.Path` is rejected outright as a task parameter
+annotation: it is neither path- nor content-tracked (hashed as an opaque
+pickled object), so there is no legitimate use for it — use `file`, `folder`,
+or `Out[file]` instead.
 
-The consequence of *not* using them matters just as much. If a path a task
-*reads* is annotated `str` (or `Path`) instead — whether that path is produced
-by an upstream task's return value or written down as a raw input path in the
-flow — its cache-key contribution is the path string alone. Edit the file on
-disk (an upstream task rewriting its output, or you editing a raw input by
-hand) and the task still reports `↺ cached`, serving its previous, now stale,
-output. Because `file` is itself a `str` subclass, the type checker sees no
-difference. Annotate any path a task reads `file` (or `folder`) — the
-producer's return `-> file` when there is one, and always the consumer's
-parameter; leave `str` for a path a task only *writes*, such as an output
-location or a log sink, since `file` requires the path to already exist when
-the cache key is computed. Ginkgo warns when it can tell the difference: if
-an argument resolved from an upstream task arrives as a plain `str` naming an
-existing path, the run prints a notice naming both ends and the annotation to
-add.
+The consequence of getting direction wrong matters just as much. If a path a
+task *reads* is annotated `str` instead of `file`/`folder` — whether that
+path is produced by an upstream task's return value or written down as a raw
+input path in the flow — its cache-key contribution is the path string
+alone. Edit the file on disk (an upstream task rewriting its output, or you
+editing a raw input by hand) and the task still reports `↺ cached`, serving
+its previous, now stale, output. Because `file` is itself a `str` subclass,
+the type checker sees no difference. Annotate any path a task reads `file`
+(or `folder`) — the producer's return `-> file` when there is one, and
+always the consumer's parameter. Ginkgo warns when it can tell the
+difference: if an argument resolved from an upstream task arrives as a plain
+`str` naming an existing path, the run prints a notice naming both ends and
+the annotation to add.
+
+For a path a task only *writes* — an output location or a log sink — `str`
+still works, but `Out[file]` / `Out[folder]` is now the declared alternative:
+`Out[...]` marks the parameter itself as a write rather than a read, so it is
+validated for writability (not existence) before execution, contributes only
+its path string to the cache key, and is checked to exist — with the right
+kind — after execution. See
+[Reads vs. Writes: `file` vs. `Out[file]`](guide/caching-and-provenance.md#reads-vs-writes-file-vs-outfile).
 
 ### Why did a task in my flow never run?
 

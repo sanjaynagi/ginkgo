@@ -80,12 +80,55 @@ consumer asks for `file`. Note that `file` and `folder` are `str` subclasses, so
 a `str` annotation is indistinguishable from the correct one at the type level
 while behaving oppositely at the cache level — no type checker will catch this.
 
-Output paths stay `str`. The file does not exist when the key is computed, so
-there is nothing to hash; annotate the return `file` when the produced path
-should be content-tracked and stored as an artifact.
+An output path can stay `str` — the file does not exist when the key is
+computed, so there is nothing to hash — and annotating the return `file`
+content-tracks and stores the produced path as an artifact regardless of how
+the parameter that named it was annotated. `Out[file]` (below) is the other
+option: annotating the *parameter* itself, rather than leaving it `str`.
 
-`Path` and `pathlib.Path` annotations are **not** content-hashed either. Use
-`file` and `folder`.
+`pathlib.Path` is rejected outright on a task parameter, since it is neither
+path- nor content-tracked: it is hashed as an opaque pickled object. Use
+`file`, `folder`, or `Out[file]` instead.
+
+### Reads vs. Writes: `file` vs. `Out[file]`
+
+`file` and `folder` mean *read*: the path must already exist before the task
+runs, and its bytes are what the cache key hashes. Neither can annotate a path
+the task is about to *write* — a first run would fail validation before the
+file exists, and even if it didn't, cache-keying on the previous run's bytes
+would make every run after the first look like a miss (or, worse, make
+deleting the output invalidate its own producer).
+
+`Out[...]` is the write-side counterpart, orthogonal to kind:
+
+```python
+from ginkgo import Out, file, folder, task
+
+@task()
+def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
+```
+
+- `Out[file]` / `Out[folder]` compose with containers and optionals —
+  `Out[list[file]]`, `Out[file | None]` — but must be the outermost wrapper:
+  `list[Out[file]]` is rejected, `Out[list[file]]` is not.
+- **Before execution:** an `Out[...]` argument need not exist yet — it is
+  validated to be a local, path-like value, and if something already exists at
+  the path it must be the declared kind (`Out[file]` pointing at an existing
+  directory is an error).
+- **Cache key:** contributes its path string only, never content — the same
+  as leaving the parameter `str`, but declared rather than implied.
+- **After execution:** the path must exist, with the right kind, or the task
+  fails naming the parameter and the path. A cache hit whose declared output
+  is missing on disk (or the wrong kind) is treated as a miss and the task
+  re-runs.
+- Not yet supported for remote tasks (`remote=True` / `executor=`) — routing
+  an `Out[...]`-declared task remotely raises at dispatch.
+
+`Out[...]` does not (yet) infer a dependency edge to a downstream consumer of
+the same path, or content-track the produced file the way `-> file` does —
+those are tracked separately; for now, still annotate the *return* `file` /
+`folder` when the produced path should be content-addressed and stored as an
+artifact.
 
 ## Artifact Storage
 

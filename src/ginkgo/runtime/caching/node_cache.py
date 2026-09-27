@@ -24,7 +24,11 @@ from ginkgo.core.task import TaskDef
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.task_validation import TaskValidator
+from ginkgo.runtime.task_validation import (
+    TaskValidator,
+    declared_output_paths,
+    output_path_matches_kind,
+)
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import NodeRun
@@ -77,6 +81,7 @@ class NodeCache:
             cache_key=node.cache_key,
             task_def=node.task_def,
             value=cached_result,
+            resolved_args=node.resolved_args,
         ):
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
@@ -103,7 +108,10 @@ class NodeCache:
             return None
 
         cached_result = self.cache_store.load(cache_key=content_key, task_def=node.task_def)
-        if cached_result is MISSING:
+        if cached_result is MISSING or not self._declared_outputs_present(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+        ):
             return None
 
         node.cache_key = content_key
@@ -132,12 +140,20 @@ class NodeCache:
             return
         self.digests.record_artifacts(artifact_ids)
 
-    def _is_valid_cached_result(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
+    def _is_valid_cached_result(
+        self,
+        *,
+        cache_key: str,
+        task_def: TaskDef,
+        value: Any,
+        resolved_args: dict[str, Any] | None,
+    ) -> bool:
         """Return whether a cached value still satisfies return validation.
 
         For file/folder outputs, the cache store ensures the working tree has a
         matching writable materialization before standard return validation
-        checks run.
+        checks run. An ``Out[...]`` parameter is not part of the return value
+        the artifact store tracks, so its own path is checked separately.
         """
         if not self.cache_store.validate_cached_outputs(
             cache_key=cache_key,
@@ -151,4 +167,24 @@ class NodeCache:
         except (FileNotFoundError, ValueError):
             return False
 
-        return True
+        return self._declared_outputs_present(task_def=task_def, resolved_args=resolved_args)
+
+    def _declared_outputs_present(
+        self,
+        *,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any] | None,
+    ) -> bool:
+        """Return whether every ``Out[...]`` parameter's path still exists.
+
+        A hit whose declared outputs are missing on disk (or the wrong kind)
+        is treated as a miss, so the task re-runs and writes them again.
+        """
+        if resolved_args is None or not task_def.output_params:
+            return True
+        return all(
+            output_path_matches_kind(path=path, kind=kind)
+            for _, path, kind in declared_output_paths(
+                task_def=task_def, resolved_args=resolved_args
+            )
+        )

@@ -100,6 +100,84 @@ def is_remote_path_value(value: Any) -> bool:
     return is_fuse_ref(value)
 
 
+def declared_output_paths(
+    *,
+    task_def: TaskDef,
+    resolved_args: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Flatten every ``Out[...]`` parameter's value into path entries.
+
+    Used both to check outputs were actually written after execution, and to
+    treat a cache hit whose declared outputs are missing on disk as a miss.
+
+    Parameters
+    ----------
+    task_def : TaskDef
+        The task definition, whose ``output_params`` names which parameters
+        are declared ``Out[...]``.
+    resolved_args : dict[str, Any]
+        Resolved argument values for the task call.
+
+    Returns
+    -------
+    list[tuple[str, str, str]]
+        One ``(parameter_name, path, kind)`` tuple per declared output path,
+        ``kind`` being ``"file"`` or ``"folder"``. An absent optional output
+        (``None``) contributes nothing.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for name in sorted(task_def.output_params):
+        if name not in resolved_args:
+            continue
+        annotation = task_def.type_hints.get(name)
+        _collect_output_paths(
+            annotation=annotation,
+            value=resolved_args[name],
+            name=name,
+            entries=entries,
+        )
+    return entries
+
+
+def _collect_output_paths(
+    *,
+    annotation: Any,
+    value: Any,
+    name: str,
+    entries: list[tuple[str, str, str]],
+) -> None:
+    """Recursively flatten one output parameter's value into path entries."""
+    annotation, _ = unwrap_optional_annotation(annotation)
+    if value is None:
+        return
+
+    origin = get_origin(annotation)
+    if origin in {list, tuple}:
+        for item_annotation, item in pair_elements_with_annotations(
+            annotation=annotation, value=value
+        ):
+            _collect_output_paths(
+                annotation=item_annotation, value=item, name=name, entries=entries
+            )
+        return
+
+    if isinstance(value, list | tuple):
+        for item in value:
+            _collect_output_paths(annotation=annotation, value=item, name=name, entries=entries)
+        return
+
+    kind = "file" if annotation_includes(annotation=annotation, expected=file) else "folder"
+    entries.append((name, str(value), kind))
+
+
+def output_path_matches_kind(*, path: str, kind: str) -> bool:
+    """Return whether a declared output path exists with its declared kind."""
+    path_obj = Path(path)
+    if kind == "file":
+        return path_obj.is_file()
+    return path_obj.exists() and path_obj.is_dir()
+
+
 def contains_dynamic_expression(value: Any) -> bool:
     """Return whether a nested value contains unresolved expressions."""
     if isinstance(value, (Expr, ExprList, OutputIndex)):
@@ -218,6 +296,13 @@ class TaskValidator:
                 continue
             if collect_secret_refs(value):
                 continue
+            if name in node.task_def.output_params:
+                self.validate_output_argument(
+                    annotation=annotation,
+                    value=value,
+                    label=f"{node.task_def.name}.{name}",
+                )
+                continue
             self.validate_annotated_value(
                 annotation=annotation,
                 value=value,
@@ -273,12 +358,123 @@ class TaskValidator:
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in resolved_args:
                 continue
+            if name in task_def.output_params:
+                self.validate_output_argument(
+                    annotation=annotation,
+                    value=resolved_args[name],
+                    label=f"{task_def.name}.{name}",
+                )
+                continue
             self.validate_annotated_value(
                 annotation=annotation,
                 value=resolved_args[name],
                 label=f"{task_def.name}.{name}",
                 execution_mode=task_def.execution_mode,
             )
+
+    def validate_output_argument(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        label: str,
+    ) -> None:
+        """Validate an ``Out[...]`` argument before execution.
+
+        Unlike a read (``file``/``folder``), an output need not already
+        exist. It must be a local path-like value — not an ``AssetRef`` and
+        not a remote reference, since remote output paths are out of scope —
+        and if something already exists at the path, it must be the right
+        kind: an ``Out[file]`` pointing at an existing directory is an error,
+        and vice versa.
+        """
+        annotation, admits_none = unwrap_optional_annotation(annotation)
+        if value is None:
+            if admits_none:
+                return
+            raise TypeError(
+                f"{label} is None but its `Out[...]` annotation does not admit "
+                "None. Annotate it `Out[file | None]` when the output is "
+                "declared `optional(...)`."
+            )
+
+        origin = get_origin(annotation)
+        if origin in {list, tuple}:
+            paired = pair_elements_with_annotations(annotation=annotation, value=value)
+            for index, (item_annotation, item) in enumerate(paired):
+                self.validate_output_argument(
+                    annotation=item_annotation,
+                    value=item,
+                    label=f"{label}[{index}]",
+                )
+            return
+
+        if isinstance(value, list | tuple):
+            for index, item in enumerate(value):
+                self.validate_output_argument(
+                    annotation=annotation,
+                    value=item,
+                    label=f"{label}[{index}]",
+                )
+            return
+
+        if isinstance(value, AssetRef):
+            raise TypeError(
+                f"{label} is declared `Out[...]` but received an asset reference. "
+                "Pass a local path string; an Out[...] parameter names a path this "
+                "task writes, not an upstream asset."
+            )
+        if is_remote_path_value(value):
+            raise TypeError(
+                f"{label} is declared `Out[...]` but received a remote path. "
+                "Remote output paths are out of scope for `Out[...]`; pass a "
+                "local path."
+            )
+        if not is_path_like(value):
+            received = f"{type(value).__module__}.{type(value).__name__}"
+            raise TypeError(
+                f"{label} is declared `Out[...]` but received a {received}, not a path-like value."
+            )
+
+        path_str = str(value)
+        if " " in path_str:
+            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
+
+        is_file_kind = annotation_includes(annotation=annotation, expected=file)
+        path_obj = Path(path_str)
+        if not path_obj.exists():
+            return
+        if is_file_kind and not path_obj.is_file():
+            raise TypeError(
+                f"{label} is declared `Out[file]` but {path_str!r} already exists "
+                "and is a directory."
+            )
+        if not is_file_kind and not path_obj.is_dir():
+            raise TypeError(
+                f"{label} is declared `Out[folder]` but {path_str!r} already exists and is a file."
+            )
+
+    def validate_declared_outputs_written(
+        self,
+        *,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any],
+    ) -> None:
+        """Fail a task whose declared ``Out[...]`` paths were not written.
+
+        Runs after a task body has completed successfully (or, for
+        shell/script/notebook tasks, after the directive's command has
+        actually run), naming the task, parameter and path so the failure is
+        legible.
+        """
+        for name, path, kind in declared_output_paths(
+            task_def=task_def, resolved_args=resolved_args
+        ):
+            if not output_path_matches_kind(path=path, kind=kind):
+                raise FileNotFoundError(
+                    f"{task_def.name}.{name} is declared `Out[{kind}]` but "
+                    f"{path!r} was not written."
+                )
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
         """Validate a task return value when it uses a Ginkgo path type."""

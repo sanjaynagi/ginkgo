@@ -180,6 +180,7 @@ class CacheStore:
                 value=resolved_args[name],
                 known_digests=known_digests,
                 label=f"{task_def.name}.{name}",
+                is_output=name in task_def.output_params,
             )
 
         env_hash = self._env_hash(task_def=task_def)
@@ -787,8 +788,15 @@ class CacheStore:
         value: Any,
         known_digests: dict[str, str] | None = None,
         label: str = "value",
+        is_output: bool = False,
     ) -> Any:
-        """Hash a concrete value according to its declared Ginkgo type."""
+        """Hash a concrete value according to its declared Ginkgo type.
+
+        An ``Out[...]`` parameter (``is_output``) contributes its path
+        string only, exactly as a plain ``str`` scalar would — never file or
+        folder content, since the path names what this task is about to
+        write, not something it reads.
+        """
         if annotation is tmp_dir:
             return None
 
@@ -797,6 +805,8 @@ class CacheStore:
         annotation, admits_none = unwrap_optional_annotation(annotation)
         if value is None and admits_none:
             return {"type": "absent"}
+        if is_output:
+            return self._hash_output_leaf(value=value)
         if isinstance(value, AssetRef):
             if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
@@ -953,6 +963,21 @@ class CacheStore:
             "type": f"{type(value).__module__}.{type(value).__name__}",
         }
 
+    def _hash_output_leaf(self, *, value: Any) -> Any:
+        """Hash an ``Out[...]`` value as a plain path string, recursively.
+
+        Mirrors the plain-scalar branch of :meth:`_hash_value` exactly (same
+        ``repr``-based digest), so an output parameter's cache-key
+        contribution changes only when its declared path changes, never
+        when the file or directory at that path does.
+        """
+        if isinstance(value, (list, tuple)):
+            return {
+                "items": [self._hash_output_leaf(value=item) for item in value],
+                "type": type(value).__name__,
+            }
+        return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
+
     def _serialise_inputs(
         self,
         *,
@@ -1024,6 +1049,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 label=f"{task_def.name}.{name}",
+                is_output=name in task_def.output_params,
             )
 
         source_hash = task_def.cache_source_hash
@@ -1039,10 +1065,23 @@ class CacheStore:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded)
 
-    def _stat_value(self, *, annotation: Any, value: Any, label: str = "value") -> Any:
-        """Build a stat-based representation for a value (no content reading)."""
+    def _stat_value(
+        self,
+        *,
+        annotation: Any,
+        value: Any,
+        label: str = "value",
+        is_output: bool = False,
+    ) -> Any:
+        """Build a stat-based representation for a value (no content reading).
+
+        An ``Out[...]`` parameter (``is_output``) is never stat'd — like the
+        content-addressed key, it contributes its path string only.
+        """
         if annotation is tmp_dir:
             return None
+        if is_output:
+            return self._hash_output_leaf(value=value)
 
         if isinstance(value, RemoteRef):
             if value.version_id is None:
