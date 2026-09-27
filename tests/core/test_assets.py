@@ -70,6 +70,14 @@ def has_rows(payload: Any) -> bool:
     return len(payload) > 0
 
 
+class RowChecks:
+    """Checks defined as methods: they pickle by reference like functions."""
+
+    @classmethod
+    def has_rows(cls, payload: Any) -> bool:
+        return len(payload) > 0
+
+
 def always_fails(payload: Any) -> bool:
     """Return a deterministic failed asset check outcome."""
     del payload
@@ -154,6 +162,40 @@ class TestFactories:
         assert via_asset.checks == (has_rows,)
         assert via_shorthand.checks == (has_rows,)
         assert table(frame).checks == ()
+
+    def test_lambda_check_is_rejected_immediately(self) -> None:
+        frame = pd.DataFrame({"a": [1]})
+
+        with pytest.raises(ValueError, match="importable module-level functions"):
+            table(frame, checks=[lambda payload: payload is not None])
+
+    def test_partial_of_a_local_function_check_is_rejected_immediately(self) -> None:
+        import functools
+
+        def local_has_min_rows(payload: Any, *, min_rows: int) -> bool:
+            return len(payload) >= min_rows
+
+        frame = pd.DataFrame({"a": [1]})
+
+        with pytest.raises(ValueError, match="importable module-level functions"):
+            table(frame, checks=[functools.partial(local_has_min_rows, min_rows=1)])
+
+    def test_module_level_function_check_is_accepted(self) -> None:
+        frame = pd.DataFrame({"a": [1]})
+
+        result = table(frame, checks=[has_rows])
+
+        assert result.checks == (has_rows,)
+
+    def test_partial_of_a_module_level_function_check_is_accepted(self) -> None:
+        import functools
+
+        frame = pd.DataFrame({"a": [1]})
+        bound_check = functools.partial(has_rows)
+
+        result = table(frame, checks=[bound_check])
+
+        assert result.checks == (bound_check,)
 
     def test_presentation_labels_are_normalized(self) -> None:
         grouped = table(
@@ -977,14 +1019,35 @@ class TestAssetCheckTransport:
         assert decoded.checks == (has_rows,)
 
     def test_unserializable_asset_check_raises_clear_error(self, tmp_path: Path) -> None:
+        # asset()/table() validate checks up front, so a nested (non-importable)
+        # check is rejected immediately at construction, before encode_value
+        # ever runs — see TestAssetCheckImportability below for that path.
         def nested_check(payload: Any) -> bool:
             return payload is not None
 
+        with pytest.raises(ValueError, match="importable module-level functions"):
+            table(pd.DataFrame({"a": [1]}), checks=[nested_check])
+
+    def test_classmethod_check_is_accepted_and_encodes(self, tmp_path: Path) -> None:
+        # A bound method is a new object on each access, so an identity check
+        # against the name it resolves to must compare the underlying function.
+        result = table(pd.DataFrame({"a": [1]}), checks=[RowChecks.has_rows])
+
+        assert result.checks == (RowChecks.has_rows,)
+        encode_value(result, base_dir=tmp_path)
+
+    def test_encode_still_rejects_a_hand_built_result_with_a_nested_check(
+        self, tmp_path: Path
+    ) -> None:
+        # AssetResult can be constructed directly, bypassing asset()'s
+        # up-front validation, so _encode_asset_checks keeps its own check
+        # as a second line of defense.
+        def nested_check(payload: Any) -> bool:
+            return payload is not None
+
+        hand_built = AssetResult(payload="x", kind="file", checks=(nested_check,))
         with pytest.raises(CodecError, match="importable module-level functions"):
-            encode_value(
-                table(pd.DataFrame({"a": [1]}), checks=[nested_check]),
-                base_dir=tmp_path,
-            )
+            encode_value(hand_built, base_dir=tmp_path)
 
     def test_asset_checks_survive_remote_result_transport(self, tmp_path: Path) -> None:
         encoded = encode_value(

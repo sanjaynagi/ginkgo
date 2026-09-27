@@ -9,6 +9,9 @@ the shorthand factories :func:`table`, :func:`array`, :func:`fig`,
 
 from __future__ import annotations
 
+import functools
+import importlib
+import types
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -17,7 +20,6 @@ from typing import Any, Literal, get_args
 
 from ginkgo.core.hashing import hash_str
 from ginkgo.core.types import file, path_binding_remedy
-
 
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
 
@@ -357,6 +359,92 @@ class AssetRef:
         )
 
 
+def is_picklable_by_reference(fn: Callable[..., Any]) -> bool:
+    """Return whether ``fn`` can be pickled by reference (module + qualified name).
+
+    A lambda, a nested function, or a closure all pickle by *value* (or not at
+    all), which only works inside a single process. A python-kind task's body
+    runs in a worker process and its return value is sent back to the driver
+    by pickling it, so a callable that cannot round-trip this way looks fine
+    in-process and then breaks the moment the task runs in a worker or remote
+    executor. This checks the same thing ``pickle`` effectively requires for a
+    module-level callable: its ``__qualname__`` names no lambda or local
+    scope, and the module it claims actually holds that exact object under
+    that name.
+
+    Parameters
+    ----------
+    fn : Callable[..., Any]
+        The callable to test.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``fn`` is importable by reference from its module.
+    """
+    if isinstance(fn, functools.partial):
+        # A partial pickles its wrapped callable plus its bound args/kwargs
+        # rather than by reference itself, so what matters is whether the
+        # wrapped callable resolves — the bound values are left unchecked.
+        return is_picklable_by_reference(fn.func)
+
+    qualname = getattr(fn, "__qualname__", None)
+    module_name = getattr(fn, "__module__", None)
+    if not qualname or not module_name:
+        return False
+    if "<lambda>" in qualname or "<locals>" in qualname:
+        return False
+
+    try:
+        obj: Any = importlib.import_module(module_name)
+    except ImportError:
+        return False
+    for part in qualname.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return False
+    if isinstance(fn, types.MethodType):
+        # A bound method (a classmethod, or a method of an instance) is a new
+        # object on every attribute access, so it can never be ``is`` the one
+        # the qualified name resolves to. Pickle stores its ``__self__`` and
+        # function name, so what must resolve is the underlying function.
+        return getattr(obj, "__func__", obj) is fn.__func__
+    return obj is fn
+
+
+def _validate_checks_importable(*, checks: tuple[Callable[[Any], bool], ...], kind: str) -> None:
+    """Raise a clear error for any asset check that cannot survive a worker.
+
+    Checks are only known once a task returns ``asset(..., checks=[...])``, so
+    this cannot be enforced statically before the task runs. Running it here
+    — the moment the checks are attached to a result, before the task body
+    even returns — surfaces the mistake immediately, as an ordinary exception
+    raised from the user's own code, instead of a confusing pickling failure
+    that ``ginkgo`` would otherwise only hit once it tries to ship the result
+    out of the worker process.
+
+    Parameters
+    ----------
+    checks : tuple[Callable[[Any], bool], ...]
+        The checks attached to an asset result.
+    kind : str
+        The asset kind, used to make the error message specific.
+    """
+    for check in checks:
+        if not callable(check):
+            continue
+        if is_picklable_by_reference(check):
+            continue
+        check_name = getattr(check, "__name__", type(check).__name__)
+        raise ValueError(
+            f"Asset check {check_name!r} for the {kind!r} asset is a lambda, nested "
+            "function, or other non-importable callable. Asset checks must be "
+            "importable module-level functions when a task runs in a worker or "
+            f"remote executor: define {check_name!r} as a module-level function and "
+            "pass it by name."
+        )
+
+
 def asset(
     payload: Any,
     *,
@@ -412,6 +500,9 @@ def asset(
     if kind not in _VALID_KINDS:
         raise ValueError(f"asset() kind must be one of {sorted(_VALID_KINDS)}, got {kind!r}")
 
+    checks_tuple = tuple(checks) if checks is not None else ()
+    _validate_checks_importable(checks=checks_tuple, kind=kind)
+
     # Late import breaks the import cycle: the registry imports AssetResult
     # from this module, but asset() needs to dispatch into the registry at
     # call time.
@@ -427,7 +518,7 @@ def asset(
         group=group.strip() if isinstance(group, str) and group.strip() else None,
         caption=caption.strip() if isinstance(caption, str) and caption.strip() else None,
         metadata=dict(metadata or {}),
-        checks=tuple(checks) if checks is not None else (),
+        checks=checks_tuple,
         kind_fields=extra_kind_fields,
     )
 
