@@ -344,7 +344,9 @@ def run_workflow(
         for diagnostic in path_like_str_param_diagnostics(
             task_defs=(node.task_def for node in evaluator.task_nodes.values())
         ):
-            console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
+            # Escaped: the message names `Out[file]`, which Rich would
+            # otherwise swallow as a style tag.
+            console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
 
     # Executors named by tasks themselves, which dispatch there regardless of
     # the run default — surfaced in the header so a locally-defaulted run does

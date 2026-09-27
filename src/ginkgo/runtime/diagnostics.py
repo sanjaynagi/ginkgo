@@ -18,7 +18,7 @@ from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.module_loader import USER_MODULE_PREFIX, load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
 
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
@@ -199,6 +199,7 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
         if task_def.name in seen_task_names:
             continue
         seen_task_names.add(task_def.name)
+        task_label = _task_label(task_def)
         for param_name, annotation in task_def.type_hints.items():
             if param_name == "return":
                 continue
@@ -211,7 +212,7 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
                     severity="warning",
                     code=PATH_LIKE_STR_PARAM_CODE,
                     message=(
-                        f"{task_def.name}'s `{param_name}` parameter is annotated `str`, so it "
+                        f"{task_label}'s `{param_name}` parameter is annotated `str`, so it "
                         "is cache-tracked by its path string alone: editing the file it names "
                         "won't re-run the task, and no dependency edge is created when it comes "
                         "from another task's output. Annotate it `file`/`folder` if the task "
@@ -219,12 +220,25 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
                     ),
                     location=task_def.name,
                     suggestion=(
-                        f"Annotate `{param_name}` `file`/`folder` if {task_def.name} reads it, "
+                        f"Annotate `{param_name}` `file`/`folder` if {task_label} reads it, "
                         "or `Out[file]`/`Out[folder]` if it writes it."
                     ),
                 )
             )
     return diagnostics
+
+
+def _task_label(task_def: TaskDef) -> str:
+    """Return the name a user would recognise for a task in a message.
+
+    A single-file workflow's module is loaded under a synthetic name
+    (``ginkgo_user_<stem>_<digest>``) that means nothing to its author, so
+    such a task is named by its function alone.
+    """
+    module = getattr(task_def.fn, "__module__", None) or ""
+    if module.startswith(USER_MODULE_PREFIX):
+        return task_def.fn.__qualname__
+    return task_def.name
 
 
 def _diagnostic_from_exception(

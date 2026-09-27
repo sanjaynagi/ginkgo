@@ -159,7 +159,10 @@ def main():
         assert status == 0
         assert "output_path" in err
         assert "write_report" in err
-        assert "file" in err and "folder" in err
+        # Escaped for Rich, which would otherwise swallow `[file]` as a tag.
+        assert "Out[file]" in err and "Out[folder]" in err
+        # A single-file workflow's synthetic module name is not shown.
+        assert "ginkgo_user_" not in err
 
     def test_a_real_run_does_not_print_the_path_like_str_param_warning(
         self, tmp_path, monkeypatch, capsys
