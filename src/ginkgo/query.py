@@ -886,9 +886,7 @@ class Query:
             (run_id, task_id),
         )
         return {
-            str(row["param"]): str(row["tracking"])
-            for row in rows
-            if row["tracking"] is not None
+            str(row["param"]): str(row["tracking"]) for row in rows if row["tracking"] is not None
         }
 
     # -- raw SQL -------------------------------------------------------------

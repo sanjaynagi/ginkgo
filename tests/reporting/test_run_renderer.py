@@ -755,3 +755,30 @@ def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line
 
     assert "ValueError: bad value" in text
     assert text.count("Traceback (most recent call last):") == 1
+
+
+def test_path_tracked_inputs_print_one_dim_summary_line(tmp_path: Path) -> None:
+    """A run whose inputs were all path-tracked names the count once (issue #307)."""
+    renderer, output = _renderer(tmp_path)
+
+    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=3)
+
+    assert "3 inputs are tracked by path only" in output.getvalue()
+    assert "ginkgo cache explain" in output.getvalue()
+
+
+def test_a_clean_run_says_nothing_about_path_tracking(tmp_path: Path) -> None:
+    """No path-tracked inputs: the line stays quiet rather than reporting zero."""
+    renderer, output = _renderer(tmp_path)
+
+    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=0)
+
+    assert "tracked by path" not in output.getvalue()
+
+
+def test_a_single_path_tracked_input_uses_singular_wording(tmp_path: Path) -> None:
+    renderer, output = _renderer(tmp_path)
+
+    renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=1)
+
+    assert "1 input is tracked by path only" in output.getvalue()

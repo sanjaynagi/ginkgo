@@ -7,11 +7,12 @@ runs or entries to compare it against.
 
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 from ginkgo import task
-from ginkgo.cli.commands.cache import explain_run_cache
+from ginkgo.cli.commands.cache import _render_explain_text, explain_run_cache
 from ginkgo.query import Query
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
@@ -94,6 +95,22 @@ def _component(explanation: dict[str, Any], name: str) -> dict[str, Any]:
     matches = [entry for entry in components if entry["component"] == name]
     assert matches, f"{name} not reported in {components}"
     return matches[0]
+
+
+def _write_task_input(
+    db_path: Path, *, run_id: str, task_id: str, param: str, tracking: str | None
+) -> None:
+    """Record one position-0 ``task_inputs`` row with a tracking label."""
+    with open_store(db_path) as store, store.transaction():
+        store.apply(
+            [
+                ProjectionOp(
+                    sql="INSERT INTO task_inputs (run_id, task_id, param, position, tracking) "
+                    "VALUES (?, ?, ?, 0, ?)",
+                    params=(run_id, task_id, param, tracking),
+                )
+            ]
+        )
 
 
 def _index(tmp_path: Path) -> CacheIndex:
@@ -387,3 +404,144 @@ class TestSavedKeyComponents:
         assert components["inputs.value"] == input_hashes["value"]
         assert entry is not None
         assert entry["function"] == produce.name
+
+
+class TestInputTrackingLabels:
+    """Each input's cache-tracking label, read from ``task_inputs.tracking``."""
+
+    def test_labels_are_reported_alongside_the_explanation(self, tmp_path: Path) -> None:
+        with _index(tmp_path) as index:
+            _write_entry(index, "current")
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+            )
+            _write_task_input(
+                _db(tmp_path),
+                run_id="run-2",
+                task_id="task_0000",
+                param="samples",
+                tracking="path",
+            )
+            _write_task_input(
+                _db(tmp_path),
+                run_id="run-2",
+                task_id="task_0000",
+                param="threads",
+                tracking="value",
+            )
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["input_labels"] == {"samples": "path", "threads": "value"}
+
+    def test_a_run_recorded_before_labels_existed_reports_none(self, tmp_path: Path) -> None:
+        """No ``task_inputs`` rows at all: absent, not a guess (item 4)."""
+        with _index(tmp_path) as index:
+            _write_entry(index, "current")
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+            )
+            explanation = _explain(_db(tmp_path))
+
+        assert "input_labels" not in explanation
+
+    def test_a_row_with_no_tracking_value_is_skipped_not_guessed(self, tmp_path: Path) -> None:
+        with _index(tmp_path) as index:
+            _write_entry(index, "current")
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+            )
+            _write_task_input(
+                _db(tmp_path), run_id="run-2", task_id="task_0000", param="legacy", tracking=None
+            )
+            explanation = _explain(_db(tmp_path))
+
+        assert "input_labels" not in explanation
+
+
+class TestExplainTextRendering:
+    """``ginkgo cache explain`` without ``--json``: one reading of the payload."""
+
+    def _rendered(self, payload: dict[str, Any]) -> str:
+        from rich.console import Console
+
+        output = StringIO()
+        console = Console(file=output, width=120, force_terminal=False)
+        _render_explain_text(console, payload)
+        return output.getvalue()
+
+    def test_a_path_label_is_named_with_its_hint(self) -> None:
+        payload = {
+            "run_id": "run-2",
+            "workflow": "flow.py",
+            "tasks": [
+                {
+                    "task_id": "task_0000",
+                    "task_name": "produce",
+                    "display_label": None,
+                    "cache_key": "abc123",
+                    "reason": "all_inputs_match",
+                    "input_labels": {"samples": "path", "threads": "value"},
+                }
+            ],
+        }
+        text = self._rendered(payload)
+
+        assert "samples" in text
+        assert "path" in text
+        assert "tracked by path string only" in text
+        assert "threads" in text
+        assert "value" in text
+
+    def test_markup_looking_values_are_escaped_not_swallowed(self) -> None:
+        """A param or label that looks like Rich markup must print literally."""
+        payload = {
+            "run_id": "run-2",
+            "workflow": None,
+            "tasks": [
+                {
+                    "task_id": "task_0000",
+                    "task_name": "[file]",
+                    "display_label": None,
+                    "cache_key": None,
+                    "reason": "no_entry_for_key",
+                    "input_labels": {"[weird]": "value"},
+                }
+            ],
+        }
+        text = self._rendered(payload)
+
+        assert "[file]" in text
+        assert "[weird]" in text
+
+    def test_a_task_with_no_labels_prints_nothing_extra(self) -> None:
+        """An entry from before labelling existed: no inputs section, no crash."""
+        payload = {
+            "run_id": "run-2",
+            "workflow": "flow.py",
+            "tasks": [
+                {
+                    "task_id": "task_0000",
+                    "task_name": "produce",
+                    "display_label": None,
+                    "cache_key": "abc123",
+                    "reason": "all_inputs_match",
+                }
+            ],
+        }
+        text = self._rendered(payload)
+
+        assert "produce" in text
+        assert "inputs:" not in text
+
+    def test_no_tasks_says_so_rather_than_printing_nothing(self) -> None:
+        text = self._rendered({"run_id": "run-2", "workflow": None, "tasks": []})
+        assert "No tasks found" in text

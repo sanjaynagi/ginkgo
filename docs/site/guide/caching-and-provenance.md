@@ -130,6 +130,49 @@ those are tracked separately; for now, still annotate the *return* `file` /
 `folder` when the produced path should be content-addressed and stored as an
 artifact.
 
+### How Is Each Input Tracked?
+
+Every task input contributes to the cache key in one of a few ways, and
+Ginkgo names which:
+
+- **content** — a `file` / `folder` annotation or instance: the bytes are
+  hashed.
+- **asset** — an `AssetRef` (or a remote reference): tracked by its version id.
+- **path** — a plain value that happens to name an existing path, but is
+  annotated as an ordinary scalar: tracked by the path *string* only. This is
+  the silent-staleness trap above — nothing is wrong syntactically, so nothing
+  warns.
+- **value** — an ordinary scalar or object: tracked by its own `repr` or
+  pickle digest.
+- **output** — an `Out[...]` parameter: tracked by its declared path string
+  only, by design (it names what the task is about to write, not something it
+  reads).
+- **untracked** — `tmp_dir`: excluded from the key entirely.
+
+A container (`list`, `tuple`, `dict`) is labelled by its least-tracked
+element — one `path` buried inside `inputs=[a, b]` labels the whole parameter
+`path`, since that is the element the cache key does not really watch.
+
+`ginkgo cache explain <run_id>` shows every input's label next to it, with a
+`path` label highlighted and a reminder to annotate `file` / `folder` instead:
+
+```
+analyze (task_0002)
+  cache key: fddb71a9…
+  reason: all_inputs_match
+  inputs:
+    coords: path (tracked by path string only — annotate `file`/`folder` to track contents)
+    output_path: output
+```
+
+Pass `--json` for the same data as JSON, under `input_labels`. A run recorded
+before this label existed shows nothing for its inputs rather than a guess.
+
+After a real `ginkgo run`, if any task's input was labelled `path`, the run
+prints one dim summary line — `N inputs are tracked by path only; see
+\`ginkgo cache explain\`` — so the trap surfaces without having to go looking
+for it. A workflow with nothing tracked by path stays quiet.
+
 ## Artifact Storage
 
 For file and folder outputs, Ginkgo stores content-addressed artifacts under

@@ -94,10 +94,7 @@ CREATE TABLE task_inputs (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
   value_type TEXT, value_summary TEXT, digest TEXT,
   artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT,
-  -- How the cache key tracks this input: content | asset | path | value |
-  -- output | untracked (issue #307 phase 1). Position-0 rows only; NULL for
-  -- entries written before this column existed, or where the parameter was
-  -- not hashed at all. Metadata only -- never read back into a cache key.
+  -- How the cache key tracks this input: content|asset|path|value|output|untracked (issue #307). Position-0 rows only; NULL before this column existed. Metadata only.
   tracking TEXT,
   PRIMARY KEY (run_id, task_id, param, position)
 );
