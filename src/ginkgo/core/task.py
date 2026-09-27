@@ -244,6 +244,40 @@ class TaskDef:
         return self._output_params
 
     @property
+    def output_params_in_order(self) -> tuple[str, ...]:
+        """``output_params``, in declaration order (signature order)."""
+        return tuple(name for name in self._signature.parameters if name in self._output_params)
+
+    @property
+    def has_inferred_return(self) -> bool:
+        """Whether this task's return value is inferred from ``Out[...]`` params.
+
+        True only when the signature carries no return annotation at all
+        (``inspect.Signature.empty`` — an explicit ``-> None`` does not
+        count) and the task declares at least one ``Out[...]`` parameter.
+        """
+        return (
+            self._signature.return_annotation is inspect.Signature.empty
+            and bool(self._output_params)
+        )
+
+    @property
+    def effective_return_annotation(self) -> Any:
+        """The annotation used to validate, coerce, and materialize the return value.
+
+        An explicit return annotation (including a bare ``-> None``) is used
+        as-is. With no return annotation at all and at least one
+        ``Out[...]`` parameter, the return is inferred: the sole output
+        parameter's inner annotation, or ``tuple[...]`` of every output
+        parameter's inner annotation in declaration order.
+        """
+        if self.has_inferred_return:
+            ordered = self.output_params_in_order
+            annotations = tuple(self._type_hints[name] for name in ordered)
+            return annotations[0] if len(annotations) == 1 else tuple[annotations]
+        return self._type_hints.get("return", self._signature.return_annotation)
+
+    @property
     def source_hash(self) -> str:
         """BLAKE3 digest of task source and local imported modules."""
         return self._source_hash

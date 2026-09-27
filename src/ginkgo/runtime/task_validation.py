@@ -16,7 +16,7 @@ from typing import Any, Iterable, get_args, get_origin
 
 from ginkgo.core.asset import AssetRef
 from ginkgo.core.directive import ExecutionDirective
-from ginkgo.core.expr import Expr, ExprList, OutputIndex
+from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
 from ginkgo.core.remote import RemoteRef, is_remote_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
@@ -180,7 +180,7 @@ def output_path_matches_kind(*, path: str, kind: str) -> bool:
 
 def contains_dynamic_expression(value: Any) -> bool:
     """Return whether a nested value contains unresolved expressions."""
-    if isinstance(value, (Expr, ExprList, OutputIndex)):
+    if isinstance(value, (Expr, ExprList, OutputIndex, OutputName)):
         return True
     if isinstance(value, list | tuple):
         return any(contains_dynamic_expression(item) for item in value)
@@ -478,7 +478,7 @@ class TaskValidator:
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
         """Validate a task return value when it uses a Ginkgo path type."""
-        annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        annotation = task_def.effective_return_annotation
         self.validate_annotated_value(
             annotation=annotation,
             value=value,
@@ -616,7 +616,7 @@ class TaskValidator:
 
     def coerce_return_value(self, *, task_def: TaskDef, value: Any) -> Any:
         """Coerce string returns into the declared Ginkgo path marker type."""
-        annotation = task_def.type_hints.get("return", task_def.signature.return_annotation)
+        annotation = task_def.effective_return_annotation
         return self.coerce_annotated_value(annotation=annotation, value=value)
 
     def coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:

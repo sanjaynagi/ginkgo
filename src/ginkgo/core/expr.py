@@ -169,32 +169,69 @@ class OutputIndex:
         return f"OutputIndex({self.expr!r}, {self.index})"
 
 
+@dataclass(frozen=True)
+class OutputName:
+    """Deferred named selection into an ``Out[...]`` parameter's value.
+
+    Created by ``expr.output["name"]``. Unlike ``OutputIndex``, which selects
+    from the task's *return* value, this resolves to the named ``Out[...]``
+    parameter's own resolved argument (coerced to ``file``/``folder``) — so it
+    works whether that task's return is explicit or inferred.
+
+    Parameters
+    ----------
+    expr : Expr
+        The upstream expression whose task declares an ``Out[...]``
+        parameter named *name*.
+    name : str
+        The ``Out[...]`` parameter's name.
+    """
+
+    expr: Expr
+    name: str
+
+    def __repr__(self) -> str:
+        return f"OutputName({self.expr!r}, {self.name!r})"
+
+
 class _OutputProxy:
     """Proxy returned by ``Expr.output`` and ``ExprList.output``.
 
-    Supports ``__getitem__`` to create deferred index selections into
-    tuple-returning task results.
+    Supports ``__getitem__`` to create deferred index or named selections
+    into a task's outputs.
     """
 
     def __init__(self, source: Expr | ExprList) -> None:
         self._source = source
 
-    def __getitem__(self, index: int) -> OutputIndex | ExprList:
-        """Select element *index* from each tuple result.
+    def __getitem__(self, index: int | str) -> OutputIndex | OutputName | ExprList:
+        """Select element *index*, or ``Out[...]`` parameter *index*, per result.
 
         Parameters
         ----------
-        index : int
-            Positional index into the result tuple.
+        index : int | str
+            A positional index into the result tuple, or the name of one of
+            the task's ``Out[...]`` parameters.
 
         Returns
         -------
-        OutputIndex
+        OutputIndex | OutputName
             When the source is a single ``Expr``.
         ExprList
             When the source is an ``ExprList``, returns a new ``ExprList``
-            whose elements are ``OutputIndex`` wrappers.
+            whose elements are ``OutputIndex``/``OutputName`` wrappers.
         """
+        if isinstance(index, str):
+            task_def = self._source.task_def
+            if task_def is not None:
+                _validate_output_name(task_def=task_def, name=index)
+            if isinstance(self._source, Expr):
+                return OutputName(expr=self._source, name=index)
+            return ExprList(
+                exprs=[OutputName(expr=e, name=index) for e in self._source],
+                task_def=self._source.task_def,
+            )
+
         if isinstance(self._source, Expr):
             return OutputIndex(expr=self._source, index=index)
 
@@ -203,6 +240,21 @@ class _OutputProxy:
             exprs=[OutputIndex(expr=e, index=index) for e in self._source],
             task_def=self._source.task_def,
         )
+
+
+def _validate_output_name(*, task_def: TaskDef, name: str) -> None:
+    """Raise a clear error if *name* is not one of the task's Out[...] params.
+
+    Validated eagerly, at flow-construction time (``.output["name"]`` itself),
+    rather than deferred to the run.
+    """
+    if name in task_def.output_params:
+        return
+    known = ", ".join(sorted(task_def.output_params)) or "(none)"
+    raise KeyError(
+        f"{task_def.fn.__name__}() has no Out[...] parameter named {name!r}. "
+        f"Its Out[...] parameters are: {known}."
+    )
 
 
 @dataclass(frozen=True)

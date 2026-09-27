@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from ginkgo.core.asset import AssetRef, AssetVersion, collect_asset_refs
 from ginkgo.core.directive import ExecutionDirective
-from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex
+from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
 from ginkgo.core.subworkflow import SubWorkflowResult
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
@@ -107,6 +107,7 @@ from ginkgo.runtime.task_runners.subworkflow import SubworkflowRunner
 from ginkgo.runtime.task_validation import (
     TaskValidator,
     contains_dynamic_expression,
+    declared_output_paths,
     is_untracked_path_value,
 )
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
@@ -684,7 +685,7 @@ class ConcurrentEvaluator:
         task_path: tuple[str, ...] = (),
     ) -> set[int]:
         """Register all task nodes reachable from a nested value."""
-        if isinstance(value, OutputIndex):
+        if isinstance(value, (OutputIndex, OutputName)):
             return self._register_value(
                 value.expr,
                 expr_stack=expr_stack,
@@ -1439,6 +1440,12 @@ class ConcurrentEvaluator:
             result = self._materialize(value.expr)
             return result[value.index]
 
+        if isinstance(value, OutputName):
+            node = self._nodes[self._expr_nodes[id(value.expr)]]
+            if node.state != "completed":
+                raise RuntimeError(f"Task {node.task_def.name} is not yet complete")
+            return self._resolve_output_param_value(node=node, name=value.name)
+
         if isinstance(value, Expr):
             node = self._nodes[self._expr_nodes[id(value)]]
             if node.state != "completed":
@@ -1776,6 +1783,8 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             execution_args=node.execution_args,
         )
+        if node.task_def.output_params:
+            self._create_output_parent_dirs(node=node)
         # Placement was resolved when the node was prepared; the backend
         # recorded in events and provenance is the executor's name.
         execution_backend = node.executor_name or LOCAL
@@ -1826,6 +1835,23 @@ class ConcurrentEvaluator:
         payload = self._build_worker_payload(node=node)
         future = python_executor.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, "python")
+
+    def _create_output_parent_dirs(self, *, node: NodeRun) -> None:
+        """Create the parent directory of every declared ``Out[...]`` path.
+
+        Runs once per node, after pre-execution validation passes and before
+        the task body dispatches — on the driver, ahead of python workers,
+        shell/script/notebook commands, and container runs alike, since all
+        of those are launched from this one call site. Only the *parent* is
+        created (``exist_ok=True``): for ``Out[folder]`` the folder itself is
+        left for the task body to create, since tools differ on whether they
+        want it to already exist.
+        """
+        assert node.execution_args is not None
+        for _, path, _kind in declared_output_paths(
+            task_def=node.task_def, resolved_args=node.execution_args
+        ):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
@@ -2058,16 +2084,59 @@ class ConcurrentEvaluator:
         the body merely returned the directive — so this is also where each
         declared ``Out[...]`` parameter's path is checked to have been
         written, with the right kind.
+
+        A task with an inferred return (no return annotation, ``Out[...]``
+        parameters present — see ``TaskDef.has_inferred_return``) has *value*
+        replaced here with the resolved value of its output parameter(s): a
+        python task body must have returned ``None`` (anything else is a
+        clear error), while a shell/script/notebook directive's own computed
+        result is discarded in favour of the same output-parameter values, so
+        both kinds go through this one substitution point.
         """
-        coerced = self._validator.coerce_return_value(task_def=node.task_def, value=value)
+        task_def = node.task_def
+        if task_def.has_inferred_return:
+            if task_def.kind == "python" and value is not None:
+                raise TypeError(
+                    f"{task_def.name} has Out[...] parameters and no return annotation, "
+                    "so its return value is inferred from those outputs — but the task "
+                    f"body returned {value!r} instead of None. Add an explicit return "
+                    "annotation (e.g. `-> file`) if this task needs to return something "
+                    "else."
+                )
+            value = self._inferred_return_value(node=node)
+        coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
         finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
-        self._validator.validate_return_value(task_def=node.task_def, value=finalized)
-        if node.task_def.output_params:
+        self._validator.validate_return_value(task_def=task_def, value=finalized)
+        if task_def.output_params:
             self._validator.validate_declared_outputs_written(
-                task_def=node.task_def,
+                task_def=task_def,
                 resolved_args=node.execution_args or {},
             )
         return finalized
+
+    def _inferred_return_value(self, *, node: NodeRun) -> Any:
+        """Build a task's inferred return from its ``Out[...]`` parameters.
+
+        One parameter's resolved value stands alone; several are combined
+        into a tuple, both in declaration order — matching
+        ``TaskDef.effective_return_annotation``.
+        """
+        ordered = node.task_def.output_params_in_order
+        values = [self._resolve_output_param_value(node=node, name=name) for name in ordered]
+        return values[0] if len(values) == 1 else tuple(values)
+
+    def _resolve_output_param_value(self, *, node: NodeRun, name: str) -> Any:
+        """Return one ``Out[...]`` parameter's resolved value, as file/folder.
+
+        Shared by inferred-return substitution and named ``.output[name]``
+        access — both read the parameter's own resolved argument, coerced to
+        its declared (inner) annotation, never the task's return value.
+        """
+        assert node.resolved_args is not None
+        annotation = node.task_def.type_hints.get(name)
+        return self._validator.coerce_annotated_value(
+            annotation=annotation, value=node.resolved_args.get(name)
+        )
 
     def _notebook_runtime_root(self) -> Path:
         """Return the shared runtime root for notebook support files."""
@@ -2460,9 +2529,7 @@ class ConcurrentEvaluator:
 
     def _output_summary_for(self, *, node: NodeRun, value: Any) -> list[dict[str, Any]]:
         """Return a compact typed output summary for one task result."""
-        annotation = node.task_def.type_hints.get(
-            "return", node.task_def.signature.return_annotation
-        )
+        annotation = node.task_def.effective_return_annotation
         return output_summary(annotation, value)
 
     def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
@@ -2622,7 +2689,7 @@ def _producer_task_name(value: Any) -> str | None:
     the caller walks element by element, so each branch arrives here as its own
     ``Expr``.
     """
-    if isinstance(value, OutputIndex):
+    if isinstance(value, (OutputIndex, OutputName)):
         return _producer_task_name(value.expr)
     if isinstance(value, Expr):
         return value.task_def.name
