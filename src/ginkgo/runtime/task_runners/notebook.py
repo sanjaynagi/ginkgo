@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 import yaml
 
+from ginkgo.core.asset import AssetRef
 from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
@@ -186,6 +187,10 @@ def render_label_value(value: Any) -> str | None:
     """Return a compact string for a mapped-task display label."""
     if isinstance(value, Path):
         text = value.name or str(value)
+    elif isinstance(value, AssetRef):
+        # An asset input reaches the label still as its ref (the payload is
+        # only loaded on a cache miss), so label it by its logical name.
+        text = value.key.name
     elif isinstance(value, (str, int, float, bool)):
         text = str(value)
     else:

@@ -837,9 +837,18 @@ class ConcurrentEvaluator:
 
         # For notebook/script tasks, eagerly evaluate the body to capture the
         # source hash of the underlying file and fold it into the cache key.
+        # The body runs before the node's cache identity is known, so it is
+        # handed the same rehydrated view of assets a cache miss would give
+        # it — ``resolved_args`` itself keeps the ``AssetRef`` the cache key
+        # is built from.
         extra_source_hash: str | None = None
         if node.task_def.kind in {"notebook", "script"}:
-            directive = node.task_def.fn(**resolved_args)
+            directive = node.task_def.fn(
+                **self._rehydrate_execution_args(
+                    task_def=node.task_def,
+                    resolved_args=resolved_args,
+                )
+            )
             node.driver_directive = directive
             extra_source_hash = directive.source_hash
 
@@ -1310,9 +1319,10 @@ class ConcurrentEvaluator:
         """Resolve concrete arguments for a task call.
 
         *asset_inputs* is filled in as arguments resolve, with the identity of
-        every asset each parameter was handed. This is the only moment it is
-        knowable for a semantically typed parameter: the next line rehydrates
-        the refs into the payload the task asked for, and the identity is gone.
+        every asset each parameter was handed. The resolved value keeps that
+        same ``AssetRef`` identity rather than the live payload it names —
+        see :meth:`_resolve_execution_args`, which rehydrates refs into the
+        payload a task body actually receives.
         """
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
@@ -1346,15 +1356,15 @@ class ConcurrentEvaluator:
                             }
                             for ref in refs
                         ]
-                # A path-shaped annotation binds a filesystem path at every
-                # depth, so the whole value — including any nested containers
-                # — keeps its ``AssetRef`` entries rather than becoming live
-                # objects that later code would stringify as paths.
-                resolved_args[name] = (
-                    materialised
-                    if is_path_shaped_annotation(annotation)
-                    else self._rehydrate_wrapped_refs(value=materialised)
-                )
+                # ``resolved_args`` keeps every ``AssetRef`` as-is, whatever
+                # the annotation: it is what the cache key is computed from
+                # (see ``node_cache.content_lookup``), and an ``AssetRef``
+                # hashes by its stable identity (asset key + version id)
+                # rather than by its live payload's pickled bytes, which can
+                # be non-deterministic (e.g. an sklearn model). Live objects
+                # are materialised later, only on a cache miss, in
+                # ``_resolve_execution_args``.
+                resolved_args[name] = materialised
                 continue
 
             if name == "threads":
@@ -1379,14 +1389,49 @@ class ConcurrentEvaluator:
         return resolved_args
 
     def _resolve_execution_args(self, *, node: NodeRun) -> dict[str, Any]:
-        """Resolve runtime-only inputs such as secret references."""
+        """Resolve runtime-only inputs: rehydrated assets and secret references.
+
+        Called only once a cache miss is confirmed (see ``_start_task_execution``),
+        so a cache hit never pays to rehydrate a live asset payload.
+        """
         assert node.resolved_args is not None
+        rehydrated = self._rehydrate_execution_args(
+            task_def=node.task_def,
+            resolved_args=node.resolved_args,
+        )
         if self.secret_resolver is None:
-            return dict(node.resolved_args)
+            return rehydrated
         return {
             name: resolve_secret_refs(value=value, resolver=self.secret_resolver)
-            for name, value in node.resolved_args.items()
+            for name, value in rehydrated.items()
         }
+
+    def _rehydrate_execution_args(
+        self,
+        *,
+        task_def: TaskDef,
+        resolved_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace wrapped ``AssetRef`` values with live payloads for execution.
+
+        Mirrors the path-shaped check in ``_resolve_task_args``: a
+        path-shaped annotation binds a filesystem path, so its ``AssetRef``
+        entries are left alone; every other parameter is rehydrated into the
+        live object the task body asked for.
+        """
+        rehydrated: dict[str, Any] = {}
+        for name, value in resolved_args.items():
+            parameter = task_def.signature.parameters.get(name)
+            annotation = task_def.type_hints.get(
+                name,
+                parameter.annotation if parameter is not None else Any,
+            )
+            rehydrated[name] = (
+                value
+                if is_path_shaped_annotation(annotation)
+                else self._rehydrate_wrapped_refs(value=value)
+            )
+        return rehydrated
 
     def _materialize(self, value: Any) -> Any:
         """Materialize a nested value using completed task-node results."""
@@ -1425,9 +1470,9 @@ class ConcurrentEvaluator:
         the existing file coercion path, and the latter carry binary
         payloads that users rarely consume as live Python objects.
 
-        Callers decide whether to rehydrate at all: ``_resolve_task_args``
-        skips this entirely for a path-shaped annotation, which binds a
-        filesystem path rather than a live object.
+        Callers decide whether to rehydrate at all:
+        ``_rehydrate_execution_args`` skips this entirely for a path-shaped
+        annotation, which binds a filesystem path rather than a live object.
 
         Parameters
         ----------
