@@ -167,8 +167,8 @@ def _clear_targets(
     try:
         manifest = registry.resolve(env=env)
     except PixiEnvNotFoundError:
-        # PixiEnvNotFoundError names only the first discovery root; report all of
-        # them so "wrong directory" is distinguishable from "env does not exist".
+        # Reported with the environments each discovery root holds, so "wrong
+        # directory" is distinguishable from "env does not exist".
         raise ValueError(
             f"Pixi environment {env!r} not found. Searched: {_searched_roots(registry=registry)}"
         ) from None
