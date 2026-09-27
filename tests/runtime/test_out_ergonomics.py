@@ -56,6 +56,14 @@ def write_optional_inferred(payload: str | None, dest: Out[file | None]):
     Path(dest).write_text(payload or "", encoding="utf-8")
 
 
+@task(kind="shell")
+def shell_mixed_container_explicit_return(
+    dest: Out[file], parts: Out[list[file]]
+) -> tuple[file, list[file]]:
+    targets = " ".join([dest, *parts])
+    return shell(cmd=f"for p in {targets}; do echo x > $p; done")
+
+
 @task()
 def explicit_none_return(payload: str, dest: Out[file]) -> None:
     Path(dest).write_text(payload, encoding="utf-8")
@@ -317,6 +325,13 @@ class TestShellOutputInference:
         other = str(tmp_path / "shell_mismatch_other.txt")
         with pytest.raises(ValueError, match="Out\\[\\.\\.\\.\\] parameters"):
             evaluate(shell_explicit_output_mismatch(payload="v", dest=str(dest), other=other))
+
+    def test_ambiguous_mixed_container_outputs_with_explicit_return_error(self, tmp_path: Path):
+        parts = [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")]
+        with pytest.raises(ValueError, match="cannot be inferred unambiguously"):
+            evaluate(
+                shell_mixed_container_explicit_return(dest=str(tmp_path / "dest.txt"), parts=parts)
+            )
 
     def test_shell_with_no_out_params_and_no_output_still_errors(self):
         with pytest.raises(ValueError, match="output"):

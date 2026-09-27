@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock, Thread, current_thread, main_thread
 from types import FrameType
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, get_origin
 
 from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.optional import OptionalOutput
@@ -31,6 +31,7 @@ from ginkgo.core.types import (
     folder,
     is_path_shaped_annotation,
     tmp_dir,
+    unwrap_optional_annotation,
 )
 from ginkgo.envs.mounts import Mount, MountMode, mount
 from ginkgo.errors import GinkgoError
@@ -419,6 +420,26 @@ def resolve_declared_output(
 
     inferred = declared_output_paths_in_order(task_def=task_def, resolved_args=resolved_args)
     if given is None:
+        # The inferred output is flat, which lines up with an explicit return
+        # annotation only when each Out parameter is a single path. With an
+        # explicit return and a container Out beside another Out, the flat
+        # paths would be coerced into the wrong tuple slots, so refuse rather
+        # than guess. (An inferred return is built per parameter instead.)
+        if (
+            not task_def.has_inferred_return
+            and len(task_def.output_params) > 1
+            and any(
+                get_origin(unwrap_optional_annotation(task_def.type_hints[name])[0])
+                in (list, tuple)
+                for name in task_def.output_params
+            )
+        ):
+            raise ValueError(
+                f"{task_def.name} has several Out[...] parameters, one of them a "
+                "list or tuple, and an explicit return annotation, so output= "
+                "cannot be inferred unambiguously. Pass output= explicitly, or "
+                "drop the return annotation to infer the return from Out[...]."
+            )
         if not inferred:
             return None
         return inferred[0] if len(inferred) == 1 else tuple(inferred)
