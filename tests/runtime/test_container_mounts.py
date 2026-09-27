@@ -226,6 +226,7 @@ class TestResolveMounts:
 @dataclass
 class _FakeTaskDef:
     type_hints: dict[str, Any] = field(default_factory=dict)
+    output_params: frozenset = field(default_factory=frozenset)
     export_thread_env: bool = False
     threads: int = 1
 
@@ -312,6 +313,29 @@ class TestDeclaredInputMounts:
             resolved_args={"reads": file(str(tmp_path / "absent.fastq"))},
         )
         assert declared_input_mounts(node=node) == []
+
+    def test_out_parameter_mounts_its_parent_read_write(self, tmp_path: Path):
+        bam = tmp_path / "results" / "out.bam"
+        # Declared but not written yet — mounting still has to happen so the
+        # task can create it, unlike a read input that is skipped.
+        node = _FakeNode(
+            task_def=_FakeTaskDef(type_hints={"bam": file}, output_params=frozenset({"bam"})),
+            resolved_args={"bam": str(bam)},
+        )
+        (item,) = declared_input_mounts(node=node)
+        assert item.host_path == bam.parent
+        assert item.mode == "rw"
+
+    def test_out_parameter_pointing_at_an_existing_file_mounts_read_write(self, tmp_path: Path):
+        bam = tmp_path / "out.bam"
+        bam.write_text("data")
+        node = _FakeNode(
+            task_def=_FakeTaskDef(type_hints={"bam": file}, output_params=frozenset({"bam"})),
+            resolved_args={"bam": str(bam)},
+        )
+        (item,) = declared_input_mounts(node=node)
+        assert item.host_path == bam.parent
+        assert item.mode == "rw"
 
 
 class TestDeclaredOutputMounts:

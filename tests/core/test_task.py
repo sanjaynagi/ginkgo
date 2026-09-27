@@ -1,13 +1,19 @@
 """Unit tests for @task decorator, TaskDef, and PartialCall."""
 
+from pathlib import Path
+from typing import Annotated
+
 import pytest
 
 from ginkgo import (
     Expr,
     ExprList,
+    Out,
     PartialCall,
     TaskDef,
     expand,
+    file,
+    folder,
     per_branch,
     task,
     tmp_dir,
@@ -743,3 +749,132 @@ class TestTaskThreadsContract:
 
         with pytest.warns(UserWarning, match="passing 'threads' as a fan-out argument"):
             f().map(x=[1, 2], threads=[1, 2])
+
+
+class TestOutAnnotation:
+    """``Out[...]`` — a direction wrapper for task path parameters."""
+
+    def test_out_file_is_accepted(self):
+        @task()
+        def align(reads: file, bam: Out[file]) -> file:
+            return reads
+
+        assert align.output_params == frozenset({"bam"})
+        assert align.type_hints["bam"] is file
+
+    def test_out_folder_is_accepted(self):
+        @task()
+        def align(qc_dir: Out[folder]) -> file:
+            return file("x")
+
+        assert align.output_params == frozenset({"qc_dir"})
+        assert align.type_hints["qc_dir"] is folder
+
+    def test_out_list_of_file_is_accepted(self):
+        @task()
+        def split(table: file, parts: Out[list[file]]) -> list[file]:
+            return []
+
+        assert split.output_params == frozenset({"parts"})
+        assert split.type_hints["parts"] == list[file]
+
+    def test_out_optional_file_is_accepted(self):
+        @task()
+        def maybe_write(bam: Out[file | None]) -> file:
+            return file("x")
+
+        assert maybe_write.output_params == frozenset({"bam"})
+        assert maybe_write.type_hints["bam"] == (file | None)
+
+    def test_return_annotation_is_kept_in_type_hints(self):
+        @task()
+        def plain(reads: file) -> tuple[file, file | None]:
+            return (reads, None)
+
+        @task()
+        def with_out(reads: file, bam: Out[file]) -> file:
+            return reads
+
+        assert plain.type_hints["return"] == tuple[file, file | None]
+        assert with_out.type_hints["return"] is file
+
+    def test_non_output_params_are_not_in_output_params(self):
+        @task()
+        def align(reads: file, bam: Out[file]) -> file:
+            return reads
+
+        assert "reads" not in align.output_params
+
+    def test_out_str_is_rejected(self):
+        with pytest.raises(TypeError, match="path-shaped"):
+
+            @task()
+            def bad(x: Out[str]) -> file:
+                return file("x")
+
+    def test_out_int_is_rejected(self):
+        with pytest.raises(TypeError, match="path-shaped"):
+
+            @task()
+            def bad(x: Out[int]) -> file:
+                return file("x")
+
+    def test_out_path_is_rejected(self):
+        with pytest.raises(TypeError, match="pathlib.Path"):
+
+            @task()
+            def bad(x: Out[Path]) -> file:
+                return file("x")
+
+    def test_out_on_return_is_rejected(self):
+        with pytest.raises(TypeError, match="return value is already an output"):
+
+            @task()
+            def bad(x: file) -> Out[file]:
+                return file(x)
+
+    def test_out_nested_inside_a_container_is_rejected(self):
+        with pytest.raises(TypeError, match="outermost"):
+
+            @task()
+            def bad(parts: list[Out[file]]) -> file:
+                return file("x")
+
+    def test_out_nested_inside_a_tuple_is_rejected(self):
+        with pytest.raises(TypeError, match="outermost"):
+
+            @task()
+            def bad(pair: tuple[Out[file], file]) -> file:
+                return file("x")
+
+    def test_plain_path_parameter_is_rejected(self):
+        with pytest.raises(TypeError, match="pathlib.Path"):
+
+            @task()
+            def bad(x: Path) -> file:
+                return file("x")
+
+    def test_optional_path_parameter_is_rejected(self):
+        with pytest.raises(TypeError, match="pathlib.Path"):
+
+            @task()
+            def bad(x: Path | None) -> file:
+                return file("x")
+
+    def test_path_subclass_parameter_is_rejected(self):
+        class MyPath(Path):
+            pass
+
+        with pytest.raises(TypeError, match="pathlib.Path"):
+
+            @task()
+            def bad(x: MyPath) -> file:
+                return file("x")
+
+    def test_non_output_annotated_metadata_still_works(self):
+        @task()
+        def f(x: Annotated[file, "some metadata"]) -> file:
+            return x
+
+        assert f.type_hints["x"] is file
+        assert f.output_params == frozenset()
