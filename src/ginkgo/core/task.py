@@ -18,7 +18,15 @@ import re
 from ginkgo.core.expr import Expr, ExprList, record_call, supersede_call
 from ginkgo.core.resources import Resources
 from ginkgo.core.source_hash import compute_source_hash
-from ginkgo.core.types import tmp_dir
+from ginkgo.core.types import (
+    contains_output_annotation,
+    contains_pathlib_annotation,
+    is_output_annotation,
+    is_path_shaped_annotation,
+    strip_output_annotation,
+    tmp_dir,
+    unwrap_optional_annotation,
+)
 from ginkgo.wildcards import ExpandedTemplate, PerBranch
 
 _TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
@@ -108,6 +116,7 @@ class TaskDef:
     fuse_prefetch: tuple[tuple[str, str], ...] = ()
     _signature: inspect.Signature = field(init=False, repr=False)
     _type_hints: dict[str, Any] = field(init=False, repr=False)
+    _output_params: frozenset[str] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
     _source_hash: str = field(init=False, repr=False)
 
@@ -149,7 +158,7 @@ class TaskDef:
                     raise ValueError(f"retry_on_exit_codes must be integers, got {code!r}")
 
         sig = inspect.signature(self.fn)
-        hints = get_type_hints(self.fn)
+        hints, output_params = _resolve_type_hints(fn=self.fn, task_name=self.name)
         required = frozenset(
             name
             for name, param in sig.parameters.items()
@@ -158,6 +167,7 @@ class TaskDef:
         # frozen dataclass — use object.__setattr__ for post-init
         object.__setattr__(self, "_signature", sig)
         object.__setattr__(self, "_type_hints", hints)
+        object.__setattr__(self, "_output_params", output_params)
         object.__setattr__(self, "_required_params", required)
         object.__setattr__(self, "_source_hash", compute_source_hash(self.fn))
 
@@ -218,8 +228,20 @@ class TaskDef:
 
     @property
     def type_hints(self) -> dict[str, Any]:
-        """Resolved runtime type hints for the wrapped function."""
+        """Resolved runtime type hints for the wrapped function.
+
+        An ``Out[...]``-annotated parameter is exposed here by its *inner*
+        annotation (``Out[file]`` reads as ``file``), so every existing
+        ``task_def.type_hints.get(name) is file`` site keeps working
+        unchanged. See :attr:`output_params` for which names were unwrapped
+        this way.
+        """
         return dict(self._type_hints)
+
+    @property
+    def output_params(self) -> frozenset[str]:
+        """Parameter names declared ``Out[...]`` — paths this task writes."""
+        return self._output_params
 
     @property
     def source_hash(self) -> str:
@@ -1087,6 +1109,98 @@ def _validate_retry_on(
                 "retry_on must be an exception class or tuple of exception "
                 f"classes, got {candidate!r}"
             )
+
+
+def _resolve_type_hints(
+    *,
+    fn: Callable[..., Any],
+    task_name: str,
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """Resolve a task function's type hints, unwrapping ``Out[...]`` markers.
+
+    Parameters
+    ----------
+    fn : Callable
+        The wrapped task function.
+    task_name : str
+        The task's fully qualified name, used only to label errors.
+
+    Returns
+    -------
+    tuple[dict[str, Any], frozenset[str]]
+        Resolved hints (an ``Out[...]`` parameter's *inner* annotation, so
+        every existing ``is file`` / ``is folder`` site keeps working), and
+        the set of parameter names that were declared ``Out[...]``.
+
+    Raises
+    ------
+    TypeError
+        If ``Out`` wraps a non-path-shaped annotation, is nested inside a
+        container instead of being outermost, or annotates the return
+        value; or if ``pathlib.Path`` (or a subclass) annotates a
+        parameter.
+    """
+    hints_with_extras = get_type_hints(fn, include_extras=True)
+    # ``include_extras=False`` fully strips every ``Annotated`` wrapper (not
+    # just ``Out``'s), which is exactly the historical behaviour for a
+    # parameter that carries unrelated ``Annotated`` metadata of its own —
+    # computing it separately keeps that path byte-for-byte unchanged.
+    plain_hints = get_type_hints(fn)
+
+    return_hint = hints_with_extras.get("return")
+    if return_hint is not None and contains_output_annotation(return_hint):
+        raise TypeError(
+            f"{task_name} return annotation may not use `Out[...]` — a return "
+            "value is already an output."
+        )
+
+    resolved: dict[str, Any] = {}
+    output_params: set[str] = set()
+    for name, hint in hints_with_extras.items():
+        if name == "return":
+            continue
+
+        if contains_pathlib_annotation(hint):
+            raise TypeError(
+                f"{task_name}.{name} is annotated with `pathlib.Path`, which is "
+                "hashed as an opaque pickled object — tracked by neither path nor "
+                "content. Use `file`, `folder`, or `Out[file]` instead."
+            )
+
+        if is_output_annotation(hint):
+            inner = strip_output_annotation(hint)
+            if contains_output_annotation(inner):
+                raise TypeError(
+                    f"{task_name}.{name} nests `Out[...]` inside its inner "
+                    "annotation; `Out` must wrap the whole parameter, not be "
+                    "wrapped by something else."
+                )
+            unwrapped, _ = unwrap_optional_annotation(inner)
+            if not is_path_shaped_annotation(unwrapped):
+                raise TypeError(
+                    f"{task_name}.{name} is `Out[{_annotation_label(inner)}]`, but "
+                    "`Out[...]` must wrap a path-shaped annotation: `file`, "
+                    "`folder`, optionally inside `list`/`tuple` and/or `| None`."
+                )
+            output_params.add(name)
+            resolved[name] = inner
+            continue
+
+        if contains_output_annotation(hint):
+            raise TypeError(
+                f"{task_name}.{name} nests `Out[...]` inside a container "
+                f"({_annotation_label(hint)}); `Out` must be the outermost "
+                "annotation, e.g. `Out[list[file]]` rather than "
+                "`list[Out[file]]`."
+            )
+        resolved[name] = plain_hints.get(name, hint)
+
+    return resolved, frozenset(output_params)
+
+
+def _annotation_label(annotation: Any) -> str:
+    """Return a readable label for an annotation, for error messages."""
+    return getattr(annotation, "__name__", None) or repr(annotation)
 
 
 def _load_taskdef(module_name: str, task_name: str) -> TaskDef:

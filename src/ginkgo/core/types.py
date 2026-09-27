@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
 
 class file(str):
@@ -36,6 +36,127 @@ class tmp_dir(str):
     Created automatically before task execution and deleted on success.
     Kept on failure for debugging.  Does not participate in the cache key.
     """
+
+
+class _OutputMarker:
+    """Sentinel identifying an ``Out[...]`` parameter annotation.
+
+    Never instantiated by users; its only job is to be a unique object that
+    ``Annotated`` metadata can carry and later be checked for by identity.
+    """
+
+    def __repr__(self) -> str:
+        return "Out"
+
+
+_OUTPUT = _OutputMarker()
+
+_T = TypeVar("_T")
+
+#: Marks a task parameter as a path this task *writes* rather than reads.
+#:
+#: ``Out[file]`` / ``Out[folder]`` compose with containers and optionals
+#: (``Out[list[file]]``, ``Out[file | None]``), but must be the outermost
+#: wrapper — ``list[Out[file]]`` is rejected at task-definition time, as is
+#: any inner annotation that is not path-shaped (``Out[str]``, ``Out[int]``).
+#: Since ``Out`` is ``Annotated[T, _OUTPUT]``, a type checker still sees
+#: ``Out[file]`` as plain ``file``.
+Out = Annotated[_T, _OUTPUT]
+
+
+def is_output_annotation(annotation: Any) -> bool:
+    """Return whether ``annotation`` is ``Out[...]`` at its outermost level.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, as returned by ``get_type_hints(..., include_extras=True)``.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``annotation`` is an ``Annotated`` type carrying the
+        ``Out`` marker among its metadata.
+    """
+    if get_origin(annotation) is not Annotated:
+        return False
+    return any(item is _OUTPUT for item in get_args(annotation)[1:])
+
+
+def strip_output_annotation(annotation: Any) -> Any:
+    """Return the inner annotation of an ``Out[...]`` wrapper.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly ``Out[...]``.
+
+    Returns
+    -------
+    Any
+        The annotation ``Out`` wraps, or ``annotation`` unchanged when it is
+        not an ``Out[...]`` annotation.
+    """
+    if is_output_annotation(annotation):
+        return get_args(annotation)[0]
+    return annotation
+
+
+def contains_output_annotation(annotation: Any) -> bool:
+    """Return whether ``Out[...]`` appears anywhere within ``annotation``.
+
+    Used to reject a nested ``Out`` — ``list[Out[file]]`` rather than the
+    required ``Out[list[file]]`` — since ``Out`` must be the outermost
+    wrapper on a parameter annotation.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly nested inside a container or union.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``annotation`` itself, or anything nested inside it,
+        is ``Out[...]``.
+    """
+    if is_output_annotation(annotation):
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(contains_output_annotation(item) for item in get_args(annotation))
+
+
+def _is_path_object_type(candidate: Any) -> bool:
+    """Return whether ``candidate`` is ``pathlib.Path`` or a subclass of it."""
+    return isinstance(candidate, type) and issubclass(candidate, Path)
+
+
+def contains_pathlib_annotation(annotation: Any) -> bool:
+    """Return whether ``annotation`` is, or contains, a ``pathlib.Path`` type.
+
+    ``pathlib.Path`` is rejected on a task *parameter* at definition time:
+    unlike ``file``/``folder`` it is hashed as a pickled object in the cache
+    key today, tracked by neither path nor content.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly nested inside a container or union.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``annotation`` itself, or anything nested inside it,
+        is ``pathlib.Path`` (or a subclass).
+    """
+    if _is_path_object_type(annotation):
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(contains_pathlib_annotation(item) for item in get_args(annotation))
 
 
 def annotation_includes(*, annotation: Any, expected: Any) -> bool:

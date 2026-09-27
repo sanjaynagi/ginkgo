@@ -89,6 +89,7 @@ Ginkgo uses a few special path-oriented annotations to define runtime behavior:
 - `file`
 - `folder`
 - `tmp_dir`
+- `Out[file]` / `Out[folder]`
 
 These types influence validation, hashing, artifact handling, and scratch-space
 lifecycle. A path a task reads — whether produced by another task or written
@@ -100,6 +101,14 @@ when the path is really an upstream task's output, writing it as a repeated
 literal string instead of passing that task's return value creates no
 dependency edge in the graph, so the consumer can run before or concurrently
 with the producer instead of after it.
+
+`file`/`folder` mean *read*: the path must already exist. A path a task is
+about to *write* — `output_path`, in the corpus's own naming — is the other
+common case, and `Out[...]` is the annotation for it: `Out[file]` and
+`Out[folder]` wrap the same `file`/`folder` kinds but mark the parameter as a
+write rather than a read. See
+[Reads vs. Writes: `file` vs. `Out[file]`](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)
+for the full contract.
 
 ## The Runtime Is Local-First
 

@@ -1945,6 +1945,7 @@ class ConcurrentEvaluator:
                     "are available locally (--gpus), and remote dispatch only "
                     f"supports python tasks, not kind={task_def.kind!r}"
                 )
+            self._require_remote_capable_kind(task_def=task_def, reason="a GPU requirement")
             if not registry.has_default:
                 raise ValueError(
                     f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
@@ -1955,7 +1956,13 @@ class ConcurrentEvaluator:
         return None
 
     def _require_remote_capable_kind(self, *, task_def: TaskDef, reason: str) -> None:
-        """Reject remote placement for task kinds the workers cannot run."""
+        """Reject remote placement for task kinds the workers cannot run.
+
+        Also rejects any task with ``Out[...]`` parameters: routing an
+        output-writing task to a remote worker would require staging its
+        declared output paths back to the driver, which phase 1 does not
+        yet do.
+        """
         if task_def.kind != "python":
             declaration = (
                 "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
@@ -1963,6 +1970,22 @@ class ConcurrentEvaluator:
             raise ValueError(
                 f"{task_def.name} declares {declaration} but remote dispatch "
                 f"only supports python tasks, not kind={task_def.kind!r}"
+            )
+        if task_def.output_params:
+            declaration = (
+                "remote=True"
+                if reason == "remote"
+                else (
+                    f"executor={task_def.executor!r}"
+                    if reason == "executor"
+                    else "exceeding the local --gpus budget"
+                )
+            )
+            raise ValueError(
+                f"{task_def.name} has Out[...] parameters "
+                f"({', '.join(sorted(task_def.output_params))}) but is routed to a "
+                f"remote executor by {declaration}. Out[...] parameters are not yet "
+                "supported for remote tasks."
             )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
@@ -2028,10 +2051,22 @@ class ConcurrentEvaluator:
         node.transport_path = None
 
     def _finalize_result_value(self, *, node: NodeRun, value: Any) -> Any:
-        """Coerce and validate a fully resolved task result."""
+        """Coerce and validate a fully resolved task result.
+
+        Called after the task body has actually run — for shell/script/
+        notebook tasks, after the directive's command has executed, not when
+        the body merely returned the directive — so this is also where each
+        declared ``Out[...]`` parameter's path is checked to have been
+        written, with the right kind.
+        """
         coerced = self._validator.coerce_return_value(task_def=node.task_def, value=value)
         finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
         self._validator.validate_return_value(task_def=node.task_def, value=finalized)
+        if node.task_def.output_params:
+            self._validator.validate_declared_outputs_written(
+                task_def=node.task_def,
+                resolved_args=node.execution_args or {},
+            )
         return finalized
 
     def _notebook_runtime_root(self) -> Path:
