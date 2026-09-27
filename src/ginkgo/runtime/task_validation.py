@@ -139,6 +139,48 @@ def declared_output_paths(
     return entries
 
 
+def declared_output_paths_in_order(
+    *,
+    task_def: TaskDef,
+    resolved_args: dict[str, Any],
+) -> list[str]:
+    """Flatten every ``Out[...]`` parameter's path(s), in declaration order.
+
+    Unlike :func:`declared_output_paths` (sorted by parameter name, and kept
+    alongside the parameter and kind for existence checks), this is used
+    where the *order* must line up with :attr:`TaskDef.effective_return_annotation`
+    — filling in a directive's omitted ``output=`` and, for an *explicit*
+    return annotation, positionally matching a flat ``output=`` against it.
+    An absent optional output (``None``) contributes nothing.
+
+    Parameters
+    ----------
+    task_def : TaskDef
+        The task definition.
+    resolved_args : dict[str, Any]
+        Resolved argument values for the task call.
+
+    Returns
+    -------
+    list[str]
+        Every declared output path, in parameter declaration order (and, for
+        a parameter whose value is itself a list/tuple, in that order too).
+    """
+    paths: list[str] = []
+    for name in task_def.output_params_in_order:
+        if name not in resolved_args:
+            continue
+        entries: list[tuple[str, str, str]] = []
+        _collect_output_paths(
+            annotation=task_def.type_hints.get(name),
+            value=resolved_args[name],
+            name=name,
+            entries=entries,
+        )
+        paths.extend(path for _, path, _ in entries)
+    return paths
+
+
 def _collect_output_paths(
     *,
     annotation: Any,

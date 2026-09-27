@@ -144,6 +144,31 @@ payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
 
+### Declaring outputs with `Out[...]` instead of `output=`
+
+When a shell, script, or notebook task's outputs are declared as `Out[...]`
+parameters, `output=` can be omitted — it is inferred from those parameters'
+declared paths, and the task's return is inferred too (see
+[Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)):
+
+```python
+from ginkgo import Out, file, shell, task
+
+
+@task(kind="shell")
+def normalize(src: file, dest: Out[file], check: Out[file]):
+    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+
+
+norm = normalize().map(src=[...], dest=[...], check=[...])
+normalized = norm.output["dest"]
+```
+
+If `output=` is given explicitly alongside `Out[...]` parameters, its paths
+must match the declared `Out[...]` paths exactly (in either order) — a shell
+task with `Out[...]` parameters and no `output=` at all is only an error if
+it declares none.
+
 ## Script Tasks
 
 Use `@task("script")` to run a standalone script file — Python (`.py`) or R
@@ -565,13 +590,41 @@ new `ExprList` selecting element `i` from every branch, so the two lists above
 stay aligned with the branches that produced them. Either result can be passed
 straight to another task call or `.map()`.
 
-`.output[i]` is the only way to select an output. Tuple unpacking —
-`a, b = normalize_seed_card(...)` — cannot work on a single call, because the
-call returns one deferred expression rather than the tuple the annotation
-describes, so ginkgo raises a `TypeError` naming the task and this idiom.
-Unpacking an `ExprList` does succeed, but it means something else entirely: it
-hands back one `Expr` per fan-out branch, not the elements of any branch's
-result.
+Tuple unpacking — `a, b = normalize_seed_card(...)` — cannot work on a single
+call, because the call returns one deferred expression rather than the tuple
+the annotation describes, so ginkgo raises a `TypeError` naming the task and
+this idiom. Unpacking an `ExprList` does succeed, but it means something else
+entirely: it hands back one `Expr` per fan-out branch, not the elements of any
+branch's result.
+
+### Selecting One Output By Name: `.output["name"]`
+
+A task with `Out[...]` parameters (see
+[Reads vs. Writes: `file` vs. `Out[file]`](caching-and-provenance.md#reads-vs-writes-file-vs-outfile))
+can select one of them by *name* instead of by position — no need to remember
+which index a shell task's `output=[...]` put it at:
+
+```python
+from ginkgo import Out, file, shell, task
+
+
+@task(kind="shell")
+def normalize(src: file, dest: Out[file], check: Out[file]):
+    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+
+
+norm = normalize().map(src=seed_cards, dest=normalized_paths, check=check_paths)
+normalized_cards = norm.output["dest"]
+checksums = norm.output["check"]
+```
+
+`.output["name"]` resolves to that parameter's own resolved argument (coerced
+to `file`/`folder`), not the task's return value — so it works whether the
+task's return is explicit or inferred from its `Out[...]` parameters — and
+creates a dependency edge on the producing node exactly like `.output[i]`
+does, including on an `ExprList`. A name that is not one of the task's
+`Out[...]` parameters is a `KeyError` at flow-construction time, naming the
+task's actual `Out[...]` parameters.
 
 ## See Also
 

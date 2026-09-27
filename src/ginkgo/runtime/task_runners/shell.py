@@ -37,7 +37,7 @@ from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
-from ginkgo.runtime.task_validation import TaskValidator
+from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
 from ginkgo.runtime.artifacts.value_codec import CodecError
 
 
@@ -382,6 +382,56 @@ def iter_output_values(
     if isinstance(output, (str, AssetResult, OptionalOutput)):
         return [_declared_item_path(output)]
     return [_declared_item_path(item) for item in output]
+
+
+def resolve_declared_output(
+    *,
+    task_def: Any,
+    resolved_args: dict[str, Any],
+    given: Any,
+) -> Any:
+    """Fill in or validate a directive's ``output=`` from ``Out[...]`` params.
+
+    Shared by the shell, script, and notebook runners. A task with no
+    ``Out[...]`` parameters gets *given* back unchanged (including ``None``
+    — the caller decides whether that is an error; script and notebook
+    tolerate it, shell does not). A task with ``Out[...]`` parameters:
+
+    - *given* is ``None``: infer the declared output as the flat list of
+      every ``Out[...]`` parameter's path(s), in parameter declaration
+      order — matching ``TaskDef.effective_return_annotation``, so an
+      explicit ``-> tuple[...]`` return coerces correctly too.
+    - *given* is provided: its paths must equal the task's declared
+      ``Out[...]`` paths as a set, else the two would disagree about what
+      the task produced.
+
+    Parameters
+    ----------
+    task_def : TaskDef
+        The task definition.
+    resolved_args : dict[str, Any]
+        The node's resolved argument values.
+    given : Any
+        The directive's own ``output=``, or ``None``.
+    """
+    if not task_def.output_params:
+        return given
+
+    inferred = declared_output_paths_in_order(task_def=task_def, resolved_args=resolved_args)
+    if given is None:
+        if not inferred:
+            return None
+        return inferred[0] if len(inferred) == 1 else tuple(inferred)
+
+    given_paths = sorted(str(path) for path in iter_output_values(given))
+    if given_paths != sorted(inferred):
+        raise ValueError(
+            f"{task_def.name} declares output={given!r} but its Out[...] parameters "
+            f"declare {sorted(inferred)!r} — the two must name the same paths. Pass "
+            "the same paths (in either order), or omit output= to infer it from "
+            "Out[...]."
+        )
+    return given
 
 
 def declared_input_mounts(*, node: Any) -> list[Mount]:
@@ -906,7 +956,17 @@ class ShellRunner:
         task_def = node.task_def
         user_log_path = Path(directive.log) if directive.log is not None else None
 
-        for output_path in iter_output_values(directive.output):
+        assert node.resolved_args is not None
+        output = resolve_declared_output(
+            task_def=task_def, resolved_args=node.resolved_args, given=directive.output
+        )
+        if output is None:
+            raise ValueError(
+                f"{task_def.name} declares kind='shell' with no Out[...] parameters, so "
+                "shell(...) must declare output=... naming at least one path."
+            )
+
+        for output_path in iter_output_values(output):
             remove_declared_output(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -914,7 +974,7 @@ class ShellRunner:
             node=node,
             cmd=directive.cmd,
             user_log_path=user_log_path,
-            mounts=declared_output_mounts(output=directive.output),
+            mounts=declared_output_mounts(output=output),
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
@@ -931,7 +991,7 @@ class ShellRunner:
 
         missing_outputs = [
             str(output_path)
-            for output_path in iter_required_output_values(directive.output)
+            for output_path in iter_required_output_values(output)
             if not output_path.exists()
         ]
         if missing_outputs:
@@ -942,5 +1002,5 @@ class ShellRunner:
 
         return self.validator.coerce_return_value(
             task_def=task_def,
-            value=resolve_output_value(directive.output),
+            value=resolve_output_value(output),
         )

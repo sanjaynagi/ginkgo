@@ -22,6 +22,7 @@ from ginkgo.runtime.task_runners.shell import (
     iter_output_values,
     remove_declared_output,
     render_cli_tokens,
+    resolve_declared_output,
 )
 
 
@@ -32,9 +33,13 @@ class ScriptRunner(DriverTaskRunner):
     def run_script(self, *, node: Any, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
+        assert node.resolved_args is not None
         user_log_path = Path(directive.log) if directive.log is not None else None
-        if directive.output is not None:
-            for output_path in iter_output_values(directive.output):
+        output = resolve_declared_output(
+            task_def=node.task_def, resolved_args=node.resolved_args, given=directive.output
+        )
+        if output is not None:
+            for output_path in iter_output_values(output):
                 remove_declared_output(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -73,7 +78,7 @@ class ScriptRunner(DriverTaskRunner):
             node=node,
             cmd=cmd,
             user_log_path=user_log_path,
-            mounts=declared_output_mounts(output=directive.output),
+            mounts=declared_output_mounts(output=output),
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
@@ -88,10 +93,10 @@ class ScriptRunner(DriverTaskRunner):
                 ),
             )
 
-        if directive.output is None:
+        if output is None:
             return None
         return self._validate_and_return_output(
             task_name=node.task_def.name,
             task_def=node.task_def,
-            output=directive.output,
+            output=output,
         )

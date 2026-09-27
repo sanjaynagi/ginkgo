@@ -256,9 +256,8 @@ class TaskDef:
         (``inspect.Signature.empty`` — an explicit ``-> None`` does not
         count) and the task declares at least one ``Out[...]`` parameter.
         """
-        return (
-            self._signature.return_annotation is inspect.Signature.empty
-            and bool(self._output_params)
+        return self._signature.return_annotation is inspect.Signature.empty and bool(
+            self._output_params
         )
 
     @property
