@@ -255,15 +255,18 @@ on success (kept on failure for debugging), and deliberately excluded from the
 cache key — you do not pass it yourself; it is auto-injected from the
 annotation.
 
-The consequence of *not* using them matters just as much. If a path crosses a
-task boundary annotated `str` (or `Path`), its cache-key contribution is the
-path string alone. The upstream task can rerun and rewrite the file while the
-downstream task still reports `↺ cached` and serves its previous, now stale,
+The consequence of *not* using them matters just as much. If a path a task
+*reads* is annotated `str` (or `Path`) instead — whether that path is produced
+by an upstream task's return value or written down as a raw input path in the
+flow — its cache-key contribution is the path string alone. Edit the file on
+disk (an upstream task rewriting its output, or you editing a raw input by
+hand) and the task still reports `↺ cached`, serving its previous, now stale,
 output. Because `file` is itself a `str` subclass, the type checker sees no
-difference. Annotate the producer's return `-> file` and the consumer's
-parameter `coords: file` whenever a path carries data between tasks; leave `str`
-for paths whose contents genuinely should not invalidate the cache, such as an
-output location or a log sink. Ginkgo warns when it can tell the difference: if
+difference. Annotate any path a task reads `file` (or `folder`) — the
+producer's return `-> file` when there is one, and always the consumer's
+parameter; leave `str` for a path a task only *writes*, such as an output
+location or a log sink, since `file` requires the path to already exist when
+the cache key is computed. Ginkgo warns when it can tell the difference: if
 an argument resolved from an upstream task arrives as a plain `str` naming an
 existing path, the run prints a notice naming both ends and the annotation to
 add.

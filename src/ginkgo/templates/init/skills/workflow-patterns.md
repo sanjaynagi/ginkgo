@@ -45,12 +45,14 @@ def render_report(sample_id: str):
 
 ## Ginkgo types and cache correctness
 
-Annotate file and folder parameters with `file` / `folder` instead of `str` so
-that ginkgo hashes the **contents** of those paths when building the cache key.
-A plain `str` annotation hashes only the path string — if an upstream task
-overwrites the file at the same path with new results, any downstream task whose
-inputs are typed `str` will see a spurious cache hit and silently return stale
-output.
+Annotate any path a task reads with `file` / `folder` instead of `str` — whether
+that path comes from an upstream task's return value or is written down as a
+raw input path in the flow — so that ginkgo hashes the **contents** of the path
+when building the cache key. A plain `str` annotation hashes only the path
+string — if the file at that path changes after the cache key is computed (an
+upstream task overwriting it, or someone editing a raw input path by hand), a
+task whose input is typed `str` will see a spurious cache hit and silently
+return stale output.
 
 ```python
 from ginkgo import file, folder, task
@@ -66,8 +68,11 @@ def analyse(manifest: str, output_dir: str) -> str:
     ...
 ```
 
-Use `file` for any single-file path that flows between tasks. Use `folder` for
-directory outputs. Ginkgo uses these types to:
+Use `file` for any single-file path a task reads — whether it is produced by
+another task or is a raw path written into the flow. Use `folder` the same way
+for directories. Leave a task's *output* path typed `str`: `file`/`folder`
+require the path to already exist when the cache key is computed, which an
+output path does not yet. Ginkgo uses these types to:
 
 1. Hash file/folder contents into the cache key, so the cache correctly
    invalidates when upstream outputs change.

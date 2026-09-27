@@ -194,11 +194,15 @@ ginkgo debug <run_id>
 ```
 
 `ginkgo run --dry-run` previews the plan for the entrypoint you actually run,
-and is the quickest way to confirm a workflow you just wrote is wired correctly.
-It reports the waves tasks fall into, which would run and which would serve from
-cache, and the resources they declare. Where it cannot work out a task's cache
-status it says so and counts the tasks affected; `--verbose` names each one and
-the error behind it.
+reporting the waves tasks fall into, which would run and which would serve from
+cache, and the resources they declare. It is a quick way to confirm the wiring
+you *expressed* — one task's return value passed as another's argument — is
+correct, but it can only show the dependency edges the graph actually has: if
+two tasks are wired by repeating the same literal path instead of passing the
+producer's return value, dry-run sees no edge between them and cannot flag that
+the consumer might run before or alongside the producer. Where it cannot work
+out a task's cache status it says so and counts the tasks affected; `--verbose`
+names each one and the error behind it.
 
 ### Validation workflows
 
