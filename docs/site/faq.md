@@ -281,6 +281,16 @@ its path string to the cache key, and is checked to exist — with the right
 kind — after execution. See
 [Reads vs. Writes: `file` vs. `Out[file]`](guide/caching-and-provenance.md#reads-vs-writes-file-vs-outfile).
 
+That runtime check only fires once a value has actually crossed a task
+boundary. A separate, purely static check catches the same mistake earlier: if
+a parameter's name looks like a path (`path`, `output_dir`, `report_files`,
+...) but is annotated a bare `str` shape (`str`, `str | None`, `list[str]`,
+`tuple[str, ...]`), `ginkgo doctor` and `ginkgo run --dry-run` emit a
+`path_like_str_param` warning naming the task and parameter, whether or not the
+workflow has ever run — no filesystem access, no execution required. It
+suggests `file`/`folder` for a path the task reads, or `Out[file]`/`Out[folder]`
+(a return-value wrapper) for one it writes.
+
 ### Why did a task in my flow never run?
 
 The task graph is exactly what is reachable from the value your `@flow` function
