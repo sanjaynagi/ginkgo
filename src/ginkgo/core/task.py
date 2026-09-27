@@ -420,7 +420,7 @@ def _fan_out_partial_call(
     columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
-    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys) if mode == "zip" else ()
     group_id = (
         _next_concurrency_group_id(partial_call.task_def) if max_concurrent is not None else None
     )
@@ -472,7 +472,7 @@ def _fan_out_expr_list(
     columns = varying_args.columns
     rows = _build_varying_rows(columns=columns, mode=mode, function_name=function_name)
     varying_keys = tuple(columns.keys())
-    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys) if mode == "zip" else ()
     group_id = _next_concurrency_group_id(task_def) if max_concurrent is not None else None
     exprs = [
         Expr(
