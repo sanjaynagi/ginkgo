@@ -13,6 +13,7 @@ surprise) and keeps the narrowed notice, now suggesting ``folder``.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -154,8 +155,66 @@ def join_labels(*, left: str, right: str) -> str:
     return f"{left}-{right}"
 
 
+@task()
+def append_to_log(*, n: int, log_path: str) -> int:
+    """A side-channel log passed as a plain ``str``: written, never returned."""
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(f"ran {n}\n")
+    return n * 2
+
+
+@task()
+def stamp_and_return_str(*, output_path: str) -> str:
+    """A legacy ``-> str`` task writing non-deterministic output to its own path."""
+    Path(output_path).write_text(f"{time.time_ns()}\n", encoding="utf-8")
+    with open("stamp_runs.txt", "a", encoding="utf-8") as handle:
+        handle.write("ran\n")
+    return output_path
+
+
 def _notices(collector: EventCollector) -> list[str]:
     return [event.message for event in collector.events if isinstance(event, TaskNotice)]
+
+
+class TestWrittenInputsAreLearned:
+    """A ``str`` path the task itself writes must not invalidate its own cache.
+
+    Content-hashing plain ``str`` path inputs (#281) would otherwise re-run a
+    task that appends to a log on every run, since the log changes each time.
+    A task seen creating or changing such a file keys that path by its string
+    from then on, and its entry is saved under that key straight away.
+    """
+
+    def test_a_task_appending_to_a_log_caches_from_the_second_run(self) -> None:
+        for _ in range(3):
+            evaluate(append_to_log(n=3, log_path="run.log"))
+
+        assert Path("run.log").read_text(encoding="utf-8") == "ran 3\n"
+
+    def test_a_log_that_already_existed_is_learned_too(self) -> None:
+        Path("run.log").write_text("earlier\n", encoding="utf-8")
+
+        for _ in range(3):
+            evaluate(append_to_log(n=3, log_path="run.log"))
+
+        assert Path("run.log").read_text(encoding="utf-8") == "earlier\nran 3\n"
+
+    def test_a_legacy_str_output_with_changing_content_still_caches(self) -> None:
+        for _ in range(3):
+            evaluate(stamp_and_return_str(output_path="stamp.txt"))
+
+        assert Path("stamp_runs.txt").read_text(encoding="utf-8") == "ran\n"
+
+    def test_a_file_the_task_only_reads_is_still_content_tracked(self) -> None:
+        """Learning is per written path: a read-only input keeps #281's fix."""
+        Path("rows.csv").write_text("0\n1\n", encoding="utf-8")
+        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
+        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
+
+        Path("rows.csv").write_text("0\n1\n2\n", encoding="utf-8")
+        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
+
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
 
 
 class TestFilePathBoundaryIsTracked:

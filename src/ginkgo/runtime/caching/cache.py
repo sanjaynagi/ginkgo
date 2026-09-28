@@ -30,7 +30,11 @@ from ginkgo.core.types import (
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.task_validation import is_content_trackable_path_value, label_input_value
+from ginkgo.runtime.task_validation import (
+    is_content_trackable_path_shape,
+    is_content_trackable_path_value,
+    label_input_value,
+)
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.caching.index import CacheIndex
@@ -822,6 +826,55 @@ class CacheStore:
 
         return current == recorded
 
+    def content_tracked_input_digests(
+        self, *, task_def: TaskDef, resolved_args: dict[str, Any]
+    ) -> dict[str, str | None]:
+        """Return ``{resolved path: digest}`` for plain-``str`` path inputs.
+
+        Covers the inputs the root-input rule content-hashes in
+        :meth:`build_cache_key` (not ``file``/``folder`` inputs, which a task
+        is not expected to write), plus the ones that would be hashed if
+        their file existed, recorded with ``None`` so a task creating the
+        file is noticed too. Digests come from the same memoised hashing, so
+        taking them right after the key costs no extra reads.
+        """
+        excluded = self._excluded_output_paths(task_def=task_def)
+        digests: dict[str, str | None] = {}
+        for name, parameter in task_def.signature.parameters.items():
+            if name in task_def.output_params or name not in resolved_args:
+                continue
+            annotation = task_def.type_hints.get(name, parameter.annotation)
+            if annotation is tmp_dir:
+                continue
+            for path in _content_trackable_paths(annotation=annotation, value=resolved_args[name]):
+                resolved = str(Path(path).resolve())
+                if resolved in excluded or resolved in digests:
+                    continue
+                candidate = Path(resolved)
+                digests[resolved] = (
+                    self._hash_file_contents(candidate) if candidate.is_file() else None
+                )
+        return digests
+
+    def written_inputs(self, *, before: dict[str, str | None]) -> set[str]:
+        """Return the paths in *before* the task created, changed or removed."""
+        written: set[str] = set()
+        for path, digest in before.items():
+            candidate = Path(path)
+            after = self._hash_file_contents(candidate) if candidate.is_file() else None
+            if after != digest:
+                written.add(path)
+        return written
+
+    def note_written_inputs(self, *, task_def: TaskDef, paths: set[str]) -> None:
+        """Remember that *task_def* writes *paths*, for this run and later ones."""
+        self.index.record_written_inputs(function=task_def.cache_name, paths=paths)
+        current = dict(self._produced_paths_by_cache_name or {})
+        current[task_def.cache_name] = frozenset(
+            current.get(task_def.cache_name, frozenset()) | paths
+        )
+        object.__setattr__(self, "_produced_paths_by_cache_name", current)
+
     def _excluded_output_paths(self, *, task_def: TaskDef) -> frozenset[str]:
         """Return paths *this task's* cache identity has produced before.
 
@@ -1302,3 +1355,34 @@ class CacheStore:
         if len(args) == 2:
             return args[0], args[1]
         return Any, Any
+
+
+def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
+    """Return the path strings in *value* the root-input rule would content-hash.
+
+    Walks lists, tuples and dict values the way :meth:`CacheStore._hash_value`
+    does, pairing each element with its own annotation. Includes paths whose
+    file does not exist yet, so a task that creates one can be noticed.
+    """
+    annotation, _ = unwrap_optional_annotation(annotation)
+    if isinstance(value, (list, tuple)):
+        if get_origin(annotation) in {list, tuple}:
+            pairs = pair_elements_with_annotations(annotation=annotation, value=value)
+        else:
+            pairs = [(Any, item) for item in value]
+        return [
+            path
+            for item_annotation, item in pairs
+            for path in _content_trackable_paths(annotation=item_annotation, value=item)
+        ]
+    if isinstance(value, dict):
+        dict_args = get_args(annotation) if get_origin(annotation) is dict else ()
+        value_annotation = dict_args[1] if len(dict_args) == 2 else Any
+        return [
+            path
+            for item in value.values()
+            for path in _content_trackable_paths(annotation=value_annotation, value=item)
+        ]
+    if is_content_trackable_path_shape(annotation=annotation, value=value):
+        return [str(value)]
+    return []

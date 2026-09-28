@@ -321,6 +321,7 @@ class NodeRun:
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     input_labels: dict[str, str] | None = None
+    content_input_digests: dict[str, str | None] | None = None
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
@@ -1223,6 +1224,7 @@ class ConcurrentEvaluator:
         node.cache_key = None
         node.input_hashes = None
         node.input_labels = None
+        node.content_input_digests = None
         node.threads = 1
         node.memory_gb = 0
         node.gpu = 0
@@ -1262,6 +1264,7 @@ class ConcurrentEvaluator:
         extra_meta: dict[str, Any] | None = None
         if node.notebook_extras is not None:
             extra_meta = {"notebook_extras": node.notebook_extras}
+        self._node_cache.rekey_if_inputs_were_written(node=node)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,

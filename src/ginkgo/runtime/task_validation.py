@@ -64,6 +64,26 @@ def _resolved_existing_path_text(value: Any) -> str | None:
     return text
 
 
+def is_content_trackable_path_shape(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value would be content-hashed if its file existed.
+
+    Everything :func:`is_content_trackable_path_value` checks except that the
+    file is there, so a caller can notice a task creating such a file.
+    """
+    if (
+        annotation is tmp_dir
+        or is_untracked_annotation(annotation)
+        or is_path_shaped_annotation(annotation)
+    ):
+        return False
+    if isinstance(value, (file, folder, tmp_dir, untracked)) or not is_path_like(value):
+        return False
+    text = str(value)
+    if not text or is_remote_uri(text) or "\x00" in text:
+        return False
+    return looks_like_path_string(text)
+
+
 def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
     """Return whether a value is a root-input path eligible for content hashing.
 

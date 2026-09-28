@@ -355,6 +355,22 @@ class CacheIndex(DirectIndex):
             ),
         )
 
+    def record_written_inputs(self, *, function: str, paths: set[str]) -> None:
+        """Record input paths a task was observed to change while it ran.
+
+        :meth:`previously_produced_paths` folds these in, so the task keys
+        each such path by its string from then on — see
+        ``NodeCache.rekey_if_inputs_were_written``.
+        """
+        for path in sorted(paths):
+            self._write(
+                ProjectionOp(
+                    sql="INSERT INTO cache_written_inputs (function, path) VALUES (?, ?) "
+                    "ON CONFLICT (function, path) DO NOTHING",
+                    params=(function, path),
+                )
+            )
+
     # -- stat index ----------------------------------------------------------
 
     def stat_index_lookup(self, stat_key: str) -> str | None:
@@ -443,6 +459,10 @@ class CacheIndex(DirectIndex):
         task or per hash, so a large history is read once regardless of how
         many tasks or map branches ask.
 
+        Also includes the paths recorded by :meth:`record_written_inputs`:
+        input files the task was seen to change while it ran, such as a log
+        it appends to, which never appear among its returned artifacts.
+
         Used to exclude a legacy ``output_path: str`` parameter from
         root-input content hashing when it names this task's own previous
         output: hashing it would otherwise self-invalidate every run, since
@@ -455,6 +475,10 @@ class CacheIndex(DirectIndex):
             JOIN cache_entries ON cache_entries.cache_key = cache_artifacts.cache_key
             """
         )
+        rows = [
+            *rows,
+            *self._query("SELECT function, path FROM cache_written_inputs"),
+        ]
         by_identity: dict[str, set[str]] = {}
         for row in rows:
             function = row["function"]
