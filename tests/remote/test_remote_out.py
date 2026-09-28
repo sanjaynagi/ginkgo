@@ -271,6 +271,25 @@ class TestRemoteOutFile:
                 remote_forgetful(marker=file(str(marker)), out_path=str(missing)),
             )
 
+    def test_an_earlier_jobs_output_on_the_worker_does_not_count(self, tmp_path: Path) -> None:
+        """Each dispatch writes Out paths into its own worker scratch directory.
+
+        Both outputs share a basename, so with one shared scratch directory the
+        first job's file would sit exactly where the second job's unwritten
+        output is looked for, and the second job would wrongly succeed.
+        """
+        first = tmp_path / "a" / "out.txt"
+        _evaluate(remote_write_output(payload="first", out_path=str(first)))
+        marker = tmp_path / "marker.txt"
+        marker.write_text("ok", encoding="utf-8")
+
+        with pytest.raises(FileNotFoundError, match="was not written"):
+            _evaluate(
+                remote_forgetful(
+                    marker=file(str(marker)), out_path=str(tmp_path / "b" / "out.txt")
+                ),
+            )
+
 
 class TestRemoteOutFolder:
     def test_out_folder_lands_at_driver_path(self, tmp_path: Path) -> None:

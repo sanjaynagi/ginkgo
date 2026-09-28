@@ -20,6 +20,7 @@ executor is in use.
 from __future__ import annotations
 
 import itertools
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
@@ -350,6 +351,10 @@ def stage_output_params_for_dispatch(
 
     manifest: list[dict[str, str]] = []
     counter = itertools.count()
+    # One fresh directory per dispatch: two tasks sharing a worker must not
+    # collide on "0-out.txt", and a file left by an earlier job must never
+    # satisfy this job's "was the output written" check.
+    dispatch_dir = uuid.uuid4().hex
 
     def remap(*, annotation: Any, value: Any, name: str) -> Any:
         if value is None:
@@ -372,7 +377,7 @@ def stage_output_params_for_dispatch(
             "file" if annotation_includes(annotation=inner_annotation, expected=file) else "folder"
         )
         original = str(value)
-        relative = f"{next(counter)}-{Path(original).name}"
+        relative = f"{dispatch_dir}/{next(counter)}-{Path(original).name}"
         manifest.append({"param": name, "relative": relative, "original": original, "kind": kind})
         return (file if kind == "file" else folder)(relative)
 
