@@ -46,15 +46,25 @@ Every path a task touches is either read or written, and the annotation says
 which:
 
 - A path the task **reads** — whether it comes from an upstream task's
-  return value or is written down as a raw input path in the flow — is
-  `file` or `folder`. Ginkgo hashes its **contents** into the cache key, so
-  the task reruns when the file changes, not only when the path string does.
+  return value or is written down as a raw input path in the flow — should
+  be `file` or `folder`. Ginkgo hashes its **contents** into the cache key,
+  so the task reruns when the file changes, not only when the path string
+  does. Prefer this over a bare `str`: it is explicit, type-checked, and
+  validated to exist before the task runs. A `str` value naming an existing
+  *file* is content-hashed automatically too (since it reads as a path — a
+  separator or a file extension), but a `str` naming an existing *directory*
+  is not — a directory is never auto-hashed, so it stays cached by path
+  string only unless annotated `folder`.
 - A path the task **writes** is `Out[file]` or `Out[folder]`. It need not
   exist before the task runs — Ginkgo creates its parent directory
   automatically — and it is cached by path only, since its contents *are*
   this run's output. Ginkgo checks the path exists (with the right kind)
   after the task runs, and registers it as produced by this task so a
   downstream task that reads the same path gets a real dependency edge.
+- A path that is neither a tracked read nor a declared write — a shared log
+  file, a staging path that is not itself the artifact — should be
+  `ginkgo.untracked`: it keys by path string only, deliberately, and is
+  never mistaken for the silent-staleness trap `ginkgo doctor` flags.
 
 ```python
 from ginkgo import Out, file, folder, task
@@ -64,10 +74,11 @@ def analyse(manifest: file, output_dir: Out[folder]) -> file:
     ...
 ```
 
-Never annotate a path parameter `str`, on either side — `str` carries no
-content tracking and no dependency edge, so `ginkgo doctor` and
-`--dry-run` warn on a `str` parameter whose name looks path-like (`path`,
-`output_dir`, `report_files`, ...).
+Prefer `Out[...]` over a bare `str` for every write — `str` carries no
+dependency edge, so `ginkgo doctor` and `--dry-run` warn on a `str`
+parameter whose name looks path-like (`path`, `output_dir`, `report_files`,
+...), suggesting `file`/`folder` for a read or `Out[file]`/`Out[folder]` for
+a write.
 
 A task with `Out[...]` parameters and no return annotation has its return
 value inferred from them — one `Out[...]` parameter becomes the return

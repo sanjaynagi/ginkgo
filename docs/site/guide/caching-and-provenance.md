@@ -16,9 +16,11 @@ level, Ginkgo hashes:
 - resolved input values
 - environment identity for foreign execution
 
-Inputs annotated `file` or `folder` are hashed by content; everything else is
-hashed from its `repr`. See [Cache Correctness](#cache-correctness) for why that
-distinction decides whether the cache stays correct.
+Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
+`Any`/`list[str]`/...) value that names an existing *file* and reads as a path
+(a separator or a file extension) is hashed by content too, whatever its
+annotation — everything else is hashed from its `repr`. See
+[Cache Correctness](#cache-correctness) for the exact rule and why it exists.
 
 The import walk starts at the task's own module, so the unit of cache identity
 is one file plus the local modules that file imports — not one function. Two
@@ -48,42 +50,59 @@ only the branches whose values changed are invalidated.
 (cache-correctness)=
 ## Cache Correctness
 
-### Annotate Path Boundaries `file` Or `folder`, Not `str`
+### Path Boundaries: `file`/`folder` Are Still Preferred, But `str` Is No Longer A Trap
 
-Any path a task *reads* must be annotated `file` (or `folder`) — whether that
-path is produced by another task's return value or written down as a literal
-input path in the flow. When it does come from another task, annotate both
-ends: the producer's return and the consumer's parameter. Content hashing is
-dispatched on that annotation.
-
-**A `str`-annotated path boundary makes the cache key path-identity only.** The
-key incorporates the path string, not the file's contents, so if an upstream
-task rewrites the file at the same path the downstream task still matches its
-old key: it reports `↺ cached` and serves a stale result as current. Nothing
-warns, because from the cache's point of view nothing changed.
+Annotate a path a task *reads* `file` (or `folder`) when you can — it is
+explicit, it validates existence and kind before execution, and it is what
+`ginkgo cache explain` and the doctor's `path_like_str_param` check expect.
+But since #307 phase 2, a plain `str` (or `Any`/`list[str]`/...) parameter is
+no longer a silent-staleness trap for a *file*: if the value is a
+`str`/`PathLike` that reads as a path (a separator, `data/x.tsv`, or a file
+extension, `x.tsv`) and names an existing regular file, its BLAKE3 content
+digest goes into the cache key automatically, exactly as `file` would.
+Editing the file — by hand, or an upstream task returning a different one —
+now invalidates the consumer whether or not the annotation says `file`.
 
 ```python
 from ginkgo import Out, file, task
 
-# WRONG — coords is keyed on the path string, so a rewritten file still hits
+# Both are keyed on coords' file contents now — file is still the clearer,
+# type-checked choice, but str is no longer a correctness trap for a file.
 @task()
-def analyze(coords: str, output_path: str) -> str: ...
+def analyze(coords: str, output_path: Out[file]) -> file: ...
 
-# CORRECT — coords is keyed on the file's contents, output_path is declared a write
 @task()
 def analyze(coords: file, output_path: Out[file]) -> file: ...
 ```
 
-The producer's annotation matters as much as the consumer's: a task declared
-`-> str` returns a plain `str` at runtime, which is hashed by `repr` even if the
-consumer asks for `file`. Note that `file` and `folder` are `str` subclasses, so
-a `str` annotation is indistinguishable from the correct one at the type level
-while behaving oppositely at the cache level — no type checker will catch this.
+**A directory is the one case this does not cover.** A plain `str` naming an
+existing directory — `"."`, `"results"` — is *not* auto-hashed: doing so
+would silently hash an entire tree as a side effect of an ordinary scalar
+parameter. It stays keyed by its path string only, same as before. Annotate
+it `folder` to track its contents; Ginkgo still warns when a directory
+crosses a task boundary as `str` (an upstream task's return reaching a
+consumer's `str` parameter), naming both ends and the `folder` annotation to
+add.
 
-Never leave an output path `str`: annotate the parameter `Out[file]` /
-`Out[folder]` (below), naming it as a write rather than a read. Annotating the
-return `file` on top of that content-tracks and stores the produced path as an
-artifact.
+A bare word with neither a separator nor an extension (`"alpha"`) does not
+qualify either, even if a same-named file exists — nothing about the string
+itself suggests a path, so it stays tracked by its own value.
+
+**Use `ginkgo.untracked` to deliberately opt a path out of content
+tracking** — a shared log file several tasks append to, a staging path that
+is not itself the tracked artifact, or anything whose content should not
+participate in the key. `untracked` never content-hashes, whatever exists on
+disk, and never triggers a doctor warning: it is a declared choice, not the
+trap these checks exist to flag.
+
+Never leave an *output* path plain `str` without `Out[...]`: annotate the
+parameter `Out[file]` / `Out[folder]` (below), naming it as a write rather
+than a read. A legacy task that still writes to a `str`-annotated
+`output_path` and returns it as `file`/`folder` is protected from
+self-invalidation — Ginkgo recognises the path as this task's own previous
+output and excludes it from content hashing — but a path written and never
+returned gets no such protection and needs `Out[...]` or `untracked`
+explicitly.
 
 `pathlib.Path` is rejected outright on a task parameter, since it is neither
 path- nor content-tracked: it is hashed as an opaque pickled object. Use
@@ -186,33 +205,37 @@ time, naming the task's actual `Out[...]` parameters.
 Every task input contributes to the cache key in one of a few ways, and
 Ginkgo names which:
 
-- **content** — a `file` / `folder` annotation or instance: the bytes are
-  hashed.
+- **content** — a `file` / `folder` annotation or instance, *or* (since
+  #307 phase 2) a plain value that names an existing regular file and reads
+  as a path: the bytes are hashed.
 - **asset** — an `AssetRef` (or a remote reference): tracked by its version id.
-- **path** — a plain value that happens to name an existing path, but is
-  annotated as an ordinary scalar: tracked by the path *string* only. This is
-  the silent-staleness trap above — nothing is wrong syntactically, so nothing
-  warns.
+- **path** — a value that names an existing path but is not content-hashed: a
+  directory (never auto-hashed — annotate `folder`), a bare word with no
+  separator or extension, or a root input excluded because Ginkgo recognises
+  it as this task's own previous output. Tracked by the path *string* only.
 - **value** — an ordinary scalar or object: tracked by its own `repr` or
   pickle digest.
 - **output** — an `Out[...]` parameter: tracked by its declared path string
   only, by design (it names what the task is about to write, not something it
   reads).
-- **untracked** — `tmp_dir`: excluded from the key entirely.
+- **untracked** — `tmp_dir`, or a parameter explicitly annotated
+  `ginkgo.untracked`: excluded from content tracking, by design.
 
 A container (`list`, `tuple`, `dict`) is labelled by its least-tracked
 element — one `path` buried inside `inputs=[a, b]` labels the whole parameter
 `path`, since that is the element the cache key does not really watch.
 
 `ginkgo cache explain <run_id>` shows every input's label next to it, with a
-`path` label highlighted and a reminder to annotate `file` / `folder` instead:
+`path` label highlighted and a reminder that a directory needs `folder` to
+track its contents:
 
 ```
 analyze (task_0002)
   cache key: fddb71a9…
   reason: all_inputs_match
   inputs:
-    coords: path (tracked by path string only — annotate `file`/`folder` to track contents)
+    readings: path (tracked by path string only — a directory needs `folder` to track
+      its contents; use `untracked` if that is deliberate)
     output_path: output
 ```
 
@@ -221,8 +244,9 @@ before this label existed shows nothing for its inputs rather than a guess.
 
 After a real `ginkgo run`, if any task's input was labelled `path`, the run
 prints one dim summary line — `N inputs are tracked by path only; see
-\`ginkgo cache explain\`` — so the trap surfaces without having to go looking
-for it. A workflow with nothing tracked by path stays quiet.
+\`ginkgo cache explain\`` — so a remaining directory or bare-word case
+surfaces without having to go looking for it. A workflow with nothing
+tracked by path stays quiet.
 
 ## Artifact Storage
 

@@ -2,24 +2,24 @@
 
 from pathlib import Path
 
-from ginkgo import evaluate, flow, task
+from ginkgo import evaluate, flow, task, untracked
 from tests._vw_support import append_line
 
 
 @task()
-def step_a(x: int, log_path: str) -> int:
+def step_a(x: int, log_path: untracked) -> int:
     append_line(log_path, "step_a")
     return x + 1
 
 
 @task()
-def step_b(x: int, log_path: str) -> int:
+def step_b(x: int, log_path: untracked) -> int:
     append_line(log_path, "step_b")
     return x * 2
 
 
 @task()
-def step_c(x: int, log_path: str) -> int:
+def step_c(x: int, log_path: untracked) -> int:
     append_line(log_path, "step_c")
     return x - 3
 

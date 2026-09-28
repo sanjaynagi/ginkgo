@@ -2,18 +2,18 @@
 
 from pathlib import Path
 
-from ginkgo import evaluate, flow, task
+from ginkgo import evaluate, flow, task, untracked
 from tests._vw_support import append_line
 
 
 @task()
-def process_high(value: int, log_path: str) -> str:
+def process_high(value: int, log_path: untracked) -> str:
     append_line(log_path, f"process_high:{value}")
     return f"high:{value}"
 
 
 @task()
-def filter_or_process(item: str, log_path: str) -> str | None:
+def filter_or_process(item: str, log_path: untracked) -> str | None:
     append_line(log_path, f"filter:{item}")
     if item.startswith("skip_"):
         return None

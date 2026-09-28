@@ -89,18 +89,24 @@ Ginkgo uses a few special path-oriented annotations to define runtime behavior:
 - `file`
 - `folder`
 - `tmp_dir`
+- `untracked`
 - `Out[file]` / `Out[folder]`
 
 These types influence validation, hashing, artifact handling, and scratch-space
-lifecycle. A path a task reads — whether produced by another task or written
-down as a literal path in the flow — costs two things when it is left `str`
-instead of `file`/`folder`: it is cache-keyed on the path string rather than
-the file's contents, so an edit to the file can serve stale results silently
-(see [Cache Correctness](caching-and-provenance.md#cache-correctness)); and,
-when the path is really an upstream task's output, writing it as a repeated
-literal string instead of passing that task's return value creates no
-dependency edge in the graph, so the consumer can run before or concurrently
-with the producer instead of after it.
+lifecycle. `file`/`folder` are still the clearer, type-checked choice, but
+leaving a path a task reads as plain `str` is no longer a correctness trap the
+way it once was: a `str` value that names an existing *file* and reads as a
+path (a separator or a file extension) is content-hashed by default, same as
+`file`. What `str` still costs, when the path is really an upstream task's
+output, is a dependency edge — writing it as a repeated literal string instead
+of passing that task's return value means nothing in the graph records the
+order, so the consumer can run before or concurrently with the producer
+instead of after it. And a *directory* named by `str` is never auto-hashed
+(hashing a whole tree as a side effect of a scalar would be a surprise), so it
+still needs `folder` to be content-tracked — see
+[Cache Correctness](caching-and-provenance.md#cache-correctness) for the exact
+rule. `untracked` is the explicit way to keep a path keyed by its string only,
+on purpose.
 
 `file`/`folder` mean *read*: the path must already exist. A path a task is
 about to *write* — `output_path`, in the corpus's own naming — is the other

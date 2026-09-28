@@ -26,9 +26,12 @@ from ginkgo.core.types import (
     folder,
     is_path_like,
     is_path_shaped_annotation,
+    is_untracked_annotation,
+    looks_like_path_string,
     pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
+    untracked,
     unwrap_optional_annotation,
 )
 from ginkgo.runtime.backend import ExecutionEnvironment
@@ -41,13 +44,97 @@ def is_path_annotation(annotation: Any) -> bool:
     return isinstance(annotation, type) and issubclass(annotation, Path)
 
 
+def _resolved_existing_path_text(value: Any) -> str | None:
+    """Return *value*'s text when it is a path-like, non-remote, existing path.
+
+    Shared groundwork for :func:`is_content_trackable_path_value` and
+    :func:`is_untracked_path_value`: both need "is this even a path worth
+    asking about" before they diverge on what to do with it.
+    """
+    if not is_path_like(value):
+        return None
+    text = str(value)
+    if not text or is_remote_uri(text):
+        return None
+    # os.path.exists, not Path.exists: a string that cannot name a path at all
+    # — a rehydrated ``text`` asset's contents, say, longer than NAME_MAX or
+    # carrying a NUL — must answer "not an existing path" rather than raise.
+    if not os.path.exists(text):
+        return None
+    return text
+
+
+def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value is a root-input path eligible for content hashing.
+
+    The #307 phase 2 rule: a parameter that is not ``Out[...]``, not
+    ``tmp_dir``, not ``untracked``, and not already annotated ``file``/
+    ``folder`` (those are content-hashed by their own branch already) is
+    nonetheless content-hashed — like a ``file`` input — when its value:
+
+    - is a ``str``/``PathLike``, not a remote URI (``is_remote_uri``);
+    - reads as a path textually, per :func:`~ginkgo.core.types.looks_like_path_string`
+      (a separator or a file extension — a bare word like ``"alpha"`` does
+      not qualify even if a same-named file exists);
+    - names an existing **regular file** on disk (``os.path.isfile``,
+      following symlinks).
+
+    A directory is deliberately excluded — hashing "." or "results" would
+    hash an entire tree as a side effect of a plain ``str`` parameter, which
+    is never what a caller passing a bare directory name intends. A
+    directory stays keyed by its path string only (see
+    :func:`is_untracked_path_value`); annotate it ``folder`` to track its
+    contents.
+
+    Whether a *particular* eligible file is excluded because the ledger
+    records it as this task's own previous output (issue #307's "don't
+    self-invalidate legacy output params") is not this predicate's concern —
+    it only answers the annotation/value shape question. Callers with ledger
+    access (``CacheStore``) layer that exclusion on top.
+
+    Parameters
+    ----------
+    annotation : Any
+        The declared annotation of the parameter receiving ``value``. Passed
+        already unwrapped of any admits-``None`` optional and already known
+        not to be an ``Out[...]`` parameter (the caller checks that first).
+    value : Any
+        The resolved argument value.
+
+    Returns
+    -------
+    bool
+        ``True`` when the value should be content-hashed as a root path
+        input.
+    """
+    if (
+        annotation is tmp_dir
+        or is_untracked_annotation(annotation)
+        or is_path_shaped_annotation(annotation)
+    ):
+        return False
+    if isinstance(value, (file, folder, tmp_dir, untracked)):
+        return False
+    text = _resolved_existing_path_text(value)
+    if text is None:
+        return False
+    if not looks_like_path_string(text):
+        return False
+    return os.path.isfile(text)
+
+
 def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     """Return whether a value is a path whose contents miss the cache key.
 
-    True when the declared annotation is not path-shaped and the value is
-    nonetheless a bare path naming something that exists on disk. Such an
-    argument contributes only its path string to the downstream cache key, so
-    content changes never invalidate it.
+    True when the declared annotation is not path-shaped (and not
+    ``untracked``, which already says so explicitly) and the value is
+    nonetheless a path naming something that exists on disk, but is not
+    eligible for the root-input content hashing
+    :func:`is_content_trackable_path_value` performs — a directory (never
+    auto-hashed; annotate ``folder``), or a bare word that happens to collide
+    with a file name (no separator, no extension). Such a value contributes
+    only its path string to the downstream cache key, so content changes
+    never invalidate it.
 
     A ``file`` / ``folder`` marker instance is excluded because the cache key
     content-hashes it whatever the annotation says. An ``AssetRef`` is excluded
@@ -67,20 +154,47 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     bool
         ``True`` when the value is a path the cache key does not track.
     """
-    if annotation is tmp_dir or is_path_shaped_annotation(annotation):
+    if (
+        annotation is tmp_dir
+        or is_untracked_annotation(annotation)
+        or is_path_shaped_annotation(annotation)
+    ):
         return False
-    if isinstance(value, (file, folder, tmp_dir)):
+    if isinstance(value, (file, folder, tmp_dir, untracked)):
         return False
-    if not is_path_like(value):
+    if _resolved_existing_path_text(value) is None:
         return False
+    if is_content_trackable_path_value(annotation=annotation, value=value):
+        return False
+    return True
 
-    text = str(value)
-    if not text or is_remote_uri(text):
+
+def is_untracked_directory_value(*, annotation: Any, value: Any) -> bool:
+    """Return whether a value is an existing *directory* the cache key does not track.
+
+    The narrowed #121 case (issue #307 phase 2): a path-like ``str`` naming a
+    directory still contributes only its path string to a consumer's cache
+    key, since directories are never auto-hashed (see
+    :func:`is_content_trackable_path_value`). A same-named existing *file*
+    no longer qualifies — it is content-hashed by default now, so warning
+    about it would describe something that no longer happens.
+
+    Parameters
+    ----------
+    annotation : Any
+        The declared annotation of the parameter receiving ``value``.
+    value : Any
+        The resolved argument value.
+
+    Returns
+    -------
+    bool
+        ``True`` when the value is an existing directory the cache key
+        tracks by path string only.
+    """
+    if not is_untracked_path_value(annotation=annotation, value=value):
         return False
-    # os.path.exists, not Path.exists: a string that cannot name a path at all
-    # — a rehydrated ``text`` asset's contents, say, longer than NAME_MAX or
-    # carrying a NUL — must answer "not an existing path" rather than raise.
-    return os.path.exists(text)
+    return os.path.isdir(str(value))
 
 
 #: The tracking labels ``label_input_value`` returns, in the order a mixed
@@ -104,23 +218,46 @@ def _combine_container_labels(labels: list[str]) -> str:
     return "value"
 
 
+def _resolved_lookup_key(value: Any) -> str | None:
+    """Return the absolute, resolved path string a value names, or ``None``.
+
+    Used to test a root-input path against a run's ``excluded_paths`` set
+    (paths the ledger records this task as having produced in a previous
+    run) with the same normalisation ``CacheStore`` used to build that set.
+    """
+    if not is_path_like(value):
+        return None
+    text = str(value)
+    if not text:
+        return None
+    try:
+        return str(Path(text).resolve())
+    except OSError:
+        return None
+
+
 def label_input_value(
     *,
     annotation: Any,
     value: Any,
     is_output: bool = False,
+    excluded_paths: frozenset[str] | None = None,
 ) -> str:
     """Return how :meth:`CacheStore.build_cache_key` tracks *value* in the cache key.
 
-    One of ``"content"`` (file/folder bytes are hashed), ``"asset"`` (an
-    ``AssetRef``, ``RemoteRef``, or fuse-streamed ref — tracked by version
-    id), ``"path"`` (a plain value that happens to name an existing path, but
-    is annotated as an ordinary scalar — tracked by its path *string* only,
-    the silent-staleness trap of issues #121/#281), ``"output"`` (an
-    ``Out[...]`` parameter — tracked by path string only, by design, since it
-    names what the task is about to write), ``"value"`` (an ordinary scalar
-    or object, tracked by its own repr/pickle digest), or ``"untracked"``
-    (``tmp_dir``, excluded from the key entirely).
+    One of ``"content"`` (file/folder bytes are hashed — including, since
+    #307 phase 2, a plain ``str``/``Any``/``list[str]``/... value that names
+    an existing regular file, see :func:`is_content_trackable_path_value`),
+    ``"asset"`` (an ``AssetRef``, ``RemoteRef``, or fuse-streamed ref —
+    tracked by version id), ``"path"`` (a value that names an existing path
+    but is not content-hashed — a directory, a bare word colliding with a
+    file name, or a root input excluded via ``excluded_paths`` because the
+    ledger records it as this task's own previous output — tracked by its
+    path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
+    path string only, by design, since it names what the task is about to
+    write), ``"value"`` (an ordinary scalar or object, tracked by its own
+    repr/pickle digest), or ``"untracked"`` (``tmp_dir`` or ``untracked``,
+    excluded from content tracking by explicit annotation).
 
     Mirrors :meth:`CacheStore._hash_value`'s dispatch order exactly — same
     branches, same order — so the label always describes what that method
@@ -142,6 +279,12 @@ def label_input_value(
         Whether this is an ``Out[...]`` parameter. Only meaningful at the
         top level: ``build_cache_key`` never passes it down into containers,
         so recursive calls omit it.
+    excluded_paths : frozenset[str] | None
+        Resolved absolute paths the ledger records this task's cache
+        identity as having produced in a previous run (see
+        ``CacheStore._excluded_output_paths``). Threaded down into every
+        recursive call, unlike ``is_output``, since an excluded path can
+        appear nested inside a container.
 
     Returns
     -------
@@ -150,6 +293,8 @@ def label_input_value(
         ``"output"``, ``"untracked"``.
     """
     if annotation is tmp_dir or isinstance(value, tmp_dir):
+        return "untracked"
+    if is_untracked_annotation(annotation) or isinstance(value, untracked):
         return "untracked"
 
     annotation, admits_none = unwrap_optional_annotation(annotation)
@@ -175,7 +320,9 @@ def label_input_value(
     origin = get_origin(annotation)
     if origin in {list, tuple}:
         labels = [
-            label_input_value(annotation=item_annotation, value=item)
+            label_input_value(
+                annotation=item_annotation, value=item, excluded_paths=excluded_paths
+            )
             for item_annotation, item in pair_elements_with_annotations(
                 annotation=annotation, value=value
             )
@@ -187,12 +334,23 @@ def label_input_value(
         key_annotation, value_annotation = (args[0], args[1]) if len(args) == 2 else (Any, Any)
         labels = []
         for key, item in value.items():
-            labels.append(label_input_value(annotation=key_annotation, value=key))
-            labels.append(label_input_value(annotation=value_annotation, value=item))
+            labels.append(
+                label_input_value(
+                    annotation=key_annotation, value=key, excluded_paths=excluded_paths
+                )
+            )
+            labels.append(
+                label_input_value(
+                    annotation=value_annotation, value=item, excluded_paths=excluded_paths
+                )
+            )
         return _combine_container_labels(labels) if labels else "value"
 
     if isinstance(value, (list, tuple)):
-        labels = [label_input_value(annotation=annotation, value=item) for item in value]
+        labels = [
+            label_input_value(annotation=annotation, value=item, excluded_paths=excluded_paths)
+            for item in value
+        ]
         return _combine_container_labels(labels) if labels else "value"
 
     if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
@@ -203,11 +361,20 @@ def label_input_value(
     if isinstance(value, dict):
         labels = []
         for key, item in value.items():
-            labels.append(label_input_value(annotation=Any, value=key))
-            labels.append(label_input_value(annotation=Any, value=item))
+            labels.append(
+                label_input_value(annotation=Any, value=key, excluded_paths=excluded_paths)
+            )
+            labels.append(
+                label_input_value(annotation=Any, value=item, excluded_paths=excluded_paths)
+            )
         return _combine_container_labels(labels) if labels else "value"
 
     if value is None or isinstance(value, (bool, int, float, str)):
+        if is_content_trackable_path_value(annotation=annotation, value=value):
+            lookup = _resolved_lookup_key(value)
+            if excluded_paths is None or lookup not in excluded_paths:
+                return "content"
+            return "path"
         if is_untracked_path_value(annotation=annotation, value=value):
             return "path"
         return "value"

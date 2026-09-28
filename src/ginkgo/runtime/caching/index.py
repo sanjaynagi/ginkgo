@@ -422,6 +422,52 @@ class CacheIndex(DirectIndex):
         """Return whether *path* still holds the bytes of *artifact_id*."""
         return self.materialized_artifact_id(path=path) == artifact_id
 
+    # -- produced output paths (#307 phase 2) --------------------------------
+
+    def previously_produced_paths(self) -> dict[str, frozenset[str]]:
+        """Return every path a task's own cache entries record it having produced.
+
+        Keyed by the producing task's cache identity (``cache_entries.function``
+        is written from :attr:`TaskDef.cache_name` in :meth:`CacheStore.save`,
+        so no separate identity translation is needed here). The source is
+        ``cache_artifacts`` — populated by every ``CacheStore.save()``,
+        library use and bare ``evaluate()`` calls included, not only a
+        ``ginkgo run`` under a recorder — rather than the run ledger's
+        ``task_outputs``: the cache entry exists whenever a task has ever
+        completed and been saved, whether or not anything was subscribed to
+        record run events, so this answers "has this task's cache identity
+        ever produced this path" in every context the cache itself works in.
+
+        One query for the whole cache index — callers (``CacheStore``)
+        memoise the result for the life of a run rather than calling this per
+        task or per hash, so a large history is read once regardless of how
+        many tasks or map branches ask.
+
+        Used to exclude a legacy ``output_path: str`` parameter from
+        root-input content hashing when it names this task's own previous
+        output: hashing it would otherwise self-invalidate every run, since
+        the value is what the task is about to overwrite, not read.
+        """
+        rows = self._query(
+            """
+            SELECT cache_entries.function AS function, cache_artifacts.path AS path
+            FROM cache_artifacts
+            JOIN cache_entries ON cache_entries.cache_key = cache_artifacts.cache_key
+            """
+        )
+        by_identity: dict[str, set[str]] = {}
+        for row in rows:
+            function = row["function"]
+            path = row["path"]
+            if not function or not path:
+                continue
+            try:
+                normalised = str(Path(str(path)).resolve())
+            except OSError:
+                normalised = str(path)
+            by_identity.setdefault(str(function), set()).add(normalised)
+        return {identity: frozenset(paths) for identity, paths in by_identity.items()}
+
     # -- digest memo ---------------------------------------------------------
 
     # -- environment materializations ----------------------------------------

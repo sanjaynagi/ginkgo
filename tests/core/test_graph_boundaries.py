@@ -1,8 +1,14 @@
 """Tests for silent failures at flow/graph boundaries.
 
-Covers two defects: a path crossing a task boundary as ``str`` contributes only
-its path string to the downstream cache key (#121), and a task call unreachable
-from the flow return value is dropped from the graph (#122).
+Covers two defects: a task call unreachable from the flow return value is
+dropped from the graph (#122), and — since #307 phase 2 — what happens at a
+``str``-typed path boundary between two tasks. A root/boundary path naming an
+existing *file* is now content-hashed by default whatever its annotation
+(closing #121/#281): editing it, or the upstream task producing a different
+one, invalidates the consumer, and the #121 cross-task notice no longer fires
+for it. A boundary path naming an existing *directory* is not auto-hashed
+(hashing an entire tree as a side effect of a plain ``str`` would be a
+surprise) and keeps the narrowed notice, now suggesting ``folder``.
 """
 
 from __future__ import annotations
@@ -13,14 +19,18 @@ from typing import Any
 import pytest
 
 import ginkgo
-from ginkgo import evaluate, file, flow, task, tmp_dir
+from ginkgo import evaluate, file, flow, folder, task, tmp_dir, untracked
 from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import TaskNotice
-from ginkgo.runtime.task_validation import is_untracked_path_value
+from ginkgo.runtime.task_validation import (
+    is_content_trackable_path_value,
+    is_untracked_directory_value,
+    is_untracked_path_value,
+)
 from tests.conftest import EventCollector
 
 
@@ -85,6 +95,40 @@ def summarise_mapping_str(*, coords: dict[str, str], output_path: str) -> str:
 
 
 @task()
+def write_dir_str(*, tag: str, output_dir: str) -> str:
+    """Write a file inside a directory and return the directory as a plain ``str``."""
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / f"{tag}.txt").write_text(tag, encoding="utf-8")
+    return output_dir
+
+
+@task()
+def summarise_dir_str(*, readings: str, output_path: untracked) -> str:
+    """Summarise a directory received as a plain ``str``."""
+    total = len(list(Path(readings).iterdir()))
+    Path(output_path).write_text(f"entries,{total}\n", encoding="utf-8")
+    return output_path
+
+
+@task()
+def write_rows_untracked(*, rows: int, output_path: str) -> str:
+    """Write ``rows`` lines and return the path as a plain ``str``."""
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(str(index) for index in range(rows)) + "\n", encoding="utf-8")
+    return output_path
+
+
+@task()
+def summarise_untracked(*, coords: untracked, output_path: untracked) -> str:
+    """Summarise a path deliberately annotated ``untracked``."""
+    count = len(Path(coords).read_text(encoding="utf-8").strip().split("\n"))
+    Path(output_path).write_text(f"rows,{count}\n", encoding="utf-8")
+    return output_path
+
+
+@task()
 def produce_file_asset(*, output_path: str) -> object:
     """Return a file asset, which reaches a consumer as an ``AssetRef``."""
     target = Path(output_path)
@@ -114,20 +158,19 @@ def _notices(collector: EventCollector) -> list[str]:
     return [event.message for event in collector.events if isinstance(event, TaskNotice)]
 
 
-class TestUntrackedPathBoundary:
-    """#121 — a ``str`` path boundary is cached on identity, not content."""
+class TestFilePathBoundaryIsTracked:
+    """#121/#281 closed — a ``str`` boundary naming an existing *file* is
+    content-hashed by default now, so it no longer warns and no longer goes
+    stale."""
 
-    def test_str_boundary_warns_and_names_both_ends(self, event_collector: EventCollector) -> None:
+    def test_str_boundary_is_silent(self, event_collector: EventCollector) -> None:
         coords = write_rows_str(rows=3, output_path="rows.csv")
         evaluate(
             summarise_str(coords=coords, output_path="summary.csv"),
             event_bus=event_collector.bus,
         )
 
-        messages = _notices(event_collector)
-        assert len(messages) == 1
-        assert "write_rows_str" in messages[0]
-        assert "coords" in messages[0]
+        assert _notices(event_collector) == []
 
     def test_file_boundary_is_silent(self, event_collector: EventCollector) -> None:
         coords = write_rows_file(rows=3, output_path="rows.csv")
@@ -150,8 +193,11 @@ class TestUntrackedPathBoundary:
 
         assert _notices(event_collector) == []
 
-    def test_str_boundary_serves_stale_downstream_output(self) -> None:
-        """The defect the warning exists to flag: content change, cache hit."""
+    def test_str_boundary_no_longer_serves_stale_downstream_output(self) -> None:
+        """The #121 repro: the upstream task returns a path as ``str`` and the
+        consumer receives it through a plain ``str`` parameter. Before #307
+        phase 2 this stayed cached on the path string; now the content
+        change re-runs the consumer."""
         evaluate(
             summarise_str(
                 coords=write_rows_str(rows=3, output_path="rows.csv"),
@@ -167,7 +213,18 @@ class TestUntrackedPathBoundary:
             )
         )
         assert len(Path("rows.csv").read_text(encoding="utf-8").strip().split("\n")) == 5
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,5\n"
+
+    def test_str_boundary_invalidates_on_a_literal_root_input_edit(self) -> None:
+        """#281's own repro: a literal root input, not routed through the
+        graph at all — editing the file directly must still invalidate."""
+        Path("rows.csv").write_text("0\n1\n2\n", encoding="utf-8")
+        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
         assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
+
+        Path("rows.csv").write_text("0\n1\n2\n3\n", encoding="utf-8")
+        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,4\n"
 
     def test_file_boundary_invalidates_downstream(self) -> None:
         evaluate(
@@ -186,10 +243,82 @@ class TestUntrackedPathBoundary:
         assert Path("summary.csv").read_text(encoding="utf-8") == "rows,5\n"
 
 
+class TestUntrackedDirectoryBoundary:
+    """The narrowed #121 case: a directory is never auto-hashed, so a ``str``
+    boundary naming one still warns — now suggesting ``folder``."""
+
+    def test_str_boundary_to_a_directory_warns_and_names_both_ends(
+        self, event_collector: EventCollector
+    ) -> None:
+        readings = write_dir_str(tag="a", output_dir="readings")
+        evaluate(
+            summarise_dir_str(readings=readings, output_path="summary.csv"),
+            event_bus=event_collector.bus,
+        )
+
+        messages = _notices(event_collector)
+        assert len(messages) == 1, messages
+        assert "write_dir_str" in messages[0]
+        assert "readings" in messages[0]
+        assert "folder" in messages[0]
+
+    def test_str_boundary_to_a_directory_serves_stale_downstream_output(self) -> None:
+        evaluate(
+            summarise_dir_str(
+                readings=write_dir_str(tag="a", output_dir="readings"),
+                output_path="summary.csv",
+            )
+        )
+        assert Path("summary.csv").read_text(encoding="utf-8") == "entries,1\n"
+
+        evaluate(
+            summarise_dir_str(
+                readings=write_dir_str(tag="b", output_dir="readings"),
+                output_path="summary.csv",
+            )
+        )
+        # A second file was added to the same directory, but the consumer's
+        # cache key is still the directory's path string only.
+        assert Path("summary.csv").read_text(encoding="utf-8") == "entries,1\n"
+
+
+class TestExplicitlyUntrackedBoundary:
+    """``untracked`` opts a path out of content tracking deliberately, and
+    never warns — the #121 notice exists to flag a *silent* trap, not a
+    declared one."""
+
+    def test_untracked_boundary_is_silent(self, event_collector: EventCollector) -> None:
+        coords = write_rows_untracked(rows=3, output_path="rows.csv")
+        evaluate(
+            summarise_untracked(coords=coords, output_path="summary.csv"),
+            event_bus=event_collector.bus,
+        )
+
+        assert _notices(event_collector) == []
+
+    def test_untracked_boundary_does_not_invalidate_on_content_change(self) -> None:
+        evaluate(
+            summarise_untracked(
+                coords=write_rows_untracked(rows=3, output_path="rows.csv"),
+                output_path="summary.csv",
+            )
+        )
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
+
+        evaluate(
+            summarise_untracked(
+                coords=write_rows_untracked(rows=5, output_path="rows.csv"),
+                output_path="summary.csv",
+            )
+        )
+        assert len(Path("rows.csv").read_text(encoding="utf-8").strip().split("\n")) == 5
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
+
+
 class TestUntrackedPathsInsideContainers:
     """The fan-in shape: expressions nested inside a list argument."""
 
-    def test_paths_inside_a_list_argument_are_checked(
+    def test_paths_inside_a_list_argument_are_silent(
         self, event_collector: EventCollector
     ) -> None:
         evaluate(
@@ -203,10 +332,7 @@ class TestUntrackedPathsInsideContainers:
             event_bus=event_collector.bus,
         )
 
-        messages = _notices(event_collector)
-        assert len(messages) == 1, messages
-        assert "write_rows_str" in messages[0]
-        assert "coords" in messages[0]
+        assert _notices(event_collector) == []
 
     def test_paths_inside_a_list_of_file_are_silent(self, event_collector: EventCollector) -> None:
         evaluate(
@@ -222,7 +348,7 @@ class TestUntrackedPathsInsideContainers:
 
         assert _notices(event_collector) == []
 
-    def test_paths_from_a_fan_out_are_checked(self, event_collector: EventCollector) -> None:
+    def test_paths_from_a_fan_out_are_silent(self, event_collector: EventCollector) -> None:
         evaluate(
             summarise_many_str(
                 coords=write_rows_str(rows=2).map(output_path=["a.csv", "b.csv"]),
@@ -231,11 +357,9 @@ class TestUntrackedPathsInsideContainers:
             event_bus=event_collector.bus,
         )
 
-        messages = _notices(event_collector)
-        assert len(messages) == 1, messages
-        assert "write_rows_str" in messages[0]
+        assert _notices(event_collector) == []
 
-    def test_paths_inside_a_dict_argument_are_checked(
+    def test_paths_inside_a_dict_argument_are_silent(
         self, event_collector: EventCollector
     ) -> None:
         evaluate(
@@ -246,9 +370,7 @@ class TestUntrackedPathsInsideContainers:
             event_bus=event_collector.bus,
         )
 
-        messages = _notices(event_collector)
-        assert len(messages) == 1, messages
-        assert "write_rows_str" in messages[0]
+        assert _notices(event_collector) == []
 
 
 class TestAssetRefBoundary:
@@ -287,13 +409,21 @@ class TestAssetRefBoundary:
 
 
 class TestIsUntrackedPathValue:
-    """The predicate behind the warning, over the annotation table in #121."""
+    """The predicate behind the warning and the ``"path"`` label, over the
+    annotation table in #121/#307. Since #307 phase 2, a plain ``str``
+    naming an existing *file* that reads as a path (a separator or an
+    extension) is content-trackable, not untracked — see
+    ``TestIsContentTrackablePathValue`` below for that half of the table.
+    What remains untracked-by-content here is a directory, and a bare word
+    with neither a separator nor an extension.
+    """
 
     @pytest.fixture(autouse=True)
-    def existing_path(self) -> Path:
-        target = Path("present.csv")
-        target.write_text("x\n", encoding="utf-8")
-        return target
+    def existing_paths(self) -> Path:
+        Path("present.csv").write_text("x\n", encoding="utf-8")
+        Path("present").write_text("x\n", encoding="utf-8")
+        Path("present_dir").mkdir()
+        return Path("present.csv")
 
     @pytest.mark.parametrize(
         ("annotation", "value", "expected"),
@@ -302,11 +432,20 @@ class TestIsUntrackedPathValue:
             (file | None, "present.csv", False),
             (list[file], "present.csv", False),
             (tmp_dir, "present.csv", False),
+            (untracked, "present.csv", False),
             (str, file("present.csv"), False),
-            (str, "present.csv", True),
-            (str | None, "present.csv", True),
-            (Path, Path("present.csv"), True),
-            (Any, "present.csv", True),
+            (str, untracked("present.csv"), False),
+            # A separator/extension existing file is content-trackable now,
+            # not "untracked" — the #121/#281 fix.
+            (str, "present.csv", False),
+            (str | None, "present.csv", False),
+            # A bare word does not read as a path, so it stays untracked.
+            (str, "present", True),
+            # A directory is never auto-hashed, so it stays untracked too.
+            (str, "present_dir", True),
+            (str | None, "present_dir", True),
+            (Path, Path("present_dir"), True),
+            (Any, "present_dir", True),
             (str, "absent.csv", False),
             (str, "not a path at all", False),
             (int, 3, False),
@@ -318,6 +457,54 @@ class TestIsUntrackedPathValue:
     )
     def test_predicate(self, annotation: Any, value: Any, expected: bool) -> None:
         assert is_untracked_path_value(annotation=annotation, value=value) is expected
+
+
+class TestIsContentTrackablePathValue:
+    """The #307 phase 2 eligibility rule: separator-or-extension, existing,
+    a regular file."""
+
+    @pytest.fixture(autouse=True)
+    def existing_paths(self) -> None:
+        Path("present.csv").write_text("x\n", encoding="utf-8")
+        Path("present").write_text("x\n", encoding="utf-8")
+        Path("present_dir").mkdir()
+
+    @pytest.mark.parametrize(
+        ("annotation", "value", "expected"),
+        [
+            (str, "present.csv", True),
+            (str | None, "present.csv", True),
+            (Any, "present.csv", True),
+            (str, "present", False),
+            (str, "present_dir", False),
+            (str, "absent.csv", False),
+            (file, "present.csv", False),
+            (tmp_dir, "present.csv", False),
+            (untracked, "present.csv", False),
+            (str, untracked("present.csv"), False),
+            (str, "s3://bucket/key.csv", False),
+        ],
+    )
+    def test_predicate(self, annotation: Any, value: Any, expected: bool) -> None:
+        assert is_content_trackable_path_value(annotation=annotation, value=value) is expected
+
+
+class TestIsUntrackedDirectoryValue:
+    """The predicate behind the narrowed evaluator notice."""
+
+    @pytest.fixture(autouse=True)
+    def existing_paths(self) -> None:
+        Path("present.csv").write_text("x\n", encoding="utf-8")
+        Path("present_dir").mkdir()
+
+    def test_directory_is_flagged(self) -> None:
+        assert is_untracked_directory_value(annotation=str, value="present_dir") is True
+
+    def test_file_is_no_longer_flagged(self) -> None:
+        assert is_untracked_directory_value(annotation=str, value="present.csv") is False
+
+    def test_folder_annotation_is_not_flagged(self) -> None:
+        assert is_untracked_directory_value(annotation=folder, value="present_dir") is False
 
 
 def _validated_evaluator(build: Any) -> ConcurrentEvaluator:

@@ -21,6 +21,7 @@ from ginkgo.core.types import (
     file,
     folder,
     is_path_shaped_annotation,
+    is_untracked_annotation,
     pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
@@ -29,7 +30,7 @@ from ginkgo.core.types import (
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.task_validation import label_input_value
+from ginkgo.runtime.task_validation import is_content_trackable_path_value, label_input_value
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.caching.index import CacheIndex
@@ -125,6 +126,9 @@ class CacheStore:
     _seen_env_materializations: set[tuple[str, str]] = field(
         default_factory=set, init=False, repr=False
     )
+    _produced_paths_by_cache_name: dict[str, frozenset[str]] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else WorkspaceLayout.for_cwd().cache
@@ -171,6 +175,7 @@ class CacheStore:
             upstream tasks, keyed by resolved absolute path.  When present,
             file inputs whose path appears here skip disk hashing entirely.
         """
+        excluded_paths = self._excluded_output_paths(task_def=task_def)
         input_hashes: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -180,6 +185,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 known_digests=known_digests,
+                excluded_paths=excluded_paths,
                 label=f"{task_def.name}.{name}",
                 is_output=name in task_def.output_params,
             )
@@ -221,6 +227,7 @@ class CacheStore:
         See :func:`~ginkgo.runtime.task_validation.label_input_value` for the
         categories.
         """
+        excluded_paths = self._excluded_output_paths(task_def=task_def)
         labels: dict[str, str] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -231,6 +238,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 is_output=name in task_def.output_params,
+                excluded_paths=excluded_paths,
             )
         return labels
 
@@ -814,12 +822,55 @@ class CacheStore:
 
         return current == recorded
 
+    def _excluded_output_paths(self, *, task_def: TaskDef) -> frozenset[str]:
+        """Return paths *this task's* cache identity has produced before.
+
+        A legacy task still writing to a ``str``/``Any``-annotated
+        ``output_path`` (rather than ``Out[file]``) would otherwise have its
+        own previous output content-hashed by the root-input rule below: one
+        spurious rerun on the first run under this feature, and — worse — a
+        permanent miss for any task whose output is not byte-identical run to
+        run (a timestamp, a gzip header). Excluding a path recorded as this
+        task's own prior output avoids both, at the cost of the read below
+        (once) and one dict lookup per eligible path per hash.
+
+        The source is :meth:`CacheIndex.previously_produced_paths`, i.e. the
+        cache index's own ``cache_artifacts``/``cache_entries`` rows — not the
+        run ledger — so this works for a bare library ``evaluate()`` call
+        exactly as it does for ``ginkgo run``: those rows are written by
+        every ``CacheStore.save()``, whether or not anything is subscribed to
+        record run events. It is read **once per run**, on first use — never
+        once per hash or per task — and memoised on this ``CacheStore`` for
+        every task asked about afterwards; a task with no recorded outputs (a
+        fresh workspace, or a task that has never produced a ``file``/
+        ``folder``) gets an empty set back, excluding nothing, which is
+        exactly right on a first run: the output does not exist yet anyway,
+        so nothing is eligible to fall through to this branch in the first
+        place.
+
+        A task that writes a file but does not *return* it (or returns it
+        un-annotated as ``file``/``folder``) is never stored as an artifact,
+        so this exclusion cannot help it; the fix in that case is the same
+        one ``ginkgo doctor`` already suggests: declare the parameter
+        ``Out[file]``/``Out[folder]``, which is excluded from content hashing
+        unconditionally, no lookup required.
+        """
+        if self._produced_paths_by_cache_name is None:
+            object.__setattr__(
+                self,
+                "_produced_paths_by_cache_name",
+                self.index.previously_produced_paths(),
+            )
+        assert self._produced_paths_by_cache_name is not None
+        return self._produced_paths_by_cache_name.get(task_def.cache_name, frozenset())
+
     def _hash_value(
         self,
         *,
         annotation: Any,
         value: Any,
         known_digests: dict[str, str] | None = None,
+        excluded_paths: frozenset[str] | None = None,
         label: str = "value",
         is_output: bool = False,
     ) -> Any:
@@ -839,7 +890,9 @@ class CacheStore:
         if value is None and admits_none:
             return {"type": "absent"}
         if is_output:
-            return self._hash_output_leaf(value=value)
+            return self._hash_path_string_leaf(value=value)
+        if is_untracked_annotation(annotation):
+            return self._hash_path_string_leaf(value=value)
         if isinstance(value, AssetRef):
             if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
@@ -895,6 +948,7 @@ class CacheStore:
                         annotation=item_annotation,
                         value=item,
                         known_digests=known_digests,
+                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item_annotation, item in pair_elements_with_annotations(
@@ -913,12 +967,14 @@ class CacheStore:
                             annotation=key_annotation,
                             value=key,
                             known_digests=known_digests,
+                            excluded_paths=excluded_paths,
                             label=label,
                         ),
                         "value": self._hash_value(
                             annotation=value_annotation,
                             value=item,
                             known_digests=known_digests,
+                            excluded_paths=excluded_paths,
                             label=label,
                         ),
                     }
@@ -934,6 +990,7 @@ class CacheStore:
                         annotation=annotation,
                         value=item,
                         known_digests=known_digests,
+                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item in value
@@ -948,6 +1005,7 @@ class CacheStore:
                         annotation=annotation,
                         value=item,
                         known_digests=known_digests,
+                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item in value
@@ -983,6 +1041,25 @@ class CacheStore:
                 "type": "dict",
             }
 
+        # Root-input path hashing (#307 phase 2, closes #121/#281): a value
+        # that is not ``Out[...]``, not ``tmp_dir``/``untracked``, and not
+        # already annotated ``file``/``folder`` (those branches above already
+        # handled it) is nonetheless content-hashed, like a ``file`` input,
+        # when it is a str/PathLike naming an existing *regular file* that
+        # reads as a path — see ``is_content_trackable_path_value`` for the
+        # exact eligibility rule. A directory never qualifies here; it falls
+        # through to the plain scalar branch below, keyed by its path string,
+        # same as before this feature.
+        if is_content_trackable_path_value(annotation=annotation, value=value):
+            resolved_key = str(Path(str(value)).resolve())
+            excluded = excluded_paths is not None and resolved_key in excluded_paths
+            if not excluded:
+                if known_digests is not None:
+                    known = known_digests.get(resolved_key)
+                    if known is not None:
+                        return {"sha256": known, "type": "file"}
+                return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+
         if value is None or isinstance(value, (bool, int, float, str)):
             return {
                 "sha256": hash_str(repr(value)),
@@ -996,17 +1073,19 @@ class CacheStore:
             "type": f"{type(value).__module__}.{type(value).__name__}",
         }
 
-    def _hash_output_leaf(self, *, value: Any) -> Any:
-        """Hash an ``Out[...]`` value as a plain path string, recursively.
+    def _hash_path_string_leaf(self, *, value: Any) -> Any:
+        """Hash a value as a plain path string only, recursively.
 
         Mirrors the plain-scalar branch of :meth:`_hash_value` exactly (same
-        ``repr``-based digest), so an output parameter's cache-key
-        contribution changes only when its declared path changes, never
-        when the file or directory at that path does.
+        ``repr``-based digest), so it contributes to the cache key only when
+        the declared path itself changes, never when the file or directory
+        at that path does. Used for an ``Out[...]`` parameter (the path
+        names what the task is about to write) and for an ``untracked``-
+        annotated parameter (a deliberate opt-out of content tracking).
         """
         if isinstance(value, (list, tuple)):
             return {
-                "items": [self._hash_output_leaf(value=item) for item in value],
+                "items": [self._hash_path_string_leaf(value=item) for item in value],
                 "type": type(value).__name__,
             }
         return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
@@ -1073,6 +1152,7 @@ class CacheStore:
         str
             Hex-encoded BLAKE3 digest of the stat-based payload.
         """
+        excluded_paths = self._excluded_output_paths(task_def=task_def)
         stat_parts: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -1081,6 +1161,7 @@ class CacheStore:
             stat_parts[name] = self._stat_value(
                 annotation=annotation,
                 value=resolved_args[name],
+                excluded_paths=excluded_paths,
                 label=f"{task_def.name}.{name}",
                 is_output=name in task_def.output_params,
             )
@@ -1103,18 +1184,22 @@ class CacheStore:
         *,
         annotation: Any,
         value: Any,
+        excluded_paths: frozenset[str] | None = None,
         label: str = "value",
         is_output: bool = False,
     ) -> Any:
         """Build a stat-based representation for a value (no content reading).
 
         An ``Out[...]`` parameter (``is_output``) is never stat'd — like the
-        content-addressed key, it contributes its path string only.
+        content-addressed key, it contributes its path string only. Same for
+        an ``untracked``-annotated parameter.
         """
         if annotation is tmp_dir:
             return None
         if is_output:
-            return self._hash_output_leaf(value=value)
+            return self._hash_path_string_leaf(value=value)
+        if is_untracked_annotation(annotation):
+            return self._hash_path_string_leaf(value=value)
 
         if isinstance(value, RemoteRef):
             if value.version_id is None:
@@ -1192,8 +1277,24 @@ class CacheStore:
                 return {"fingerprint": hash_str("\n".join(parts)), "type": "folder"}
             return {"type": "folder", "missing": True}
 
+        # Root-input path stat fingerprint (#307 phase 2), mirroring the
+        # ``file``/``folder`` branches above rather than reading content: a
+        # value eligible for root-input content hashing under the normal key
+        # (see ``is_content_trackable_path_value``) is fingerprinted by stat,
+        # not by digest, so ``--trust-mtimes`` stays a fast surrogate. Falls
+        # through to the plain scalar branch below when it is excluded as
+        # this task's own previous output, same as the content-addressed key.
+        if is_content_trackable_path_value(annotation=annotation, value=value):
+            path = Path(str(value)).resolve()
+            excluded = excluded_paths is not None and str(path) in excluded_paths
+            if not excluded:
+                st = path.stat()
+                return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
+
         # For non-path types, use the same hash as the content-addressed path.
-        return self._hash_value(annotation=annotation, value=value, label=label)
+        return self._hash_value(
+            annotation=annotation, value=value, excluded_paths=excluded_paths, label=label
+        )
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""

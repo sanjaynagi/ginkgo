@@ -52,18 +52,19 @@ class TestLabelsDoNotAffectTheKey:
 
         assert key_before == key_after
 
-    def test_a_path_labelled_input_keys_the_same_as_before_labelling_existed(
+    def test_a_directory_labelled_input_keys_the_same_as_before_labelling_existed(
         self, tmp_path: Path
     ) -> None:
-        """The silent-staleness trap itself must stay exactly as silent.
-
-        Labelling a ``str``-annotated existing path ``"path"`` is metadata
-        only: the key must still be the path string, not its content, so
-        rewriting the file at the same path must not move the key.
+        """The remaining silent-staleness trap (a directory, never auto-hashed)
+        must stay exactly as silent. Labelling a ``str``-annotated existing
+        directory ``"path"`` is metadata only: the key must still be the path
+        string, not its contents, so writing a new file into the directory
+        at the same path must not move the key.
         """
         store = _store(tmp_path)
-        target = tmp_path / "coords.txt"
-        target.write_text("v1", encoding="utf-8")
+        target = tmp_path / "coords_dir"
+        target.mkdir()
+        (target / "a.txt").write_text("v1", encoding="utf-8")
         resolved_args = {"coords": str(target), "threads": "4", "scratch": "unused"}
 
         key_v1, _ = store.build_cache_key(task_def=analyze, resolved_args=resolved_args)
@@ -71,9 +72,27 @@ class TestLabelsDoNotAffectTheKey:
             "path"
         )
 
-        target.write_text("v2", encoding="utf-8")
+        (target / "b.txt").write_text("v2", encoding="utf-8")
         key_v2, _ = store.build_cache_key(task_def=analyze, resolved_args=resolved_args)
         assert key_v1 == key_v2
+
+    def test_a_root_input_file_is_content_hashed_and_moves_the_key(self, tmp_path: Path) -> None:
+        """#307 phase 2 / #121 / #281: unlike a directory, a plain ``str``
+        naming an existing *file* is content-hashed by default, so editing it
+        does move the key — this is the fix, not a trap."""
+        store = _store(tmp_path)
+        target = tmp_path / "coords.txt"
+        target.write_text("v1", encoding="utf-8")
+        resolved_args = {"coords": str(target), "threads": "4", "scratch": "unused"}
+
+        key_v1, _ = store.build_cache_key(task_def=analyze, resolved_args=resolved_args)
+        assert store.label_inputs(task_def=analyze, resolved_args=resolved_args)["coords"] == (
+            "content"
+        )
+
+        target.write_text("v2", encoding="utf-8")
+        key_v2, _ = store.build_cache_key(task_def=analyze, resolved_args=resolved_args)
+        assert key_v1 != key_v2
 
 
 class TestLabelCategories:
@@ -85,7 +104,17 @@ class TestLabelCategories:
         )
         assert labels == {"coords": "value", "threads": "value", "scratch": "untracked"}
 
-    def test_str_naming_an_existing_path_is_path(self, tmp_path: Path) -> None:
+    def test_str_naming_an_existing_directory_is_path(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        target = tmp_path / "coords_dir"
+        target.mkdir()
+        labels = store.label_inputs(
+            task_def=analyze,
+            resolved_args={"coords": str(target), "threads": "4", "scratch": "unused"},
+        )
+        assert labels["coords"] == "path"
+
+    def test_str_naming_an_existing_file_is_content(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         target = tmp_path / "coords.txt"
         target.write_text("v1", encoding="utf-8")
@@ -93,7 +122,7 @@ class TestLabelCategories:
             task_def=analyze,
             resolved_args={"coords": str(target), "threads": "4", "scratch": "unused"},
         )
-        assert labels["coords"] == "path"
+        assert labels["coords"] == "content"
 
     def test_file_annotation_is_content(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

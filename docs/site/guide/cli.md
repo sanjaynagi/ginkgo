@@ -262,9 +262,10 @@ ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 task, naming each input's cache-tracking label (`content`, `asset`, `path`,
 `value`, `output`, `untracked` — see
 [Caching and Provenance](caching-and-provenance.md#how-is-each-input-tracked)) alongside
-it, with a `path` label highlighted since it names the silent-staleness trap
-of annotating a path boundary `str` rather than `file`/`folder`. Pass `--json`
-for the same data as JSON.
+it, with a `path` label highlighted: since #307 phase 2 a `str` naming an
+existing *file* is content-tracked by default, so what remains labelled
+`path` is a directory (annotate `folder` to track its contents) or a
+deliberately `untracked` parameter. Pass `--json` for the same data as JSON.
 
 For a task that re-ran, it also names the components of the cache key that
 moved, so the answer is a specific fact rather than "the key changed". The
