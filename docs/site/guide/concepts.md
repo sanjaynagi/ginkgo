@@ -97,10 +97,13 @@ down as a literal path in the flow — costs two things when it is left `str`
 instead of `file`/`folder`: it is cache-keyed on the path string rather than
 the file's contents, so an edit to the file can serve stale results silently
 (see [Cache Correctness](caching-and-provenance.md#cache-correctness)); and,
-when the path is really an upstream task's output, writing it as a repeated
-literal string instead of passing that task's return value creates no
-dependency edge in the graph, so the consumer can run before or concurrently
-with the producer instead of after it.
+when the path is really an upstream task's output declared `Out[...]`,
+writing it as a repeated literal string instead of passing that task's
+return value is fine — Ginkgo matches the literal against every node's
+`Out[...]` paths and infers the edge. It is only a path *computed at
+runtime* from an upstream value (never written down as a literal) that still
+needs to be passed through the graph explicitly: that path cannot be known
+until the run, so nothing static can match it.
 
 `file`/`folder` mean *read*: the path must already exist. A path a task is
 about to *write* — `output_path`, in the corpus's own naming — is the other
