@@ -22,7 +22,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
-from ginkgo.core.types import file, folder
+from ginkgo.core.types import (
+    file,
+    folder,
+    pair_elements_with_annotations,
+    unwrap_optional_annotation,
+)
 from ginkgo.remote.access.protocol import (
     is_fuse_ref,
 )
@@ -131,34 +136,72 @@ def _stage_value(
                 known_digests=known_digests,
             )
 
-    # Recurse into typed containers.
-    origin = get_origin(annotation)
+    # Recurse into typed containers. Arguments reach here already passed
+    # through ``encode_value``, which wraps containers as
+    # ``{"__ginkgo_type__": "list"|"tuple"|"dict", "items": [...]}``; a raw
+    # list/tuple/dict is accepted too for callers that stage unencoded values.
+    container_annotation, _ = unwrap_optional_annotation(annotation)
+    origin = get_origin(container_annotation)
+    encoded_tag = value.get("__ginkgo_type__") if isinstance(value, dict) else None
+
+    if origin in {list, tuple} and encoded_tag in {"list", "tuple"}:
+        return {
+            **value,
+            "items": [
+                _stage_value(
+                    value=item,
+                    annotation=item_annotation,
+                    remote_store=remote_store,
+                    known_digests=known_digests,
+                )
+                for item_annotation, item in pair_elements_with_annotations(
+                    annotation=container_annotation, value=value["items"]
+                )
+            ],
+        }
     if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        inner_args = get_args(annotation)
-        inner_annotation = inner_args[0] if inner_args else Any
         staged_items = [
             _stage_value(
                 value=item,
-                annotation=inner_annotation,
+                annotation=item_annotation,
                 remote_store=remote_store,
                 known_digests=known_digests,
             )
-            for item in value
+            for item_annotation, item in pair_elements_with_annotations(
+                annotation=container_annotation, value=value
+            )
         ]
-        return list(staged_items) if origin is list else tuple(staged_items)
+        return list(staged_items) if isinstance(value, list) else tuple(staged_items)
 
-    if origin is dict and isinstance(value, dict):
-        dict_args = get_args(annotation)
+    if origin is dict:
+        dict_args = get_args(container_annotation)
         value_annotation = dict_args[1] if len(dict_args) == 2 else Any
-        return {
-            key: _stage_value(
-                value=item,
-                annotation=value_annotation,
-                remote_store=remote_store,
-                known_digests=known_digests,
-            )
-            for key, item in value.items()
-        }
+        if encoded_tag == "dict":
+            return {
+                **value,
+                "items": [
+                    {
+                        **entry,
+                        "value": _stage_value(
+                            value=entry["value"],
+                            annotation=value_annotation,
+                            remote_store=remote_store,
+                            known_digests=known_digests,
+                        ),
+                    }
+                    for entry in value["items"]
+                ],
+            }
+        if isinstance(value, dict) and encoded_tag is None:
+            return {
+                key: _stage_value(
+                    value=item,
+                    annotation=value_annotation,
+                    remote_store=remote_store,
+                    known_digests=known_digests,
+                )
+                for key, item in value.items()
+            }
 
     return value
 
