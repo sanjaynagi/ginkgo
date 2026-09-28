@@ -36,7 +36,7 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
-    v: int = 4
+    v: int = 5
     task_id: str = ""
     node_id: int = -1
     """The scheduler node this task is, recorded rather than parsed back out."""
@@ -46,6 +46,9 @@ class GraphNodeRegistered(RunEvent):
     env: str | None = None
     retries: int = 0
     dependency_ids: list[str] = field(default_factory=list)
+    inferred_dependency_ids: list[str] = field(default_factory=list)
+    """The subset of ``dependency_ids`` inferred from ``Out[...]`` paths
+    rather than the ``Expr`` graph (issue #280/#307)."""
     stdout_log: str | None = None
     """Where the task's stdout will be written, relative to the run directory."""
     stderr_log: str | None = None

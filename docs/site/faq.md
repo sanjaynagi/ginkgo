@@ -132,7 +132,10 @@ The dependency comes from the `Expr` you pass, not from the value it will carry.
 A task whose only job is a side effect can return `None`: pass its `Expr` and the
 downstream task both waits for it and receives that `None`. A plain value that is
 not an `Expr` (a literal `None`, say) creates no dependency, because nothing links
-it back to a producing task.
+it back to a producing task — with one exception: a literal path string that
+matches another task's declared `Out[...]` path is matched up and turned into a
+real dependency edge too, even though it is not an `Expr`. See
+[Reads vs. Writes: `file` vs. `Out[file]`](guide/caching-and-provenance.md#reads-vs-writes-file-vs-outfile).
 
 ```python
 @flow
