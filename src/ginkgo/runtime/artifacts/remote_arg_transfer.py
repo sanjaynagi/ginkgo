@@ -19,15 +19,25 @@ executor is in use.
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
-from ginkgo.core.types import file, folder
+from ginkgo.core.types import (
+    annotation_includes,
+    file,
+    folder,
+    pair_elements_with_annotations,
+    unwrap_optional_annotation,
+)
 from ginkgo.remote.access.protocol import (
     is_fuse_ref,
 )
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 from ginkgo.workspace_layout import WorkspaceLayout
+
+if TYPE_CHECKING:
+    from ginkgo.core.task import TaskDef
 
 
 _REMOTE_FILE_TAG = "__ginkgo_remote_file__"
@@ -64,6 +74,7 @@ def stage_args_for_remote(
     type_hints: dict[str, Any],
     remote_store: RemoteArtifactStore,
     known_digests: dict[str, str] | None = None,
+    output_params: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Rewrite ``file`` / ``folder`` arguments into remote-artifact references.
 
@@ -81,10 +92,18 @@ def stage_args_for_remote(
         A hit means the artifact exists locally but says nothing about
         whether it has been published to the remote store yet — the store
         answers that from the artifact's own row.
+    output_params : frozenset[str]
+        Names of ``Out[...]`` parameters. These name paths the task is about
+        to *write*, not read, so nothing exists yet to upload — staging them
+        here would try to hash a file that does not exist. Left untouched;
+        :func:`stage_output_params_for_dispatch` handles them separately.
     """
     known_digests = known_digests or {}
     staged: dict[str, Any] = {}
     for name, value in args.items():
+        if name in output_params:
+            staged[name] = value
+            continue
         annotation = type_hints.get(name, Any)
         staged[name] = _stage_value(
             value=value,
@@ -296,10 +315,177 @@ def _hydrate_reference(
     return wrap(str(dest))
 
 
+def stage_output_params_for_dispatch(
+    *,
+    resolved_args: dict[str, Any],
+    task_def: TaskDef,
+    base_dir: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Rewrite declared ``Out[...]`` paths into worker-local scratch markers.
+
+    Called client side, before dispatch, for a task with ``output_params``
+    when a remote artifact store is configured. A remote worker's filesystem
+    is not assumed to be the driver's: the task's real absolute output paths
+    (e.g. ``/home/user/project/results/x.csv``) would not exist, and could
+    not be created, on the worker. Each declared leaf is instead replaced
+    with a short relative marker; :func:`resolve_output_param_scratch_paths`
+    turns that marker into a real scratch path once the payload reaches the
+    worker.
+
+    Walks *resolved_args* (the task's real, pre-encoding argument values —
+    an ``Out[...]`` value need not be a ``file`` / ``folder`` instance, only
+    a path-like value, so this cannot rely on :func:`encode_value` having
+    tagged it) rather than the already-encoded payload, mirroring
+    ``declared_output_paths``' own annotation-driven traversal.
+
+    Returns ``{name: encoded_value}`` for just the declared output
+    parameters — merge into the worker payload's ``args`` — alongside an
+    ordered manifest of ``{"param", "relative", "original", "kind"}``
+    entries, one per declared output leaf, that travels with the payload as
+    ``output_param_entries`` and is later consumed by
+    :func:`stage_output_param_results` (worker) and
+    :func:`materialize_output_params_from_remote` (driver).
+    """
+    from ginkgo.runtime.artifacts.value_codec import encode_value
+
+    manifest: list[dict[str, str]] = []
+    counter = itertools.count()
+
+    def remap(*, annotation: Any, value: Any, name: str) -> Any:
+        if value is None:
+            return None
+        inner_annotation, _ = unwrap_optional_annotation(annotation)
+        origin = get_origin(inner_annotation)
+        if origin in {list, tuple} and isinstance(value, (list, tuple)):
+            items = [
+                remap(annotation=item_annotation, value=item, name=name)
+                for item_annotation, item in pair_elements_with_annotations(
+                    annotation=inner_annotation, value=value
+                )
+            ]
+            return list(items) if origin is list else tuple(items)
+        if isinstance(value, (list, tuple)):
+            items = [remap(annotation=inner_annotation, value=item, name=name) for item in value]
+            return type(value)(items)
+
+        kind = (
+            "file" if annotation_includes(annotation=inner_annotation, expected=file) else "folder"
+        )
+        original = str(value)
+        relative = f"{next(counter)}-{Path(original).name}"
+        manifest.append({"param": name, "relative": relative, "original": original, "kind": kind})
+        return (file if kind == "file" else folder)(relative)
+
+    encoded: dict[str, Any] = {}
+    for name in sorted(task_def.output_params):
+        if name not in resolved_args:
+            continue
+        annotation = task_def.type_hints.get(name)
+        remapped = remap(annotation=annotation, value=resolved_args[name], name=name)
+        encoded[name] = encode_value(remapped, base_dir=base_dir)
+    return encoded, manifest
+
+
+def resolve_output_param_scratch_paths(
+    *,
+    args: dict[str, Any],
+    entries: list[dict[str, str]],
+    scratch_dir: Path,
+) -> dict[str, Any]:
+    """Turn worker-local output markers into absolute scratch paths.
+
+    Called on the worker, before the task body runs, so the ``Out[...]``
+    parameters it receives are real writable paths under *scratch_dir* —
+    each leaf's parent directory is created here, mirroring the driver's
+    own pre-execution ``Out[...]`` parent-directory creation.
+    """
+    param_names = {entry["param"] for entry in entries}
+    new_args = dict(args)
+    for name in param_names:
+        if name in new_args:
+            new_args[name] = _resolve_scratch_leaves(value=new_args[name], scratch_dir=scratch_dir)
+    return new_args
+
+
+def _resolve_scratch_leaves(*, value: Any, scratch_dir: Path) -> Any:
+    """Recurse through an encoded ``Out[...]`` value, resolving each marker."""
+    if not isinstance(value, dict):
+        return value
+    kind = value.get("__ginkgo_type__")
+    if kind in ("file", "folder"):
+        dest = scratch_dir / value["value"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return {"__ginkgo_type__": kind, "value": str(dest)}
+    if kind in ("list", "tuple"):
+        return {
+            **value,
+            "items": [
+                _resolve_scratch_leaves(value=item, scratch_dir=scratch_dir)
+                for item in value.get("items", [])
+            ],
+        }
+    return value
+
+
+def stage_output_param_results(
+    *,
+    entries: list[dict[str, str]],
+    remote_store: RemoteArtifactStore,
+    scratch_dir: Path,
+) -> list[dict[str, str]]:
+    """Upload each ``Out[...]`` path the task body actually wrote.
+
+    Called on the worker after the task body has run. An entry whose
+    scratch path was not written (missing optional output, or a bug the
+    driver-side ``validate_declared_outputs_written`` check should catch) is
+    silently skipped rather than raised here — the driver runs the same
+    check, by the same name and path, once materialisation leaves it either
+    present or still missing, so the error is reported exactly as it would
+    be for a local task.
+    """
+    staged: list[dict[str, str]] = []
+    for entry in entries:
+        path = scratch_dir / entry["relative"]
+        is_file_kind = entry["kind"] == "file"
+        written = path.is_file() if is_file_kind else (path.exists() and path.is_dir())
+        if not written:
+            continue
+        record = remote_store.store(src_path=path, src_is_readonly=False)
+        staged.append(
+            {
+                "original": entry["original"],
+                "artifact_id": record.artifact_id,
+                "kind": entry["kind"],
+            }
+        )
+    return staged
+
+
+def materialize_output_params_from_remote(
+    *,
+    entries: list[dict[str, str]],
+    remote_store: RemoteArtifactStore,
+) -> None:
+    """Restore each produced ``Out[...]`` output at its declared driver path.
+
+    Called client side once a remote job succeeds, before the task's result
+    is finalised — the post-execution "was it written" check and cache-hit
+    "outputs present" check both stat the declared path directly, so the
+    bytes must already be there. Restores as writable content (not a
+    symlink into the CAS) so a remote task's output is indistinguishable
+    from one a local task wrote directly, and so the artifact store records
+    it as a fresh materialization for future ``--trust-mtimes`` runs.
+    """
+    for entry in entries:
+        dest = Path(entry["original"])
+        remote_store.restore(artifact_id=entry["artifact_id"], dest_path=dest)
+
+
 def stage_result_for_remote(
     *,
     result: Any,
     remote_store: RemoteArtifactStore,
+    output_param_paths: dict[str, str] | None = None,
 ) -> Any:
     """Rewrite file/folder values in an encoded task result into remote refs.
 
@@ -315,29 +501,48 @@ def stage_result_for_remote(
         The ``result`` payload produced by :func:`encode_value`.
     remote_store : RemoteArtifactStore
         Store to upload produced artifacts into.
+    output_param_paths : dict[str, str] | None
+        Worker-local scratch path → original driver path, for every declared
+        ``Out[...]`` leaf (see :func:`stage_output_params_for_dispatch`). A
+        task that returns its own ``Out[...]`` value (explicitly, not just
+        via the inferred-return substitution) would otherwise have that
+        value re-uploaded and materialised a second time, at a fresh
+        artifact-store scratch path rather than the original one —
+        :func:`materialize_output_params_from_remote` already restored it
+        there. A leaf matching one of these paths is pointed straight at
+        its original path instead, exactly as the local (same-filesystem)
+        case already does implicitly.
     """
-    return _stage_encoded_value(value=result, remote_store=remote_store)
+    return _stage_encoded_value(
+        value=result, remote_store=remote_store, output_param_paths=output_param_paths or {}
+    )
 
 
-def _stage_encoded_value(*, value: Any, remote_store: RemoteArtifactStore) -> Any:
+def _stage_encoded_value(
+    *,
+    value: Any,
+    remote_store: RemoteArtifactStore,
+    output_param_paths: dict[str, str] | None = None,
+) -> Any:
     """Walk an encoded value tree, uploading file/folder leaves to remote."""
+    output_param_paths = output_param_paths or {}
     if not isinstance(value, dict):
         return value
 
     kind = value.get("__ginkgo_type__")
-    if kind == "file":
-        return _stage_encoded_path(
-            path_str=value["value"], tag=_REMOTE_FILE_TAG, remote_store=remote_store
-        )
-    if kind == "folder":
-        return _stage_encoded_path(
-            path_str=value["value"], tag=_REMOTE_FOLDER_TAG, remote_store=remote_store
-        )
+    if kind in ("file", "folder"):
+        original = output_param_paths.get(str(Path(value["value"])))
+        if original is not None:
+            return {"__ginkgo_type__": kind, "value": original}
+        tag = _REMOTE_FILE_TAG if kind == "file" else _REMOTE_FOLDER_TAG
+        return _stage_encoded_path(path_str=value["value"], tag=tag, remote_store=remote_store)
     if kind in {"list", "tuple"}:
         return {
             **value,
             "items": [
-                _stage_encoded_value(value=item, remote_store=remote_store)
+                _stage_encoded_value(
+                    value=item, remote_store=remote_store, output_param_paths=output_param_paths
+                )
                 for item in value.get("items", [])
             ],
         }
@@ -346,8 +551,16 @@ def _stage_encoded_value(*, value: Any, remote_store: RemoteArtifactStore) -> An
             **value,
             "items": [
                 {
-                    "key": _stage_encoded_value(value=item["key"], remote_store=remote_store),
-                    "value": _stage_encoded_value(value=item["value"], remote_store=remote_store),
+                    "key": _stage_encoded_value(
+                        value=item["key"],
+                        remote_store=remote_store,
+                        output_param_paths=output_param_paths,
+                    ),
+                    "value": _stage_encoded_value(
+                        value=item["value"],
+                        remote_store=remote_store,
+                        output_param_paths=output_param_paths,
+                    ),
                 }
                 for item in value.get("items", [])
             ],
@@ -355,7 +568,11 @@ def _stage_encoded_value(*, value: Any, remote_store: RemoteArtifactStore) -> An
     if kind == "asset_result":
         return {
             **value,
-            "payload": _stage_encoded_value(value=value["payload"], remote_store=remote_store),
+            "payload": _stage_encoded_value(
+                value=value["payload"],
+                remote_store=remote_store,
+                output_param_paths=output_param_paths,
+            ),
         }
     return value
 

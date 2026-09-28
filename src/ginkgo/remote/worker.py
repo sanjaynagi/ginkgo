@@ -37,10 +37,32 @@ def main() -> None:
         print(json.dumps(error_response(exc)))
         sys.exit(1)
 
+    try:
+        result = run_worker_payload(payload)
+    except Exception as exc:
+        print(json.dumps(error_response(exc)))
+        sys.exit(1)
+
+    # Print the result as a JSON line for the handle to parse.
+    print(json.dumps(result, default=str))
+    sys.exit(0 if result.get("ok", False) else 1)
+
+
+def run_worker_payload(payload: dict) -> dict:
+    """Execute one worker payload dict and return its result dict.
+
+    The pure body of :func:`main`, split out so tests (and in-process fake
+    executors) can drive a remote task end to end — code bundle install,
+    input hydration, the task body, and output publishing — without the
+    ``GINKGO_WORKER_PAYLOAD`` environment variable or process exit calls.
+    """
+    from ginkgo.runtime.worker import error_response
+
     # Remove remote-only keys that the local worker doesn't expect.
     payload.pop("resources", None)
     code_bundle = payload.pop("code_bundle", None)
     remote_artifact_config = payload.pop("remote_artifact_store", None)
+    output_param_entries = payload.pop("output_param_entries", None)
 
     mounted_access = None
     try:
@@ -54,6 +76,11 @@ def main() -> None:
         if remote_artifact_config is not None:
             _hydrate_remote_inputs(payload, config=remote_artifact_config)
 
+        # Turn declared Out[...] markers into real, writable scratch paths
+        # before the task body runs — see stage_output_params_for_dispatch.
+        if output_param_entries:
+            _resolve_output_param_paths(payload, entries=output_param_entries)
+
         # Hydrate fuse-marked inputs by mounting their buckets on the pod.
         mounted_access = _hydrate_fuse_inputs(payload)
 
@@ -65,6 +92,14 @@ def main() -> None:
         if mounted_access is not None and result.get("ok"):
             result["remote_input_access"] = mounted_access.stats().to_dict()
 
+        # Publish declared Out[...] outputs the task body wrote back to the
+        # shared artifact store so the client can restore them at their
+        # declared driver paths.
+        if output_param_entries and result.get("ok") and remote_artifact_config is not None:
+            _stage_output_params(
+                result, entries=output_param_entries, config=remote_artifact_config
+            )
+
         # Publish produced file/folder outputs back to the shared artifact
         # store so the client can hydrate them. Skipped for dynamic results
         # and failures — both contain no encoded file/folder leaves.
@@ -73,15 +108,16 @@ def main() -> None:
             and result.get("ok")
             and result.get("result_encoding") == "encoded"
         ):
-            _stage_remote_outputs(result, config=remote_artifact_config)
+            _stage_remote_outputs(
+                result, config=remote_artifact_config, output_param_entries=output_param_entries
+            )
     except Exception as exc:
         if mounted_access is not None:
             try:
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
-        print(json.dumps(error_response(exc)))
-        sys.exit(1)
+        return error_response(exc)
     finally:
         if mounted_access is not None:
             try:
@@ -89,9 +125,7 @@ def main() -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-    # Print the result as a JSON line for the handle to parse.
-    print(json.dumps(result, default=str))
-    sys.exit(0 if result.get("ok", False) else 1)
+    return result
 
 
 def _install_code_bundle(code_bundle: dict[str, str]):
@@ -129,7 +163,12 @@ def _scratch_root():
     return Path("/tmp")
 
 
-def _stage_remote_outputs(result: dict, *, config: dict[str, str]) -> None:
+def _stage_remote_outputs(
+    result: dict,
+    *,
+    config: dict[str, str],
+    output_param_entries: list[dict[str, str]] | None = None,
+) -> None:
     """Upload encoded file/folder outputs to the shared remote store."""
     from ginkgo.runtime.artifacts.remote_arg_transfer import (
         build_worker_remote_store,
@@ -144,7 +183,51 @@ def _stage_remote_outputs(result: dict, *, config: dict[str, str]) -> None:
         prefix=config["prefix"],
         local_root=local_root,
     )
-    result["result"] = stage_result_for_remote(result=result["result"], remote_store=remote_store)
+    output_param_paths = None
+    if output_param_entries:
+        scratch_dir = root / "ginkgo-outputs"
+        output_param_paths = {
+            str(scratch_dir / entry["relative"]): entry["original"]
+            for entry in output_param_entries
+        }
+    result["result"] = stage_result_for_remote(
+        result=result["result"],
+        remote_store=remote_store,
+        output_param_paths=output_param_paths,
+    )
+
+
+def _resolve_output_param_paths(payload: dict, *, entries: list[dict[str, str]]) -> None:
+    """Rewrite declared ``Out[...]`` markers into absolute pod-local paths."""
+    from ginkgo.runtime.artifacts.remote_arg_transfer import resolve_output_param_scratch_paths
+
+    scratch_dir = _scratch_root() / "ginkgo-outputs"
+    payload["args"] = resolve_output_param_scratch_paths(
+        args=payload.get("args", {}), entries=entries, scratch_dir=scratch_dir
+    )
+
+
+def _stage_output_params(
+    result: dict, *, entries: list[dict[str, str]], config: dict[str, str]
+) -> None:
+    """Upload each declared ``Out[...]`` output the task body wrote."""
+    from ginkgo.runtime.artifacts.remote_arg_transfer import (
+        build_worker_remote_store,
+        stage_output_param_results,
+    )
+
+    root = _scratch_root()
+    local_root = root / "ginkgo-remote-cas"
+    scratch_dir = root / "ginkgo-outputs"
+    remote_store = build_worker_remote_store(
+        scheme=config["scheme"],
+        bucket=config["bucket"],
+        prefix=config["prefix"],
+        local_root=local_root,
+    )
+    result["output_param_results"] = stage_output_param_results(
+        entries=entries, remote_store=remote_store, scratch_dir=scratch_dir
+    )
 
 
 def _hydrate_remote_inputs(payload: dict, *, config: dict[str, str]) -> None:

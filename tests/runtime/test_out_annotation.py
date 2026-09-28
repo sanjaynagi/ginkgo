@@ -93,11 +93,19 @@ class _FakeRemoteExecutor(RemoteExecutor):
 
 
 # ---------------------------------------------------------------------------
-# Remote dispatch is not yet supported for Out[...] parameters
+# Remote dispatch places Out[...] tasks like any other python task
 # ---------------------------------------------------------------------------
 
 
-class TestOutRemoteDispatchRejected:
+class TestOutRemoteDispatchAllowed:
+    """``Out[...]`` no longer blocks remote placement (issue #307 phase 2C).
+
+    Functional remote round-trips (worker-local scratch paths, staging the
+    written output back, restoring it at the driver path) live in
+    ``tests/remote/test_remote_out.py``. These just confirm placement itself
+    is no longer rejected.
+    """
+
     def _evaluator(self) -> ConcurrentEvaluator:
         config = {"remote": {"executors": {"gpu-k8s": {"type": "k8s", "namespace": "ml"}}}}
         registry = ExecutorRegistry.from_config(config, default="gpu-k8s")
@@ -105,15 +113,13 @@ class TestOutRemoteDispatchRejected:
             registry._built[name] = _FakeRemoteExecutor()
         return ConcurrentEvaluator(jobs=1, executor_registry=registry)
 
-    def test_remote_true_with_output_param_is_rejected(self):
+    def test_remote_true_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        with pytest.raises(ValueError, match="Out\\[...\\] parameters are not yet supported"):
-            evaluator._resolve_placement(task_def=remote_with_output)
+        assert evaluator._resolve_placement(task_def=remote_with_output) == "gpu-k8s"
 
-    def test_named_executor_with_output_param_is_rejected(self):
+    def test_named_executor_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        with pytest.raises(ValueError, match="Out\\[...\\] parameters are not yet supported"):
-            evaluator._resolve_placement(task_def=executor_with_output)
+        assert evaluator._resolve_placement(task_def=executor_with_output) == "gpu-k8s"
 
 
 # ---------------------------------------------------------------------------

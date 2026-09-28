@@ -2021,10 +2021,15 @@ class ConcurrentEvaluator:
     def _require_remote_capable_kind(self, *, task_def: TaskDef, reason: str) -> None:
         """Reject remote placement for task kinds the workers cannot run.
 
-        Also rejects any task with ``Out[...]`` parameters: routing an
-        output-writing task to a remote worker would require staging its
-        declared output paths back to the driver, which phase 1 does not
-        yet do.
+        ``Out[...]`` parameters are supported on remote tasks: when a remote
+        artifact store is configured (``[remote.artifacts] store``), declared
+        output paths are rewritten to worker-local scratch paths, staged back
+        through the same channel returned files use, and restored at their
+        declared driver path once the job completes — see
+        ``RemoteDispatchManager.dispatch`` and
+        ``ginkgo.runtime.artifacts.remote_arg_transfer``. Without a configured
+        store, ``Out[...]`` paths are sent to the worker unchanged, which only
+        works when the worker shares the driver's filesystem.
         """
         if task_def.kind != "python":
             declaration = (
@@ -2033,22 +2038,6 @@ class ConcurrentEvaluator:
             raise ValueError(
                 f"{task_def.name} declares {declaration} but remote dispatch "
                 f"only supports python tasks, not kind={task_def.kind!r}"
-            )
-        if task_def.output_params:
-            declaration = (
-                "remote=True"
-                if reason == "remote"
-                else (
-                    f"executor={task_def.executor!r}"
-                    if reason == "executor"
-                    else "exceeding the local --gpus budget"
-                )
-            )
-            raise ValueError(
-                f"{task_def.name} has Out[...] parameters "
-                f"({', '.join(sorted(task_def.output_params))}) but is routed to a "
-                f"remote executor by {declaration}. Out[...] parameters are not yet "
-                "supported for remote tasks."
             )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
