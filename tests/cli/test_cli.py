@@ -673,6 +673,7 @@ class TestCliAssets:
         assert "🌿 ginkgo asset inspect" in inspected.stdout
         assert "Asset Key: file:prepared_data" in inspected.stdout
         assert f"Version: {second_version}" in inspected.stdout
+        assert "Source Path:" in inspected.stdout
         assert "Artifact Path:" in inspected.stdout
 
     def test_asset_lookup_resolves_bare_names_and_reports_unknown_keys(self) -> None:

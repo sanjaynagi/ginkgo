@@ -27,6 +27,11 @@ from ginkgo.core.types import (
     path_binding_remedy,
 )
 
+# Version metadata key holding the path a path-backed asset was declared at
+# (``results/x.fastq.gz``), so user code can render a logical filename rather
+# than the content-addressed blob path it reads from (issue #289).
+ASSET_SOURCE_PATH_METADATA_KEY = "ginkgo_source_path"
+
 AssetKind = Literal["file", "table", "array", "fig", "text", "model"]
 
 # Canonical asset-kind names, derived from the Literal so there is exactly one
@@ -142,6 +147,11 @@ class AssetVersion:
     producer_task: str
     created_at: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def source_path(self) -> str | None:
+        """Return the path the producer declared this asset at, if any."""
+        return _source_path_from(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a YAML-safe mapping."""
@@ -292,6 +302,27 @@ class AssetRef:
     def name(self) -> str:
         """Return the asset name."""
         return self.key.name
+
+    @property
+    def source_path(self) -> str | None:
+        """Return the path the producer declared this asset at, if any.
+
+        ``artifact_path`` is where the bytes live in the artifact store; this
+        is the path the producing task wrote (``results/x.fastq.gz``). It is
+        ``None`` for an in-memory payload, and for versions registered
+        before it was recorded.
+        """
+        return _source_path_from(self.metadata)
+
+    @property
+    def filename(self) -> str | None:
+        """Return the basename of :attr:`source_path`, for user-facing output.
+
+        A tool that echoes its input path reports the blob path it was given;
+        render this instead wherever a reader expects the file's own name.
+        """
+        source_path = self.source_path
+        return None if source_path is None else Path(source_path).name
 
     def as_file(self, *, execution_mode: str | None = None) -> file:
         """Return the artifact path as a ``ginkgo.file`` marker.
@@ -907,6 +938,12 @@ def make_asset_version(
         created_at=datetime.now(UTC).isoformat(),
         metadata=dict(metadata or {}),
     )
+
+
+def _source_path_from(metadata: dict[str, Any]) -> str | None:
+    """Return the recorded declared path from version metadata, if any."""
+    value = metadata.get(ASSET_SOURCE_PATH_METADATA_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 def asset_ref_from_version(*, version: AssetVersion, artifact_path: str | Path) -> AssetRef:

@@ -286,6 +286,23 @@ The path such a kind binds is content-addressed but keeps the artifact's
 file extension (`blobs/<digest>.png`), so a command that switches behaviour
 on the suffix (`.png` versus `.svg`, say) reads it correctly as-is.
 
+The *name* is not kept, though: a tool that echoes its input path into its
+output (`seqkit stats`, `samtools`, `fastqc`, ...) reports the blob path.
+Wherever a reader expects the file's own name, render the one the producer
+declared instead. It is on the asset reference, reachable from a `file`
+parameter as `.asset`:
+
+```python
+@task()
+def label(reads: file) -> str:
+    reads.asset.filename     # "ERR3058522_1.filtered.fastq.gz"
+    reads.asset.source_path  # "results/filtered/ERR3058522_1.filtered.fastq.gz"
+    return str(reads)        # ".ginkgo/artifacts/blobs/<digest>.gz"
+```
+
+Both are `None` for an asset built from an in-memory value, which has no
+path. `ginkgo asset inspect` shows the same `Source Path`.
+
 ### Inspecting Assets
 
 ```bash

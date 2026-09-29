@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ginkgo.core.asset import (
+    ASSET_SOURCE_PATH_METADATA_KEY,
     AssetKey,
     AssetRef,
     AssetResult,
@@ -290,6 +291,13 @@ class AssetRegistrar:
                 extension=serialized.extension,
             )
             version_metadata = _metadata_with_group(metadata=serialized.metadata, result=result)
+
+        # Keep the declared path: consumers read the blob path, and a tool that
+        # echoes it would otherwise leak it into user-facing output (#289).
+        if result.kind == "file" or is_path_backed_payload(
+            kind=result.kind, sub_kind=result.sub_kind, payload=result.payload
+        ):
+            version_metadata[ASSET_SOURCE_PATH_METADATA_KEY] = str(result.payload)
 
         # 2. Verify the stored payload before publishing a catalog version.
         check_outcomes = _check_outcomes(result=result)

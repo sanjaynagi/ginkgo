@@ -2059,3 +2059,81 @@ class TestPathWrappedOutputs:
 
         paths = iter_output_values([fig(png), table(csv, name="raw")])
         assert paths == [png, csv]
+
+
+@task()
+def report_asset_filename(summary: file) -> tuple[str | None, str | None, str]:
+    """Return what a consumer can render instead of the blob path (#289)."""
+    asset_ref = summary.asset
+    assert asset_ref is not None
+    return asset_ref.filename, asset_ref.source_path, Path(summary).name
+
+
+@task()
+def produce_csv_table_asset(output_path: str) -> object:
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("a\n1\n", encoding="utf-8")
+    return table(out, name="csv_table")
+
+
+class TestAssetSourcePath:
+    """#289: an asset remembers the path its producer declared it at."""
+
+    def test_consumer_sees_the_declared_filename_not_the_blob(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        def build() -> Any:
+            return report_asset_filename(
+                summary=produce_file_asset(output_path="results/summary.csv")
+            )
+
+        cold = ginkgo.evaluate(build())
+        warm = ginkgo.evaluate(build())
+
+        filename, source_path, blob_name = cold
+        assert filename == "summary.csv"
+        assert source_path == "results/summary.csv"
+        assert blob_name != "summary.csv"
+        assert tuple(warm) == tuple(cold)
+
+    def test_catalog_version_records_the_source_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(produce_file_asset(output_path="results/summary.csv"))
+        ginkgo.evaluate(produce_csv_table_asset(output_path="results/raw.csv"))
+
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            file_version = catalog.resolve_version(key=AssetKey(namespace="file", name="summary"))
+            table_version = catalog.resolve_version(
+                key=AssetKey(namespace="table", name="csv_table")
+            )
+
+        assert file_version.source_path == "results/summary.csv"
+        assert table_version.source_path == "results/raw.csv"
+
+    def test_in_memory_payloads_have_no_source_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(produce_text_asset())
+
+        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
+            version = catalog.resolve_version(key=AssetKey(namespace="text", name="notes"))
+
+        assert version.source_path is None
+
+    def test_a_ref_without_the_key_has_no_filename(self) -> None:
+        ref = AssetRef(
+            key=AssetKey(namespace="file", name="old"),
+            version_id="v",
+            kind="file",
+            artifact_id="a",
+            content_hash="h",
+            artifact_path="/tmp/blobs/a.csv",
+        )
+        assert ref.source_path is None
+        assert ref.filename is None
