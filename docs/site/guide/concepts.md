@@ -113,6 +113,13 @@ write rather than a read. See
 [Reads vs. Writes: `file` vs. `Out[file]`](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)
 for the full contract.
 
+Edges are matched on literal path strings, so a task that dynamically returns
+a new `Out[...]` producer can only gate readers that have not started yet. A
+reader of that path that already ran or is running is an error naming both
+tasks, since it could not have waited; pass the path through the graph instead.
+The task doing the expanding is exempt: receiving a folder and returning
+children that write inside it is the ordinary fan-out shape.
+
 ## The Runtime Is Local-First
 
 Today, Ginkgo's orchestration logic stays in the local Python process. Graph
