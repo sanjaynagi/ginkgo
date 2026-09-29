@@ -6,7 +6,7 @@ is not content-tracked by the cache and creates no dependency edge.
 
 from __future__ import annotations
 
-from ginkgo import task
+from ginkgo import task, untracked
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import (
     PATH_LIKE_STR_PARAM_CODE,
@@ -23,6 +23,11 @@ def greet(name: str, output_path: str) -> str:
 @task()
 def tidy(threshold: int, input_dir: str) -> str:
     return f"{threshold} {input_dir}"
+
+
+@task()
+def deliberate(output_path: untracked) -> str:
+    return output_path
 
 
 def _task_defs_for(build):
@@ -80,6 +85,16 @@ class TestPathLikeStrParamDiagnostics:
             task_defs=[td for td in task_defs if "tidy" not in td.name]
         )
         assert filtered == []
+
+    def test_no_warning_for_a_path_like_name_annotated_untracked(self) -> None:
+        """``untracked`` is a deliberate opt-out (#307 phase 2), not the
+        silent trap this warning exists to flag — it must never fire for it,
+        even though the parameter name (``output_path``) looks path-like."""
+        task_defs = _task_defs_for(lambda: deliberate(output_path="results/out.txt"))
+
+        diagnostics = path_like_str_param_diagnostics(task_defs=task_defs)
+
+        assert diagnostics == []
 
 
 class TestCollectWorkflowDiagnosticsSurfacesThePathWarning:

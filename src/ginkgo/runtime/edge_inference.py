@@ -35,7 +35,9 @@ from ginkgo.core.types import (
     folder,
     is_path_like,
     pair_elements_with_annotations,
+    is_untracked_annotation,
     tmp_dir,
+    untracked,
     unwrap_optional_annotation,
 )
 from ginkgo.errors import GinkgoError
@@ -241,7 +243,7 @@ def _walk_consumed_value(
             )
         return
 
-    if not is_path_like(value):
+    if not is_path_like(value) or isinstance(value, untracked):
         return
     text = str(value)
     if not text or is_remote_uri(text):
@@ -270,7 +272,8 @@ def collect_consumed_paths(
     """Return every literal path-like value a node's non-output parameters receive.
 
     ``tmp_dir``-annotated parameters are excluded (they name a scratch
-    directory ginkgo manages itself, never another node's output).
+    directory ginkgo manages itself, never another node's output), and so are
+    ``untracked`` ones (the author opted that path out of tracking).
     ``Out[...]`` parameters are excluded — a node never depends on itself for
     a path it writes.
     """
@@ -280,7 +283,9 @@ def collect_consumed_paths(
         if name in output_params or name not in args:
             continue
         annotation = task_def.type_hints.get(name, parameter.annotation)
-        if annotation is tmp_dir:
+        # A scratch directory ginkgo manages, or a path the author declared
+        # ``untracked`` on purpose: neither is a read of another node's output.
+        if annotation is tmp_dir or is_untracked_annotation(annotation):
             continue
         _walk_consumed_value(
             annotation=annotation,

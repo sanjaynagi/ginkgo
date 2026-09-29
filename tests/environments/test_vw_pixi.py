@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import flow, shell, task
+from ginkgo import Out, file, flow, shell, task
 from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.envs.pixi import (
     PixiEnvImportError,
@@ -404,7 +404,7 @@ class TestPixiPyprojectManifest:
 
 
 @task(env=_TEST_ENV_NAME, kind="shell")
-def shell_touch(output_path: str) -> str:
+def shell_touch(output_path: Out[file]) -> file:
     """Shell task: uses the pixi env to create a sentinel file."""
     return shell(
         cmd=f"echo pixi_ran > {output_path}",

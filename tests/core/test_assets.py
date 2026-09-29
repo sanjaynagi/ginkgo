@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 import ginkgo
-from ginkgo import array, asset, fig, file, model, table, task, text
+from ginkgo import array, asset, fig, file, model, table, task, text, untracked
 from ginkgo.core.asset import AssetKey, AssetRef, AssetResult
 from ginkgo.runtime.artifacts.asset_serialization import (
     AssetSerializationError,
@@ -652,7 +652,7 @@ def make_noisy_model_task() -> object:
 
 
 @task()
-def noisy_model_consumer_task(upstream: object, log_path: str) -> int:
+def noisy_model_consumer_task(upstream: object, log_path: untracked) -> int:
     assert isinstance(upstream, NoisyModel)
     assert upstream.value == 7
     with open(log_path, "a", encoding="utf-8") as fh:

@@ -16,6 +16,7 @@ import pytest
 from ginkgo import (
     AssetRef,
     NotebookDirective,
+    Out,
     ScriptDirective,
     SubWorkflowDirective,
     asset,
@@ -28,6 +29,7 @@ from ginkgo import (
     shell,
     task,
     tmp_dir,
+    untracked,
 )
 from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.runtime.backend import LocalEnvironment
@@ -126,7 +128,7 @@ def notebook_ipynb_task(*, notebook_path: str, value: int) -> Path:
 
 
 @task("notebook")
-def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: str) -> Path:
+def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: Out[file]) -> Path:
     """Run an ipynb notebook that declares an output file."""
     return notebook(notebook_path, output=output_path)
 
@@ -161,7 +163,7 @@ def add_one_task(x: int) -> int:
 
 
 @task()
-def logged_work_task(x: int, log_path: str) -> int:
+def logged_work_task(x: int, log_path: untracked) -> int:
     append_line(log_path, f"work:{x}")
     return x + 1
 
@@ -177,7 +179,7 @@ def sum_keyword_pair_task(*, left: int, right: int) -> int:
 
 
 @task(retries=2)
-def flaky_retry_task(marker_path: str, log_path: str) -> str:
+def flaky_retry_task(marker_path: untracked, log_path: untracked) -> str:
     append_line(log_path, "attempt")
     marker = Path(marker_path)
     failures = int(marker.read_text(encoding="utf-8")) if marker.exists() else 0
@@ -188,37 +190,37 @@ def flaky_retry_task(marker_path: str, log_path: str) -> str:
 
 
 @task(retries=2)
-def always_fail_retry_task(log_path: str) -> str:
+def always_fail_retry_task(log_path: untracked) -> str:
     append_line(log_path, "attempt")
     raise RuntimeError("still broken")
 
 
 @task()
-def always_fail_once_task(log_path: str) -> str:
+def always_fail_once_task(log_path: untracked) -> str:
     append_line(log_path, "attempt")
     raise RuntimeError("no retry configured")
 
 
 @task(on_failure="ignore")
-def ignored_failure_task(log_path: str) -> int:
+def ignored_failure_task(log_path: untracked) -> int:
     append_line(log_path, "ignored-attempt")
     raise RuntimeError("bad input")
 
 
 @task(on_failure="ignore", retries=2)
-def ignored_failure_with_retries_task(log_path: str) -> int:
+def ignored_failure_with_retries_task(log_path: untracked) -> int:
     append_line(log_path, "attempt")
     raise RuntimeError("still broken")
 
 
 @task()
-def double_task(value: int, log_path: str) -> int:
+def double_task(value: int, log_path: untracked) -> int:
     append_line(log_path, f"double:{value}")
     return value * 2
 
 
 @task()
-def expand_into_a_failure_task(log_path: str) -> object:
+def expand_into_a_failure_task(log_path: untracked) -> object:
     append_line(log_path, "expanded")
     return [
         logged_work_task(x=1, log_path=log_path),
@@ -227,14 +229,14 @@ def expand_into_a_failure_task(log_path: str) -> object:
 
 
 @task()
-def fatal_failure_marker_task(marker_path: str, log_path: str) -> int:
+def fatal_failure_marker_task(marker_path: untracked, log_path: untracked) -> int:
     append_line(log_path, "fatal")
     Path(marker_path).write_text("failed", encoding="utf-8")
     raise RuntimeError("fatal boom")
 
 
 @task(on_failure="ignore")
-def ignored_failure_after_marker_task(marker_path: str, log_path: str) -> int:
+def ignored_failure_after_marker_task(marker_path: untracked, log_path: untracked) -> int:
     import time as _time
 
     for _ in range(1000):
@@ -246,13 +248,13 @@ def ignored_failure_after_marker_task(marker_path: str, log_path: str) -> int:
 
 
 @task()
-def join_pair_task(left: int, right: int, log_path: str) -> int:
+def join_pair_task(left: int, right: int, log_path: untracked) -> int:
     append_line(log_path, "joined")
     return left + right
 
 
 @task(retries=2, retry_on=IOError)
-def retry_only_ioerror_task(log_path: str, kind: str) -> str:
+def retry_only_ioerror_task(log_path: untracked, kind: str) -> str:
     append_line(log_path, "attempt")
     if kind == "ioerror":
         raise IOError("transient io")
@@ -260,7 +262,7 @@ def retry_only_ioerror_task(log_path: str, kind: str) -> str:
 
 
 @task(retries=3, retry_backoff=0.05, retry_backoff_multiplier=2.0)
-def flaky_with_backoff_task(marker_path: str, log_path: str) -> str:
+def flaky_with_backoff_task(marker_path: untracked, log_path: untracked) -> str:
     import time as _time
 
     append_line(log_path, f"attempt:{_time.monotonic():.6f}")
@@ -273,7 +275,9 @@ def flaky_with_backoff_task(marker_path: str, log_path: str) -> str:
 
 
 @task(kind="shell", retries=2, retry_on_exit_codes=(7,))
-def shell_retry_on_exit_code_task(marker_path: str, output_path: str, log_path: str) -> file:
+def shell_retry_on_exit_code_task(
+    marker_path: untracked, output_path: str, log_path: untracked
+) -> file:
     return shell(
         cmd=(
             f"if [ ! -f {marker_path} ]; then "
@@ -287,17 +291,17 @@ def shell_retry_on_exit_code_task(marker_path: str, output_path: str, log_path: 
 
 
 @task(kind="shell", retries=2, retry_on_exit_codes=(137,))
-def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: str) -> file:
+def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: untracked) -> file:
     return shell(cmd="exit 7", output=output_path, log=log_path)
 
 
 @task(kind="shell", env="test_env")
-def shell_env_write_output_task(output_path: str) -> file:
+def shell_env_write_output_task(output_path: Out[file]) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
 
 
 @task(kind="shell")
-def shell_write_output_task(output_path: str, log_path: str) -> file:
+def shell_write_output_task(output_path: str, log_path: untracked) -> file:
     return shell(
         cmd=(
             "printf 'captured stdout\\n'; "
@@ -316,9 +320,9 @@ def shell_missing_output_task(output_path: str) -> file:
 
 @task(kind="shell")
 def shell_write_multiple_outputs_task(
-    output_one: str,
-    output_two: str,
-    marker_path: str,
+    output_one: Out[file],
+    output_two: Out[file],
+    marker_path: untracked,
 ) -> tuple[file, file]:
     return shell(
         cmd=(
@@ -347,7 +351,7 @@ def shell_missing_multiple_outputs_task(output_one: str, output_two: str) -> tup
 
 
 @task(kind="shell", retries=2)
-def flaky_shell_task(marker_path: str, output_path: str, log_path: str) -> file:
+def flaky_shell_task(marker_path: untracked, output_path: str, log_path: untracked) -> file:
     return shell(
         cmd=(
             f"if [ ! -f {marker_path} ]; then "
@@ -438,7 +442,7 @@ def sum_array_task(values: object) -> int:
 
 
 @task()
-def dataframe_task(log_path: str, start: int) -> object:
+def dataframe_task(log_path: untracked, start: int) -> object:
     append_line(log_path, f"df:{start}")
     return pd.DataFrame({"sample": [start, start + 1], "value": [start * 2, start * 2 + 1]})
 
@@ -454,7 +458,7 @@ def passthrough_task(value: object | None = None) -> object:
 
 
 @task()
-def reveal_secret_task(secret_value: str, output_path: str) -> file:
+def reveal_secret_task(secret_value: str, output_path: Out[file]) -> file:
     print(f"stdout:{secret_value}")
     print(f"stderr:{secret_value}", file=sys.stderr)
     Path(output_path).write_text(secret_value, encoding="utf-8")
@@ -468,13 +472,13 @@ def fail_with_secret_task(secret_value: str) -> str:
 
 
 @task()
-def write_asset_task(output_path: str, text: str = "payload") -> file:
+def write_asset_task(output_path: untracked, text: str = "payload") -> file:
     Path(output_path).write_text(text, encoding="utf-8")
     return asset(output_path, name="prepared_data")
 
 
 @task()
-def transform_asset_task(source: object, output_path: str) -> file:
+def transform_asset_task(source: object, output_path: untracked) -> file:
     assert isinstance(source, AssetRef)
     payload = Path(source.artifact_path).read_text(encoding="utf-8").upper()
     Path(output_path).write_text(payload, encoding="utf-8")
@@ -482,7 +486,7 @@ def transform_asset_task(source: object, output_path: str) -> file:
 
 
 @task()
-def read_asset_task(source: object, log_path: str) -> str:
+def read_asset_task(source: object, log_path: untracked) -> str:
     assert isinstance(source, AssetRef)
     Path(log_path).write_text(source.version_id, encoding="utf-8")
     return Path(source.artifact_path).read_text(encoding="utf-8")

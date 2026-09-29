@@ -6,7 +6,15 @@ from typing import Optional
 
 import pytest
 
-from ginkgo.core.types import file, folder, is_str_path_annotation, looks_path_like_param_name
+from ginkgo.core.types import (
+    file,
+    folder,
+    is_str_path_annotation,
+    is_untracked_annotation,
+    looks_like_path_string,
+    looks_path_like_param_name,
+    untracked,
+)
 
 
 class TestLooksPathLikeParamName:
@@ -77,3 +85,44 @@ class TestIsStrPathAnnotation:
     )
     def test_other_shapes_do_not_match(self, annotation: object) -> None:
         assert is_str_path_annotation(annotation) is False
+
+    def test_untracked_does_not_match(self) -> None:
+        """``untracked`` is a ``str`` subclass but not ``str`` itself, so the
+        doctor's ``path_like_str_param`` check — built on this predicate —
+        must never fire for a deliberately opted-out parameter (#307 phase 2)."""
+        assert is_str_path_annotation(untracked) is False
+
+    def test_untracked_container_shapes_do_not_match(self) -> None:
+        assert is_str_path_annotation(list[untracked]) is False
+        assert is_str_path_annotation(untracked | None) is False
+
+
+class TestIsUntrackedAnnotation:
+    def test_bare_untracked_matches(self) -> None:
+        assert is_untracked_annotation(untracked) is True
+
+    def test_composed_shapes_match(self) -> None:
+        assert is_untracked_annotation(list[untracked]) is True
+        assert is_untracked_annotation(tuple[untracked, ...]) is True
+        assert is_untracked_annotation(untracked | None) is True
+
+    def test_unrelated_annotations_do_not_match(self) -> None:
+        assert is_untracked_annotation(str) is False
+        assert is_untracked_annotation(file) is False
+        assert is_untracked_annotation(list[str]) is False
+
+
+class TestLooksLikePathString:
+    """The #307 phase 2 eligibility rule's textual half: a separator or a
+    file extension, so a bare word never qualifies."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["data/counts.tsv", "./x", "../y", "counts.tsv", "a.b.c", "/abs/path"],
+    )
+    def test_separator_or_extension_matches(self, text: str) -> None:
+        assert looks_like_path_string(text) is True
+
+    @pytest.mark.parametrize("text", ["alpha", "results", "north", ""])
+    def test_bare_word_does_not_match(self, text: str) -> None:
+        assert looks_like_path_string(text) is False

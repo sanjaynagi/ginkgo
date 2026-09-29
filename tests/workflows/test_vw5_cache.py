@@ -3,18 +3,18 @@
 from collections import Counter
 from pathlib import Path
 
-from ginkgo import evaluate, flow, task
+from ginkgo import evaluate, flow, task, untracked
 from tests._vw_support import append_line
 
 
 @task()
-def process(item: str, multiplier: int, log_path: str) -> str:
+def process(item: str, multiplier: int, log_path: untracked) -> str:
     append_line(log_path, f"process:{item}")
     return item * multiplier
 
 
 @task()
-def merge(results: list[str], log_path: str) -> str:
+def merge(results: list[str], log_path: untracked) -> str:
     append_line(log_path, "merge")
     return ",".join(sorted(results))
 

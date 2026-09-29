@@ -21,6 +21,7 @@ from ginkgo.core.types import (
     file,
     folder,
     is_path_shaped_annotation,
+    is_untracked_annotation,
     pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
@@ -29,7 +30,11 @@ from ginkgo.core.types import (
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
-from ginkgo.runtime.task_validation import label_input_value
+from ginkgo.runtime.task_validation import (
+    is_content_trackable_path_shape,
+    is_content_trackable_path_value,
+    label_input_value,
+)
 from ginkgo.core.hashing import hash_bytes, hash_directory, hash_file, hash_str
 from ginkgo.formatting import now_iso
 from ginkgo.runtime.caching.index import CacheIndex
@@ -814,6 +819,45 @@ class CacheStore:
 
         return current == recorded
 
+    def content_tracked_input_digests(
+        self, *, task_def: TaskDef, resolved_args: dict[str, Any]
+    ) -> dict[str, str | None]:
+        """Return ``{resolved path: digest}`` for plain-``str`` path inputs.
+
+        Covers the inputs the root-input rule content-hashes in
+        :meth:`build_cache_key` (not ``file``/``folder`` inputs, which a task
+        is not expected to write), plus the ones that would be hashed if
+        their file existed, recorded with ``None`` so a task creating the
+        file is noticed too. Digests come from the same memoised hashing, so
+        taking them right after the key costs no extra reads.
+        """
+        digests: dict[str, str | None] = {}
+        for name, parameter in task_def.signature.parameters.items():
+            if name in task_def.output_params or name not in resolved_args:
+                continue
+            annotation = task_def.type_hints.get(name, parameter.annotation)
+            if annotation is tmp_dir:
+                continue
+            for path in _content_trackable_paths(annotation=annotation, value=resolved_args[name]):
+                resolved = str(Path(path).resolve())
+                if resolved in digests:
+                    continue
+                candidate = Path(resolved)
+                digests[resolved] = (
+                    self._hash_file_contents(candidate) if candidate.is_file() else None
+                )
+        return digests
+
+    def written_inputs(self, *, before: dict[str, str | None]) -> set[str]:
+        """Return the paths in *before* the task created, changed or removed."""
+        written: set[str] = set()
+        for path, digest in before.items():
+            candidate = Path(path)
+            after = self._hash_file_contents(candidate) if candidate.is_file() else None
+            if after != digest:
+                written.add(path)
+        return written
+
     def _hash_value(
         self,
         *,
@@ -839,7 +883,9 @@ class CacheStore:
         if value is None and admits_none:
             return {"type": "absent"}
         if is_output:
-            return self._hash_output_leaf(value=value)
+            return self._hash_path_string_leaf(value=value)
+        if is_untracked_annotation(annotation):
+            return self._hash_path_string_leaf(value=value)
         if isinstance(value, AssetRef):
             if annotation_includes(annotation=annotation, expected=file):
                 return {"sha256": value.content_hash, "type": "file"}
@@ -983,6 +1029,23 @@ class CacheStore:
                 "type": "dict",
             }
 
+        # Root-input path hashing (#307 phase 2, closes #121/#281): a value
+        # that is not ``Out[...]``, not ``tmp_dir``/``untracked``, and not
+        # already annotated ``file``/``folder`` (those branches above already
+        # handled it) is nonetheless content-hashed, like a ``file`` input,
+        # when it is a str/PathLike naming an existing *regular file* that
+        # reads as a path — see ``is_content_trackable_path_value`` for the
+        # exact eligibility rule. A directory never qualifies here; it falls
+        # through to the plain scalar branch below, keyed by its path string,
+        # same as before this feature.
+        if is_content_trackable_path_value(annotation=annotation, value=value):
+            resolved_key = str(Path(str(value)).resolve())
+            if known_digests is not None:
+                known = known_digests.get(resolved_key)
+                if known is not None:
+                    return {"sha256": known, "type": "file"}
+            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+
         if value is None or isinstance(value, (bool, int, float, str)):
             return {
                 "sha256": hash_str(repr(value)),
@@ -996,17 +1059,19 @@ class CacheStore:
             "type": f"{type(value).__module__}.{type(value).__name__}",
         }
 
-    def _hash_output_leaf(self, *, value: Any) -> Any:
-        """Hash an ``Out[...]`` value as a plain path string, recursively.
+    def _hash_path_string_leaf(self, *, value: Any) -> Any:
+        """Hash a value as a plain path string only, recursively.
 
         Mirrors the plain-scalar branch of :meth:`_hash_value` exactly (same
-        ``repr``-based digest), so an output parameter's cache-key
-        contribution changes only when its declared path changes, never
-        when the file or directory at that path does.
+        ``repr``-based digest), so it contributes to the cache key only when
+        the declared path itself changes, never when the file or directory
+        at that path does. Used for an ``Out[...]`` parameter (the path
+        names what the task is about to write) and for an ``untracked``-
+        annotated parameter (a deliberate opt-out of content tracking).
         """
         if isinstance(value, (list, tuple)):
             return {
-                "items": [self._hash_output_leaf(value=item) for item in value],
+                "items": [self._hash_path_string_leaf(value=item) for item in value],
                 "type": type(value).__name__,
             }
         return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
@@ -1109,12 +1174,15 @@ class CacheStore:
         """Build a stat-based representation for a value (no content reading).
 
         An ``Out[...]`` parameter (``is_output``) is never stat'd — like the
-        content-addressed key, it contributes its path string only.
+        content-addressed key, it contributes its path string only. Same for
+        an ``untracked``-annotated parameter.
         """
         if annotation is tmp_dir:
             return None
         if is_output:
-            return self._hash_output_leaf(value=value)
+            return self._hash_path_string_leaf(value=value)
+        if is_untracked_annotation(annotation):
+            return self._hash_path_string_leaf(value=value)
 
         if isinstance(value, RemoteRef):
             if value.version_id is None:
@@ -1192,6 +1260,15 @@ class CacheStore:
                 return {"fingerprint": hash_str("\n".join(parts)), "type": "folder"}
             return {"type": "folder", "missing": True}
 
+        # Root-input path stat fingerprint (#307 phase 2), mirroring the
+        # ``file``/``folder`` branches above rather than reading content: a
+        # value eligible for root-input content hashing under the normal key
+        # (see ``is_content_trackable_path_value``) is fingerprinted by stat,
+        # not by digest, so ``--trust-mtimes`` stays a fast surrogate.
+        if is_content_trackable_path_value(annotation=annotation, value=value):
+            st = Path(str(value)).resolve().stat()
+            return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
+
         # For non-path types, use the same hash as the content-addressed path.
         return self._hash_value(annotation=annotation, value=value, label=label)
 
@@ -1201,3 +1278,34 @@ class CacheStore:
         if len(args) == 2:
             return args[0], args[1]
         return Any, Any
+
+
+def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
+    """Return the path strings in *value* the root-input rule would content-hash.
+
+    Walks lists, tuples and dict values the way :meth:`CacheStore._hash_value`
+    does, pairing each element with its own annotation. Includes paths whose
+    file does not exist yet, so a task that creates one can be noticed.
+    """
+    annotation, _ = unwrap_optional_annotation(annotation)
+    if isinstance(value, (list, tuple)):
+        if get_origin(annotation) in {list, tuple}:
+            pairs = pair_elements_with_annotations(annotation=annotation, value=value)
+        else:
+            pairs = [(Any, item) for item in value]
+        return [
+            path
+            for item_annotation, item in pairs
+            for path in _content_trackable_paths(annotation=item_annotation, value=item)
+        ]
+    if isinstance(value, dict):
+        dict_args = get_args(annotation) if get_origin(annotation) is dict else ()
+        value_annotation = dict_args[1] if len(dict_args) == 2 else Any
+        return [
+            path
+            for item in value.values()
+            for path in _content_trackable_paths(annotation=value_annotation, value=item)
+        ]
+    if is_content_trackable_path_shape(annotation=annotation, value=value):
+        return [str(value)]
+    return []

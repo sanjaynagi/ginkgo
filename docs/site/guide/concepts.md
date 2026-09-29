@@ -89,21 +89,30 @@ Ginkgo uses a few special path-oriented annotations to define runtime behavior:
 - `file`
 - `folder`
 - `tmp_dir`
+- `untracked`
 - `Out[file]` / `Out[folder]`
 
 These types influence validation, hashing, artifact handling, and scratch-space
-lifecycle. A path a task reads — whether produced by another task or written
-down as a literal path in the flow — costs two things when it is left `str`
-instead of `file`/`folder`: it is cache-keyed on the path string rather than
-the file's contents, so an edit to the file can serve stale results silently
-(see [Cache Correctness](caching-and-provenance.md#cache-correctness)); and,
-when the path is really an upstream task's output declared `Out[...]`,
-writing it as a repeated literal string instead of passing that task's
-return value is fine — Ginkgo matches the literal against every node's
-`Out[...]` paths and infers the edge. It is only a path *computed at
-runtime* from an upstream value (never written down as a literal) that still
-needs to be passed through the graph explicitly: that path cannot be known
-until the run, so nothing static can match it.
+lifecycle. `file`/`folder` are still the clearer, type-checked choice, but
+leaving a path a task reads as plain `str` is no longer a correctness trap:
+
+- **Contents.** A `str` value that names an existing *file* and reads as a
+  path (a separator or a file extension) is content-hashed by default, same
+  as `file`. A *directory* named by `str` is never auto-hashed (hashing a
+  whole tree as a side effect of a scalar would be a surprise), so it still
+  needs `folder` — see
+  [Cache Correctness](caching-and-provenance.md#cache-correctness) for the
+  exact rule. A file the task itself writes through a `str` path, such as a
+  log it appends to, would invalidate the task on every run, so Ginkgo
+  flags it with a notice: annotate it `Out[file]`, or `untracked`.
+- **Ordering.** A literal path that matches another task's `Out[...]` path
+  gets an inferred dependency edge, so the consumer waits for the producer.
+  Only a path *computed at runtime* from an upstream value (never written
+  down as a literal) still needs to be passed through the graph explicitly:
+  it cannot be known until the run, so nothing static can match it.
+
+`untracked` is the explicit way to keep a path keyed by its string only, on
+purpose; it is also left out of edge inference.
 
 `file`/`folder` mean *read*: the path must already exist. A path a task is
 about to *write* — `output_path`, in the corpus's own naming — is the other

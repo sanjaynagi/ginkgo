@@ -120,7 +120,7 @@ from ginkgo.runtime.task_validation import (
     TaskValidator,
     contains_dynamic_expression,
     declared_output_paths,
-    is_untracked_path_value,
+    is_untracked_directory_value,
 )
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
@@ -338,6 +338,7 @@ class NodeRun:
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     input_labels: dict[str, str] | None = None
+    content_input_digests: dict[str, str | None] | None = None
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
@@ -1430,6 +1431,7 @@ class ConcurrentEvaluator:
         node.cache_key = None
         node.input_hashes = None
         node.input_labels = None
+        node.content_input_digests = None
         node.threads = 1
         node.memory_gb = 0
         node.gpu = 0
@@ -1469,6 +1471,7 @@ class ConcurrentEvaluator:
         extra_meta: dict[str, Any] | None = None
         if node.notebook_extras is not None:
             extra_meta = {"notebook_extras": node.notebook_extras}
+        self._warn_on_written_str_inputs(node=node)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,
@@ -2139,6 +2142,32 @@ class ConcurrentEvaluator:
             )
         )
 
+    def _warn_on_written_str_inputs(self, *, node: NodeRun) -> None:
+        """Warn when a task wrote a file it received as a plain ``str`` path.
+
+        That path is content-hashed as an input, so the task invalidates its
+        own cache entry and re-runs on every run until it is re-annotated.
+        """
+        written = self._node_cache.written_str_inputs(node=node)
+        if not written:
+            return
+        paths = ", ".join(written)
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=(
+                    f"wrote {paths}, which it received as a plain `str` path, so the "
+                    "file is tracked as an input and this task will re-run every time. "
+                    "Annotate that parameter `Out[file]` if the task writes it, or "
+                    "`untracked` to key it by its path only."
+                ),
+            )
+        )
+
     def effective_resources(self, *, task_def: TaskDef) -> Resources:
         """Return the task's declared resources with site overrides applied.
 
@@ -2394,14 +2423,18 @@ class ConcurrentEvaluator:
         node: NodeRun,
         resolved_args: dict[str, Any],
     ) -> None:
-        """Warn when a path crosses a task boundary without content tracking.
+        """Warn when a directory crosses a task boundary without content tracking.
 
         Fires only for arguments resolved from an upstream expression in this
-        graph: those are the ones where the producer can rewrite the file while
-        the consumer's cache key, built from the path string alone, stays put.
-        Deduplicated per producer/consumer/parameter so fan-out branches report
-        once. Runs before the cache-hit branch so the warning appears on the
-        run that serves the stale result.
+        graph: those are the ones where the producer can rewrite the
+        directory's contents while the consumer's cache key, built from the
+        path string alone, stays put. Narrowed to directories since #307
+        phase 2: a same-shaped upstream *file* path is now content-hashed by
+        default (``CacheStore._hash_value``'s root-input rule), so warning
+        about it would describe something that no longer happens. Deduplicated
+        per producer/consumer/parameter so fan-out branches report once. Runs
+        before the cache-hit branch so the warning appears on the run that
+        serves the stale result.
         """
         for name, unresolved in node.expr.args.items():
             self._scan_untracked_path_argument(
@@ -2467,7 +2500,7 @@ class ConcurrentEvaluator:
         warning_key = (producer, node.task_def.name, parameter)
         if warning_key in self._untracked_path_warnings:
             return
-        if not is_untracked_path_value(annotation=annotation, value=resolved):
+        if not is_untracked_directory_value(annotation=annotation, value=resolved):
             return
         self._untracked_path_warnings.add(warning_key)
 
@@ -2480,9 +2513,10 @@ class ConcurrentEvaluator:
                 attempt=node.attempt,
                 display_label=node.display_label,
                 message=(
-                    f"{producer_base} returns a path as 'str', so '{parameter}' is cached on the "
-                    "path only and content changes will not invalidate this task. Annotate "
-                    f"{producer_base}'s return '-> file' and '{parameter}: file'."
+                    f"{producer_base} returns a path to a directory as 'str', so '{parameter}' "
+                    "is cached on the path only and content changes will not invalidate this "
+                    f"task. Annotate {producer_base}'s return '-> folder' and "
+                    f"'{parameter}: folder'."
                 ),
             )
         )
