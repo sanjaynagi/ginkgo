@@ -36,6 +36,16 @@ from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_re
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 
 
+def _normalized(path: Any) -> str:
+    """Normalise a path value the same way :mod:`edge_inference` does.
+
+    Kept local (rather than importing ``edge_inference``) to avoid a cycle:
+    ``edge_inference`` itself imports ``contains_dynamic_expression`` from
+    this module.
+    """
+    return os.path.normpath(os.path.abspath(str(path)))
+
+
 def is_path_annotation(annotation: Any) -> bool:
     """Return whether an annotation is a pathlib path type."""
     return isinstance(annotation, type) and issubclass(annotation, Path)
@@ -459,8 +469,20 @@ class TaskValidator:
                 label=f"{task_def.name}.{name}",
             )
 
-    def validate_static_inputs(self, *, node: Any) -> None:
-        """Validate literal-only task inputs during dry-run mode."""
+    def validate_static_inputs(
+        self, *, node: Any, produced_paths: frozenset[str] | set[str] = frozenset()
+    ) -> None:
+        """Validate literal-only task inputs during dry-run mode.
+
+        Parameters
+        ----------
+        produced_paths : frozenset[str] | set[str]
+            Every ``Out[...]`` path declared anywhere in this dry-run's graph
+            (normalised the same way edge inference does). A ``file``/
+            ``folder`` input that does not exist yet is normally rejected
+            here, but not when its path is one of these — a real run would
+            produce it first, since an edge was inferred for it (#280).
+        """
         for name, parameter in node.task_def.signature.parameters.items():
             annotation = node.task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in node.expr.args:
@@ -482,6 +504,7 @@ class TaskValidator:
                 value=value,
                 label=f"{node.task_def.name}.{name}",
                 execution_mode=node.task_def.execution_mode,
+                produced_paths=produced_paths,
             )
 
     def validate_task_importable(self, *, task_def: TaskDef) -> None:
@@ -667,12 +690,16 @@ class TaskValidator:
         value: Any,
         label: str,
         execution_mode: str | None = None,
+        produced_paths: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         """Validate a value for direct and container-wrapped Ginkgo types.
 
         ``execution_mode`` is the consuming task's ``TaskDef.execution_mode``,
         carried through so a kind/path mismatch can offer the remedies that
-        work for that kind of task.
+        work for that kind of task. ``produced_paths`` is forwarded to the
+        existence check only (see :meth:`validate_static_inputs`); real
+        execution never passes it, since by dispatch time the producer has
+        actually run and the path either exists or the task fails honestly.
         """
         if annotation in {None, Any}:
             return
@@ -700,6 +727,7 @@ class TaskValidator:
                     value=item,
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
+                    produced_paths=produced_paths,
                 )
             return
 
@@ -710,6 +738,7 @@ class TaskValidator:
                     value=item,
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
+                    produced_paths=produced_paths,
                 )
             return
 
@@ -738,7 +767,8 @@ class TaskValidator:
                 label=label,
                 execution_mode=execution_mode,
             )
-            self._validate_file_path(path=value, label=label)
+            if _normalized(value) not in produced_paths:
+                self._validate_file_path(path=value, label=label)
             return
 
         if annotation is folder:
@@ -750,7 +780,8 @@ class TaskValidator:
                 label=label,
                 execution_mode=execution_mode,
             )
-            self._validate_folder_path(path=value, label=label)
+            if _normalized(value) not in produced_paths:
+                self._validate_folder_path(path=value, label=label)
             return
 
         if annotation is tmp_dir:

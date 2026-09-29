@@ -5,6 +5,9 @@
   "env": "analysis",
   "event": "graph_node_registered",
   "execution_mode": "python",
+  "inferred_dependency_ids": [
+    "task_0001"
+  ],
   "kind": "python",
   "node_id": 7,
   "retries": 2,
@@ -14,5 +17,5 @@
   "task_id": "task_0007",
   "task_name": "analysis.fit",
   "ts": "2026-08-28T09:00:00+00:00",
-  "v": 4
+  "v": 5
 }

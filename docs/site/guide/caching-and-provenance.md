@@ -133,8 +133,16 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   `Out[folder]` only the *parent* is created, not the folder itself — tools
   differ on whether they want the target directory to already exist.
 
-`Out[...]` does not (yet) infer a dependency edge to a downstream consumer of
-the same path — that is tracked separately.
+A literal path elsewhere in the graph that matches an `Out[...]` path is now
+also a real dependency edge: if another task's argument is the same path
+string (or a path inside a produced `Out[folder]`, or a `folder`-annotated
+argument containing a produced path), Ginkgo infers that it must run after
+the task that writes it — no `.output[...]` reference or return value needed.
+Two tasks declaring the same (or an overlapping) `Out[...]` path is a clear
+error before anything runs. A path only *computed* at runtime, from an
+upstream value rather than written down as a literal string, still needs to
+be passed through the graph (the producer's return value or an
+`.output[...]` reference) — that is not inferable from a static argument.
 
 ### Inferring the return from `Out[...]`
 

@@ -69,6 +69,7 @@ def _events() -> list[GinkgoEvent]:
             env="analysis",
             retries=2,
             dependency_ids=["task_0001"],
+            inferred_dependency_ids=["task_0001"],
             stdout_log="logs/task_0007_analysis_fit.stdout.log",
             stderr_log="logs/task_0007_analysis_fit.stderr.log",
         ),
