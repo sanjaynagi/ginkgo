@@ -19,14 +19,15 @@ executor is in use.
 
 from __future__ import annotations
 
+from collections import abc
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 from ginkgo.core.types import (
     file,
     folder,
     pair_elements_with_annotations,
-    unwrap_optional_annotation,
 )
 from ginkgo.remote.access.protocol import (
     is_fuse_ref,
@@ -140,70 +141,82 @@ def _stage_value(
     # through ``encode_value``, which wraps containers as
     # ``{"__ginkgo_type__": "list"|"tuple"|"dict", "items": [...]}``; a raw
     # list/tuple/dict is accepted too for callers that stage unencoded values.
-    container_annotation, _ = unwrap_optional_annotation(annotation)
-    origin = get_origin(container_annotation)
     encoded_tag = value.get("__ginkgo_type__") if isinstance(value, dict) else None
+    if encoded_tag in {"list", "tuple", "dict"}:
+        shape = "dict" if encoded_tag == "dict" else "sequence"
+    elif isinstance(value, (list, tuple)):
+        shape = "sequence"
+    elif isinstance(value, dict):
+        shape = "dict"
+    else:
+        return value
 
-    if origin in {list, tuple} and encoded_tag in {"list", "tuple"}:
+    container_annotation = _container_annotation(annotation=annotation, shape=shape)
+    if container_annotation is None:
+        return value
+
+    def stage(item: Any, item_annotation: Any) -> Any:
+        return _stage_value(
+            value=item,
+            annotation=item_annotation,
+            remote_store=remote_store,
+            known_digests=known_digests,
+        )
+
+    if shape == "sequence":
+        items = value["items"] if encoded_tag is not None else value
+        staged_items = [
+            stage(item, item_annotation)
+            for item_annotation, item in pair_elements_with_annotations(
+                annotation=container_annotation, value=items
+            )
+        ]
+        if encoded_tag is not None:
+            return {**value, "items": staged_items}
+        return list(staged_items) if isinstance(value, list) else tuple(staged_items)
+
+    dict_args = get_args(container_annotation)
+    key_annotation, value_annotation = dict_args if len(dict_args) == 2 else (Any, Any)
+    if encoded_tag == "dict":
         return {
             **value,
             "items": [
-                _stage_value(
-                    value=item,
-                    annotation=item_annotation,
-                    remote_store=remote_store,
-                    known_digests=known_digests,
-                )
-                for item_annotation, item in pair_elements_with_annotations(
-                    annotation=container_annotation, value=value["items"]
-                )
+                {
+                    **entry,
+                    "key": stage(entry["key"], key_annotation),
+                    "value": stage(entry["value"], value_annotation),
+                }
+                for entry in value["items"]
             ],
         }
-    if origin in {list, tuple} and isinstance(value, (list, tuple)):
-        staged_items = [
-            _stage_value(
-                value=item,
-                annotation=item_annotation,
-                remote_store=remote_store,
-                known_digests=known_digests,
-            )
-            for item_annotation, item in pair_elements_with_annotations(
-                annotation=container_annotation, value=value
-            )
-        ]
-        return list(staged_items) if isinstance(value, list) else tuple(staged_items)
+    # A raw dict's keys must stay hashable, so only its values are staged.
+    return {key: stage(item, value_annotation) for key, item in value.items()}
 
-    if origin is dict:
-        dict_args = get_args(container_annotation)
-        value_annotation = dict_args[1] if len(dict_args) == 2 else Any
-        if encoded_tag == "dict":
-            return {
-                **value,
-                "items": [
-                    {
-                        **entry,
-                        "value": _stage_value(
-                            value=entry["value"],
-                            annotation=value_annotation,
-                            remote_store=remote_store,
-                            known_digests=known_digests,
-                        ),
-                    }
-                    for entry in value["items"]
-                ],
-            }
-        if isinstance(value, dict) and encoded_tag is None:
-            return {
-                key: _stage_value(
-                    value=item,
-                    annotation=value_annotation,
-                    remote_store=remote_store,
-                    known_digests=known_digests,
-                )
-                for key, item in value.items()
-            }
 
-    return value
+_SEQUENCE_ORIGINS = frozenset(
+    {list, tuple, abc.Sequence, abc.MutableSequence, abc.Collection, abc.Iterable}
+)
+_MAPPING_ORIGINS = frozenset({dict, abc.Mapping, abc.MutableMapping})
+
+
+def _container_annotation(*, annotation: Any, shape: str) -> Any | None:
+    """Return the member of *annotation* that describes a container of *shape*.
+
+    Handles optionals and unions (``list[file] | list[str]``) by picking the
+    member whose origin matches the value's shape, and abstract collection
+    types (``Sequence[file]``, ``Mapping[str, file]``) alongside the concrete
+    ones. ``None`` when nothing in the annotation describes such a container,
+    in which case the value is passed through unstaged.
+    """
+    origin = get_origin(annotation)
+    if origin in {Union, UnionType}:
+        for member in get_args(annotation):
+            found = _container_annotation(annotation=member, shape=shape)
+            if found is not None:
+                return found
+        return None
+    wanted = _SEQUENCE_ORIGINS if shape == "sequence" else _MAPPING_ORIGINS
+    return annotation if origin in wanted else None
 
 
 def _file_path_from_value(*, value: Any, tag: str) -> str | None:

@@ -10,7 +10,12 @@ import pytest
 from ginkgo import file, folder
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
+from collections.abc import Sequence
+
+from ginkgo.runtime.artifacts.remote_arg_transfer import (
+    hydrate_args_from_remote,
+    stage_args_for_remote,
+)
 from ginkgo.runtime.artifacts.remote_artifact_store import RemoteArtifactStore
 from ginkgo.runtime.artifacts.value_codec import encode_value
 from ginkgo.runtime.caching.index import CacheIndex
@@ -109,3 +114,69 @@ def test_a_list_of_plain_strings_is_untouched(tmp_path, remote_store) -> None:
     )
 
     assert staged["x"] == encoded
+
+
+def test_a_union_of_container_types_stages_the_matching_member(tmp_path, remote_store) -> None:
+    staged = _stage(
+        _inputs(tmp_path, 1), list[file] | list[str], tmp_path=tmp_path, remote_store=remote_store
+    )
+
+    assert staged["items"][0]["__ginkgo_type__"] == _REMOTE_FILE
+
+
+def test_an_abstract_sequence_of_files_is_staged(tmp_path, remote_store) -> None:
+    staged = _stage(
+        _inputs(tmp_path, 2), Sequence[file], tmp_path=tmp_path, remote_store=remote_store
+    )
+
+    assert [item["__ginkgo_type__"] for item in staged["items"]] == [_REMOTE_FILE] * 2
+
+
+def test_file_keys_of_a_dict_are_staged(tmp_path, remote_store) -> None:
+    (only,) = _inputs(tmp_path, 1)
+    staged = _stage({only: "label"}, dict[file, str], tmp_path=tmp_path, remote_store=remote_store)
+
+    assert staged["items"][0]["key"]["__ginkgo_type__"] == _REMOTE_FILE
+
+
+def test_none_elements_and_nested_lists_are_handled(tmp_path, remote_store) -> None:
+    first, second = _inputs(tmp_path, 2)
+    optional = _stage(
+        [first, None], list[file | None], tmp_path=tmp_path, remote_store=remote_store
+    )
+    nested = _stage(
+        [[first], [second]], list[list[file]], tmp_path=tmp_path, remote_store=remote_store
+    )
+
+    assert optional["items"][0]["__ginkgo_type__"] == _REMOTE_FILE
+    assert optional["items"][1] == encode_value(None, base_dir=tmp_path)
+    assert [inner["items"][0]["__ginkgo_type__"] for inner in nested["items"]] == [
+        _REMOTE_FILE
+    ] * 2
+
+
+def test_a_raw_list_of_files_is_staged(tmp_path, remote_store) -> None:
+    staged = stage_args_for_remote(
+        args={"x": [str(path) for path in _inputs(tmp_path, 2)]},
+        type_hints={"x": list[file]},
+        remote_store=remote_store,
+    )
+
+    assert [item["__ginkgo_type__"] for item in staged["x"]] == [_REMOTE_FILE] * 2
+
+
+def test_staged_containers_hydrate_back_to_readable_files(tmp_path, remote_store) -> None:
+    """The worker side turns every staged reference back into a local file."""
+    inputs = _inputs(tmp_path, 2)
+    staged = stage_args_for_remote(
+        args={"x": encode_value(inputs, base_dir=tmp_path)},
+        type_hints={"x": list[file]},
+        remote_store=remote_store,
+    )
+
+    hydrated = hydrate_args_from_remote(
+        args=staged, remote_store=remote_store, scratch_dir=tmp_path / "worker"
+    )
+
+    items = hydrated["x"]["items"]
+    assert [Path(item).read_text(encoding="utf-8") for item in items] == ["input 0", "input 1"]
