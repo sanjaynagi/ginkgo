@@ -124,6 +124,8 @@ def run_worker_payload(payload: dict) -> dict:
                 mounted_access.close()
             except Exception:  # noqa: BLE001
                 pass
+        if output_param_entries:
+            _remove_output_param_scratch(entries=output_param_entries)
 
     return result
 
@@ -205,6 +207,18 @@ def _resolve_output_param_paths(payload: dict, *, entries: list[dict[str, str]])
     payload["args"] = resolve_output_param_scratch_paths(
         args=payload.get("args", {}), entries=entries, scratch_dir=scratch_dir
     )
+
+
+def _remove_output_param_scratch(*, entries: list[dict[str, str]]) -> None:
+    """Delete this dispatch's ``Out[...]`` scratch directory once uploaded.
+
+    A long-lived worker would otherwise keep every output it ever wrote.
+    """
+    import shutil
+
+    scratch_dir = _scratch_root() / "ginkgo-outputs"
+    for dispatch_dir in {entry["relative"].split("/", 1)[0] for entry in entries}:
+        shutil.rmtree(scratch_dir / dispatch_dir, ignore_errors=True)
 
 
 def _stage_output_params(

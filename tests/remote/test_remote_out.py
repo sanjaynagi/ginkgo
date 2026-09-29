@@ -290,6 +290,15 @@ class TestRemoteOutFile:
                 ),
             )
 
+    def test_the_worker_removes_its_scratch_outputs_after_the_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "out.txt"
+        _evaluate(remote_write_output(payload="x", out_path=str(out)))
+
+        assert out.read_text(encoding="utf-8") == "x"
+        assert list((tmp_path / "pod-scratch" / "ginkgo-outputs").iterdir()) == []
+
 
 class TestRemoteOutFolder:
     def test_out_folder_lands_at_driver_path(self, tmp_path: Path) -> None:
