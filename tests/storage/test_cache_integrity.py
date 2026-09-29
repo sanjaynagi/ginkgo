@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import evaluate, file, folder, shell, task
+from ginkgo import Out, evaluate, file, folder, shell, task
 from ginkgo.cli.commands.cache import _safe_rmtree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
@@ -813,12 +813,12 @@ class TestSourceHashCacheInvalidation:
 
 
 @task(kind="shell")
-def write_file_task(output_path: str) -> file:
+def write_file_task(output_path: Out[file]) -> file:
     return shell(cmd=f"echo 'hello' > {output_path}", output=output_path)
 
 
 @task(kind="shell")
-def write_folder_task(output_dir: str) -> folder:
+def write_folder_task(output_dir: Out[folder]) -> folder:
     return shell(
         cmd=f"mkdir -p {output_dir} && echo 'a' > {output_dir}/a.txt && echo 'b' > {output_dir}/b.txt",
         output=output_dir,
@@ -826,7 +826,7 @@ def write_folder_task(output_dir: str) -> folder:
 
 
 @task()
-def write_python_file_task(output_path: str, payload: str) -> file:
+def write_python_file_task(output_path: Out[file], payload: str) -> file:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(payload, encoding="utf-8")

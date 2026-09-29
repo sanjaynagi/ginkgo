@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from ginkgo import Out, file, task, untracked
 from ginkgo.runtime.edge_inference import (
     ConsumedPath,
     DuplicateOutputPathError,
     PathIndex,
     ProducedPath,
+    collect_consumed_paths,
 )
 
 
@@ -101,3 +105,19 @@ class TestPathIndex:
         ]
 
         assert all(len(found) == 1 for found in edges)
+
+
+@task()
+def _logs_to(*, log_path: untracked, logs: list[untracked], dest: Out[file]) -> None:
+    Path(dest).write_text("x", encoding="utf-8")
+
+
+def test_an_untracked_parameter_is_not_a_consumer() -> None:
+    consumed = collect_consumed_paths(
+        node_id=1,
+        task_name="logs_to",
+        task_def=_logs_to,
+        args={"log_path": "/w/run.log", "logs": ["/w/a.log"], "dest": "/w/out.txt"},
+    )
+
+    assert consumed == []

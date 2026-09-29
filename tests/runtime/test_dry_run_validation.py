@@ -15,7 +15,7 @@ import pytest
 from rich.console import Console
 
 import ginkgo
-from ginkgo import file, table, task
+from ginkgo import file, table, task, untracked
 from ginkgo.cli.app import main as cli_main
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.core.expr import record_constructed_calls
@@ -24,8 +24,16 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
 
 @task()
-def produce_summary(output_path: str) -> object:
-    """Write a CSV and return it as a ``table`` asset."""
+def produce_summary(output_path: untracked) -> object:
+    """Write a CSV and return it as a ``table`` asset.
+
+    ``output_path`` is annotated ``untracked``: it is a staging path for the
+    ``table`` asset built from it, not itself a tracked read or a declared
+    ``Out[...]`` write, so it must not be content-hashed — doing so would
+    make the key depend on whether the file happens to exist yet at
+    key-computation time (absent before the first run, present after),
+    self-invalidating on the very next probe or run.
+    """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"site": ["north", "south"], "count": [10, 20]}).to_csv(out, index=False)
@@ -206,13 +214,13 @@ SWITCHED_WORKFLOW = """
 from pathlib import Path
 
 import pandas as pd
-from ginkgo import file, flow, param, table, task
+from ginkgo import file, flow, param, table, task, untracked
 
 mode = param("mode", default="produce")
 
 
 @task()
-def produce_summary(output_path: str) -> object:
+def produce_summary(output_path: untracked) -> object:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"site": ["north"], "count": [1]}).to_csv(out, index=False)

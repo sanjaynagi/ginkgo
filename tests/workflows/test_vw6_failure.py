@@ -5,12 +5,12 @@ import time
 
 import pytest
 
-from ginkgo import evaluate, flow, task
+from ginkgo import evaluate, flow, task, untracked
 from tests._vw_support import append_line
 
 
 @task()
-def may_fail_transient(item: str, log_path: str) -> str:
+def may_fail_transient(item: str, log_path: untracked) -> str:
     append_line(log_path, f"start:{item}")
     marker = Path(f".transient-{item}")
     if item == "item_3" and not marker.exists():
@@ -28,7 +28,7 @@ def failure_pipeline_transient(items: list[str], log_path: str):
 
 
 @task()
-def may_fail(item: str, log_path: str) -> str:
+def may_fail(item: str, log_path: untracked) -> str:
     append_line(log_path, f"start:{item}")
 
     if item == "item_0":

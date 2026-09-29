@@ -79,6 +79,10 @@ class NodeCache:
                 task_def=node.task_def,
                 resolved_args=node.resolved_args,
             )
+            node.content_input_digests = self.cache_store.content_tracked_input_digests(
+                task_def=node.task_def,
+                resolved_args=node.resolved_args,
+            )
 
         cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
         if cached_result is MISSING or not self._is_valid_cached_result(
@@ -89,6 +93,19 @@ class NodeCache:
         ):
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
+
+    def written_str_inputs(self, *, node: NodeRun) -> list[str]:
+        """Return plain-``str`` path inputs the just-run task created or changed.
+
+        Such a path is content-hashed as an input, so a task that writes it
+        (a log it appends to, a legacy ``output_path: str``) changes its own
+        key and re-runs every time. The caller warns; the fix is to annotate
+        the parameter ``Out[file]`` or ``untracked``.
+        """
+        before = node.content_input_digests
+        if not before:
+            return []
+        return sorted(self.cache_store.written_inputs(before=before))
 
     def lookup_by_stat(self, *, node: NodeRun) -> CacheHit | None:
         """Return a stat-index cached result for ``--trust-mtimes`` mode.

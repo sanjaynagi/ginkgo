@@ -54,6 +54,7 @@ _EXPORTS = {
     "subworkflow": ("ginkgo.core.subworkflow", "subworkflow"),
     "task": ("ginkgo.core.task", "task"),
     "tmp_dir": ("ginkgo.core.types", "tmp_dir"),
+    "untracked": ("ginkgo.core.types", "untracked"),
     "zip_expand": ("ginkgo.wildcards", "zip_expand"),
 }
 

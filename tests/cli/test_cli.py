@@ -293,12 +293,12 @@ class TestCliRunAndCache:
             """
 import ginkgo
 from pathlib import Path
-from ginkgo import flow, task
+from ginkgo import flow, task, untracked
 
 cfg = ginkgo.config("ginkgo.toml")
 
 @task()
-def write_message(message: str, output_path: str) -> str:
+def write_message(message: str, output_path: untracked) -> str:
     Path(output_path).write_text(message, encoding="utf-8")
     return output_path
 

@@ -17,10 +17,10 @@ PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
 WORKFLOW = """
 from pathlib import Path
-from ginkgo import flow, task
+from ginkgo import flow, task, untracked
 
 @task()
-def greet(name: str, output_path: str) -> str:
+def greet(name: str, output_path: untracked) -> str:
     Path(output_path).write_text(f"hello {name}", encoding="utf-8")
     return output_path
 

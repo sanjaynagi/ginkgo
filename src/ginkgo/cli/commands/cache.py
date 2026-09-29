@@ -491,7 +491,10 @@ _TRACKING_STYLES = {
 
 #: A short hint printed next to a label that names a real tracking gap.
 _TRACKING_HINTS = {
-    "path": "tracked by path string only — annotate `file`/`folder` to track contents",
+    "path": (
+        "tracked by path string only — a directory needs `folder` to track its contents; "
+        "use `untracked` if that is deliberate"
+    ),
 }
 
 _REASON_TEXT = {

@@ -54,6 +54,21 @@ class tmp_dir(str):
     """
 
 
+class untracked(str):
+    """A path parameter deliberately excluded from content tracking.
+
+    Since #307 phase 2, a ``str`` (or ``Any``/``list[str]``/...) parameter
+    naming an existing *file* is content-hashed by default — the annotation
+    alone no longer opts a path out of tracking (see :func:`is_str_path_annotation`
+    and the root-input hashing rule in ``CacheStore._hash_value``). ``untracked``
+    is the explicit replacement: annotate a parameter (or its container,
+    ``list[untracked]``, or its optional, ``untracked | None``) with it to key
+    the value by its path string only, whatever exists on disk at that path.
+    Never content-hashed, never warned about by ``ginkgo doctor``, and labelled
+    ``"untracked"`` by ``ginkgo cache explain``.
+    """
+
+
 class _OutputMarker:
     """Sentinel identifying an ``Out[...]`` parameter annotation.
 
@@ -219,6 +234,29 @@ def is_path_shaped_annotation(annotation: Any) -> bool:
     )
 
 
+def is_untracked_annotation(annotation: Any) -> bool:
+    """Return whether ``annotation`` is, or contains, the ``untracked`` marker.
+
+    Matches ``untracked`` itself, and composed shapes such as
+    ``list[untracked]``, ``tuple[untracked, ...]`` and ``untracked | None`` —
+    anywhere :class:`untracked` appears among a generic alias's arguments,
+    recursively, the same way :func:`annotation_includes` looks for
+    ``file``/``folder``. Also usable by phase 2A's edge inference to skip a
+    parameter deliberately opted out of tracking.
+
+    Parameters
+    ----------
+    annotation : Any
+        A type annotation, possibly a union or generic alias.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``untracked`` is the annotation or appears within it.
+    """
+    return annotation_includes(annotation=annotation, expected=untracked)
+
+
 def unwrap_optional_annotation(annotation: Any) -> tuple[Any, bool]:
     """Split an ``X | None`` annotation into its inner type and nullability.
 
@@ -367,6 +405,47 @@ def is_str_path_annotation(annotation: Any) -> bool:
     if origin is tuple:
         return args == (str, Ellipsis)
     return False
+
+
+def looks_like_path_string(text: str) -> bool:
+    """Return whether *text* is shaped like a real filesystem path, textually.
+
+    The eligibility rule for #307 phase 2's root-input content hashing: a
+    ``str``/``PathLike`` value that names an existing regular file is
+    content-hashed only when it also *reads* as a path, not a bare word that
+    happens to collide with a file name in the working directory. Two shapes
+    qualify:
+
+    - it contains a path separator (``/``, or ``os.sep``/``os.altsep`` on
+      the current platform) — ``"data/counts.tsv"``, ``"./x"``, ``"../y"``;
+    - or it carries a file extension — ``Path(text).suffix`` is non-empty and
+      not the bare ``"."`` a trailing dot leaves.
+
+    A bare word with neither, such as ``"alpha"`` or ``"results"``, does not
+    qualify even when a same-named file exists on disk: nothing about the
+    string itself suggests a path, so treating it as one would silently
+    content-hash values that were never meant to be paths (a label, a slug).
+    Such a value stays keyed by its own repr, exactly as any other scalar.
+
+    This is purely textual — no filesystem access. Callers pair it with an
+    existence check (see ``is_content_trackable_path_value`` in
+    ``ginkgo.runtime.task_validation``).
+
+    Parameters
+    ----------
+    text : str
+        The candidate string.
+
+    Returns
+    -------
+    bool
+        ``True`` when the text contains a path separator or a file
+        extension.
+    """
+    if "/" in text or os.sep in text or (os.altsep is not None and os.altsep in text):
+        return True
+    suffix = Path(text).suffix
+    return suffix not in ("", ".")
 
 
 def is_path_like(value: Any) -> bool:
