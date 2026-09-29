@@ -138,8 +138,13 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   fails naming the parameter and the path. A cache hit whose declared output
   is missing on disk (or the wrong kind) is treated as a miss and the task
   re-runs.
-- Not yet supported for remote tasks (`remote=True` / `executor=`) — routing
-  an `Out[...]`-declared task remotely raises at dispatch.
+- Supported for remote tasks (`remote=True` / `executor=`) too: with a
+  `[remote.artifacts] store` configured, each declared path is rewritten to a
+  worker-local scratch path, staged back through the same channel returned
+  files use once the task body writes it, and restored at its declared
+  driver path before the post-execution check runs. Without a configured
+  store, the declared path is sent to the worker unchanged, which only works
+  when the worker shares the driver's filesystem.
 - The parent directory of every declared `Out[...]` path is created
   automatically before the task body runs (`mkdir(parents=True)`), so a task
   writing into a fresh subdirectory needs no boilerplate of its own. For

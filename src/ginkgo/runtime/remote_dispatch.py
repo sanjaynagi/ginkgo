@@ -77,14 +77,28 @@ class RemoteDispatchManager:
         if code_bundle is not None:
             payload["code_bundle"] = code_bundle
         if self._artifact_store is not None:
-            from ginkgo.runtime.artifacts.remote_arg_transfer import stage_args_for_remote
+            from ginkgo.runtime.artifacts.remote_arg_transfer import (
+                stage_args_for_remote,
+                stage_output_params_for_dispatch,
+            )
 
             payload["args"] = stage_args_for_remote(
                 args=payload["args"],
                 type_hints=node.task_def.type_hints,
                 remote_store=self._artifact_store,
                 known_digests=self.digests.known,
+                output_params=node.task_def.output_params,
             )
+            if node.task_def.output_params:
+                assert node.transport_path is not None
+                assert node.execution_args is not None
+                output_args, output_param_entries = stage_output_params_for_dispatch(
+                    resolved_args=node.execution_args,
+                    task_def=node.task_def,
+                    base_dir=node.transport_path,
+                )
+                payload["args"].update(output_args)
+                payload["output_param_entries"] = output_param_entries
             payload["remote_artifact_store"] = {
                 "scheme": self._artifact_store.scheme,
                 "bucket": self._artifact_store.bucket,
@@ -191,6 +205,20 @@ class RemoteDispatchManager:
                 result=payload["result"],
                 remote_store=self._artifact_store,
                 scratch_dir=scratch_dir,
+            )
+
+        if (
+            self._artifact_store is not None
+            and isinstance(payload, dict)
+            and payload.get("ok")
+            and payload.get("output_param_results")
+        ):
+            from ginkgo.runtime.artifacts.remote_arg_transfer import (
+                materialize_output_params_from_remote,
+            )
+
+            materialize_output_params_from_remote(
+                entries=payload["output_param_results"], remote_store=self._artifact_store
             )
 
         return payload
