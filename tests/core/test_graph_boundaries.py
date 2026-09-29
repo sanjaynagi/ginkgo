@@ -796,6 +796,35 @@ def build_and_link(*, rows: int) -> object:
     return agg, rep
 
 
+@task()
+def write_one(*, n: int, out: Out[file]) -> int:
+    Path(out).write_text(f"{n}\n", encoding="utf-8")
+    return n
+
+
+@task()
+def spawn_into_folder(*, d: folder) -> object:
+    """Receive a folder and return children writing inside it."""
+    return write_one(n=1, out=str(Path(d) / "a.txt")), write_one(n=2, out=str(Path(d) / "b.txt"))
+
+
+@task()
+def slow_gate(*, seconds: float) -> int:
+    time.sleep(seconds)
+    return 0
+
+
+@task()
+def report_after(*, csv_path: str, gate: object) -> int:
+    return len(Path(csv_path).read_text(encoding="utf-8").strip().split("\n"))
+
+
+@task()
+def spawn_producer(*, path: str, gate: object) -> object:
+    """Dynamically register an ``Out`` producer for a literal path."""
+    return aggregate(rows=3, output_path=path)
+
+
 def _node_for(evaluator: ConcurrentEvaluator, *, param: str, value: Any) -> Any:
     matches = [
         node for node in evaluator.task_nodes.values() if node.expr.args.get(param) == value
@@ -1022,3 +1051,35 @@ class TestOutPathEdgeInference:
         """A producer/consumer pair built at runtime (dynamic graph expansion)."""
         _, count = evaluate(build_and_link(rows=4))
         assert count == 4
+
+    def test_expanding_task_may_spawn_children_writing_inside_its_folder(
+        self, tmp_path: Path
+    ) -> None:
+        """The expanding task is itself a consumer of its children's paths."""
+        results_dir = tmp_path / "res"
+        results_dir.mkdir()
+        assert evaluate(spawn_into_folder(d=str(results_dir))) == (1, 2)
+        assert (results_dir / "b.txt").read_text(encoding="utf-8") == "2\n"
+
+    def test_dynamic_producer_retroactively_gates_a_pending_consumer(self) -> None:
+        """A reader registered earlier waits for a producer registered later."""
+
+        @flow
+        def main():
+            gate = slow_gate(seconds=1.0)
+            spawned = spawn_producer(path="late.csv", gate=0)
+            return spawned, report_after(csv_path="late.csv", gate=gate)
+
+        _, count = evaluate(main())
+        assert count == 3
+
+    def test_dynamic_producer_for_an_already_read_path_raises(self) -> None:
+        Path("late.csv").write_text("old\n", encoding="utf-8")
+
+        @flow
+        def main():
+            count = report_after(csv_path="late.csv", gate=0)
+            return spawn_producer(path="late.csv", gate=count)
+
+        with pytest.raises(RuntimeError, match="already read that path"):
+            evaluate(main())

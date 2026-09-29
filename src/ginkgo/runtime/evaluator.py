@@ -459,10 +459,13 @@ class ConcurrentEvaluator:
         default_factory=dict, init=False, repr=False
     )
     _path_index: PathIndex = field(default_factory=PathIndex, init=False, repr=False)
-    _edges_inferred_this_batch: bool = field(default=False, init=False, repr=False)
     """Cumulative literal produced/consumed paths across every registration
     batch, so a later batch (dynamic expansion) is matched against everything
     seen so far, and vice versa."""
+    _edges_inferred_this_batch: bool = field(default=False, init=False, repr=False)
+    """Whether the current batch added an edge, gating the cycle check."""
+    _dynamic_parent_ids: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    """Node id -> id of the task whose dynamic expansion registered it."""
 
     @property
     def unreachable_calls(self) -> list[ConstructedCall]:
@@ -837,7 +840,7 @@ class ConcurrentEvaluator:
         self._pending_node_ids.append(node_id)
         return node_id
 
-    def _infer_and_apply_edges(self) -> None:
+    def _infer_and_apply_edges(self, *, expanding_node_id: int | None = None) -> None:
         """Infer ``Out[...]`` path dependency edges and emit deferred events.
 
         Called once after every top-level registration batch — the initial
@@ -854,7 +857,11 @@ class ConcurrentEvaluator:
            the only way a dynamically registered node can retroactively
            matter. A still-pending old consumer gets the edge added; one
            already dispatched or completed can no longer be made to wait, so
-           this raises rather than let the race happen silently.
+           this raises rather than let the race happen silently. The
+           expanding task and its own dynamic ancestors are exempt: a task
+           that receives a folder and returns children writing inside it
+           is the normal fan-out shape, and it already waits on those
+           children through its dynamic template.
         5. Detect any cycle the new edges created.
         6. Emit each new node's ``GraphNodeRegistered`` event, now carrying
            its final (declared + inferred) dependency ids.
@@ -871,6 +878,15 @@ class ConcurrentEvaluator:
         self._pending_node_ids = []
         if not new_node_ids:
             return
+
+        expanding_lineage: set[int] = set()
+        if expanding_node_id is not None:
+            for node_id in new_node_ids:
+                self._dynamic_parent_ids[node_id] = expanding_node_id
+            ancestor: int | None = expanding_node_id
+            while ancestor is not None:
+                expanding_lineage.add(ancestor)
+                ancestor = self._dynamic_parent_ids.get(ancestor)
 
         new_produced: list[ProducedPath] = []
         new_consumed: list[ConsumedPath] = []
@@ -909,6 +925,8 @@ class ConcurrentEvaluator:
         # dynamic-expansion case, where the reader may already be in flight.
         for producer in new_produced:
             for consumer in index.consumers_for(producer):
+                if consumer.node_id in expanding_lineage:
+                    continue
                 consumer_run = self._nodes[consumer.node_id]
                 producer_run = self._nodes[producer.node_id]
                 if consumer_run.state != "pending":
@@ -2866,7 +2884,7 @@ class ConcurrentEvaluator:
             self._cleanup_transport(node)
 
             dynamic_dependencies = self._register_value(completed_value)
-            self._infer_and_apply_edges()
+            self._infer_and_apply_edges(expanding_node_id=node.node_id)
             if dynamic_dependencies:
                 node.state = "waiting_dynamic"
                 node.dynamic_template = completed_value
@@ -2900,7 +2918,7 @@ class ConcurrentEvaluator:
             return
 
         dynamic_dependencies = self._register_value(completed_value)
-        self._infer_and_apply_edges()
+        self._infer_and_apply_edges(expanding_node_id=node.node_id)
         if dynamic_dependencies:
             self._cleanup_transport(node)
             node.state = "waiting_dynamic"
