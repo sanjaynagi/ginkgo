@@ -48,12 +48,33 @@ def filter_fastq(sample_id: str, fastq_1: file, fastq_2: file, min_length: int) 
     )
 
 
+def _display_name(path: file) -> str:
+    """Return the name a reader should see for an input path.
+
+    An input produced as an asset upstream points at its content-addressed
+    artifact; ``.asset.filename`` is the name its producer wrote it under.
+    """
+    if path.asset is not None and path.asset.filename is not None:
+        return path.asset.filename
+    return Path(path).name
+
+
 @task(env="bioinfo_tools", kind="shell")
 def fastq_stats(sample_id: str, fastq_1: file, fastq_2: file) -> file:
-    """Compute per-sample paired-end FASTQ QC metrics with seqkit."""
+    """Compute per-sample paired-end FASTQ QC metrics with seqkit.
+
+    seqkit reports each input's path in its ``file`` column. Those paths are
+    artifact-store blobs, so the column is rewritten to the logical filenames.
+    """
     output = f"results/qc/{sample_id}.stats.tsv"
+    rename = (
+        "awk -F '\\t' -v OFS='\\t' "
+        f"-v p1={shlex.quote(str(fastq_1))} -v n1={shlex.quote(_display_name(fastq_1))} "
+        f"-v p2={shlex.quote(str(fastq_2))} -v n2={shlex.quote(_display_name(fastq_2))} "
+        "'$1 == p1 {$1 = n1} $1 == p2 {$1 = n2} {print}'"
+    )
     return shell(
-        cmd=f"seqkit stats -T {fastq_1} {fastq_2} > {output}",
+        cmd=f"seqkit stats -T {fastq_1} {fastq_2} | {rename} > {output}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )

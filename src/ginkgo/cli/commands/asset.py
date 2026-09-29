@@ -99,6 +99,7 @@ def _run_asset_command(*, args, rich_console, store: AssetStore, layout: Workspa
     rich_console.print(f"Artifact ID: {version.artifact_id}")
     rich_console.print(f"Content Hash: {version.content_hash}")
     rich_console.print(f"Created: {version.created_at}")
+    rich_console.print(f"Source Path: {version.source_path or '-'}")
     rich_console.print(f"Artifact Path: {artifact_path or '-'}")
     if version.metadata:
         rich_console.print(f"Metadata: {version.metadata}")
@@ -226,6 +227,8 @@ def render_asset_show(*, console, version) -> int:
     console.print(f"Kind: {version.kind}")
     console.print(f"Sub-kind: {metadata.get('sub_kind', '-')}")
     console.print(f"Artifact ID: {version.artifact_id}")
+    if version.source_path is not None:
+        console.print(f"Source Path: {version.source_path}")
     caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
     if isinstance(caption, str) and caption.strip():
         console.print(f"Caption: {caption.strip()}")
