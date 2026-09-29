@@ -53,10 +53,6 @@ CREATE TABLE cache_entries (
 index cache_function
 CREATE INDEX cache_function ON cache_entries(function, created_at)
 
-table cache_written_inputs
-CREATE TABLE cache_written_inputs (function TEXT NOT NULL, path TEXT NOT NULL,
-  PRIMARY KEY (function, path))
-
 table digest_memo
 CREATE TABLE digest_memo (
   kind TEXT NOT NULL, fingerprint TEXT NOT NULL, digest TEXT NOT NULL,

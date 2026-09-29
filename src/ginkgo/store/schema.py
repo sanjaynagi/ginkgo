@@ -171,24 +171,14 @@ _V2_INPUT_TRACKING = """
 ALTER TABLE task_inputs ADD COLUMN tracking TEXT;
 """
 
-_V3_WRITTEN_INPUTS = """
--- Input paths a task was observed to write (issue #307): a file passed as a
--- plain ``str`` that the task itself changed, such as a log it appends to.
--- Such a path is keyed by its string, not its contents, for that task from
--- then on, so the task does not invalidate its own cache entry.
-CREATE TABLE cache_written_inputs (function TEXT NOT NULL, path TEXT NOT NULL,
-  PRIMARY KEY (function, path));
-"""
-
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
     (1, _SCHEMA),
     (2, _V2_INPUT_TRACKING),
-    (3, _V3_WRITTEN_INPUTS),
 ]
 """Every schema step, in the order they are applied, keyed by resulting version.
 
-Steps 2 and 3 are additive — a nullable column, a new table — so an older
-workspace is stepped forward rather than refused: deleting it would throw away its cache index for
+Step 2 is additive — a nullable column — so a version-1 workspace is stepped
+forward rather than refused: deleting it would throw away its cache index for
 the sake of a metadata column. A database at a version with no step here (one
 written by a newer ginkgo, or by an older in-place edit) is still refused, and
 the user deletes the workspace.

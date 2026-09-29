@@ -1453,7 +1453,7 @@ class ConcurrentEvaluator:
         extra_meta: dict[str, Any] | None = None
         if node.notebook_extras is not None:
             extra_meta = {"notebook_extras": node.notebook_extras}
-        self._node_cache.rekey_if_inputs_were_written(node=node)
+        self._warn_on_written_str_inputs(node=node)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,
@@ -2121,6 +2121,32 @@ class ConcurrentEvaluator:
                 attempt=node.attempt,
                 display_label=node.display_label,
                 message=f"FUSE access fell back to staging: {reason}",
+            )
+        )
+
+    def _warn_on_written_str_inputs(self, *, node: NodeRun) -> None:
+        """Warn when a task wrote a file it received as a plain ``str`` path.
+
+        That path is content-hashed as an input, so the task invalidates its
+        own cache entry and re-runs on every run until it is re-annotated.
+        """
+        written = self._node_cache.written_str_inputs(node=node)
+        if not written:
+            return
+        paths = ", ".join(written)
+        self._emit_event(
+            TaskNotice(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                message=(
+                    f"wrote {paths}, which it received as a plain `str` path, so the "
+                    "file is tracked as an input and this task will re-run every time. "
+                    "Annotate that parameter `Out[file]` if the task writes it, or "
+                    "`untracked` to key it by its path only."
+                ),
             )
         )
 

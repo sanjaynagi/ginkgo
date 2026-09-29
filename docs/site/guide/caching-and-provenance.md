@@ -97,12 +97,11 @@ trap these checks exist to flag.
 
 Never leave an *output* path plain `str` without `Out[...]`: annotate the
 parameter `Out[file]` / `Out[folder]` (below), naming it as a write rather
-than a read. A legacy task that still writes to a `str`-annotated
-`output_path` and returns it as `file`/`folder` is protected from
-self-invalidation — Ginkgo recognises the path as this task's own previous
-output and excludes it from content hashing — but a path written and never
-returned gets no such protection and needs `Out[...]` or `untracked`
-explicitly.
+than a read. A file a task writes through a plain `str` path is
+content-hashed as an input, so the task invalidates its own cache entry and
+re-runs every time; Ginkgo notices the write after the run and prints a
+notice naming the path, and the fix is `Out[...]` (or `untracked` for a
+side-channel file such as a log).
 
 `pathlib.Path` is rejected outright on a task parameter, since it is neither
 path- nor content-tracked: it is hashed as an opaque pickled object. Use
@@ -219,8 +218,7 @@ Ginkgo names which:
 - **asset** — an `AssetRef` (or a remote reference): tracked by its version id.
 - **path** — a value that names an existing path but is not content-hashed: a
   directory (never auto-hashed — annotate `folder`), a bare word with no
-  separator or extension, or a root input excluded because Ginkgo recognises
-  it as this task's own previous output. Tracked by the path *string* only.
+  separator or extension. Tracked by the path *string* only.
 - **value** — an ordinary scalar or object: tracked by its own `repr` or
   pickle digest.
 - **output** — an `Out[...]` parameter: tracked by its declared path string

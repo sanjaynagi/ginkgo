@@ -206,37 +206,6 @@ class TestContainerCombination:
         assert label_input_value(annotation=list[str], value=[]) == "value"
 
 
-class TestExcludedPaths:
-    """The ledger exclusion for a legacy task's own previous output."""
-
-    def test_excluded_path_is_labelled_path_not_content(self, tmp_path) -> None:
-        target = tmp_path / "output.txt"
-        target.write_text("x", encoding="utf-8")
-        excluded = frozenset({str(target.resolve())})
-        assert (
-            label_input_value(annotation=str, value=str(target), excluded_paths=excluded) == "path"
-        )
-
-    def test_a_different_path_is_unaffected_by_the_exclusion_set(self, tmp_path) -> None:
-        target = tmp_path / "output.txt"
-        target.write_text("x", encoding="utf-8")
-        other = tmp_path / "other.txt"
-        excluded = frozenset({str(other.resolve())})
-        assert (
-            label_input_value(annotation=str, value=str(target), excluded_paths=excluded)
-            == "content"
-        )
-
-    def test_excluded_path_nested_in_a_list_is_labelled_path(self, tmp_path) -> None:
-        target = tmp_path / "output.txt"
-        target.write_text("x", encoding="utf-8")
-        excluded = frozenset({str(target.resolve())})
-        assert (
-            label_input_value(annotation=list[str], value=[str(target)], excluded_paths=excluded)
-            == "path"
-        )
-
-
 class TestIsContentTrackablePathValue:
     """The exact #307 phase 2 eligibility rule, over the annotation/value table."""
 

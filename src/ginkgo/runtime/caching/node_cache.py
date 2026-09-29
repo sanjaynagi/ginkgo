@@ -94,37 +94,18 @@ class NodeCache:
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
 
-    def rekey_if_inputs_were_written(self, *, node: NodeRun) -> None:
-        """Re-key a just-run task whose plain-``str`` path inputs it wrote itself.
+    def written_str_inputs(self, *, node: NodeRun) -> list[str]:
+        """Return plain-``str`` path inputs the just-run task created or changed.
 
-        A task that appends to a log (or overwrites a marker) passed as a
-        ``str`` path would otherwise key that file by its contents before it
-        ran, then find it changed on every later run and never cache. When a
-        content-tracked input changed while the task ran, the task writes
-        it: remember that (so every later run keys the path by its string)
-        and save this run's entry under the key computed that way, so the
-        very next run is already a hit.
+        Such a path is content-hashed as an input, so a task that writes it
+        (a log it appends to, a legacy ``output_path: str``) changes its own
+        key and re-runs every time. The caller warns; the fix is to annotate
+        the parameter ``Out[file]`` or ``untracked``.
         """
         before = node.content_input_digests
-        if not before or node.resolved_args is None:
-            return
-        written = self.cache_store.written_inputs(before=before)
-        if not written:
-            return
-        self.cache_store.note_written_inputs(task_def=node.task_def, paths=written)
-        node.cache_key, node.input_hashes = self.cache_store.build_cache_key(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-            extra_source_hash=node.extra_source_hash,
-            known_digests=self.digests.known,
-        )
-        node.input_labels = self.cache_store.label_inputs(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-        )
-        node.content_input_digests = {
-            path: digest for path, digest in before.items() if path not in written
-        }
+        if not before:
+            return []
+        return sorted(self.cache_store.written_inputs(before=before))
 
     def lookup_by_stat(self, *, node: NodeRun) -> CacheHit | None:
         """Return a stat-index cached result for ``--trust-mtimes`` mode.

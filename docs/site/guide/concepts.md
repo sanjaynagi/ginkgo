@@ -103,8 +103,8 @@ leaving a path a task reads as plain `str` is no longer a correctness trap:
   needs `folder` — see
   [Cache Correctness](caching-and-provenance.md#cache-correctness) for the
   exact rule. A file the task itself writes through a `str` path, such as a
-  log it appends to, is recognised after its first run and keyed by its
-  path from then on, so it does not invalidate the task.
+  log it appends to, would invalidate the task on every run, so Ginkgo
+  flags it with a notice: annotate it `Out[file]`, or `untracked`.
 - **Ordering.** A literal path that matches another task's `Out[...]` path
   gets an inferred dependency edge, so the consumer waits for the producer.
   Only a path *computed at runtime* from an upstream value (never written

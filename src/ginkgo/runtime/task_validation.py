@@ -116,12 +116,6 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
     :func:`is_untracked_path_value`); annotate it ``folder`` to track its
     contents.
 
-    Whether a *particular* eligible file is excluded because the ledger
-    records it as this task's own previous output (issue #307's "don't
-    self-invalidate legacy output params") is not this predicate's concern —
-    it only answers the annotation/value shape question. Callers with ledger
-    access (``CacheStore``) layer that exclusion on top.
-
     Parameters
     ----------
     annotation : Any
@@ -248,30 +242,11 @@ def _combine_container_labels(labels: list[str]) -> str:
     return "value"
 
 
-def _resolved_lookup_key(value: Any) -> str | None:
-    """Return the absolute, resolved path string a value names, or ``None``.
-
-    Used to test a root-input path against a run's ``excluded_paths`` set
-    (paths the ledger records this task as having produced in a previous
-    run) with the same normalisation ``CacheStore`` used to build that set.
-    """
-    if not is_path_like(value):
-        return None
-    text = str(value)
-    if not text:
-        return None
-    try:
-        return str(Path(text).resolve())
-    except OSError:
-        return None
-
-
 def label_input_value(
     *,
     annotation: Any,
     value: Any,
     is_output: bool = False,
-    excluded_paths: frozenset[str] | None = None,
 ) -> str:
     """Return how :meth:`CacheStore.build_cache_key` tracks *value* in the cache key.
 
@@ -280,10 +255,8 @@ def label_input_value(
     an existing regular file, see :func:`is_content_trackable_path_value`),
     ``"asset"`` (an ``AssetRef``, ``RemoteRef``, or fuse-streamed ref —
     tracked by version id), ``"path"`` (a value that names an existing path
-    but is not content-hashed — a directory, a bare word colliding with a
-    file name, or a root input excluded via ``excluded_paths`` because the
-    ledger records it as this task's own previous output — tracked by its
-    path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
+    but is not content-hashed — a directory, or a bare word colliding with a
+    file name — tracked by its path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
     path string only, by design, since it names what the task is about to
     write), ``"value"`` (an ordinary scalar or object, tracked by its own
     repr/pickle digest), or ``"untracked"`` (``tmp_dir`` or ``untracked``,
@@ -309,12 +282,6 @@ def label_input_value(
         Whether this is an ``Out[...]`` parameter. Only meaningful at the
         top level: ``build_cache_key`` never passes it down into containers,
         so recursive calls omit it.
-    excluded_paths : frozenset[str] | None
-        Resolved absolute paths the ledger records this task's cache
-        identity as having produced in a previous run (see
-        ``CacheStore._excluded_output_paths``). Threaded down into every
-        recursive call, unlike ``is_output``, since an excluded path can
-        appear nested inside a container.
 
     Returns
     -------
@@ -350,9 +317,7 @@ def label_input_value(
     origin = get_origin(annotation)
     if origin in {list, tuple}:
         labels = [
-            label_input_value(
-                annotation=item_annotation, value=item, excluded_paths=excluded_paths
-            )
+            label_input_value(annotation=item_annotation, value=item)
             for item_annotation, item in pair_elements_with_annotations(
                 annotation=annotation, value=value
             )
@@ -364,23 +329,12 @@ def label_input_value(
         key_annotation, value_annotation = (args[0], args[1]) if len(args) == 2 else (Any, Any)
         labels = []
         for key, item in value.items():
-            labels.append(
-                label_input_value(
-                    annotation=key_annotation, value=key, excluded_paths=excluded_paths
-                )
-            )
-            labels.append(
-                label_input_value(
-                    annotation=value_annotation, value=item, excluded_paths=excluded_paths
-                )
-            )
+            labels.append(label_input_value(annotation=key_annotation, value=key))
+            labels.append(label_input_value(annotation=value_annotation, value=item))
         return _combine_container_labels(labels) if labels else "value"
 
     if isinstance(value, (list, tuple)):
-        labels = [
-            label_input_value(annotation=annotation, value=item, excluded_paths=excluded_paths)
-            for item in value
-        ]
+        labels = [label_input_value(annotation=annotation, value=item) for item in value]
         return _combine_container_labels(labels) if labels else "value"
 
     if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
@@ -391,20 +345,13 @@ def label_input_value(
     if isinstance(value, dict):
         labels = []
         for key, item in value.items():
-            labels.append(
-                label_input_value(annotation=Any, value=key, excluded_paths=excluded_paths)
-            )
-            labels.append(
-                label_input_value(annotation=Any, value=item, excluded_paths=excluded_paths)
-            )
+            labels.append(label_input_value(annotation=Any, value=key))
+            labels.append(label_input_value(annotation=Any, value=item))
         return _combine_container_labels(labels) if labels else "value"
 
     if value is None or isinstance(value, (bool, int, float, str)):
         if is_content_trackable_path_value(annotation=annotation, value=value):
-            lookup = _resolved_lookup_key(value)
-            if excluded_paths is None or lookup not in excluded_paths:
-                return "content"
-            return "path"
+            return "content"
         if is_untracked_path_value(annotation=annotation, value=value):
             return "path"
         return "value"

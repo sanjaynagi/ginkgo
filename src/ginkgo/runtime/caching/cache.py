@@ -130,9 +130,6 @@ class CacheStore:
     _seen_env_materializations: set[tuple[str, str]] = field(
         default_factory=set, init=False, repr=False
     )
-    _produced_paths_by_cache_name: dict[str, frozenset[str]] | None = field(
-        default=None, init=False, repr=False
-    )
 
     def __post_init__(self) -> None:
         root = self.root if self.root is not None else WorkspaceLayout.for_cwd().cache
@@ -179,7 +176,6 @@ class CacheStore:
             upstream tasks, keyed by resolved absolute path.  When present,
             file inputs whose path appears here skip disk hashing entirely.
         """
-        excluded_paths = self._excluded_output_paths(task_def=task_def)
         input_hashes: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -189,7 +185,6 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 known_digests=known_digests,
-                excluded_paths=excluded_paths,
                 label=f"{task_def.name}.{name}",
                 is_output=name in task_def.output_params,
             )
@@ -231,7 +226,6 @@ class CacheStore:
         See :func:`~ginkgo.runtime.task_validation.label_input_value` for the
         categories.
         """
-        excluded_paths = self._excluded_output_paths(task_def=task_def)
         labels: dict[str, str] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -242,7 +236,6 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 is_output=name in task_def.output_params,
-                excluded_paths=excluded_paths,
             )
         return labels
 
@@ -838,7 +831,6 @@ class CacheStore:
         file is noticed too. Digests come from the same memoised hashing, so
         taking them right after the key costs no extra reads.
         """
-        excluded = self._excluded_output_paths(task_def=task_def)
         digests: dict[str, str | None] = {}
         for name, parameter in task_def.signature.parameters.items():
             if name in task_def.output_params or name not in resolved_args:
@@ -848,7 +840,7 @@ class CacheStore:
                 continue
             for path in _content_trackable_paths(annotation=annotation, value=resolved_args[name]):
                 resolved = str(Path(path).resolve())
-                if resolved in excluded or resolved in digests:
+                if resolved in digests:
                     continue
                 candidate = Path(resolved)
                 digests[resolved] = (
@@ -866,64 +858,12 @@ class CacheStore:
                 written.add(path)
         return written
 
-    def note_written_inputs(self, *, task_def: TaskDef, paths: set[str]) -> None:
-        """Remember that *task_def* writes *paths*, for this run and later ones."""
-        self.index.record_written_inputs(function=task_def.cache_name, paths=paths)
-        current = dict(self._produced_paths_by_cache_name or {})
-        current[task_def.cache_name] = frozenset(
-            current.get(task_def.cache_name, frozenset()) | paths
-        )
-        object.__setattr__(self, "_produced_paths_by_cache_name", current)
-
-    def _excluded_output_paths(self, *, task_def: TaskDef) -> frozenset[str]:
-        """Return paths *this task's* cache identity has produced before.
-
-        A legacy task still writing to a ``str``/``Any``-annotated
-        ``output_path`` (rather than ``Out[file]``) would otherwise have its
-        own previous output content-hashed by the root-input rule below: one
-        spurious rerun on the first run under this feature, and — worse — a
-        permanent miss for any task whose output is not byte-identical run to
-        run (a timestamp, a gzip header). Excluding a path recorded as this
-        task's own prior output avoids both, at the cost of the read below
-        (once) and one dict lookup per eligible path per hash.
-
-        The source is :meth:`CacheIndex.previously_produced_paths`, i.e. the
-        cache index's own ``cache_artifacts``/``cache_entries`` rows — not the
-        run ledger — so this works for a bare library ``evaluate()`` call
-        exactly as it does for ``ginkgo run``: those rows are written by
-        every ``CacheStore.save()``, whether or not anything is subscribed to
-        record run events. It is read **once per run**, on first use — never
-        once per hash or per task — and memoised on this ``CacheStore`` for
-        every task asked about afterwards; a task with no recorded outputs (a
-        fresh workspace, or a task that has never produced a ``file``/
-        ``folder``) gets an empty set back, excluding nothing, which is
-        exactly right on a first run: the output does not exist yet anyway,
-        so nothing is eligible to fall through to this branch in the first
-        place.
-
-        A task that writes a file but does not *return* it (or returns it
-        un-annotated as ``file``/``folder``) is never stored as an artifact,
-        so this exclusion cannot help it; the fix in that case is the same
-        one ``ginkgo doctor`` already suggests: declare the parameter
-        ``Out[file]``/``Out[folder]``, which is excluded from content hashing
-        unconditionally, no lookup required.
-        """
-        if self._produced_paths_by_cache_name is None:
-            object.__setattr__(
-                self,
-                "_produced_paths_by_cache_name",
-                self.index.previously_produced_paths(),
-            )
-        assert self._produced_paths_by_cache_name is not None
-        return self._produced_paths_by_cache_name.get(task_def.cache_name, frozenset())
-
     def _hash_value(
         self,
         *,
         annotation: Any,
         value: Any,
         known_digests: dict[str, str] | None = None,
-        excluded_paths: frozenset[str] | None = None,
         label: str = "value",
         is_output: bool = False,
     ) -> Any:
@@ -1001,7 +941,6 @@ class CacheStore:
                         annotation=item_annotation,
                         value=item,
                         known_digests=known_digests,
-                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item_annotation, item in pair_elements_with_annotations(
@@ -1020,14 +959,12 @@ class CacheStore:
                             annotation=key_annotation,
                             value=key,
                             known_digests=known_digests,
-                            excluded_paths=excluded_paths,
                             label=label,
                         ),
                         "value": self._hash_value(
                             annotation=value_annotation,
                             value=item,
                             known_digests=known_digests,
-                            excluded_paths=excluded_paths,
                             label=label,
                         ),
                     }
@@ -1043,7 +980,6 @@ class CacheStore:
                         annotation=annotation,
                         value=item,
                         known_digests=known_digests,
-                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item in value
@@ -1058,7 +994,6 @@ class CacheStore:
                         annotation=annotation,
                         value=item,
                         known_digests=known_digests,
-                        excluded_paths=excluded_paths,
                         label=label,
                     )
                     for item in value
@@ -1105,13 +1040,11 @@ class CacheStore:
         # same as before this feature.
         if is_content_trackable_path_value(annotation=annotation, value=value):
             resolved_key = str(Path(str(value)).resolve())
-            excluded = excluded_paths is not None and resolved_key in excluded_paths
-            if not excluded:
-                if known_digests is not None:
-                    known = known_digests.get(resolved_key)
-                    if known is not None:
-                        return {"sha256": known, "type": "file"}
-                return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
+            if known_digests is not None:
+                known = known_digests.get(resolved_key)
+                if known is not None:
+                    return {"sha256": known, "type": "file"}
+            return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
         if value is None or isinstance(value, (bool, int, float, str)):
             return {
@@ -1205,7 +1138,6 @@ class CacheStore:
         str
             Hex-encoded BLAKE3 digest of the stat-based payload.
         """
-        excluded_paths = self._excluded_output_paths(task_def=task_def)
         stat_parts: dict[str, Any] = {}
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
@@ -1214,7 +1146,6 @@ class CacheStore:
             stat_parts[name] = self._stat_value(
                 annotation=annotation,
                 value=resolved_args[name],
-                excluded_paths=excluded_paths,
                 label=f"{task_def.name}.{name}",
                 is_output=name in task_def.output_params,
             )
@@ -1237,7 +1168,6 @@ class CacheStore:
         *,
         annotation: Any,
         value: Any,
-        excluded_paths: frozenset[str] | None = None,
         label: str = "value",
         is_output: bool = False,
     ) -> Any:
@@ -1334,20 +1264,13 @@ class CacheStore:
         # ``file``/``folder`` branches above rather than reading content: a
         # value eligible for root-input content hashing under the normal key
         # (see ``is_content_trackable_path_value``) is fingerprinted by stat,
-        # not by digest, so ``--trust-mtimes`` stays a fast surrogate. Falls
-        # through to the plain scalar branch below when it is excluded as
-        # this task's own previous output, same as the content-addressed key.
+        # not by digest, so ``--trust-mtimes`` stays a fast surrogate.
         if is_content_trackable_path_value(annotation=annotation, value=value):
-            path = Path(str(value)).resolve()
-            excluded = excluded_paths is not None and str(path) in excluded_paths
-            if not excluded:
-                st = path.stat()
-                return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
+            st = Path(str(value)).resolve().stat()
+            return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
 
         # For non-path types, use the same hash as the content-addressed path.
-        return self._hash_value(
-            annotation=annotation, value=value, excluded_paths=excluded_paths, label=label
-        )
+        return self._hash_value(annotation=annotation, value=value, label=label)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
         """Extract key and value annotations for a mapping annotation."""

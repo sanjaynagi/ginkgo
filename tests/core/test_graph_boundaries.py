@@ -35,7 +35,7 @@ from tests.conftest import EventCollector
 
 
 @task()
-def write_rows_str(*, rows: int, output_path: str) -> str:
+def write_rows_str(*, rows: int, output_path: Out[file]) -> str:
     """Write ``rows`` lines and return the path as a plain ``str``."""
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,7 @@ def write_rows_str(*, rows: int, output_path: str) -> str:
 
 
 @task()
-def summarise_str(*, coords: str, output_path: str) -> str:
+def summarise_str(*, coords: str, output_path: Out[file]) -> str:
     """Summarise a path received as a plain ``str``."""
     count = len(Path(coords).read_text(encoding="utf-8").strip().split("\n"))
     Path(output_path).write_text(f"rows,{count}\n", encoding="utf-8")
@@ -52,7 +52,7 @@ def summarise_str(*, coords: str, output_path: str) -> str:
 
 
 @task()
-def write_rows_file(*, rows: int, output_path: str) -> file:
+def write_rows_file(*, rows: int, output_path: Out[file]) -> file:
     """Write ``rows`` lines and return the path as a ``file``."""
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ def write_rows_file(*, rows: int, output_path: str) -> file:
 
 
 @task()
-def summarise_file(*, coords: file, output_path: str) -> str:
+def summarise_file(*, coords: file, output_path: Out[file]) -> str:
     """Summarise a path received as a ``file``."""
     count = len(Path(coords).read_text(encoding="utf-8").strip().split("\n"))
     Path(output_path).write_text(f"rows,{count}\n", encoding="utf-8")
@@ -69,7 +69,7 @@ def summarise_file(*, coords: file, output_path: str) -> str:
 
 
 @task()
-def summarise_many_str(*, coords: list[str], output_path: str) -> str:
+def summarise_many_str(*, coords: list[str], output_path: Out[file]) -> str:
     """Summarise several paths received inside a ``list[str]``."""
     total = sum(len(Path(path).read_text(encoding="utf-8").strip().split("\n")) for path in coords)
     Path(output_path).write_text(f"rows,{total}\n", encoding="utf-8")
@@ -77,7 +77,7 @@ def summarise_many_str(*, coords: list[str], output_path: str) -> str:
 
 
 @task()
-def summarise_many_file(*, coords: list[file], output_path: str) -> str:
+def summarise_many_file(*, coords: list[file], output_path: Out[file]) -> str:
     """Summarise several paths received inside a ``list[file]``."""
     total = sum(len(Path(path).read_text(encoding="utf-8").strip().split("\n")) for path in coords)
     Path(output_path).write_text(f"rows,{total}\n", encoding="utf-8")
@@ -85,7 +85,7 @@ def summarise_many_file(*, coords: list[file], output_path: str) -> str:
 
 
 @task()
-def summarise_mapping_str(*, coords: dict[str, str], output_path: str) -> str:
+def summarise_mapping_str(*, coords: dict[str, str], output_path: Out[file]) -> str:
     """Summarise paths received as the values of a ``dict[str, str]``."""
     total = sum(
         len(Path(path).read_text(encoding="utf-8").strip().split("\n")) for path in coords.values()
@@ -112,7 +112,7 @@ def summarise_dir_str(*, readings: str, output_path: untracked) -> str:
 
 
 @task()
-def write_rows_untracked(*, rows: int, output_path: str) -> str:
+def write_rows_untracked(*, rows: int, output_path: Out[file]) -> str:
     """Write ``rows`` lines and return the path as a plain ``str``."""
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +129,7 @@ def summarise_untracked(*, coords: untracked, output_path: untracked) -> str:
 
 
 @task()
-def produce_file_asset(*, output_path: str) -> object:
+def produce_file_asset(*, output_path: Out[file]) -> object:
     """Return a file asset, which reaches a consumer as an ``AssetRef``."""
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,7 @@ def produce_file_asset(*, output_path: str) -> object:
 
 
 @task()
-def receive_as_str(*, incoming: str, output_path: str) -> str:
+def receive_as_str(*, incoming: str, output_path: Out[file]) -> str:
     """Receive an upstream value through a plain ``str`` parameter."""
     Path(output_path).write_text(str(incoming), encoding="utf-8")
     return output_path
@@ -163,57 +163,75 @@ def append_to_log(*, n: int, log_path: str) -> int:
 
 
 @task()
-def stamp_and_return_str(*, output_path: str) -> str:
-    """A legacy ``-> str`` task writing non-deterministic output to its own path."""
-    Path(output_path).write_text(f"{time.time_ns()}\n", encoding="utf-8")
-    with open("stamp_runs.txt", "a", encoding="utf-8") as handle:
+def append_to_untracked_log(*, n: int, log_path: untracked) -> int:
+    """The same side-channel log, declared ``untracked``."""
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(f"ran {n}\n")
+    return n * 2
+
+
+@task()
+def pass_through(*, path: str) -> file:
+    """Returns the input it only read, as a validator or normaliser might."""
+    with open("pass_through_runs.txt", "a", encoding="utf-8") as handle:
         handle.write("ran\n")
-    return output_path
+    return file(path)
 
 
 def _notices(collector: EventCollector) -> list[str]:
     return [event.message for event in collector.events if isinstance(event, TaskNotice)]
 
 
-class TestWrittenInputsAreLearned:
-    """A ``str`` path the task itself writes must not invalidate its own cache.
+class TestWrittenStrInputsAreFlagged:
+    """A file a task writes through a plain ``str`` path is flagged.
 
-    Content-hashing plain ``str`` path inputs (#281) would otherwise re-run a
-    task that appends to a log on every run, since the log changes each time.
-    A task seen creating or changing such a file keys that path by its string
-    from then on, and its entry is saved under that key straight away.
+    Plain ``str`` path inputs are content-hashed (#281), so a task that writes
+    one invalidates its own cache entry and re-runs every time. That is
+    reported with a notice naming the fix: ``Out[file]`` or ``untracked``.
     """
 
-    def test_a_task_appending_to_a_log_caches_from_the_second_run(self) -> None:
+    def test_a_task_appending_to_a_str_log_is_flagged_and_reruns(
+        self, event_collector: EventCollector
+    ) -> None:
+        for _ in range(2):
+            evaluate(append_to_log(n=3, log_path="run.log"), event_bus=event_collector.bus)
+
+        assert Path("run.log").read_text(encoding="utf-8") == "ran 3\nran 3\n"
+        notices = _notices(event_collector)
+        assert notices and all("Out[file]" in notice for notice in notices)
+        assert "run.log" in notices[0]
+
+    def test_an_untracked_log_is_not_flagged_and_caches(
+        self, event_collector: EventCollector
+    ) -> None:
         for _ in range(3):
-            evaluate(append_to_log(n=3, log_path="run.log"))
+            evaluate(
+                append_to_untracked_log(n=3, log_path="run.log"), event_bus=event_collector.bus
+            )
 
         assert Path("run.log").read_text(encoding="utf-8") == "ran 3\n"
+        assert _notices(event_collector) == []
 
-    def test_a_log_that_already_existed_is_learned_too(self) -> None:
-        Path("run.log").write_text("earlier\n", encoding="utf-8")
+    def test_a_returned_input_the_task_only_read_stays_content_tracked(self) -> None:
+        """Returning an input path does not make it look like an output."""
+        Path("in.txt").write_text("original\n", encoding="utf-8")
+        evaluate(pass_through(path="in.txt"))
+        evaluate(pass_through(path="in.txt"))
+        Path("in.txt").write_text("changed\n", encoding="utf-8")
+        evaluate(pass_through(path="in.txt"))
 
-        for _ in range(3):
-            evaluate(append_to_log(n=3, log_path="run.log"))
+        assert Path("pass_through_runs.txt").read_text(encoding="utf-8") == "ran\nran\n"
 
-        assert Path("run.log").read_text(encoding="utf-8") == "earlier\nran 3\n"
-
-    def test_a_legacy_str_output_with_changing_content_still_caches(self) -> None:
-        for _ in range(3):
-            evaluate(stamp_and_return_str(output_path="stamp.txt"))
-
-        assert Path("stamp_runs.txt").read_text(encoding="utf-8") == "ran\n"
-
-    def test_a_file_the_task_only_reads_is_still_content_tracked(self) -> None:
-        """Learning is per written path: a read-only input keeps #281's fix."""
+    def test_a_file_the_task_only_reads_is_not_flagged(
+        self, event_collector: EventCollector
+    ) -> None:
         Path("rows.csv").write_text("0\n1\n", encoding="utf-8")
-        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
-        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
+        evaluate(
+            summarise_str(coords="rows.csv", output_path="summary.csv"),
+            event_bus=event_collector.bus,
+        )
 
-        Path("rows.csv").write_text("0\n1\n2\n", encoding="utf-8")
-        evaluate(summarise_str(coords="rows.csv", output_path="summary.csv"))
-
-        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
+        assert not any("rows.csv" in notice for notice in _notices(event_collector))
 
 
 class TestFilePathBoundaryIsTracked:
