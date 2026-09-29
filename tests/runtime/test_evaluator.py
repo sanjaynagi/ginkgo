@@ -16,6 +16,7 @@ import pytest
 from ginkgo import (
     AssetRef,
     NotebookDirective,
+    Out,
     ScriptDirective,
     SubWorkflowDirective,
     asset,
@@ -127,7 +128,7 @@ def notebook_ipynb_task(*, notebook_path: str, value: int) -> Path:
 
 
 @task("notebook")
-def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: str) -> Path:
+def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: Out[file]) -> Path:
     """Run an ipynb notebook that declares an output file."""
     return notebook(notebook_path, output=output_path)
 
@@ -295,7 +296,7 @@ def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: untra
 
 
 @task(kind="shell", env="test_env")
-def shell_env_write_output_task(output_path: str) -> file:
+def shell_env_write_output_task(output_path: Out[file]) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
 
 
@@ -319,8 +320,8 @@ def shell_missing_output_task(output_path: str) -> file:
 
 @task(kind="shell")
 def shell_write_multiple_outputs_task(
-    output_one: str,
-    output_two: str,
+    output_one: Out[file],
+    output_two: Out[file],
     marker_path: untracked,
 ) -> tuple[file, file]:
     return shell(
@@ -457,7 +458,7 @@ def passthrough_task(value: object | None = None) -> object:
 
 
 @task()
-def reveal_secret_task(secret_value: str, output_path: str) -> file:
+def reveal_secret_task(secret_value: str, output_path: Out[file]) -> file:
     print(f"stdout:{secret_value}")
     print(f"stderr:{secret_value}", file=sys.stderr)
     Path(output_path).write_text(secret_value, encoding="utf-8")

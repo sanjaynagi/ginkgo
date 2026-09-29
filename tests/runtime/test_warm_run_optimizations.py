@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ginkgo import evaluate, file, task
+from ginkgo import Out, evaluate, file, task
 from ginkgo.core.remote import remote_file
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.core.hashing import hash_file
@@ -200,7 +200,7 @@ class TestMaterializations:
 
 
 @task()
-def produce_file(*, output_path: str) -> file:
+def produce_file(*, output_path: Out[file]) -> file:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text("content")
     return output_path
@@ -212,7 +212,7 @@ def consume_file(*, input_file: file) -> int:
 
 
 @task()
-def make_shared(*, output_path: str) -> file:
+def make_shared(*, output_path: Out[file]) -> file:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text("shared data")
     return output_path
