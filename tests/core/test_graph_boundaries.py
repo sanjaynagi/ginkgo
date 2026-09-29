@@ -1,25 +1,30 @@
 """Tests for silent failures at flow/graph boundaries.
 
-Covers two defects: a path crossing a task boundary as ``str`` contributes only
-its path string to the downstream cache key (#121), and a task call unreachable
-from the flow return value is dropped from the graph (#122).
+Covers three defects: a path crossing a task boundary as ``str`` contributes
+only its path string to the downstream cache key (#121), a task call
+unreachable from the flow return value is dropped from the graph (#122), and
+a literal path shared between two tasks creates no dependency edge, so a
+producer and consumer race in the same wave (#280, closed by #307 phase 2 —
+see ``TestOutPathEdgeInference`` below).
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import ginkgo
-from ginkgo import evaluate, file, flow, task, tmp_dir
+from ginkgo import Out, evaluate, file, flow, folder, task, tmp_dir
 from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
-from ginkgo.runtime.events import TaskNotice
+from ginkgo.runtime.edge_inference import DuplicateOutputPathError
+from ginkgo.runtime.evaluator import ConcurrentEvaluator, CycleError
+from ginkgo.runtime.events import GraphNodeRegistered, TaskNotice
 from ginkgo.runtime.task_validation import is_untracked_path_value
 from tests.conftest import EventCollector
 
@@ -449,3 +454,374 @@ class TestUnreachableCalls:
 
         assert plan.task_count == 1
         assert plan.dropped_labels == ("make_label()",)
+
+
+# --------------------------------------------------------------------------
+# #280 / #307 phase 2 — dependency edges inferred from Out[...] paths
+# --------------------------------------------------------------------------
+
+
+@task()
+def aggregate(*, rows: int, output_path: Out[file]) -> None:
+    """Write ``output_path`` slowly, line by line, flushing after each."""
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as handle:
+        for index in range(rows):
+            handle.write(f"{index}\n")
+            handle.flush()
+            time.sleep(0.05)
+
+
+@task()
+def relay(*, src: str, dest: Out[file]) -> None:
+    """Copy ``src`` to ``dest`` — one link in a chain joined only by paths."""
+    Path(dest).write_text(Path(src).read_text(encoding="utf-8"), encoding="utf-8")
+
+
+@task()
+def report(*, csv_path: str) -> int:
+    """Read ``csv_path`` and return its line count.
+
+    Raises if the path does not exist yet — the tell for #280: without the
+    inferred edge this task can run before ``aggregate`` has written
+    anything.
+    """
+    return len(Path(csv_path).read_text(encoding="utf-8").strip().split("\n"))
+
+
+@task()
+def make_qc_dir(*, qc_dir: Out[folder]) -> None:
+    Path(qc_dir).mkdir(parents=True, exist_ok=True)
+    (Path(qc_dir) / "report.txt").write_text("ok\n", encoding="utf-8")
+
+
+@task()
+def read_file_in_dir(*, report_path: str) -> str:
+    return Path(report_path).read_text(encoding="utf-8")
+
+
+@task()
+def write_many_into_dir(*, out_dir: Out[folder]) -> None:
+    target = Path(out_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "a.txt").write_text("a\n", encoding="utf-8")
+
+
+@task()
+def read_whole_dir(*, input_dir: folder) -> list[str]:
+    return sorted(p.name for p in Path(input_dir).iterdir())
+
+
+@task()
+def touch_output(*, output_path: Out[file]) -> None:
+    Path(output_path).write_text("x\n", encoding="utf-8")
+
+
+@task()
+def read_own_output(*, output_path: Out[file], also_read: str) -> str:
+    Path(output_path).write_text("x\n", encoding="utf-8")
+    return also_read
+
+
+@task()
+def side_use(*, value: object) -> object:
+    """Consume ``value`` for no other reason than to keep it reachable."""
+    return value
+
+
+@task()
+def build_and_link(*, rows: int) -> object:
+    """Dynamically register a producer/consumer pair sharing a literal path."""
+    agg = aggregate(rows=rows, output_path="dyn.csv")
+    rep = report(csv_path="dyn.csv")
+    return agg, rep
+
+
+@task()
+def write_one(*, n: int, out: Out[file]) -> int:
+    Path(out).write_text(f"{n}\n", encoding="utf-8")
+    return n
+
+
+@task()
+def spawn_into_folder(*, d: folder) -> object:
+    """Receive a folder and return children writing inside it."""
+    return write_one(n=1, out=str(Path(d) / "a.txt")), write_one(n=2, out=str(Path(d) / "b.txt"))
+
+
+@task()
+def slow_gate(*, seconds: float) -> int:
+    time.sleep(seconds)
+    return 0
+
+
+@task()
+def report_after(*, csv_path: str, gate: object) -> int:
+    return len(Path(csv_path).read_text(encoding="utf-8").strip().split("\n"))
+
+
+@task()
+def spawn_producer(*, path: str, gate: object) -> object:
+    """Dynamically register an ``Out`` producer for a literal path."""
+    return aggregate(rows=3, output_path=path)
+
+
+def _node_for(evaluator: ConcurrentEvaluator, *, param: str, value: Any) -> Any:
+    matches = [
+        node for node in evaluator.task_nodes.values() if node.expr.args.get(param) == value
+    ]
+    assert len(matches) == 1, f"expected exactly one node with {param}={value!r}: {matches}"
+    return matches[0]
+
+
+class TestOutPathEdgeInference:
+    """#280/#307 phase 2 — a literal path matching ``Out[...]`` gets an edge."""
+
+    def test_literal_path_matching_out_creates_dependency_edge(self) -> None:
+        @flow
+        def main():
+            agg = aggregate(rows=5, output_path="agg.csv")
+            rep = report(csv_path="agg.csv")
+            return agg, rep
+
+        evaluator = _validated_evaluator(main)
+        agg_node = _node_for(evaluator, param="output_path", value="agg.csv")
+        rep_node = _node_for(evaluator, param="csv_path", value="agg.csv")
+
+        assert agg_node.node_id in rep_node.dependency_ids
+        assert agg_node.node_id in rep_node.inferred_dependency_ids
+        assert evaluator.unreachable_calls == []
+
+    def test_dry_run_shows_two_waves(self) -> None:
+        @flow
+        def main():
+            return aggregate(rows=3, output_path="agg.csv"), report(csv_path="agg.csv")
+
+        evaluator = _validated_evaluator(main)
+        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+
+        assert plan.wave_count == 2
+
+    def test_real_run_orders_producer_before_consumer(self) -> None:
+        """The #280 repro: without the edge, ``report`` races ``aggregate``."""
+        _, count = evaluate(
+            (
+                aggregate(rows=5, output_path="agg.csv"),
+                report(csv_path="agg.csv"),
+            )
+        )
+        assert count == 5
+
+    def test_producer_reachable_only_via_a_separate_use_still_gets_the_edge(self) -> None:
+        """Producer's Expr is not returned directly, but stays in the graph."""
+
+        @flow
+        def main():
+            agg = aggregate(rows=4, output_path="agg.csv")
+            # `agg` reaches the graph only through this unrelated use, not by
+            # being returned itself — its Out[...] path must still be found.
+            kept = side_use(value=agg)
+            return kept, report(csv_path="agg.csv")
+
+        evaluator = _validated_evaluator(main)
+        agg_node = _node_for(evaluator, param="output_path", value="agg.csv")
+        rep_node = _node_for(evaluator, param="csv_path", value="agg.csv")
+
+        assert evaluator.unreachable_calls == []
+        assert agg_node.node_id in rep_node.dependency_ids
+
+    def test_map_fan_out_gets_per_branch_edges(self) -> None:
+        @flow
+        def main():
+            aggs = aggregate(rows=2).map(output_path=["a.csv", "b.csv"])
+            reps = report().map(csv_path=["a.csv", "b.csv"])
+            return aggs, reps
+
+        evaluator = _validated_evaluator(main)
+        agg_a = _node_for(evaluator, param="output_path", value="a.csv")
+        agg_b = _node_for(evaluator, param="output_path", value="b.csv")
+        rep_a = _node_for(evaluator, param="csv_path", value="a.csv")
+        rep_b = _node_for(evaluator, param="csv_path", value="b.csv")
+
+        assert rep_a.dependency_ids == frozenset({agg_a.node_id})
+        assert rep_b.dependency_ids == frozenset({agg_b.node_id})
+
+    def test_consumer_path_inside_produced_out_folder_gets_the_edge(self) -> None:
+        @flow
+        def main():
+            qc = make_qc_dir(qc_dir="qc")
+            rep = read_file_in_dir(report_path="qc/report.txt")
+            return qc, rep
+
+        evaluator = _validated_evaluator(main)
+        qc_node = _node_for(evaluator, param="qc_dir", value="qc")
+        rep_node = _node_for(evaluator, param="report_path", value="qc/report.txt")
+
+        assert qc_node.node_id in rep_node.dependency_ids
+
+    def test_folder_consumer_containing_a_produced_file_gets_the_edge(self) -> None:
+        @flow
+        def main():
+            prod = write_many_into_dir(out_dir="stage")
+            rep = read_whole_dir(input_dir="stage")
+            return prod, rep
+
+        evaluator = _validated_evaluator(main)
+        prod_node = _node_for(evaluator, param="out_dir", value="stage")
+        rep_node = _node_for(evaluator, param="input_dir", value="stage")
+
+        assert prod_node.node_id in rep_node.dependency_ids
+
+    def test_duplicate_out_paths_raise_before_anything_runs(self) -> None:
+        @flow
+        def main():
+            first = touch_output(output_path="dup.txt")
+            second = touch_output(output_path="dup.txt")
+            return first, second
+
+        with pytest.raises(DuplicateOutputPathError, match="dup.txt"):
+            _validated_evaluator(main)
+
+    def test_a_long_chain_of_inferred_edges_does_not_hit_the_recursion_limit(self) -> None:
+        """The cycle check walks the graph iteratively."""
+
+        @flow
+        def main():
+            return [relay(src=f"chain/{i}.txt", dest=f"chain/{i + 1}.txt") for i in range(3000)]
+
+        evaluator = _validated_evaluator(main)
+        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+
+        assert plan.wave_count == 3000
+
+    def test_inferred_edges_forming_a_cycle_raise_cycle_error(self) -> None:
+        @task()
+        def write_a_read_b(*, a_path: Out[file], b_path: str) -> None:
+            Path(a_path).write_text(Path(b_path).read_text(encoding="utf-8"), encoding="utf-8")
+
+        @task()
+        def write_b_read_a(*, b_path: Out[file], a_path: str) -> None:
+            Path(b_path).write_text(Path(a_path).read_text(encoding="utf-8"), encoding="utf-8")
+
+        @flow
+        def main():
+            first = write_a_read_b(a_path="a.txt", b_path="b.txt")
+            second = write_b_read_a(b_path="b.txt", a_path="a.txt")
+            return first, second
+
+        with pytest.raises(CycleError, match="Detected cycle in workflow graph"):
+            _validated_evaluator(main)
+
+    def test_reading_your_own_declared_output_is_not_a_self_dependency(self) -> None:
+        @flow
+        def main():
+            return read_own_output(output_path="self.txt", also_read="self.txt")
+
+        evaluator = _validated_evaluator(main)
+        node = next(iter(evaluator.task_nodes.values()))
+
+        assert node.dependency_ids == frozenset()
+        assert node.inferred_dependency_ids == frozenset()
+
+    def test_graph_node_registered_event_carries_the_inferred_edge(
+        self, event_collector: EventCollector
+    ) -> None:
+        evaluate(
+            (
+                aggregate(rows=2, output_path="agg.csv"),
+                report(csv_path="agg.csv"),
+            ),
+            event_bus=event_collector.bus,
+        )
+
+        registered = [
+            event for event in event_collector.events if isinstance(event, GraphNodeRegistered)
+        ]
+        agg_event = next(event for event in registered if "aggregate" in event.task_name)
+        rep_event = next(event for event in registered if "report" in event.task_name)
+
+        assert agg_event.task_id in rep_event.dependency_ids
+        assert agg_event.task_id in rep_event.inferred_dependency_ids
+
+    def test_no_out_params_means_no_behaviour_change(self) -> None:
+        """A graph with no ``Out[...]`` parameters is untouched by inference."""
+
+        @flow
+        def main():
+            return join_labels(left=make_label(text="a"), right=make_label(text="b"))
+
+        evaluator = _validated_evaluator(main)
+        for node in evaluator.task_nodes.values():
+            assert node.inferred_dependency_ids == frozenset()
+
+    def test_file_annotated_consumer_waits_for_the_out_file_producer(self) -> None:
+        """The reverse direction of #280: existence validation must wait too.
+
+        ``summarise_file`` requires its ``coords`` argument to already exist
+        (``file`` is validated at prepare time, right before dispatch). Without
+        the inferred edge this task could be prepared — and its existence
+        check run — before ``aggregate`` has written anything.
+        """
+
+        @flow
+        def main():
+            return (
+                aggregate(rows=3, output_path="agg.csv"),
+                summarise_file(coords="agg.csv", output_path="summary.csv"),
+            )
+
+        evaluate(main())
+        assert Path("summary.csv").read_text(encoding="utf-8") == "rows,3\n"
+
+    def test_dry_run_does_not_reject_a_not_yet_existing_out_path(self) -> None:
+        """Static validation must not reject a `file` input this graph produces."""
+
+        @flow
+        def main():
+            return (
+                aggregate(rows=3, output_path="agg.csv"),
+                summarise_file(coords="agg.csv", output_path="summary.csv"),
+            )
+
+        # Would raise FileNotFoundError before #307 phase 2's dry-run skip,
+        # since "agg.csv" does not exist on disk yet at validation time.
+        evaluator = _validated_evaluator(main)
+        assert len(evaluator.task_nodes) == 2
+
+    def test_dynamic_expansion_infers_edges_among_newly_registered_nodes(self) -> None:
+        """A producer/consumer pair built at runtime (dynamic graph expansion)."""
+        _, count = evaluate(build_and_link(rows=4))
+        assert count == 4
+
+    def test_expanding_task_may_spawn_children_writing_inside_its_folder(
+        self, tmp_path: Path
+    ) -> None:
+        """The expanding task is itself a consumer of its children's paths."""
+        results_dir = tmp_path / "res"
+        results_dir.mkdir()
+        assert evaluate(spawn_into_folder(d=str(results_dir))) == (1, 2)
+        assert (results_dir / "b.txt").read_text(encoding="utf-8") == "2\n"
+
+    def test_dynamic_producer_retroactively_gates_a_pending_consumer(self) -> None:
+        """A reader registered earlier waits for a producer registered later."""
+
+        @flow
+        def main():
+            gate = slow_gate(seconds=1.0)
+            spawned = spawn_producer(path="late.csv", gate=0)
+            return spawned, report_after(csv_path="late.csv", gate=gate)
+
+        _, count = evaluate(main())
+        assert count == 3
+
+    def test_dynamic_producer_for_an_already_read_path_raises(self) -> None:
+        Path("late.csv").write_text("old\n", encoding="utf-8")
+
+        @flow
+        def main():
+            count = report_after(csv_path="late.csv", gate=0)
+            return spawn_producer(path="late.csv", gate=count)
+
+        with pytest.raises(RuntimeError, match="already read that path"):
+            evaluate(main())

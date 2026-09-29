@@ -42,6 +42,13 @@ from ginkgo.core.types import (
 )
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.edge_inference import (
+    ConsumedPath,
+    ProducedPath,
+    PathIndex,
+    collect_consumed_paths,
+    collect_produced_paths,
+)
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
@@ -287,6 +294,16 @@ class TaskNode:
     node_id: int
     expr: Expr
     dependency_ids: frozenset[int]
+    inferred_dependency_ids: frozenset[int] = frozenset()
+    """The subset of :attr:`dependency_ids` inferred from ``Out[...]`` paths
+    (issue #307/#280) rather than declared through the ``Expr`` graph.
+
+    Mutated in place after registration via ``object.__setattr__`` — see
+    ``ConcurrentEvaluator._infer_and_apply_edges``. Kept separate from
+    :attr:`dependency_ids` only so an inferred edge stays cheaply
+    distinguishable; scheduling, dry-run waves and completion checks all
+    still read the combined :attr:`dependency_ids`.
+    """
 
     @property
     def task_def(self) -> TaskDef:
@@ -372,6 +389,10 @@ class NodeRun:
         return self.node.dependency_ids
 
     @property
+    def inferred_dependency_ids(self) -> frozenset[int]:
+        return self.node.inferred_dependency_ids
+
+    @property
     def concurrency_group(self) -> str | None:
         return self.node.concurrency_group
 
@@ -428,6 +449,22 @@ class ConcurrentEvaluator:
     _effective_resources_cache: dict[str, Resources] = field(
         default_factory=dict, init=False, repr=False
     )
+    # Edge inference (#280/#307) -----------------------------------------
+    _pending_node_ids: list[int] = field(default_factory=list, init=False, repr=False)
+    """Node ids created since the last call to ``_infer_and_apply_edges``,
+    whose ``GraphNodeRegistered`` event has not been emitted yet — emission is
+    deferred so the event can carry inferred edges (see that method)."""
+    _pending_registration_logs: dict[int, tuple[str | None, str | None]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _path_index: PathIndex = field(default_factory=PathIndex, init=False, repr=False)
+    """Cumulative literal produced/consumed paths across every registration
+    batch, so a later batch (dynamic expansion) is matched against everything
+    seen so far, and vice versa."""
+    _edges_inferred_this_batch: bool = field(default=False, init=False, repr=False)
+    """Whether the current batch added an edge, gating the cycle check."""
+    _dynamic_parent_ids: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    """Node id -> id of the task whose dynamic expansion registered it."""
 
     @property
     def unreachable_calls(self) -> list[ConstructedCall]:
@@ -606,6 +643,7 @@ class ConcurrentEvaluator:
         """
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
+        self._infer_and_apply_edges()
         if not self._root_dependency_ids:
             return self._materialize(expr)
 
@@ -792,22 +830,191 @@ class ConcurrentEvaluator:
             self._nodes[node_id].stderr_path = stderr_path
             stdout_log = self.run_dir.relative(stdout_path)
             stderr_log = self.run_dir.relative(stderr_path)
-        self._emit_event(
-            GraphNodeRegistered(
-                run_id=self._run_id,
-                task_id=task_id_for_node(node_id),
-                node_id=node_id,
-                task_name=expr.task_def.name,
-                kind=expr.task_def.kind,
-                execution_mode=expr.task_def.execution_mode,
-                env=expr.task_def.env,
-                retries=expr.task_def.retries,
-                dependency_ids=[task_id_for_node(dep_id) for dep_id in sorted(dependency_ids)],
-                stdout_log=stdout_log,
-                stderr_log=stderr_log,
-            )
-        )
+        self._pending_registration_logs[node_id] = (stdout_log, stderr_log)
+        # Emission is deferred to ``_infer_and_apply_edges``: a node's final
+        # dependency ids are not known until every node reachable from this
+        # registration batch has been walked and Out[...] edges inferred
+        # across all of them (#280/#307) — a literal path can name a node
+        # registered later in the same batch.
+        self._pending_node_ids.append(node_id)
         return node_id
+
+    def _infer_and_apply_edges(self, *, expanding_node_id: int | None = None) -> None:
+        """Infer ``Out[...]`` path dependency edges and emit deferred events.
+
+        Called once after every top-level registration batch — the initial
+        graph build (``evaluate``/``build_and_validate``) and each dynamic
+        expansion (``GraphExpanded``). Implements issue #280/#307's phase 2:
+
+        1. Collect the literal produced (``Out[...]``) and consumed path
+           values for the nodes registered in this batch.
+        2. Reject two nodes declaring the same, or an overlapping, ``Out``
+           path before any work starts.
+        3. Match new consumers against every producer known so far (this
+           batch and every earlier one) and add the producer as a dependency.
+        4. Match new producers against consumers from *earlier* batches —
+           the only way a dynamically registered node can retroactively
+           matter. A still-pending old consumer gets the edge added; one
+           already dispatched or completed can no longer be made to wait, so
+           this raises rather than let the race happen silently. The
+           expanding task and its own dynamic ancestors are exempt: a task
+           that receives a folder and returns children writing inside it
+           is the normal fan-out shape, and it already waits on those
+           children through its dynamic template.
+        5. Detect any cycle the new edges created.
+        6. Emit each new node's ``GraphNodeRegistered`` event, now carrying
+           its final (declared + inferred) dependency ids.
+
+        A retroactively added edge on an *already emitted* node is applied
+        to its live :class:`TaskNode` (so the scheduler honours it) but does
+        not re-emit that node's registration event — by the time a node can
+        acquire a retroactive dependency, it has not yet been dispatched, so
+        its later ``TaskPlanned`` event (emitted right before dispatch, from
+        the live ``dependency_ids``) already carries the edge into the
+        ledger.
+        """
+        new_node_ids = self._pending_node_ids
+        self._pending_node_ids = []
+        if not new_node_ids:
+            return
+
+        expanding_lineage: set[int] = set()
+        if expanding_node_id is not None:
+            for node_id in new_node_ids:
+                self._dynamic_parent_ids[node_id] = expanding_node_id
+            ancestor: int | None = expanding_node_id
+            while ancestor is not None:
+                expanding_lineage.add(ancestor)
+                ancestor = self._dynamic_parent_ids.get(ancestor)
+
+        new_produced: list[ProducedPath] = []
+        new_consumed: list[ConsumedPath] = []
+        for node_id in new_node_ids:
+            node = self._nodes[node_id]
+            new_produced.extend(
+                collect_produced_paths(
+                    node_id=node_id,
+                    task_name=node.task_def.name,
+                    task_def=node.task_def,
+                    args=node.expr.args,
+                )
+            )
+            new_consumed.extend(
+                collect_consumed_paths(
+                    node_id=node_id,
+                    task_name=node.task_def.name,
+                    task_def=node.task_def,
+                    args=node.expr.args,
+                )
+            )
+
+        index = self._path_index
+        index.add_produced(new_produced)
+        self._edges_inferred_this_batch = False
+
+        # New consumers against every producer indexed so far (new included).
+        for consumer in new_consumed:
+            producer_ids = {entry.node_id for entry in index.producers_for(consumer)}
+            if producer_ids:
+                self._add_inferred_dependencies(
+                    node_id=consumer.node_id, producer_ids=producer_ids
+                )
+
+        # New producers against consumers registered in earlier batches — the
+        # dynamic-expansion case, where the reader may already be in flight.
+        for producer in new_produced:
+            for consumer in index.consumers_for(producer):
+                if consumer.node_id in expanding_lineage:
+                    continue
+                consumer_run = self._nodes[consumer.node_id]
+                producer_run = self._nodes[producer.node_id]
+                if consumer_run.state != "pending":
+                    raise RuntimeError(
+                        f"{producer_run.task_def.name!r} was just registered declaring "
+                        f"`Out[...]` path {producer.path!r}, but {consumer_run.task_def.name!r} "
+                        f"already read that path (state={consumer_run.state!r}) before the "
+                        "edge could be inferred. Pass the path through the task graph "
+                        "(the producer's return value or an `.output[...]` reference) "
+                        "instead of a literal string so the dependency is explicit."
+                    )
+                self._add_inferred_dependencies(
+                    node_id=consumer.node_id, producer_ids={producer.node_id}
+                )
+
+        index.add_consumed(new_consumed)
+
+        # Registration already rejects cycles in the expression graph, so only
+        # an inferred edge can close one; skip the walk when none was added.
+        if self._edges_inferred_this_batch:
+            cycle = self._find_dependency_cycle()
+            if cycle is not None:
+                raise CycleError([self._nodes[nid].task_def.name for nid in cycle])
+
+        for node_id in new_node_ids:
+            node = self._nodes[node_id]
+            stdout_log, stderr_log = self._pending_registration_logs.pop(node_id, (None, None))
+            self._emit_event(
+                GraphNodeRegistered(
+                    run_id=self._run_id,
+                    task_id=task_id_for_node(node_id),
+                    node_id=node_id,
+                    task_name=node.task_def.name,
+                    kind=node.task_def.kind,
+                    execution_mode=node.task_def.execution_mode,
+                    env=node.task_def.env,
+                    retries=node.task_def.retries,
+                    dependency_ids=[
+                        task_id_for_node(dep_id) for dep_id in sorted(node.dependency_ids)
+                    ],
+                    inferred_dependency_ids=[
+                        task_id_for_node(dep_id)
+                        for dep_id in sorted(node.node.inferred_dependency_ids)
+                    ],
+                    stdout_log=stdout_log,
+                    stderr_log=stderr_log,
+                )
+            )
+
+    def _add_inferred_dependencies(self, *, node_id: int, producer_ids: set[int]) -> None:
+        """Merge inferred producer ids into a node's dependency ids in place."""
+        node = self._nodes[node_id].node
+        producer_ids = producer_ids - {node_id}
+        if not producer_ids:
+            return
+        object.__setattr__(node, "dependency_ids", node.dependency_ids | producer_ids)
+        object.__setattr__(
+            node, "inferred_dependency_ids", node.inferred_dependency_ids | producer_ids
+        )
+        self._edges_inferred_this_batch = True
+
+    def _find_dependency_cycle(self) -> list[int] | None:
+        """Return a cycle among the registered nodes' ``dependency_ids``, if any.
+
+        Iterative depth-first search, so a long linear chain of tasks cannot
+        exhaust the interpreter's recursion limit.
+        """
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: dict[int, int] = dict.fromkeys(self._nodes, WHITE)
+        for root in sorted(self._nodes):
+            if color[root] != WHITE:
+                continue
+            path: list[int] = [root]
+            stack = [iter(sorted(self._nodes[root].dependency_ids))]
+            color[root] = GRAY
+            while stack:
+                dep_id = next(stack[-1], None)
+                if dep_id is None:
+                    color[path.pop()] = BLACK
+                    stack.pop()
+                    continue
+                state = color.get(dep_id, BLACK)
+                if state == GRAY:
+                    return [*path[path.index(dep_id) :], dep_id]
+                if state == WHITE:
+                    color[dep_id] = GRAY
+                    path.append(dep_id)
+                    stack.append(iter(sorted(self._nodes[dep_id].dependency_ids)))
+        return None
 
     def _prepare_pending_nodes(self) -> None:
         """Resolve cache-ready nodes whose dependencies have completed."""
@@ -2297,12 +2504,19 @@ class ConcurrentEvaluator:
         """Build the static task graph and validate import/env/input constraints."""
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
+        self._infer_and_apply_edges()
         self._validator.validate_declared_envs(nodes=self._nodes.values())
         self._validator.validate_declared_secrets(nodes=self._nodes.values())
 
+        # A `file`/`folder` input that does not exist yet is normally a static
+        # error, but it is not when the path is one of this graph's own
+        # Out[...] outputs (#280): a real run would produce it before this
+        # node runs, since an edge was just inferred for it. Dry-run static
+        # validation must not reject what the run would actually satisfy.
+        produced_paths = set(self._path_index.produced_exact)
         for node in self._nodes.values():
             self._validator.validate_task_importable(task_def=node.task_def)
-            self._validator.validate_static_inputs(node=node)
+            self._validator.validate_static_inputs(node=node, produced_paths=produced_paths)
             # Placement is static per task definition; resolving it here
             # surfaces misconfiguration (remote=True or an unsatisfiable GPU
             # requirement without a usable executor) before anything runs.
@@ -2636,6 +2850,7 @@ class ConcurrentEvaluator:
             self._cleanup_transport(node)
 
             dynamic_dependencies = self._register_value(completed_value)
+            self._infer_and_apply_edges(expanding_node_id=node.node_id)
             if dynamic_dependencies:
                 node.state = "waiting_dynamic"
                 node.dynamic_template = completed_value
@@ -2669,6 +2884,7 @@ class ConcurrentEvaluator:
             return
 
         dynamic_dependencies = self._register_value(completed_value)
+        self._infer_and_apply_edges(expanding_node_id=node.node_id)
         if dynamic_dependencies:
             self._cleanup_transport(node)
             node.state = "waiting_dynamic"
