@@ -33,6 +33,24 @@ When you already have a run id:
   Shows a human-readable failure summary.
 - `ginkgo debug <run_id> --json`
   Emits structured diagnostics for programmatic consumers.
+- `ginkgo report <run_id>`
+  Renders a run as an HTML report; `--no-open --out <dir>` writes it to a
+  directory without opening a browser, with rendered notebooks under
+  `<dir>/notebooks/`.
+- `ginkgo cache ls`
+  Lists cache entries with their full keys.
+- `ginkgo cache explain <run_id>`
+  Shows each task's cache key beside its branch label, and why it reused the
+  cache or re-ran.
+- `ginkgo cache clear <full-cache-key>`
+  Removes one entry; a key prefix is not accepted. `ginkgo cache prune
+  --max-entries 0` removes every entry.
+
+Provenance:
+
+- `ginkgo why <path>`
+  Names the task and run that produced a file (or an artifact id), its cache
+  key, and the inputs that task recorded.
 
 Testing guidance:
 
