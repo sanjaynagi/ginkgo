@@ -311,9 +311,13 @@ parameter's name looks like a path (`path`, `output_dir`, `report_files`,
 ...) but is annotated a bare `str` shape (`str`, `str | None`, `list[str]`,
 `tuple[str, ...]`), `ginkgo doctor` and `ginkgo run --dry-run` emit a
 `path_like_str_param` warning naming the task and parameter, whether or not the
-workflow has ever run — no filesystem access, no execution required. It
-suggests `file`/`folder` for a path the task reads, or `Out[file]`/`Out[folder]`
-(a return-value wrapper) for one it writes. `untracked` never triggers this
+workflow has ever run — no filesystem access, no execution required. The
+warning is name-based, so it fires even when the value turns out to be an
+existing file (which is content-tracked, as above). What it still guards
+against: a directory or any other non-file path is tracked by its path string
+alone, only `file`/`folder` check that the path exists, and a path the task
+writes belongs in `Out[...]`. It suggests `file`/`folder` for a path the task
+reads, or `Out[file]`/`Out[folder]` for one it writes. `untracked` never triggers this
 warning: it is a declared choice, not the trap the warning exists to flag.
 
 ### Why did a task in my flow never run?

@@ -207,9 +207,11 @@ names each one and the error behind it.
 Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
 without touching the filesystem, a parameter whose name looks like a path
 (`path`, `output_dir`, `report_files`, ...) but is annotated a bare `str`
-shape rather than `file`/`folder` — a `path_like_str_param` warning, since
-such a parameter is tracked by its path string alone (see the FAQ entry on
-`file`/`folder` for why that matters).
+shape rather than `file`/`folder` — a `path_like_str_param` warning. Such a
+parameter is content-tracked only when its value names an existing regular
+file; a directory or any other non-file path is tracked by its path string
+alone, and nothing checks that it exists. A path the task writes belongs in
+`Out[...]` (see the FAQ entry on `file`/`folder`).
 
 ### Validation workflows
 

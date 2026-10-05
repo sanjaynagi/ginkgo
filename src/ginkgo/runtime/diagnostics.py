@@ -172,12 +172,13 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
 
     A parameter named like a path (``path``, ``output_dir``, ``report_files``,
     ...) but annotated a bare ``str`` shape (``str``, ``str | None``,
-    ``list[str]``, ``tuple[str, ...]``) is tracked by the cache only as a
-    string: editing the file it names does not invalidate the task, and
-    referencing it from another task's output creates no dependency edge —
-    this is issue #307. Purely static and name-based, so it flags every task
-    definition in the graph once, regardless of how many calls or branches
-    reach it.
+    ``list[str]``, ``tuple[str, ...]``) is only content-tracked when its
+    value names an existing regular file (#307 phase 2). A directory or any
+    other non-file path is tracked by its path string alone, ``file`` and
+    ``folder`` additionally validate that the path exists, and a path the
+    task writes belongs in ``Out[...]``. Purely static and name-based, so it
+    flags every task definition in the graph once, regardless of how many
+    calls or branches reach it.
 
     Parameters
     ----------
@@ -213,10 +214,11 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
                     code=PATH_LIKE_STR_PARAM_CODE,
                     message=(
                         f"{task_label}'s `{param_name}` parameter is annotated `str`, so it "
-                        "is cache-tracked by its path string alone: editing the file it names "
-                        "won't re-run the task, and no dependency edge is created when it comes "
-                        "from another task's output. Annotate it `file`/`folder` if the task "
-                        "reads that path, or `Out[file]`/`Out[folder]` if it writes to it."
+                        "is only content-tracked when its value names an existing regular "
+                        "file: a directory or any other non-file path is tracked by its path "
+                        "string alone, and nothing checks that it exists. Annotate it "
+                        "`file`/`folder` if the task reads that path, or `Out[file]`/"
+                        "`Out[folder]` if the task writes it."
                     ),
                     location=task_def.name,
                     suggestion=(
