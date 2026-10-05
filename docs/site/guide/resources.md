@@ -253,6 +253,34 @@ Two things this does *not* do:
   the notebooks and assets they produced are still listed and still there, so
   fixing the input and re-running does only the work that is left.
 
+### Aggregating The Branches That Succeeded
+
+To aggregate over a fan-out whose branches may fail, make the failure part of
+the branch's result instead of the run's. In a Python task, catch the exception
+inside the task body and return `None`; annotate the return as optional and have
+the aggregator drop the `None` entries. The branch then succeeds, so the
+aggregator is not skipped:
+
+```python
+@task()
+def load_sample(sample: str) -> str | None:
+    try:
+        return parse(sample)
+    except ValueError:
+        return None       # logged by the task, recorded as succeeded
+
+
+@task()
+def combine(loaded: list[str | None]) -> str:
+    kept = [item for item in loaded if item is not None]
+    ...
+```
+
+The trade-off is that the run no longer records those branches as failed, so
+log or return enough detail to find them later. This works only for Python
+tasks: a shell task's failure is its exit status, which Ginkgo cannot turn into
+a `None` result.
+
 Anything ginkgo itself rejects about a task attempt — a return value that
 breaks the task's declared contract, say — is ignored on the same terms as an
 error the task body raised. `--keep-going` is a statement about the whole run,

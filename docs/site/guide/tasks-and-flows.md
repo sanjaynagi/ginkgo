@@ -149,6 +149,39 @@ payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
 
+### Which shell runs the command
+
+Which shell runs `cmd=` depends on where the task runs, and none of them is
+strict by default:
+
+- **No `env` (local).** The command runs under `/bin/sh -c`, with no options.
+  That is whatever `/bin/sh` is on your machine (`dash` on Debian and Ubuntu,
+  `bash` in POSIX mode on macOS), so bash-only syntax such as `<(...)` is not
+  available.
+- **A Pixi or Conda `env`.** The command runs under `bash -c`.
+- **A container `env`.** The command runs under the shell named by
+  `[container] shell` in `ginkgo.toml`, `bash` by default (see
+  [Environments](environments.md)).
+
+In every case the shell is started without `errexit` or `pipefail`. In a
+multi-line command a failing line does not stop the ones after it, and in a
+pipeline only the last command's exit status counts, so
+`nosuchtool | cat > out` exits 0, the task is recorded as succeeded, and the
+result is cached. Turn strict mode on at the top of the command:
+
+```python
+from ginkgo import Out, file, shell, task
+
+
+@task(kind="shell")
+def align(reads: file, bam: Out[file]):
+    return shell(cmd=f"set -eo pipefail; bwa mem ref.fa {reads} | samtools sort -o {bam}")
+```
+
+`set -e` is portable. `pipefail` is not part of POSIX `sh`, so a local `/bin/sh`
+that is `dash` may reject `set -o pipefail`; give the task a Pixi or container
+`env`, which run bash, when you need it.
+
 ### Declaring outputs with `Out[...]` instead of `output=`
 
 When a shell, script, or notebook task's outputs are declared as `Out[...]`
@@ -558,6 +591,44 @@ simulate().map(
 `per_branch()` with `.product_map()` expresses the same sweep without the
 flattening, and without depending on `expand()`'s ordering, so prefer it for
 grids.
+
+### Fan-Out Over A Non-Rectangular Set Of Combinations
+
+When the combinations are not a grid — every unordered pair of populations on
+each chromosome, say — `.product_map()` cannot express them. Build one row per
+combination in a DataFrame and `.map()` over its columns, which `.map()` zips by
+position. `per_branch()` derives each output path from the row's own values:
+
+```python
+import itertools
+
+import pandas as pd
+
+from ginkgo import Out, file, flow, per_branch, task
+
+rows = pd.DataFrame(
+    [
+        {"chrom": chrom, "pop_a": a, "pop_b": b}
+        for chrom in ["2L", "3R"]
+        for a, b in itertools.combinations(["YRI", "CEU", "CHB"], 2)
+    ]
+)
+
+
+@task()
+def fst(chrom: str, pop_a: str, pop_b: str, out: Out[file]): ...
+
+
+@flow
+def main():
+    return fst().map(
+        **rows.to_dict("list"),
+        out=per_branch("results/{chrom}_{pop_a}_{pop_b}.txt"),
+    )
+```
+
+This runs six branches (`results/2L_YRI_CEU.txt`, `results/2L_YRI_CHB.txt`, ...),
+one per row, with no hand-written paths.
 
 ### Chaining Fan-Out
 
