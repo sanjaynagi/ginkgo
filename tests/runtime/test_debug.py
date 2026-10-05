@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,24 @@ def test_run_level_failure_without_failed_tasks_reports_error(
     assert "Run Failure" in stdout
     assert "ghost_env" in stdout
     assert "No failed tasks found" not in stdout
+
+
+def test_run_level_failure_without_failed_tasks_counts_as_one_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="Scheduler reached a deadlock")
+
+    assert _debug() == 0
+    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
+
+
+def test_failed_task_behind_the_run_failure_is_counted_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
+
+    assert _debug() == 0
+    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
 
 
 def test_failed_task_and_run_level_error_are_both_rendered(
