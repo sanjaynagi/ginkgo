@@ -138,8 +138,10 @@ def command_run_help(args, *, usage: str) -> int:
     int
         Process exit code.
     """
+    # Usage and parameter help are printed without markup: their brackets are
+    # literal text (``[workflow]``, a user's ``help="[x]"``), not style tags.
     rich_console = console(sys.stdout)
-    rich_console.print(usage.rstrip(), highlight=False)
+    rich_console.print(usage.rstrip(), highlight=False, markup=False)
 
     try:
         workflow_path = resolve_workflow_path(
@@ -157,13 +159,16 @@ def command_run_help(args, *, usage: str) -> int:
         )
     except BaseException as exc:
         rich_console.print(
-            f"\n[yellow]⚠[/] Could not import {workflow_path.name} to list its parameters: {exc}"
+            f"\n[yellow]⚠[/] Could not import {escape(workflow_path.name)} "
+            f"to list its parameters: {escape(str(exc))}"
         )
         return 0
 
-    rich_console.print(f"\nparameters declared by {workflow_path.name}:", highlight=False)
+    rich_console.print(
+        f"\nparameters declared by {workflow_path.name}:", highlight=False, markup=False
+    )
     for line in format_param_help(declarations) or ["  (none)"]:
-        rich_console.print(line, highlight=False)
+        rich_console.print(line, highlight=False, markup=False)
     return 0
 
 
@@ -481,7 +486,7 @@ def run_workflow(
                 run_id=run_id,
                 run_dir=run_dir.path,
                 workflow_path=workflow_path,
-                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {escape(message)}"),
             )
             if notification_service is not None:
                 stack.callback(notification_service.close)

@@ -2337,6 +2337,42 @@ def main():
         assert "Number of replicates" in result.stdout
         assert "--label STR" in result.stdout
 
+    def test_run_help_keeps_bracketed_words_in_the_usage_text(self) -> None:
+        result = _run_cli("run", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        text = _unwrapped(result.stdout)
+        assert "[workflow]" in text
+        assert "[remote.executors]" in text
+        assert "[remote.k8s]" in text
+
+    def test_run_help_prints_bracketed_parameter_help_verbatim(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from ginkgo import flow, task
+
+n = ginkgo.param("n", type=int, default=1, help="number [/x] of [bold] things")
+tag = ginkgo.param("tag", default="[red]")
+
+@task()
+def echo(n: int, tag: str) -> str:
+    return f"{tag}{n}"
+
+@flow
+def main():
+    return echo(n=n, tag=tag)
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "number [/x] of [bold] things" in result.stdout
+        assert "(default: '[red]')" in result.stdout
+
     def test_run_help_still_shows_usage_for_unimportable_workflow(self) -> None:
         Path("workflow.py").write_text("import nonexistent_module_xyz\n", encoding="utf-8")
         result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())

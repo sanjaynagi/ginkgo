@@ -735,6 +735,29 @@ def test_a_notebook_failures_reason_is_a_headline_not_the_full_traceback(
     assert text.count("Traceback (most recent call last)") == 1
 
 
+@pytest.mark.parametrize("label", ["clean[bad]", "clean[bad[/x]]", "clean[bold]"])
+def test_a_bracketed_label_is_printed_verbatim_in_the_failure_panel(
+    tmp_path: Path, label: str
+) -> None:
+    """A fan-out label is user data, not Rich markup: none of it is swallowed."""
+    renderer, _ = _renderer(tmp_path)
+    details = FailureDetails(
+        task_label=label,
+        exit_code=1,
+        log_path=Path("logs/task[1].stderr.log"),
+        log_tail=[],
+        error=f"bad region {label}",
+    )
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_panel(details))
+    text = console.file.getvalue()
+
+    assert f"Failure Details: {label}" in text
+    assert f"Task      {label}" in text
+    assert "task[1].stderr.log" in text
+
+
 def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line(
     tmp_path: Path,
 ) -> None:

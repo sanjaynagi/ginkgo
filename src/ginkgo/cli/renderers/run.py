@@ -624,7 +624,8 @@ class _RunLayoutRenderer:
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
         summary.add_column()
-        summary.add_row("Task", details.task_label)
+        # Labels and paths are user data: as Text, their brackets stay literal.
+        summary.add_row("Task", Text(details.task_label))
         if details.failure_kind:
             summary.add_row("Category", details.failure_kind)
         summary.add_row(
@@ -633,7 +634,7 @@ class _RunLayoutRenderer:
         if details.error:
             summary.add_row("Reason", Text(details.reason_headline, style="#7f1d1d"))
         if details.log_path is not None:
-            summary.add_row("Log", str(details.log_path))
+            summary.add_row("Log", Text(str(details.log_path)))
 
         sections: list[object] = [summary]
         if hint is not None:
@@ -655,7 +656,7 @@ class _RunLayoutRenderer:
 
         return Panel(
             Group(*sections),
-            title=f"[bold red]Failure Details: {details.task_label}[/]",
+            title=Text(f"Failure Details: {details.task_label}", style="bold red"),
             border_style="red",
             box=box.SQUARE,
             expand=False,
@@ -937,7 +938,7 @@ class CliRunRenderer:
                 self._console.print(self._layout.render_notebooks(notebooks))
             if assets:
                 self._console.print(self._layout.render_assets(assets))
-            self._console.print(f"Run directory: {self._summary.run_dir}")
+            self._console.print(f"Run directory: {self._summary.run_dir}", markup=False)
 
     def label_for_node(self, node_id: int) -> str | None:
         """Return the current display label for a node, if known."""
