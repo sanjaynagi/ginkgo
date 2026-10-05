@@ -90,7 +90,6 @@ class _RunEventState:
     """Track per-node task status as JSON event lines arrive from the evaluator."""
 
     def __init__(self) -> None:
-        self._name_counts: Counter[str] = Counter()
         self.rows: dict[int, _TaskRow] = {}
         self.row_order: list[int] = []
         self.notices: list[str] = []
@@ -142,7 +141,10 @@ class _RunEventState:
 
         event_time = time.perf_counter()
         if node_id not in self.rows:
-            label = self.label_for(task_name=task_name)
+            # A node the graph grew mid-run. The evaluator labelled it at
+            # registration, disambiguated against every other node, and no
+            # label on the event means the bare task name.
+            label = display_label if isinstance(display_label, str) else task_base_name(task_name)
             self.rows[node_id] = _TaskRow(
                 node_id=node_id,
                 task_name=task_name,
@@ -202,19 +204,6 @@ class _RunEventState:
         if started is None:
             return
         self.env_prepare_seconds += max(0.0, event_time - started)
-
-    def label_for(self, *, task_name: str) -> str:
-        """Return a display label for a node the plan did not announce.
-
-        Only nodes the graph grew mid-run reach this: every planned node is
-        seeded with its graph label. Such a node's own label arrives with
-        its first event carrying one, so this is a placeholder that only
-        has to stay distinct from its siblings.
-        """
-        base_name = task_name.rsplit(".", 1)[-1]
-        self._name_counts[base_name] += 1
-        count = self._name_counts[base_name]
-        return base_name if count == 1 else f"{base_name}[{count}]"
 
     def _apply_display_label(self, *, node_id: int, display_label: str) -> None:
         """Replace a fallback duplicate label with a richer runtime label."""

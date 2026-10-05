@@ -36,11 +36,14 @@ class GraphNodeRegistered(RunEvent):
     """Static or dynamic task-node registration."""
 
     event: str = "graph_node_registered"
-    v: int = 5
+    v: int = 6
     task_id: str = ""
     node_id: int = -1
     """The scheduler node this task is, recorded rather than parsed back out."""
     task_name: str = ""
+    display_label: str | None = None
+    """The label the task is shown under, such as ``clean[north]`` or
+    ``child[2]``; ``None`` when that is the bare task name."""
     kind: str = "python"
     execution_mode: str = "python"
     env: str | None = None

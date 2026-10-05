@@ -403,7 +403,7 @@ class TestReportData:
         assert report.status_raw == "succeeded"
         assert report.has_failures is False
         assert len(report.tasks) == 2
-        assert {task.base_name for task in report.tasks} == {"first", "second"}
+        assert {task.label for task in report.tasks} == {"first", "second"}
         assert not any(task.failed for task in report.tasks)
         # Summary cards present.
         labels = [card.label for card in report.summary_cards]
@@ -590,7 +590,7 @@ class TestReportData:
         assert report.has_failures is True
         assert len(report.failures) == 1
         card = report.failures[0]
-        assert card.base_name == "second"
+        assert card.label == "second"
         assert card.category == "user_code_error"
         assert card.log_tail is not None
         assert card.log_tail.total_lines > 0
@@ -640,7 +640,90 @@ class TestReportData:
 # ----- Export ------------------------------------------------------------
 
 
+def _make_fan_out_run(*, tmp_path: Path, run_id: str) -> _Run:
+    """Build a failed run whose two fan-out branches of one task both failed."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ledger = Ledger.start(root=tmp_path, run_id=run_id, workflow=str(tmp_path / "workflow.py"))
+    for node_id, label in enumerate(["clean[north]", "clean[south]"]):
+        task_id = f"task_{node_id:04d}"
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id=run_id, task_id=task_id, node_id=node_id, task_name="demo.clean"
+            )
+        )
+        ledger.bus.emit(
+            TaskPlanned(
+                run_id=run_id,
+                task_id=task_id,
+                task_name="demo.clean",
+                display_label=label,
+                inputs={"region": label[6:-1]},
+                cache_key=f"cache-{label}",
+            )
+        )
+        ledger.bus.emit(
+            TaskFailed(
+                run_id=run_id,
+                task_id=task_id,
+                task_name="demo.clean",
+                display_label=label,
+                attempt=1,
+                exit_code=1,
+                failure={"kind": "user_code_error", "message": "boom"},
+            )
+        )
+    return _Run(ledger=ledger, tmp_path=tmp_path, status="failed", error="boom")
+
+
 class TestExport:
+    def test_fan_out_notebook_branches_keep_their_own_html(self, tmp_path: Path) -> None:
+        ledger = Ledger.start(root=tmp_path, run_id="run-nb-fan-out")
+        for node_id, region in enumerate(["north", "south"]):
+            task_id = f"task_{node_id:04d}"
+            ledger.bus.emit(
+                GraphNodeRegistered(
+                    run_id=ledger.run_id, task_id=task_id, node_id=node_id, task_name="demo.report"
+                )
+            )
+            html_path = ledger.path / "notebooks" / f"{task_id}.html"
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(f"<html>{region}</html>", encoding="utf-8")
+            ledger.bus.emit(
+                TaskAnnotated(
+                    run_id=ledger.run_id,
+                    task_id=task_id,
+                    task_name="demo.report",
+                    fields={"task_type": "notebook", "rendered_html": f"notebooks/{task_id}.html"},
+                )
+            )
+            ledger.bus.emit(
+                TaskCompleted(
+                    run_id=ledger.run_id, task_id=task_id, task_name="demo.report", attempt=1
+                )
+            )
+        run = _Run(ledger=ledger, tmp_path=tmp_path)
+
+        out_dir = tmp_path / "out"
+        export_report(summary=run.summary(), out_dir=out_dir)
+        report = build_report_data(summary=run.summary())
+
+        copies = [out_dir / card.link_relpath for card in report.notebooks]
+        assert [path.read_text(encoding="utf-8") for path in copies] == [
+            "<html>north</html>",
+            "<html>south</html>",
+        ]
+
+    def test_fan_out_branches_are_named_by_their_labels(self, tmp_path: Path) -> None:
+        run = _make_fan_out_run(tmp_path=tmp_path, run_id="run-fan-out")
+
+        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        task_names = re.findall(r'<td class="name">([^<]*)</td>', html)
+        assert task_names == ["clean[north]", "clean[south]"]
+        failure_headings = re.findall(r"<h4>([^<]*)</h4>", html)
+        assert failure_headings == ["clean[north]", "clean[south]"]
+
     def test_bundle_mode_renders_asset_check_badges(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)
         _register_asset(

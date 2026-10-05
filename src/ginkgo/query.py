@@ -245,6 +245,9 @@ class CacheEntryRow:
         ISO-8601 UTC timestamps; ``last_hit_at`` is ``None`` until a run hits it.
     hit_count : int
         Runs that have served from this entry.
+    display_label : str | None
+        The fan-out label of the newest recorded task with this key, such as
+        ``clean[north]``; ``None`` when that task had none.
     """
 
     cache_key: str
@@ -253,6 +256,7 @@ class CacheEntryRow:
     created_at: str | None
     hit_count: int
     last_hit_at: str | None
+    display_label: str | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -684,11 +688,17 @@ class Query:
         -------
         list[CacheEntryRow]
         """
-        where = "WHERE function = ?" if function is not None else ""
+        where = "WHERE c.function = ?" if function is not None else ""
         params = (function,) if function is not None else ()
+        # The entry does not record which branch wrote it, so the label comes
+        # from the newest task the ledger recorded with the same key.
         rows = self._store.query(
-            "SELECT cache_key, function, size_bytes, created_at, hit_count, last_hit_at "
-            f"FROM cache_entries {where} ORDER BY created_at DESC, cache_key",  # noqa: S608
+            "SELECT c.cache_key, c.function, c.size_bytes, c.created_at, c.hit_count, "
+            "c.last_hit_at, ("
+            "  SELECT t.display_label FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            "  WHERE t.cache_key = c.cache_key ORDER BY r.started_at DESC LIMIT 1"
+            ") AS display_label "
+            f"FROM cache_entries c {where} ORDER BY c.created_at DESC, c.cache_key",  # noqa: S608
             params,
         )
         return [
@@ -699,6 +709,7 @@ class Query:
                 created_at=row["created_at"],
                 hit_count=int(row["hit_count"] or 0),
                 last_hit_at=row["last_hit_at"],
+                display_label=row["display_label"],
             )
             for row in rows
         ]

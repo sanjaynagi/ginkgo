@@ -539,6 +539,37 @@ You can chain fan-out calls. Chaining always returns a flat `ExprList`, with
 existing branches treated as the outer loop and newly introduced rows as the
 inner loop.
 
+### How Branches Are Labelled
+
+Each branch is shown under a label built from its varying values. The same
+label appears in the live table, `--dry-run`, `runs show`, `debug`, the HTML
+report and `cache ls`, and `ginkgo history "de[batch]"` finds that branch.
+
+- `.product_map()` labels every varying argument as `name=value`:
+  `train[sample=sample_a,lr=0.01]`.
+- `.map()` uses bare values. It takes the varying arguments in the order you
+  pass them, adding one at a time until the labels tell every branch apart.
+  `.map(factor=["condition", "batch"])` gives `de[condition]` and `de[batch]`.
+  `.map(factor=["c", "c", "b"], adjust_for=["batch", "", "batch"])` needs both
+  arguments and gives `de[c,batch]`, `de[c,]` and `de[b,batch]`; an empty
+  string still counts as a value.
+- `.map()` skips a value longer than 24 characters, or one that looks like a
+  path (it contains `/` or ends in a file extension). When no varying argument
+  has a usable value, a branch takes the label of the upstream branch it was
+  mapped over, or else the first varying argument's value in full.
+- Chained fan-out joins the labels: `train[sample_a,lr=0.01,epochs=10]`.
+- A call that is neither mapped nor product-mapped has no label and is shown by
+  its task name.
+
+When two tasks would be shown under the same name or label, the second and
+later take an ordinal in graph order: `child`, `child[2]`, `child[3]`. This
+covers plain calls, branches whose values do not tell them apart, and the tasks
+a dynamic task returns.
+
+A `.map()` label comes from the values, so changing the `.map()` arguments can
+move a label onto different inputs. Compare cache keys before reading two
+`history` rows with the same label as the same branch.
+
 ## Returning Expressions From Tasks
 
 Tasks can return:
