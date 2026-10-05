@@ -4,7 +4,7 @@
 <div class="failure-card">
   <div class="failure-head">
     <div>
-      <h4>{{ card.base_name }}</h4>
+      <h4>{{ card.label }}</h4>
       <div class="meta">
         {{ card.task_name }}
         {% if card.exit_code is not none %} · exit {{ card.exit_code }}{% endif %}

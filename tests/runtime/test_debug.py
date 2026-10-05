@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from ginkgo.cli.commands.debug import command_debug
-from ginkgo.runtime.events import GraphNodeRegistered, TaskFailed
+from ginkgo.runtime.events import GraphNodeRegistered, TaskFailed, TaskPlanned
 
 from tests.conftest import Ledger
 
@@ -26,6 +26,7 @@ def _record_run(
     failed_task: bool = False,
     succeeded_task: bool = False,
     message: str = "boom",
+    display_label: str | None = None,
 ) -> None:
     """Record one run in the workspace ``ginkgo debug`` will read."""
     ledger = Ledger.start(root=cwd, run_id=RUN_ID, workflow="wf.py")
@@ -33,6 +34,15 @@ def _record_run(
         name = "explode" if failed_task else "ok"
         ledger.bus.emit(
             GraphNodeRegistered(run_id=RUN_ID, task_id="task_0000", node_id=0, task_name=name)
+        )
+    if display_label is not None:
+        ledger.bus.emit(
+            TaskPlanned(
+                run_id=RUN_ID,
+                task_id="task_0000",
+                task_name="explode",
+                display_label=display_label,
+            )
         )
     if failed_task:
         ledger.bus.emit(
@@ -103,6 +113,27 @@ def test_failed_task_and_run_level_error_are_both_rendered(
     assert "boom" in stdout
     assert "Run Failure" in stdout
     assert "orchestrator exploded" in stdout
+
+
+def test_a_fan_out_branch_is_named_by_its_label(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", failed_task=True, display_label="explode[north]")
+
+    assert _debug() == 0
+    stdout = capsys.readouterr().out
+    assert "Failed Task: explode[north]" in stdout
+    assert re.search(r"Task +explode\[north\]", stdout)
+
+
+def test_json_payload_carries_the_branch_label(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", failed_task=True, display_label="explode[north]")
+
+    assert _debug(json_output=True) == 0
+    failure = json.loads(capsys.readouterr().out)["failures"][0]
+    assert (failure["task_name"], failure["display_label"]) == ("explode", "explode[north]")
 
 
 def test_a_bracketed_error_message_is_printed_verbatim(

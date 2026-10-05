@@ -94,7 +94,8 @@ class TaskRow:
     task_key: str
     node_id: int | None
     name: str
-    base_name: str
+    label: str
+    """The task's fan-out label, or its base name."""
     kind_label: str
     status_label: str
     status_tone: str
@@ -150,7 +151,8 @@ class FailureCard:
 
     task_key: str
     task_name: str
-    base_name: str
+    label: str
+    """The task's fan-out label, or its base name."""
     category: str | None
     exit_code: int | None
     attempts_label: str | None
@@ -644,7 +646,7 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
                 task_key=task.task_key,
                 node_id=task.node_id,
                 name=task.name,
-                base_name=task.base_name,
+                label=task.label,
                 kind_label=task.kind_label,
                 status_label=_STATUS_LABEL.get(task.status, task.status),
                 status_tone=_STATUS_TONE.get(task.status, "warn"),
@@ -824,7 +826,7 @@ def _graph_tone(*, task: TaskSummary, failure_keys: set[str]) -> str:
 
 def _graph_label(task: TaskSummary) -> tuple[str, str | None]:
     """Return the display label and optional sub-label for a graph node."""
-    label = task.base_name
+    label = task.label
     sub = None
     # Fan-out hint when there are dynamic dependencies beyond one.
     dynamic = len(task.dynamic_dependency_ids)
@@ -860,7 +862,7 @@ def _build_failures(
             FailureCard(
                 task_key=task.task_key,
                 task_name=task.name,
-                base_name=task.base_name,
+                label=task.label,
                 category=category,
                 exit_code=task.exit_code,
                 attempts_label=task.attempts_label,
