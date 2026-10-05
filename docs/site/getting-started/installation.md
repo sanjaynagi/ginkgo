@@ -12,7 +12,9 @@ curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh |
 ```
 
 This installs `ginkgo` from `main` into an isolated environment via
-`uv tool install`. Re-run the same command to upgrade.
+`uv tool install`. Re-run the same command to upgrade. It installs just the CLI:
+the example workflows under `examples/` and the Pixi workspace below come from
+a clone of the repository (`git clone https://github.com/sanjaynagi/ginkgo.git`).
 
 ## Recommended For Development: Pixi
 

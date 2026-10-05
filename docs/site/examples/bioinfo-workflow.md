@@ -4,10 +4,15 @@ This example is a small but realistic workflow. It shows the main runtime
 boundaries — Pixi environments, containers, fan-out, and local aggregation —
 in one place.
 
-Source files:
+Source files, in the Ginkgo repository (clone it with
+`git clone https://github.com/sanjaynagi/ginkgo.git`; the files are not part of
+the `ginkgo` CLI install):
 
 - `examples/bioinfo/workflow/flow.py`
 - `examples/bioinfo/ginkgo.toml`
+
+Running it needs Pixi and Docker (or Podman) on your `PATH`; see
+[Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
 
 ## What The Workflow Does
 
@@ -75,7 +80,7 @@ def main():
 
 ## Running The Example
 
-From the example root:
+From the example root, `ginkgo/examples/bioinfo` in your clone:
 
 ```bash
 ginkgo run

@@ -1,11 +1,28 @@
 # Quickstart
 
-This quickstart uses the runnable bioinformatics example in `examples/bioinfo`.
+This quickstart uses the runnable bioinformatics example in `examples/bioinfo`
+of the Ginkgo repository. The example is not installed with the `ginkgo` CLI,
+so you need a clone of the repository. If you would rather start with no
+checkout and no external tools, run the
+[Minimal Workflow](../index.md#a-minimal-workflow) from the home page, or
+scaffold a project with `ginkgo init`.
 
-## 1. Move Into The Example
+## Prerequisites
+
+- The `ginkgo` CLI; see [Installation](installation.md).
+- [Pixi](https://pixi.sh/) on your `PATH`: two of the example's tasks run in a
+  Pixi environment, which Ginkgo installs on first use.
+- Docker or Podman on your `PATH`: one task runs in a container image, which
+  Ginkgo pulls on first use.
+
+Both are described under
+[Runtime Prerequisites](installation.md#runtime-prerequisites).
+
+## 1. Clone The Repository And Move Into The Example
 
 ```bash
-cd examples/bioinfo
+git clone https://github.com/sanjaynagi/ginkgo.git
+cd ginkgo/examples/bioinfo
 ```
 
 The example includes:
