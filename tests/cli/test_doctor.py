@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -15,14 +16,47 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
 
 
-def _run_doctor(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_doctor(
+    *args: str, cwd: Path, path_prefix: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = None
+    if path_prefix is not None:
+        env = {**os.environ, "PATH": f"{path_prefix}{os.pathsep}{os.environ['PATH']}"}
     return subprocess.run(
         [str(PYTHON), "-m", "ginkgo.cli", "doctor", "workflow.py", *args],
         cwd=cwd,
         check=False,
         text=True,
         capture_output=True,
+        env=env,
     )
+
+
+def _write_fake_docker(*, daemon_up: bool) -> Path:
+    """Write a ``docker`` stub that has no local images and logs each call.
+
+    Returns the directory to put first on ``PATH``.
+    """
+    bin_dir = Path("fake-bin").resolve()
+    bin_dir.mkdir()
+    info = (
+        "exit 0"
+        if daemon_up
+        else "echo 'failed to connect to the docker API at unix:///fake/docker.sock' >&2; exit 1"
+    )
+    stub = bin_dir / "docker"
+    stub.write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{bin_dir / "calls.log"}"
+case "$1" in
+  info) {info} ;;
+  *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return bin_dir
 
 
 def _write_workflow(*, env: str | None) -> None:
@@ -256,10 +290,10 @@ class TestDoctorContainerImageValidation:
     """Cover for issue #288: a container image that cannot possibly run is
     caught by ``doctor`` rather than surfacing mid-run.
 
-    ``pull_policy = "never"`` keeps this deterministic and network-free: the
-    image is certain to be absent (no daemon is available here) and no
-    pull/registry attempt will ever be made, so the diagnostic follows from
-    the local check alone.
+    ``pull_policy = "never"`` and a stub ``docker`` with a running daemon and
+    no local images keep this deterministic and network-free: the image is
+    certain to be absent and no pull/registry attempt will ever be made, so
+    the diagnostic follows from the local check alone.
     """
 
     def _write_never_pull_config(self) -> None:
@@ -271,8 +305,9 @@ class TestDoctorContainerImageValidation:
     def test_bogus_image_produces_a_diagnostic(self) -> None:
         self._write_never_pull_config()
         _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+        fake_bin = _write_fake_docker(daemon_up=True)
 
-        result = _run_doctor(cwd=Path.cwd())
+        result = _run_doctor(cwd=Path.cwd(), path_prefix=fake_bin)
 
         assert result.returncode == 1
         assert "MISSING_IMAGE" in result.stderr
@@ -281,13 +316,40 @@ class TestDoctorContainerImageValidation:
     def test_bogus_image_is_reported_in_json(self) -> None:
         self._write_never_pull_config()
         _write_workflow(env="docker://nope-this-image-does-not-exist:99.99")
+        fake_bin = _write_fake_docker(daemon_up=True)
 
-        result = _run_doctor("--json", cwd=Path.cwd())
+        result = _run_doctor("--json", cwd=Path.cwd(), path_prefix=fake_bin)
 
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
         assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
+
+
+class TestDoctorContainerDaemonValidation:
+    """Issue #343: a Docker CLI whose daemon is down fails ``doctor`` with a
+    message naming the daemon, instead of passing and failing the run."""
+
+    def test_unreachable_daemon_produces_a_diagnostic(self) -> None:
+        _write_workflow(env="docker://ubuntu:24.04")
+        fake_bin = _write_fake_docker(daemon_up=False)
+
+        result = _run_doctor("--json", cwd=Path.cwd(), path_prefix=fake_bin)
+
+        assert result.returncode == 1
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] != "MISSING_IMAGE"
+        assert "docker daemon is not reachable" in diagnostic["message"]
+        assert "failed to connect to the docker API" in diagnostic["message"]
+
+    def test_workflow_without_container_envs_does_not_probe(self) -> None:
+        _write_workflow(env=None)
+        fake_bin = _write_fake_docker(daemon_up=False)
+
+        result = _run_doctor(cwd=Path.cwd(), path_prefix=fake_bin)
+
+        assert result.returncode == 0, result.stderr
+        assert not (fake_bin / "calls.log").exists()
 
 
 class TestDoctorEnvRootMatchesRun:
