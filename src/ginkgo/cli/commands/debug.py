@@ -41,7 +41,11 @@ def command_debug(args) -> int:
         rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{summary.run_id}[/]")
         return 0
 
-    rich_console.print(render_debug_header(summary=summary, failures=len(failed_tasks)))
+    # A failed run with no failed task failed at run level, and that is one
+    # failure. Otherwise the run failed because its tasks did, so counting
+    # the run as well would count the same failure twice.
+    failures = len(failed_tasks) or 1
+    rich_console.print(render_debug_header(summary=summary, failures=failures))
     for item in _debug_failure_details(summary=summary, failed_tasks=failed_tasks):
         rich_console.print(render_debug_failure_panel(item))
 
