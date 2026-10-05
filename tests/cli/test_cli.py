@@ -244,6 +244,16 @@ def test_version_flag_reports_pyproject_version() -> None:
     assert result.stdout.strip() == f"ginkgo {expected}"
 
 
+def test_init_help_describes_every_flag() -> None:
+    result = _run_cli("init", "--help", cwd=REPO_ROOT)
+
+    assert result.returncode == 0
+    help_text = _unwrapped(result.stdout)
+    assert "--no-skills Write the project scaffold without the agent skills." in help_text
+    assert "--skills-only Write only the agent skills, not the project scaffold." in help_text
+    assert "--force Overwrite scaffold files that already exist." in help_text
+
+
 @pytest.mark.parametrize(
     ("command", "subcommands"),
     [
@@ -509,6 +519,64 @@ def main():
         assert stats["never_hit_bytes"] == 100
         assert stats["hit_histogram"] == {"0": 1, "1": 1}
         assert stats["top_functions"][0]["entries"] == 2
+
+    def test_cache_stats_reports_artifact_store_bytes_separately(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import file, flow, task
+
+@task()
+def make() -> file:
+    Path("out.txt").write_text("x" * 1000, encoding="utf-8")
+    return file("out.txt")
+
+@flow
+def main():
+    return make()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+
+        as_json = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+        text = _run_cli("cache", "stats", cwd=Path.cwd())
+
+        assert as_json.returncode == 0, as_json.stderr
+        stats = json.loads(as_json.stdout)
+        assert stats["artifact_bytes"] == 1000
+        # The entry figure stays the cache entries' own bytes.
+        assert stats["total_bytes"] < 1000
+        assert "Artifact store: 1000 B" in text.stdout
+
+    def test_assets_materialised_is_not_printed_for_a_fully_cached_run(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import pandas as pd
+from ginkgo import flow, table, task
+
+@task()
+def make() -> object:
+    return table(pd.DataFrame({"a": [1, 2]}), name="a")
+
+@flow
+def main():
+    return make()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert first.returncode == 0, first.stderr
+        assert "Assets materialised (1)" in first.stdout
+        assert second.returncode == 0, second.stderr
+        assert "0 tasks executed, 1 cached" in second.stdout
+        assert "Assets materialised" not in second.stdout
 
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
@@ -2075,10 +2143,35 @@ def main():
         assert result.returncode == 1
         assert "Run not found: run-a" in result.stderr
 
-    def test_cache_explain_requires_a_run_id(self) -> None:
+    def test_cache_explain_defaults_to_the_latest_run(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        _run_cli("run", "workflow.py", cwd=Path.cwd())
+        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert second.returncode == 0, second.stderr
+        run_dir = _extract_run_dir(second.stdout)
+
+        explain = _run_cli("cache", "explain", "--json", cwd=Path.cwd())
+        assert explain.returncode == 0, explain.stderr
+        assert json.loads(explain.stdout)["run_id"] == run_dir.name
+
+    def test_cache_explain_without_runs_reports_no_runs(self) -> None:
         result = _run_cli("cache", "explain", cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "provide a run id" in result.stdout
+        assert result.returncode == 1
+        assert "No runs recorded" in result.stderr
 
 
 class TestCliRunProfile:

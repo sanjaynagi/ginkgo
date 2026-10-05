@@ -89,6 +89,13 @@ class TestTaskDecorator:
         assert isinstance(run, TaskDef)
         assert run.kind == kind
 
+    def test_bare_task_decorator_points_at_the_parenthesised_form(self):
+        with pytest.raises(TypeError, match=r"use @task\(\)"):
+
+            @task
+            def bare(x: int) -> int:
+                return x
+
     def test_task_positional_kind_and_keyword_differ_raises(self):
         with pytest.raises(ValueError, match="kind specified twice"):
 

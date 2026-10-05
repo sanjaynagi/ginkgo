@@ -30,6 +30,8 @@ from ginkgo.runtime.events import (
     TaskCompleted,
     TaskFailed,
     TaskPlanned,
+    TaskRetrying,
+    TaskStarted,
 )
 
 from ginkgo.runtime.run_summary import RunSummary
@@ -415,6 +417,66 @@ class TestReportData:
         # Masthead KV includes the status pill row.
         status_entries = [kv for kv in report.masthead_kv if kv.key == "status"]
         assert len(status_entries) == 1
+
+    def test_attempts_label_counts_the_attempts_made(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-attempts", fail=False)
+        report = build_report_data(
+            summary=run.summary(),
+            generated_at=datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC),
+        )
+
+        # Each fixture task completed on its first and only attempt.
+        assert [task.attempts_label for task in report.tasks] == ["1", "1"]
+
+    def test_attempts_label_for_an_exhausted_retry_budget(self, tmp_path: Path) -> None:
+        ledger = Ledger.start(root=tmp_path, run_id="run-retries")
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id="run-retries",
+                task_id="task_0000",
+                node_id=0,
+                task_name="demo.flaky",
+                retries=2,
+            )
+        )
+        for attempt in (1, 2, 3):
+            ledger.bus.emit(
+                TaskStarted(
+                    run_id="run-retries",
+                    task_id="task_0000",
+                    task_name="demo.flaky",
+                    attempt=attempt,
+                )
+            )
+            if attempt < 3:
+                ledger.bus.emit(
+                    TaskRetrying(
+                        run_id="run-retries",
+                        task_id="task_0000",
+                        task_name="demo.flaky",
+                        attempt=attempt,
+                    )
+                )
+        ledger.bus.emit(
+            TaskFailed(
+                run_id="run-retries",
+                task_id="task_0000",
+                task_name="demo.flaky",
+                attempt=3,
+                exit_code=1,
+                failure={"kind": "user_code_error", "message": "boom"},
+            )
+        )
+        ledger.finish(status="failed", error="boom")
+        summary = ledger.summary()
+        ledger.close()
+
+        report = build_report_data(
+            summary=summary, generated_at=datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
+        )
+
+        assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
+        assert [card.attempts_label for card in report.failures] == ["3 / 3"]
 
     def test_asset_checks_are_exposed_on_cards(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)

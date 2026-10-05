@@ -148,9 +148,10 @@ class TaskSummary:
         """Return ``"N"``, ``"N / M"``, or ``"—"`` when nothing was attempted."""
         if self.status == "cached" or (self.status == "skipped" and not self.started):
             return "—"
+        # ``attempts`` is the ledger's 1-based count of attempts made.
         if self.max_attempts is not None and self.max_attempts > 1:
-            return f"{self.attempts + 1} / {self.max_attempts}"
-        return f"{self.attempts + 1}"
+            return f"{self.attempts} / {self.max_attempts}"
+        return f"{self.attempts}"
 
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
         """Resolve ``rendered_html`` against the run directory.
@@ -603,10 +604,16 @@ def _load_notebooks(*, tasks: tuple[TaskSummary, ...]) -> tuple[NotebookSummary,
 
 
 def _load_assets(*, tasks: tuple[TaskSummary, ...]) -> tuple[AssetSummary, ...]:
-    """Extract unique materialised asset references from tasks."""
+    """Extract the unique asset references tasks materialised in this run.
+
+    A cache hit replays the assets an earlier run registered; it materialises
+    nothing, so it contributes none.
+    """
     seen: set[str] = set()
     out: list[AssetSummary] = []
     for task in tasks:
+        if task.cached or task.status == "cached":
+            continue
         for asset in task.assets:
             key = asset.get("asset_key")
             if not isinstance(key, str) or key in seen:

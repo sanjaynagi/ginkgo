@@ -69,7 +69,11 @@ def render_lineage_tree(graph: LineageGraph) -> Tree:
 
 
 def _grow(branch: Tree, *, graph: LineageGraph, version_id: str, seen: set[str]) -> None:
-    """Attach the versions one hop from *version_id*, depth-first."""
+    """Attach the versions one hop from *version_id*, depth-first.
+
+    *seen* is shared across the whole walk, so a version is expanded the first
+    time any path reaches it and only marked after that.
+    """
     for neighbour in graph.neighbours(version_id):
         version = graph.versions.get(neighbour)
         if version is None:
@@ -78,7 +82,8 @@ def _grow(branch: Tree, *, graph: LineageGraph, version_id: str, seen: set[str])
             branch.add(f"{_label(version)} [dim](already shown)[/]")
             continue
         child = branch.add(_label(version))
-        _grow(child, graph=graph, version_id=neighbour, seen=seen | {neighbour})
+        seen.add(neighbour)
+        _grow(child, graph=graph, version_id=neighbour, seen=seen)
 
 
 def _label(version: AssetVersion) -> str:
@@ -109,6 +114,6 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
         return 0
     rich_console.print("\n[bold]Inputs[/]")
     for entry in provenance.inputs:
-        detail = entry.get("asset_key") or entry.get("digest") or entry.get("value_summary") or "-"
+        detail = entry.get("asset_key") or entry.get("value_summary") or entry.get("digest") or "-"
         rich_console.print(f"  {entry.get('param')} = {detail}")
     return 0
