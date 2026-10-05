@@ -33,6 +33,27 @@ When you already have a run id:
   Shows a human-readable failure summary.
 - `ginkgo debug <run_id> --json`
   Emits structured diagnostics for programmatic consumers.
+- `ginkgo report <run_id>`
+  Renders a run as an HTML report; `--no-open --out <dir>` writes it to a
+  directory without opening a browser, with rendered notebooks under
+  `<dir>/notebooks/`.
+- `ginkgo cache ls`
+  Lists cache entries with their full keys.
+- `ginkgo cache explain <run_id>`
+  Shows each task's cache key beside its branch label, and why it reused the
+  cache or re-ran.
+- `ginkgo cache clear <full-cache-key>`
+  Removes one entry; a key prefix is not accepted. `ginkgo cache prune
+  --max-entries 0` removes every entry.
+
+Assets and lineage:
+
+- `ginkgo asset ls`
+  Lists asset keys (`<kind>:<name>`) with their latest version.
+- `ginkgo asset versions <key>` / `ginkgo asset show <key>[@<version>]`
+  Lists an asset's versions, or shows one version's metadata.
+- `ginkgo lineage <key>` / `ginkgo lineage <key> --downstream`
+  Traces what an asset was built from, or what was derived from it.
 
 Testing guidance:
 
