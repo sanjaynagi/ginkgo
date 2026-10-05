@@ -2394,7 +2394,10 @@ class ConcurrentEvaluator:
         access — both read the parameter's own resolved argument, coerced to
         its declared (inner) annotation, never the task's return value.
         """
-        assert node.resolved_args is not None
+        assert node.resolved_args is not None, (
+            f"Out[...] parameter {name!r} of {node.task_def.name} was read before "
+            "the task's arguments were resolved"
+        )
         annotation = node.task_def.type_hints.get(name)
         return self._validator.coerce_annotated_value(
             annotation=annotation, value=node.resolved_args.get(name)

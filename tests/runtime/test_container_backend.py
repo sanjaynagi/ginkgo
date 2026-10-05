@@ -13,6 +13,7 @@ import pytest
 from ginkgo import shell, task
 from ginkgo.envs.container import (
     ContainerBackend,
+    ContainerDaemonUnreachableError,
     ContainerImageNotFoundError,
     ContainerPrepareError,
     ContainerRef,
@@ -234,6 +235,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             pytest.raises(ContainerImageNotFoundError, match="pull_policy") as excinfo,
         ):
             backend.validate_envs(env_names={"docker://nope-does-not-exist:99.99"})
@@ -250,6 +252,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch("ginkgo.envs.container.subprocess.run", return_value=completed) as mock_run,
             pytest.raises(ContainerImageNotFoundError, match="not found in its registry"),
         ):
@@ -263,6 +266,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch(
                 "ginkgo.envs.container.subprocess.run",
                 side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=15),
@@ -282,6 +286,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch("ginkgo.envs.container.subprocess.run", return_value=completed),
         ):
             backend.validate_envs(env_names={"docker://img:1"})
@@ -296,6 +301,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch("ginkgo.envs.container.subprocess.run") as mock_run,
         ):
             backend.validate_envs(env_names={"docker://img:1"})
@@ -311,6 +317,7 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch("ginkgo.envs.container.subprocess.run", return_value=completed) as mock_run,
         ):
             backend.validate_envs(env_names={"docker://img:1"})
@@ -325,6 +332,115 @@ class TestContainerBackendValidateImageAvailability:
         backend = ContainerBackend(project_root=tmp_path, pull_policy="if-not-present")
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_require_daemon_reachable"),
+            patch("ginkgo.envs.container.subprocess.run") as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        mock_run.assert_not_called()
+
+
+def _completed(*, returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
+
+
+class TestContainerBackendDaemonProbe:
+    """Issue #343: a runtime installed with its daemon down is reported as
+    such at validation, not as a missing image or a failed pull mid-run."""
+
+    def test_unreachable_daemon_raises(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        refused = _completed(
+            returncode=1, stderr="failed to connect to the docker API at unix:///x/docker.sock"
+        )
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=refused) as mock_run,
+            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        message = str(excinfo.value)
+        assert "docker daemon is not reachable" in message
+        assert "failed to connect to the docker API" in message
+        assert "pull" not in message.lower()
+        assert mock_run.call_args[0][0] == ["docker", "info"]
+        assert mock_run.call_args.kwargs["timeout"] > 0
+
+    def test_unreachable_daemon_is_not_reported_as_a_missing_image(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)),
+            pytest.raises(ContainerDaemonUnreachableError),
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+
+    def test_reachable_daemon_goes_on_to_check_the_image(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=0)),
+            pytest.raises(ContainerImageNotFoundError, match="not present locally"),
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+
+    def test_local_image_needs_no_probe(self, tmp_path: Path):
+        """A successful local lookup already proves the daemon is up."""
+        backend = ContainerBackend(project_root=tmp_path)
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
+            patch("ginkgo.envs.container.subprocess.run") as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        mock_run.assert_not_called()
+
+    def test_probe_timeout_does_not_block_run(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch(
+                "ginkgo.envs.container.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=10),
+            ),
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+
+    def test_daemon_is_probed_once_per_backend(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path)
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch(
+                "ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=0)
+            ) as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
+            backend.validate_envs(env_names={"docker://img:3"})
+        mock_run.assert_called_once()
+
+    def test_podman_is_probed_with_its_own_info(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, runtime="podman")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/podman"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch(
+                "ginkgo.envs.container.subprocess.run",
+                return_value=_completed(returncode=125, stderr="Cannot connect to Podman"),
+            ) as mock_run,
+            pytest.raises(ContainerDaemonUnreachableError, match="podman machine start"),
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        assert mock_run.call_args[0][0] == ["podman", "info"]
+
+    def test_unknown_runtime_is_not_probed(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, runtime="custom-runtime")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run") as mock_run,
         ):
