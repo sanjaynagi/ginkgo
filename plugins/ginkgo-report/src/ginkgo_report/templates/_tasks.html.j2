@@ -16,7 +16,7 @@
   <tbody>
     {% for task in report.tasks %}
     <tr{% if task.failed %} class="failed"{% endif %}>
-      <td class="name">{{ task.base_name }}</td>
+      <td class="name">{{ task.label }}</td>
       <td><span class="tag">{{ task.kind_label }}</span></td>
       <td><span class="pill {{ task.status_tone }}"><span class="dot"></span>{{ task.status_label }}</span></td>
       <td class="mono">{{ task.duration_label }}</td>

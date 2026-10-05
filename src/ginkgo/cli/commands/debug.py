@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from ginkgo.cli.common import open_run, stdout_console
-from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.renderers.debug import (
     render_debug_failure_panel,
     render_debug_header,
@@ -73,7 +72,7 @@ def _debug_failure_details(
     """Return failure details for the rich ``ginkgo debug`` report."""
     return [
         FailureDetails(
-            task_label=task_base_name(task.name),
+            task_label=task.label,
             exit_code=task.exit_code,
             log_path=(summary.run_dir / task.stderr_log if task.stderr_log is not None else None),
             log_tail=_log_tail(run_dir=summary.run_dir, task=task),
@@ -95,7 +94,8 @@ def _debug_failure_payload(
     return [
         {
             "task_id": task.task_key,
-            "task_name": task_base_name(task.name),
+            "task_name": task.base_name,
+            "display_label": task.display_label,
             "exit_code": task.exit_code,
             "error": task.error,
             "failure": task.failure,

@@ -108,7 +108,7 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
     table.add_column("Attempts", justify="right")
     for task in summary.tasks:
         table.add_row(
-            Text(task.display_label or task.base_name),
+            Text(task.label),
             task.status,
             "yes" if task.cached else "no",
             format_duration(task.duration_s),
