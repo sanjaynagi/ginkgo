@@ -10,9 +10,11 @@ from ginkgo import Out, file, task, untracked
 from ginkgo.runtime.edge_inference import (
     ConsumedPath,
     DuplicateOutputPathError,
+    OutputOverwritesInputError,
     PathIndex,
     ProducedPath,
     collect_consumed_paths,
+    reject_self_overwrite,
 )
 
 
@@ -105,6 +107,51 @@ class TestPathIndex:
         ]
 
         assert all(len(found) == 1 for found in edges)
+
+
+class TestRejectSelfOverwrite:
+    """#334 — a node may not declare an ``Out[...]`` path over its own input."""
+
+    @pytest.mark.parametrize(
+        ("consumed", "produced"),
+        [
+            (("/w/in.txt", "file"), ("/w/in.txt", "file")),
+            (("/w/qc/in.txt", "file"), ("/w/qc", "folder")),
+            (("/w/data", "folder"), ("/w/data/out.txt", "file")),
+            (("/w/data", "folder"), ("/w/data", "folder")),
+        ],
+    )
+    def test_overlapping_input_and_output_are_refused(self, consumed, produced) -> None:
+        with pytest.raises(OutputOverwritesInputError, match="t1"):
+            reject_self_overwrite(
+                produced=[_produced(1, produced[0], kind=produced[1])],
+                consumed=[_consumed(1, consumed[0], kind=consumed[1])],
+            )
+
+    def test_message_names_both_parameters_and_the_path(self) -> None:
+        with pytest.raises(OutputOverwritesInputError) as excinfo:
+            reject_self_overwrite(
+                produced=[_produced(1, "/w/in.txt")],
+                consumed=[_consumed(1, "/w/in.txt", kind="file")],
+            )
+
+        message = str(excinfo.value)
+        assert "'out'" in message
+        assert "'src'" in message
+        assert "/w/in.txt" in message
+
+    def test_disjoint_paths_are_accepted(self) -> None:
+        reject_self_overwrite(
+            produced=[_produced(1, "/w/qc", kind="folder")],
+            consumed=[_consumed(1, "/w/qc2/x.txt", kind="file")],
+        )
+
+    def test_an_untyped_string_is_not_an_input(self) -> None:
+        """A plain ``str`` may be a label that happens to match, so it is not refused."""
+        reject_self_overwrite(
+            produced=[_produced(1, "/w/S1", kind="folder")],
+            consumed=[_consumed(1, "/w/S1")],
+        )
 
 
 @task()
