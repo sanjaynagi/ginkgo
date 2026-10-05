@@ -59,6 +59,8 @@ process.
 Side by side, the five bodies look like this:
 
 ```python
+from pathlib import Path
+
 from ginkgo import (
     Out,
     SubWorkflowResult,
@@ -69,6 +71,8 @@ from ginkgo import (
     subworkflow,
     task,
 )
+
+_WORKFLOW_DIR = Path(__file__).resolve().parent  # the directory holding flow.py
 
 
 @task()                                     # python
@@ -81,11 +85,11 @@ def filter_fastq(fastq: file) -> file:
 
 @task("script", env="analysis_tools")       # script
 def build_brief(normalized_card: file, output_path: Out[file]) -> file:
-    return script("scripts/build_brief.py")
+    return script(_WORKFLOW_DIR / "scripts" / "build_brief.py")
 
 @task("notebook", env="analysis_tools")     # notebook
 def render_overview(summary_path: file) -> file:
-    return notebook("notebooks/overview.ipynb")
+    return notebook(_WORKFLOW_DIR / "notebooks" / "overview.ipynb")
 
 @task("subworkflow")                        # subworkflow
 def run_child(dataset: file) -> SubWorkflowResult:
@@ -218,6 +222,16 @@ def build_brief(item: str, normalized_card: file, output_path: Out[file]) -> fil
     return script(_SCRIPTS_DIR / "build_brief.py")
 ```
 
+A relative path passed to `script()` or `notebook()` is *not* resolved against
+the file that contains the call. It resolves against the process working
+directory, and `ginkgo` changes that to the project root (the nearest
+directory holding `ginkgo.toml`) before it runs a workflow, wherever you
+invoked it from. So `script("scripts/build_brief.py")` looks for
+`<project-root>/scripts/build_brief.py`, which is not where the canonical
+layout above keeps scripts (`workflow/scripts/`). Build the path from
+`Path(__file__)`, as above, to make it independent of where the project root
+sits. The same applies to `notebook()`.
+
 The interpreter is inferred from the file extension (`.py` → `python`,
 `.r`/`.R` → `rscript`); pass `interpreter=...` to override it. A script task
 lets you reuse an existing analysis script without rewriting it as a Python
@@ -230,13 +244,17 @@ The body returns a `notebook(...)` expression, and the rendered HTML becomes a
 tracked run artifact.
 
 ```python
+from pathlib import Path
+
 from ginkgo import file, notebook, task
+
+_NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
 
 
 @task("notebook")
 def render_overview(summary_path: file, run_label: str) -> file:
     """Render an HTML overview notebook for the run."""
-    return notebook("notebooks/overview.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "overview.ipynb")
 ```
 
 The decorated function defines the typed parameter schema; its resolved inputs
@@ -265,6 +283,12 @@ Notebook tasks support `.ipynb` execution through Papermill as well as marimo
 notebooks. The HTML export is recorded in provenance and appears in the
 [run report](assets.md). A notebook task can declare an `env` so the notebook
 runs against that environment's kernel.
+
+Inside the run directory the rendered page is stored under
+`.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
+export it under the task's name, build the report bundle:
+`ginkgo report --no-open --out deliver` writes `deliver/notebooks/<task>.html`
+next to `deliver/index.html`. See [Assets and Reports](assets.md).
 
 A marimo notebook reads its parameters with `mo.cli_args()`, which collects a
 repeated option into a list but joins space-separated values into one string.
@@ -317,6 +341,8 @@ import pandas as pd
 
 from ginkgo import Out, asset, file, flow, notebook, table, task
 
+_NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
+
 
 @task()
 def differential_expression() -> object:
@@ -336,7 +362,7 @@ def stage_de_csv(de_table: object, output_path: Out[file]) -> file:
 @task("notebook")
 def render_rnaseq_report(de_csv_path: file, lfc_threshold: float) -> file:
     """Render the report notebook against the staged CSV."""
-    return notebook("notebooks/rnaseq_report.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "rnaseq_report.ipynb")
 
 
 @flow
