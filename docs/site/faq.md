@@ -24,12 +24,14 @@ Pythonic syntax.
 
 ### How does Ginkgo compare to Snakemake, Nextflow, Prefect, and Dagster?
 
-Snakemake can not handle dynamic DAGs natively. Nextflow is written in Groovy and requires using
+Snakemake builds its DAG from rules and file-name patterns. Its `checkpoint` rules re-evaluate
+that DAG once an output exists, but the dynamic part must be expressed through that mechanism
+rather than in ordinary code. Nextflow is written in Groovy and requires using
 the abstraction of channels to pass data between steps. We take the view that a scientific workflow
 orchestrator should be plain Python, handle dynamic DAGs natively and should not require the abstraction of channels.
 Prefect and Dagster are also Python, but they require DIY effort to run shell commands, scripts,
-and notebooks in foreign environments (e.g an isolated pixi, conda environment or container image).
-Ginkgo runs those natively each task can declare its own foreign environment right on the @task() decorator.
+and notebooks in foreign environments (e.g. an isolated pixi, conda environment or container image).
+Ginkgo runs those natively: each task can declare its own foreign environment right on the `@task()` decorator.
 
 
 ### What does the canonical project layout look like, and how does autodiscovery find my flows?
@@ -504,6 +506,11 @@ error no longer quietly truncates the closure and masks a stale cache.
 Runtime-only dependencies (dynamic imports, data files) still cannot be tracked
 this way; bump `version=` on the task when those change.
 
+A data file opened by a literal path inside a task body is one of these: the
+cache never sees it, and nothing warns. Pass the path in as a `file` argument
+instead and its bytes become part of the key. See the note in the
+[CLI guide](guide/cli.md#workflow-parameters).
+
 ### Does changing a task's threads or memory invalidate its cache?
 
 No. Before any source text is hashed — the task definition itself, and every
@@ -549,6 +556,13 @@ also garbage-collect orphaned artifacts. There is no `--no-cache` or force-rerun
 flag on `ginkgo run`. To force a task to re-execute, either bump its `version=`
 (a dedicated cache-busting tag that feeds directly into the key), change its
 source, or `ginkgo cache clear <cache-key>` for that entry.
+
+`cache clear` needs the *full* 64-character key: a prefix, even a long one, is
+reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, and
+`ginkgo cache explain <run_id>` prints each task's key beside its branch label
+(`fst[2L,YRI,CEU]`), which is the easiest way to find the key of one branch of a
+fan-out. To discard everything and start cold, run
+`ginkgo cache prune --max-entries 0`.
 
 ### Where does the artifact store fit in for file/folder outputs?
 

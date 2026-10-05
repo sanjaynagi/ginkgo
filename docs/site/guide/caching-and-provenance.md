@@ -47,6 +47,17 @@ the module, so the whole fan-out re-runs rather than the affected branch. Pass
 such parameters as task arguments instead; arguments are hashed per call, so
 only the branches whose values changed are invalidated.
 
+### Early Cutoff
+
+A downstream task's key is built from the *values* its upstream tasks produced,
+not from the upstream tasks' own cache keys. So when an upstream task re-runs
+(an input changed, or its `version=` was bumped) and produces the same bytes
+for a `file` output, or an equal plain value such as an `int` or `str`, every
+task below it still hits the cache. The change stops spreading at the first task
+whose output did not change, so only the tasks whose inputs actually differ
+re-run. (Tasks defined in the same module share a source hash, so editing that
+module's source still invalidates all of them; see [Cache Identity](#cache-identity).)
+
 (cache-correctness)=
 ## Cache Correctness
 
