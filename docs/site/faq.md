@@ -479,7 +479,8 @@ The key hashes a sorted object with exactly these fields: the task name, the tas
 `version`, the task `source_hash` (source plus local import closure), the
 resolved `inputs`, the declared `env`, and an `env_hash`. Each input is hashed by
 declared type: `file`/`folder` arguments are hashed by content, an `AssetRef`
-contributes its content hash, a remote reference contributes its object-store
+contributes its content hash when the parameter is annotated `file`/`folder`
+and its version id for any other annotation (for example `object`), a remote reference contributes its object-store
 version id (staging first if needed), primitives are hashed from their `repr`,
 and any other object is hashed via the value codec. `tmp_dir` parameters are
 deliberately excluded. The `env_hash` is `None` when the task declares no env;
@@ -549,8 +550,13 @@ source, or `ginkgo cache clear <cache-key>` for that entry.
 File and folder outputs are copied into a content-addressed artifact store under
 `.ginkgo/artifacts/` (hashed with BLAKE3), and that store — not the task's
 declared output path — is the durable source of truth. On a cache hit, the
-artifact store re-materialises the output into the working tree; large
-serialized return values are also offloaded here rather than inlined.
+artifact store re-materialises the output into the working tree: a tracked
+output file that is missing or modified on disk (including `asset(...)` of an
+`Out[...]` path) is restored without re-running the task, overwriting any hand
+edits. Only when no stored artifact exists to restore from, such as a task with
+an explicit `-> None` return, does the missing output count as a miss and the
+task re-run. Large serialized return values are also offloaded to the store
+rather than inlined.
 
 ## Value Transport And Serialization
 
