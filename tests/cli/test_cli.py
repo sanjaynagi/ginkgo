@@ -374,6 +374,33 @@ def main():
         assert "Age" in listed.stdout
         assert cache_key in listed.stdout.replace("\n", "")
 
+    def test_cache_ls_names_each_fan_out_branch_by_its_label(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def greet(name: str) -> str:
+    return name
+
+@flow
+def main():
+    return greet().map(name=["alpha", "beta"])
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+
+        listed = _run_cli("cache", "ls", cwd=Path.cwd())
+        assert listed.returncode == 0, listed.stderr
+        assert "Label" in listed.stdout
+        assert sorted(re.findall(r"greet\[\w+\]", listed.stdout)) == [
+            "greet[alpha]",
+            "greet[beta]",
+        ]
+
     def test_cache_clear_removes_entry(self) -> None:
         cache_key = _run_trivial_workflow_cache_key(Path.cwd())
 
