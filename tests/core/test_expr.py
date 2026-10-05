@@ -74,6 +74,49 @@ class TestExpr:
     def test_expr_stays_truthy_despite_refusing_len(self):
         assert bool(pair_task(x=1)) is True
 
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            pytest.param(lambda s: s == 5, id="eq"),
+            pytest.param(lambda s: s != 5, id="ne"),
+            pytest.param(lambda s: 5 == s, id="reflected-eq"),
+            pytest.param(lambda s: s in [5, 6], id="contains"),
+            pytest.param(lambda s: s > 2, id="gt"),
+            pytest.param(lambda s: s >= 2, id="ge"),
+            pytest.param(lambda s: s < 2, id="lt"),
+            pytest.param(lambda s: s <= 2, id="le"),
+            pytest.param(lambda s: 2 < s, id="reflected-lt"),
+            pytest.param(lambda s: int(s), id="int"),
+            pytest.param(lambda s: float(s), id="float"),
+            pytest.param(lambda s: [0, 1][s], id="index"),
+            pytest.param(lambda s: f"{s:d}", id="format"),
+            pytest.param(lambda s: s + 1, id="add"),
+            pytest.param(lambda s: 1 + s, id="radd"),
+            pytest.param(lambda s: s - 1, id="sub"),
+            pytest.param(lambda s: s * 2, id="mul"),
+            pytest.param(lambda s: s / 2, id="truediv"),
+            pytest.param(lambda s: s // 2, id="floordiv"),
+            pytest.param(lambda s: s % 2, id="mod"),
+            pytest.param(lambda s: s**2, id="pow"),
+            pytest.param(lambda s: -s, id="neg"),
+        ],
+    )
+    def test_value_operations_name_the_task(self, operation):
+        """#334: a deferred value must not be silently compared or raise a bare TypeError."""
+        with pytest.raises(TypeError, match=r"dummy\(\) returns one deferred result"):
+            operation(dummy(x=1))
+
+    def test_plain_formatting_still_renders_the_call(self):
+        expr = dummy(x=1)
+        assert f"{expr}" == repr(expr)
+
+    def test_expr_compares_with_expr_by_value_and_identity(self):
+        expr = dummy(x=1)
+        assert expr == expr
+        assert dummy(x=1) == dummy(x=1)
+        assert dummy(x=1) != dummy(x=2)
+        assert expr in [dummy(x=2), expr]
+
 
 class TestExprList:
     def test_len(self):
