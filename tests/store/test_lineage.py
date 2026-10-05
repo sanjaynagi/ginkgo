@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from rich.console import Console
 
 from ginkgo import query, table, task, text
+from ginkgo.cli.commands.lineage import _render_why, render_lineage_tree
 from ginkgo.core.asset import AssetKey, AssetRef, AssetVersion, make_asset_version
-from ginkgo.query import Query
+from ginkgo.query import Provenance, Query
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.index import CacheIndex
@@ -439,3 +442,68 @@ class TestFanInConsumption:
 
         assert rows[0]["value_summary"] is not None
         assert all(row["value_summary"] is None and row["value_type"] is None for row in rows[1:])
+
+
+class TestLineageRendering:
+    def test_a_version_reached_by_two_paths_is_shown_once_then_marked(self, db_path: Path) -> None:
+        """In a diamond the shared ancestor is expanded once, then marked."""
+        with CacheIndex.open(path=db_path) as index:
+            catalog = AssetStore.attached_to(index)
+            a = _register(catalog, namespace="table", name="a", run_id="run-1", task_id="t0")
+            b = _register(
+                catalog,
+                namespace="table",
+                name="b",
+                run_id="run-1",
+                task_id="t1",
+                parents=[_ref(a)],
+            )
+            c = _register(
+                catalog,
+                namespace="table",
+                name="c",
+                run_id="run-1",
+                task_id="t2",
+                parents=[_ref(a)],
+            )
+            _register(
+                catalog,
+                namespace="fig",
+                name="d",
+                run_id="run-1",
+                task_id="t3",
+                parents=[_ref(b), _ref(c)],
+            )
+
+        with _reader(db_path) as reader:
+            graph = reader.lineage("fig:d")
+        buffer = io.StringIO()
+        Console(file=buffer, width=400, force_terminal=False).print(render_lineage_tree(graph))
+        lines = buffer.getvalue().splitlines()
+        marked = [line for line in lines if "(already shown)" in line]
+
+        assert sum(a.version_id in line for line in lines) == 2
+        assert len(marked) == 1
+        assert a.version_id in marked[0]
+
+
+class TestWhyRendering:
+    def test_a_parameter_prefers_its_value_to_its_digest(self) -> None:
+        provenance = Provenance(
+            artifact_id="artifact-1",
+            inputs=(
+                {"param": "baseline_weeks", "value_summary": "52", "digest": "658325b1f32c"},
+                {"param": "label", "digest": "9f9f9f9f"},
+            ),
+        )
+        buffer = io.StringIO()
+
+        _render_why(
+            Console(file=buffer, width=200, force_terminal=False),
+            provenance=provenance,
+            as_json=False,
+        )
+
+        output = buffer.getvalue()
+        assert "baseline_weeks = 52" in output
+        assert "label = 9f9f9f9f" in output
