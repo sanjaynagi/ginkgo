@@ -492,7 +492,7 @@ class TestWhyRendering:
         provenance = Provenance(
             artifact_id="artifact-1",
             inputs=(
-                {"param": "baseline_weeks", "value_summary": "52", "digest": "658325b1f32c"},
+                {"param": "baseline_weeks", "value_summary": "52", "digest": "baseline-digest"},
                 {"param": "label", "digest": "9f9f9f9f"},
             ),
         )
