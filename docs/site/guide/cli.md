@@ -130,8 +130,8 @@ events, for programmatic use by AI coding agents &mdash; see
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | A failure ended the run. |
-| 2 | The command line was rejected. |
+| 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc`, no command at all), or a command found an argument missing in its own check: `cache clear` with no key, `cache prune` with no limit, `query` with no statement. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
 | 130 | Interrupted with Ctrl-C. |
 
@@ -185,6 +185,16 @@ so a parameter passed as one correctly re-runs the tasks that used it. A
 parameter read from a module global inside a task body is not part of the key, so
 changing it would silently reuse the previous result. Both `ginkgo run` and
 `ginkgo doctor` warn when they spot this.
+```
+
+```{important}
+**Pass a data file into a task as a `file` argument.** A file opened by a literal
+path inside a task body, such as `open("data/samples.tsv")`, is invisible to the
+cache: editing it does not re-run the task, and Ginkgo does not warn. Declare it
+as a `file` parameter instead (`def summarise(samples: file)`) and pass the path
+at the call site, so its bytes are hashed into the key and, when another task
+produces it, the dependency edge is created. `version=` on the task is the
+stopgap when the path cannot be passed in.
 ```
 
 ## Validation And Diagnostics
