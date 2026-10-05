@@ -29,6 +29,7 @@ from ginkgo.core.types import (
 )
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
+from ginkgo.runtime.artifacts.asset_kinds import NATIVE_ARTIFACT_KINDS
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.task_validation import (
     is_content_trackable_path_shape,
@@ -405,7 +406,7 @@ class CacheStore:
     ) -> bool:
         """Recursively validate or restore managed file and folder outputs."""
         if isinstance(value, AssetRef):
-            return Path(value.artifact_path).exists()
+            return self._validate_asset_output(ref=value)
 
         # An absent optional output has nothing to restore, and its absence is
         # itself the cached result. A None the annotation does not admit is not
@@ -456,6 +457,25 @@ class CacheStore:
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
+
+    def _validate_asset_output(self, *, ref: AssetRef) -> bool:
+        """Ensure one asset output's declared path matches its artifact.
+
+        The ref names its own artifact, so the path the producer wrote is
+        checked against it and restored on mismatch, as a ``file`` output is.
+        Only a kind whose artifact holds the payload's own bytes is restored:
+        a ``table`` read from a CSV stores Ginkgo's encoding, not the CSV.
+        """
+        if not Path(ref.artifact_path).exists():
+            return False
+        source_path = ref.source_path
+        if source_path is None or ref.kind not in NATIVE_ARTIFACT_KINDS:
+            return True
+        path = Path(source_path)
+        if self._artifact_store.matches(artifact_id=ref.artifact_id, path=path):
+            return True
+        self._artifact_store.restore(artifact_id=ref.artifact_id, dest_path=path)
+        return self._artifact_store.matches(artifact_id=ref.artifact_id, path=path)
 
     def _validate_folder_output(self, path: Path, *, artifact_ids: dict[str, str]) -> bool:
         """Ensure one managed folder output matches its cached artifact."""
