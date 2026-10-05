@@ -181,10 +181,10 @@ def _graph_node_registered(event: StoredEvent, payload: dict[str, Any]) -> list[
         ProjectionOp(
             sql="""
             INSERT INTO tasks (
-              run_id, task_id, node_id, name, kind, execution_mode, env,
+              run_id, task_id, node_id, name, display_label, kind, execution_mode, env,
               status, attempts, max_attempts, stdout_log, stderr_log,
               timings, extra
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '{}', '{}')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, '{}', '{}')
             ON CONFLICT (run_id, task_id) DO NOTHING
             """,
             params=(
@@ -192,6 +192,7 @@ def _graph_node_registered(event: StoredEvent, payload: dict[str, Any]) -> list[
                 task_id,
                 int(payload.get("node_id", -1)),
                 payload.get("task_name") or "unknown",
+                payload.get("display_label"),
                 payload.get("kind") or "python",
                 payload.get("execution_mode") or "worker",
                 payload.get("env"),
