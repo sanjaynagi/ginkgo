@@ -2075,10 +2075,35 @@ def main():
         assert result.returncode == 1
         assert "Run not found: run-a" in result.stderr
 
-    def test_cache_explain_requires_a_run_id(self) -> None:
+    def test_cache_explain_defaults_to_the_latest_run(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def produce() -> str:
+    return "ok"
+
+@flow
+def main():
+    return produce()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        _run_cli("run", "workflow.py", cwd=Path.cwd())
+        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert second.returncode == 0, second.stderr
+        run_dir = _extract_run_dir(second.stdout)
+
+        explain = _run_cli("cache", "explain", "--json", cwd=Path.cwd())
+        assert explain.returncode == 0, explain.stderr
+        assert json.loads(explain.stdout)["run_id"] == run_dir.name
+
+    def test_cache_explain_without_runs_reports_no_runs(self) -> None:
         result = _run_cli("cache", "explain", cwd=Path.cwd())
-        assert result.returncode == 2
-        assert "provide a run id" in result.stdout
+        assert result.returncode == 1
+        assert "No runs recorded" in result.stderr
 
 
 class TestCliRunProfile:

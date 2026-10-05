@@ -136,12 +136,6 @@ def command_cache(args) -> int:
             return 2
 
         run_id = args.run_id or args.run_flag
-        if run_id is None:
-            rich_console.print(
-                "[red]Error:[/] provide a run id, e.g. ginkgo cache explain RUN_ID."
-            )
-            return 2
-
         with open_run(run_id) as (reader, resolved):
             payload = explain_run_cache(reader=reader, run_id=resolved)
         if args.json:

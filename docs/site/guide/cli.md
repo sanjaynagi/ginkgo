@@ -242,8 +242,8 @@ navigating `.ginkgo/runs/`.
 ```bash
 ginkgo cache ls                          # list cached task results
 ginkgo cache stats                       # size, hit counts, biggest tasks
-ginkgo cache explain <run_id>            # explain cache decisions for a run
-ginkgo cache explain <run_id> --json     # same, as JSON
+ginkgo cache explain [run_id]            # explain cache decisions for a run (default: latest)
+ginkgo cache explain [run_id] --json     # same, as JSON
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
