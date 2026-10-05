@@ -583,7 +583,9 @@ class Query:
         )
         return {row["status"]: int(row["n"]) for row in rows}
 
-    def task_history(self, name: str, *, limit: int = 20) -> list[TaskRow]:
+    def task_history(
+        self, name: str, *, limit: int = 20, include_pending: bool = False
+    ) -> list[TaskRow]:
         """Return every run of one task, newest first.
 
         The task is matched on its display label as well as its name, so the
@@ -596,6 +598,10 @@ class Query:
             The task's name, its base name, or the display label of one branch.
         limit : int, optional
             Most rows to return.
+        include_pending : bool, optional
+            Also return runs in which the task never started, such as one
+            blocked by an upstream failure. Left out by default: they hold no
+            history of the task.
 
         Returns
         -------
@@ -608,13 +614,13 @@ class Query:
         rows = self._store.query(
             f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE {_TASK_MATCH} "
+            f"WHERE ({_TASK_MATCH}){'' if include_pending else _STARTED_ONLY} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
             (name, name, _like_suffix(f".{name}"), limit),
         )
         return [_task_row(row) for row in rows]
 
-    def task_resource_history(self, name: str) -> list[TaskRow]:
+    def task_resource_history(self, name: str, *, include_pending: bool = False) -> list[TaskRow]:
         """Return every run of one task, newest first and unlimited.
 
         The distribution ``ginkgo history --resources`` reports is computed
@@ -626,6 +632,9 @@ class Query:
         ----------
         name : str
             The task's name, its base name, or the display label of one branch.
+        include_pending : bool, optional
+            Also count runs in which the task never started; see
+            :meth:`task_history`.
 
         Returns
         -------
@@ -636,7 +645,7 @@ class Query:
         rows = self._store.query(
             f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE {_TASK_MATCH} "
+            f"WHERE ({_TASK_MATCH}){'' if include_pending else _STARTED_ONLY} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id",
             (name, name, _like_suffix(f".{name}")),
         )
@@ -1376,6 +1385,9 @@ _TASK_COLUMNS = (
 
 _TASK_MATCH = "t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\'"
 """Matches a task by name, by base name, or by one fan-out branch's label."""
+
+_STARTED_ONLY = " AND NOT (t.status = 'pending' AND t.started_at IS NULL)"
+"""Drops tasks no run ever started; one waiting to retry has started and stays."""
 
 
 def _task_row(row: Any) -> TaskRow:

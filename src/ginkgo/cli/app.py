@@ -536,6 +536,11 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     history_parser.add_argument("task", help="Task name, base name, or fan-out display label.")
     history_parser.add_argument("--limit", type=int, default=20, help="Most runs to list.")
     history_parser.add_argument(
+        "--include-pending",
+        action="store_true",
+        help="Also list runs in which the task never started.",
+    )
+    history_parser.add_argument(
         "--resources",
         action="store_true",
         help="Summarise measured memory and CPU across every run of the task.",

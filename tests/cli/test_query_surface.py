@@ -565,3 +565,43 @@ def test_the_agent_stream_and_the_export_share_a_wire_shape(tmp_path: Path) -> N
     assert shared, "no event reached both the live stream and the export"
     for event in shared:
         assert by_key[(event["event"], event["ts"])] == event
+
+
+class TestHistoryOfBlockedTask:
+    @pytest.fixture(scope="class")
+    def blocked_workspace(self, tmp_path_factory) -> Path:
+        """Build a workspace whose run failed upstream of ``after``, so it never started."""
+        root = tmp_path_factory.mktemp("blocked")
+        (root / "workflow.py").write_text(
+            "from ginkgo import flow, task\n\n"
+            "@task()\n"
+            "def bad() -> int:\n"
+            '    raise RuntimeError("boom")\n\n'
+            "@task()\n"
+            "def after(x: int) -> int:\n"
+            "    return x\n\n"
+            "@flow\n"
+            "def main():\n"
+            "    return after(x=bad())\n",
+            encoding="utf-8",
+        )
+        assert _run_cli("run", "workflow.py", cwd=root).returncode == 1
+        return root
+
+    def test_a_task_that_never_started_is_not_listed(self, blocked_workspace: Path) -> None:
+        result = _run_cli("history", "after", "--json", cwd=blocked_workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == []
+
+    def test_include_pending_lists_it(self, blocked_workspace: Path) -> None:
+        result = _run_cli("history", "after", "--include-pending", "--json", cwd=blocked_workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert [row["status"] for row in json.loads(result.stdout)] == ["pending"]
+
+    def test_the_resource_aggregate_skips_it_too(self, blocked_workspace: Path) -> None:
+        result = _run_cli("history", "after", "--resources", "--json", cwd=blocked_workspace)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["resources"][0]["runs"] == 0
