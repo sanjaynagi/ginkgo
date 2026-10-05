@@ -48,6 +48,7 @@ from ginkgo.runtime.edge_inference import (
     PathIndex,
     collect_consumed_paths,
     collect_produced_paths,
+    reject_self_overwrite,
 )
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
@@ -885,7 +886,8 @@ class ConcurrentEvaluator:
         1. Collect the literal produced (``Out[...]``) and consumed path
            values for the nodes registered in this batch.
         2. Reject two nodes declaring the same, or an overlapping, ``Out``
-           path before any work starts.
+           path before any work starts, and one node declaring an ``Out``
+           path that overlaps its own ``file``/``folder`` input.
         3. Match new consumers against every producer known so far (this
            batch and every earlier one) and add the producer as a dependency.
         4. Match new producers against consumers from *earlier* batches —
@@ -927,22 +929,21 @@ class ConcurrentEvaluator:
         new_consumed: list[ConsumedPath] = []
         for node_id in new_node_ids:
             node = self._nodes[node_id]
-            new_produced.extend(
-                collect_produced_paths(
-                    node_id=node_id,
-                    task_name=node.task_def.name,
-                    task_def=node.task_def,
-                    args=node.expr.args,
-                )
+            node_produced = collect_produced_paths(
+                node_id=node_id,
+                task_name=node.task_def.name,
+                task_def=node.task_def,
+                args=node.expr.args,
             )
-            new_consumed.extend(
-                collect_consumed_paths(
-                    node_id=node_id,
-                    task_name=node.task_def.name,
-                    task_def=node.task_def,
-                    args=node.expr.args,
-                )
+            node_consumed = collect_consumed_paths(
+                node_id=node_id,
+                task_name=node.task_def.name,
+                task_def=node.task_def,
+                args=node.expr.args,
             )
+            reject_self_overwrite(produced=node_produced, consumed=node_consumed)
+            new_produced.extend(node_produced)
+            new_consumed.extend(node_consumed)
 
         index = self._path_index
         index.add_produced(new_produced)

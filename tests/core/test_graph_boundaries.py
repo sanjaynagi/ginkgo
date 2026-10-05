@@ -23,7 +23,7 @@ from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
-from ginkgo.runtime.edge_inference import DuplicateOutputPathError
+from ginkgo.runtime.edge_inference import DuplicateOutputPathError, OutputOverwritesInputError
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, CycleError, IncompleteCallError
 from ginkgo.runtime.events import GraphNodeRegistered, TaskNotice
 from ginkgo.runtime.task_validation import (
@@ -868,6 +868,16 @@ def read_own_output(*, output_path: Out[file], also_read: str) -> str:
 
 
 @task()
+def overwrite_input(*, src: file, out: Out[file]) -> None:
+    Path(out).write_text("FILTERED\n", encoding="utf-8")
+
+
+@task()
+def write_into_input_dir(*, input_dir: folder, out: Out[file]) -> None:
+    Path(out).write_text(str(len(list(Path(input_dir).iterdir()))), encoding="utf-8")
+
+
+@task()
 def side_use(*, value: object) -> object:
     """Consume ``value`` for no other reason than to keep it reachable."""
     return value
@@ -1054,6 +1064,30 @@ class TestOutPathEdgeInference:
             return first, second
 
         with pytest.raises(CycleError, match="Detected cycle in workflow graph"):
+            _validated_evaluator(main)
+
+    def test_overwriting_your_own_file_input_is_refused_before_it_runs(self) -> None:
+        """#334: the task would destroy its raw input and then cache the result."""
+        Path("in.txt").write_text("RAW\n", encoding="utf-8")
+
+        @flow
+        def main():
+            return overwrite_input(src="in.txt", out="in.txt")
+
+        with pytest.raises(OutputOverwritesInputError, match="in.txt"):
+            _validated_evaluator(main)
+        with pytest.raises(OutputOverwritesInputError):
+            evaluate(main())
+        assert Path("in.txt").read_text(encoding="utf-8") == "RAW\n"
+
+    def test_writing_inside_your_own_folder_input_is_refused(self) -> None:
+        Path("data").mkdir()
+
+        @flow
+        def main():
+            return write_into_input_dir(input_dir="data", out="data/summary.txt")
+
+        with pytest.raises(OutputOverwritesInputError, match="input_dir"):
             _validated_evaluator(main)
 
     def test_reading_your_own_declared_output_is_not_a_self_dependency(self) -> None:
