@@ -150,7 +150,8 @@ class ResourceSummary:
     total_threads : int
         Sum of declared core budgets across all tasks.
     peak_wave_threads : int
-        Largest per-wave core total.
+        Largest per-wave sum of declared threads. Not bounded by the run's
+        core budget, which the scheduler enforces by queueing within a wave.
     peak_wave_index : int
         1-based index of the wave with the largest core total (``0`` if empty).
     total_memory_gb : int

@@ -2,7 +2,8 @@
 
 A consumer wired to a cached producer through ``.output["name"]`` has every
 input it needs, so the probe must determine its status rather than report a
-probe failure.
+probe failure. The resource summary must not present summed thread
+declarations as a core count the run would actually use.
 """
 
 from __future__ import annotations
@@ -10,9 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 import ginkgo
 from ginkgo import Out, file, task
+from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -37,6 +40,12 @@ def use(p: file) -> int:
 def collect(logs: list[file]) -> int:
     """Read a list of files."""
     return sum(len(Path(p).read_text()) for p in logs)
+
+
+@task(threads=4)
+def busy(i: int) -> int:
+    """Declare more threads than one core."""
+    return i
 
 
 def _single_flow():
@@ -99,3 +108,19 @@ class TestNamedOutputConsumers:
 
         assert plan.probe_failures == ()
         assert _statuses(plan) == {"make": "cached", "use": "will_run"}
+
+
+class TestResourceSummaryLabel:
+    def test_peak_threads_are_labelled_as_requested_threads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Summed declarations are demand, not cores the run will occupy."""
+        monkeypatch.chdir(tmp_path)
+        plan = _plan_for(lambda: busy().map(i=[1, 2, 3]))
+
+        console = Console(record=True, width=120)
+        render_dry_run_plan(plan=plan, console=console, verbose=False)
+        text = console.export_text()
+
+        assert "12 threads requested at peak (wave 1)" in text
+        assert "cores peak" not in text
