@@ -502,9 +502,21 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     init_parser = subparsers.add_parser("init", help="Initialize a new ginkgo project scaffold")
     init_parser.add_argument("directory", nargs="?", default=".")
-    init_parser.add_argument("--no-skills", action="store_true")
-    init_parser.add_argument("--skills-only", action="store_true")
-    init_parser.add_argument("--force", action="store_true")
+    init_parser.add_argument(
+        "--no-skills",
+        action="store_true",
+        help="Write the project scaffold without the agent skills.",
+    )
+    init_parser.add_argument(
+        "--skills-only",
+        action="store_true",
+        help="Write only the agent skills, not the project scaffold.",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite scaffold files that already exist.",
+    )
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect workflow structure")
     inspect_subparsers = inspect_parser.add_subparsers(dest="inspect_command", required=True)

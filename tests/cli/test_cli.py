@@ -244,6 +244,16 @@ def test_version_flag_reports_pyproject_version() -> None:
     assert result.stdout.strip() == f"ginkgo {expected}"
 
 
+def test_init_help_describes_every_flag() -> None:
+    result = _run_cli("init", "--help", cwd=REPO_ROOT)
+
+    assert result.returncode == 0
+    help_text = _unwrapped(result.stdout)
+    assert "--no-skills Write the project scaffold without the agent skills." in help_text
+    assert "--skills-only Write only the agent skills, not the project scaffold." in help_text
+    assert "--force Overwrite scaffold files that already exist." in help_text
+
+
 @pytest.mark.parametrize(
     ("command", "subcommands"),
     [
