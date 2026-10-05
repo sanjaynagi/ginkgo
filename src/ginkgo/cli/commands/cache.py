@@ -201,6 +201,7 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
                 {
                     "entries": stats.entries,
                     "total_bytes": stats.total_bytes,
+                    "artifact_bytes": stats.artifact_bytes,
                     "never_hit": stats.never_hit,
                     "never_hit_bytes": stats.never_hit_bytes,
                     "hit_histogram": {str(k): v for k, v in stats.hit_histogram.items()},
@@ -218,6 +219,7 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]stats[/]\n")
     rich_console.print(f"Entries: [bold]{format_int(stats.entries)}[/]")
     rich_console.print(f"Total size: [bold]{format_bytes(stats.total_bytes)}[/]")
+    rich_console.print(f"Artifact store: [bold]{format_bytes(stats.artifact_bytes)}[/]")
     rich_console.print(
         f"Never hit: [bold]{format_int(stats.never_hit)}[/] "
         f"([bold]{format_bytes(stats.never_hit_bytes)}[/])"
