@@ -134,6 +134,42 @@ def main():
         assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
 
 
+class TestDoctorPartialCalls:
+    """#332: a call missing a required argument is reported, not passed."""
+
+    def test_consumed_partial_call_is_an_error(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def join(left: str, right: str) -> str:
+    return left + right
+
+@task()
+def shout(text: str) -> str:
+    return text.upper()
+
+@flow
+def main():
+    return shout(text=join(left="a"))
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "INCOMPLETECALLERROR"
+        assert (
+            "join() is missing required argument(s): right"
+            in (payload["diagnostics"][0]["message"])
+        )
+
+
 class TestDoctorPathLikeStrParam:
     """Cover for issue #307: a ``str`` path parameter is a warning, not a failure."""
 

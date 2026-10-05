@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
-    from ginkgo.core.task import TaskDef
+    from ginkgo.core.task import PartialCall, TaskDef
 
 T = TypeVar("T")
 
@@ -341,19 +341,31 @@ class ConstructedCall:
 
     Parameters
     ----------
-    value : Expr | ExprList
+    value : Expr | ExprList | PartialCall
         The object the call handed back to the flow body.
     exprs : tuple[Expr, ...]
         The expressions the call produced — one for a plain call, one per
-        branch for a fan-out. Never empty.
+        branch for a fan-out. Empty only for a partial call, which produces
+        none until ``.map()`` or ``.product_map()`` completes it.
+    missing_params : tuple[str, ...]
+        Required parameters a partial call left unsupplied; empty for a
+        complete call.
     """
 
-    value: Expr | ExprList
+    value: Expr | ExprList | PartialCall
     exprs: tuple[Expr, ...]
+    missing_params: tuple[str, ...] = ()
+
+    @property
+    def is_partial(self) -> bool:
+        """Whether the call omitted required arguments."""
+        return bool(self.missing_params)
 
     @property
     def task_name(self) -> str:
         """Fully qualified name of the called task."""
+        if self.is_partial:
+            return self.value.task_def.name
         return self.exprs[0].task_def.name
 
     @property
@@ -402,11 +414,32 @@ def record_call(value: Expr | ExprList) -> None:
     log.append(ConstructedCall(value=value, exprs=exprs))
 
 
-def supersede_call(value: Expr | ExprList) -> None:
-    """Drop a logged call that a chained fan-out has replaced.
+def record_partial_call(partial_call: PartialCall) -> None:
+    """Append a call that omitted required arguments to the active log, if any.
+
+    It enters the graph only through the fan-out that completes it, which
+    supersedes this entry, so one still logged once the flow body has run was
+    discarded.
+    """
+    log = _active_call_log.get()
+    if log is None:
+        return
+    log.append(
+        ConstructedCall(
+            value=partial_call,
+            exprs=(),
+            missing_params=partial_call.missing_params,
+        )
+    )
+
+
+def supersede_call(value: Expr | ExprList | PartialCall) -> None:
+    """Drop a logged call that a fan-out has replaced.
 
     ``ExprList.map`` rebuilds every branch, so the expressions of the list it
-    was called on are legitimately unreachable and must not be reported.
+    was called on are legitimately unreachable and must not be reported. A
+    partial call completed by ``.map()`` or ``.product_map()`` is likewise
+    replaced by the branches it produced.
     """
     log = _active_call_log.get()
     if log is None:

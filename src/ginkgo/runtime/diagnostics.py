@@ -149,22 +149,38 @@ def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[Wo
     list[WorkflowDiagnostic]
         One ``warning``-severity diagnostic per dropped call.
     """
-    return [
-        WorkflowDiagnostic(
+    return [_unreachable_call_diagnostic(call=call) for call in calls]
+
+
+def _unreachable_call_diagnostic(*, call: ConstructedCall) -> WorkflowDiagnostic:
+    """Build the warning for one dropped call, naming what a partial call lacks."""
+    if call.is_partial:
+        return WorkflowDiagnostic(
             severity="warning",
             code=UNREACHABLE_CALL_CODE,
             message=(
-                f"{call.label} is not reachable from the flow return value, so it was "
-                "dropped from the graph and will not run."
+                f"{call.label} is missing required argument(s): "
+                f"{', '.join(call.missing_params)}, so it was dropped from the graph and "
+                "will not run."
             ),
             location=call.task_name,
             suggestion=(
-                "Return its result from the flow (directly or inside a tuple, list, or dict) "
-                "if the task should run."
+                "Pass every required argument, or complete the call with .map() or .product_map()."
             ),
         )
-        for call in calls
-    ]
+    return WorkflowDiagnostic(
+        severity="warning",
+        code=UNREACHABLE_CALL_CODE,
+        message=(
+            f"{call.label} is not reachable from the flow return value, so it was "
+            "dropped from the graph and will not run."
+        ),
+        location=call.task_name,
+        suggestion=(
+            "Return its result from the flow (directly or inside a tuple, list, or dict) "
+            "if the task should run."
+        ),
+    )
 
 
 def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:

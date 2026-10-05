@@ -33,7 +33,7 @@ from ginkgo.errors import GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
-from ginkgo.core.task import TaskDef
+from ginkgo.core.task import PartialCall, TaskDef
 from ginkgo.core.types import (
     is_path_shaped_annotation,
     pair_elements_with_annotations,
@@ -151,6 +151,34 @@ class CycleError(GinkgoError, RuntimeError):
         self.cycle = cycle
         rendered = " -> ".join(cycle)
         super().__init__(f"Detected cycle in workflow graph: {rendered}")
+
+
+class IncompleteCallError(GinkgoError, TypeError):
+    """Raised when a task call missing required arguments reaches the graph.
+
+    Such a call is a :class:`~ginkgo.core.task.PartialCall`, which only
+    ``.map()`` or ``.product_map()`` can complete. Returned from the flow or
+    passed to another task, it would otherwise run nothing or reach a worker
+    as an ordinary value.
+
+    Parameters
+    ----------
+    partial_call : PartialCall
+        The incomplete call.
+    consumer : str | None
+        Short name of the task it was passed to, or ``None`` when the flow
+        returned it.
+    """
+
+    def __init__(self, *, partial_call: PartialCall, consumer: str | None) -> None:
+        name = partial_call.task_def.fn.__name__
+        missing = ", ".join(partial_call.missing_params)
+        where = "returned from the flow" if consumer is None else f"passed to {consumer}()"
+        super().__init__(
+            f"{name}() is missing required argument(s): {missing}, but was {where}. "
+            "Pass every required argument, or complete the call with .map() or "
+            ".product_map()."
+        )
 
 
 class RootSkippedError(GinkgoError, RuntimeError):
@@ -473,7 +501,8 @@ class ConcurrentEvaluator:
 
         Empty unless the caller passed ``constructed_calls`` recorded around the
         flow body. Only meaningful after ``validate`` or ``evaluate`` has
-        registered the graph.
+        registered the graph. A discarded partial call has no expressions,
+        so it is always among them.
         """
         return [
             call
@@ -745,6 +774,12 @@ class ConcurrentEvaluator:
                     task_path=task_path,
                 )
             }
+
+        # Only a fan-out may complete a partial call; one reached here would
+        # otherwise run nothing (as the root) or reach a worker as a value.
+        if isinstance(value, PartialCall):
+            consumer = task_path[-1].rsplit(".", 1)[-1] if task_path else None
+            raise IncompleteCallError(partial_call=value, consumer=consumer)
 
         if isinstance(value, ExprList):
             dependencies: set[int] = set()

@@ -1030,6 +1030,55 @@ def main():
         assert result.returncode == 0, result.stderr
         assert "not reachable from the flow return value" in _unwrapped(result.stderr)
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_run_rejects_a_returned_partial_call(self, dry_run: bool) -> None:
+        """#332: a call missing a required argument must not run green with zero tasks."""
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def join(left: str, right: str) -> str:
+    return left + right
+
+@flow
+def main():
+    return join(left="a")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
+        result = _run_cli(*args, cwd=Path.cwd())
+
+        assert result.returncode == 1
+        output = _unwrapped(result.stdout + result.stderr)
+        assert "join() is missing required argument(s): right" in output
+
+    def test_run_warns_about_a_discarded_partial_call(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def join(left: str, right: str) -> str:
+    return left + right
+
+@flow
+def main():
+    join(left="a")
+    return join(left="a", right="b")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "join() is missing required argument(s): right" in _unwrapped(result.stderr)
+
     def test_run_dry_run_groups_waves_and_expands_fanout(self) -> None:
         Path("workflow.py").write_text(
             """
