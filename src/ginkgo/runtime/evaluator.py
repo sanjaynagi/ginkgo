@@ -2564,9 +2564,28 @@ class ConcurrentEvaluator:
 
     def build_and_validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
+        self.build_graph(expr)
+        self.validate_graph()
+
+    def build_graph(self, expr: Any) -> None:
+        """Register the static task graph reachable from *expr*, with inferred edges.
+
+        After this, :attr:`unreachable_calls` is known, so a caller can report
+        dropped calls before :meth:`validate_graph` fails on a consequence of
+        one, such as a consumer of a dropped producer's ``Out[...]`` path.
+
+        Parameters
+        ----------
+        expr : Any
+            The flow's return value: an expression or a nested container of
+            them.
+        """
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
         self._infer_and_apply_edges()
+
+    def validate_graph(self) -> None:
+        """Validate the built graph's import/env/input constraints."""
         self._validator.validate_declared_envs(nodes=self._nodes.values())
         self._validator.validate_declared_secrets(nodes=self._nodes.values())
 

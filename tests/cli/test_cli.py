@@ -1031,6 +1031,42 @@ def main():
         assert "not reachable from the flow return value" in _unwrapped(result.stderr)
 
     @pytest.mark.parametrize("dry_run", [False, True])
+    def test_dropped_producer_is_named_before_its_consumer_fails_validation(
+        self, dry_run: bool
+    ) -> None:
+        """#341: the dropped-call warning explains the `file` input's "must exist" error."""
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import Out, file, flow, task
+
+@task()
+def produce(out: Out[file]) -> None:
+    Path(out).write_text("x")
+
+@task()
+def consume(p: file) -> str:
+    return Path(p).read_text()
+
+@flow
+def main():
+    produce(out="p.txt")
+    return consume(p="p.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
+        result = _run_cli(*args, cwd=Path.cwd())
+
+        assert result.returncode == 1
+        stderr = _unwrapped(result.stderr)
+        warning = stderr.index("produce() is not reachable from the flow return value")
+        error = stderr.index("must exist and be a file")
+        assert warning < error
+
+    @pytest.mark.parametrize("dry_run", [False, True])
     def test_run_rejects_a_returned_partial_call(self, dry_run: bool) -> None:
         """#332: a call missing a required argument must not run green with zero tasks."""
         Path("workflow.py").write_text(
