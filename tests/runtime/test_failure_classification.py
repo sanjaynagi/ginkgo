@@ -6,6 +6,7 @@ from ginkgo.envs.container import ContainerPrepareError
 from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.runtime.task_runners import classify_failure
 from ginkgo.runtime.task_runners.shell import ShellTaskError
+from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
 
 
 class CustomAnalysisError(Exception):
@@ -48,6 +49,10 @@ class TestFrameworkClassification:
             (PermissionError("denied"), "invalid_path"),
             (FileNotFoundError("missing.txt"), "missing_input"),
             (FileNotFoundError("task did not create out.txt"), "output_validation_error"),
+            (
+                DeclaredOutputNotWrittenError("t.out is declared `Out[file]` but 'o' was not"),
+                "output_validation_error",
+            ),
         ],
     )
     def test_framework_exceptions_keep_their_kind(self, exc: Exception, kind: str) -> None:

@@ -2402,14 +2402,17 @@ class ConcurrentEvaluator:
                     "else."
                 )
             value = self._inferred_return_value(node=node)
-        coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
-        finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
-        self._validator.validate_return_value(task_def=task_def, value=finalized)
+        # An unwritten Out[...] path is checked first: a task returning that
+        # path would otherwise fail the generic return check, which names
+        # `.return` rather than the parameter.
         if task_def.output_params:
             self._validator.validate_declared_outputs_written(
                 task_def=task_def,
                 resolved_args=node.execution_args or {},
             )
+        coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
+        finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
+        self._validator.validate_return_value(task_def=task_def, value=finalized)
         return finalized
 
     def _inferred_return_value(self, *, node: NodeRun) -> Any:
