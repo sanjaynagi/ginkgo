@@ -423,7 +423,10 @@ def _probe_node(
 
     # Record the hit so dependents can resolve their own arguments against
     # this output, mirroring the evaluator's prepare-phase cache fast path.
+    # A dependent reading ``.output["name"]`` takes the value from this
+    # node's resolved arguments rather than its result.
     node.cache_key = cache_key
+    node.resolved_args = resolved_args
     node.result = cached_value
     node.state = "completed"
     return "cached"
