@@ -23,8 +23,8 @@ from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
-from ginkgo.runtime.edge_inference import DuplicateOutputPathError
-from ginkgo.runtime.evaluator import ConcurrentEvaluator, CycleError
+from ginkgo.runtime.edge_inference import DuplicateOutputPathError, OutputOverwritesInputError
+from ginkgo.runtime.evaluator import ConcurrentEvaluator, CycleError, IncompleteCallError
 from ginkgo.runtime.events import GraphNodeRegistered, TaskNotice
 from ginkgo.runtime.task_validation import (
     is_content_trackable_path_value,
@@ -714,6 +714,91 @@ class TestUnreachableCalls:
         assert plan.dropped_labels == ("make_label()",)
 
 
+class TestPartialCalls:
+    """#332 — a call missing a required argument is a ``PartialCall``, not a task."""
+
+    def test_returned_partial_call_is_a_build_error(self) -> None:
+        @flow
+        def main():
+            return join_labels(left="a")
+
+        with pytest.raises(IncompleteCallError, match=r"join_labels\(\) .*right"):
+            _validated_evaluator(main)
+
+    def test_returned_partial_call_fails_evaluate(self) -> None:
+        with pytest.raises(IncompleteCallError, match=r"join_labels\(\) .*right"):
+            evaluate(join_labels(left="a"))
+
+    def test_partial_call_inside_a_returned_container_is_a_build_error(self) -> None:
+        @flow
+        def main():
+            return [make_label(text="a"), make_label()]
+
+        with pytest.raises(IncompleteCallError, match=r"make_label\(\) .*text"):
+            _validated_evaluator(main)
+
+    def test_consumed_partial_call_is_a_build_error_naming_the_consumer(self) -> None:
+        @flow
+        def main():
+            return join_labels(left=make_label(), right="b")
+
+        with pytest.raises(IncompleteCallError) as excinfo:
+            _validated_evaluator(main)
+
+        message = str(excinfo.value)
+        assert "make_label()" in message
+        assert "text" in message
+        assert "join_labels()" in message
+
+    def test_discarded_partial_call_is_reported_as_dropped(self) -> None:
+        @flow
+        def main():
+            make_label()
+            return make_label(text="kept")
+
+        evaluator = _validated_evaluator(main)
+        diagnostics = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+
+        assert len(evaluator.task_nodes) == 1
+        assert [call.label for call in evaluator.unreachable_calls] == ["make_label()"]
+        assert len(diagnostics) == 1
+        assert diagnostics[0].severity == "warning"
+        assert diagnostics[0].code == UNREACHABLE_CALL_CODE
+        assert "missing required argument" in diagnostics[0].message
+        assert "text" in diagnostics[0].message
+
+    def test_map_completes_a_partial_call(self) -> None:
+        @flow
+        def main():
+            return join_labels(left="a").map(right=["x", "y"])
+
+        evaluator = _validated_evaluator(main)
+
+        assert len(evaluator.task_nodes) == 2
+        assert evaluator.unreachable_calls == []
+
+    def test_product_map_completes_a_partial_call(self) -> None:
+        @flow
+        def main():
+            return join_labels().product_map(left=["a", "b"], right=["x", "y"])
+
+        evaluator = _validated_evaluator(main)
+
+        assert len(evaluator.task_nodes) == 4
+        assert evaluator.unreachable_calls == []
+
+    def test_partial_call_mapped_twice_is_not_reported(self) -> None:
+        @flow
+        def main():
+            partial = join_labels(left="a")
+            return partial.map(right=["x"]), partial.map(right=["y"])
+
+        evaluator = _validated_evaluator(main)
+
+        assert len(evaluator.task_nodes) == 2
+        assert evaluator.unreachable_calls == []
+
+
 # --------------------------------------------------------------------------
 # #280 / #307 phase 2 — dependency edges inferred from Out[...] paths
 # --------------------------------------------------------------------------
@@ -780,6 +865,16 @@ def touch_output(*, output_path: Out[file]) -> None:
 def read_own_output(*, output_path: Out[file], also_read: str) -> str:
     Path(output_path).write_text("x\n", encoding="utf-8")
     return also_read
+
+
+@task()
+def overwrite_input(*, src: file, out: Out[file]) -> None:
+    Path(out).write_text("FILTERED\n", encoding="utf-8")
+
+
+@task()
+def write_into_input_dir(*, input_dir: folder, out: Out[file]) -> None:
+    Path(out).write_text(str(len(list(Path(input_dir).iterdir()))), encoding="utf-8")
 
 
 @task()
@@ -969,6 +1064,30 @@ class TestOutPathEdgeInference:
             return first, second
 
         with pytest.raises(CycleError, match="Detected cycle in workflow graph"):
+            _validated_evaluator(main)
+
+    def test_overwriting_your_own_file_input_is_refused_before_it_runs(self) -> None:
+        """#334: the task would destroy its raw input and then cache the result."""
+        Path("in.txt").write_text("RAW\n", encoding="utf-8")
+
+        @flow
+        def main():
+            return overwrite_input(src="in.txt", out="in.txt")
+
+        with pytest.raises(OutputOverwritesInputError, match="in.txt"):
+            _validated_evaluator(main)
+        with pytest.raises(OutputOverwritesInputError):
+            evaluate(main())
+        assert Path("in.txt").read_text(encoding="utf-8") == "RAW\n"
+
+    def test_writing_inside_your_own_folder_input_is_refused(self) -> None:
+        Path("data").mkdir()
+
+        @flow
+        def main():
+            return write_into_input_dir(input_dir="data", out="data/summary.txt")
+
+        with pytest.raises(OutputOverwritesInputError, match="input_dir"):
             _validated_evaluator(main)
 
     def test_reading_your_own_declared_output_is_not_a_self_dependency(self) -> None:

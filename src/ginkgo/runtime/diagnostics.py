@@ -72,8 +72,11 @@ def collect_workflow_diagnostics(
     Returns
     -------
     list[WorkflowDiagnostic]
-        One diagnostic per validation failure; empty when validation passes.
+        One diagnostic per validation failure or warning; empty when validation
+        passes cleanly. A failure is the last entry, after any dropped-call
+        warnings that may explain it.
     """
+    dropped_calls: list[WorkflowDiagnostic] = []
     try:
         from ginkgo.cli.workflow_params import (
             global_param_reads,
@@ -103,7 +106,11 @@ def collect_workflow_diagnostics(
                 config_paths=config_paths,
             ),
         )
-        evaluator.build_and_validate(expr)
+        evaluator.build_graph(expr)
+        # Collected before validation and kept if it fails: a consumer of a
+        # dropped producer's Out[...] path fails it, and the warning names why.
+        dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+        evaluator.validate_graph()
 
         # A parameter read from a module global inside a task body is invisible
         # to that task's cache key, so a changed value silently reuses the
@@ -122,7 +129,7 @@ def collect_workflow_diagnostics(
                 evaluator=evaluator,
             )
         ]
-        diagnostics.extend(unreachable_call_diagnostics(calls=evaluator.unreachable_calls))
+        diagnostics.extend(dropped_calls)
         diagnostics.extend(
             path_like_str_param_diagnostics(
                 task_defs=(node.task_def for node in evaluator.task_nodes.values())
@@ -132,7 +139,7 @@ def collect_workflow_diagnostics(
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
         # interrupts doctor wants it to stop, not to be told about a diagnostic.
-        return [_diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
+        return [*dropped_calls, _diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
 
 
 def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[WorkflowDiagnostic]:
@@ -149,22 +156,38 @@ def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[Wo
     list[WorkflowDiagnostic]
         One ``warning``-severity diagnostic per dropped call.
     """
-    return [
-        WorkflowDiagnostic(
+    return [_unreachable_call_diagnostic(call=call) for call in calls]
+
+
+def _unreachable_call_diagnostic(*, call: ConstructedCall) -> WorkflowDiagnostic:
+    """Build the warning for one dropped call, naming what a partial call lacks."""
+    if call.is_partial:
+        return WorkflowDiagnostic(
             severity="warning",
             code=UNREACHABLE_CALL_CODE,
             message=(
-                f"{call.label} is not reachable from the flow return value, so it was "
-                "dropped from the graph and will not run."
+                f"{call.label} is missing required argument(s): "
+                f"{', '.join(call.missing_params)}, so it was dropped from the graph and "
+                "will not run."
             ),
             location=call.task_name,
             suggestion=(
-                "Return its result from the flow (directly or inside a tuple, list, or dict) "
-                "if the task should run."
+                "Pass every required argument, or complete the call with .map() or .product_map()."
             ),
         )
-        for call in calls
-    ]
+    return WorkflowDiagnostic(
+        severity="warning",
+        code=UNREACHABLE_CALL_CODE,
+        message=(
+            f"{call.label} is not reachable from the flow return value, so it was "
+            "dropped from the graph and will not run."
+        ),
+        location=call.task_name,
+        suggestion=(
+            "Return its result from the flow (directly or inside a tuple, list, or dict) "
+            "if the task should run."
+        ),
+    )
 
 
 def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:

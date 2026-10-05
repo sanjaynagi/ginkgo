@@ -62,6 +62,7 @@ from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
+    WorkflowDiagnostic,
     path_like_str_param_diagnostics,
     unreachable_call_diagnostics,
 )
@@ -309,9 +310,27 @@ def run_workflow(
         constructed_calls=tuple(constructed_calls),
         **evaluator_kwargs,
     )
+    # A call the flow never returns is not in the graph, so its side effects
+    # never happen: the run otherwise looks like a smaller but healthy one.
+    # Warned about before validation, which a consumer of a dropped producer's
+    # Out[...] path fails, so the warning names the cause. Held back only for a
+    # dry-run plan that renders its own "Dropped" section, unless validation
+    # fails before the plan can be rendered.
+    plan_reports_dropped = (
+        dry_run and plan_preview and output_mode not in {"agent", "agent_verbose"}
+    )
     validate_started = time.perf_counter()
     with profiler.timed("evaluator_validate"):
-        evaluator.build_and_validate(expr)
+        evaluator.build_graph(expr)
+        dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+        if not plan_reports_dropped:
+            _print_dropped_calls(diagnostics=dropped_calls)
+        try:
+            evaluator.validate_graph()
+        except Exception:
+            if plan_reports_dropped:
+                _print_dropped_calls(diagnostics=dropped_calls)
+            raise
     validate_elapsed = time.perf_counter() - validate_started
 
     # A parameter must reach a task as an argument. One read from a module global
@@ -322,17 +341,6 @@ def run_workflow(
         evaluator=evaluator,
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {finding.message()}")
-
-    # A call the flow never returns is not in the graph, so its side effects
-    # never happen. Warned about for the same reason: the run otherwise looks
-    # like a smaller but healthy one. Suppressed only when the dry-run plan is
-    # about to render its own "Dropped" section, which would say it twice.
-    plan_reports_dropped = (
-        dry_run and plan_preview and output_mode not in {"agent", "agent_verbose"}
-    )
-    if not plan_reports_dropped:
-        for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
-            console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
     # A parameter named like a path but annotated a bare `str` is tracked by
     # its path string alone: no content hash, no dependency edge (issue #307).
@@ -732,6 +740,12 @@ def run_workflow(
     finally:
         resource_monitor.stop()
     return 0
+
+
+def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
+    """Warn on stderr about each task call dropped from the graph."""
+    for diagnostic in diagnostics:
+        console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:

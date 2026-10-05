@@ -133,6 +133,75 @@ def main():
         assert payload["diagnostics"][0]["severity"] == "warning"
         assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
 
+    def test_dropped_producer_accompanies_its_consumers_validation_error(self) -> None:
+        """#341: the warning explains why the consumer's `file` input does not exist."""
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import Out, file, flow, task
+
+@task()
+def produce(out: Out[file]) -> None:
+    Path(out).write_text("x")
+
+@task()
+def consume(p: file) -> str:
+    return Path(p).read_text()
+
+@flow
+def main():
+    produce(out="p.txt")
+    return consume(p="p.txt")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert [entry["severity"] for entry in payload["diagnostics"]] == ["warning", "error"]
+        assert payload["diagnostics"][0]["code"] == "unreachable_task_call"
+        assert "produce()" in payload["diagnostics"][0]["message"]
+        assert "must exist and be a file" in payload["diagnostics"][1]["message"]
+
+
+class TestDoctorPartialCalls:
+    """#332: a call missing a required argument is reported, not passed."""
+
+    def test_consumed_partial_call_is_an_error(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def join(left: str, right: str) -> str:
+    return left + right
+
+@task()
+def shout(text: str) -> str:
+    return text.upper()
+
+@flow
+def main():
+    return shout(text=join(left="a"))
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["code"] == "INCOMPLETECALLERROR"
+        assert (
+            "join() is missing required argument(s): right"
+            in (payload["diagnostics"][0]["message"])
+        )
+
 
 class TestDoctorPathLikeStrParam:
     """Cover for issue #307: a ``str`` path parameter is a warning, not a failure."""

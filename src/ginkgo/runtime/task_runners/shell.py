@@ -38,7 +38,11 @@ from ginkgo.errors import GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
-from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
+from ginkgo.runtime.task_validation import (
+    DeclaredOutputNotWrittenError,
+    TaskValidator,
+    declared_output_paths_in_order,
+)
 from ginkgo.runtime.artifacts.value_codec import CodecError
 
 
@@ -630,6 +634,8 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
         kind = "shell_command_error"
     elif isinstance(exc, (IsADirectoryError, NotADirectoryError, PermissionError)):
         kind = "invalid_path"
+    elif isinstance(exc, DeclaredOutputNotWrittenError):
+        kind = "output_validation_error"
     elif isinstance(exc, FileNotFoundError):
         kind = "missing_input" if "did not create" not in message else "output_validation_error"
     else:

@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal, get_type_hints
 
 import re
 
-from ginkgo.core.expr import Expr, ExprList, record_call, supersede_call
+from ginkgo.core.expr import Expr, ExprList, record_call, record_partial_call, supersede_call
 from ginkgo.core.resources import Resources
 from ginkgo.core.source_hash import compute_source_hash
 from ginkgo.core.types import (
@@ -387,7 +387,9 @@ class TaskDef:
             return expr
 
         # Partial call — some required params are missing
-        return PartialCall(task_def=self, fixed_args=kwargs)
+        partial_call = PartialCall(task_def=self, fixed_args=kwargs)
+        record_partial_call(partial_call)
+        return partial_call
 
     def __reduce__(self) -> tuple[Callable[..., TaskDef], tuple[str, str]]:
         """Serialize task definitions by their module-level binding."""
@@ -408,6 +410,15 @@ class PartialCall:
 
     task_def: TaskDef
     fixed_args: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def missing_params(self) -> tuple[str, ...]:
+        """Required parameters not yet supplied, in signature order."""
+        return tuple(
+            name
+            for name in self.task_def.all_params
+            if name in self.task_def.required_params and name not in self.fixed_args
+        )
 
     def map(self, *, max_concurrent: int | None = None, **varying: Any) -> ExprList:
         """Fan-out: produce one ``Expr`` per element by zipping varying columns.
@@ -529,6 +540,8 @@ def _fan_out_partial_call(
         )
         for row in rows
     ]
+    # The fan-out completes the partial call, so it is no longer dropped.
+    supersede_call(partial_call)
     expr_list = ExprList(exprs=exprs, task_def=partial_call.task_def)
     record_call(expr_list)
     return expr_list

@@ -18,6 +18,7 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobHandle
+from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
 from tests.conftest import EventCollector
 
 
@@ -60,6 +61,18 @@ def write_output_dir(payload: str, out_dir: Out[folder]) -> folder:
 def forgetful(marker: file, out_path: Out[file]) -> file:
     """Declares an output but never writes it — returns an unrelated file."""
     return marker
+
+
+@task()
+def writes_beside_its_output(out_path: Out[file]) -> file:
+    """Writes the wrong path, then returns the declared one."""
+    Path(out_path + ".x").write_text("x", encoding="utf-8")
+    return file(out_path)
+
+
+@task()
+def never_writes(out_path: Out[file]) -> None:
+    """Declares an output, writes nothing, and returns nothing."""
 
 
 @task()
@@ -210,6 +223,31 @@ class TestOutPostExecutionValidation:
 
         with pytest.raises(FileNotFoundError, match="was not written"):
             evaluate(forgetful(marker=file(str(marker)), out_path=str(missing)))
+
+    def test_unwritten_output_of_a_file_returning_task_names_the_parameter(self, tmp_path: Path):
+        """#341: the declared-output check runs before the generic ``.return`` check."""
+        out_path = tmp_path / "o.txt"
+        collector = EventCollector()
+
+        with pytest.raises(DeclaredOutputNotWrittenError) as excinfo:
+            evaluate(writes_beside_its_output(out_path=str(out_path)), event_bus=collector.bus)
+
+        message = str(excinfo.value)
+        assert "writes_beside_its_output.out_path is declared `Out[file]`" in message
+        assert str(out_path) in message
+        assert ".return" not in message
+        [failed] = collector.failed()
+        assert failed.failure["kind"] == "output_validation_error"
+        assert failed.failure["code"] == "DeclaredOutputNotWrittenError"
+
+    def test_unwritten_output_of_a_none_returning_task_is_an_output_failure(self, tmp_path: Path):
+        collector = EventCollector()
+
+        with pytest.raises(DeclaredOutputNotWrittenError, match="out_path"):
+            evaluate(never_writes(out_path=str(tmp_path / "o.txt")), event_bus=collector.bus)
+
+        [failed] = collector.failed()
+        assert failed.failure["kind"] == "output_validation_error"
 
     def test_shell_task_output_is_checked_after_the_command_runs(self, tmp_path: Path):
         out_path = tmp_path / "shell_out.txt"
