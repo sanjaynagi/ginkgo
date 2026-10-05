@@ -551,6 +551,33 @@ def main():
         assert stats["total_bytes"] < 1000
         assert "Artifact store: 1000 B" in text.stdout
 
+    def test_assets_materialised_is_not_printed_for_a_fully_cached_run(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import pandas as pd
+from ginkgo import flow, table, task
+
+@task()
+def make() -> object:
+    return table(pd.DataFrame({"a": [1, 2]}), name="a")
+
+@flow
+def main():
+    return make()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        second = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert first.returncode == 0, first.stderr
+        assert "Assets materialised (1)" in first.stdout
+        assert second.returncode == 0, second.stderr
+        assert "0 tasks executed, 1 cached" in second.stdout
+        assert "Assets materialised" not in second.stdout
+
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
         known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
