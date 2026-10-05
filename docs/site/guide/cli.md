@@ -109,6 +109,9 @@ run applies, so a kind/path mismatch (say, a `table` asset wired into a
 `file` parameter) is reported under **Problems** before anything runs &mdash;
 and the command exits non-zero, so a scripted preflight fails loudly. A
 first, cold dry run cannot resolve those arguments and so makes no claim.
+The plan covers only the graph the flow builds before anything runs: tasks a
+task returns at runtime are not shown, so for a dynamic workflow it is a lower
+bound on what the real run executes.
 
 `--keep-going` stops a task failure from ending the run: every task is treated
 as `on_failure="ignore"`, so each branch that does not depend on the failure
