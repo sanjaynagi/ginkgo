@@ -21,8 +21,8 @@ coding agents working in the repository:
 - `project.md` — canonical layout and where code should live
 - `config.md` — config loading and CLI overlay patterns
 - `commands.md` — validation, execution, and inspection commands
-- `workflow-patterns.md` — task-kind syntax, environments, notebooks, and
-  remote staging
+- `workflow-patterns.md` — task-kind syntax, environments, notebooks, assets,
+  workflow parameters, and remote staging
 - `local.md` — repository-specific conventions that refine the defaults
 
 Point an agent at `skills/index.md` and it has enough context to author and run

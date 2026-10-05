@@ -47,6 +47,17 @@ the module, so the whole fan-out re-runs rather than the affected branch. Pass
 such parameters as task arguments instead; arguments are hashed per call, so
 only the branches whose values changed are invalidated.
 
+### Early Cutoff
+
+A downstream task's key is built from the *values* its upstream tasks produced,
+not from the upstream tasks' own cache keys. So when an upstream task re-runs
+(an input changed, or its `version=` was bumped) and produces the same bytes
+for a `file` output, or an equal plain value such as an `int` or `str`, every
+task below it still hits the cache. The change stops spreading at the first task
+whose output did not change, so only the tasks whose inputs actually differ
+re-run. (Tasks defined in the same module share a source hash, so editing that
+module's source still invalidates all of them; see [Cache Identity](#cache-identity).)
+
 (cache-correctness)=
 ## Cache Correctness
 
@@ -135,9 +146,13 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - **Cache key:** contributes its path string only, never content — the same
   as leaving the parameter `str`, but declared rather than implied.
 - **After execution:** the path must exist, with the right kind, or the task
-  fails naming the parameter and the path. A cache hit whose declared output
-  is missing on disk (or the wrong kind) is treated as a miss and the task
-  re-runs.
+  fails naming the parameter and the path. On a cache hit, a tracked output
+  file that is missing or modified on disk is restored from the artifact store
+  without re-running the task and without a log line. This covers `file(...)`
+  returns, inferred returns (below), and `asset(...)` of an `Out[...]` path.
+  The restore overwrites hand edits: an edited output is reset to the cached
+  bytes. A miss and re-run happens only when no stored artifact exists to
+  restore from, for example a task with an explicit `-> None` return.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned
@@ -221,6 +236,10 @@ Ginkgo names which:
   #307 phase 2) a plain value that names an existing regular file and reads
   as a path: the bytes are hashed.
 - **asset** — an `AssetRef` (or a remote reference): tracked by its version id.
+  The exception is an `AssetRef` passed to a parameter annotated
+  `file`/`folder`: the cache key then uses the asset version's content hash
+  instead of its version id (`ginkgo cache explain` still labels it
+  **asset**).
 - **path** — a value that names an existing path but is not content-hashed: a
   directory (never auto-hashed — annotate `folder`), a bare word with no
   separator or extension. Tracked by the path *string* only.

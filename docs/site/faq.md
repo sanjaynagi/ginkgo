@@ -24,12 +24,14 @@ Pythonic syntax.
 
 ### How does Ginkgo compare to Snakemake, Nextflow, Prefect, and Dagster?
 
-Snakemake can not handle dynamic DAGs natively. Nextflow is written in Groovy and requires using
+Snakemake builds its DAG from rules and file-name patterns. Its `checkpoint` rules re-evaluate
+that DAG once an output exists, but the dynamic part must be expressed through that mechanism
+rather than in ordinary code. Nextflow is written in Groovy and requires using
 the abstraction of channels to pass data between steps. We take the view that a scientific workflow
 orchestrator should be plain Python, handle dynamic DAGs natively and should not require the abstraction of channels.
 Prefect and Dagster are also Python, but they require DIY effort to run shell commands, scripts,
-and notebooks in foreign environments (e.g an isolated pixi, conda environment or container image).
-Ginkgo runs those natively each task can declare its own foreign environment right on the @task() decorator.
+and notebooks in foreign environments (e.g. an isolated pixi, conda environment or container image).
+Ginkgo runs those natively: each task can declare its own foreign environment right on the `@task()` decorator.
 
 
 ### What does the canonical project layout look like, and how does autodiscovery find my flows?
@@ -230,6 +232,8 @@ or by keyword (`@task(kind="shell")`); `python` is the default.
   self-contained child `ginkgo run`, yielding a `SubWorkflowResult`.
 
 ```python
+from pathlib import Path
+
 from ginkgo import Out, file, notebook, script, shell, subworkflow, task
 
 
@@ -238,9 +242,12 @@ def filter_reads(reads: file) -> file:
     return shell(cmd="seqkit seq ...", output="results/filtered.fastq")
 
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
+
+
 @task("script")
 def build_brief(card: file, output_path: Out[file]) -> file:
-    return script("scripts/build_brief.py")
+    return script(_SCRIPTS_DIR / "build_brief.py")
 ```
 
 ### Are there path-oriented input/output types?
@@ -311,9 +318,13 @@ parameter's name looks like a path (`path`, `output_dir`, `report_files`,
 ...) but is annotated a bare `str` shape (`str`, `str | None`, `list[str]`,
 `tuple[str, ...]`), `ginkgo doctor` and `ginkgo run --dry-run` emit a
 `path_like_str_param` warning naming the task and parameter, whether or not the
-workflow has ever run — no filesystem access, no execution required. It
-suggests `file`/`folder` for a path the task reads, or `Out[file]`/`Out[folder]`
-(a return-value wrapper) for one it writes. `untracked` never triggers this
+workflow has ever run — no filesystem access, no execution required. The
+warning is name-based, so it fires even when the value turns out to be an
+existing file (which is content-tracked, as above). What it still guards
+against: a directory or any other non-file path is tracked by its path string
+alone, only `file`/`folder` check that the path exists, and a path the task
+writes belongs in `Out[...]`. It suggests `file`/`folder` for a path the task
+reads, or `Out[file]`/`Out[folder]` for one it writes. `untracked` never triggers this
 warning: it is a declared choice, not the trap the warning exists to flag.
 
 ### Why did a task in my flow never run?
@@ -475,7 +486,8 @@ The key hashes a sorted object with exactly these fields: the task name, the tas
 `version`, the task `source_hash` (source plus local import closure), the
 resolved `inputs`, the declared `env`, and an `env_hash`. Each input is hashed by
 declared type: `file`/`folder` arguments are hashed by content, an `AssetRef`
-contributes its content hash, a remote reference contributes its object-store
+contributes its content hash when the parameter is annotated `file`/`folder`
+and its version id for any other annotation (for example `object`), a remote reference contributes its object-store
 version id (staging first if needed), primitives are hashed from their `repr`,
 and any other object is hashed via the value codec. `tmp_dir` parameters are
 deliberately excluded. The `env_hash` is `None` when the task declares no env;
@@ -493,6 +505,11 @@ parsed, Ginkgo now raises an error rather than silently skipping it, so a syntax
 error no longer quietly truncates the closure and masks a stale cache.
 Runtime-only dependencies (dynamic imports, data files) still cannot be tracked
 this way; bump `version=` on the task when those change.
+
+A data file opened by a literal path inside a task body is one of these: the
+cache never sees it, and nothing warns. Pass the path in as a `file` argument
+instead and its bytes become part of the key. See the note in the
+[CLI guide](guide/cli.md#workflow-parameters).
 
 ### Does changing a task's threads or memory invalidate its cache?
 
@@ -540,13 +557,25 @@ flag on `ginkgo run`. To force a task to re-execute, either bump its `version=`
 (a dedicated cache-busting tag that feeds directly into the key), change its
 source, or `ginkgo cache clear <cache-key>` for that entry.
 
+`cache clear` needs the *full* 64-character key: a prefix, even a long one, is
+reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, and
+`ginkgo cache explain <run_id>` prints each task's key beside its branch label
+(`fst[2L,YRI,CEU]`), which is the easiest way to find the key of one branch of a
+fan-out. To discard everything and start cold, run
+`ginkgo cache prune --max-entries 0`.
+
 ### Where does the artifact store fit in for file/folder outputs?
 
 File and folder outputs are copied into a content-addressed artifact store under
 `.ginkgo/artifacts/` (hashed with BLAKE3), and that store — not the task's
 declared output path — is the durable source of truth. On a cache hit, the
-artifact store re-materialises the output into the working tree; large
-serialized return values are also offloaded here rather than inlined.
+artifact store re-materialises the output into the working tree: a tracked
+output file that is missing or modified on disk (including `asset(...)` of an
+`Out[...]` path) is restored without re-running the task, overwriting any hand
+edits. Only when no stored artifact exists to restore from, such as a task with
+an explicit `-> None` return, does the missing output count as a miss and the
+task re-run. Large serialized return values are also offloaded to the store
+rather than inlined.
 
 ## Value Transport And Serialization
 

@@ -55,6 +55,13 @@ at the nearest `ginkgo.toml`.
 : List and inspect typed, versioned task outputs. See
   [Assets and Reports](assets.md).
 
+`ginkgo lineage`
+: Trace what an asset was built from, or with `--downstream` what was derived
+  from it. The target is an asset key (`table:features`, optionally
+  `@<version-or-alias>`), a materialized file path, or an artifact id; `--depth N`
+  stops the walk after N hops and `--json` emits JSON. See
+  [Assets and Reports](assets.md) and [Querying Provenance](querying-provenance.md).
+
 `ginkgo models`
 : List model assets together with their recorded metrics.
 
@@ -125,8 +132,8 @@ events, for programmatic use by AI coding agents &mdash; see
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | A failure ended the run. |
-| 2 | The command line was rejected. |
+| 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc`, no command at all), or a command found an argument missing in its own check: `cache clear` with no key, `cache prune` with no limit, `query` with no statement. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
 | 130 | Interrupted with Ctrl-C. |
 
@@ -182,6 +189,16 @@ changing it would silently reuse the previous result. Both `ginkgo run` and
 `ginkgo doctor` warn when they spot this.
 ```
 
+```{important}
+**Pass a data file into a task as a `file` argument.** A file opened by a literal
+path inside a task body, such as `open("data/samples.tsv")`, is invisible to the
+cache: editing it does not re-run the task, and Ginkgo does not warn. Declare it
+as a `file` parameter instead (`def summarise(samples: file)`) and pass the path
+at the call site, so its bytes are hashed into the key and, when another task
+produces it, the dependency edge is created. `version=` on the task is the
+stopgap when the path cannot be passed in.
+```
+
 ## Validation And Diagnostics
 
 Use these commands to inspect a workflow without committing to the full
@@ -207,9 +224,11 @@ names each one and the error behind it.
 Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
 without touching the filesystem, a parameter whose name looks like a path
 (`path`, `output_dir`, `report_files`, ...) but is annotated a bare `str`
-shape rather than `file`/`folder` — a `path_like_str_param` warning, since
-such a parameter is tracked by its path string alone (see the FAQ entry on
-`file`/`folder` for why that matters).
+shape rather than `file`/`folder` — a `path_like_str_param` warning. Such a
+parameter is content-tracked only when its value names an existing regular
+file; a directory or any other non-file path is tracked by its path string
+alone, and nothing checks that it exists. A path the task writes belongs in
+`Out[...]` (see the FAQ entry on `file`/`folder`).
 
 ### Validation workflows
 

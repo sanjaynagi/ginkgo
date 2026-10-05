@@ -334,8 +334,10 @@ def run_workflow(
         for diagnostic in unreachable_call_diagnostics(calls=evaluator.unreachable_calls):
             console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
 
-    # A parameter named like a path but annotated a bare `str` is tracked by
-    # its path string alone: no content hash, no dependency edge (issue #307).
+    # A parameter named like a path but annotated a bare `str` is content-tracked
+    # only when its value names an existing regular file; a directory or other
+    # non-file path is tracked by its path string alone and is never checked for
+    # existence (issue #307).
     # Purely static and name-based, so it is cheap to check every time, but
     # only printed on --dry-run: unlike the two warnings above it fires once
     # per task definition regardless of how the graph is shaped, so a real

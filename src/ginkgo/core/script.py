@@ -76,8 +76,12 @@ def script(
     Parameters
     ----------
     path : str | Path
-        Source script file. Relative paths resolve from the current working
-        directory at the time of the call.
+        Source script file. A relative path resolves against the process
+        working directory at the time of the call, which ``ginkgo`` sets to
+        the project root (the nearest directory holding ``ginkgo.toml``)
+        before running a workflow, not against the file containing the call.
+        Build the path from ``Path(__file__)`` to anchor it to the workflow
+        file.
     output : str | AssetResult | list[those] | None
         Declared output path or paths, validated for existence after
         execution.

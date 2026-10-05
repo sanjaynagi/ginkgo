@@ -56,8 +56,11 @@ def notebook(
     """Create a notebook execution expression.
 
     Called from inside a ``@task("notebook")`` body with fully resolved
-    argument values. Relative paths resolve from the current working directory
-    at the time of the call.
+    argument values. A relative path resolves against the process working
+    directory at the time of the call, which ``ginkgo`` sets to the project
+    root (the nearest directory holding ``ginkgo.toml``) before running a
+    workflow, not against the file containing the call. Build the path from
+    ``Path(__file__)`` to anchor it to the workflow file.
 
     Parameters
     ----------
