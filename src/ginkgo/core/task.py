@@ -1081,10 +1081,18 @@ def task(
 
     Raises
     ------
+    TypeError
+        If used bare, as ``@task`` without parentheses.
     ValueError
         If both a positional kind and a non-default ``kind`` keyword are
         supplied and they differ.
     """
+    if callable(_kind):
+        raise TypeError(
+            f'@task needs parentheses: use @task() (or @task("shell"), ...) on '
+            f"{getattr(_kind, '__name__', _kind)!r}."
+        )
+
     resolved_kind = _kind if _kind is not None else kind
     if _kind is not None and kind != "python" and _kind != kind:
         raise ValueError(f"task kind specified twice: positional {_kind!r} and keyword {kind!r}")
