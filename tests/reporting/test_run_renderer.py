@@ -564,6 +564,111 @@ def test_many_ignored_failures_are_panelled_up_to_a_limit(tmp_path: Path) -> Non
     assert "branch[10]" not in text
 
 
+def _fatal_failure(*, label: str, error: str = "seqtkk: command not found") -> FailureDetails:
+    return FailureDetails(
+        task_label=label,
+        exit_code=127,
+        log_path=None,
+        log_tail=[],
+        error=error,
+        failure_kind="shell_command_error",
+    )
+
+
+def test_identical_fatal_failures_share_one_panel(tmp_path: Path) -> None:
+    """Seven branches failing the same way are one problem, not seven panels."""
+    renderer, _ = _renderer(tmp_path)
+    details = [_fatal_failure(label=f"trim[{index}]") for index in range(7)]
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_details(details))
+    text = console.file.getvalue()
+
+    assert text.count("Failure Details:") == 1
+    assert "Failure Details: trim[0] (×7)" in text
+    assert "trim[1], trim[2], trim[3]" in text
+    assert "shell_command_error×7" in text
+
+
+def test_fatal_failures_with_different_reasons_keep_their_own_panels(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    details = [
+        _fatal_failure(label="trim[a]"),
+        _fatal_failure(label="trim[b]", error="seqtk: input file is empty"),
+    ]
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_details(details))
+    text = console.file.getvalue()
+
+    assert text.count("Failure Details:") == 2
+    assert "Failure Details: trim[a] " in text
+    assert "Failure Details: trim[b] " in text
+    assert "(×" not in text
+
+
+def test_a_failure_without_an_exit_code_has_no_exit_code_row(tmp_path: Path) -> None:
+    """An in-process exception has no exit code, and "?" said nothing."""
+    renderer, _ = _renderer(tmp_path)
+    details = FailureDetails(task_label="task_a", exit_code=None, log_path=None, log_tail=[])
+
+    console = Console(file=StringIO(), width=120, force_terminal=False)
+    console.print(renderer._layout.render_failure_panel(details))
+
+    assert "Exit code" not in console.file.getvalue()
+
+
+def test_a_log_path_wider_than_the_console_is_folded_not_truncated(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    log_path = Path(".ginkgo/runs/20261005_105716_799605_a04c64d3/logs") / (
+        "task_0000_ginkgo_user_flow_547d514134.pack.stderr.log"
+    )
+    details = FailureDetails(task_label="pack", exit_code=1, log_path=log_path, log_tail=[])
+
+    console = Console(file=StringIO(), width=80, force_terminal=False)
+    console.print(renderer._layout.render_failure_panel(details))
+    text = console.file.getvalue()
+
+    assert "…" not in text
+    assert "stderr.log" in text
+
+
+def test_a_notice_names_the_task_it_is_about(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    renderer.write(
+        json.dumps(
+            {
+                "task": "mod.task_a",
+                "status": "notice",
+                "node_id": 0,
+                "display_label": "task_a[x]",
+                "message": "FUSE access fell back to staging: no /dev/fuse",
+            }
+        )
+        + "\n"
+    )
+
+    assert renderer._state.notices == ["task_a: FUSE access fell back to staging: no /dev/fuse"]
+
+
+def test_a_notice_from_an_unplanned_task_uses_its_display_label(tmp_path: Path) -> None:
+    renderer, _ = _renderer(tmp_path)
+    renderer.write(
+        json.dumps(
+            {
+                "task": "mod.child",
+                "status": "notice",
+                "node_id": 9,
+                "display_label": "child[b]",
+                "message": "installing ipykernel",
+            }
+        )
+        + "\n"
+    )
+
+    assert renderer._state.notices == ["child[b]: installing ipykernel"]
+
+
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     skipped = [

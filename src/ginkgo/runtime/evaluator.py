@@ -338,7 +338,7 @@ class NodeRun:
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     input_labels: dict[str, str] | None = None
-    content_input_digests: dict[str, str | None] | None = None
+    content_input_digests: dict[tuple[str, str], str | None] | None = None
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
@@ -2211,7 +2211,8 @@ class ConcurrentEvaluator:
         written = self._node_cache.written_str_inputs(node=node)
         if not written:
             return
-        paths = ", ".join(written)
+        paths = ", ".join(f"{path} (parameter '{parameter}')" for parameter, path in written)
+        parameters = ", ".join(sorted({f"'{parameter}'" for parameter, _ in written}))
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
@@ -2222,7 +2223,7 @@ class ConcurrentEvaluator:
                 message=(
                     f"wrote {paths}, which it received as a plain `str` path, so the "
                     "file is tracked as an input and this task will re-run every time. "
-                    "Annotate that parameter `Out[file]` if the task writes it, or "
+                    f"Annotate {parameters} `Out[file]` if the task writes it, or "
                     "`untracked` to key it by its path only."
                 ),
             )

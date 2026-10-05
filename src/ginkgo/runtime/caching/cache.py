@@ -821,17 +821,19 @@ class CacheStore:
 
     def content_tracked_input_digests(
         self, *, task_def: TaskDef, resolved_args: dict[str, Any]
-    ) -> dict[str, str | None]:
-        """Return ``{resolved path: digest}`` for plain-``str`` path inputs.
+    ) -> dict[tuple[str, str], str | None]:
+        """Return ``{(parameter, resolved path): digest}`` for plain-``str`` inputs.
 
         Covers the inputs the root-input rule content-hashes in
         :meth:`build_cache_key` (not ``file``/``folder`` inputs, which a task
         is not expected to write), plus the ones that would be hashed if
         their file existed, recorded with ``None`` so a task creating the
         file is noticed too. Digests come from the same memoised hashing, so
-        taking them right after the key costs no extra reads.
+        taking them right after the key costs no extra reads. Each path is
+        keyed with the parameter that carried it, so a warning about it can
+        name what to re-annotate.
         """
-        digests: dict[str, str | None] = {}
+        digests: dict[tuple[str, str], str | None] = {}
         for name, parameter in task_def.signature.parameters.items():
             if name in task_def.output_params or name not in resolved_args:
                 continue
@@ -840,22 +842,22 @@ class CacheStore:
                 continue
             for path in _content_trackable_paths(annotation=annotation, value=resolved_args[name]):
                 resolved = str(Path(path).resolve())
-                if resolved in digests:
+                if (name, resolved) in digests:
                     continue
                 candidate = Path(resolved)
-                digests[resolved] = (
+                digests[(name, resolved)] = (
                     self._hash_file_contents(candidate) if candidate.is_file() else None
                 )
         return digests
 
-    def written_inputs(self, *, before: dict[str, str | None]) -> set[str]:
-        """Return the paths in *before* the task created, changed or removed."""
-        written: set[str] = set()
-        for path, digest in before.items():
+    def written_inputs(self, *, before: dict[tuple[str, str], str | None]) -> set[tuple[str, str]]:
+        """Return the ``(parameter, path)`` keys of *before* whose file the task changed."""
+        written: set[tuple[str, str]] = set()
+        for (parameter, path), digest in before.items():
             candidate = Path(path)
             after = self._hash_file_contents(candidate) if candidate.is_file() else None
             if after != digest:
-                written.add(path)
+                written.add((parameter, path))
         return written
 
     def _hash_value(

@@ -17,7 +17,7 @@ def render_debug_header(*, summary: RunSummary, failures: int) -> Panel:
     """Render the top-level ``ginkgo debug`` report header."""
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="bold #134e4a", no_wrap=True)
-    grid.add_column()
+    grid.add_column(overflow="fold")
     grid.add_row("Run ID", summary.run_id)
     # Paths, labels and messages are user data: as Text, brackets stay literal.
     grid.add_row("Workflow", Text(summary.workflow or "unknown"))
@@ -37,13 +37,15 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
     """Render a failed task report for ``ginkgo debug``."""
     summary = Table.grid(padding=(0, 1))
     summary.add_column(style="bold #7f1d1d", no_wrap=True)
-    summary.add_column()
+    # Folded rather than cut with an ellipsis, so a long path stays copyable.
+    summary.add_column(overflow="fold")
     summary.add_row("Task", Text(details.task_label))
     if details.ignored:
         # Both kinds of failure are worth debugging, but only one of them
         # ended the run, and the reader is owed which one this was.
         summary.add_row("Policy", "ignored - the run continued past this failure")
-    summary.add_row("Exit code", str(details.exit_code) if details.exit_code is not None else "?")
+    if details.exit_code is not None:
+        summary.add_row("Exit code", str(details.exit_code))
     if details.error:
         summary.add_row("Error", Text(details.reason_headline))
     if details.log_path is not None:

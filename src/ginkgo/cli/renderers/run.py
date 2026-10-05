@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 import yaml
@@ -133,7 +134,10 @@ class _RunEventState:
         if status == "notice":
             message = payload.get("message")
             if isinstance(message, str) and message:
-                self.notices.append(message)
+                subject = self._notice_subject(
+                    node_id=node_id, task_name=task_name, display_label=display_label
+                )
+                self.notices.append(f"{subject}: {message}")
             return
 
         event_time = time.perf_counter()
@@ -169,6 +173,15 @@ class _RunEventState:
         elif status in TERMINAL_STATUSES:
             row.started_at = row.started_at or event_time
             row.finished_at = event_time
+
+    def _notice_subject(self, *, node_id: int, task_name: str, display_label: object) -> str:
+        """Return the label a notice is attributed to: the task's row, as the table shows it."""
+        row = self.rows.get(node_id)
+        if row is not None:
+            return row.label
+        if isinstance(display_label, str) and display_label:
+            return display_label
+        return task_base_name(task_name)
 
     def _track_env_prepare(
         self,
@@ -551,7 +564,8 @@ class _RunLayoutRenderer:
         A failure the run's policy let pass is diagnosed exactly like a fatal
         one, but under its own heading: what stopped the run and what merely
         cost it a branch are different questions. A fatal failure always gets
-        its panel; ignored ones are panelled up to a limit, because a
+        a panel, shared with any others of the same category and reason;
+        ignored ones are panelled up to a limit, because a
         keep-going run over a wide fan-out can collect hundreds and the
         category summary above already counts them all. The failure carrying
         the environment hint is panelled wherever it sits in that list: the
@@ -565,10 +579,16 @@ class _RunLayoutRenderer:
         if category_summary is not None:
             parts.append(category_summary)
         hinted, hint = _interpreter_hint(details)
-        parts.extend(
-            self.render_failure_panel(item, hint=hint if item is hinted else None)
-            for item in fatal
-        )
+        # Identical fatal failures, typically every branch of a fan-out
+        # failing the same way, share one panel naming them all.
+        for group in _group_identical_failures(fatal):
+            parts.append(
+                self.render_failure_panel(
+                    group[0],
+                    hint=hint if any(item is hinted for item in group) else None,
+                    same_failures=group[1:],
+                )
+            )
         if ignored:
             parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
             panelled = _panelled_with(items=ignored, kept=hinted, limit=_IGNORED_PANEL_LIMIT)
@@ -620,17 +640,38 @@ class _RunLayoutRenderer:
         details: FailureDetails,
         *,
         hint: EnvironmentFinding | None = None,
+        same_failures: Sequence[FailureDetails] = (),
     ) -> Panel:
+        """Render one failure's panel.
+
+        Parameters
+        ----------
+        details : FailureDetails
+            The failure the panel describes.
+        hint : EnvironmentFinding | None, optional
+            Interpreter advice to attach, when this failure carries it.
+        same_failures : Sequence[FailureDetails], optional
+            Further failures with the same category and reason, named in the
+            panel rather than given panels of their own.
+
+        Returns
+        -------
+        Panel
+            The rendered panel.
+        """
         summary = Table.grid(padding=(0, 1))
         summary.add_column(style="bold #7f1d1d", no_wrap=True)
-        summary.add_column()
+        # Folded rather than cut with an ellipsis: a path or a reason too
+        # wide for the console is still there to copy.
+        summary.add_column(overflow="fold")
         # Labels and paths are user data: as Text, their brackets stay literal.
         summary.add_row("Task", Text(details.task_label))
+        if same_failures:
+            summary.add_row("Also", Text(_also_failed_line(same_failures)))
         if details.failure_kind:
             summary.add_row("Category", details.failure_kind)
-        summary.add_row(
-            "Exit code", str(details.exit_code) if details.exit_code is not None else "?"
-        )
+        if details.exit_code is not None:
+            summary.add_row("Exit code", str(details.exit_code))
         if details.error:
             summary.add_row("Reason", Text(details.reason_headline, style="#7f1d1d"))
         if details.log_path is not None:
@@ -654,9 +695,10 @@ class _RunLayoutRenderer:
             sections.append(Text("Log tail", style="bold #7f1d1d"))
             sections.append(Text("\n".join(details.log_tail), style="#7f1d1d"))
 
+        count_suffix = f" (×{len(same_failures) + 1})" if same_failures else ""
         return Panel(
             Group(*sections),
-            title=Text(f"Failure Details: {details.task_label}", style="bold red"),
+            title=Text(f"Failure Details: {details.task_label}{count_suffix}", style="bold red"),
             border_style="red",
             box=box.SQUARE,
             expand=False,
@@ -1007,6 +1049,27 @@ def _format_count(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.1f}"
     return "--"
+
+
+_ALSO_FAILED_LABEL_LIMIT = 5
+"""Most labels an ``Also`` row names before counting the rest."""
+
+
+def _group_identical_failures(details: list[FailureDetails]) -> list[list[FailureDetails]]:
+    """Group failures sharing a category and reason, in first-seen order."""
+    groups: dict[tuple[str | None, str | None], list[FailureDetails]] = {}
+    for item in details:
+        groups.setdefault((item.failure_kind, item.reason_headline), []).append(item)
+    return list(groups.values())
+
+
+def _also_failed_line(details: Sequence[FailureDetails]) -> str:
+    """Name the further tasks a shared failure panel stands for."""
+    labels = [item.task_label for item in details[:_ALSO_FAILED_LABEL_LIMIT]]
+    remaining = len(details) - len(labels)
+    if remaining > 0:
+        labels.append(f"and {remaining} more")
+    return ", ".join(labels)
 
 
 def _panelled_with(

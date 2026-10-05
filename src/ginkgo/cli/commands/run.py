@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from rich.markup import escape
 
 from ginkgo import query
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table, stdout_console
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -213,7 +213,9 @@ def run_workflow(
     cli_startup_started = time.perf_counter()
 
     run_id = make_run_id(workflow_path=workflow_path)
-    rich_console = console(sys.stdout)
+    # Piped output gets the read-only commands' fixed width rather than 80
+    # columns, so the paths in a failure panel are not broken mid-token.
+    rich_console = stdout_console()
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [bold]--dry-run[/]\n"
