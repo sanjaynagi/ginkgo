@@ -230,6 +230,8 @@ or by keyword (`@task(kind="shell")`); `python` is the default.
   self-contained child `ginkgo run`, yielding a `SubWorkflowResult`.
 
 ```python
+from pathlib import Path
+
 from ginkgo import Out, file, notebook, script, shell, subworkflow, task
 
 
@@ -238,9 +240,12 @@ def filter_reads(reads: file) -> file:
     return shell(cmd="seqkit seq ...", output="results/filtered.fastq")
 
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
+
+
 @task("script")
 def build_brief(card: file, output_path: Out[file]) -> file:
-    return script("scripts/build_brief.py")
+    return script(_SCRIPTS_DIR / "build_brief.py")
 ```
 
 ### Are there path-oriented input/output types?
