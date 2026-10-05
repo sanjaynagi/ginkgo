@@ -1324,7 +1324,8 @@ def _build_notebooks(
         source = task.rendered_html_absolute(run_dir=run_dir)
         if source is None or not source.is_file():
             continue
-        dest = f"notebooks/{task.base_name}.html"
+        # Keyed by task, not name: the branches of a fan-out share a name.
+        dest = f"notebooks/{task.task_key}_{task.base_name}.html"
         artifact_copies.append(ArtifactCopy(source=source, dest_relpath=dest))
 
         size_bytes = source.stat().st_size

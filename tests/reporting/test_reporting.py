@@ -676,6 +676,43 @@ def _make_fan_out_run(*, tmp_path: Path, run_id: str) -> _Run:
 
 
 class TestExport:
+    def test_fan_out_notebook_branches_keep_their_own_html(self, tmp_path: Path) -> None:
+        ledger = Ledger.start(root=tmp_path, run_id="run-nb-fan-out")
+        for node_id, region in enumerate(["north", "south"]):
+            task_id = f"task_{node_id:04d}"
+            ledger.bus.emit(
+                GraphNodeRegistered(
+                    run_id=ledger.run_id, task_id=task_id, node_id=node_id, task_name="demo.report"
+                )
+            )
+            html_path = ledger.path / "notebooks" / f"{task_id}.html"
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(f"<html>{region}</html>", encoding="utf-8")
+            ledger.bus.emit(
+                TaskAnnotated(
+                    run_id=ledger.run_id,
+                    task_id=task_id,
+                    task_name="demo.report",
+                    fields={"task_type": "notebook", "rendered_html": f"notebooks/{task_id}.html"},
+                )
+            )
+            ledger.bus.emit(
+                TaskCompleted(
+                    run_id=ledger.run_id, task_id=task_id, task_name="demo.report", attempt=1
+                )
+            )
+        run = _Run(ledger=ledger, tmp_path=tmp_path)
+
+        out_dir = tmp_path / "out"
+        export_report(summary=run.summary(), out_dir=out_dir)
+        report = build_report_data(summary=run.summary())
+
+        copies = [out_dir / card.link_relpath for card in report.notebooks]
+        assert [path.read_text(encoding="utf-8") for path in copies] == [
+            "<html>north</html>",
+            "<html>south</html>",
+        ]
+
     def test_fan_out_branches_are_named_by_their_labels(self, tmp_path: Path) -> None:
         run = _make_fan_out_run(tmp_path=tmp_path, run_id="run-fan-out")
 
