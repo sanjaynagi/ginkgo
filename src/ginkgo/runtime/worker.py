@@ -119,8 +119,14 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         if stderr_path is not None:
             with Path(stderr_path).open("a", encoding="utf-8") as handle:
-                traceback.print_exc(
-                    file=_RedactingWriter(handle=handle, secret_values=secret_values)
+                # The first frame is this function's own call into the task,
+                # so the log starts at the user's frame instead.
+                user_traceback = exc.__traceback__.tb_next if exc.__traceback__ else None
+                traceback.print_exception(
+                    type(exc),
+                    exc,
+                    user_traceback,
+                    file=_RedactingWriter(handle=handle, secret_values=secret_values),
                 )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
         response = error_response(exc)
