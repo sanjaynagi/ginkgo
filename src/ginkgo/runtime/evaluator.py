@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import time
 import builtins
+from collections import Counter
 from collections.abc import Mapping, Set as AbstractSet
 from contextlib import ExitStack
 from concurrent.futures import (
@@ -353,6 +354,8 @@ class NodeRun:
     stdout_path: Path | None = None
     stderr_path: Path | None = None
     display_label: str | None = None
+    """The label the node is reported and recorded under, fixed when it is
+    registered; ``None`` when that is the bare task name."""
     attempt: int = 0
     retry_ready_at: float | None = None
     secret_values: tuple[str, ...] = ()
@@ -370,6 +373,11 @@ class NodeRun:
     def remote(self) -> bool:
         """Whether the node is placed on a remote executor."""
         return self.executor_name is not None
+
+    @property
+    def label(self) -> str:
+        """The name the node is shown under: its display label or bare task name."""
+        return self.display_label or self.task_def.name.rsplit(".", 1)[-1]
 
     # Identity views, delegated so collaborators that receive a run can
     # read the vertex without reaching through ``.node``.
@@ -466,6 +474,8 @@ class ConcurrentEvaluator:
     """Whether the current batch added an edge, gating the cycle check."""
     _dynamic_parent_ids: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     """Node id -> id of the task whose dynamic expansion registered it."""
+    _display_label_counts: Counter[str] = field(default_factory=Counter, init=False, repr=False)
+    """How many registered nodes each expression label has been given to."""
 
     @property
     def unreachable_calls(self) -> list[ConstructedCall]:
@@ -804,6 +814,9 @@ class ConcurrentEvaluator:
 
         node_id = self._next_node_id
         self._next_node_id += 1
+        # Labelled with its id, before its arguments are walked, so ordinals
+        # follow ascending node id.
+        display_label = self._next_display_label(expr=expr)
 
         next_expr_stack = (*expr_stack, expr_id)
         next_task_path = (*task_path, expr.task_def.name)
@@ -820,7 +833,8 @@ class ConcurrentEvaluator:
                 node_id=node_id,
                 expr=expr,
                 dependency_ids=frozenset(dependency_ids),
-            )
+            ),
+            display_label=display_label,
         )
         self._expr_nodes[expr_id] = node_id
         stdout_log = stderr_log = None
@@ -841,6 +855,27 @@ class ConcurrentEvaluator:
         # registered later in the same batch.
         self._pending_node_ids.append(node_id)
         return node_id
+
+    def _next_display_label(self, *, expr: Expr) -> str | None:
+        """Return the display label for the node being registered for *expr*.
+
+        The expression's own label (its task name plus any fan-out values)
+        takes an ordinal when earlier nodes already hold it, counted across
+        the static graph and every dynamic expansion. The second plain
+        ``child(...)`` call is ``child[2]`` in the live table, the dry run,
+        the ledger and ``history`` alike.
+
+        Returns
+        -------
+        str | None
+            The label, or ``None`` when it is the bare task name.
+        """
+        label = expr.display_label
+        self._display_label_counts[label] += 1
+        count = self._display_label_counts[label]
+        if count > 1:
+            return f"{label}[{count}]"
+        return label if expr.display_label_parts else None
 
     def _infer_and_apply_edges(self, *, expanding_node_id: int | None = None) -> None:
         """Infer ``Out[...]`` path dependency edges and emit deferred events.
@@ -962,6 +997,7 @@ class ConcurrentEvaluator:
                     task_id=task_id_for_node(node_id),
                     node_id=node_id,
                     task_name=node.task_def.name,
+                    display_label=node.display_label,
                     kind=node.task_def.kind,
                     execution_mode=node.task_def.execution_mode,
                     env=node.task_def.env,
@@ -1082,7 +1118,7 @@ class ConcurrentEvaluator:
 
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash
-        node.display_label = self._display_label_for(node=node)
+        node.display_label = self._resolved_display_label(node=node)
         self._record_task_timing(
             node_id=node.node_id,
             phase="prepare_seconds",
@@ -2844,21 +2880,24 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _display_label_for(self, *, node: NodeRun) -> str | None:
-        """Return a richer CLI label for mapped tasks once args are resolved."""
-        if not node.expr.mapped or node.resolved_args is None:
-            return None
+    def _resolved_display_label(self, *, node: NodeRun) -> str | None:
+        """Return a prepared node's display label, given its resolved args.
 
-        if node.expr.display_label_parts:
-            return node.expr.display_label
+        The label fixed at registration stands, except for a mapped branch
+        whose fan-out values gave it no label part (each was an upstream
+        result, say): that branch is named by the resolved value of its
+        first label parameter, when one renders.
+        """
+        if not node.expr.mapped or node.expr.display_label_parts or node.resolved_args is None:
+            return node.display_label
 
         label_key = first_label_param_name(task_def=node.task_def)
         if label_key is None or label_key not in node.resolved_args:
-            return None
+            return node.display_label
 
         rendered = render_label_value(node.resolved_args[label_key])
         if rendered is None:
-            return None
+            return node.display_label
 
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"

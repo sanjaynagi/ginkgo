@@ -64,6 +64,7 @@ def _events() -> list[GinkgoEvent]:
             task_id="task_0007",
             node_id=7,
             task_name="analysis.fit",
+            display_label="fit[north]",
             kind="python",
             execution_mode="python",
             env="analysis",

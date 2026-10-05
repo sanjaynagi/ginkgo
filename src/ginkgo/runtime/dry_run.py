@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
 from ginkgo.runtime.events import task_id_for_node
 
@@ -239,7 +238,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     nodes = evaluator.task_nodes
     waves_by_node = _assign_waves(nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
-    labels = display_labels({node_id: node.expr for node_id, node in nodes.items()})
+    labels = {node_id: node.label for node_id, node in nodes.items()}
     cache_status, diagnostics, probe_failures = _resolve_cache_status(
         evaluator=evaluator, topo_order=topo_order, labels=labels
     )

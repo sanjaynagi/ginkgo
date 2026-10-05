@@ -1683,6 +1683,75 @@ def main():
         assert "train[sample_a,lr=0.1,epochs=10]" in result.stdout
         assert "train[sample_a,lr=0.1,epochs=50]" in result.stdout
 
+    def test_dynamic_children_are_recorded_under_their_live_labels(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def child(x: str) -> str:
+    return x
+
+@task()
+def spawn() -> object:
+    return [child(x="a"), child(x="b"), child(x="c")]
+
+@flow
+def main():
+    return spawn()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        live_labels = re.findall(r"│ (child(?:\[\d\])?) +│", result.stdout)
+        assert live_labels == ["child", "child[2]", "child[3]"]
+
+        run_id = _extract_run_dir(result.stdout).name
+        shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        assert re.findall(r"│ (child(?:\[\d\])?) +│", shown.stdout) == live_labels
+
+        history = _run_cli("history", "child[2]", "--json", cwd=Path.cwd())
+        assert history.returncode == 0, history.stderr
+        rows = json.loads(history.stdout)
+        # The spawning task is node 0, so the second child is node 2.
+        assert [(row["task_id"], row["display_label"]) for row in rows] == [
+            ("task_0002", "child[2]")
+        ]
+
+    def test_branches_the_run_never_prepared_keep_their_labels(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def boom() -> str:
+    raise ValueError("upstream broke")
+
+@task()
+def consume(up: str, region: str) -> str:
+    return f"{up}:{region}"
+
+@flow
+def main():
+    return consume(up=boom()).map(region=["north", "south"])
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert result.returncode == 1
+        run_id = _extract_run_dir(result.stdout + result.stderr).name
+
+        shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
+        assert shown.returncode == 0, shown.stderr
+        assert "consume[north]" in shown.stdout
+        assert "consume[south]" in shown.stdout
+
 
 class TestCliGridSweepOutputPaths:
     """End-to-end cover for the grid sweep of issue #198."""
