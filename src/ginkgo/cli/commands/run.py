@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from rich.markup import escape
 
 from ginkgo import query
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table, stdout_console
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -138,8 +138,10 @@ def command_run_help(args, *, usage: str) -> int:
     int
         Process exit code.
     """
+    # Usage and parameter help are printed without markup: their brackets are
+    # literal text (``[workflow]``, a user's ``help="[x]"``), not style tags.
     rich_console = console(sys.stdout)
-    rich_console.print(usage.rstrip(), highlight=False)
+    rich_console.print(usage.rstrip(), highlight=False, markup=False)
 
     try:
         workflow_path = resolve_workflow_path(
@@ -157,13 +159,16 @@ def command_run_help(args, *, usage: str) -> int:
         )
     except BaseException as exc:
         rich_console.print(
-            f"\n[yellow]⚠[/] Could not import {workflow_path.name} to list its parameters: {exc}"
+            f"\n[yellow]⚠[/] Could not import {escape(workflow_path.name)} "
+            f"to list its parameters: {escape(str(exc))}"
         )
         return 0
 
-    rich_console.print(f"\nparameters declared by {workflow_path.name}:", highlight=False)
+    rich_console.print(
+        f"\nparameters declared by {workflow_path.name}:", highlight=False, markup=False
+    )
     for line in format_param_help(declarations) or ["  (none)"]:
-        rich_console.print(line, highlight=False)
+        rich_console.print(line, highlight=False, markup=False)
     return 0
 
 
@@ -208,7 +213,9 @@ def run_workflow(
     cli_startup_started = time.perf_counter()
 
     run_id = make_run_id(workflow_path=workflow_path)
-    rich_console = console(sys.stdout)
+    # Piped output gets the read-only commands' fixed width rather than 80
+    # columns, so the paths in a failure panel are not broken mid-token.
+    rich_console = stdout_console()
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [bold]--dry-run[/]\n"
@@ -481,7 +488,7 @@ def run_workflow(
                 run_id=run_id,
                 run_dir=run_dir.path,
                 workflow_path=workflow_path,
-                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {escape(message)}"),
             )
             if notification_service is not None:
                 stack.callback(notification_service.close)

@@ -338,7 +338,7 @@ class NodeRun:
     cache_key: str | None = None
     input_hashes: dict[str, Any] | None = None
     input_labels: dict[str, str] | None = None
-    content_input_digests: dict[str, str | None] | None = None
+    content_input_digests: dict[tuple[str, str], str | None] | None = None
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
@@ -694,7 +694,7 @@ class ConcurrentEvaluator:
                         continue
 
                     if self._failure is not None:
-                        break
+                        raise self._failure
 
                     if self._is_root_resolved():
                         return self._materialize(self._root_template)
@@ -714,13 +714,15 @@ class ConcurrentEvaluator:
                             raise root_skipped
 
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
+            except BaseException as exc:
+                # Whatever stopped the run, a task it started and will not see
+                # finish is closed in the record rather than left running.
+                self._close_unfinished_nodes(reason=exc)
+                raise
             finally:
                 self._log_drain.stop()
                 self._executors = None
                 self._cache_index.close()
-
-        assert self._failure is not None
-        raise self._failure
 
     def _register_value(
         self,
@@ -1018,7 +1020,12 @@ class ConcurrentEvaluator:
         return None
 
     def _prepare_pending_nodes(self) -> None:
-        """Resolve cache-ready nodes whose dependencies have completed."""
+        """Resolve cache-ready nodes whose dependencies have completed.
+
+        A node whose preparation raises fails like any other task attempt,
+        except that it is never retried: nothing it raised came from running
+        its body, so another attempt would only fail the same way.
+        """
         while True:
             progressed = False
             for node in self._nodes.values():
@@ -1027,8 +1034,14 @@ class ConcurrentEvaluator:
                 if not self._dependencies_complete(node.dependency_ids):
                     continue
 
-                self._prepare_node(node)
+                try:
+                    self._prepare_node(node)
+                except Exception as exc:
+                    self._handle_task_exception(node=node, exc=exc, retryable=False)
                 progressed = True
+                # Fail-fast: once the run is stopping, nothing more is prepared.
+                if self._failure is not None:
+                    return
 
             if not progressed:
                 return
@@ -1260,8 +1273,10 @@ class ConcurrentEvaluator:
             node = self._nodes[node_id]
 
             if future.cancelled():
-                node.state = "failed"
                 self._remote_dispatch.pop_handle(node.node_id)
+                # Only a stopping run cancels work.
+                assert self._failure is not None
+                self._close_unfinished_node(node=node, reason=self._failure)
                 continue
 
             # Capture remote job id for provenance before processing result.
@@ -1359,10 +1374,24 @@ class ConcurrentEvaluator:
         final_value = self._finalize_result_value(node=node, value=completed_value)
         self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
 
-    def _handle_task_exception(self, *, node: NodeRun, exc: BaseException) -> None:
-        """Either retry a failed task attempt or fail the run."""
+    def _handle_task_exception(
+        self,
+        *,
+        node: NodeRun,
+        exc: BaseException,
+        retryable: bool = True,
+    ) -> None:
+        """Either retry a failed task attempt or fail the run.
+
+        ``retryable=False`` records the failure without consulting the
+        task's retry policy.
+        """
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
-        if self._failure is None and self._should_retry(node=node, exc=sanitized_exc):
+        if (
+            retryable
+            and self._failure is None
+            and self._should_retry(node=node, exc=sanitized_exc)
+        ):
             self._schedule_retry(node=node, exc=sanitized_exc)
             return
 
@@ -1399,6 +1428,37 @@ class ConcurrentEvaluator:
                 failure=classify_failure(exc=sanitized_exc),
                 remote_job_id=node.remote_job_id,
                 ignored=ignore,
+            )
+        )
+
+    def _close_unfinished_nodes(self, *, reason: BaseException) -> None:
+        """Close every started task the stopping run leaves without an outcome.
+
+        Work still in flight, and a task waiting on its own expansion, has
+        been recorded as running; nothing else would ever end that record.
+        """
+        for node in self._nodes.values():
+            if node.state in _IN_FLIGHT_NODE_STATES or node.state == "waiting_dynamic":
+                self._close_unfinished_node(node=node, reason=reason)
+
+    def _close_unfinished_node(self, *, node: NodeRun, reason: BaseException) -> None:
+        """Record one started task as cancelled by the run stopping around it."""
+        node.state = "failed"
+        self._cleanup_transport(node)
+        self._emit_event(
+            TaskFailed(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                task_name=node.task_def.name,
+                attempt=node.attempt,
+                display_label=node.display_label,
+                failure={
+                    "kind": "cancelled",
+                    "message": f"The run stopped before this task finished: {reason}",
+                    "retryable": False,
+                    "code": "cancelled",
+                },
+                remote_job_id=node.remote_job_id,
             )
         )
 
@@ -2151,7 +2211,8 @@ class ConcurrentEvaluator:
         written = self._node_cache.written_str_inputs(node=node)
         if not written:
             return
-        paths = ", ".join(written)
+        paths = ", ".join(f"{path} (parameter '{parameter}')" for parameter, path in written)
+        parameters = ", ".join(sorted({f"'{parameter}'" for parameter, _ in written}))
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
@@ -2162,7 +2223,7 @@ class ConcurrentEvaluator:
                 message=(
                     f"wrote {paths}, which it received as a plain `str` path, so the "
                     "file is tracked as an input and this task will re-run every time. "
-                    "Annotate that parameter `Out[file]` if the task writes it, or "
+                    f"Annotate {parameters} `Out[file]` if the task writes it, or "
                     "`untracked` to key it by its path only."
                 ),
             )

@@ -96,6 +96,11 @@ def raises_from_check(payload: Any) -> bool:
     raise ValueError("check exploded")
 
 
+def mean_is_positive(payload: Any) -> bool:
+    """Return a pandas comparison, which is a ``numpy.bool_`` rather than a ``bool``."""
+    return payload["a"].mean() > 0.0
+
+
 # ---------------------------------------------------------------------------
 # Canonical kind list
 # ---------------------------------------------------------------------------
@@ -612,6 +617,11 @@ def make_raising_check_task() -> object:
 
 
 @task()
+def make_numpy_checked_table_task() -> object:
+    return table(pd.DataFrame({"a": [1]}), name="numpy_checked", checks=[mean_is_positive])
+
+
+@task()
 def consumer_task(upstream: object) -> int:
     # Wrapped ``AssetRef`` inputs are rehydrated to the live payload only
     # once execution args are resolved (a confirmed cache miss), so the task
@@ -748,12 +758,30 @@ class TestEvaluatorIntegration:
         assert isinstance(result, AssetRef)
         assert result.metadata["ginkgo_checks"] == [{"name": "has_rows", "passed": True}]
 
+    def test_a_check_returning_a_numpy_bool_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = ginkgo.evaluate(make_numpy_checked_table_task())
+
+        assert isinstance(result, AssetRef)
+        assert result.metadata["ginkgo_checks"] == [{"name": "mean_is_positive", "passed": True}]
+        assert type(result.metadata["ginkgo_checks"][0]["passed"]) is bool
+
     @pytest.mark.parametrize(
         ("expression", "message"),
         [
-            (make_failed_check_task(), "Asset check 'always_fails' failed"),
-            (make_invalid_check_task(), "must return bool, got str"),
-            (make_raising_check_task(), "Asset check 'raises_from_check' raised an exception"),
+            (
+                make_failed_check_task(),
+                "Asset check 'always_fails' failed for 'table' asset 'rejected'",
+            ),
+            (make_invalid_check_task(), "asset 'invalid' must return bool, got str"),
+            (
+                make_raising_check_task(),
+                "Asset check 'raises_from_check' raised an exception for 'table' asset "
+                "'raising': ValueError: check exploded",
+            ),
         ],
     )
     def test_rejected_checks_do_not_register_versions(

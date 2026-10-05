@@ -16,6 +16,7 @@ registered serializer and then stored as bytes.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -300,7 +301,7 @@ class AssetRegistrar:
             version_metadata[ASSET_SOURCE_PATH_METADATA_KEY] = str(result.payload)
 
         # 2. Verify the stored payload before publishing a catalog version.
-        check_outcomes = _check_outcomes(result=result)
+        check_outcomes = _check_outcomes(result=result, asset_name=asset_name)
         if check_outcomes:
             version_metadata[ASSET_CHECKS_METADATA_KEY] = check_outcomes
 
@@ -590,30 +591,35 @@ def _metadata_with_group(*, metadata: dict[str, Any], result: AssetResult) -> di
     return version_metadata
 
 
-def _check_outcomes(*, result: AssetResult) -> list[dict[str, bool | str]]:
+def _check_outcomes(*, result: AssetResult, asset_name: str) -> list[dict[str, bool | str]]:
     """Run asset checks and return their serialisable passing outcomes."""
     outcomes: list[dict[str, bool | str]] = []
+    subject = f"{result.kind!r} asset {asset_name!r}"
     for check in result.checks:
         check_name = getattr(check, "__name__", type(check).__name__)
         if not callable(check):
-            raise AssetCheckError(
-                f"Asset check {check_name!r} for {result.kind!r} asset is not callable."
-            )
+            raise AssetCheckError(f"Asset check {check_name!r} for {subject} is not callable.")
 
         try:
             passed = check(result.payload)
         except Exception as exc:
             raise AssetCheckError(
-                f"Asset check {check_name!r} raised an exception for {result.kind!r} asset."
+                f"Asset check {check_name!r} raised an exception for {subject}: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
 
+        # A pandas or numpy comparison returns ``numpy.bool_``, the natural
+        # way to write a check; it is a verdict like any ``bool``.
+        numpy = sys.modules.get("numpy")
+        if numpy is not None and isinstance(passed, numpy.bool_):
+            passed = bool(passed)
         if not isinstance(passed, bool):
             raise AssetCheckError(
-                f"Asset check {check_name!r} for {result.kind!r} asset must return bool, "
+                f"Asset check {check_name!r} for {subject} must return bool, "
                 f"got {type(passed).__name__}."
             )
         if not passed:
-            raise AssetCheckError(f"Asset check {check_name!r} failed for {result.kind!r} asset.")
+            raise AssetCheckError(f"Asset check {check_name!r} failed for {subject}.")
         outcomes.append({"name": check_name, "passed": passed})
     return outcomes
 

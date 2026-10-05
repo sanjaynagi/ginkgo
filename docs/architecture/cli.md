@@ -308,6 +308,10 @@ Run-time failure diagnostics classify each task failure into one of a small
 set of categories — `env_mismatch`, `import_error`, `invalid_path`,
 `missing_input`, `shell_command_error`, `serialization_error`,
 `user_code_error`, `output_validation_error`, `cache_error`,
-`cycle_detected`, and `scheduler_error` — and the end-of-run renderer
-groups failures by category so that common root causes stand out without
-digging through individual panels.
+`cycle_detected`, `scheduler_error`, and `cancelled` — and the end-of-run
+renderer groups failures by category so that common root causes stand out
+without digging through individual panels. `cancelled` marks a task the run
+had started when something else stopped it, so the record closes it rather
+than leaving it running. A failure while a task is being prepared (resolving
+and validating its inputs, running a notebook or script body to hash its
+source, preparing its environment) is that task's failure, and is not retried.

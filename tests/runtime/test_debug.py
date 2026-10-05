@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,7 @@ def _record_run(
     error: str | None = None,
     failed_task: bool = False,
     succeeded_task: bool = False,
+    message: str = "boom",
 ) -> None:
     """Record one run in the workspace ``ginkgo debug`` will read."""
     ledger = Ledger.start(root=cwd, run_id=RUN_ID, workflow="wf.py")
@@ -40,7 +42,7 @@ def _record_run(
                 task_name="explode",
                 attempt=1,
                 exit_code=1,
-                failure={"kind": "user_code_error", "message": "boom"},
+                failure={"kind": "user_code_error", "message": message},
             )
         )
     ledger.finish(status=status, error=error)
@@ -72,6 +74,24 @@ def test_run_level_failure_without_failed_tasks_reports_error(
     assert "No failed tasks found" not in stdout
 
 
+def test_run_level_failure_without_failed_tasks_counts_as_one_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="Scheduler reached a deadlock")
+
+    assert _debug() == 0
+    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
+
+
+def test_failed_task_behind_the_run_failure_is_counted_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
+
+    assert _debug() == 0
+    assert re.search(r"Failures\s+1\s", capsys.readouterr().out)
+
+
 def test_failed_task_and_run_level_error_are_both_rendered(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -83,6 +103,17 @@ def test_failed_task_and_run_level_error_are_both_rendered(
     assert "boom" in stdout
     assert "Run Failure" in stdout
     assert "orchestrator exploded" in stdout
+
+
+def test_a_bracketed_error_message_is_printed_verbatim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(
+        cwd=tmp_path, status="failed", failed_task=True, message="bad region bad[/x] [bold]"
+    )
+
+    assert _debug() == 0
+    assert "bad region bad[/x] [bold]" in capsys.readouterr().out
 
 
 def test_succeeded_run_keeps_empty_state(

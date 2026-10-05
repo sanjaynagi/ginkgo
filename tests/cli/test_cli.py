@@ -864,7 +864,8 @@ def main():
         assert "Failed Task: explode" in debug.stdout
         assert "Task" in debug.stdout
         assert "sample_1" in debug.stdout
-        assert "Exit code" in debug.stdout
+        # A Python exception has no exit code, so there is no row for one.
+        assert "Exit code" not in debug.stdout
         assert "Inputs" in debug.stdout
         assert "Log tail" in debug.stdout
         assert "about-to-fail:sample_1" in debug.stdout
@@ -2337,6 +2338,42 @@ def main():
         assert "Number of replicates" in result.stdout
         assert "--label STR" in result.stdout
 
+    def test_run_help_keeps_bracketed_words_in_the_usage_text(self) -> None:
+        result = _run_cli("run", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        text = _unwrapped(result.stdout)
+        assert "[workflow]" in text
+        assert "[remote.executors]" in text
+        assert "[remote.k8s]" in text
+
+    def test_run_help_prints_bracketed_parameter_help_verbatim(self) -> None:
+        Path("workflow.py").write_text(
+            """
+import ginkgo
+from ginkgo import flow, task
+
+n = ginkgo.param("n", type=int, default=1, help="number [/x] of [bold] things")
+tag = ginkgo.param("tag", default="[red]")
+
+@task()
+def echo(n: int, tag: str) -> str:
+    return f"{tag}{n}"
+
+@flow
+def main():
+    return echo(n=n, tag=tag)
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "number [/x] of [bold] things" in result.stdout
+        assert "(default: '[red]')" in result.stdout
+
     def test_run_help_still_shows_usage_for_unimportable_workflow(self) -> None:
         Path("workflow.py").write_text("import nonexistent_module_xyz\n", encoding="utf-8")
         result = _run_cli("run", "workflow.py", "--help", cwd=Path.cwd())
@@ -2611,6 +2648,92 @@ def main():
 """.strip()
     + "\n"
 )
+
+
+_FANOUT_FAILURE_WORKFLOW = (
+    """
+from ginkgo import flow, task
+
+@task()
+def clean(region: str) -> str:
+    raise ValueError("malformed region")
+
+@flow
+def main():
+    return clean().map(region=["north", "south", "east"])
+""".strip()
+    + "\n"
+)
+
+
+_WRITES_STR_INPUT_WORKFLOW = (
+    """
+from pathlib import Path
+
+from ginkgo import flow, task
+
+@task()
+def append(log_path: str) -> str:
+    Path(log_path).write_text("line", encoding="utf-8")
+    return log_path
+
+@flow
+def main():
+    return append(log_path="run.log")
+""".strip()
+    + "\n"
+)
+
+
+class TestFailureOutputReadability:
+    def test_identical_branch_failures_share_one_panel(self) -> None:
+        Path("workflow.py").write_text(_FANOUT_FAILURE_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        assert result.stdout.count("Failure Details:") == 1
+        assert "(×3)" in result.stdout
+        assert "Exit code" not in result.stdout
+
+    def test_the_log_path_is_printed_whole_when_piped(self) -> None:
+        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        run_dir = _extract_run_dir(result.stderr)
+        (log_path,) = (run_dir / "logs").glob("*load*stderr.log")
+        assert str(log_path) in result.stdout
+
+    def test_the_logged_traceback_starts_at_the_users_frame(self) -> None:
+        Path("workflow.py").write_text(_FAIL_FAST_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        run_dir = _extract_run_dir(result.stderr)
+        (log_path,) = (run_dir / "logs").glob("*load*stderr.log")
+        frames = [
+            line
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.lstrip().startswith("File ")
+        ]
+        assert frames
+        assert "workflow.py" in frames[0]
+        assert not any("ginkgo/runtime/worker.py" in frame for frame in frames)
+
+    def test_a_task_notice_names_the_task_and_the_parameter(self) -> None:
+        Path("workflow.py").write_text(_WRITES_STR_INPUT_WORKFLOW, encoding="utf-8")
+        Path("run.log").write_text("", encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        text = _unwrapped(result.stdout)
+        assert "append: wrote " in text
+        assert "(parameter 'log_path')" in text
+        assert "Annotate 'log_path' `Out[file]`" in text
 
 
 class TestCliFailurePolicy:
