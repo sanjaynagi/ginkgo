@@ -265,6 +265,11 @@ class CacheStats:
         Entries in the index.
     total_bytes : int
         Bytes across all of them.
+    artifact_bytes : int
+        Bytes in the local artifact store, which the entries point into and
+        which holds more than they do: assets and bytes no entry names count
+        here too. Reported apart from ``total_bytes`` because pruning entries
+        does not bound it.
     never_hit : int
         Entries no run has ever served from.
     never_hit_bytes : int
@@ -277,6 +282,7 @@ class CacheStats:
 
     entries: int
     total_bytes: int
+    artifact_bytes: int
     never_hit: int
     never_hit_bytes: int
     hit_histogram: dict[int, int]
@@ -288,6 +294,7 @@ class CacheStats:
         return cls(
             entries=0,
             total_bytes=0,
+            artifact_bytes=0,
             never_hit=0,
             never_hit_bytes=0,
             hit_histogram={},
@@ -743,9 +750,14 @@ class Query:
             "SELECT function, count(*) AS n, coalesce(sum(size_bytes), 0) AS bytes "
             "FROM cache_entries GROUP BY function ORDER BY bytes DESC, function LIMIT 10"
         )
+        artifacts = self._store.query(
+            "SELECT coalesce(sum(size), 0) AS artifact_bytes FROM artifacts "
+            "WHERE coalesce(storage_backend, 'local') = 'local'"
+        )[0]
         return CacheStats(
             entries=int(totals["entries"]),
             total_bytes=int(totals["total_bytes"]),
+            artifact_bytes=int(artifacts["artifact_bytes"]),
             never_hit=int(totals["never_hit"]),
             never_hit_bytes=int(totals["never_hit_bytes"]),
             hit_histogram={int(row["hit_count"]): int(row["n"]) for row in histogram},

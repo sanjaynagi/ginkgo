@@ -510,6 +510,37 @@ def main():
         assert stats["hit_histogram"] == {"0": 1, "1": 1}
         assert stats["top_functions"][0]["entries"] == 2
 
+    def test_cache_stats_reports_artifact_store_bytes_separately(self) -> None:
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+from ginkgo import file, flow, task
+
+@task()
+def make() -> file:
+    Path("out.txt").write_text("x" * 1000, encoding="utf-8")
+    return file("out.txt")
+
+@flow
+def main():
+    return make()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+
+        as_json = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+        text = _run_cli("cache", "stats", cwd=Path.cwd())
+
+        assert as_json.returncode == 0, as_json.stderr
+        stats = json.loads(as_json.stdout)
+        assert stats["artifact_bytes"] == 1000
+        # The entry figure stays the cache entries' own bytes.
+        assert stats["total_bytes"] < 1000
+        assert "Artifact store: 1000 B" in text.stdout
+
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
         known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
