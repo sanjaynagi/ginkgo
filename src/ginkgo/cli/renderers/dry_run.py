@@ -191,9 +191,12 @@ def _summary(plan: DryRunPlan) -> Text:
     """Return the trailing resource / no-execution summary line."""
     resources = plan.resources
     parts: list[str] = []
+    # Declared demand, not occupancy: the scheduler holds a wave to the core
+    # budget, so this figure may exceed it.
     if resources.peak_wave_threads:
         parts.append(
-            f"{resources.peak_wave_threads} cores peak (wave {resources.peak_wave_index})"
+            f"{resources.peak_wave_threads} threads requested at peak "
+            f"(wave {resources.peak_wave_index})"
         )
     if resources.peak_wave_memory_gb:
         parts.append(f"{resources.peak_wave_memory_gb} GiB peak")
