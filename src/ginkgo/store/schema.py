@@ -1,7 +1,7 @@
 """The ledger schema and its migrations.
 
 The store is one append-only ``events`` table plus projection tables derived
-from it. Every table exists from version 1 even though later phases are what
+from it. Every table exists from the first step even though later phases are what
 populate most of them: one migration is easier to reason about than eight, and
 an empty table costs nothing.
 
@@ -44,12 +44,10 @@ CREATE TABLE events (
   task_id   TEXT,                      -- 'task_0007'; NULL for run-level events
   attempt   INTEGER,
   cache_key TEXT,
-  asset_key TEXT,                      -- 'table:rows'
   payload   TEXT NOT NULL              -- JSON of the remaining event fields
 );
 CREATE INDEX events_run      ON events(run_id, seq);
 CREATE INDEX events_type_ts  ON events(type, ts);
-CREATE INDEX events_asset    ON events(asset_key, seq) WHERE asset_key IS NOT NULL;
 
 -- run projections
 CREATE TABLE runs (
@@ -92,15 +90,17 @@ CREATE TABLE attempts (
   PRIMARY KEY (run_id, task_id, attempt)
 );
 
+-- tracking: how the cache key tracks the input, content|version|path|value|output|untracked
+-- (issue #307). Metadata only: nothing reads it to decide a cache hit.
 CREATE TABLE task_inputs (
-  run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL,
   value_type TEXT, value_summary TEXT, digest TEXT,
-  artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT,
-  PRIMARY KEY (run_id, task_id, param, position)
+  remote_uri TEXT, tracking TEXT,
+  PRIMARY KEY (run_id, task_id, param)
 );
 CREATE TABLE task_outputs (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT,
-  value_type TEXT, path TEXT, artifact_id TEXT, asset_key TEXT, asset_version_id TEXT,
+  value_type TEXT, path TEXT, artifact_id TEXT,
   PRIMARY KEY (run_id, task_id, position)
 );
 
@@ -111,10 +111,8 @@ CREATE TABLE edges (
   PRIMARY KEY (run_id, src_kind, src_id, dst_kind, dst_id, edge)
 );
 CREATE INDEX edges_dst ON edges(dst_kind, dst_id);
--- `lineage --downstream` walks the other end of the same rows.
-CREATE INDEX edges_src ON edges(src_kind, src_id);
--- kinds: task | artifact | asset_version | run
--- edges: depends_on | dynamic_depends_on | produced | consumed | derived_from | child_of
+-- kinds: task | artifact | run
+-- edges: depends_on | dynamic_depends_on | produced | child_of
 
 -- cache index (Phase 2)
 CREATE TABLE cache_entries (
@@ -136,27 +134,13 @@ CREATE TABLE digest_memo (
   PRIMARY KEY (kind, fingerprint)
 );
 
--- artifacts, assets, remote inputs (Phases 2-3)
+-- artifacts and remote inputs (Phases 2-3)
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY, kind TEXT NOT NULL, digest_algorithm TEXT NOT NULL,
   digest_hex TEXT NOT NULL DEFAULT '',
   extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
 );
 CREATE TABLE materializations (path TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, size INTEGER, mtime_ns INTEGER);
-CREATE TABLE asset_versions (
-  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL,
-  artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
-  run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
-  code_version TEXT, data_version TEXT,
-  metadata TEXT,                                            -- JSON
-  PRIMARY KEY (asset_key, version_id)
-);
-CREATE INDEX asset_versions_created ON asset_versions(asset_key, created_at);
--- Lineage edges name a version and not the asset it belongs to, so resolving
--- one back to its row is a lookup by version id alone.
-CREATE INDEX asset_versions_version ON asset_versions(version_id);
-CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
-  PRIMARY KEY (asset_key, alias));
 CREATE TABLE staging_entries (uri TEXT PRIMARY KEY, digest TEXT, etag TEXT, version_id TEXT,
   size INTEGER, staged_at TEXT, blob_path TEXT, last_used_at TEXT);
 CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
@@ -164,24 +148,14 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-_V2_INPUT_TRACKING = """
--- How the cache key tracks each input: content|asset|path|value|output|untracked
--- (issue #307). Position-0 rows only; NULL for rows written before this step.
--- Metadata only: nothing reads it to decide a cache hit.
-ALTER TABLE task_inputs ADD COLUMN tracking TEXT;
-"""
-
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
-    (1, _SCHEMA),
-    (2, _V2_INPUT_TRACKING),
+    (3, _SCHEMA),
 ]
 """Every schema step, in the order they are applied, keyed by resulting version.
 
-Step 2 is additive — a nullable column — so a version-1 workspace is stepped
-forward rather than refused: deleting it would throw away its cache index for
-the sake of a metadata column. A database at a version with no step here (one
-written by a newer ginkgo, or by an older in-place edit) is still refused, and
-the user deletes the workspace.
+The schema starts at version 3: removing the asset catalog edited it in place,
+so a database written at version 1 or 2 is refused and the user deletes the
+workspace. Later additive changes get a step of their own.
 """
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

@@ -250,7 +250,7 @@ Two things this does *not* do:
   the flow returns, in which case the run produces no result and says so —
   which, since a flow's return value usually sits downstream of everything, is
   how most such runs end today. The successful branches are still cached, and
-  the notebooks and assets they produced are still listed and still there, so
+  the notebooks they rendered are still listed and their outputs still there, so
   fixing the input and re-running does only the work that is left.
 
 Anything ginkgo itself rejects about a task attempt — a return value that

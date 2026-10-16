@@ -22,7 +22,6 @@ from threading import Lock, Thread, current_thread, main_thread
 from types import FrameType
 from typing import Any, Callable, Sequence, get_origin
 
-from ginkgo.core.asset import AssetRef, AssetResult
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.types import (
@@ -124,59 +123,6 @@ def remove_declared_output(path: Path) -> None:
         shutil.rmtree(path)
 
 
-# Sub-kind values that identify a path-backed non-file asset (payload is
-# a path, not an in-memory object). The kind's ``detect`` sets these
-# sub-kinds based on the declared file extension.
-_PATH_SUB_KINDS: dict[str, frozenset[str]] = {
-    "file": frozenset(),  # file always has a path payload; handled below.
-    "table": frozenset({"csv", "tsv"}),
-    "fig": frozenset({"png", "svg", "html"}),
-}
-
-
-def _asset_result_path(result: AssetResult) -> Path:
-    """Return the declared output path from an :class:`AssetResult`.
-
-    File assets carry their path directly. Non-file kinds only qualify
-    as declared outputs when they wrap a path: ``fig("p.png")``,
-    ``table("d.csv")``, ``text(Path("doc.md"))``. In-memory payloads
-    (matplotlib figures, pandas DataFrames, etc.) are not valid declared
-    task outputs and raise a clear error here rather than at a
-    downstream serialisation boundary.
-    """
-    payload = result.payload
-
-    if result.kind == "file":
-        return Path(str(payload))
-
-    path_sub_kinds = _PATH_SUB_KINDS.get(result.kind)
-    if path_sub_kinds is not None and result.sub_kind in path_sub_kinds:
-        return Path(str(payload))
-
-    # ``text(Path("doc.md"))`` stores a Path payload directly.
-    if result.kind == "text" and isinstance(payload, Path):
-        return payload
-
-    if path_sub_kinds:
-        remedy = (
-            f"{result.kind}(...) accepts a str or Path for a declared output "
-            f'(e.g. {result.kind}("results/foo.{sorted(path_sub_kinds)[0]}")).'
-        )
-    else:
-        remedy = (
-            f"{result.kind}(...) has no path form — it wraps a live Python object, "
-            f"so it cannot be a command's declared output. Declare the file the "
-            f"command writes with file(path), or build the {result.kind} asset in a "
-            f"python task."
-        )
-
-    raise TypeError(
-        f"{result.kind}(...) output must wrap a declared file path; got "
-        f"in-memory payload of type "
-        f"{type(payload).__module__}.{type(payload).__name__}. " + remedy
-    )
-
-
 def serialize_cli_argument_value(
     value: Any,
     *,
@@ -191,23 +137,14 @@ def serialize_cli_argument_value(
     here — its body is Python and runs before the command is built, so it can
     legitimately take a live payload and write the format its command expects.
 
-    An :class:`AssetRef` crosses that boundary as the path to its stored
-    bytes, since a CLI argument and a parameter file carry text rather than
-    Python objects. ``AssetRef.as_file`` decides whether the ref has such a
-    path at all, so a kind stored in Ginkgo's own encoding is refused by name
-    here instead of reaching ``json.dumps`` and failing as "not JSON
-    serializable". Every caller is a driver task kind, so the refusal names
-    the remedies that work for one.
-
+    A CLI argument and a parameter file carry text rather than Python objects.
     A live Python payload — a DataFrame handed to a parameter annotated
-    ``object``, say — has no text form either, and is refused for the same
-    reason rather than falling through to ``json.dumps`` or ``yaml.safe_dump``
+    ``object``, say — has no text form, so it is refused by name rather than
+    falling through to ``json.dumps`` or ``yaml.safe_dump``
     and naming only its type. ``label`` names the parameter in that refusal,
     e.g. ``"summarise.scores"``; nested values extend it with their index or
     key, so a payload inside a list reports ``summarise.scores[1]``.
     """
-    if isinstance(value, AssetRef):
-        return str(value.as_file(execution_mode="driver"))
     if isinstance(value, Path | file | folder | tmp_dir):
         return str(value)
     if value is None or isinstance(value, bool | int | float | str):
@@ -237,7 +174,7 @@ def serialize_cli_argument_value(
         f"{label} is a {received}. The arguments of {carrier} cross to another "
         "process as CLI options and parameter-file entries, which carry text rather "
         "than Python objects. Write the payload to a file in a separate `python` task "
-        "and pass that path (with `asset(path)` to track it), or keep the payload out "
+        "and pass that path, or keep the payload out "
         f"of another process by making this task a `python` one. {STAGING_TASK_GUIDANCE}"
     )
 
@@ -258,8 +195,8 @@ def stringify_cli_argument(
 def _is_flat_cli_token(value: Any) -> bool:
     """Return whether a serialized list item renders as its own CLI token.
 
-    A path-shaped or plain scalar (str, int, float — an ``AssetRef``, ``Path``,
-    ``file``, ``folder`` or date/time has already become one of these by
+    A path-shaped or plain scalar (str, int, float — a ``Path``, ``file``,
+    ``folder`` or date/time has already become one of these by
     :func:`serialize_cli_argument_value`) has an unambiguous single-token
     text form. ``bool`` is excluded even though it subclasses ``int``: a list
     of booleans has no positional CLI idiom, so it falls back to JSON like
@@ -284,8 +221,7 @@ def render_cli_tokens(
     script's own parser can declare the matching option:
 
     - A ``list``/``tuple`` whose items are all scalars or paths (str, int,
-      float, ``Path``, ``file``, ``folder``, an ``AssetRef`` resolving to a
-      path) renders as the option followed by each item as its own token —
+      float, ``Path``, ``file``, ``folder``) renders as the option followed by each item as its own token —
       pairs with ``nargs="*"``/``"+"``. An empty list renders as the bare
       option, matching what ``nargs="*"`` gives back: ``[]``. A list holding
       anything else (``None``, a ``bool``, a nested list, a dict) has no flat
@@ -366,8 +302,6 @@ def _declared_item_path(item: Any) -> Path:
     """Return the filesystem path declared by one output item."""
     if isinstance(item, OptionalOutput):
         return _declared_item_path(item.payload)
-    if isinstance(item, AssetResult):
-        return _asset_result_path(item)
     return Path(str(item))
 
 
@@ -380,7 +314,7 @@ def iter_output_values(
     optional path must be treated exactly like a required one: a stale file
     left by an earlier run must not be mistaken for this run's output.
     """
-    if isinstance(output, (str, AssetResult, OptionalOutput)):
+    if isinstance(output, (str, OptionalOutput)):
         return [_declared_item_path(output)]
     return [_declared_item_path(item) for item in output]
 
@@ -527,8 +461,6 @@ def declared_output_mounts(*, output: Any) -> list[Mount]:
 
 def _iter_declared_paths(value: Any) -> list[Path]:
     """Return every filesystem path a resolved argument value carries."""
-    if isinstance(value, AssetRef):
-        return [Path(value.artifact_path)]
     if isinstance(value, (str, Path, os.PathLike)):
         return [Path(str(value))]
     if isinstance(value, dict):
@@ -544,7 +476,7 @@ def iter_required_output_values(
     """Return only the declared output paths that must exist after execution."""
     if isinstance(output, OptionalOutput):
         return []
-    if isinstance(output, (str, AssetResult)):
+    if isinstance(output, str):
         return [_declared_item_path(output)]
     return [_declared_item_path(item) for item in output if not isinstance(item, OptionalOutput)]
 
@@ -559,7 +491,7 @@ def resolve_output_value(output: Any) -> Any:
         path = _declared_item_path(output)
         return output.payload if path.exists() else None
 
-    if isinstance(output, (str, AssetResult)):
+    if isinstance(output, str):
         return output
 
     resolved = [resolve_output_value(item) for item in output]

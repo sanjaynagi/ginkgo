@@ -212,18 +212,14 @@ class TestExamples:
         assert notebook_html.is_file()
         assert (example_dir / "results" / "summary.json").is_file()
         assert (example_dir / "results" / "delivery_manifest.md").is_file()
-        seed_card_assets = [
-            asset
+        seed_card_outputs = [
+            output
             for task in first_manifest["tasks"].values()
             if str(task["name"]).endswith(".write_seed_card")
-            for asset in task.get("assets", [])
+            for output in task.get("outputs", [])
         ]
-        assert seed_card_assets
-        assert all(
-            asset["metadata"]["ginkgo_checks"]
-            == [{"name": "_seed_card_has_content", "passed": True}]
-            for asset in seed_card_assets
-        )
+        assert seed_card_outputs
+        assert all(output.get("artifact_id") for output in seed_card_outputs)
 
         with _mock_docker(), _mock_notebook_tools():
             _, second_manifest = _run_example(example_dir=example_dir)
@@ -264,10 +260,11 @@ class TestExamples:
         assert sorted(summary["sample_id"].unique().tolist()) == ["ERR3058522", "ERR3058532"]
         assert len(summary) == 4
         assert "read_count_r1" in summary.columns
-        assert any(
-            task.get("assets")
+        assert all(
+            output.get("artifact_id")
             for task in first_manifest["tasks"].values()
             if str(task["name"]).endswith(".filter_fastq")
+            for output in task.get("outputs", [])
         )
 
         with _mock_docker():
@@ -425,15 +422,6 @@ class TestExamples:
 
         assert first_manifest["status"] == "succeeded"
         assert len(first_manifest["tasks"]) == 13
-
-        # Candidates now return model() assets instead of JSON files.
-        model_assets = [
-            asset
-            for task in first_manifest["tasks"].values()
-            for asset in (task.get("assets") or [])
-            if asset.get("namespace") == "model"
-        ]
-        assert len(model_assets) == 4
 
         assert sorted(scorecard["model_name"].tolist()) == [
             "baseline_logit",

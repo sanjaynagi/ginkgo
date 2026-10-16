@@ -37,8 +37,8 @@ BUSY_TIMEOUT_MS = 5000
 """How long a write waits for another process's lock before giving up."""
 
 _APPEND_EVENT = """
-INSERT INTO events (run_id, ts, type, v, task_id, attempt, cache_key, asset_key, payload)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO events (run_id, ts, type, v, task_id, attempt, cache_key, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -223,7 +223,6 @@ class SqliteStore:
                     event.task_id,
                     event.attempt,
                     event.cache_key,
-                    event.asset_key,
                     event.payload,
                 )
                 for event in events

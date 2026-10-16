@@ -171,21 +171,18 @@ class TestMigrations:
         with open_store(tmp_path / "ginkgo.db") as store:
             assert _schema_snapshot(store) == expected
 
-    def test_a_version_one_database_gains_the_input_tracking_column(self, tmp_path):
-        """Step 2 is additive, so a v1 workspace is stepped forward, not refused."""
-        from ginkgo.store.schema import _SCHEMA, _statements
-
+    def test_a_database_from_before_the_asset_removal_is_refused(self, tmp_path):
+        """The schema was edited in place at version 3, so versions 1 and 2 stop."""
         path = tmp_path / "ginkgo.db"
         connection = sqlite3.connect(path)
         connection.isolation_level = None
-        # A workspace written before step 2 existed: the v1 schema, at version 1.
-        for statement in _statements(_SCHEMA):
-            connection.execute(statement)
-        connection.execute("INSERT INTO schema_version VALUES (1, '2026-09-01')")
+        connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
+        connection.execute("INSERT INTO schema_version VALUES (2, '2026-09-01')")
 
-        assert migrate(connection) == SCHEMA_VERSION
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(task_inputs)")]
-        assert "tracking" in columns
+        with pytest.raises(StaleWorkspaceError) as caught:
+            migrate(connection)
+
+        assert caught.value.found == 2
 
     def test_a_database_from_another_schema_version_is_refused(self, tmp_path):
         """Pre-1.0 there is no path forward from an older schema, so say so.
@@ -243,7 +240,6 @@ class TestWriting:
                             task_id="task_0007",
                             attempt=1,
                             cache_key="cache_abc",
-                            asset_key="table:rows",
                             payload='{"status": "success"}',
                         )
                     ]
@@ -252,7 +248,7 @@ class TestWriting:
             row = store.query("SELECT * FROM events")[0]
 
         assert (row["task_id"], row["attempt"], row["v"]) == ("task_0007", 1, 2)
-        assert (row["cache_key"], row["asset_key"]) == ("cache_abc", "table:rows")
+        assert row["cache_key"] == "cache_abc"
         assert row["payload"] == '{"status": "success"}'
 
     def test_projection_ops_run_in_the_same_transaction_as_the_events(self, tmp_path):

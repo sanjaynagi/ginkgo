@@ -35,7 +35,6 @@ from ginkgo.envs.interpreter import EnvironmentFinding, explain_import_failure
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
-    CliAssetSummary,
     FailureDetails,
     CliNotebookSummary,
     ResourceRenderState,
@@ -537,14 +536,6 @@ class _RunLayoutRenderer:
             text.append("\n")
         return text
 
-    def render_assets(self, assets: list[CliAssetSummary]) -> Text:
-        """Render the list of assets materialised in this run."""
-        text = Text()
-        text.append(f"\n📦 Assets materialised ({len(assets)})\n", style="bold")
-        for asset in assets:
-            text.append(f"  {asset.name}\n", style="bold #134e4a")
-        return text
-
     def render_failure_details(self, details: list[FailureDetails]):
         """Render the failure section, fatal failures first.
 
@@ -866,7 +857,6 @@ class CliRunRenderer:
         failure_details: list[FailureDetails] | None = None,
         skipped: list[SkipDetails] | None = None,
         notebooks: list[CliNotebookSummary] | None = None,
-        assets: list[CliAssetSummary] | None = None,
         remote_summary: str | None = None,
         path_tracked_inputs: int = 0,
     ) -> None:
@@ -932,11 +922,9 @@ class CliRunRenderer:
         # its surviving branches produced, and its reader still wants the run
         # directory. A run a failure ended passes neither, and reports its
         # directory on stderr beside the traceback instead.
-        if success or notebooks is not None or assets is not None:
+        if success or notebooks is not None:
             if notebooks:
                 self._console.print(self._layout.render_notebooks(notebooks))
-            if assets:
-                self._console.print(self._layout.render_assets(assets))
             self._console.print(f"Run directory: {self._summary.run_dir}")
 
     def label_for_node(self, node_id: int) -> str | None:

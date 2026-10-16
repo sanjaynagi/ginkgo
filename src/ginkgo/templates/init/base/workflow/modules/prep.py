@@ -5,12 +5,7 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from ginkgo import Out, asset, file, shell, task
-
-
-def _seed_card_has_content(payload: object) -> bool:
-    """Return whether a seed-card file exists and has content."""
-    return isinstance(payload, Path) and payload.is_file() and payload.stat().st_size > 0
+from ginkgo import Out, file, shell, task
 
 
 @task()
@@ -35,12 +30,7 @@ def write_seed_card(item: str, output_path: Out[file]) -> file:
         f"item={item}\nlabel={item}\n",
         encoding="utf-8",
     )
-    return asset(
-        output,
-        name=f"starter/seed_cards/{item}",
-        metadata={"item": item, "stage": "seed"},
-        checks=[_seed_card_has_content],
-    )
+    return file(str(output))
 
 
 @task(kind="shell")

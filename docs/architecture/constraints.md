@@ -6,10 +6,12 @@ The current runtime still has important boundaries and tradeoffs:
 - the scheduler's authoritative live execution state is still in-memory; what
   happened is persisted to the ledger at `.ginkgo/ginkgo.db` as it happens, and
   exported once per run to `runs/<id>/manifest.yaml`
-- pre-ledger workspaces are not migrated: runs, cache entries and assets
-  recorded before `.ginkgo/ginkgo.db` existed lived in files ginkgo no longer
-  reads, so they are invisible to the CLI. There is no import path; delete
+- pre-ledger workspaces are not migrated: runs and cache entries recorded
+  before `.ginkgo/ginkgo.db` existed lived in files ginkgo no longer reads, so they are invisible to the CLI. There is no import path; delete
   `.ginkgo/` and re-run
+- before 1.0 the schema is edited in place rather than migrated: a workspace
+  written at an older schema version (1 or 2) is refused with
+  `StaleWorkspaceError`; delete `.ginkgo/` and re-run
 - a lost `ginkgo.db` colds the cache and loses the run history. `ginkgo db
   check` finds the bytes it stranded; back the file up as you would `.git`
 

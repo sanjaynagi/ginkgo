@@ -18,7 +18,6 @@ import pytest
 
 from ginkgo.runtime import events as events_module
 from ginkgo.runtime.events import (
-    AssetMaterialized,
     EnvPrepareCompleted,
     EnvPrepareFailed,
     EnvPrepareStarted,
@@ -80,20 +79,6 @@ def _events() -> list[GinkgoEvent]:
             inputs={"rows": 10},
             input_hashes=[{"param": "table", "digest": "b3:1234"}],
             input_labels={"rows": "value", "table": "version"},
-            asset_inputs={
-                "table": [
-                    {
-                        "asset_key": "table:rows",
-                        "version_id": "v-abcdef",
-                        "artifact_id": "artifact-abcdef",
-                    },
-                    {
-                        "asset_key": "table:more_rows",
-                        "version_id": "v-bcdefa",
-                        "artifact_id": "artifact-bcdefa",
-                    },
-                ]
-            },
             cache_key="cache_abcdef",
             source_hash="src_abcdef",
             version=3,
@@ -139,27 +124,17 @@ def _events() -> list[GinkgoEvent]:
             attempt=1,
             status="success",
             cache_key="cache_abcdef",
-            outputs=[{"name": "table", "type": "table"}],
-            assets=[{"asset_key": "table:rows", "version_id": "v1"}],
+            outputs=[
+                {
+                    "name": "return",
+                    "type": "file",
+                    "path": "results/table.csv",
+                    "artifact_id": "artifact_abcdef",
+                }
+            ],
             output_summary={"kind": "table", "rows": 10},
             resource_usage={"max_rss_bytes": 1048576},
             remote_job_id="job-1",
-        ),
-        AssetMaterialized(
-            **TASK,
-            asset_key="table:rows",
-            version_id="v1",
-            kind="table",
-            artifact_id="artifact_abcdef",
-            content_hash="b3:abcdef",
-            cache_key="cache_abcdef",
-            metadata={
-                "columns": 3,
-                "sub_kind": "parquet",
-                "metrics": {"rows": 10},
-                "ginkgo_checks": [{"name": "not_empty", "passed": True}],
-            },
-            parents=[{"asset_key": "table:raw", "version_id": "v0"}],
         ),
         TaskAnnotated(**TASK, fields={"env_lock": "envs/analysis.lock"}),
         TaskFailed(

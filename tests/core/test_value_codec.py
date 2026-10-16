@@ -6,27 +6,33 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ginkgo.core.asset import AssetKey, AssetRef, table
 from ginkgo.core.types import file, folder
 from ginkgo.remote.access.protocol import FUSE_FILE_TYPE
 from ginkgo.runtime.artifacts.value_codec import (
     CodecError,
+    check_encoded,
     decode_value,
     encode_value,
     hash_value_bytes,
 )
 
 
-def _make_ref(*, kind: str = "file") -> AssetRef:
-    return AssetRef(
-        key=AssetKey(namespace=kind, name="prepared"),
-        version_id="version-123",
-        kind=kind,
-        artifact_id="artifact-123",
-        content_hash="content-123",
-        artifact_path="/artifacts/prepared",
-        metadata={},
-    )
+class TestPathMarkers:
+    def test_a_file_marker_round_trips(self, tmp_path) -> None:
+        decoded = decode_value(
+            encode_value(file("/some/path"), base_dir=tmp_path), base_dir=tmp_path
+        )
+
+        assert isinstance(decoded, file)
+        assert str(decoded) == "/some/path"
+
+    def test_a_folder_marker_round_trips(self, tmp_path) -> None:
+        decoded = decode_value(
+            encode_value(folder("/some/dir"), base_dir=tmp_path), base_dir=tmp_path
+        )
+
+        assert isinstance(decoded, folder)
+        assert str(decoded) == "/some/dir"
 
 
 class TestDecodeTags:
@@ -40,94 +46,27 @@ class TestDecodeTags:
         with pytest.raises(CodecError):
             decode_value(payload, base_dir=tmp_path)
 
+    def test_check_encoded_finds_an_unknown_tag_without_decoding(self) -> None:
+        payload = {
+            "__ginkgo_type__": "dict",
+            "items": [{"key": "a", "value": {"__ginkgo_type__": "asset_ref"}}],
+        }
+
+        with pytest.raises(CodecError, match="'asset_ref'"):
+            check_encoded(payload)
+
+    def test_check_encoded_accepts_what_encode_value_writes(self, tmp_path) -> None:
+        payload = encode_value({"x": [file("/a"), (1, 2)]}, base_dir=tmp_path)
+
+        check_encoded(payload)
+
     def test_a_fuse_marker_passes_through_for_worker_hydration(self, tmp_path) -> None:
         marker = {"__ginkgo_type__": FUSE_FILE_TYPE, "uri": "gs://bucket/key"}
 
         assert decode_value(marker, base_dir=tmp_path) is marker
 
 
-class TestPathMarkerAssetRoundtrip:
-    """A ``file``/``folder`` value's ``.asset`` survives the transport codec.
-
-    Rule #307: a ``file``/``folder`` execution-arg value carries the
-    producing ``AssetRef`` on ``.asset`` (a plain instance attribute, since
-    neither marker declares ``__slots__``). That attribute crosses a
-    process-pool worker transport only if the codec carries it across
-    explicitly — this is what ``value_codec`` does for both markers.
-    """
-
-    def test_file_asset_attribute_survives_the_codec(self, tmp_path) -> None:
-        ref = _make_ref(kind="file")
-        value = file(ref.artifact_path)
-        value.asset = ref
-
-        encoded = encode_value(value, base_dir=tmp_path)
-        decoded = decode_value(encoded, base_dir=tmp_path)
-
-        assert isinstance(decoded, file)
-        assert str(decoded) == ref.artifact_path
-        assert decoded.asset == ref
-
-    def test_folder_asset_attribute_survives_the_codec(self, tmp_path) -> None:
-        ref = _make_ref(kind="folder")
-        value = folder(ref.artifact_path)
-        value.asset = ref
-
-        encoded = encode_value(value, base_dir=tmp_path)
-        decoded = decode_value(encoded, base_dir=tmp_path)
-
-        assert isinstance(decoded, folder)
-        assert str(decoded) == ref.artifact_path
-        assert decoded.asset == ref
-
-    def test_file_without_an_asset_decodes_with_asset_none(self, tmp_path) -> None:
-        """A plain ``file(...)`` with no upstream asset round-trips as before."""
-        value = file("/some/path")
-
-        encoded = encode_value(value, base_dir=tmp_path)
-        decoded = decode_value(encoded, base_dir=tmp_path)
-
-        assert isinstance(decoded, file)
-        assert str(decoded) == "/some/path"
-        assert decoded.asset is None
-
-
 class TestHashValueBytes:
-    def test_asset_ref_hash_uses_version_identity(self, tmp_path) -> None:
-        value = AssetRef(
-            key=AssetKey(namespace="file", name="prepared"),
-            version_id="version-123",
-            kind="file",
-            artifact_id="artifact-123",
-            content_hash="content-123",
-            artifact_path="/artifacts/prepared",
-            metadata={},
-        )
-
-        codec_name, digest = hash_value_bytes(value)
-        encoded = encode_value(value, base_dir=tmp_path)
-        decoded = decode_value(encoded, base_dir=tmp_path)
-
-        assert codec_name == "ginkgo.asset_ref"
-        assert digest
-        assert decoded == value
-
-    def test_asset_result_roundtrip_preserves_group(self, tmp_path) -> None:
-        value = table(
-            pd.DataFrame({"a": [1]}),
-            name="features",
-            group="QC metrics",
-            caption="Variant counts after QC filtering",
-        )
-
-        encoded = encode_value(value, base_dir=tmp_path)
-        decoded = decode_value(encoded, base_dir=tmp_path)
-
-        assert decoded.kind == "table"
-        assert decoded.name == "features"
-        assert decoded.group == "QC metrics"
-        assert decoded.caption == "Variant counts after QC filtering"
-
     def test_numpy_hash_is_stable_for_equal_values_with_different_layouts(self) -> None:
         base = np.arange(12, dtype=np.int64).reshape(3, 4)
         contiguous = np.array(base, order="C")

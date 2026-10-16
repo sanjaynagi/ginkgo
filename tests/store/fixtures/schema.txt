@@ -5,26 +5,6 @@ CREATE TABLE artifacts (
   extension TEXT, size INTEGER, created_at TEXT NOT NULL, storage_backend TEXT, remote_uri TEXT
 )
 
-table asset_aliases
-CREATE TABLE asset_aliases (asset_key TEXT NOT NULL, alias TEXT NOT NULL, version_id TEXT NOT NULL,
-  PRIMARY KEY (asset_key, alias))
-
-table asset_versions
-CREATE TABLE asset_versions (
-  asset_key TEXT NOT NULL, version_id TEXT NOT NULL, kind TEXT NOT NULL,
-  artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL,
-  run_id TEXT, task_id TEXT, producer_task TEXT, cache_key TEXT, created_at TEXT NOT NULL,
-  code_version TEXT, data_version TEXT,
-  metadata TEXT,
-  PRIMARY KEY (asset_key, version_id)
-)
-
-index asset_versions_created
-CREATE INDEX asset_versions_created ON asset_versions(asset_key, created_at)
-
-index asset_versions_version
-CREATE INDEX asset_versions_version ON asset_versions(version_id)
-
 table attempts
 CREATE TABLE attempts (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt INTEGER NOT NULL,
@@ -70,9 +50,6 @@ CREATE TABLE edges (
 index edges_dst
 CREATE INDEX edges_dst ON edges(dst_kind, dst_id)
 
-index edges_src
-CREATE INDEX edges_src ON edges(src_kind, src_id)
-
 table env_materializations
 CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
   materialized_digest TEXT, seen_at TEXT NOT NULL, PRIMARY KEY (env_hash, host))
@@ -87,12 +64,8 @@ CREATE TABLE events (
   task_id   TEXT,
   attempt   INTEGER,
   cache_key TEXT,
-  asset_key TEXT,
   payload   TEXT NOT NULL
 )
-
-index events_asset
-CREATE INDEX events_asset    ON events(asset_key, seq) WHERE asset_key IS NOT NULL
 
 index events_run
 CREATE INDEX events_run      ON events(run_id, seq)
@@ -131,16 +104,16 @@ CREATE TABLE stat_index (stat_key TEXT PRIMARY KEY, cache_key TEXT NOT NULL)
 
 table task_inputs
 CREATE TABLE task_inputs (
-  run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+  run_id TEXT NOT NULL, task_id TEXT NOT NULL, param TEXT NOT NULL,
   value_type TEXT, value_summary TEXT, digest TEXT,
-  artifact_id TEXT, asset_key TEXT, asset_version_id TEXT, remote_uri TEXT, tracking TEXT,
-  PRIMARY KEY (run_id, task_id, param, position)
+  remote_uri TEXT, tracking TEXT,
+  PRIMARY KEY (run_id, task_id, param)
 )
 
 table task_outputs
 CREATE TABLE task_outputs (
   run_id TEXT NOT NULL, task_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT,
-  value_type TEXT, path TEXT, artifact_id TEXT, asset_key TEXT, asset_version_id TEXT,
+  value_type TEXT, path TEXT, artifact_id TEXT,
   PRIMARY KEY (run_id, task_id, position)
 )
 

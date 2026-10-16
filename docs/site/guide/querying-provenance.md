@@ -126,20 +126,21 @@ frame["seconds"] = frame.pop("days") * 86_400
 print(frame.groupby("name")["seconds"].describe())
 ```
 
-### Walking lineage
+### What produced a file
 
 ```python
 with query.open() as reader:
-    graph = reader.lineage("table:features", direction="upstream")
-    for version_id in graph.neighbours(graph.root.version_id):
-        parent = graph.versions[version_id]
-        print(parent.key, parent.version_id, parent.producer_task)
+    provenance = reader.why("results/features.parquet")
+
+print(provenance.task_name, provenance.run_id, provenance.cache_key)
+for entry in provenance.inputs:
+    print(entry["param"], entry.get("digest") or entry.get("value_summary"))
 ```
 
-Nodes are `AssetVersion` objects — the same model the asset catalog uses.
-`direction="downstream"` walks the other way, and `depth=N` stops the walk.
-`reader.why(path_or_artifact_id)` answers the related question for a file:
-which run and task produced these bytes, and what that task consumed.
+`reader.why(path_or_artifact_id)` takes a file ginkgo materialized, or an
+artifact id, and returns a `Provenance`: which run and task produced those
+bytes, the cache entry holding them, and the inputs that task recorded, one
+mapping per parameter. `ginkgo why <path>` prints the same thing.
 
 ### Cache statistics
 
@@ -181,5 +182,4 @@ your workspace. The ones you will want most often:
 | `tasks` | task within a run — status, cache key, timings, attempts |
 | `events` | ledger event, with the full payload as JSON |
 | `cache_entries` | cache entry — function, size, hit count |
-| `asset_versions` | version of a catalogued asset |
 | `edges` | provenance edge between two nodes |

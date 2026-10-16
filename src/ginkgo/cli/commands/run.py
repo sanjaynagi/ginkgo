@@ -23,7 +23,6 @@ from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE
 from ginkgo.cli.renderers.models import (
-    CliAssetSummary,
     FailureDetails,
     CliNotebookSummary,
     ResourceRenderState,
@@ -682,7 +681,7 @@ def run_workflow(
             if run_failed:
                 # Nothing stopped the run, so it is reported like any other
                 # finished run: the failures and what they cost, and also the
-                # notebooks and assets the surviving branches really did
+                # notebooks the surviving branches really did
                 # produce. Only the summary line differs from a success.
                 if renderer is not None:
                     with profiler.timed("renderer_finish"):
@@ -703,7 +702,6 @@ def run_workflow(
                                 run_summary=run_summary,
                                 renderer=renderer,
                             ),
-                            assets=_render_assets(run_summary=run_summary),
                             remote_summary=evaluator.remote_stats.summary(),
                             path_tracked_inputs=_count_path_tracked_inputs(
                                 run_summary=run_summary
@@ -723,7 +721,6 @@ def run_workflow(
                             run_summary=run_summary,
                             renderer=renderer,
                         ),
-                        assets=_render_assets(run_summary=run_summary),
                         remote_summary=evaluator.remote_stats.summary(),
                         path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
                     )
@@ -905,11 +902,6 @@ def _render_notebooks(
             )
         )
     return rows
-
-
-def _render_assets(*, run_summary: RunSummary) -> list[CliAssetSummary]:
-    """Build CLI-renderer asset rows from a run summary."""
-    return [CliAssetSummary(name=asset.name) for asset in run_summary.assets]
 
 
 def _count_path_tracked_inputs(*, run_summary: RunSummary) -> int:

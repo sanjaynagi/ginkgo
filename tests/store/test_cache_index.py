@@ -18,7 +18,7 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.errors import StoreError
 from ginkgo.store.projector import projection_ops
 from ginkgo.store.sqlite import open_store
-from ginkgo.store.protocol import ProjectionOp, StoredEvent
+from ginkgo.store.protocol import StoredEvent
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -194,22 +194,10 @@ class TestArtifacts:
         assert index.artifact("artifact-1") is None
         assert index.materialization_matches(path=path, artifact_id="artifact-1") is False
 
-    def test_referenced_ids_cover_cache_entries_and_asset_versions(
-        self, index: CacheIndex, db_path: Path
-    ) -> None:
+    def test_referenced_ids_are_the_cache_entries_artifacts(self, index: CacheIndex) -> None:
         _record(index, "key-1", artifact_ids={"/out/a.txt": "artifact-1"})
-        with open_store(db_path) as store, store.transaction():
-            store.apply(
-                [
-                    ProjectionOp(
-                        sql="INSERT INTO asset_versions (asset_key, version_id, kind, "
-                        "artifact_id, content_hash, created_at) "
-                        "VALUES ('table:rows', 'v1', 'table', 'artifact-2', 'h', '2026-08-28')",
-                    )
-                ]
-            )
 
-        assert index.referenced_artifact_ids() == {"artifact-1", "artifact-2"}
+        assert index.referenced_artifact_ids() == {"artifact-1"}
 
 
 class TestStatIndex:

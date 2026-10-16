@@ -16,7 +16,6 @@ ginkgo/
 ├── errors.py             # error taxonomy and user-code failure location
 ├── formatting.py         # value formatters shared by read-only presenters
 ├── core/
-│   ├── asset.py          # asset identity, table/array/fig/text/model wrappers
 │   ├── directive.py      # ExecutionDirective base type
 │   ├── expr.py
 │   ├── flow.py
@@ -74,13 +73,7 @@ ginkgo/
 │   │   ├── remote_arg_transfer.py  # argument staging for remote execution
 │   │   ├── fs_share.py         # filesystem-shared copies into the CAS
 │   │   ├── output_index.py     # compact typed index of task outputs
-│   │   ├── value_codec.py      # cross-process value serialization
-│   │   ├── asset_store.py      # asset catalog metadata
-│   │   ├── asset_kinds.py      # kind registry for the asset model
-│   │   ├── asset_loaders.py    # per-kind artifact loaders
-│   │   ├── asset_serialization.py
-│   │   ├── asset_registration.py   # cache-to-catalog glue
-│   │   └── live_payloads.py    # in-memory wrapped-asset payloads
+│   │   └── value_codec.py      # cross-process value serialization
 │   ├── notifications/
 │   │   ├── notifications.py
 │   │   └── slack.py
@@ -134,9 +127,8 @@ ginkgo/
 │   ├── workspace.py         # canonical workflow discovery
 │   ├── workflow_params.py   # CLI side of ginkgo.param
 │   ├── commands/            # one module per command: run, inspect, cache,
-│   │                        # asset, db, debug, doctor, env, export, history,
-│   │                        # init, lineage, models, notebooks, query, report,
-│   │                        # runs, secrets
+│   │                        # db, debug, doctor, env, export, history, init,
+│   │                        # notebooks, query, report, runs, secrets, why
 │   └── renderers/           # rich live output, JSONL agent output, dry-run
 │                            # and debug renderers, shared formatting
 └── templates/

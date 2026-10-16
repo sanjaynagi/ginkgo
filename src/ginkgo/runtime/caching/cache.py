@@ -10,9 +10,8 @@ import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import Any, get_args, get_origin
 
-from ginkgo.core.asset import AssetRef
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
@@ -42,16 +41,14 @@ from ginkgo.store.jsonio import dumps_or_none
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
     CodecError,
+    check_encoded,
     decode_value,
     encode_value,
-    encoded_asset_refs,
     hash_value_bytes,
     summarise_value,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
 
-if TYPE_CHECKING:
-    from ginkgo.runtime.artifacts.asset_store import AssetStore
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +220,7 @@ class CacheStore:
         excluded from the key — but never folded into the key itself, so
         computing or storing it cannot perturb it. ``ginkgo cache explain`` and
         the run summary read this to name *how* an input is tracked: by
-        file/folder content, by an asset's version id, by its path string only
+        file/folder content, by a remote ref's version id, by its path string only
         (the silent-staleness trap of issues #121/#281), by its own value, by
         an ``Out[...]`` parameter's declared path (by design), or not at all.
         See :func:`~ginkgo.runtime.task_validation.label_input_value` for the
@@ -252,18 +249,20 @@ class CacheStore:
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
             return MISSING
 
-        # An entry this codec cannot read is a miss. Its directory is removed
-        # because ``save`` never overwrites an existing entry, so leaving it
-        # would make the task miss on every run.
+        # An entry this codec cannot read — cut short, or written by a codec
+        # this version no longer has — is a miss. Its directory and rows are
+        # removed because ``save`` never overwrites an existing entry, so
+        # leaving it would make the task miss on every run.
         try:
             return decode_value(
                 json.loads(output_path.read_text(encoding="utf-8")),
                 base_dir=entry_dir,
                 artifact_store=self._artifact_store,
             )
-        except CodecError as exc:
+        except (ValueError, CodecError) as exc:
             logger.warning("Discarding unreadable cache entry %s: %s", cache_key, exc)
             shutil.rmtree(entry_dir, ignore_errors=True)
+            self.index.forget_entries([cache_key])
             return MISSING
 
     def has_entry(self, *, cache_key: str, task_def: TaskDef) -> bool:
@@ -415,9 +414,6 @@ class CacheStore:
         artifact_ids: dict[str, str],
     ) -> bool:
         """Recursively validate or restore managed file and folder outputs."""
-        if isinstance(value, AssetRef):
-            return Path(value.artifact_path).exists()
-
         # An absent optional output has nothing to restore, and its absence is
         # itself the cached result. A None the annotation does not admit is not
         # this walk's to diagnose — validation already rejected it — but the
@@ -595,9 +591,6 @@ class CacheStore:
                 )
             return
 
-        if isinstance(value, AssetRef):
-            return
-
         if annotation is file or isinstance(value, file):
             path = Path(str(value))
             if path.is_symlink():
@@ -665,18 +658,26 @@ class CacheStore:
         losing one side: an entry row whose ``output.json`` is gone is a row
         that will never hit, a directory with no row is bytes nothing can find,
         and an artifact a cache entry names but the store does not hold is a
-        restore that will fail. Each is reported rather than repaired.
+        restore that will fail. An ``output.json`` that cannot be decoded — cut
+        short by a full disk, or written by a ginkgo whose encoding has since
+        moved on — will miss on every load. Each is reported rather than
+        repaired.
 
         Returns
         -------
         list[str]
             One sentence per problem, in the order they were checked.
         """
-        problems = [
-            f"cache entry {key} has a row but no output.json"
-            for key in self.index.cache_keys()
-            if not self.output_path(key).is_file()
-        ]
+        problems: list[str] = []
+        for key in self.index.cache_keys():
+            output_path = self.output_path(key)
+            if not output_path.is_file():
+                problems.append(f"cache entry {key} has a row but no output.json")
+                continue
+            try:
+                check_encoded(json.loads(output_path.read_text(encoding="utf-8")))
+            except (ValueError, KeyError, CodecError) as exc:
+                problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
         problems += [
             f"cache directory {entry.name} has no row (orphan)"
             for entry in self.orphan_entry_dirs()
@@ -688,59 +689,6 @@ class CacheStore:
             or not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
         ]
         return problems
-
-    def asset_reference_problems(self, *, assets: AssetStore) -> list[str]:
-        """Report entries that would replay an asset version the catalog lost.
-
-        An entry's ``output.json`` outlives the database, so a catalog rebuilt
-        or restored behind an intact cache leaves the refs inside it naming
-        versions with no row. Replaying one of those drops the consumer's
-        lineage and unprotects the asset's bytes (issue #263). A run repairs
-        what it replays; this names what is still dangling, so a workspace in
-        that state is diagnosable without waiting for a warning mid-run.
-
-        Parameters
-        ----------
-        assets : AssetStore
-            The catalog to check the replayed versions against.
-
-        Returns
-        -------
-        list[str]
-            One sentence counting the dangling versions and naming a few, plus
-            one per entry whose stored output could not be read at all.
-        """
-        dangling: dict[str, str] = {}
-        problems: list[str] = []
-        for cache_key in self.index.cache_keys():
-            output_path = self.output_path(cache_key)
-            if not output_path.is_file():
-                # Already reported by `integrity_problems` as a row with no bytes.
-                continue
-            try:
-                payload = json.loads(output_path.read_text(encoding="utf-8"))
-                refs = encoded_asset_refs(payload)
-            except Exception as exc:
-                # A check reports; it does not raise. An entry truncated by a
-                # full disk, or written by a ginkgo whose encoding has since
-                # moved on, is a finding in its own right — and must not cost
-                # the user every check that comes after this one.
-                problems.append(f"cache entry {cache_key} has an unreadable output.json: {exc}")
-                continue
-            for ref in refs:
-                if ref.version_id in dangling or assets.version_by_id(ref.version_id) is not None:
-                    continue
-                dangling[ref.version_id] = f"{ref.key}@{ref.version_id[:12]} in entry {cache_key}"
-        if not dangling:
-            return problems
-        examples = "; ".join(sorted(dangling.values())[:3])
-        more = "" if len(dangling) <= 3 else f"; and {len(dangling) - 3} more"
-        return [
-            *problems,
-            f"{len(dangling)} asset version(s) a cache entry replays have no catalog row "
-            f"({examples}{more}) — lineage through them is lost and their artifacts are "
-            f"unprotected until a run replays them",
-        ]
 
     def _env_hash(self, *, task_def: TaskDef) -> dict[str, Any] | None:
         """Return environment identity information for cache-keying.
@@ -897,16 +845,6 @@ class CacheStore:
             return self._hash_path_string_leaf(value=value)
         if is_untracked_annotation(annotation):
             return self._hash_path_string_leaf(value=value)
-        if isinstance(value, AssetRef):
-            if annotation_includes(annotation=annotation, expected=file):
-                return {"sha256": value.content_hash, "type": "file"}
-            if annotation_includes(annotation=annotation, expected=folder):
-                return {"sha256": value.content_hash, "type": "folder"}
-            return {
-                "asset": str(value.key),
-                "type": "asset_ref",
-                "version_id": value.version_id,
-            }
         if isinstance(value, RemoteRef):
             if value.version_id is None:
                 raise ValueError(
@@ -1235,17 +1173,6 @@ class CacheStore:
             else:
                 stat_entry["version_id"] = value["version_id"]
             return stat_entry
-
-        if isinstance(value, AssetRef):
-            # An ``AssetRef`` bound to a path-shaped annotation (rule #307:
-            # a bare ``file``/``folder`` param may receive one directly, not
-            # just the ``file | AssetRef`` union) is not a filesystem path to
-            # stat — ``str(value)`` is the ref's ``repr()``, not a path, so
-            # falling through to the branches below would try to stat a path
-            # built from that repr. The ref's own identity is already a
-            # stable, cheap fingerprint: it changes exactly when the content
-            # the artifact holds changes (see ``hash_value_bytes``).
-            return {"type": "asset_ref", "version_id": value.version_id}
 
         if annotation is file or isinstance(value, file):
             path = Path(str(value)).resolve()

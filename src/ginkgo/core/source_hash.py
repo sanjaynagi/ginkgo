@@ -111,8 +111,7 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         return hash_str(source)
 
     # Imported lazily: ``core`` must not depend on ``runtime`` at module load
-    # time (see the similar imports in ``ginkgo.core.asset`` and
-    # ``ginkgo.core.types``).
+    # time (see the similar import in ``ginkgo.core.task``).
     from ginkgo.runtime.module_loader import cache_identity_module_name
 
     modules = _local_import_closure(module)

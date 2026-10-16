@@ -10,11 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias, final
 
-from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.optional import OptionalOutput
 
-ShellOutputItem: TypeAlias = str | AssetResult | OptionalOutput
+ShellOutputItem: TypeAlias = str | OptionalOutput
 ShellOutput: TypeAlias = ShellOutputItem | list[ShellOutputItem] | tuple[ShellOutputItem, ...]
 
 

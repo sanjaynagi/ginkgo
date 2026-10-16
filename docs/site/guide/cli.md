@@ -51,12 +51,10 @@ at the nearest `ginkgo.toml`.
 : List, clear, and prune cached task results. See
   [Caching and Provenance](caching-and-provenance.md).
 
-`ginkgo asset`
-: List and inspect typed, versioned task outputs. See
-  [Assets and Reports](assets.md).
-
-`ginkgo models`
-: List model assets together with their recorded metrics.
+`ginkgo why`
+: Name the task and run that produced a materialized file (or an artifact id),
+  its cache key, and the inputs that task recorded. Add `--json` for a
+  structured payload. See [Querying Provenance](querying-provenance.md).
 
 `ginkgo notebooks`
 : List the rendered notebook HTML artifacts produced by runs.
@@ -105,7 +103,7 @@ tasks declare (e.g. `--resource api_calls=10`) — see
 task body &mdash; the fastest way to confirm a workflow is wired correctly.
 On a warm cache it goes further: with cached upstream outputs in hand, each
 downstream task's arguments run through the same input validation the real
-run applies, so a kind/path mismatch (say, a `table` asset wired into a
+run applies, so a kind/path mismatch (say, a DataFrame wired into a
 `file` parameter) is reported under **Problems** before anything runs &mdash;
 and the command exits non-zero, so a scripted preflight fails loudly. A
 first, cold dry run cannot resolve those arguments and so makes no claim.

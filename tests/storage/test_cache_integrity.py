@@ -989,3 +989,18 @@ class TestUnreadableCacheEntry:
         assert rerun == cached == 9
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
         assert collector.cached()
+
+    def test_a_truncated_entry_reruns_once_then_caches(self, tmp_path):
+        log_path = str(tmp_path / "runs.log")
+        evaluate(counted_square_task(log_path=log_path, value=4))
+
+        (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
+        entry.write_text('{"__ginkgo_type__": "li', encoding="utf-8")
+
+        rerun = evaluate(counted_square_task(log_path=log_path, value=4))
+        collector = EventCollector()
+        cached = evaluate(counted_square_task(log_path=log_path, value=4), event_bus=collector.bus)
+
+        assert rerun == cached == 16
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
+        assert collector.cached()

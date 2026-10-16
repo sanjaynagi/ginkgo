@@ -11,14 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import final
 
-from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.hashing import hash_file
 
 _NOTEBOOK_EXTENSIONS = frozenset({".ipynb", ".py"})
 
-_NotebookOutputItem = str | AssetResult | OptionalOutput
+_NotebookOutputItem = str | OptionalOutput
 _NotebookOutput = _NotebookOutputItem | list[_NotebookOutputItem] | None
 
 
@@ -31,7 +30,7 @@ class NotebookDirective(ExecutionDirective):
     ----------
     path : Path
         Resolved source notebook path (.ipynb or .py for marimo).
-    output : str | AssetResult | list[those] | None
+    output : str | OptionalOutput | list[those] | None
         Declared output path or paths. When provided, every path is
         validated for existence after execution. When omitted, the
         managed HTML artifact path is returned as the task result.
@@ -63,7 +62,7 @@ def notebook(
     ----------
     path : str | Path
         Source notebook file (.ipynb for Jupyter/Papermill or .py for marimo).
-    output : str | AssetResult | list[those] | None
+    output : str | OptionalOutput | list[those] | None
         Declared output path or paths, validated for existence after
         execution. When omitted, the managed rendered HTML artifact path
         is returned instead.

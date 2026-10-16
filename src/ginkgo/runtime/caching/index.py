@@ -253,15 +253,11 @@ class CacheIndex(DirectIndex):
         return [str(row["artifact_id"]) for row in rows]
 
     def referenced_artifact_ids(self) -> set[str]:
-        """Return every artifact id a cache entry or asset version still points at.
+        """Return every artifact id a cache entry still points at.
 
-        Both halves are one query so a garbage collector cannot see a
-        half-updated picture and delete bytes the other half still wants.
+        This is what a garbage collector keeps; any other artifact is orphaned.
         """
-        rows = self._query(
-            "SELECT artifact_id FROM cache_artifacts UNION SELECT artifact_id FROM asset_versions"
-        )
-        return {str(row["artifact_id"]) for row in rows}
+        return set(self.cache_artifact_ids())
 
     def record_hit(self, cache_key: str, *, at: str | None = None) -> None:
         """Count one hit against an entry.

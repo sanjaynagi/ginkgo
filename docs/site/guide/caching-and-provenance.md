@@ -220,7 +220,8 @@ Ginkgo names which:
 - **content** — a `file` / `folder` annotation or instance, *or* (since
   #307 phase 2) a plain value that names an existing regular file and reads
   as a path: the bytes are hashed.
-- **version** — an `AssetRef` (or a remote reference): tracked by its version id.
+- **version** — a remote reference, or a remote file streamed through FUSE:
+  tracked by its version id.
 - **path** — a value that names an existing path but is not content-hashed: a
   directory (never auto-hashed — annotate `folder`), a bare word with no
   separator or extension. Tracked by the path *string* only.
@@ -323,10 +324,14 @@ file (or delete the directories if the history is not wanted).
 ### Upgrading from a pre-ledger workspace
 
 Workspaces recorded before `.ginkgo/ginkgo.db` existed are **not** migrated.
-Their runs, cache entries and asset catalog lived in files ginkgo no longer
-reads, so they are invisible to every command. If you have one, delete
-`.ginkgo/` and run the workflow again; there is no import path, and nothing in
-the old layout is read by mistake.
+Their runs and cache entries lived in files ginkgo no longer reads, so they
+are invisible to every command. If you have one, delete `.ginkgo/` and run the
+workflow again; there is no import path, and nothing in the old layout is read
+by mistake.
+
+The same holds between schema versions before 1.0: the schema is edited in
+place rather than migrated, so a database written by an older ginkgo is refused
+with an error naming both versions. Delete `.ginkgo/` and run again.
 
 `ginkgo.db` is the record of your runs and of your cache; back it up as you
 would `.git`. If it is lost, the run history goes with it and the cache goes

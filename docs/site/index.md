@@ -77,7 +77,6 @@ ginkgo run flow.py
       <li><a href="guide/tasks-and-flows/">Tasks and flows</a></li>
       <li><a href="guide/resources/">Resources and scheduling</a></li>
       <li><a href="guide/environments/">Environments</a></li>
-      <li><a href="guide/assets/">Assets</a></li>
       <li><a href="guide/reports/">Reports</a></li>
       <li><a href="guide/caching-and-provenance/">Caching and provenance</a></li>
       <li><a href="guide/querying-provenance/">Querying provenance</a></li>
@@ -116,7 +115,6 @@ guide/concepts
 guide/tasks-and-flows
 guide/resources
 guide/environments
-guide/assets
 guide/reports
 guide/caching-and-provenance
 guide/querying-provenance

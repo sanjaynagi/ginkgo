@@ -89,7 +89,6 @@ class TaskSummary:
     ``path``, ``value``, ``output``, ``untracked``), when recorded (issue
     #307 phase 1). ``None`` for a run recorded before the label existed."""
     outputs: tuple[dict[str, Any], ...]
-    assets: tuple[dict[str, Any], ...]
     resource_usage: dict[str, Any] | None
     skipped_because: dict[str, Any] | None
     """The failed task this one was waiting on, when it was skipped."""
@@ -183,14 +182,6 @@ class NotebookSummary:
 
 
 @dataclass(frozen=True, kw_only=True)
-class AssetSummary:
-    """One asset materialised in a finished run."""
-
-    asset_key: str
-    name: str
-
-
-@dataclass(frozen=True, kw_only=True)
 class RunSummary:
     """Aggregate view of one run.
 
@@ -234,8 +225,6 @@ class RunSummary:
         Tasks ordered by ``node_id`` ascending.
     notebooks : tuple[NotebookSummary, ...]
         Notebook tasks materialised in this run.
-    assets : tuple[AssetSummary, ...]
-        Unique assets materialised in this run.
     """
 
     run_id: str
@@ -259,7 +248,6 @@ class RunSummary:
     timings: dict[str, float]
     tasks: tuple[TaskSummary, ...]
     notebooks: tuple[NotebookSummary, ...]
-    assets: tuple[AssetSummary, ...]
 
     @classmethod
     def load(
@@ -322,7 +310,6 @@ class RunSummary:
             timings=_mapping(run.get("timings")),
             tasks=tasks,
             notebooks=_load_notebooks(tasks=tasks),
-            assets=_load_assets(tasks=tasks),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -463,10 +450,8 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
     inputs: dict[str, dict[str, Any]] = {}
     trackings: dict[str, dict[str, str]] = {}
     for row in store.query(
-        # Position 0 is the row that carries the rendered argument; a fan-in
-        # parameter's later positions record only which asset sat at each one.
         "SELECT task_id, param, value_summary, tracking FROM task_inputs WHERE run_id = ? "
-        "AND position = 0 ORDER BY task_id, param",
+        "ORDER BY task_id, param",
         (run_id,),
     ):
         inputs.setdefault(row["task_id"], {})[row["param"]] = loads(row["value_summary"])
@@ -528,7 +513,6 @@ def _build_task_summary(
     extra = _mapping(row.get("extra"))
     failure = _mapping(row.get("failure")) or None
     outputs = _sequence(row.get("output_summary"))
-    assets = tuple(item for item in extra.get("assets", []) if isinstance(item, dict))
     name = str(row.get("name") or "unknown")
 
     return TaskSummary(
@@ -569,7 +553,6 @@ def _build_task_summary(
         inputs=inputs,
         input_trackings=input_trackings,
         outputs=tuple(item for item in outputs if isinstance(item, dict)),
-        assets=assets,
         resource_usage=_mapping(row.get("resource_usage")) or None,
         skipped_because=_mapping(extra.get("skipped_because")) or None,
         ignored=bool(extra.get("ignored")),
@@ -600,21 +583,6 @@ def _load_notebooks(*, tasks: tuple[TaskSummary, ...]) -> tuple[NotebookSummary,
             )
         )
     return tuple(notebooks)
-
-
-def _load_assets(*, tasks: tuple[TaskSummary, ...]) -> tuple[AssetSummary, ...]:
-    """Extract unique materialised asset references from tasks."""
-    seen: set[str] = set()
-    out: list[AssetSummary] = []
-    for task in tasks:
-        for asset in task.assets:
-            key = asset.get("asset_key")
-            if not isinstance(key, str) or key in seen:
-                continue
-            seen.add(key)
-            name = asset.get("name") or key
-            out.append(AssetSummary(asset_key=key, name=str(name)))
-    return tuple(out)
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -1,16 +1,16 @@
 """Compact typed output index for task results.
 
 The provenance manifest and lifecycle events both carry a small JSON
-summary of each task's outputs (file paths, asset references, dataframe
-shapes, ndarray dtypes, etc.). This module owns that rendering.
+summary of each task's outputs (file paths and the artifacts storing them,
+dataframe shapes, ndarray dtypes, etc.). This module owns that rendering.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, get_origin
 
-from ginkgo.core.asset import AssetRef
 from ginkgo.core.types import (
     annotation_includes,
     file,
@@ -27,8 +27,30 @@ def output_summary(
     value: Any,
     *,
     name: str = "return",
+    artifact_ids: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a compact typed output index for a task result."""
+    """Return a compact typed output index for a task result.
+
+    Parameters
+    ----------
+    annotation : Any
+        The task's effective return annotation.
+    value : Any
+        The task result.
+    name : str
+        Label for the top-level output; nested entries extend it with their
+        index.
+    artifact_ids : Mapping[str, str] | None
+        The cache entry's output path to artifact id mapping, keyed as
+        ``CacheStore.save`` keys it. A ``file`` or ``folder`` entry whose path
+        is in it carries its ``artifact_id``.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One entry per output leaf.
+    """
+    artifact_ids = artifact_ids or {}
     annotation, admits_none = unwrap_optional_annotation(annotation)
     if value is None:
         # A task with no output indexes nothing, but a declared optional output
@@ -41,7 +63,7 @@ def output_summary(
             return [{"name": name, "type": output_type, "optional": True, "present": False}]
         return []
 
-    entries = _present_output_summary(annotation, value, name=name)
+    entries = _present_output_summary(annotation, value, name=name, artifact_ids=artifact_ids)
     if admits_none:
         for entry in entries:
             entry["optional"] = True
@@ -53,7 +75,8 @@ def _present_output_summary(
     annotation: Any,
     value: Any,
     *,
-    name: str = "return",
+    name: str,
+    artifact_ids: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Return the output index for a value that is known to be present."""
     origin = get_origin(annotation)
@@ -61,32 +84,28 @@ def _present_output_summary(
         outputs: list[dict[str, Any]] = []
         paired = pair_elements_with_annotations(annotation=annotation, value=value)
         for index, (item_annotation, item) in enumerate(paired):
-            outputs.extend(output_summary(item_annotation, item, name=f"{name}[{index}]"))
+            outputs.extend(
+                output_summary(
+                    item_annotation, item, name=f"{name}[{index}]", artifact_ids=artifact_ids
+                )
+            )
         return outputs
 
     if isinstance(value, (list, tuple)):
         outputs: list[dict[str, Any]] = []
         for index, item in enumerate(value):
-            outputs.extend(output_summary(annotation, item, name=f"{name}[{index}]"))
+            outputs.extend(
+                output_summary(
+                    annotation, item, name=f"{name}[{index}]", artifact_ids=artifact_ids
+                )
+            )
         return outputs
 
-    if isinstance(value, AssetRef):
-        return [
-            {
-                "name": name,
-                "type": "asset",
-                "asset_key": str(value.key),
-                "version_id": value.version_id,
-                "artifact_id": value.artifact_id,
-                "path": value.artifact_path,
-            }
-        ]
-
     if annotation is file or isinstance(value, file):
-        return [{"name": name, "type": "file", "path": str(value)}]
+        return [_path_entry(name=name, kind="file", value=value, artifact_ids=artifact_ids)]
 
     if annotation is folder or isinstance(value, folder):
-        return [{"name": name, "type": "folder", "path": str(value)}]
+        return [_path_entry(name=name, kind="folder", value=value, artifact_ids=artifact_ids)]
 
     if isinstance(value, Path):
         return [{"name": name, "type": "path", "path": str(value)}]
@@ -115,3 +134,14 @@ def _present_output_summary(
         ]
 
     return [{"name": name, "type": "value", "summary": summarise_value(value)}]
+
+
+def _path_entry(
+    *, name: str, kind: str, value: Any, artifact_ids: Mapping[str, str]
+) -> dict[str, Any]:
+    """Return a ``file``/``folder`` output entry, naming its artifact when stored."""
+    entry: dict[str, Any] = {"name": name, "type": kind, "path": str(value)}
+    artifact_id = artifact_ids.get(str(Path(str(value))))
+    if artifact_id is not None:
+        entry["artifact_id"] = artifact_id
+    return entry

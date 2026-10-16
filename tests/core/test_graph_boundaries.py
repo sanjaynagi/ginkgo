@@ -17,9 +17,7 @@ from typing import Any
 
 import pytest
 
-import ginkgo
 from ginkgo import Out, evaluate, file, flow, folder, task, tmp_dir, untracked
-from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
@@ -125,22 +123,6 @@ def summarise_untracked(*, coords: untracked, output_path: untracked) -> str:
     """Summarise a path deliberately annotated ``untracked``."""
     count = len(Path(coords).read_text(encoding="utf-8").strip().split("\n"))
     Path(output_path).write_text(f"rows,{count}\n", encoding="utf-8")
-    return output_path
-
-
-@task()
-def produce_file_asset(*, output_path: Out[file]) -> object:
-    """Return a file asset, which reaches a consumer as an ``AssetRef``."""
-    target = Path(output_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("0\n1\n", encoding="utf-8")
-    return ginkgo.asset(target)
-
-
-@task()
-def receive_as_str(*, incoming: str, output_path: Out[file]) -> str:
-    """Receive an upstream value through a plain ``str`` parameter."""
-    Path(output_path).write_text(str(incoming), encoding="utf-8")
     return output_path
 
 
@@ -449,41 +431,6 @@ class TestUntrackedPathsInsideContainers:
         assert _notices(event_collector) == []
 
 
-class TestAssetRefBoundary:
-    """An ``AssetRef`` is version-keyed, so its boundary is already tracked."""
-
-    def test_asset_ref_reaching_a_str_parameter_is_not_warned_about(
-        self, event_collector: EventCollector
-    ) -> None:
-        evaluate(
-            receive_as_str(
-                incoming=produce_file_asset(output_path="rows.csv"),
-                output_path="summary.txt",
-            ),
-            event_bus=event_collector.bus,
-        )
-
-        assert _notices(event_collector) == []
-
-    def test_the_predicate_excludes_asset_refs(self) -> None:
-        """Pinned directly: a file-kind ref under a ``str`` annotation.
-
-        An ``AssetRef`` is not path-like, so it never reaches the existence
-        probe. This pins the outcome rather than the mechanism, so it still
-        holds if ``AssetRef`` ever becomes ``os.PathLike``.
-        """
-        ref = AssetRef(
-            key=AssetKey(namespace="ns", name="rows"),
-            version_id="v1",
-            kind="file",
-            artifact_id="artifact-1",
-            content_hash="hash-1",
-            artifact_path=Path("rows.csv"),
-        )
-
-        assert is_untracked_path_value(annotation=str, value=ref) is False
-
-
 class TestIsUntrackedPathValue:
     """The predicate behind the warning and the ``"path"`` label, over the
     annotation table in #121/#307. Since #307 phase 2, a plain ``str``
@@ -526,7 +473,7 @@ class TestIsUntrackedPathValue:
             (str, "not a path at all", False),
             (int, 3, False),
             (str, "s3://bucket/key.csv", False),
-            # A rehydrated ``text`` asset arrives as its contents.
+            # Long text that cannot name a path at all.
             (str, "# Title\n\n" + "x" * 400, False),
             (str, "has a \x00 in it", False),
         ],

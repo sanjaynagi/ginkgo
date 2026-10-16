@@ -6,9 +6,8 @@ change when it moves. Readers open the database read-only, which means they
 work while a run is writing and can never migrate it out from under one.
 
 Every method returns either a core type ginkgo already models — a
-:class:`~ginkgo.runtime.run_summary.RunSummary`, an
-:class:`~ginkgo.core.asset.AssetVersion` — or a frozen row dataclass declared
-here for a shape that has no model elsewhere.
+:class:`~ginkgo.runtime.run_summary.RunSummary` — or a frozen row dataclass
+declared here for a shape that has no model elsewhere.
 
 The database schema is versioned but **not stable**. :meth:`Query.sql` hands
 out raw SQL over the tables :meth:`Query.schema` names — they are also described
@@ -27,9 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from ginkgo.core.asset import AssetKey, AssetVersion
 from ginkgo.formatting import duration_seconds, parse_timestamp
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.runtime.caching.cache import key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
@@ -42,7 +39,6 @@ __all__ = [
     "CacheEntryRow",
     "CacheStats",
     "EventRow",
-    "LineageGraph",
     "Provenance",
     "Query",
     "RerunExplanation",
@@ -383,51 +379,6 @@ class EventRow:
 
 
 @dataclass(frozen=True, kw_only=True)
-class LineageGraph:
-    """One asset version and the versions it reaches, in one direction.
-
-    Nodes are :class:`~ginkgo.core.asset.AssetVersion` — the catalog's model of
-    a version, not a second one — keyed by version id. Every edge points from a
-    parent to the child derived from it, whichever direction the walk went.
-
-    Parameters
-    ----------
-    root : AssetVersion
-        The version the walk started from.
-    direction : str
-        ``"upstream"`` for what the root was built from, ``"downstream"`` for
-        what was built from it.
-    versions : dict[str, AssetVersion]
-        Every version reached, including the root, by version id.
-    edges : tuple[tuple[str, str], ...]
-        ``(parent_version_id, child_version_id)`` pairs, sorted.
-    """
-
-    root: AssetVersion
-    direction: str
-    versions: dict[str, AssetVersion]
-    edges: tuple[tuple[str, str], ...]
-
-    def neighbours(self, version_id: str) -> list[str]:
-        """Return the versions one step from *version_id*, in the walk's direction."""
-        if self.direction == "downstream":
-            return [child for parent, child in self.edges if parent == version_id]
-        return [parent for parent, child in self.edges if child == version_id]
-
-    def to_payload(self) -> dict[str, Any]:
-        """Return the graph as JSON-ready data."""
-        return {
-            "root": self.root.to_dict(),
-            "direction": self.direction,
-            "versions": {
-                version_id: version.to_dict()
-                for version_id, version in sorted(self.versions.items())
-            },
-            "edges": [{"parent": parent, "child": child} for parent, child in self.edges],
-        }
-
-
-@dataclass(frozen=True, kw_only=True)
 class Provenance:
     """Where one artifact came from.
 
@@ -441,8 +392,6 @@ class Provenance:
         The task that produced it.
     cache_key : str | None
         The cache entry holding it, if it came out of the cache.
-    asset_key, version_id : str | None
-        The asset version it backs, if it is a catalogued asset.
     inputs : tuple[dict[str, Any], ...]
         The producing task's recorded inputs, one mapping per parameter.
     """
@@ -453,8 +402,6 @@ class Provenance:
     task_id: str | None = None
     task_name: str | None = None
     cache_key: str | None = None
-    asset_key: str | None = None
-    version_id: str | None = None
     inputs: tuple[dict[str, Any], ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
@@ -466,8 +413,6 @@ class Provenance:
             "task_id": self.task_id,
             "task_name": self.task_name,
             "cache_key": self.cache_key,
-            "asset_key": self.asset_key,
-            "version_id": self.version_id,
             "inputs": [dict(entry) for entry in self.inputs],
         }
 
@@ -482,10 +427,6 @@ class Query:
     def __init__(self, store: ProvenanceStore, *, layout: WorkspaceLayout) -> None:
         self._store = store
         self._layout = layout
-        # One catalog over this reader's connection, sharing its lifetime: a
-        # fresh one per access would mean a fresh lock per access, which
-        # guards nothing.
-        self._catalog = AssetStore(store=store, owns_store=False)
 
     @property
     def store(self) -> ProvenanceStore:
@@ -874,15 +815,13 @@ class Query:
     def _task_input_labels(self, *, run_id: str, task_id: str) -> dict[str, str]:
         """Return one task's per-parameter cache-tracking labels.
 
-        Read from ``task_inputs.tracking`` (position 0, one row per
-        parameter). A run recorded before the column existed reads back
+        Read from ``task_inputs.tracking``, one row per parameter. A run recorded before the column existed reads back
         ``None`` for every row, so the result is empty rather than a dict of
         placeholders — ``ginkgo cache explain`` shows nothing for those,
         never a guess.
         """
         rows = self._store.query(
-            "SELECT param, tracking FROM task_inputs WHERE run_id = ? AND task_id = ? "
-            "AND position = 0",
+            "SELECT param, tracking FROM task_inputs WHERE run_id = ? AND task_id = ?",
             (run_id, task_id),
         )
         return {
@@ -990,81 +929,6 @@ class Query:
             return f"{listed} `ginkgo query --schema` lists every table."
         return f"The tables are {', '.join(schema)}. `ginkgo query --schema` lists their columns."
 
-    # -- assets and lineage --------------------------------------------------
-
-    @property
-    def catalog(self) -> AssetStore:
-        """The asset catalog over this reader's connection."""
-        return self._catalog
-
-    def lineage(
-        self,
-        asset_key: str,
-        version_id: str | None = None,
-        *,
-        direction: str = "upstream",
-        depth: int | None = None,
-    ) -> LineageGraph:
-        """Walk the ``derived_from`` edges around one asset version.
-
-        Parameters
-        ----------
-        asset_key : str
-            ``'<kind>:<name>'``, as ``ginkgo asset ls`` prints it.
-        version_id : str | None
-            A version id or alias. The latest version when omitted.
-        direction : str
-            ``"upstream"`` for what this version was built from,
-            ``"downstream"`` for what was built from it.
-        depth : int | None
-            Stop after this many hops. Unlimited when omitted.
-
-        Returns
-        -------
-        LineageGraph
-
-        Raises
-        ------
-        FileNotFoundError
-            If the asset or version is unknown.
-        ValueError
-            If *direction* is neither ``"upstream"`` nor ``"downstream"``.
-        """
-        if direction not in {"upstream", "downstream"}:
-            raise ValueError(f"direction must be 'upstream' or 'downstream', got {direction!r}")
-        catalog = self.catalog
-        root = catalog.resolve_version(key=AssetKey.parse(asset_key), selector=version_id)
-
-        versions: dict[str, AssetVersion] = {root.version_id: root}
-        edges: set[tuple[str, str]] = set()
-        frontier = [root.version_id]
-        hops = 0
-        while frontier and (depth is None or hops < depth):
-            next_frontier: list[str] = []
-            for current in frontier:
-                step = (
-                    catalog.children_of(current)
-                    if direction == "downstream"
-                    else catalog.parents_of(current)
-                )
-                for other in step:
-                    edges.add((current, other) if direction == "downstream" else (other, current))
-                    if other in versions:
-                        continue
-                    version = catalog.version_by_id(other)
-                    if version is None:
-                        continue
-                    versions[other] = version
-                    next_frontier.append(other)
-            frontier = next_frontier
-            hops += 1
-        return LineageGraph(
-            root=root,
-            direction=direction,
-            versions=versions,
-            edges=tuple(sorted(edges)),
-        )
-
     def why(self, path_or_artifact_id: str) -> Provenance:
         """Return what produced an artifact, named by path or by id.
 
@@ -1088,22 +952,17 @@ class Query:
         """
         artifact_id, path = self._resolve_artifact(path_or_artifact_id)
         output = self._store.query(
-            "SELECT run_id, task_id, asset_key, asset_version_id FROM task_outputs "
+            "SELECT run_id, task_id FROM task_outputs "
             "WHERE artifact_id = ? ORDER BY run_id DESC LIMIT 1",
-            (artifact_id,),
-        )
-        asset = self._store.query(
-            "SELECT asset_key, version_id, run_id, task_id, cache_key FROM asset_versions "
-            "WHERE artifact_id = ? ORDER BY created_at DESC LIMIT 1",
             (artifact_id,),
         )
         cached = self._store.query(
             "SELECT cache_key FROM cache_artifacts WHERE artifact_id = ? LIMIT 1",
             (artifact_id,),
         )
-        run_id = _first(output, "run_id") or _first(asset, "run_id")
-        task_id = _first(output, "task_id") or _first(asset, "task_id")
-        cache_key = _first(cached, "cache_key") or _first(asset, "cache_key")
+        run_id = _first(output, "run_id")
+        task_id = _first(output, "task_id")
+        cache_key = _first(cached, "cache_key")
         if run_id is None and cache_key is not None:
             produced_by = self._store.query(
                 "SELECT run_id, task_id FROM tasks WHERE cache_key = ? "
@@ -1119,8 +978,6 @@ class Query:
             task_id=task_id,
             task_name=self._task_name(run_id=run_id, task_id=task_id),
             cache_key=cache_key,
-            asset_key=_first(asset, "asset_key") or _first(output, "asset_key"),
-            version_id=_first(asset, "version_id") or _first(output, "asset_version_id"),
             inputs=self._task_inputs(run_id=run_id, task_id=task_id),
         )
 
@@ -1156,18 +1013,13 @@ class Query:
     def _task_inputs(
         self, *, run_id: str | None, task_id: str | None
     ) -> tuple[dict[str, Any], ...]:
-        """Return the recorded inputs of one task, one mapping per input row.
-
-        A parameter handed several assets at once has a row per position; only
-        its position-0 row carries the rendered value, type and digest, the
-        rest naming the asset that sat at that position.
-        """
+        """Return the recorded inputs of one task, one mapping per parameter."""
         if run_id is None or task_id is None:
             return ()
         rows = self._store.query(
-            "SELECT param, value_type, value_summary, digest, artifact_id, asset_key, "
-            "asset_version_id, remote_uri, tracking FROM task_inputs "
-            "WHERE run_id = ? AND task_id = ? ORDER BY param, position",
+            "SELECT param, value_type, value_summary, digest, remote_uri, tracking "
+            "FROM task_inputs "
+            "WHERE run_id = ? AND task_id = ? ORDER BY param",
             (run_id, task_id),
         )
         return tuple(dict(row) for row in rows)
@@ -1200,7 +1052,7 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     missing_ok : bool, optional
         Read an empty ledger instead of raising when the workspace has none.
         What a listing wants: a workspace nobody has run anything in holds no
-        assets and no runs, and that is an answer rather than a failure. The
+        runs, and that is an answer rather than a failure. The
         empty ledger is in memory, so a read path still never creates a file.
 
     Returns

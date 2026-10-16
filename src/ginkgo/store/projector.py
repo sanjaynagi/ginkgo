@@ -273,58 +273,36 @@ def _task_planned(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
         if isinstance(label, str)
     }
     inputs = payload.get("inputs") or {}
-    declared_assets = _declared_assets(payload.get("asset_inputs"))
     # Every parameter that was hashed gets a row, including one the rendered
     # arguments do not name (a tmp_dir, say): the digest is the fact worth
     # keeping, and a missing summary is not a reason to drop it.
     parameters = {str(param): inputs.get(param, _ABSENT) for param in {**inputs, **hashes}}
     for param, value in parameters.items():
         entry = hashes.get(str(param), {})
-        # A parameter handed N assets gets N rows, one per position. Only
-        # position 0 carries the rendered value, its type and its digest:
-        # those describe the whole argument, not one asset inside it, and
-        # repeating them per position would read as N separate arguments.
-        assets = _asset_identities(declared=declared_assets.get(param), entry=entry, value=value)
-        for position, asset in enumerate(assets):
-            ops.append(
-                ProjectionOp(
-                    sql="""
-                    INSERT INTO task_inputs (
-                      run_id, task_id, param, position, value_type, value_summary,
-                      digest, artifact_id, asset_key, asset_version_id, remote_uri, tracking
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (run_id, task_id, param, position) DO UPDATE SET
-                      value_type=excluded.value_type, value_summary=excluded.value_summary,
-                      digest=excluded.digest, artifact_id=excluded.artifact_id,
-                      asset_key=excluded.asset_key,
-                      asset_version_id=excluded.asset_version_id, remote_uri=excluded.remote_uri,
-                      tracking=excluded.tracking
-                    """,
-                    params=(
-                        event.run_id,
-                        task_id,
-                        param,
-                        position,
-                        entry.get("type") if position == 0 else None,
-                        None if (position or value is _ABSENT) else dumps(value),
-                        _digest_of(entry) if position == 0 else None,
-                        asset.get("artifact_id"),
-                        asset.get("asset"),
-                        asset.get("version_id"),
-                        _remote_uri(entry) if position == 0 else None,
-                        labels.get(param) if position == 0 else None,
-                    ),
-                )
+        ops.append(
+            ProjectionOp(
+                sql="""
+                INSERT INTO task_inputs (
+                  run_id, task_id, param, value_type, value_summary,
+                  digest, remote_uri, tracking
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (run_id, task_id, param) DO UPDATE SET
+                  value_type=excluded.value_type, value_summary=excluded.value_summary,
+                  digest=excluded.digest, remote_uri=excluded.remote_uri,
+                  tracking=excluded.tracking
+                """,
+                params=(
+                    event.run_id,
+                    task_id,
+                    param,
+                    entry.get("type"),
+                    None if value is _ABSENT else dumps(value),
+                    _digest_of(entry),
+                    _remote_uri(entry),
+                    labels.get(param),
+                ),
             )
-            if asset.get("asset"):
-                ops.append(
-                    _edge(
-                        run_id=event.run_id,
-                        src=("asset_version", str(asset.get("version_id") or asset["asset"])),
-                        dst=("task", task_id),
-                        edge="consumed",
-                    )
-                )
+        )
 
     for dependency in payload.get("dependency_ids") or []:
         ops.append(
@@ -464,7 +442,6 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
     task_id = event.task_id or ""
     cached = payload.get("status") == "cached"
     outputs = [entry for entry in payload.get("outputs") or [] if isinstance(entry, dict)]
-    assets = [entry for entry in payload.get("assets") or [] if isinstance(entry, dict)]
     resource_usage = payload.get("resource_usage")
     ops = [
         ProjectionOp(
@@ -474,8 +451,7 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
               attempts = max(attempts, ?),
               cache_key = coalesce(?, cache_key),
               remote_job_id = coalesce(?, remote_job_id),
-              output_summary = ?,
-              extra = json_patch(coalesce(extra, '{}'), ?)
+              output_summary = ?
             WHERE run_id = ? AND task_id = ?
             """,
             params=(
@@ -486,7 +462,6 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                 payload.get("cache_key"),
                 payload.get("remote_job_id"),
                 dumps(outputs),
-                dumps({"assets": assets} if assets else {}),
                 event.run_id,
                 task_id,
             ),
@@ -522,9 +497,8 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
             ProjectionOp(
                 sql="""
                 INSERT INTO task_outputs (
-                  run_id, task_id, position, name, value_type, path,
-                  artifact_id, asset_key, asset_version_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  run_id, task_id, position, name, value_type, path, artifact_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 params=(
                     event.run_id,
@@ -534,21 +508,10 @@ def _task_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Project
                     entry.get("type"),
                     entry.get("path"),
                     entry.get("artifact_id"),
-                    entry.get("asset_key"),
-                    entry.get("version_id"),
                 ),
             )
         )
-        if entry.get("asset_key"):
-            ops.append(
-                _edge(
-                    run_id=event.run_id,
-                    src=("task", task_id),
-                    dst=("asset_version", str(entry.get("version_id") or entry["asset_key"])),
-                    edge="produced",
-                )
-            )
-        elif entry.get("artifact_id"):
+        if entry.get("artifact_id"):
             ops.append(
                 _edge(
                     run_id=event.run_id,
@@ -803,87 +766,6 @@ def accumulate_seconds(
         """,
         params=(path, path, seconds, *where_params),
     )
-
-
-def _declared_assets(raw: Any) -> dict[str, list[dict[str, Any]]]:
-    """Return a ``task_planned`` payload's ``asset_inputs`` as a list per parameter.
-
-    This is the one place the two recorded shapes meet. A ``task_planned``
-    event written before ``v=2`` maps each parameter to a single identity
-    mapping; from ``v=2`` it maps to the list of every asset the parameter was
-    handed (issue #264). The old shape is accepted rather than migrated:
-    normalising here means nothing downstream of this function has to know
-    either shape existed.
-
-    Nothing re-projects stored events, so this is not a replay path — the rows
-    a ``v=1`` event caused were written when it was recorded. It is defensive
-    against a payload in the old shape still arriving, from an old remote
-    worker say. ``TaskPlanned.v`` is informational: nothing dispatches on it,
-    and this reads the value's shape instead.
-    """
-    if not isinstance(raw, dict):
-        return {}
-    declared: dict[str, list[dict[str, Any]]] = {}
-    for param, recorded in raw.items():
-        entries = recorded if isinstance(recorded, list) else [recorded]
-        kept = [entry for entry in entries if isinstance(entry, dict) and entry]
-        if kept:
-            declared[str(param)] = kept
-    return declared
-
-
-def _asset_identities(
-    *, declared: list[dict[str, Any]] | None, entry: dict[str, Any], value: Any
-) -> list[dict[str, Any]]:
-    """Return the assets an input names, one per row the parameter earns.
-
-    Always at least one entry, empty when the parameter named no asset at all,
-    so the caller writes the parameter's position-0 row either way.
-
-    The evaluator knows the answer at resolution time and puts it on the event
-    as ``asset_inputs``; that is the authority, and the only source for a
-    parameter typed as the payload rather than as a file — by the time such an
-    argument reaches the task the ref has become a DataFrame, and neither the
-    hash entry nor the rendered value can say where it came from. A fan-in
-    parameter declares several, and each of them earns a row (issue #264).
-
-    The other two fallbacks remain because the event predates them, and each
-    can only ever name one asset. A task that declares a parameter as ``file``
-    and is handed an ``AssetRef`` is hashed as the file it resolves to, because
-    the cache keys on content and changing that payload would invalidate every
-    entry; the hash entry names the artifact, and the rendered argument still
-    describes the ref.
-    """
-    if declared:
-        recorded = [
-            {
-                "asset": item["asset_key"],
-                "version_id": item.get("version_id"),
-                "artifact_id": item.get("artifact_id"),
-            }
-            for item in declared
-            if item.get("asset_key")
-        ]
-        if recorded:
-            return recorded
-    return [_fallback_asset_identity(entry=entry, value=value)]
-
-
-def _fallback_asset_identity(*, entry: dict[str, Any], value: Any) -> dict[str, Any]:
-    """Return the asset an input-hash entry or a rendered argument names."""
-    if entry.get("asset"):
-        return {
-            "asset": entry["asset"],
-            "version_id": entry.get("version_id"),
-            "artifact_id": entry.get("artifact_id"),
-        }
-    if isinstance(value, dict) and value.get("type") == "asset_ref" and value.get("asset"):
-        return {
-            "asset": value["asset"],
-            "version_id": value.get("version_id"),
-            "artifact_id": value.get("artifact_id"),
-        }
-    return {}
 
 
 def _digest_of(entry: dict[str, Any]) -> str | None:

@@ -1,11 +1,8 @@
 """Candidate training and evaluation tasks for the ML model ops example.
 
 Each candidate fits a real scikit-learn pipeline on the engineered
-feature matrix, wraps the fitted estimator with :func:`ginkgo.model`,
-and returns a dict that carries both the model asset and the scalar
-metrics downstream reporting tasks need. The model assets are
-automatically registered in the local asset catalog and listable via
-``ginkgo models``.
+feature matrix and returns a dict that carries both the fitted pipeline
+and the scalar metrics downstream reporting tasks need.
 """
 
 import json
@@ -15,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ginkgo import file, model, task
+from ginkgo import file, task
 
 
 _FEATURE_COLUMNS = [
@@ -40,7 +37,7 @@ def evaluate_candidate(
     Parameters
     ----------
     model_name : str
-        Candidate identifier used as the model asset name.
+        Candidate identifier.
     weight_scale : float
         Inverse regularisation strength forwarded as scikit-learn's
         ``C`` parameter. Higher values mean less regularisation.
@@ -58,10 +55,8 @@ def evaluate_candidate(
     Returns
     -------
     dict
-        A report carrying the wrapped model asset, the scalar metrics,
-        and confusion-matrix details used by the reporting tasks. The
-        model is rehydrated into a live pipeline when a downstream
-        task consumes this report.
+        A report carrying the fitted pipeline, the scalar metrics, and
+        confusion-matrix details used by the reporting tasks.
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import (
@@ -130,12 +125,7 @@ def evaluate_candidate(
     )
 
     return {
-        "model": model(
-            pipeline,
-            name=model_name,
-            metrics=metrics,
-            metadata={"feature_columns": _FEATURE_COLUMNS},
-        ),
+        "model": pipeline,
         "model_name": model_name,
         "weight_scale": float(weight_scale),
         "ticket_penalty": float(ticket_penalty),

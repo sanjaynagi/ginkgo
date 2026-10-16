@@ -197,16 +197,15 @@ arguments to another process — a script task as `--arg-name value` options, a
 notebook task through a parameter file. Both go through
 `serialize_cli_argument_value` in `task_runners/shell.py`, which is the single
 home for what that boundary accepts: `None`, booleans, numbers, strings, path
-types, dates and times (as ISO text), an `AssetRef` whose artifact holds
-readable bytes (see [Assets](assets.md)), and lists, tuples, and dicts of
+types, dates and times (as ISO text), and lists, tuples, and dicts of
 those.
 
 A live Python payload has no text form there, so it is refused by name rather
 than reaching `json.dumps` or `yaml.safe_dump` and failing with only its type
 named. The refusal names the parameter, the type received, and the task kind,
-and points at writing the payload to a file in a Python task first. It is
-reachable by following the "annotate it `object`" advice for a consumer of a
-semantic asset in a task kind that cannot receive one.
+and points at writing the payload to a file in a Python task first — the
+staging pattern the guide works through under "Staging A Python Value For A
+Notebook".
 
 Shell tasks never reach that function: their runner passes the command the
 body returned straight to the shell rather than forwarding resolved

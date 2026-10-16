@@ -183,10 +183,3 @@ class CliNotebookSummary:
     def replayed(self) -> bool:
         """Return True when this run reused an earlier run's artifact."""
         return self.replayed_from_run_id is not None
-
-
-@dataclass(frozen=True, kw_only=True)
-class CliAssetSummary:
-    """Asset materialised in a run."""
-
-    name: str

@@ -459,12 +459,7 @@ def _safe_rmtree(path: Path) -> None:
 
 
 def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
-    """Remove artifacts no cache entry or catalogued asset points at.
-
-    The cache and the asset catalog share one artifact store, and both halves
-    of what is still referenced come back from one query, so a collector cannot
-    see a half-updated picture and delete bytes the other half still wants.
-    """
+    """Remove artifacts no cache entry points at."""
     layout = WorkspaceLayout.relative()
     if not layout.artifacts.exists():
         return

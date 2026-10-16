@@ -63,7 +63,6 @@ def stored_event(event: GinkgoEvent) -> StoredEvent:
         task_id=_column(payload, "task_id"),
         attempt=payload.get("attempt") if isinstance(payload.get("attempt"), int) else None,
         cache_key=_column(payload, "cache_key"),
-        asset_key=_column(payload, "asset_key"),
         payload=json.dumps(payload, sort_keys=True, default=str),
     )
 

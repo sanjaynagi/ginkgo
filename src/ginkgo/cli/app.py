@@ -9,7 +9,6 @@ from pathlib import Path
 import sys
 from typing import NoReturn, Sequence
 
-from ginkgo.cli.commands.asset import command_asset
 from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.db import command_db
 from ginkgo.cli.commands.debug import command_debug
@@ -19,14 +18,13 @@ from ginkgo.cli.commands.export import command_export
 from ginkgo.cli.commands.history import command_history
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
-from ginkgo.cli.commands.lineage import command_lineage
-from ginkgo.cli.commands.models import command_models
 from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.query import command_query
 from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.runs import command_runs
 from ginkgo.cli.commands.secrets import command_secrets
+from ginkgo.cli.commands.why import command_why
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
@@ -157,8 +155,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_run(args, output_mode=_run_mode_from_args(args))
         if args.command == "cache":
             return command_cache(args)
-        if args.command == "asset":
-            return command_asset(args)
         if args.command == "env":
             return command_env(args)
         if args.command == "db":
@@ -171,10 +167,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_init(args)
         if args.command == "inspect":
             return command_inspect(args)
-        if args.command == "models":
-            return command_models(args)
-        if args.command == "lineage":
-            return command_lineage(args)
+        if args.command == "why":
+            return command_why(args)
         if args.command == "notebooks":
             return command_notebooks(args)
         if args.command == "runs":
@@ -439,22 +433,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     prune_parser.add_argument("--dry-run", action="store_true")
 
-    asset_parser = subparsers.add_parser("asset", help="Inspect and manage versioned assets")
-    asset_subparsers = asset_parser.add_subparsers(dest="asset_command", required=True)
-    asset_subparsers.add_parser("ls", help="List assets")
-    asset_key_help = "Asset key: '<kind>:<name>' as printed by 'ginkgo asset ls', or a bare name."
-    asset_ref_help = f"{asset_key_help} Append '@<version-or-alias>' to pin a version."
-    asset_versions_parser = asset_subparsers.add_parser(
-        "versions", help="List versions of an asset"
-    )
-    asset_versions_parser.add_argument("key", help=asset_key_help)
-    asset_inspect_parser = asset_subparsers.add_parser("inspect", help="Inspect an asset record")
-    asset_inspect_parser.add_argument("ref", help=asset_ref_help)
-    asset_show_parser = asset_subparsers.add_parser(
-        "show", help="Display asset content or metadata"
-    )
-    asset_show_parser.add_argument("ref", help=asset_ref_help)
-
     env_parser = subparsers.add_parser("env", help="Manage task execution environments")
     env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)
     env_subparsers.add_parser("ls", help="List environments")
@@ -584,28 +562,9 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "--out", default=None, metavar="PATH", help="Write here instead of to stdout."
     )
 
-    lineage_parser = subparsers.add_parser(
-        "lineage", help="Trace what an asset was built from, or what came of it"
-    )
-    lineage_parser.add_argument(
-        "target",
-        help=(
-            "Asset key '<kind>:<name>' (optionally '@<version-or-alias>'), "
-            "or a materialized file path or artifact id."
-        ),
-    )
-    lineage_parser.add_argument(
-        "--downstream",
-        action="store_true",
-        help="Walk forwards to the assets derived from this one",
-    )
-    lineage_parser.add_argument(
-        "--depth", type=int, default=None, help="Stop after this many hops"
-    )
-    lineage_parser.add_argument("--json", action="store_true", help="Emit JSON")
-
-    models_parser = subparsers.add_parser("models", help="Inspect tracked ML models")
-    models_parser.add_argument("run_id", nargs="?")
+    why_parser = subparsers.add_parser("why", help="Trace which task produced a file")
+    why_parser.add_argument("target", help="A materialized file path or an artifact id.")
+    why_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     subparsers.add_parser("notebooks", help="Manage notebook workflows")
 

@@ -65,10 +65,11 @@ workflow and its runs:
 - `ginkgo query "<sql>" --json` — one read-only SQL statement over the ledger
 - `ginkgo export events <run_id>` — a finished run's events as JSONL
 - `ginkgo debug <run_id>` — task status, logs, and failure detail
+- `ginkgo why <path>` — the task and run that produced a file, and its inputs
 - `ginkgo report <run_id>` — a full HTML report of a run (see
-  [Assets and Reports](assets.md))
+  [Reports](reports.md))
 
 ## See Also
 
 - [CLI](cli.md) — the full command surface.
-- [Assets and Reports](assets.md) — inspecting workflow outputs.
+- [Reports](reports.md) — rendering a run as HTML.

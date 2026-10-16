@@ -9,10 +9,6 @@ from types import ModuleType
 from typing import Any
 
 _EXPORTS = {
-    "AssetKey": ("ginkgo.core.asset", "AssetKey"),
-    "AssetRef": ("ginkgo.core.asset", "AssetRef"),
-    "AssetResult": ("ginkgo.core.asset", "AssetResult"),
-    "AssetVersion": ("ginkgo.core.asset", "AssetVersion"),
     "ExecutionDirective": ("ginkgo.core.directive", "ExecutionDirective"),
     "Expr": ("ginkgo.core.expr", "Expr"),
     "ExprList": ("ginkgo.core.expr", "ExprList"),
@@ -28,12 +24,6 @@ _EXPORTS = {
     "SubWorkflowDirective": ("ginkgo.core.subworkflow", "SubWorkflowDirective"),
     "SubWorkflowResult": ("ginkgo.core.subworkflow", "SubWorkflowResult"),
     "TaskDef": ("ginkgo.core.task", "TaskDef"),
-    "array": ("ginkgo.core.asset", "array"),
-    "asset": ("ginkgo.core.asset", "asset"),
-    "fig": ("ginkgo.core.asset", "fig"),
-    "model": ("ginkgo.core.asset", "model"),
-    "table": ("ginkgo.core.asset", "table"),
-    "text": ("ginkgo.core.asset", "text"),
     "evaluate": ("ginkgo.runtime.evaluator", "evaluate"),
     "expand": ("ginkgo.wildcards", "expand"),
     "flatten": ("ginkgo.wildcards", "flatten"),
