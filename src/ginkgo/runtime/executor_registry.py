@@ -21,9 +21,10 @@ and GPU overflow route to the run's *default* executor, selected with
 evaluator never parses config and never constructs backends itself, and
 so unknown names fail at build time with the configured names listed.
 
-The legacy single-executor sections ``[remote.k8s]`` and ``[remote.batch]``
-are read as implicitly named executors ``k8s`` and ``batch``, which is what
-makes ``--executor k8s`` keep working unchanged.
+A ``type`` is an executor type some installed plugin contributes (see
+:mod:`ginkgo.plugins`); core's own are ``k8s`` and ``batch``. The legacy
+single-executor section ``[remote.<type>]`` is read as an implicitly named
+executor ``<type>``, which is what makes ``--executor k8s`` keep working.
 """
 
 from __future__ import annotations
@@ -33,18 +34,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ginkgo.plugins.api import ExecutorType
+from ginkgo.plugins.registry import plugin_registry
 from ginkgo.runtime.remote_executor import RemoteExecutor
-
-# Executor backend types and the config sections that define them implicitly.
-_EXECUTOR_TYPES = ("k8s", "batch")
-
-# Settings a backend cannot be constructed without, checked when the config
-# is parsed so a missing one fails before any task runs rather than at the
-# first dispatch. Backend label is for the error message.
-_REQUIRED_SETTINGS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "k8s": ("Kubernetes", ("image",)),
-    "batch": ("GCP Batch", ("project", "image")),
-}
 
 # Name reserved for "no remote executor" — the default run placement.
 LOCAL = "local"
@@ -59,7 +51,8 @@ class ExecutorSpec:
     name : str
         Executor name as written in config and in ``@task(executor=...)``.
     type : str
-        Backend type (``"k8s"`` or ``"batch"``).
+        Executor type, as an installed plugin contributes it (``"k8s"``,
+        ``"batch"``, ...).
     settings : dict[str, Any]
         Backend-specific configuration (image, namespace, project, ...),
         excluding the ``type`` key and the nested ``code`` table.
@@ -119,9 +112,10 @@ class ExecutorRegistry:
         if not isinstance(remote, dict):
             raise ValueError("[remote] must be a table")
 
+        executor_types = plugin_registry().keys(ExecutorType)
         specs: dict[str, ExecutorSpec] = {}
         # Legacy sections first so an explicit [remote.executors.k8s] wins.
-        for type_name in _EXECUTOR_TYPES:
+        for type_name in executor_types:
             section = remote.get(type_name)
             if isinstance(section, dict) and section:
                 specs[type_name] = _spec_from_table(
@@ -144,8 +138,8 @@ class ExecutorRegistry:
                     "pick a name that does not collide with local placement"
                 )
             type_name = table.get("type")
-            if not isinstance(type_name, str) or type_name not in _EXECUTOR_TYPES:
-                supported = ", ".join(_EXECUTOR_TYPES)
+            if not isinstance(type_name, str) or type_name not in executor_types:
+                supported = ", ".join(executor_types)
                 raise ValueError(f"{source} needs a type from {{{supported}}}, got {type_name!r}")
             specs[name] = _spec_from_table(
                 name=name,
@@ -300,11 +294,9 @@ class ExecutorRegistry:
     def label(self, name: str) -> str:
         """Human-readable label for a run header line."""
         spec = self.specs.get(name)
-        friendly = (
-            None if spec is None else {"k8s": "Kubernetes", "batch": "GCP Batch"}.get(spec.type)
-        )
-        if friendly is None:
+        if spec is None or spec.type not in plugin_registry().keys(ExecutorType):
             return name
+        friendly = plugin_registry().get(ExecutorType, spec.type).label
         return friendly if name == spec.type else f"{name} ({friendly})"
 
 
@@ -339,11 +331,13 @@ def _validate_settings(spec: ExecutorSpec) -> None:
     ValueError
         Naming the missing key and the config section that must set it.
     """
-    label, required = _REQUIRED_SETTINGS.get(spec.type, ("", ()))
-    for key in required:
+    if spec.type not in plugin_registry().keys(ExecutorType):
+        return
+    executor_type = plugin_registry().get(ExecutorType, spec.type)
+    for key in executor_type.required_settings:
         if not spec.settings.get(key):
             raise ValueError(
-                f"{label} executor {spec.name!r} requires a {key}. "
+                f"{executor_type.label} executor {spec.name!r} requires a {key}. "
                 f"Set {key} in {_source_hint(spec)}."
             )
 
@@ -351,55 +345,7 @@ def _validate_settings(spec: ExecutorSpec) -> None:
 def _build_executor(spec: ExecutorSpec) -> RemoteExecutor:
     """Construct the backend object for one executor spec."""
     _validate_settings(spec)
-    if spec.type == "k8s":
-        return _build_k8s_executor(spec)
-    if spec.type == "batch":
-        return _build_batch_executor(spec)
-    raise ValueError(f"executor {spec.name!r} has no buildable backend type {spec.type!r}")
-
-
-def _build_k8s_executor(spec: ExecutorSpec) -> RemoteExecutor:
-    """Construct a ``KubernetesExecutor`` from an executor spec."""
-    from ginkgo.remote.kubernetes import KubernetesExecutor
-
-    config = spec.settings
-    return KubernetesExecutor(
-        namespace=config.get("namespace", "default"),
-        image=config["image"],
-        service_account=config.get("service_account"),
-        pull_policy=config.get("pull_policy", "IfNotPresent"),
-        gpu_type=config.get("gpu_type"),
-        node_selector=config.get("node_selector"),
-        tolerations=config.get("tolerations"),
-        ttl_seconds_after_finished=int(config.get("ttl_seconds_after_finished", 3600)),
-        unschedulable_timeout=float(config.get("unschedulable_timeout", 300.0)),
-        ephemeral_storage=config.get("ephemeral_storage", "10Gi"),
-        backoff_limit=int(config.get("backoff_limit", 2)),
-        fuse_image=config.get("fuse_image"),
-        fuse_annotations=config.get("fuse_annotations"),
-        fuse_privileged=bool(config.get("fuse_privileged", False)),
-    )
-
-
-def _build_batch_executor(spec: ExecutorSpec) -> RemoteExecutor:
-    """Construct a ``GCPBatchExecutor`` from an executor spec."""
-    from ginkgo.remote.gcp_batch import GCPBatchExecutor
-
-    config = spec.settings
-    project = config["project"]
-    image = config["image"]
-
-    return GCPBatchExecutor(
-        project=project,
-        region=config.get("region", "europe-west2"),
-        image=image,
-        service_account=config.get("service_account"),
-        gpu_type=config.get("gpu_type"),
-        gpu_driver_version=config.get("gpu_driver_version", "LATEST"),
-        max_run_duration=config.get("max_run_duration", "3600s"),
-        fuse_image=config.get("fuse_image"),
-        fuse_privileged=bool(config.get("fuse_privileged", False)),
-    )
+    return plugin_registry().get(ExecutorType, spec.type).build(spec.settings)
 
 
 def _source_hint(spec: ExecutorSpec) -> str:

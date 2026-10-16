@@ -156,7 +156,7 @@ class TestResolveBackend:
         assert backend._profile == "uk"
 
     def test_unsupported_scheme_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(ValueError, match="No installed plugin provides object store"):
             resolve_backend("ftp")
 
 

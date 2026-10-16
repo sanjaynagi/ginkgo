@@ -56,6 +56,11 @@ at the nearest `ginkgo.toml`.
   its cache key, and the inputs that task recorded. Add `--json` for a
   structured payload. See [Querying Provenance](querying-provenance.md).
 
+`ginkgo plugins`
+: List the installed plugins and what each contributes: executor types,
+  object stores, FUSE drivers, secret backends and run notifications. Add
+  `--json` for a structured payload.
+
 `ginkgo notebooks`
 : List the rendered notebook HTML artifacts produced by runs.
 

@@ -9,6 +9,8 @@ from typing import Any, Protocol
 
 from ginkgo.core.secret import SecretRef
 from ginkgo.errors import GinkgoError
+from ginkgo.plugins.api import SecretBackendType
+from ginkgo.plugins.registry import plugin_registry
 
 
 class SecretResolutionError(GinkgoError, RuntimeError):
@@ -81,7 +83,27 @@ def build_secret_resolver(
     config: Mapping[str, Any] | None,
     environ: Mapping[str, str],
 ) -> SecretResolver:
-    """Build a resolver from project config and process environment."""
+    """Build a resolver with every secret backend the installed plugins provide."""
+    return SecretResolver(
+        backends={
+            backend_type.name: backend_type.build(
+                project_root=project_root, config=config, environ=environ
+            )
+            for backend_type in plugin_registry().all(SecretBackendType)
+        }
+    )
+
+
+def build_env_backends(
+    *,
+    project_root: Path,
+    config: Mapping[str, Any] | None,
+    environ: Mapping[str, str],
+) -> tuple[SecretBackend, ...]:
+    """Return the ``env`` backend chain: the process environment, then ``.env``.
+
+    The ``.env`` file is consulted only when ``[secrets.dotenv]`` enables it.
+    """
     secrets_config = config.get("secrets", {}) if isinstance(config, Mapping) else {}
     dotenv_config = secrets_config.get("dotenv", {}) if isinstance(secrets_config, Mapping) else {}
 
@@ -89,8 +111,7 @@ def build_secret_resolver(
     if _dotenv_enabled(dotenv_config):
         dotenv_path = _dotenv_path(project_root=project_root, dotenv_config=dotenv_config)
         env_chain.append(DotenvSecretBackend(values=_load_dotenv(path=dotenv_path)))
-
-    return SecretResolver(backends={"env": tuple(env_chain)})
+    return tuple(env_chain)
 
 
 def collect_secret_refs(value: Any) -> set[SecretRef]:

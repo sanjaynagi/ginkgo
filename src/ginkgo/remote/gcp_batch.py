@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -336,3 +337,18 @@ class GCPBatchJobHandle:
         # Format: projects/{project}/locations/{region}/jobs/{job_id}
         parts = self.job_name.split("/")
         return parts[1] if len(parts) >= 2 else ""
+
+
+def build_gcp_batch_executor(settings: Mapping[str, Any]) -> GCPBatchExecutor:
+    """Construct a ``GCPBatchExecutor`` from an executor table's settings."""
+    return GCPBatchExecutor(
+        project=settings["project"],
+        region=settings.get("region", "europe-west2"),
+        image=settings["image"],
+        service_account=settings.get("service_account"),
+        gpu_type=settings.get("gpu_type"),
+        gpu_driver_version=settings.get("gpu_driver_version", "LATEST"),
+        max_run_duration=settings.get("max_run_duration", "3600s"),
+        fuse_image=settings.get("fuse_image"),
+        fuse_privileged=bool(settings.get("fuse_privileged", False)),
+    )

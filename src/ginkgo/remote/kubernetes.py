@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -480,3 +481,23 @@ class KubernetesJobHandle:
             return resp.read().decode("utf-8", errors="replace")
         except Exception:
             return ""
+
+
+def build_kubernetes_executor(settings: Mapping[str, Any]) -> KubernetesExecutor:
+    """Construct a ``KubernetesExecutor`` from an executor table's settings."""
+    return KubernetesExecutor(
+        namespace=settings.get("namespace", "default"),
+        image=settings["image"],
+        service_account=settings.get("service_account"),
+        pull_policy=settings.get("pull_policy", "IfNotPresent"),
+        gpu_type=settings.get("gpu_type"),
+        node_selector=settings.get("node_selector"),
+        tolerations=settings.get("tolerations"),
+        ttl_seconds_after_finished=int(settings.get("ttl_seconds_after_finished", 3600)),
+        unschedulable_timeout=float(settings.get("unschedulable_timeout", 300.0)),
+        ephemeral_storage=settings.get("ephemeral_storage", "10Gi"),
+        backoff_limit=int(settings.get("backoff_limit", 2)),
+        fuse_image=settings.get("fuse_image"),
+        fuse_annotations=settings.get("fuse_annotations"),
+        fuse_privileged=bool(settings.get("fuse_privileged", False)),
+    )

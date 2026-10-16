@@ -15,6 +15,10 @@ ginkgo/
 ├── workspace_layout.py   # the .ginkgo/ directory convention
 ├── errors.py             # error taxonomy and user-code failure location
 ├── formatting.py         # value formatters shared by read-only presenters
+├── plugins/
+│   ├── api.py            # Plugin and the extension-point specs
+│   ├── registry.py       # entry-point discovery and lookup
+│   └── builtin.py        # core's own contributions
 ├── core/
 │   ├── directive.py      # ExecutionDirective base type
 │   ├── expr.py

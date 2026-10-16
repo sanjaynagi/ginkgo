@@ -9,6 +9,8 @@ import sys
 
 from rich.markup import escape
 
+from ginkgo.plugins.api import ExecutorType
+from ginkgo.plugins.registry import plugin_registry
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
@@ -187,7 +189,7 @@ def _extract_executor_configs(*, config: dict) -> dict[str, dict]:
     if not isinstance(remote, dict):
         return {}
     sections: dict[str, dict] = {}
-    for type_name in ("k8s", "batch"):
+    for type_name in plugin_registry().keys(ExecutorType):
         section = remote.get(type_name)
         if isinstance(section, dict):
             sections[f"[remote.{type_name}]"] = section

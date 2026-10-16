@@ -69,6 +69,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Provenance and Run State](provenance.md) — how a run is recorded, the read model, and the on-disk run layout.
 - [Provenance Store](store.md) — the SQLite ledger and its projections: schema, pragmas, migrations, `ginkgo db`.
 - [CLI](cli.md) — available commands and capabilities.
+- [Plugins](plugins.md) — the plugin registry, its extension points, discovery, and the dispatch sites that use it.
 - [Remote Execution](remote-execution.md) — `RemoteExecutor` protocol, Kubernetes and GCP Batch executors, remote worker, code sync, GCS backend, infrastructure scripts.
 - [Remote Input Access](remote-input-access.md) — staged vs FUSE-mounted access strategies, per-input policy resolution, mount lifecycle, pod security, fallback semantics.
 - [Agent Operability](agent-operability.md) — runtime event protocol, agent-mode output, structured inspection/diagnostics, Slack notifications.
