@@ -321,62 +321,8 @@ in the catalog. `<ref>` additionally accepts `@<version-or-alias>`, as in
 `ginkgo asset show table:sites/forest/trend@<version-id>`; without it you get
 the latest version.
 
-## HTML Reports
-
-`ginkgo report` renders a **completed** run (status `succeeded`, `failed` or
-`cancelled`) as an HTML report. By default this produces a directory bundle
-(`index.html` plus an `assets/` folder); pass `--single-file` to emit a single
-self-contained HTML file instead. Running or pending runs are rejected with an
-error.
-
-```bash
-ginkgo report                   # the most recent run
-ginkgo report <run_id> --open   # a specific run, opened in the browser
-```
-
-The report includes the run summary, the task graph, per-task status and
-timing, failure detail with log tails, asset previews (tables, figures, model
-metrics), and links to rendered notebooks. By default it is written to
-`.ginkgo/reports/<run-id>/`.
-
-Every asset card carries a fragment id built from its key, so a single figure
-or table can be linked directly: `table:sales/by-region` renders at
-`#asset-table-sales-by-region`. A `#` beside the asset name navigates to that
-fragment, leaving the URL to share in the address bar. It appears when you
-hover the card, or stays visible where there is no pointer to hover with.
-
-The task ledger's **Peak RSS** column shows each task's measured peak memory
-against what it declared (`3.2 GiB / 16 GiB`), or the measured figure alone
-when the task declared no `memory`. It reads an em dash for tasks that never
-ran or were served from cache. See [Measured Usage](resources.md#measured-usage).
-
-Useful flags:
-
-- `--single-file` — emit one HTML file with CSS, fonts, figures, and log files
-  inlined as data URIs; easy to share or attach. Notebook iframes are not
-  inlined and remain as relative references. A small `.ginkgo-report.json`
-  marker is written beside it so the directory can be re-rendered; the HTML
-  itself is self-contained and can be shared on its own.
-- `--out <dir>` — write the report bundle somewhere other than the default. The
-  directory must be empty, missing, or hold an earlier ginkgo report; otherwise
-  the command stops and changes nothing. The default destination always
-  re-renders.
-- `--force` — replace the contents of an `--out` directory that holds files
-  ginkgo did not write.
-- `--open` / `--no-open` — open (or do not open) the report in a browser when
-  the build finishes.
-- `--embed-full-assets` — copy artifact bytes into the bundle alongside the
-  rendered previews. Only applies to assets stored as single files; directory-
-  backed artifacts (e.g. zarr stores) are excluded.
-- `--max-log-lines N` — control how many log lines are shown per failed task
-  (default 80).
-
-To list just the rendered notebook artifacts produced by runs, use
-`ginkgo notebooks`.
-
 ## See Also
 
-- [Tasks and Flows](tasks-and-flows.md) — notebook tasks render to HTML and
-  appear in reports.
+- [Reports](reports.md) — rendering a finished run as HTML.
 - [Caching and Provenance](caching-and-provenance.md) — how run outputs are
   stored and reused.

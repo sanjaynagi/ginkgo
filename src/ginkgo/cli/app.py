@@ -627,12 +627,7 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     report_parser.add_argument(
         "--single-file",
         action="store_true",
-        help="Emit one HTML file with CSS, fonts, and figures inlined as data URIs.",
-    )
-    report_parser.add_argument(
-        "--embed-full-assets",
-        action="store_true",
-        help="Copy full artifact bytes into the bundle alongside the rendered previews.",
+        help="Emit one HTML file with CSS, fonts, and script inlined.",
     )
     report_parser.add_argument(
         "--max-log-lines",

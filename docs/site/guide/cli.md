@@ -45,7 +45,7 @@ at the nearest `ginkgo.toml`.
 : Render a finished run as an HTML report. By default this produces a
   directory bundle (`index.html` plus an `assets/` folder); pass
   `--single-file` for a single self-contained HTML file. See
-  [Assets and Reports](assets.md).
+  [Reports](reports.md).
 
 `ginkgo cache`
 : List, clear, and prune cached task results. See

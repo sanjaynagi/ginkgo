@@ -677,14 +677,11 @@ ginkgo report <run_id> --open   # a specific run, opened in the browser
 
 The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
-with log tails, asset previews (tables, figures, arrays, text, model metrics)
-with any check outcomes, and links to rendered notebooks. By default it is
-written as a directory bundle at `.ginkgo/reports/<run-id>/` that you can open or
-share. Useful flags: `--single-file` (inline CSS, fonts, figures, and logs into
-one file), `--out <dir>`, `--embed-full-assets` (copy single-file artifact bytes
-into the bundle; directory-backed artifacts such as zarr are excluded),
-`--max-log-lines N` (default 80), and `--open`/`--no-open`. To list rendered
-notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
+with log tails, and links to rendered notebooks. By default it is written as a
+directory bundle at `.ginkgo/reports/<run-id>/` that you can open or share.
+Useful flags: `--single-file` (inline CSS, fonts and script into one file),
+`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. To
+list rendered notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
 
 ## Failures And Retries
 

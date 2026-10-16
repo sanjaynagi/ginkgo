@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import re
 from datetime import UTC, datetime
@@ -15,14 +14,10 @@ import pytest
 
 from ginkgo.cli import main
 from ginkgo.cli.commands.report import _resolve_output_dir
-from ginkgo.core.asset import AssetKey, make_asset_version
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.reporting import SizingPolicy, build_report_data, export_report
 from ginkgo.reporting.render import _MARKER_NAME
-from ginkgo.reporting.sizing import build_log_tail, build_table_preview
-from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.artifacts.asset_store import AssetStore
+from ginkgo.reporting.sizing import build_log_tail
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
     RunResourcesSampled,
@@ -48,7 +43,6 @@ class _Run:
     tmp_path: Path
     status: str = "success"
     error: str | None = None
-    assets: list[dict[str, Any]] = field(default_factory=list)
     _finished: bool = False
 
     @property
@@ -58,18 +52,6 @@ class _Run:
     @property
     def run_dir(self) -> Path:
         return self.ledger.path
-
-    def add_asset(self, rendered: dict[str, Any], *, append: bool) -> None:
-        """Attach one materialised asset to the run's first task."""
-        self.assets = [*self.assets, rendered] if append else [rendered]
-        self.ledger.bus.emit(
-            TaskAnnotated(
-                run_id=self.run_id,
-                task_id="task_0000",
-                task_name="demo.first",
-                fields={"assets": list(self.assets)},
-            )
-        )
 
     def summary(self) -> RunSummary:
         if not self._finished:
@@ -85,7 +67,7 @@ def _make_run(
     fail: bool,
     cached: bool = False,
 ) -> _Run:
-    """Build a minimal terminal run with a registered asset.
+    """Build a minimal terminal two-task run.
 
     ``cached`` records both tasks as cache hits instead of fresh executions,
     which is how a re-run of an unchanged workflow reaches the report.
@@ -198,7 +180,6 @@ def _make_run(
         )
     )
 
-    _register_asset(run=run)
     return run
 
 
@@ -260,64 +241,6 @@ def _make_notebook_run(
     return _Run(ledger=ledger, tmp_path=tmp_path)
 
 
-def _register_asset(
-    *,
-    run: _Run,
-    name: str = "demo/output",
-    text: str = "alpha\nbeta\ngamma\n",
-    namespace: str = "file",
-    suffix: str = ".txt",
-    group: str | None = None,
-    caption: str | None = None,
-    checks: list[dict[str, bool | str]] | None = None,
-    append: bool = False,
-) -> None:
-    """Register an asset and record it against the run's first task.
-
-    ``namespace`` and ``suffix`` pick the asset kind and the stored artifact's
-    extension — ``namespace="fig", suffix=".svg"`` registers a figure.
-    """
-    tmp_path = run.tmp_path
-    index = CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db")
-    asset_store = AssetStore.attached_to(index)
-    artifact_store = LocalArtifactStore(
-        root=tmp_path / ".ginkgo" / "artifacts",
-        index=index,
-    )
-    source = tmp_path / f"{name.replace('/', '_')}{suffix}"
-    source.write_text(text, encoding="utf-8")
-    record = artifact_store.store(src_path=source)
-    metadata = {"stage": "demo"}
-    if group is not None:
-        metadata["ginkgo_group"] = group
-    if caption is not None:
-        metadata["ginkgo_caption"] = caption
-    if checks is not None:
-        metadata["ginkgo_checks"] = checks
-    version = make_asset_version(
-        key=AssetKey(namespace=namespace, name=name),
-        kind=namespace,
-        artifact_id=record.artifact_id,
-        content_hash=record.digest_hex,
-        run_id=run.run_id,
-        producer_task="demo.first",
-        metadata=metadata,
-    )
-    asset_store.register_version(version=version)
-    run.add_asset(
-        {
-            "asset_key": str(version.key),
-            "version_id": version.version_id,
-            "artifact_id": version.artifact_id,
-            "name": version.key.name,
-            "namespace": version.key.namespace,
-            "kind": namespace,
-            "metadata": dict(version.metadata),
-        },
-        append=append,
-    )
-
-
 # ----- Formatting --------------------------------------------------------
 
 
@@ -363,17 +286,6 @@ class TestSizing:
     def test_log_tail_missing(self) -> None:
         assert build_log_tail(path=None, policy=SizingPolicy()) is None
 
-    def test_table_preview_csv(self, tmp_path: Path) -> None:
-        csv_path = tmp_path / "data.csv"
-        csv_path.write_text("a,b\n1,2\n3,4\n5,6\n", encoding="utf-8")
-        preview = build_table_preview(
-            path=csv_path, extension=".csv", policy=SizingPolicy(table_rows=2)
-        )
-        assert preview is not None
-        assert preview.columns == ("a", "b")
-        assert preview.shown_rows == 2
-        assert preview.truncated is True
-
 
 # ----- ReportData --------------------------------------------------------
 
@@ -407,109 +319,12 @@ class TestReportData:
         assert not any(task.failed for task in report.tasks)
         # Summary cards present.
         labels = [card.label for card in report.summary_cards]
-        assert labels == ["Tasks", "Failures", "Assets", "Cache hits"]
-        # Asset card surfaced.
-        assert len(report.assets) == 1
-        assert report.assets[0].title == "Ungrouped assets"
-        assert report.assets[0].cards[0].asset_key == "file:demo/output"
+        assert labels == ["Tasks", "Failures", "Cache hits"]
         # Masthead KV includes the status pill row.
         status_entries = [kv for kv in report.masthead_kv if kv.key == "status"]
         assert len(status_entries) == 1
 
-    def test_asset_checks_are_exposed_on_cards(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/checked",
-            checks=[{"name": "has_rows", "passed": True}],
-            append=True,
-        )
-
-        report = build_report_data(summary=run.summary())
-        checked_card = next(
-            card
-            for section in report.assets
-            for card in section.cards
-            if card.name == "demo/checked"
-        )
-
-        assert checked_card.checks[0].name == "has_rows"
-        assert checked_card.checks[0].passed is True
-
-    def test_grouped_assets_render_in_named_sections(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/qc-a",
-            text="qc a\n",
-            group="QC metrics",
-            caption="Variant counts after QC filtering",
-            append=True,
-        )
-        _register_asset(
-            run=run,
-            name="demo/qc-b",
-            text="qc b\n",
-            group="QC metrics",
-            append=True,
-        )
-
-        report = build_report_data(summary=run.summary())
-
-        assert [section.title for section in report.assets] == [
-            "Ungrouped assets",
-            "QC metrics",
-        ]
-        assert [card.asset_key for card in report.assets[1].cards] == [
-            "file:demo/qc-a",
-            "file:demo/qc-b",
-        ]
-        assert report.assets[1].cards[0].caption == "Variant counts after QC filtering"
-        assert report.assets[1].cards[1].caption is None
-        asset_card = next(card for card in report.summary_cards if card.label == "Assets")
-        assert asset_card.value == "3"
-
-    def test_asset_cards_carry_anchors_derived_from_their_key(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-
-        report = build_report_data(summary=run.summary())
-
-        assert report.assets[0].cards[0].anchor == "asset-file-demo-output"
-
-    def test_assets_sharing_a_slug_get_distinct_stable_anchors(self, tmp_path: Path) -> None:
-        # "pca plot" and "pca-plot" reduce to the same slug; the ids must still
-        # address one card each, and pick the same one on every re-render. The
-        # suffix carries a doubled hyphen so it cannot take the id that
-        # "pca-plot-2" — a key no other key collides with — claims for itself.
-        run = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-        for name in ("demo/pca plot", "demo/pca-plot", "demo/pca-plot-2"):
-            _register_asset(
-                run=run,
-                name=name,
-                text=f"{name}\n",
-                append=True,
-            )
-
-        anchors = [
-            (card.asset_key, card.anchor)
-            for section in build_report_data(summary=run.summary()).assets
-            for card in section.cards
-        ]
-
-        assert dict(anchors) == {
-            "file:demo/output": "asset-file-demo-output",
-            "file:demo/pca plot": "asset-file-demo-pca-plot",
-            "file:demo/pca-plot": "asset-file-demo-pca-plot--2",
-            "file:demo/pca-plot-2": "asset-file-demo-pca-plot-2",
-        }
-        rebuilt = [
-            (card.asset_key, card.anchor)
-            for section in build_report_data(summary=run.summary()).assets
-            for card in section.cards
-        ]
-        assert rebuilt == anchors
-
-    def test_cached_run_reports_the_same_assets_and_sections(self, tmp_path: Path) -> None:
+    def test_cached_run_reports_the_same_sections(self, tmp_path: Path) -> None:
         # A re-run that hits cache for every task must present exactly what the
         # executed run did; only the cache labels differ.
         executed = build_report_data(
@@ -528,14 +343,6 @@ class TestReportData:
         assert [task.status_label for task in cached.tasks] == ["cached", "cached"]
         assert cached.has_failures is False
 
-        def asset_keys(report) -> list[tuple[str, str]]:  # noqa: ANN001
-            return [
-                (section.title, card.asset_key)
-                for section in report.assets
-                for card in section.cards
-            ]
-
-        assert asset_keys(cached) == asset_keys(executed)
         assert [(s.anchor, s.number, s.title) for s in cached.sections] == [
             (s.anchor, s.number, s.title) for s in executed.sections
         ]
@@ -555,8 +362,7 @@ class TestReportData:
             ("02", "params"),
             ("03", "graph"),
             ("04", "tasks"),
-            ("05", "assets"),
-            ("06", "env"),
+            ("05", "env"),
         ]
         # The failure section takes 05, pushing everything after it along.
         assert [(s.number, s.anchor) for s in failed.sections] == [
@@ -565,20 +371,16 @@ class TestReportData:
             ("03", "graph"),
             ("04", "tasks"),
             ("05", "failure"),
-            ("06", "assets"),
-            ("07", "env"),
+            ("06", "env"),
         ]
-        assert [group.label for group in clean.section_groups] == [
-            "Execution",
-            "Results",
-            "Appendix",
-        ]
+        # Results holds only notebooks, so a run without one drops the group.
+        assert [group.label for group in clean.section_groups] == ["Execution", "Appendix"]
 
     def test_section_lookup_rejects_an_unrendered_anchor(self, tmp_path: Path) -> None:
         report = build_report_data(
             summary=_make_run(tmp_path=tmp_path, run_id="run-ok", fail=False).summary()
         )
-        assert report.section("assets").title == "Assets"
+        assert report.section("tasks").title == "Tasks"
         with pytest.raises(KeyError, match="notebooks"):
             report.section("notebooks")
 
@@ -641,21 +443,6 @@ class TestReportData:
 
 
 class TestExport:
-    def test_bundle_mode_renders_asset_check_badges(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-checks", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/checked",
-            checks=[{"name": "has_rows", "passed": True}],
-            append=True,
-        )
-
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
-        html = result.index_path.read_text(encoding="utf-8")
-
-        assert "has_rows" in html
-        assert "check-pass" in html
-
     def test_bundle_mode_writes_index_and_assets(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
@@ -673,39 +460,6 @@ class TestExport:
         assert "01</span>Summary" in html
         assert "first" in html
         assert "second" in html
-        assert "<h3>Ungrouped assets</h3>" in html
-
-    def test_bundle_mode_renders_grouped_asset_sections(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/qc",
-            text="qc\n",
-            group="QC metrics",
-            caption="Variant counts after QC filtering",
-            append=True,
-        )
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
-
-        html = result.index_path.read_text(encoding="utf-8")
-        assert "<h3>Ungrouped assets</h3>" in html
-        assert "<h3>QC metrics</h3>" in html
-        assert "Variant counts after QC filtering" in html
-
-    def test_bundle_mode_renders_asset_anchor_ids_and_links(self, tmp_path: Path) -> None:
-        run = _make_run(tmp_path=tmp_path, run_id="run-assets", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/pca plot",
-            text="pca\n",
-            append=True,
-        )
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
-
-        html = result.index_path.read_text(encoding="utf-8")
-        assert '<div class="asset" id="asset-file-demo-output">' in html
-        assert '<div class="asset" id="asset-file-demo-pca-plot">' in html
-        assert 'href="#asset-file-demo-pca-plot"' in html
 
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
@@ -733,8 +487,8 @@ class TestExport:
         assert "data:font/woff2;base64," in html
 
     def test_rendered_section_numerals_are_contiguous(self, tmp_path: Path) -> None:
-        # A run with no failures and no notebooks renders six sections; the
-        # numerals must run 01..06 with no hole where an omitted section sat.
+        # A run with no failures and no notebooks renders five sections; the
+        # numerals must run 01..05 with no hole where an omitted section sat.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
@@ -743,7 +497,7 @@ class TestExport:
         headings = re.findall(r'<span class="num">(\d+)</span>', html)
         sidebar = re.findall(r'<span class="idx">(\d+)</span>', html)
 
-        assert headings == ["01", "02", "03", "04", "05", "06"]
+        assert headings == ["01", "02", "03", "04", "05"]
         assert sidebar == headings
 
     def test_rendered_section_numerals_include_the_failure_section(self, tmp_path: Path) -> None:
@@ -758,7 +512,6 @@ class TestExport:
             "04",
             "05",
             "06",
-            "07",
         ]
         assert '<span class="num">05</span>Failure' in html
 
@@ -767,7 +520,7 @@ class TestExport:
         result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
-        assert '<span class="num">06</span>Notebooks' in html
+        assert '<span class="num">05</span>Notebooks' in html
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
             "01",
             "02",
@@ -775,31 +528,7 @@ class TestExport:
             "04",
             "05",
             "06",
-            "07",
         ]
-
-    def test_single_file_inlines_figures_with_an_image_mime_type(self, tmp_path: Path) -> None:
-        # The MIME type comes from the bundle path (which, like the CAS
-        # source filename since #231, carries the record's extension). A
-        # generic octet-stream URI renders only by browser content sniffing
-        # and breaks under a strict CSP.
-        run = _make_run(tmp_path=tmp_path, run_id="run-fig", fail=False)
-        _register_asset(
-            run=run,
-            name="demo/figure",
-            text='<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>',
-            namespace="fig",
-            suffix=".svg",
-            append=True,
-        )
-
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "sf", single_file=True)
-        html = result.index_path.read_text(encoding="utf-8")
-
-        figure_uris = re.findall(r'<img src="data:([^;]+);base64,', html)
-        assert figure_uris, "expected the figure to be inlined as a data URI"
-        assert all(mime.startswith("image/") for mime in figure_uris), figure_uris
-        assert "data:application/octet-stream" not in html
 
     def test_no_network_references_in_rendered_html(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

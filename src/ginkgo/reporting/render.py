@@ -2,8 +2,8 @@
 
 The default output is a directory bundle containing ``index.html``, the
 stylesheet, bundled fonts, a small islands JS module, and copied artifacts
-(figures, notebook HTML, log files). ``single_file=True`` produces one
-self-contained HTML document with all assets inlined as data URIs.
+(notebook HTML, log files). ``single_file=True`` produces one HTML document
+with the stylesheet, fonts and script inlined.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ def export_report(
     summary: RunSummary,
     out_dir: Path,
     workspace_label: str | None = None,
-    artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     single_file: bool = False,
     managed_destination: bool = False,
@@ -61,17 +60,14 @@ def export_report(
     out_dir : Path
         Destination directory. For the default bundle, the report is
         written inside this directory. For ``single_file``, the HTML is
-        written at ``out_dir / "index.html"`` with assets inlined.
+        written at ``out_dir / "index.html"`` with its stylesheet, fonts
+        and script inlined.
     workspace_label : str | None
         Label for the workspace header. Inferred when omitted.
-    artifacts_root : Path | None
-        Override for the artifact store root. Inferred from the run directory
-        when omitted.
     policy : SizingPolicy | None
-        Per-kind preview caps.
+        Size caps applied at export time.
     single_file : bool
-        When True, emit one HTML file with CSS, fonts, figures, and logs
-        inlined as data URIs.
+        When True, emit one HTML file with CSS, fonts, and script inlined.
     managed_destination : bool
         Set when ``out_dir`` is a path ginkgo derived rather than one a user
         chose — the managed ``.ginkgo/reports/<run-id>/`` directory. Such a
@@ -95,7 +91,6 @@ def export_report(
     report = build_report_data(
         summary=summary,
         workspace_label=workspace_label,
-        artifacts_root=artifacts_root,
         policy=policy,
     )
     out_dir = Path(out_dir)
@@ -127,8 +122,6 @@ def _render_bundle(*, report: ReportData, out_dir: Path) -> Path:
         logo_src="assets/images/ginkgo-leaf.png",
         inline_css=None,
         inline_islands=None,
-        image_inliner=None,
-        log_inliner=None,
     )
     index_path = out_dir / "index.html"
     index_path.write_text(html, encoding="utf-8")
@@ -166,7 +159,7 @@ def _copy_static(*, out_dir: Path) -> None:
 
 
 def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
-    """Copy figure / notebook / log artifacts declared by the report."""
+    """Copy the notebook and log artifacts declared by the report."""
     for copy in report.artifact_copies:
         dest = out_dir / copy.dest_relpath
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -177,33 +170,13 @@ def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
 
 
 def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
-    """Render a single HTML file with assets inlined as data URIs."""
+    """Render a single HTML file with its stylesheet, fonts and script inlined."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     css_text = _load_text(_STATIC_DIR / "report.css")
     islands_text = _load_text(_STATIC_DIR / "islands.js")
 
     css_text = _inline_font_urls(css_text=css_text)
-
-    copies_by_relpath: dict[str, Path] = {
-        copy.dest_relpath: copy.source for copy in report.artifact_copies
-    }
-
-    def image_inliner(relpath: str) -> str:
-        source = copies_by_relpath.get(relpath)
-        if source is None or not source.is_file():
-            return relpath
-        # The type comes from the bundle path: it always carries the
-        # artifact's extension, whether or not the CAS source filename
-        # does (older stores wrote extensionless blobs).
-        return _data_uri(source, mime=mimetypes.guess_type(relpath)[0])
-
-    def log_inliner(relpath: str) -> str:
-        source = copies_by_relpath.get(relpath)
-        if source is None or not source.is_file():
-            return relpath
-        mime = "text/plain"
-        return _data_uri(source, mime=mime)
 
     logo_path = _STATIC_DIR / "images" / "ginkgo-leaf.png"
     logo_src = _data_uri(logo_path) if logo_path.is_file() else None
@@ -217,8 +190,6 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
         logo_src=logo_src,
         inline_css=css_text,
         inline_islands=islands_text,
-        image_inliner=image_inliner,
-        log_inliner=log_inliner,
     )
     out_path.write_text(html, encoding="utf-8")
     return out_path

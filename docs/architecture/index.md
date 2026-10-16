@@ -65,7 +65,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Task Model](task-model.md) — Python, shell, notebook, and script task kinds; path-oriented special types.
 - [Caching](caching.md) — cache keying, hashing, artifact store, and cache maintenance.
 - [Assets](assets.md) — asset catalog, wrapped asset sentinels (`table`/`array`/`fig`/`text`/`model`), and live-payload rehydration.
-- [Reporting](reporting.md) — static HTML report export, typed report data, asset previews, and bundle layout.
+- [Reporting](reporting.md) — static HTML report export, typed report data, and bundle layout.
 - [Value Transport](value-transport.md) — codec layer for cross-process task inputs/outputs.
 - [Configuration, Parameters, and Secrets](config-secrets.md) — config layering, `ginkgo.param` declarations and resolution, secret references, resolvers, and redaction.
 - [Provenance and Run State](provenance.md) — how a run is recorded, the read model, and the on-disk run layout.

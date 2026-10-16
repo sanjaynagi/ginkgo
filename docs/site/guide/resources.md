@@ -91,7 +91,7 @@ need to size the retry.
 `ginkgo report` surfaces it as a **Peak RSS** column in the task ledger
 (`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo runs show --json`
 includes the raw `resource_usage` record per task. See
-[Assets and Reports](assets.md#html-reports).
+[Reports](reports.md).
 
 ### Across Runs
 
@@ -266,5 +266,5 @@ and `on_failure="ignore"` on the one task whose failure you expect.
   GCP Batch.
 - [CLI](cli.md) &mdash; the `--jobs`, `--cores`, `--memory`, `--gpus`, and
   `--resource` run budgets.
-- [Assets and Reports](assets.md#html-reports) &mdash; the Peak RSS column in
+- [Reports](reports.md) &mdash; the Peak RSS column in
   `ginkgo report`.
