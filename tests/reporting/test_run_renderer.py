@@ -443,7 +443,7 @@ def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:
 def test_evaluator_reports_a_failed_environment_preparation() -> None:
     """A prepare failure must close the window it opened on the event stream."""
     from ginkgo.envs.pixi import PixiEnvPrepareError
-    from ginkgo.runtime.backend import LocalEnvironment
+    from ginkgo.envs.pixi import PixiEnvironment
     from ginkgo.runtime.evaluator import ConcurrentEvaluator
     from ginkgo.runtime.events import EventBus
 
@@ -452,7 +452,7 @@ def test_evaluator_reports_a_failed_environment_preparation() -> None:
     bus.subscribe(events.append)
 
     evaluator = ConcurrentEvaluator(
-        backend=LocalEnvironment(pixi_registry=_FailingPixiRegistry(project_root=_TESTS_DIR)),
+        backend=PixiEnvironment(pixi_registry=_FailingPixiRegistry(project_root=_TESTS_DIR)),
         event_bus=bus,
     )
     with pytest.raises(PixiEnvPrepareError):

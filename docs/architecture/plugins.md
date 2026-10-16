@@ -17,6 +17,7 @@ contributions — and one frozen spec dataclass per extension point:
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(*, project_root, config, environ) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
+| `EnvironmentType` | the scheme of an `env=` value (`docker`, `oci`), or `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `label` for run tables |
 
 The set of extension points is fixed: adding one is a change to core, so each
 dispatch site stays typed and greppable. There is no generic hook mechanism.
@@ -63,6 +64,10 @@ Errors are explicit and raised at discovery or lookup:
   as a reason to fall back to staging.
 - **Secrets.** `build_secret_resolver` builds every registered backend chain,
   keyed by backend name.
+- **Environments.** `CompositeEnvironment` (`runtime/backend.py`) routes an
+  `env=` value by scheme and builds each environment on first use. Schemes
+  contributed with the same `build` share one instance. The run table labels a
+  bare name with the bare-name environment's `label` (`pixi:analysis`).
 - **Event subscribers.** `ginkgo run` builds each registered subscriber and
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
   only sees events already in the ledger.
@@ -71,7 +76,15 @@ Errors are explicit and raised at discovery or lookup:
 
 ## Not yet extension points
 
-Environment backends (Pixi, containers), task kinds, CLI commands and value
-codecs are still wired directly. URI parsing for `remote_file` /
+Task kinds, CLI commands and value codecs are still wired directly. URI parsing for `remote_file` /
 `remote_folder` (`core/remote.py`) still knows the `s3`, `oci` and `gs`
 schemes by name.
+
+## Failure classification
+
+Failure categories and doctor diagnostics are declared on the exception
+classes that need them, not by core naming those classes: `failure_kind`
+(`env_mismatch`, `shell_command_error`, `cycle_detected`,
+`serialization_error`) is read by `classify_failure`, and `diagnostic_code` /
+`diagnostic_suggestion` by `ginkgo doctor`. An exception a plugin raises
+classifies itself the same way.

@@ -10,7 +10,7 @@ import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, ClassVar, get_args, get_origin
 
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
@@ -82,6 +82,8 @@ def key_components(meta: dict[str, Any]) -> dict[str, Any]:
 
 class UnresolvedEnvIdentityError(RuntimeError):
     """Raised when a backend cannot identify an environment a task declares."""
+
+    failure_kind: ClassVar[str] = "env_mismatch"
 
     def __init__(self, *, env: str, backend: Any) -> None:
         super().__init__(

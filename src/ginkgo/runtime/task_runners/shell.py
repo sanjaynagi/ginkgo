@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock, Thread, current_thread, main_thread
 from types import FrameType
-from typing import Any, Callable, Sequence, get_origin
+from typing import Any, Callable, ClassVar, Sequence, get_origin
 
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
@@ -38,7 +38,6 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
-from ginkgo.runtime.artifacts.value_codec import CodecError
 
 
 # ----- Exceptions -----------------------------------------------------------
@@ -46,6 +45,8 @@ from ginkgo.runtime.artifacts.value_codec import CodecError
 
 class ShellTaskError(GinkgoError, RuntimeError):
     """Shell task execution failure."""
+
+    failure_kind: ClassVar[str] = "shell_command_error"
 
     def __init__(
         self,
@@ -527,53 +528,25 @@ def sanitize_exception(
 
 
 def classify_failure(*, exc: BaseException) -> dict[str, Any]:
-    """Return a structured task failure summary."""
-    # Imported lazily to avoid a hard import cycle with the notebook runner.
-    from ginkgo.envs.container import ContainerPrepareError, ContainerRuntimeNotFoundError
-    from ginkgo.envs.pixi import (
-        PixiEnvImportError,
-        PixiEnvNotFoundError,
-        PixiEnvPrepareError,
-    )
-    from ginkgo.runtime.evaluator import CycleError
-    from ginkgo.runtime.task_runners.notebook import NotebookTaskError
+    """Return a structured task failure summary.
 
+    A ginkgo error names its own category through a ``failure_kind`` class
+    attribute, so this function never imports the environment, notebook or
+    scheduler modules that raise them. Built-in exceptions are classified
+    here; anything else was raised inside a task body and is user code.
+    """
     message = str(exc)
-    if isinstance(exc, CycleError):
-        kind = "cycle_detected"
-    elif isinstance(
-        exc,
-        (
-            PixiEnvNotFoundError,
-            PixiEnvImportError,
-            PixiEnvPrepareError,
-            ContainerRuntimeNotFoundError,
-            ContainerPrepareError,
-        ),
-    ):
-        kind = "env_mismatch"
-    elif isinstance(exc, ModuleNotFoundError):
-        kind = "import_error"
+    declared = getattr(exc, "failure_kind", None)
+    if isinstance(declared, str):
+        kind = declared
     elif isinstance(exc, ImportError):
         kind = "import_error"
-    elif isinstance(exc, CodecError):
-        kind = "serialization_error"
-    elif isinstance(exc, (ShellTaskError, NotebookTaskError)):
-        kind = "shell_command_error"
     elif isinstance(exc, (IsADirectoryError, NotADirectoryError, PermissionError)):
         kind = "invalid_path"
     elif isinstance(exc, FileNotFoundError):
         kind = "missing_input" if "did not create" not in message else "output_validation_error"
     else:
-        # Anything unrecognised was raised inside a task body, so it is user code
-        # unless the class name identifies it as a framework failure.
-        exc_name = exc.__class__.__name__.lower()
-        if "env" in exc_name or "container" in exc_name:
-            kind = "env_mismatch"
-        elif "cache" in exc_name:
-            kind = "cache_error"
-        else:
-            kind = "user_code_error"
+        kind = "user_code_error"
 
     return {
         "kind": kind,

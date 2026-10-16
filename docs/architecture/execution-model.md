@@ -270,7 +270,7 @@ argument preprocessing.
 
 The evaluator dispatches work through an `ExecutionEnvironment` protocol (`runtime/backend.py`), which decouples environment resolution from the scheduling loop.
 
-**LocalEnvironment** wraps `PixiRegistry` for existing Pixi-based execution.
+**PixiEnvironment** (`envs/pixi.py`) wraps `PixiRegistry` for Pixi-based execution.
 Shell tasks may declare `env="name"` to run against a Pixi environment under
 `envs/<name>/`, where the manifest is either a `pixi.toml` or a `pyproject.toml`
 carrying a `[tool.pixi]` section (Pixi accepts both natively), or against an
@@ -296,7 +296,7 @@ Ginkgo's own computed environment — `GINKGO_THREADS`, plus the BLAS/OpenMP var
 
 `exec_failure_hint` on the `ExecutionEnvironment` protocol lets a backend diagnose a failure the raw output does not name; every driver runner asks through `ShellRunner.failure_hint`, since each raises its own error type. `ContainerBackend` uses it to identify an image that ships no `bash`, matching only on markers the runtime itself emits and on the shell as a quoted token — a shell that started and then failed on a CRLF script says "no such file or directory" too, and diagnosing that as a missing shell would cost its author more time than saying nothing.
 
-**CompositeEnvironment** routes env strings to the correct backend based on the URI scheme. Container env URIs go to `ContainerBackend`; everything else goes to `LocalEnvironment`.
+**CompositeEnvironment** routes each env string by its scheme to an environment the plugin registry provides (an `EnvironmentType`; see [Plugins](plugins.md)), building each on first use from an `EnvironmentContext`. `docker://` and `oci://` go to `ContainerBackend`, which shares one instance across both; a bare name, with no scheme, goes to `PixiEnvironment`. Each environment's `provenance_fields` say what the run records about it — `backend`, plus `container_image_digest` for containers — and a lock file from `env_lock_path` is copied into the run directory.
 
 Foreign execution environments do not support Python tasks. `env=...` is valid on shell, notebook, and script tasks only. This keeps foreign execution command-oriented and avoids requiring the Ginkgo runtime to be importable inside every target environment. This is enforced at validation time before any work starts.
 

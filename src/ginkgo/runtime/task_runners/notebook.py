@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 import yaml
 
@@ -53,6 +53,8 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 class NotebookTaskError(GinkgoError, RuntimeError):
     """Notebook task execution failure."""
+
+    failure_kind: ClassVar[str] = "shell_command_error"
 
     def __init__(
         self,

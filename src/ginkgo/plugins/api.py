@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 if TYPE_CHECKING:
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
+    from ginkgo.runtime.backend import ExecutionEnvironment
     from ginkgo.runtime.environment.secrets import SecretBackend, SecretResolver
     from ginkgo.runtime.events import GinkgoEvent
     from ginkgo.runtime.remote_executor import RemoteExecutor
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Contribution",
+    "EnvironmentContext",
+    "EnvironmentType",
     "EventSubscriber",
     "EventSubscriberContext",
     "EventSubscriberType",
@@ -210,8 +213,65 @@ class EventSubscriberType:
         return self.name
 
 
+@dataclass(frozen=True, kw_only=True)
+class EnvironmentContext:
+    """What a run hands an environment backend when building it.
+
+    Parameters
+    ----------
+    project_root : Path
+        The workflow project's root directory.
+    workflow_root : Path | None
+        Where named environment manifests are searched, when known.
+    config : Mapping[str, Any]
+        Merged runtime config; each backend reads its own table.
+    probe_registry : bool
+        Whether validation may ask image registries about missing images.
+        Only a dry run and ``ginkgo doctor`` set it.
+    """
+
+    project_root: Path
+    workflow_root: Path | None
+    config: Mapping[str, Any]
+    probe_registry: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
+class EnvironmentType:
+    """An execution environment for ``env=`` values of one URI scheme.
+
+    Parameters
+    ----------
+    scheme : str
+        The scheme of the ``env=`` value, e.g. ``"docker"`` for
+        ``"docker://image:tag"``. The empty string claims bare names with no
+        scheme, such as a Pixi environment name.
+    label : str
+        Short name for the backend in run tables, e.g. ``"pixi"``.
+    build : Callable[[EnvironmentContext], ExecutionEnvironment]
+        Construct the backend for a run. Schemes contributed with the same
+        ``build`` share one backend instance per run.
+    """
+
+    point_name: ClassVar[str] = "environment for scheme"
+
+    scheme: str
+    label: str
+    build: Callable[[EnvironmentContext], ExecutionEnvironment]
+
+    @property
+    def key(self) -> str:
+        """The lookup key: the ``env=`` scheme."""
+        return self.scheme
+
+
 Contribution = (
-    ExecutorType | ObjectStoreType | MountDriverType | SecretBackendType | EventSubscriberType
+    ExecutorType
+    | ObjectStoreType
+    | MountDriverType
+    | SecretBackendType
+    | EventSubscriberType
+    | EnvironmentType
 )
 """Every extension point a plugin can contribute to."""
 

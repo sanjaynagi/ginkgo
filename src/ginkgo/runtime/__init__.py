@@ -9,7 +9,6 @@ _EXPORTS = {
     "CodecError": ("ginkgo.runtime.artifacts.value_codec", "CodecError"),
     "CompositeEnvironment": ("ginkgo.runtime.backend", "CompositeEnvironment"),
     "ExecutionEnvironment": ("ginkgo.runtime.backend", "ExecutionEnvironment"),
-    "LocalEnvironment": ("ginkgo.runtime.backend", "LocalEnvironment"),
     "MISSING": ("ginkgo.runtime.caching.cache", "MISSING"),
     "RunDir": ("ginkgo.runtime.rundir", "RunDir"),
     "SchedulableTask": ("ginkgo.runtime.scheduler", "SchedulableTask"),

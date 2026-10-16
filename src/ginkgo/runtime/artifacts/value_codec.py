@@ -7,7 +7,7 @@ import io
 import logging
 import pickle
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, ClassVar, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -25,6 +25,8 @@ INLINE_BYTES_LIMIT = 256 * 1024
 
 class CodecError(GinkgoError, TypeError):
     """Raised when a value cannot be encoded by Ginkgo."""
+
+    failure_kind: ClassVar[str] = "serialization_error"
 
 
 def encode_value(

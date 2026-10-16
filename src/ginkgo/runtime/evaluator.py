@@ -20,7 +20,7 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
@@ -34,7 +34,6 @@ from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
-from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.edge_inference import (
     ConsumedPath,
@@ -135,6 +134,8 @@ del _unregistered
 
 class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
+
+    failure_kind: ClassVar[str] = "cycle_detected"
 
     def __init__(self, cycle: list[str]) -> None:
         self.cycle = cycle
@@ -2524,15 +2525,7 @@ class ConcurrentEvaluator:
         if node.task_def.env is None or self.backend is None:
             return
 
-        if is_container_env(node.task_def.env):
-            fields: dict[str, Any] = {"backend": "container"}
-            digest = self.backend.materialized_digest(env=node.task_def.env)
-            if digest is not None:
-                fields["container_image_digest"] = digest
-            self._annotate_task(node=node, fields=fields)
-            return
-
-        fields = {"backend": "local"}
+        fields = self.backend.provenance_fields(env=node.task_def.env)
         lock_path = self.backend.env_lock_path(env=node.task_def.env)
         if lock_path is not None and self.run_dir is not None:
             copied = self.run_dir.copy_env_lock(env_name=node.task_def.env, lock_path=lock_path)

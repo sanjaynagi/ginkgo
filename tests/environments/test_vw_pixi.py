@@ -49,9 +49,9 @@ def _make_registry() -> PixiRegistry:
 def _evaluate(expr, *, registry: PixiRegistry):
     """Evaluate an expression without importing the evaluator at module import time."""
     from ginkgo import evaluate
-    from ginkgo.runtime.backend import LocalEnvironment
+    from ginkgo.envs.pixi import PixiEnvironment
 
-    return evaluate(expr, backend=LocalEnvironment(pixi_registry=registry))
+    return evaluate(expr, backend=PixiEnvironment(pixi_registry=registry))
 
 
 def _pixi_available() -> bool:
@@ -431,7 +431,7 @@ class TestPixiShellTask:
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
-        from ginkgo.runtime.backend import LocalEnvironment
+        from ginkgo.envs.pixi import PixiEnvironment
         from ginkgo.runtime.events import EventBus, TaskCacheHit
 
         output = str(tmp_path / "sentinel.txt")
@@ -449,7 +449,7 @@ class TestPixiShellTask:
         )
 
         evaluator = ConcurrentEvaluator(
-            backend=LocalEnvironment(pixi_registry=registry),
+            backend=PixiEnvironment(pixi_registry=registry),
             event_bus=bus,
         )
         evaluator.evaluate(shell_touch(output_path=output))

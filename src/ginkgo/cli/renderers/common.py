@@ -10,7 +10,9 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.text import Text
 
 from ginkgo.cli.renderers.models import _TaskRow
-from ginkgo.envs.container import is_container_env
+from ginkgo.plugins.api import EnvironmentType
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
+from ginkgo.runtime.backend import env_scheme
 from ginkgo.formatting import format_duration
 
 
@@ -73,13 +75,20 @@ def _task_duration_plain(row: _TaskRow, *, now: float) -> str:
 def environment_label(env: str | None) -> str:
     """Return the task environment label for the CLI table.
 
-    Container envs keep their URI verbatim so the execution backend stays
-    visible; Pixi envs are prefixed to distinguish them from the ``local``
+    An env URI (``docker://...``) is shown verbatim, since its scheme already
+    names the backend. A bare name is prefixed with the label of the backend
+    that serves bare names (``pixi:analysis``), to tell it from the ``local``
     default.
     """
     if env is None:
         return "local"
-    return env if is_container_env(env) else f"pixi:{env}"
+    if env_scheme(env):
+        return env
+    try:
+        label = plugin_registry().get(EnvironmentType, "").label
+    except PluginNotFoundError:
+        return env
+    return f"{label}:{env}"
 
 
 def task_base_name(task_name: str) -> str:

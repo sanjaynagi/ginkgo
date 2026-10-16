@@ -21,8 +21,9 @@ from ginkgo.envs.container import (
     parse_container_uri,
 )
 from ginkgo.envs.mounts import mount
-from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
+from ginkgo.plugins.api import EnvironmentContext
+from ginkgo.plugins.registry import PluginNotFoundError
+from ginkgo.runtime.backend import CompositeEnvironment
 
 
 # ------------------------------------------------------------------
@@ -547,13 +548,17 @@ class TestContainerKindRestriction:
 # ------------------------------------------------------------------
 
 
+def _composite(tmp_path: Path, *, pull_policy: str | None = None) -> CompositeEnvironment:
+    """Route envs for a project at *tmp_path* through the built-in backends."""
+    config = {"container": {"pull_policy": pull_policy}} if pull_policy else {}
+    return CompositeEnvironment(
+        context=EnvironmentContext(project_root=tmp_path, workflow_root=None, config=config)
+    )
+
+
 class TestCompositeEnvironment:
     def _make_composite(self, tmp_path: Path) -> CompositeEnvironment:
-        registry = PixiRegistry(project_root=tmp_path)
-        return CompositeEnvironment(
-            local=LocalEnvironment(pixi_registry=registry),
-            container=ContainerBackend(project_root=tmp_path),
-        )
+        return _composite(tmp_path)
 
     def test_routes_container_env_to_container_backend(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
@@ -582,14 +587,16 @@ class TestCompositeEnvironment:
             # Only container envs — should pass.
             composite.validate_envs(env_names={"docker://img:1"})
 
-    def test_no_container_backend_raises_on_container_env(self, tmp_path: Path):
-        registry = PixiRegistry(project_root=tmp_path)
-        composite = CompositeEnvironment(
-            local=LocalEnvironment(pixi_registry=registry),
-            container=None,
-        )
-        with pytest.raises(RuntimeError, match="requires a container backend"):
-            composite.exec_argv(env="docker://img:1", cmd="ls")
+    def test_a_scheme_no_plugin_serves_is_refused(self, tmp_path: Path):
+        composite = self._make_composite(tmp_path)
+        with pytest.raises(PluginNotFoundError, match="environment for scheme 'singularity'"):
+            composite.exec_argv(env="singularity://img:1", cmd="ls")
+
+    def test_docker_and_oci_share_one_container_backend(self, tmp_path: Path):
+        composite = self._make_composite(tmp_path)
+        composite.env_identity(env="docker://img:1")
+        composite.env_identity(env="oci://img:1")
+        assert len(composite._built) == 1
 
     def test_env_lock_path_delegates(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
@@ -644,15 +651,7 @@ class TestContainerShellE2E:
         ):
             result = evaluate(
                 _container_shell_task(output_path=str(output_file)),
-                backend=CompositeEnvironment(
-                    local=LocalEnvironment(
-                        pixi_registry=PixiRegistry(project_root=tmp_path),
-                    ),
-                    container=ContainerBackend(
-                        project_root=tmp_path,
-                        pull_policy="never",
-                    ),
-                ),
+                backend=_composite(tmp_path, pull_policy="never"),
             )
 
         assert str(result) == str(output_file)
@@ -669,11 +668,6 @@ class TestContainerShellE2E:
 
         output_file = tmp_path / "result.txt"
         ledger = Ledger.start(root=tmp_path)
-
-        container_backend = ContainerBackend(
-            project_root=tmp_path,
-            pull_policy="never",
-        )
 
         from ginkgo.runtime.task_runners.shell import ShellRunner
 
@@ -694,12 +688,7 @@ class TestContainerShellE2E:
 
             evaluate(
                 _container_shell_task(output_path=str(output_file)),
-                backend=CompositeEnvironment(
-                    local=LocalEnvironment(
-                        pixi_registry=PixiRegistry(project_root=tmp_path),
-                    ),
-                    container=container_backend,
-                ),
+                backend=_composite(tmp_path, pull_policy="never"),
                 run_dir=ledger.run_dir,
                 event_bus=ledger.bus,
             )
@@ -731,10 +720,7 @@ class TestContainerShellE2E:
 
         store = CacheStore(
             index=CacheIndex.in_memory(),
-            backend=CompositeEnvironment(
-                local=LocalEnvironment(pixi_registry=PixiRegistry(project_root=tmp_path)),
-                container=ContainerBackend(project_root=tmp_path, pull_policy="never"),
-            ),
+            backend=_composite(tmp_path, pull_policy="never"),
         )
         resolved_args = {"output_path": str(tmp_path / "out.txt")}
 

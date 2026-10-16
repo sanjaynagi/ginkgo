@@ -18,10 +18,13 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 from ginkgo.envs.mounts import Mount, parse_extra_mount, resolve_mounts
 from ginkgo.errors import GinkgoError
+
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import EnvironmentContext
 
 
 # ------------------------------------------------------------------
@@ -87,6 +90,8 @@ def parse_container_uri(env: str) -> ContainerRef:
 class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
     """Raised when the container runtime binary is not on PATH."""
 
+    failure_kind: ClassVar[str] = "env_mismatch"
+
     def __init__(self, *, runtime: str) -> None:
         super().__init__(
             f"Container runtime {runtime!r} is not installed or not found on PATH. "
@@ -96,6 +101,8 @@ class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
 
 class ContainerPrepareError(GinkgoError, RuntimeError):
     """Raised when an image cannot be pulled."""
+
+    failure_kind: ClassVar[str] = "env_mismatch"
 
     def __init__(self, *, image: str, output: str) -> None:
         details = output.strip() or "no output from container runtime"
@@ -113,6 +120,12 @@ class ContainerImageNotFoundError(GinkgoError, RuntimeError):
     backend does not recognise never raises this — it must not block a run
     that would otherwise have succeeded.
     """
+
+    failure_kind: ClassVar[str] = "env_mismatch"
+    diagnostic_code: ClassVar[str] = "MISSING_IMAGE"
+    diagnostic_suggestion: ClassVar[str] = (
+        "Pull the image, correct its name/tag, or adjust [container] pull_policy."
+    )
 
     def __init__(self, *, image: str, reason: str) -> None:
         self.image = image
@@ -463,6 +476,14 @@ class ContainerBackend:
         """Containers have no lock file artifact."""
         return None
 
+    def provenance_fields(self, *, env: str) -> dict[str, Any]:
+        """Record the backend and the ID of the image the task ran in."""
+        fields: dict[str, Any] = {"backend": "container"}
+        digest = self.materialized_digest(env=env)
+        if digest is not None:
+            fields["container_image_digest"] = digest
+        return fields
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -670,3 +691,12 @@ def _config_mounts(table: dict[str, Any]) -> tuple[str, ...]:
         if not isinstance(spec, str):
             raise ValueError(f"[container] extra_mounts entries must be strings, got {spec!r}")
     return tuple(value)
+
+
+def build_container_environment(context: EnvironmentContext) -> ContainerBackend:
+    """Build the container environment for a run from its ``[container]`` table."""
+    return container_backend_from_config(
+        project_root=context.project_root,
+        config=dict(context.config),
+        probe_registry=context.probe_registry,
+    )

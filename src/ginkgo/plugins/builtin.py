@@ -8,7 +8,10 @@ metadata being installed.
 
 from __future__ import annotations
 
+from ginkgo.envs.container import build_container_environment
+from ginkgo.envs.pixi import build_pixi_environment
 from ginkgo.plugins.api import (
+    EnvironmentType,
     EventSubscriberType,
     ExecutorType,
     MountDriverType,
@@ -50,6 +53,9 @@ BUILTIN = Plugin(
         MountDriverType(scheme="oci", build=RcloneDriver),
         SecretBackendType(name="env", build=build_env_backends),
         EventSubscriberType(name="slack", build=build_notification_service),
+        EnvironmentType(scheme="", label="pixi", build=build_pixi_environment),
+        EnvironmentType(scheme="docker", label="container", build=build_container_environment),
+        EnvironmentType(scheme="oci", label="container", build=build_container_environment),
     ),
 )
 """Everything core contributes, in the order the registry indexes it."""

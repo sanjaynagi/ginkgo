@@ -1,20 +1,22 @@
-"""Execution environment protocol and implementations.
+"""Execution environment protocol and the router over its implementations.
 
 The ``ExecutionEnvironment`` protocol decouples the evaluator from a specific
-execution environment.  ``LocalEnvironment`` wraps an existing ``PixiRegistry``,
-``ContainerBackend`` wraps Docker/Podman, and ``CompositeEnvironment`` routes
-calls to the correct underlying environment based on the ``env`` string.
+execution environment. Implementations are contributed by plugins as
+:class:`~ginkgo.plugins.api.EnvironmentType`, keyed by the scheme of the
+``env=`` value; ``CompositeEnvironment`` builds each one on first use and
+routes every call to it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
-from ginkgo.envs.container import ContainerBackend, is_container_env
 from ginkgo.envs.mounts import Mount
-from ginkgo.envs.pixi import PixiRegistry
+from ginkgo.plugins.api import EnvironmentContext, EnvironmentType
+from ginkgo.plugins.registry import plugin_registry
 
 
 @runtime_checkable
@@ -119,117 +121,85 @@ class ExecutionEnvironment(Protocol):
         """
         ...
 
+    def provenance_fields(self, *, env: str) -> dict[str, Any]:
+        """Return what the run records about the environment a task ran in.
 
-@dataclass(kw_only=True)
-class LocalEnvironment:
-    """Local execution environment backed by Pixi.
+        Called once the environment is prepared. The fields are annotated onto
+        the task (its ``extra``); a lock file from :meth:`env_lock_path` is
+        copied into the run directory separately.
 
-    Parameters
-    ----------
-    pixi_registry : PixiRegistry
-        The underlying Pixi registry that discovers and materialises
-        environments.
-    """
-
-    pixi_registry: PixiRegistry
-
-    def validate_envs(self, *, env_names: set[str]) -> None:
-        """Raise for any environment name that cannot be resolved."""
-        self.pixi_registry.validate_envs(env_names=env_names)
-
-    def prepare(self, *, env: str) -> None:
-        """Materialize the Pixi environment."""
-        self.pixi_registry.prepare(env=env)
-
-    def env_identity(self, *, env: str) -> str:
-        """Return the BLAKE3 digest of the Pixi manifest."""
-        return self.pixi_registry.env_identity(env=env)
-
-    def materialized_digest(self, *, env: str) -> str | None:
-        """Return the BLAKE3 digest of the installed environment's lock file."""
-        return self.pixi_registry.lock_hash(env=env)
-
-    def exec_argv(
-        self,
-        *,
-        env: str,
-        cmd: str,
-        mounts: Sequence[Mount] = (),
-        env_vars: Sequence[str] = (),
-    ) -> list[str]:
-        """Build argv to run *cmd* through the Pixi environment.
-
-        Pixi runs on the host, where every declared path is already reachable
-        and the subprocess environment is inherited, so *mounts* and *env_vars*
-        are accepted for protocol conformance and ignored.
+        Returns
+        -------
+        dict[str, Any]
+            At least ``{"backend": <name>}``.
         """
-        return self.pixi_registry.exec_argv(env=env, cmd=cmd)
+        ...
 
-    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
-        """Pixi failures surface the tool's own error; nothing to add."""
-        return None
 
-    def env_lock_path(self, *, env: str) -> Path | None:
-        """Return the path to the Pixi lock file for provenance capture."""
-        manifest = self.pixi_registry.resolve(env=env)
-        lock_path = manifest.parent / "pixi.lock"
-        return lock_path if lock_path.is_file() else None
+def env_scheme(env: str) -> str:
+    """Return the scheme of an ``env=`` value, or ``""`` for a bare name.
+
+    ``"docker://ubuntu:24.04"`` has scheme ``"docker"``; ``"analysis"`` and
+    ``"envs/analysis/pixi.toml"`` have none.
+    """
+    scheme, separator, _ = env.partition("://")
+    return scheme if separator else ""
 
 
 @dataclass(kw_only=True)
 class CompositeEnvironment:
-    """Routes calls to the correct environment based on the ``env`` string.
+    """Routes each ``env=`` value to the environment its scheme belongs to.
 
-    Container URIs (``docker://...``, ``oci://...``) are dispatched to the
-    container environment.  All other env values go to the local environment.
+    Environments are built from the plugin registry on first use, so a run
+    never constructs a backend none of its tasks declares.
 
     Parameters
     ----------
-    local : LocalEnvironment
-        Environment for Pixi and bare-host tasks.
-    container : ContainerBackend | None
-        Environment for container-isolated tasks.  When ``None``, container
-        env URIs will raise at validation time.
+    context : EnvironmentContext
+        Handed to each environment's ``build``.
     """
 
-    local: LocalEnvironment
-    container: ContainerBackend | None = None
+    context: EnvironmentContext
+    _built: dict[Callable[..., Any], ExecutionEnvironment] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def _route(self, *, env: str) -> ExecutionEnvironment:
-        """Return the environment responsible for *env*."""
-        if is_container_env(env):
-            if self.container is None:
-                raise RuntimeError(
-                    f"Container env {env!r} requires a container backend, but none is configured."
-                )
-            return self.container
-        return self.local
+        """Return the environment responsible for *env*, building it if needed.
+
+        Raises
+        ------
+        PluginNotFoundError
+            If no installed plugin provides an environment for the scheme.
+        """
+        environment_type = plugin_registry().get(EnvironmentType, env_scheme(env))
+        # Keyed by the build function, so schemes one backend serves (docker://
+        # and oci:// for containers) share an instance and its state.
+        built = self._built.get(environment_type.build)
+        if built is None:
+            built = environment_type.build(self.context)
+            self._built[environment_type.build] = built
+        return built
 
     def validate_envs(self, *, env_names: set[str]) -> None:
-        """Partition env names by type and validate with each environment."""
-        local_envs = {e for e in env_names if not is_container_env(e)}
-        container_envs = {e for e in env_names if is_container_env(e)}
-
-        if local_envs:
-            self.local.validate_envs(env_names=local_envs)
-        if container_envs:
-            if self.container is None:
-                raise RuntimeError(
-                    f"Container envs {sorted(container_envs)} require a container backend, "
-                    "but none is configured."
-                )
-            self.container.validate_envs(env_names=container_envs)
+        """Validate each env name with the environment that owns it."""
+        by_environment: dict[int, tuple[ExecutionEnvironment, set[str]]] = {}
+        for env in sorted(env_names):
+            environment = self._route(env=env)
+            by_environment.setdefault(id(environment), (environment, set()))[1].add(env)
+        for environment, names in by_environment.values():
+            environment.validate_envs(env_names=names)
 
     def prepare(self, *, env: str) -> None:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         self._route(env=env).prepare(env=env)
 
     def env_identity(self, *, env: str) -> str:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         return self._route(env=env).env_identity(env=env)
 
     def materialized_digest(self, *, env: str) -> str | None:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         return self._route(env=env).materialized_digest(env=env)
 
     def exec_argv(
@@ -240,13 +210,17 @@ class CompositeEnvironment:
         mounts: Sequence[Mount] = (),
         env_vars: Sequence[str] = (),
     ) -> list[str]:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         return self._route(env=env).exec_argv(env=env, cmd=cmd, mounts=mounts, env_vars=env_vars)
 
     def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         return self._route(env=env).exec_failure_hint(env=env, exit_code=exit_code, output=output)
 
     def env_lock_path(self, *, env: str) -> Path | None:
-        """Delegate to the correct environment."""
+        """Delegate to the owning environment."""
         return self._route(env=env).env_lock_path(env=env)
+
+    def provenance_fields(self, *, env: str) -> dict[str, Any]:
+        """Delegate to the owning environment."""
+        return self._route(env=env).provenance_fields(env=env)
