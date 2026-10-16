@@ -483,7 +483,7 @@ def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
 _TRACKING_STYLES = {
     "path": "yellow",
     "content": "green",
-    "asset": "cyan",
+    "version": "cyan",
     "output": "blue",
     "value": "dim",
     "untracked": "dim",

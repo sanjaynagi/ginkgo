@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-
 import json
+import logging
 import os
 import shutil
 import socket
@@ -41,6 +41,7 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.jsonio import dumps_or_none
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
+    CodecError,
     decode_value,
     encode_value,
     encoded_asset_refs,
@@ -51,6 +52,8 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.asset_store import AssetStore
+
+logger = logging.getLogger(__name__)
 
 MISSING = object()
 
@@ -249,11 +252,19 @@ class CacheStore:
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
             return MISSING
 
-        return decode_value(
-            json.loads(output_path.read_text(encoding="utf-8")),
-            base_dir=entry_dir,
-            artifact_store=self._artifact_store,
-        )
+        # An entry this codec cannot read is a miss. Its directory is removed
+        # because ``save`` never overwrites an existing entry, so leaving it
+        # would make the task miss on every run.
+        try:
+            return decode_value(
+                json.loads(output_path.read_text(encoding="utf-8")),
+                base_dir=entry_dir,
+                artifact_store=self._artifact_store,
+            )
+        except CodecError as exc:
+            logger.warning("Discarding unreadable cache entry %s: %s", cache_key, exc)
+            shutil.rmtree(entry_dir, ignore_errors=True)
+            return MISSING
 
     def has_entry(self, *, cache_key: str, task_def: TaskDef) -> bool:
         """Return whether a usable cache entry exists for the given key.

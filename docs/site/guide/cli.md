@@ -259,7 +259,7 @@ ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 ### Why Did This Task Run Again?
 
 `ginkgo cache explain <run_id>` prints formatted text by default, one entry per
-task, naming each input's cache-tracking label (`content`, `asset`, `path`,
+task, naming each input's cache-tracking label (`content`, `version`, `path`,
 `value`, `output`, `untracked` — see
 [Caching and Provenance](caching-and-provenance.md#how-is-each-input-tracked)) alongside
 it, with a `path` label highlighted: since #307 phase 2 a `str` naming an

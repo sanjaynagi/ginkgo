@@ -79,7 +79,7 @@ def _events() -> list[GinkgoEvent]:
             display_label="fit[a]",
             inputs={"rows": 10},
             input_hashes=[{"param": "table", "digest": "b3:1234"}],
-            input_labels={"rows": "value", "table": "asset"},
+            input_labels={"rows": "value", "table": "version"},
             asset_inputs={
                 "table": [
                     {

@@ -249,6 +249,15 @@ def decode_value(
         return _decode_binary_payload(
             payload=payload, base_dir=base_dir, artifact_store=artifact_store
         )
+
+    # Fuse markers pass through, mirroring ``encode_value``; the worker
+    # hydrates them after decoding. Any other tag was written by a codec this
+    # version no longer has, and returning it as a raw dict would hand the
+    # task a value it never produced.
+    from ginkgo.remote.access.protocol import is_fuse_ref
+
+    if kind is not None and not is_fuse_ref(payload):
+        raise CodecError(f"Unknown encoded value type: {kind!r}")
     return payload
 
 
@@ -575,9 +584,12 @@ def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
     portable across pandas/Python versions. The Parquet failure is logged
     rather than swallowed silently so the format downgrade is diagnosable.
     """
+    # ``index=None`` stores a ``RangeIndex`` as metadata so it decodes as a
+    # ``RangeIndex``; ``index=True`` would materialise it as an ``Index``,
+    # which hashes differently from the frame that was encoded.
     buffer = io.BytesIO()
     try:
-        value.to_parquet(buffer, index=True)
+        value.to_parquet(buffer, index=None)
     except Exception:
         logger.warning(
             "DataFrame could not be encoded as Parquet; falling back to "

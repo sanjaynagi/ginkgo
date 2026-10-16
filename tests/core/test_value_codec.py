@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ginkgo.core.asset import AssetKey, AssetRef, table
 from ginkgo.core.types import file, folder
-from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value, hash_value_bytes
+from ginkgo.remote.access.protocol import FUSE_FILE_TYPE
+from ginkgo.runtime.artifacts.value_codec import (
+    CodecError,
+    decode_value,
+    encode_value,
+    hash_value_bytes,
+)
 
 
 def _make_ref(*, kind: str = "file") -> AssetRef:
@@ -20,6 +27,23 @@ def _make_ref(*, kind: str = "file") -> AssetRef:
         artifact_path="/artifacts/prepared",
         metadata={},
     )
+
+
+class TestDecodeTags:
+    def test_an_unknown_tag_raises(self, tmp_path) -> None:
+        with pytest.raises(CodecError, match="Unknown encoded value type: 'retired'"):
+            decode_value({"__ginkgo_type__": "retired", "value": 1}, base_dir=tmp_path)
+
+    def test_an_unknown_tag_nested_in_a_list_raises(self, tmp_path) -> None:
+        payload = {"__ginkgo_type__": "list", "items": [{"__ginkgo_type__": "retired"}]}
+
+        with pytest.raises(CodecError):
+            decode_value(payload, base_dir=tmp_path)
+
+    def test_a_fuse_marker_passes_through_for_worker_hydration(self, tmp_path) -> None:
+        marker = {"__ginkgo_type__": FUSE_FILE_TYPE, "uri": "gs://bucket/key"}
+
+        assert decode_value(marker, base_dir=tmp_path) is marker
 
 
 class TestPathMarkerAssetRoundtrip:
@@ -151,6 +175,24 @@ class TestHashValueBytes:
         _codec_right, digest_right = hash_value_bytes(right)
 
         assert digest_left != digest_right
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            pd.DataFrame({"a": [1, 2, 3]}),
+            pd.DataFrame({"a": [1, 2, 3]}).iloc[1:],
+            pd.DataFrame({"a": [1, 2, 3]}, index=pd.RangeIndex(0, 6, 2, name="r")),
+            pd.DataFrame({"a": pd.Series([], dtype="int64")}),
+        ],
+        ids=["default", "sliced", "stepped-named", "empty"],
+    )
+    def test_dataframe_hash_survives_the_codec_round_trip(self, tmp_path, frame) -> None:
+        encoded = encode_value(frame, base_dir=tmp_path, inline_limit=0)
+        decoded = decode_value(encoded, base_dir=tmp_path)
+
+        assert encoded["codec"] == "pandas.parquet"
+        assert type(decoded.index) is type(frame.index)
+        assert hash_value_bytes(decoded) == hash_value_bytes(frame)
 
     def test_dataframe_hash_changes_when_dtype_changes(self) -> None:
         object_frame = pd.DataFrame({"a": ["x", "y"]})

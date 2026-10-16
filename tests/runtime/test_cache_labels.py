@@ -131,7 +131,7 @@ class TestLabelCategories:
         labels = store.label_inputs(task_def=read_file, resolved_args={"data": str(target)})
         assert labels == {"data": "content"}
 
-    def test_asset_ref_is_asset(self, tmp_path: Path) -> None:
+    def test_asset_ref_is_version(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         ref = AssetRef(
             key=AssetKey(namespace="table", name="producer.dataset"),
@@ -142,7 +142,7 @@ class TestLabelCategories:
             artifact_path=str(tmp_path / "abc123"),
         )
         labels = store.label_inputs(task_def=consume_asset, resolved_args={"dataset": ref})
-        assert labels == {"dataset": "asset"}
+        assert labels == {"dataset": "version"}
 
     def test_out_parameter_is_output(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

@@ -220,7 +220,7 @@ Ginkgo names which:
 - **content** — a `file` / `folder` annotation or instance, *or* (since
   #307 phase 2) a plain value that names an existing regular file and reads
   as a path: the bytes are hashed.
-- **asset** — an `AssetRef` (or a remote reference): tracked by its version id.
+- **version** — an `AssetRef` (or a remote reference): tracked by its version id.
 - **path** — a value that names an existing path but is not content-hashed: a
   directory (never auto-hashed — annotate `folder`), a bare word with no
   separator or extension. Tracked by the path *string* only.

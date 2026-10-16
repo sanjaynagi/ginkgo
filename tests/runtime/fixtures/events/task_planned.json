@@ -33,7 +33,7 @@
   ],
   "input_labels": {
     "rows": "value",
-    "table": "asset"
+    "table": "version"
   },
   "inputs": {
     "rows": 10

@@ -223,7 +223,7 @@ def is_untracked_directory_value(*, annotation: Any, value: Any) -> bool:
 
 #: The tracking labels ``label_input_value`` returns, in the order a mixed
 #: container's label is chosen from (see its docstring).
-INPUT_TRACKING_LABELS = ("path", "output", "value", "asset", "content", "untracked")
+INPUT_TRACKING_LABELS = ("path", "output", "value", "version", "content", "untracked")
 
 
 def _combine_container_labels(labels: list[str]) -> str:
@@ -253,7 +253,7 @@ def label_input_value(
     One of ``"content"`` (file/folder bytes are hashed — including, since
     #307 phase 2, a plain ``str``/``Any``/``list[str]``/... value that names
     an existing regular file, see :func:`is_content_trackable_path_value`),
-    ``"asset"`` (an ``AssetRef``, ``RemoteRef``, or fuse-streamed ref —
+    ``"version"`` (an ``AssetRef``, ``RemoteRef``, or fuse-streamed ref —
     tracked by version id), ``"path"`` (a value that names an existing path
     but is not content-hashed — a directory, or a bare word colliding with a
     file name — tracked by its path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
@@ -286,7 +286,7 @@ def label_input_value(
     Returns
     -------
     str
-        One of ``"content"``, ``"asset"``, ``"path"``, ``"value"``,
+        One of ``"content"``, ``"version"``, ``"path"``, ``"value"``,
         ``"output"``, ``"untracked"``.
     """
     if annotation is tmp_dir or isinstance(value, tmp_dir):
@@ -300,9 +300,9 @@ def label_input_value(
     if is_output:
         return "output"
     if isinstance(value, AssetRef):
-        return "asset"
+        return "version"
     if isinstance(value, RemoteRef):
-        return "asset"
+        return "version"
 
     from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
 
@@ -310,7 +310,7 @@ def label_input_value(
         FUSE_FILE_TYPE,
         FUSE_FOLDER_TYPE,
     }:
-        return "asset"
+        return "version"
     if isinstance(value, SecretRef):
         return "value"
 

@@ -66,20 +66,20 @@ class TestContentLabel:
 
 class TestAssetLabel:
     def test_asset_ref_is_asset(self) -> None:
-        assert label_input_value(annotation=str, value=_asset_ref()) == "asset"
+        assert label_input_value(annotation=str, value=_asset_ref()) == "version"
 
     def test_remote_ref_is_asset(self) -> None:
         ref = RemoteFileRef(
             uri="s3://bucket/key", scheme="s3", bucket="bucket", key="key", version_id="v1"
         )
-        assert label_input_value(annotation=str, value=ref) == "asset"
+        assert label_input_value(annotation=str, value=ref) == "version"
 
     def test_fuse_marker_is_asset(self) -> None:
         ref = RemoteFileRef(
             uri="s3://bucket/key", scheme="s3", bucket="bucket", key="key", version_id="v1"
         )
         marker = encode_fuse_ref(ref=ref, policy="fuse")
-        assert label_input_value(annotation=str, value=marker) == "asset"
+        assert label_input_value(annotation=str, value=marker) == "version"
 
 
 class TestPathLabel:
@@ -199,7 +199,7 @@ class TestContainerCombination:
 
     def test_value_beats_asset_in_a_mixed_list(self) -> None:
         # Precedence surfaces the weaker-tracked element: "value" (a repr
-        # digest) is treated as less specific than "asset" (a version id).
+        # digest) is treated as less specific than "version" (a version id).
         assert label_input_value(annotation=list, value=[_asset_ref(), 5]) == "value"
 
     def test_empty_container_is_value(self) -> None:

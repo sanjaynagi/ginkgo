@@ -453,6 +453,12 @@ def dataframe_total_task(df: object) -> int:
 
 
 @task()
+def logged_dataframe_total_task(log_path: untracked, df: object) -> int:
+    append_line(log_path, "total")
+    return int(df["value"].sum())
+
+
+@task()
 def passthrough_task(value: object | None = None) -> object:
     return value
 
@@ -1229,6 +1235,22 @@ class TestEvaluate:
         result = evaluate(dataframe_total_task(df=dataframe_task(log_path="df.log", start=4)))
 
         assert result == 17
+
+    def test_dataframe_consumer_stays_cached_when_producer_is_replayed(self):
+        # The producer's default RangeIndex must survive the cache round trip,
+        # or the replayed frame hashes differently and the consumer re-runs.
+        log_path = "dataframe-chain.log"
+
+        def build() -> object:
+            return logged_dataframe_total_task(
+                log_path=log_path, df=dataframe_task(log_path=log_path, start=5)
+            )
+
+        first = evaluate(build())
+        second = evaluate(build())
+
+        assert first == second == 21
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["df:5", "total"]
 
     def test_validate_rejects_direct_expression_cycles(self):
         first = passthrough_task()

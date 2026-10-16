@@ -313,7 +313,7 @@ class RerunExplanation:
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
     input_labels : dict[str, str]
-        Each input parameter's cache-tracking label (``content``, ``asset``,
+        Each input parameter's cache-tracking label (``content``, ``version``,
         ``path``, ``value``, ``output``, ``untracked`` — see
         ``ginkgo.runtime.task_validation.label_input_value``), read from this
         task's own ``task_inputs`` row. Empty for a task run before this label

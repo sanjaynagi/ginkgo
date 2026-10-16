@@ -85,7 +85,7 @@ class TaskSummary:
     dynamic_dependency_ids: tuple[int, ...]
     inputs: dict[str, Any] | None
     input_trackings: dict[str, str] | None
-    """Each input parameter's cache-tracking label (``content``, ``asset``,
+    """Each input parameter's cache-tracking label (``content``, ``version``,
     ``path``, ``value``, ``output``, ``untracked``), when recorded (issue
     #307 phase 1). ``None`` for a run recorded before the label existed."""
     outputs: tuple[dict[str, Any], ...]
