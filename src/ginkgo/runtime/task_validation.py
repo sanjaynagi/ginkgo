@@ -36,6 +36,7 @@ from ginkgo.core.types import (
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
+from ginkgo.runtime.task_kinds import task_kind
 
 
 def _normalized(path: Any) -> str:
@@ -524,18 +525,14 @@ class TaskValidator:
     def validate_declared_envs(self, *, nodes: Iterable[Any]) -> None:
         """Raise before any work starts if a declared env cannot be resolved.
 
-        Foreign execution environments only support shell-like tasks.
+        Only a kind whose spec ``allows_env`` may declare one.
         """
         node_list = list(nodes)
         for node in node_list:
-            if node.task_def.env is not None and node.task_def.kind not in {
-                "notebook",
-                "script",
-                "shell",
-            }:
+            if node.task_def.env is not None and not task_kind(node.task_def).allows_env:
                 raise TypeError(
                     f"{node.task_def.name} uses env {node.task_def.env!r} "
-                    "but is declared with kind='python'. Foreign environments "
+                    f"but is declared with kind={node.task_def.kind!r}. Foreign environments "
                     "only support driver tasks — use @task('shell'), "
                     "@task('notebook'), or @task('script')."
                 )
@@ -631,7 +628,7 @@ class TaskValidator:
                 annotation=annotation,
                 value=value,
                 label=f"{node.task_def.name}.{name}",
-                execution_mode=node.task_def.execution_mode,
+                execution_mode=task_kind(node.task_def).execution_mode,
                 produced_paths=produced_paths,
             )
 
@@ -694,7 +691,7 @@ class TaskValidator:
                 annotation=annotation,
                 value=resolved_args[name],
                 label=f"{task_def.name}.{name}",
-                execution_mode=task_def.execution_mode,
+                execution_mode=task_kind(task_def).execution_mode,
             )
 
     def validate_output_argument(
@@ -802,7 +799,7 @@ class TaskValidator:
             annotation=annotation,
             value=value,
             label=f"{task_def.name}.return",
-            execution_mode=task_def.execution_mode,
+            execution_mode=task_kind(task_def).execution_mode,
         )
 
     def validate_annotated_value(
@@ -816,7 +813,7 @@ class TaskValidator:
     ) -> None:
         """Validate a value for direct and container-wrapped Ginkgo types.
 
-        ``execution_mode`` is the consuming task's ``TaskDef.execution_mode``,
+        ``execution_mode`` is the consuming task kind's ``execution_mode``,
         carried through so a kind/path mismatch can offer the remedies that
         work for that kind of task. ``produced_paths`` is forwarded to the
         existence check only (see :meth:`validate_static_inputs`); real

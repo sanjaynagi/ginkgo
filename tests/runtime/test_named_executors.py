@@ -242,7 +242,7 @@ class TestExecutorRouting:
             raise AssertionError("never runs")
 
         evaluator = self._evaluator(default=None)
-        with pytest.raises(ValueError, match="only supports python tasks"):
+        with pytest.raises(ValueError, match="cannot be dispatched remotely"):
             evaluator._resolve_placement(task_def=shelled)
 
 

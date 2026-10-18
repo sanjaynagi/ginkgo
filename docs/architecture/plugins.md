@@ -17,6 +17,7 @@ contributions — and one frozen spec dataclass per extension point:
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(*, project_root, config, environ) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
+| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries` |
 | `EnvironmentType` | the scheme of an `env=` value (`docker`, `oci`), or `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `label` for run tables |
 
 The set of extension points is fixed: adding one is a change to core, so each
@@ -68,6 +69,18 @@ Errors are explicit and raised at discovery or lookup:
   `env=` value by scheme and builds each environment on first use. Schemes
   contributed with the same `build` share one instance. The run table labels a
   bare name with the bare-name environment's `label` (`pixi:analysis`).
+- **Task kinds.** `@task` only checks that `kind` is a non-empty string, so
+  decorating a task never loads plugins; the evaluator looks the kind up when
+  it registers the task's node, before anything runs, and refuses an unknown
+  kind or `retry_on_exit_codes` on a kind without `exit_code_retries`. A
+  directive runs on the runner of the kind whose `directive` it is — usually,
+  but not necessarily, the task's own kind. Runners are built on first use from
+  a `RunnerContext` of evaluator services (backend, validator, the shared
+  `ShellRunner`, cache store, run directory, `annotate`, `notice`). A runner's
+  `replay_cached` re-applies anything it stored on `node.runner_extras`, which
+  the evaluator saves in the cache entry's `extra` as `runner_extras`.
+  `runtime/task_kinds.task_kind(task_def)` is the one lookup every caller uses
+  (dispatch, validation, dry run, remote-input staging, `inspect`).
 - **Event subscribers.** `ginkgo run` builds each registered subscriber and
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
   only sees events already in the ledger.
@@ -76,7 +89,7 @@ Errors are explicit and raised at discovery or lookup:
 
 ## Not yet extension points
 
-Task kinds, CLI commands and value codecs are still wired directly. URI parsing for `remote_file` /
+CLI commands and value codecs are still wired directly. URI parsing for `remote_file` /
 `remote_folder` (`core/remote.py`) still knows the `s3`, `oci` and `gs`
 schemes by name.
 

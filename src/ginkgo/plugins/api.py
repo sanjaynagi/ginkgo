@@ -19,9 +19,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 if TYPE_CHECKING:
+    from ginkgo.core.directive import ExecutionDirective
+    from ginkgo.runtime.caching.cache import CacheStore
+    from ginkgo.runtime.rundir import RunDir
+    from ginkgo.runtime.task_runners.shell import ShellRunner
+    from ginkgo.runtime.task_validation import TaskValidator
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
@@ -41,7 +46,10 @@ __all__ = [
     "MountDriverType",
     "ObjectStoreType",
     "Plugin",
+    "RunnerContext",
     "SecretBackendType",
+    "TaskKind",
+    "TaskRunner",
 ]
 
 
@@ -265,6 +273,111 @@ class EnvironmentType:
         return self.scheme
 
 
+@dataclass(frozen=True, kw_only=True)
+class RunnerContext:
+    """The evaluator services a task runner may use.
+
+    Parameters
+    ----------
+    backend : ExecutionEnvironment | None
+        The run's execution environment router.
+    validator : TaskValidator
+        Input and contract validation.
+    shell_runner : ShellRunner
+        Logged subprocess execution, shared by every runner so an interrupt
+        terminates all of their children.
+    cache_store : CacheStore
+        The run's cache, for runners that persist or replay extras.
+    run_dir : RunDir | None
+        The run directory; ``None`` for dry runs and validation.
+    runtime_root : Callable[[], Path]
+        Resolves the workspace directory for shared runner support files.
+    annotate : Callable[..., None]
+        ``annotate(node=..., fields=...)`` records facts against a task.
+    notice : Callable[[Any, str], None]
+        ``notice(node, message)`` surfaces a notice as a run event.
+    run_id : Callable[[], str]
+        Returns the current run id.
+    db_path : Path
+        The provenance database.
+    """
+
+    backend: ExecutionEnvironment | None
+    validator: TaskValidator
+    shell_runner: ShellRunner
+    cache_store: CacheStore
+    run_dir: RunDir | None
+    runtime_root: Callable[[], Path]
+    annotate: Callable[..., None]
+    notice: Callable[[Any, str], None]
+    run_id: Callable[[], str]
+    db_path: Path
+
+
+class TaskRunner(Protocol):
+    """Executes the directive a task body returned."""
+
+    def run(self, *, node: Any, directive: Any) -> Any:
+        """Execute *directive* for *node* and return the task's result."""
+        ...
+
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
+        """Re-apply anything the runner recorded when *node* hits the cache.
+
+        A runner that records extras on ``node.runner_extras`` while running
+        gets them back from the cache entry here; one that records nothing
+        does nothing.
+        """
+        ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class TaskKind:
+    """A task kind, selected by ``@task(kind=...)``.
+
+    Parameters
+    ----------
+    name : str
+        The ``kind`` value.
+    directive : type[ExecutionDirective] | None
+        The directive the task body returns, which the runner executes.
+        ``None`` for a kind whose body's return value is the result.
+    call_form : str
+        How the body builds its directive, for messages, e.g. ``"shell(...)"``.
+    execution_mode : {"driver", "worker"}
+        Whether the body runs on the scheduler or in a worker process.
+    allows_env : bool
+        Whether the kind may declare ``env=``.
+    remote_capable : bool
+        Whether the kind can be dispatched to a remote executor.
+    eager_source_hash : bool
+        Whether the body is evaluated while the task is prepared, so the
+        directive's ``source_hash`` (a notebook or script file) joins the cache
+        key.
+    exit_code_retries : bool
+        Whether ``retry_on_exit_codes`` applies.
+    runner : Callable[[RunnerContext], TaskRunner] | None
+        Build the runner for a run. ``None`` when ``directive`` is ``None``.
+    """
+
+    point_name: ClassVar[str] = "task kind"
+
+    name: str
+    directive: type[ExecutionDirective] | None
+    call_form: str
+    execution_mode: Literal["driver", "worker"]
+    allows_env: bool
+    remote_capable: bool
+    eager_source_hash: bool = False
+    exit_code_retries: bool = False
+    runner: Callable[[RunnerContext], TaskRunner] | None = None
+
+    @property
+    def key(self) -> str:
+        """The lookup key: the kind name."""
+        return self.name
+
+
 Contribution = (
     ExecutorType
     | ObjectStoreType
@@ -272,6 +385,7 @@ Contribution = (
     | SecretBackendType
     | EventSubscriberType
     | EnvironmentType
+    | TaskKind
 )
 """Every extension point a plugin can contribute to."""
 

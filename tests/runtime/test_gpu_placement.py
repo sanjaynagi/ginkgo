@@ -82,7 +82,7 @@ class TestGpuPlacement:
             evaluate(explicitly_remote(x=1), jobs=1)
 
     def test_remote_on_non_python_kind_fails(self) -> None:
-        with pytest.raises(ValueError, match="only supports python tasks"):
+        with pytest.raises(ValueError, match="cannot be dispatched remotely"):
             evaluate(remote_shell(), jobs=1)
 
     def test_gpu_over_budget_with_executor_places_remotely(self) -> None:
@@ -107,7 +107,7 @@ class TestGpuPlacement:
             raise AssertionError("never runs")
 
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=_registry())
-        with pytest.raises(ValueError, match="not kind='shell'"):
+        with pytest.raises(ValueError, match="kind='shell' cannot be dispatched remotely"):
             evaluator._resolve_placement(task_def=gpu_shell)
 
     def test_placement_misconfiguration_fails_at_build(self) -> None:

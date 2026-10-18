@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock, Thread, current_thread, main_thread
 from types import FrameType
-from typing import Any, Callable, ClassVar, Sequence, get_origin
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Sequence, get_origin
 
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.shell import ShellDirective
@@ -38,6 +38,9 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
+
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import RunnerContext
 
 
 # ----- Exceptions -----------------------------------------------------------
@@ -877,7 +880,10 @@ class ShellRunner:
             env=node.task_def.env, exit_code=exit_code, output=output
         )
 
-    def run_shell(self, *, node: Any, directive: ShellDirective) -> Any:
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
+        """A shell task records nothing beyond its result."""
+
+    def run(self, *, node: Any, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
         user_log_path = Path(directive.log) if directive.log is not None else None
@@ -930,3 +936,8 @@ class ShellRunner:
             task_def=task_def,
             value=resolve_output_value(output),
         )
+
+
+def build_shell_runner(context: RunnerContext) -> ShellRunner:
+    """Return the run's shared shell runner, which also executes shell tasks."""
+    return context.shell_runner

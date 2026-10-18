@@ -16,13 +16,12 @@ from typing import TYPE_CHECKING, Literal
 from ginkgo.core.expr import display_labels
 from ginkgo.runtime.caching.cache import MISSING
 from ginkgo.runtime.events import task_id_for_node
+from ginkgo.runtime.task_kinds import task_kind
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
 
 CacheStatus = Literal["cached", "will_run", "unknown"]
-
-_DRIVER_KINDS = {"notebook", "script"}
 
 
 @dataclass(kw_only=True)
@@ -385,7 +384,7 @@ def _probe_node(
         )
         # A diagnosed driver task still never reached a cache key, so it
         # keeps the status the probe can actually stand behind.
-        return "unknown" if node.task_def.kind in _DRIVER_KINDS else "will_run"
+        return "unknown" if task_kind(node.task_def).eager_source_hash else "will_run"
     except (FileNotFoundError, ValueError):
         # The same errors NodeCache._is_valid_cached_result treats as "not
         # really cached": typically a working-tree path the live run would
@@ -393,9 +392,9 @@ def _probe_node(
         # not materialise anything, so it cannot tell — no claim.
         return "unknown"
 
-    # Notebook/script cache keys fold in a source hash obtained by evaluating
-    # the task body; skip them rather than run user code during a dry run.
-    if node.task_def.kind in _DRIVER_KINDS:
+    # Some kinds' cache keys fold in a source hash obtained by evaluating the
+    # task body; skip them rather than run user code during a dry run.
+    if task_kind(node.task_def).eager_source_hash:
         return "unknown"
 
     cache_store = evaluator.cache_store

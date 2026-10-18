@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 import yaml
 
+from ginkgo.plugins.api import TaskKind
+from ginkgo.plugins.registry import plugin_registry
 from ginkgo import SubWorkflowDirective, SubWorkflowResult, subworkflow, task
 from ginkgo.runtime.rundir import make_run_id
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
@@ -106,7 +108,7 @@ class TestRecursionGuard:
         evaluator = ConcurrentEvaluator(
             run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
         )
-        runner = evaluator._subworkflow_runner
+        runner = evaluator._runner_for(plugin_registry().get(TaskKind, "subworkflow"))
 
         class _FakeNode:
             class _TaskDef:
@@ -115,7 +117,7 @@ class TestRecursionGuard:
             task_def = _TaskDef()
 
         with pytest.raises(SubWorkflowRecursionError):
-            runner.run_subworkflow(
+            runner.run(
                 node=_FakeNode(),
                 directive=subworkflow(str(child)),
             )

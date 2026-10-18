@@ -9,7 +9,9 @@ from typing import Any
 
 import pytest
 
+from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.secret import SecretRef
+from ginkgo.core.task import task
 from ginkgo.plugins import registry as registry_module
 from ginkgo.plugins.api import (
     EventSubscriberType,
@@ -18,6 +20,7 @@ from ginkgo.plugins.api import (
     ObjectStoreType,
     Plugin,
     SecretBackendType,
+    TaskKind,
 )
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import (
@@ -213,3 +216,56 @@ class TestEventSubscribers:
         assert recorder.seen[-1] == "run_completed"
         assert "task_completed" in recorder.seen
         assert recorder.closed == [True]
+
+
+@dataclass(frozen=True)
+class _Greeting(ExecutionDirective):
+    name: str
+
+
+@dataclass
+class _GreetingRunner:
+    replayed: list[str]
+
+    def run(self, *, node: Any, directive: _Greeting) -> str:
+        return f"hello {directive.name}"
+
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
+        self.replayed.append(cache_key)
+
+
+@task(kind="greeting")
+def greet(name: str) -> Any:
+    """A task of a kind only the test's plugin provides."""
+    return _Greeting(name=name)
+
+
+class TestTaskKinds:
+    def test_a_plugin_task_kind_runs_its_directive_and_replays_on_a_hit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ginkgo import evaluate
+
+        runner = _GreetingRunner(replayed=[])
+        greeting_kind = Plugin(
+            name="ginkgo-greeting",
+            contributions=(
+                TaskKind(
+                    name="greeting",
+                    directive=_Greeting,
+                    call_form="greet(...)",
+                    execution_mode="driver",
+                    allows_env=False,
+                    remote_capable=False,
+                    runner=lambda _: runner,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            registry_module, "_active", PluginRegistry(plugins=(BUILTIN, greeting_kind))
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
+        assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
+        assert len(runner.replayed) == 1
