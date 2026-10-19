@@ -99,6 +99,31 @@ class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
         )
 
 
+class ContainerDaemonUnreachableError(GinkgoError, RuntimeError):
+    """Raised at validation time when the runtime cannot reach its daemon.
+
+    The binary is on PATH, but every image lookup, pull, and ``run`` would
+    fail, so saying so up front beats a "failed to pull" mid-run. The fix
+    depends on the runtime and on whether the daemon is down or refused
+    access, so the message carries it and no generic suggestion is declared.
+    """
+
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
+    diagnostic_code: ClassVar[str] = "CONTAINER_DAEMON_UNREACHABLE"
+
+    def __init__(self, *, runtime: str, output: str, permission_denied: bool, fix: str) -> None:
+        details = output.strip() or "no output from container runtime"
+        problem = (
+            f"was denied access to the {runtime} daemon"
+            if permission_denied
+            else f"the {runtime} daemon is not reachable"
+        )
+        super().__init__(
+            f"Container runtime {runtime!r} is installed, but {problem} "
+            f"(`{runtime} info` failed): {details}. To fix, {fix}."
+        )
+
+
 class ContainerPrepareError(GinkgoError, RuntimeError):
     """Raised when an image cannot be pulled."""
 
@@ -159,6 +184,30 @@ _MANIFEST_INSPECT_RUNTIMES = frozenset({"docker", "podman"})
 # mid-run after other tasks have already spent time.
 _MANIFEST_INSPECT_TIMEOUT_SECONDS = 15
 
+# Runtimes whose "info" subcommand fails when the engine behind the CLI is
+# unreachable, each with how to start that engine. Podman has no daemon on
+# Linux, where "info" simply succeeds; elsewhere it fails until the Podman
+# machine is running, as every "podman run" would.
+_DAEMON_START_HINTS = {
+    "docker": "start Docker Desktop or the Docker service (`sudo systemctl start docker`)",
+    "podman": "start the Podman machine (`podman machine start`)",
+}
+
+# How to get access to a running daemon whose socket refused the user, as
+# Docker on Linux does for a user outside the docker group.
+_DAEMON_PERMISSION_HINTS = {
+    "docker": (
+        "add your user to the docker group (`sudo usermod -aG docker $USER`) and log in again"
+    ),
+    "podman": "check that your user can access the Podman socket",
+}
+
+# Ceiling on each daemon round trip during validation (the "info" probe and
+# the local image lookup). A reachable daemon answers in well under a second,
+# and an absent one is refused at once; the bound only guards against a
+# wedged socket stalling validation.
+_DAEMON_PROBE_TIMEOUT_SECONDS = 10
+
 # Substrings a registry's own error text uses to say an image (or tag) does
 # not exist, as opposed to a transient or unrecognised failure. Matched
 # case-insensitively against combined stdout+stderr.
@@ -206,10 +255,12 @@ class ContainerBackend:
         Escape hatch for paths that cannot be declared task inputs, as
         ``"/path"``, ``"/path:rw"``, or ``"/host:/container:rw"``.
     probe_registry : bool
-        Whether validation may ask an image's registry if an image that is
-        not present locally exists. On for ``doctor`` and ``--dry-run``,
-        which pull nothing; off for a real run, whose own pull reports a
-        missing image without first paying for an extra registry round trip.
+        Whether validation may ask the runtime's daemon whether it is
+        reachable, and an image's registry whether an image that is not
+        present locally exists. On for ``doctor`` and ``--dry-run``, which
+        pull nothing; off for a real run, which may never dispatch a container
+        task (every one may be cached) and whose own pull reports a missing
+        image or a stopped daemon when it does.
     """
 
     runtime: str = "docker"
@@ -226,6 +277,9 @@ class ContainerBackend:
     # the same image on several tasks (or is validated more than once, e.g.
     # doctor then run) does not repeat a local-store or registry probe for it.
     _validated_images: set[str] = field(default_factory=set, init=False, repr=False)
+    # Set once the daemon probe has answered without proving the daemon
+    # unreachable, so it runs at most once per backend.
+    _daemon_probed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Resolved once, so the path mounted and the path mounts are compared
@@ -240,6 +294,14 @@ class ContainerBackend:
 
     def validate_envs(self, *, env_names: set[str]) -> None:
         """Validate container env URIs, config, runtime availability, and images.
+
+        An installed runtime whose daemon is unreachable fails every image
+        lookup, so when an image is not found locally and ``probe_registry``
+        is set, the daemon is probed first (``<runtime> info``, bounded, once
+        per backend) and reported as the cause rather than the image. A real
+        run does not probe: it fails at dispatch only if it has to run a
+        container task, so a fully cached run is not blocked by a stopped
+        daemon.
 
         A run is certain to fail if a declared image is neither present
         locally nor ever going to be pulled (``pull_policy = "never"``), so
@@ -275,6 +337,11 @@ class ContainerBackend:
         if self._image_exists_locally(image):
             self._validated_images.add(image)
             return
+
+        # A failed lookup reads the same for an absent image and a stopped
+        # daemon; rule out the daemon before blaming the image.
+        if self.probe_registry:
+            self._require_daemon_reachable()
 
         if self.pull_policy == "never":
             raise ContainerImageNotFoundError(
@@ -519,13 +586,59 @@ class ContainerBackend:
         return _uid_gid_argv(self.user)
 
     def _image_exists_locally(self, image: str) -> bool:
-        """Return whether *image* is present in the local image store."""
-        completed = subprocess.run(
-            [self.runtime, "image", "inspect", image],
-            check=False,
-            capture_output=True,
-        )
+        """Return whether *image* is present in the local image store.
+
+        A lookup that times out reads as "cannot tell" (``True``), so a hung
+        daemon neither stalls validation nor gets the image blamed; in
+        ``prepare`` the pull is skipped and the task's own ``run`` reports it.
+        """
+        try:
+            completed = subprocess.run(
+                [self.runtime, "image", "inspect", image],
+                check=False,
+                capture_output=True,
+                timeout=_DAEMON_PROBE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return True
         return completed.returncode == 0
+
+    def _require_daemon_reachable(self) -> None:
+        """Raise if ``<runtime> info`` reports the daemon unreachable.
+
+        Only a non-zero exit raises. A runtime this backend does not know how
+        to probe, a timeout, or a failure to execute the binary reads as
+        "cannot tell" and lets validation continue, as the registry probe
+        does.
+        """
+        start_hint = _DAEMON_START_HINTS.get(self.runtime)
+        if self._daemon_probed or start_hint is None:
+            return
+
+        try:
+            completed = subprocess.run(
+                [self.runtime, "info"],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=_DAEMON_PROBE_TIMEOUT_SECONDS,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            self._daemon_probed = True
+            return
+
+        if completed.returncode != 0:
+            # The reason is on stderr; stdout carries the client's own
+            # version block, which says nothing about the daemon.
+            output = completed.stderr or completed.stdout or ""
+            permission_denied = "permission denied" in output.lower()
+            raise ContainerDaemonUnreachableError(
+                runtime=self.runtime,
+                output=output,
+                permission_denied=permission_denied,
+                fix=_DAEMON_PERMISSION_HINTS[self.runtime] if permission_denied else start_hint,
+            )
+        self._daemon_probed = True
 
     def _registry_reports_missing(self, image: str) -> bool:
         """Return whether *image*'s registry positively reports it missing.

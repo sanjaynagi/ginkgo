@@ -293,8 +293,9 @@ class EnvironmentContext:
     config : Mapping[str, Any]
         Merged runtime config; each backend reads its own table.
     probe_registry : bool
-        Whether validation may ask image registries about missing images.
-        Only a dry run and ``ginkgo doctor`` set it.
+        Whether validation may make probes a real run skips: asking the
+        container daemon whether it is reachable, and image registries about
+        missing images. Only a dry run and ``ginkgo doctor`` set it.
     """
 
     project_root: Path

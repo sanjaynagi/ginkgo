@@ -146,11 +146,12 @@ class ResourceSummary:
     Parameters
     ----------
     total_threads : int
-        Sum of declared core budgets across all tasks.
+        Sum of declared threads across all tasks.
     peak_wave_threads : int
-        Largest per-wave core total.
+        Largest per-wave sum of declared threads. Not bounded by the run's
+        core budget, which the scheduler enforces by queueing within a wave.
     peak_wave_index : int
-        1-based index of the wave with the largest core total (``0`` if empty).
+        1-based index of the wave with the largest thread total (``0`` if empty).
     total_memory_gb : int
         Sum of declared memory budgets in GiB.
     peak_wave_memory_gb : int
@@ -421,7 +422,10 @@ def _probe_node(
 
     # Record the hit so dependents can resolve their own arguments against
     # this output, mirroring the evaluator's prepare-phase cache fast path.
+    # A dependent reading ``.output["name"]`` takes the value from this
+    # node's resolved arguments rather than its result.
     node.cache_key = cache_key
+    node.resolved_args = resolved_args
     node.result = cached_value
     node.state = "completed"
     return "cached"
