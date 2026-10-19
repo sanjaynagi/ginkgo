@@ -17,7 +17,6 @@ from ginkgo.envs.pixi import build_pixi_environment
 from ginkgo.plugins.api import (
     EnvironmentType,
     EventSubscriberType,
-    ExecutorType,
     MountDriverType,
     ObjectStoreType,
     Plugin,
@@ -27,8 +26,6 @@ from ginkgo.plugins.api import (
 from ginkgo.remote.access.drivers.gcsfuse import GcsFuseDriver
 from ginkgo.remote.access.drivers.rclone import RcloneDriver
 from ginkgo.remote.access.drivers.s3 import MountpointS3Driver
-from ginkgo.remote.gcp_batch import build_gcp_batch_executor
-from ginkgo.remote.kubernetes import build_kubernetes_executor
 from ginkgo.remote.resolve import build_gcs_store, build_oci_store, build_s3_store
 from ginkgo.runtime.environment.secrets import build_env_backends
 from ginkgo.runtime.notifications.notifications import build_notification_service
@@ -42,18 +39,6 @@ __all__ = ["BUILTIN"]
 BUILTIN = Plugin(
     name="ginkgo",
     contributions=(
-        ExecutorType(
-            name="k8s",
-            label="Kubernetes",
-            required_settings=("image",),
-            build=build_kubernetes_executor,
-        ),
-        ExecutorType(
-            name="batch",
-            label="GCP Batch",
-            required_settings=("project", "image"),
-            build=build_gcp_batch_executor,
-        ),
         ObjectStoreType(scheme="s3", build=build_s3_store),
         ObjectStoreType(scheme="oci", build=build_oci_store),
         ObjectStoreType(scheme="gs", build=build_gcs_store),

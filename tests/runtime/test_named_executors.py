@@ -6,9 +6,12 @@ import pytest
 
 from ginkgo import task
 from ginkgo.core.task import TaskDef
+from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.remote_executor import RemoteDispatchStats, RemoteExecutor, RemoteJobHandle
+
+pytestmark = pytest.mark.usefixtures("stub_executor_types")
 
 
 class _FakeRemoteExecutor(RemoteExecutor):
@@ -82,13 +85,12 @@ class TestExecutorRegistryConfig:
         assert "code" not in registry.specs["cheap-batch"].settings
         assert registry.code_config("gpu-k8s") is None
 
-    def test_legacy_sections_become_implicit_names(self) -> None:
+    def test_a_legacy_type_section_is_not_an_executor(self) -> None:
         registry = ExecutorRegistry.from_config(
             {"remote": {"k8s": {"image": "reg/worker:v2"}}},
-            default="k8s",
+            default=None,
         )
-        assert registry.specs["k8s"].type == "k8s"
-        assert registry.has_default
+        assert registry.specs == {}
 
     def test_local_default_leaves_no_default_executor(self) -> None:
         registry = ExecutorRegistry.from_config(CONFIG, default="local")
@@ -100,8 +102,10 @@ class TestExecutorRegistryConfig:
         with pytest.raises(ValueError, match="cheap-batch, gpu-k8s"):
             ExecutorRegistry.from_config(CONFIG, default="typo")
 
-    def test_unknown_type_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="needs a type"):
+    def test_unknown_type_names_the_section_and_what_is_available(self) -> None:
+        with pytest.raises(
+            PluginNotFoundError, match=r"\[remote.executors.weird\].*'slurm'.*'batch', 'k8s'"
+        ):
             ExecutorRegistry.from_config(
                 {"remote": {"executors": {"weird": {"type": "slurm"}}}},
                 default=None,
@@ -141,10 +145,11 @@ class TestExecutorRegistryConfig:
         registry = ExecutorRegistry.from_config(CONFIG, default=None)
         assert registry.label("gpu-k8s") == "gpu-k8s (Kubernetes)"
         assert registry.label("cheap-batch") == "cheap-batch (GCP Batch)"
-        legacy = ExecutorRegistry.from_config(
-            {"remote": {"batch": {"project": "p", "image": "i"}}}, default=None
+        same_name = ExecutorRegistry.from_config(
+            {"remote": {"executors": {"batch": {"type": "batch", "project": "p", "image": "i"}}}},
+            default=None,
         )
-        assert legacy.label("batch") == "GCP Batch"
+        assert same_name.label("batch") == "GCP Batch"
 
 
 class TestSettingsValidation:
@@ -174,8 +179,10 @@ class TestCodeSyncGaps:
 
     SPLIT = {
         "remote": {
-            "k8s": {"image": "i", "code": {"mode": "sync", "package": "wf"}},
-            "executors": {"cheap-batch": {"type": "batch", "project": "p", "image": "i"}},
+            "executors": {
+                "syncer": {"type": "k8s", "image": "i", "code": {"mode": "sync", "package": "wf"}},
+                "cheap-batch": {"type": "batch", "project": "p", "image": "i"},
+            },
         }
     }
 
@@ -183,35 +190,16 @@ class TestCodeSyncGaps:
         registry = ExecutorRegistry.from_config(self.SPLIT, default="cheap-batch")
         (message,) = registry.code_sync_gaps(names=["cheap-batch"])
         assert "[remote.executors.cheap-batch]" in message
-        assert "[remote.k8s]" in message
+        assert "[remote.executors.syncer]" in message
         assert "[remote.executors.cheap-batch.code]" in message
 
     def test_syncing_executor_is_not_reported(self) -> None:
-        registry = ExecutorRegistry.from_config(self.SPLIT, default="k8s")
-        assert registry.code_sync_gaps(names=["k8s"]) == []
+        registry = ExecutorRegistry.from_config(self.SPLIT, default="syncer")
+        assert registry.code_sync_gaps(names=["syncer"]) == []
 
     def test_nothing_is_reported_when_no_executor_syncs(self) -> None:
         registry = ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s")
         assert registry.code_sync_gaps(names=["gpu-k8s", "cheap-batch"]) == []
-
-    def test_explicit_section_is_named_over_the_legacy_one(self) -> None:
-        config = {
-            "remote": {
-                "k8s": {"image": "legacy"},
-                "executors": {
-                    "k8s": {"type": "k8s", "image": "explicit"},
-                    "syncer": {
-                        "type": "k8s",
-                        "image": "i",
-                        "code": {"mode": "sync", "package": "wf"},
-                    },
-                },
-            }
-        }
-        registry = ExecutorRegistry.from_config(config, default="k8s")
-        (message,) = registry.code_sync_gaps(names=["k8s"])
-        assert "[remote.executors.k8s]" in message
-        assert "[remote.k8s]" not in message
 
 
 class TestExecutorRouting:

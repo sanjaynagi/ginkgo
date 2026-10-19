@@ -9,8 +9,7 @@ import sys
 
 from rich.markup import escape
 
-from ginkgo.plugins.api import EnvironmentContext, ExecutorType
-from ginkgo.plugins.registry import plugin_registry
+from ginkgo.plugins.api import EnvironmentContext
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
@@ -176,18 +175,14 @@ def _extract_executor_configs(*, config: dict) -> dict[str, dict]:
     A task may be pinned to any configured executor, so the FUSE probes
     have to see all of them: diagnosing only one section would clear a run
     whose other executors cannot mount. Keys are the section names as they
-    appear in ``ginkgo.toml`` (``"[remote.k8s]"``,
-    ``"[remote.executors.gpu-k8s]"``) so a diagnostic can name the section
+    appear in ``ginkgo.toml`` (``"[remote.executors.gpu-k8s]"``) so a
+    diagnostic can name the section
     the user has to edit.
     """
     remote = config.get("remote") if isinstance(config, dict) else None
     if not isinstance(remote, dict):
         return {}
     sections: dict[str, dict] = {}
-    for type_name in plugin_registry().keys(ExecutorType):
-        section = remote.get(type_name)
-        if isinstance(section, dict):
-            sections[f"[remote.{type_name}]"] = section
     named = remote.get("executors")
     if isinstance(named, dict):
         for name, table in named.items():

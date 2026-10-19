@@ -605,23 +605,16 @@ class TestLocalWorkerFuseHydration:
 
 
 class TestExecutorFuseDetection:
-    def test_kubernetes_fuse_detection(self) -> None:
-        from ginkgo.remote.kubernetes import _payload_requires_fuse
+    def test_a_fuse_marker_anywhere_in_the_args_requires_fuse(self) -> None:
+        from ginkgo.remote.executor_support import payload_requires_fuse
 
         ref = remote_file("s3://b/k.bam", access="fuse")
         marker = encode_fuse_ref(ref=ref, policy="fuse")
 
-        assert _payload_requires_fuse({"args": {}}) is False
-        assert _payload_requires_fuse({"args": {"fastq": marker}}) is True
-        assert _payload_requires_fuse({"args": {"files": [marker]}}) is True
-
-    def test_gcp_batch_fuse_detection(self) -> None:
-        from ginkgo.remote.gcp_batch import _payload_requires_fuse
-
-        ref = remote_file("s3://b/k.bam", access="fuse")
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
-        assert _payload_requires_fuse({"args": {"fastq": marker}}) is True
-        assert _payload_requires_fuse({"args": {"raw": "plain"}}) is False
+        assert payload_requires_fuse({"args": {}}) is False
+        assert payload_requires_fuse({"args": {"raw": "plain"}}) is False
+        assert payload_requires_fuse({"args": {"fastq": marker}}) is True
+        assert payload_requires_fuse({"args": {"files": [marker]}}) is True
 
 
 # ---------------------------------------------------------------------------

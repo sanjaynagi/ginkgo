@@ -392,7 +392,6 @@ class TestDoctorExecutorSelection:
     def test_every_executor_section_is_collected(self) -> None:
         config = {
             "remote": {
-                "k8s": {"image": "plain"},
                 "executors": {
                     "cheap-batch": {"type": "batch", "image": "plain"},
                     "stream-k8s": {"type": "k8s", "fuse_image": "fuse-worker"},
@@ -400,7 +399,6 @@ class TestDoctorExecutorSelection:
             }
         }
         assert _extract_executor_configs(config=config) == {
-            "[remote.k8s]": {"image": "plain"},
             "[remote.executors.cheap-batch]": {"type": "batch", "image": "plain"},
             "[remote.executors.stream-k8s]": {"type": "k8s", "fuse_image": "fuse-worker"},
         }

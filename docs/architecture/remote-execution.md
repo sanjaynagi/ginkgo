@@ -14,18 +14,21 @@ are satisfied by the executor.
 ## Executor Registry
 
 `runtime/executor_registry.py` owns the name → backend mapping. It parses
-`[remote.executors.<name>]` tables (each with a `type` of `k8s` or `batch`,
-backend settings, and an optional `code` sub-table), plus the legacy
-`[remote.k8s]` / `[remote.batch]` sections as implicitly named executors
-`k8s` and `batch`. `--executor` selects the run default; `local` means the run
-has none. Backends are constructed lazily on first dispatch, so a configured
+`[remote.executors.<name>]` tables, each with a `type`, backend settings, and
+an optional `code` sub-table. These tables are the only way to configure an
+executor. A `type` is an `ExecutorType` some installed plugin contributes (see
+[Plugins](plugins.md)): `k8s` from ginkgo-k8s, `batch` from ginkgo-gcp. A type
+no installed plugin provides fails while the config is parsed, naming the table,
+the available types and, for a first-party type, the distribution to install.
+`--executor` selects the run default by executor *name*, so `--executor k8s`
+needs a table named `k8s`; `local` means the run has none. Backends are constructed lazily on first dispatch, so a configured
 executor no task reaches is never contacted, and unknown names — on the flag or
 on a task — fail at build time with the configured names listed. Lazy
 construction would otherwise defer settings errors to the first dispatch, so
 once the graph is known `ExecutorRegistry.validate_settings` checks the
-executors the run will reach (`_REQUIRED_SETTINGS` is the one home for which
-keys a backend cannot be built without); a section no task reaches stays
-unvalidated, so a stale `[remote.k8s]` never fails a local run.
+executors the run will reach (each `ExecutorType.required_settings` is the one
+home for which keys a backend cannot be built without); a table no task reaches
+stays unvalidated, so a stale `[remote.executors.k8s]` never fails a local run.
 
 `_resolve_placement` returns the executor's name or `None` for local
 placement; `NodeRun.executor_name` carries it, and `NodeRun.remote` is the
@@ -48,9 +51,18 @@ This keeps executor implementations fully decoupled from the scheduling loop.
 The evaluator polls handles on dedicated watcher threads and processes results
 through the same code path as local worker completions.
 
+`remote/executor_support.py` holds the helpers an executor plugin uses to speak
+the worker protocol: `encode_payload` (the `GINKGO_WORKER_PAYLOAD` value),
+`generate_job_name`, `payload_requires_fuse`, and `parse_worker_output` (the
+worker's JSON result line, read from job logs).
+
 ## Executor Implementations
 
-**KubernetesExecutor** (`remote/kubernetes.py`) submits `batch/v1` Jobs to any
+Core ships no executor. Both implementations live in first-party plugin
+distributions under `plugins/` (see [Plugins](plugins.md#first-party-plugins)).
+
+**KubernetesExecutor** (`ginkgo_k8s/executor.py`, distribution ginkgo-k8s,
+type `k8s`) submits `batch/v1` Jobs to any
 Kubernetes cluster. Resource declarations on `@task` map to pod resource
 requests: `threads` → CPU, `memory` → memory, `gpu` → `nvidia.com/gpu`. GPU
 tasks receive a `cloud.google.com/gke-accelerator` node selector when an
@@ -58,7 +70,8 @@ accelerator type is available — `@task(gpu_type=...)` per task, falling back
 to the executor-level `gpu_type` — enabling automatic GPU node provisioning
 on GKE Autopilot.
 
-**GCPBatchExecutor** (`remote/gcp_batch.py`) submits jobs to GCP Batch, a
+**GCPBatchExecutor** (`ginkgo_gcp/batch.py`, distribution ginkgo-gcp, type
+`batch`) submits jobs to GCP Batch, a
 serverless batch compute service. No cluster required — each job runs on
 Google-managed infrastructure. GPU tasks use the Batch accelerator allocation
 policy; a GPU task with no accelerator type (task-level or executor-level) is
@@ -74,7 +87,9 @@ The worker entry point (`remote/worker.py`) runs as
 3. Calls the standard `run_task()` worker function
 4. Prints a JSON result line to stdout for the handle to parse
 
-The same worker image serves both K8s and GCP Batch executors.
+The same worker image serves both K8s and GCP Batch executors. It installs
+`ginkgo[cloud]` only: the worker runs tasks and never submits them, so it needs
+no executor plugin.
 
 ## Code Sync
 
@@ -86,7 +101,7 @@ Two modes for making workflow code available to remote workers:
   coordinates in the task payload. Workers download and extract the bundle
   before importing task functions.
 
-Code sync is configured via `[remote.k8s.code]` or `[remote.batch.code]`
+Code sync is configured per executor via `[remote.executors.<name>.code]`
 with `mode = "sync"` and `package = "<dir>"`. The bundle is published to the
 remote artifact backend configured in `[remote.artifacts]`.
 
@@ -125,9 +140,8 @@ ginkgo/
 ├── remote/
 │   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # tarball creation, publish, download+extract
+│   ├── executor_support.py  # worker-protocol helpers for executor plugins
 │   ├── fsspec_backends.py   # S3, OCI, GCS fsspec backends
-│   ├── gcp_batch.py         # GCPBatchExecutor + GCPBatchJobHandle
-│   ├── kubernetes.py        # KubernetesExecutor + KubernetesJobHandle
 │   ├── publisher.py         # RemotePublisher for remote outputs
 │   ├── resolve.py           # resolve_backend() factory
 │   ├── staging.py           # remote input staging
@@ -137,4 +151,10 @@ ginkgo/
 │   ├── remote_executor.py   # RemoteExecutor / RemoteJobHandle protocols
 │   └── ...
 └── ...
+
+plugins/                     # repository root, not part of the ginkgo package
+├── ginkgo-k8s/src/ginkgo_k8s/
+│   └── executor.py          # KubernetesExecutor + KubernetesJobHandle
+└── ginkgo-gcp/src/ginkgo_gcp/
+    └── batch.py             # GCPBatchExecutor + GCPBatchJobHandle
 ```

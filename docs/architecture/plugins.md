@@ -48,15 +48,20 @@ Errors are explicit and raised at discovery or lookup:
 - `PluginConflictError` — two plugins contribute the same key to one extension
   point; the message names both.
 - `PluginNotFoundError` (a `ValueError`) — nothing provides the key asked for;
-  the message lists what is available.
+  the message lists what is available. When the key is one a first-party
+  plugin provides, the message also names the distribution to install
+  (`_FIRST_PARTY_PROVIDERS` in `registry.py`: `k8s` → ginkgo-k8s, `batch` →
+  ginkgo-gcp).
 
 ## Dispatch sites
 
-- **Executors.** `ExecutorRegistry` (`runtime/executor_registry.py`) accepts any
-  registered `type`, reads the legacy `[remote.<type>]` section for each,
-  checks `required_settings` before the run starts, labels run headers with
-  `label`, and builds lazily through `build`. `ginkgo doctor` probes the same
-  sections.
+- **Executors.** `ExecutorRegistry` (`runtime/executor_registry.py`) reads
+  `[remote.executors.<name>]` tables only, and looks each table's `type` up
+  while parsing config, so an uninstalled type fails before anything runs
+  (`[remote.executors.<name>]: No installed plugin provides executor type
+  'k8s'. ...`). It checks `required_settings` before the run starts, labels
+  run headers with `label`, and builds lazily through `build`. `ginkgo doctor`
+  probes the same tables. Core contributes no executor type.
 - **Object stores.** `remote.resolve.resolve_backend(scheme)` looks the scheme
   up and passes the merged runtime config; each store reads its own provider
   settings.
@@ -85,7 +90,72 @@ Errors are explicit and raised at discovery or lookup:
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
   only sees events already in the ledger.
 
-`ginkgo plugins [--json]` lists the loaded plugins and their contributions.
+`ginkgo plugins [--json]` lists the loaded plugins and their contributions; a
+contribution with an empty key (the bare-name environment) shows as
+`(bare name)`.
+
+## First-party plugins
+
+The Kubernetes and GCP Batch executors are not in core. They live in separate
+distributions in this repository, under `plugins/`:
+
+| Distribution | Package | Entry point | Contributes | Depends on |
+|---|---|---|---|---|
+| `plugins/ginkgo-k8s` | `ginkgo_k8s` | `k8s = "ginkgo_k8s:PLUGIN"` | `ExecutorType` `k8s` (label `Kubernetes`, requires `image`) | `kubernetes` |
+| `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `google-cloud-batch`, `google-cloud-logging` |
+
+Each pins the exact core version (`ginkgo==0.1.0`). They are not on PyPI: core's
+`all` extra installs both through git direct references at the same ref as
+core.
+
+An executor plugin implements `RemoteExecutor` / `RemoteJobHandle`
+(`runtime/remote_executor.py`) and runs tasks by starting
+`python -m ginkgo.remote.worker` in a ginkgo worker image. The public helpers in
+`remote/executor_support.py` — `encode_payload`, `generate_job_name`,
+`payload_requires_fuse`, `parse_worker_output` — speak that worker protocol, so
+a plugin never reimplements the payload or result format. Worker images install
+`ginkgo[cloud]` only: a worker runs tasks and needs no executor plugin.
+
+### Writing one
+
+1. Build a `Plugin` in a module of your distribution — a name and a tuple of
+   contributions, each a spec from `ginkgo.plugins.api`:
+
+   ```python
+   from ginkgo.plugins.api import ExecutorType, Plugin
+
+   PLUGIN = Plugin(
+       name="ginkgo-k8s",
+       contributions=(
+           ExecutorType(
+               name="k8s",
+               label="Kubernetes",
+               required_settings=("image",),
+               build=build_kubernetes_executor,
+           ),
+       ),
+   )
+   ```
+
+2. Register it under the `ginkgo.plugins` entry-point group in the
+   distribution's `pyproject.toml` (see [Discovery](#discovery)).
+3. Pin the exact core version you were built against.
+
+`build` receives the executor table's settings (without `type` and `code`) and
+is called only on first dispatch, so importing the plugin stays cheap.
+
+### Testing
+
+The pixi `default` environment installs both plugins editable (feature
+`plugins`); `pixi run test` runs `pytest tests/ plugins/`. Plugin tests live in
+`plugins/<name>/tests`.
+
+Core's own tests must pass with no plugin installed. The `core` environment has
+none, and `pixi run -e core test-core` runs `tests/` there; CI runs it as a
+separate `core-without-plugins` job. A core test that configures `k8s` or
+`batch` executors uses the `stub_executor_types` fixture (`tests/conftest.py`),
+which swaps in a registry of core's plugin plus stub executor types that mirror
+the real labels and required settings and refuse to build.
 
 ## Not yet extension points
 

@@ -8,12 +8,14 @@ first lookup, so a run that never needs a plugin never imports one.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from typing import TypeVar
 
 from ginkgo.errors import GinkgoError
-from ginkgo.plugins.api import Contribution, Plugin
+from ginkgo.plugins.api import Contribution, ExecutorType, Plugin
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -22,9 +24,16 @@ __all__ = [
     "PluginNotFoundError",
     "PluginRegistry",
     "plugin_registry",
+    "use_plugin_registry",
 ]
 
 ENTRY_POINT_GROUP = "ginkgo.plugins"
+
+_FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
+    (ExecutorType, "k8s"): "ginkgo-k8s",
+    (ExecutorType, "batch"): "ginkgo-gcp",
+}
+"""Which first-party distribution provides a key core does not ship, for hints."""
 
 C = TypeVar("C", bound=Contribution)
 
@@ -112,8 +121,11 @@ class PluginRegistry:
         found = self._index.get((point, key))
         if found is None:
             available = ", ".join(repr(name) for name in self.keys(point)) or "none"
+            provider = _FIRST_PARTY_PROVIDERS.get((point, key))
+            hint = f" Install {provider} to add it." if provider is not None else ""
             raise PluginNotFoundError(
-                f"No installed plugin provides {point.point_name} {key!r}. Available: {available}."
+                f"No installed plugin provides {point.point_name} {key!r}. "
+                f"Available: {available}.{hint}"
             )
         contribution, _ = found
         assert isinstance(contribution, point)
@@ -141,3 +153,19 @@ def plugin_registry() -> PluginRegistry:
     if _active is None:
         _active = PluginRegistry.discover()
     return _active
+
+
+@contextmanager
+def use_plugin_registry(registry: PluginRegistry) -> Iterator[PluginRegistry]:
+    """Make *registry* the process's registry for the duration of the block.
+
+    For tests and embedders that need a known set of plugins regardless of
+    what is installed. The previous registry is restored on exit.
+    """
+    global _active
+    previous = _active
+    _active = registry
+    try:
+        yield registry
+    finally:
+        _active = previous

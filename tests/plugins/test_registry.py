@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ from ginkgo.plugins.registry import (
     PluginLoadError,
     PluginNotFoundError,
     PluginRegistry,
+    use_plugin_registry,
 )
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -73,10 +74,9 @@ class _EntryPoint:
 
 
 @pytest.fixture
-def with_fake_plugin(monkeypatch: pytest.MonkeyPatch) -> PluginRegistry:
-    registry = PluginRegistry(plugins=(BUILTIN, _FAKE))
-    monkeypatch.setattr(registry_module, "_active", registry)
-    return registry
+def with_fake_plugin() -> Iterator[PluginRegistry]:
+    with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, _FAKE))) as registry:
+        yield registry
 
 
 def _discover_with(monkeypatch: pytest.MonkeyPatch, *entries: _EntryPoint) -> PluginRegistry:
@@ -88,7 +88,7 @@ class TestBuiltin:
     def test_core_contributes_every_shipped_implementation(self) -> None:
         registry = PluginRegistry(plugins=(BUILTIN,))
 
-        assert registry.keys(ExecutorType) == ["batch", "k8s"]
+        assert registry.keys(ExecutorType) == []
         assert registry.keys(ObjectStoreType) == ["gs", "oci", "s3"]
         assert registry.keys(MountDriverType) == ["gs", "oci", "s3"]
         assert registry.keys(SecretBackendType) == ["env"]
@@ -99,18 +99,22 @@ class TestLookup:
     def test_an_unknown_key_names_what_is_available(self) -> None:
         registry = PluginRegistry(plugins=(BUILTIN,))
 
-        with pytest.raises(PluginNotFoundError, match="executor type 'slurm'.*'batch', 'k8s'"):
-            registry.get(ExecutorType, "slurm")
+        with pytest.raises(PluginNotFoundError, match="object store for scheme 'az'.*'gs', 'oci'"):
+            registry.get(ObjectStoreType, "az")
+
+    def test_a_first_party_key_names_the_package_that_provides_it(self) -> None:
+        registry = PluginRegistry(plugins=(BUILTIN,))
+
+        with pytest.raises(PluginNotFoundError, match="Install ginkgo-k8s to add it"):
+            registry.get(ExecutorType, "k8s")
 
     def test_two_plugins_claiming_one_key_is_an_error_naming_both(self) -> None:
         clash = Plugin(
-            name="ginkgo-other-k8s",
-            contributions=(
-                ExecutorType(name="k8s", label="K8s", required_settings=(), build=_FakeExecutor),
-            ),
+            name="ginkgo-other-s3",
+            contributions=(ObjectStoreType(scheme="s3", build=lambda **_: None),),
         )
 
-        with pytest.raises(PluginConflictError, match="'ginkgo' and 'ginkgo-other-k8s'"):
+        with pytest.raises(PluginConflictError, match="'ginkgo' and 'ginkgo-other-s3'"):
             PluginRegistry(plugins=(BUILTIN, clash))
 
     def test_the_same_key_on_different_points_does_not_clash(self) -> None:
@@ -199,9 +203,6 @@ class TestEventSubscribers:
             name="ginkgo-observer",
             contributions=(EventSubscriberType(name="observer", build=lambda _: recorder),),
         )
-        monkeypatch.setattr(
-            registry_module, "_active", PluginRegistry(plugins=(BUILTIN, observer))
-        )
         monkeypatch.chdir(tmp_path)
         Path("wf.py").write_text(
             "from ginkgo import flow, task\n\n"
@@ -210,7 +211,8 @@ class TestEventSubscribers:
             encoding="utf-8",
         )
 
-        assert main(["run", "wf.py"]) == 0
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, observer))):
+            assert main(["run", "wf.py"]) == 0
 
         assert recorder.seen[0] == "run_started"
         assert recorder.seen[-1] == "run_completed"
@@ -261,11 +263,9 @@ class TestTaskKinds:
                 ),
             ),
         )
-        monkeypatch.setattr(
-            registry_module, "_active", PluginRegistry(plugins=(BUILTIN, greeting_kind))
-        )
         monkeypatch.chdir(tmp_path)
 
-        assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
-        assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, greeting_kind))):
+            assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
+            assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
         assert len(runner.replayed) == 1

@@ -32,5 +32,6 @@ def command_plugins(args) -> int:
     for plugin in plugins:
         rich_console.print(f"[bold]{plugin.name}[/]")
         for contribution in plugin.contributions:
-            rich_console.print(f"  {contribution.point_name} [cyan]{contribution.key}[/]")
+            key = contribution.key or "(bare name)"
+            rich_console.print(f"  {contribution.point_name} [cyan]{key}[/]")
     return 0

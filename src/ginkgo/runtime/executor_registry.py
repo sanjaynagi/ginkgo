@@ -22,9 +22,7 @@ evaluator never parses config and never constructs backends itself, and
 so unknown names fail at build time with the configured names listed.
 
 A ``type`` is an executor type some installed plugin contributes (see
-:mod:`ginkgo.plugins`); core's own are ``k8s`` and ``batch``. The legacy
-single-executor section ``[remote.<type>]`` is read as an implicitly named
-executor ``<type>``, which is what makes ``--executor k8s`` keep working.
+:mod:`ginkgo.plugins`): ``k8s`` from ginkgo-k8s, ``batch`` from ginkgo-gcp.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.plugins.api import ExecutorType
-from ginkgo.plugins.registry import plugin_registry
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.runtime.remote_executor import RemoteExecutor
 
 # Name reserved for "no remote executor" — the default run placement.
@@ -58,18 +56,12 @@ class ExecutorSpec:
         excluding the ``type`` key and the nested ``code`` table.
     code : dict[str, Any] | None
         Code-sync configuration from the executor's ``code`` sub-table.
-    source : str
-        Config section the spec was read from (``"[remote.k8s]"``,
-        ``"[remote.executors.gpu-k8s]"``), so a message can name the
-        section the user has to edit rather than guess it back from the
-        name.
     """
 
     name: str
     type: str
     settings: dict[str, Any]
     code: dict[str, Any] | None = None
-    source: str = ""
 
 
 @dataclass
@@ -112,19 +104,7 @@ class ExecutorRegistry:
         if not isinstance(remote, dict):
             raise ValueError("[remote] must be a table")
 
-        executor_types = plugin_registry().keys(ExecutorType)
         specs: dict[str, ExecutorSpec] = {}
-        # Legacy sections first so an explicit [remote.executors.k8s] wins.
-        for type_name in executor_types:
-            section = remote.get(type_name)
-            if isinstance(section, dict) and section:
-                specs[type_name] = _spec_from_table(
-                    name=type_name,
-                    table=section,
-                    type_name=type_name,
-                    source=f"[remote.{type_name}]",
-                )
-
         executors = remote.get("executors", {})
         if not isinstance(executors, dict):
             raise ValueError("[remote.executors] must be a table of named executors")
@@ -138,14 +118,16 @@ class ExecutorRegistry:
                     "pick a name that does not collide with local placement"
                 )
             type_name = table.get("type")
-            if not isinstance(type_name, str) or type_name not in executor_types:
-                supported = ", ".join(executor_types)
-                raise ValueError(f"{source} needs a type from {{{supported}}}, got {type_name!r}")
+            if not isinstance(type_name, str) or not type_name:
+                raise ValueError(f"{source} needs a type, got {type_name!r}")
+            try:
+                plugin_registry().get(ExecutorType, type_name)
+            except PluginNotFoundError as exc:
+                raise PluginNotFoundError(f"{source}: {exc}") from exc
             specs[name] = _spec_from_table(
                 name=name,
                 table=table,
                 type_name=type_name,
-                source=source,
             )
 
         default_name = None if default in (None, LOCAL) else default
@@ -305,14 +287,13 @@ def _spec_from_table(
     name: str,
     table: dict[str, Any],
     type_name: str,
-    source: str,
 ) -> ExecutorSpec:
     """Split one executor config table into settings and code-sync config."""
     code = table.get("code")
     if code is not None and not isinstance(code, dict):
-        raise ValueError(f"{source} code must be a table")
+        raise ValueError(f"[remote.executors.{name}] code must be a table")
     settings = {key: value for key, value in table.items() if key not in {"type", "code"}}
-    return ExecutorSpec(name=name, type=type_name, settings=settings, code=code, source=source)
+    return ExecutorSpec(name=name, type=type_name, settings=settings, code=code)
 
 
 def _available_hint(specs: dict[str, ExecutorSpec]) -> str:
@@ -349,11 +330,5 @@ def _build_executor(spec: ExecutorSpec) -> RemoteExecutor:
 
 
 def _source_hint(spec: ExecutorSpec) -> str:
-    """Config section a spec came from, for error messages.
-
-    An explicit ``[remote.executors.k8s]`` overrides the legacy
-    ``[remote.k8s]``, so the section cannot be derived from the name --
-    it is recorded when the spec is parsed. Specs built around an
-    already-constructed backend have no section; name them instead.
-    """
-    return spec.source or f"[remote.executors.{spec.name}]"
+    """Config section a spec came from, for error messages."""
+    return f"[remote.executors.{spec.name}]"

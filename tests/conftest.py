@@ -8,6 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from ginkgo.plugins.api import ExecutorType, Plugin
+from ginkgo.plugins.builtin import BUILTIN
+from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
 from ginkgo.remote.backend import RemoteObjectMeta
 from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo.runtime.run_summary import RunSummary
@@ -250,3 +253,39 @@ def latest_run_view(*, root: Path) -> tuple[Path, dict[str, Any]]:
         "workflow": run.workflow,
         "tasks": tasks,
     }
+
+
+def _unbuildable_executor(settings: Any) -> Any:
+    raise AssertionError("a test reached a real executor build; stub the backend instead")
+
+
+STUB_EXECUTORS = Plugin(
+    name="stub-executors",
+    contributions=(
+        ExecutorType(
+            name="k8s",
+            label="Kubernetes",
+            required_settings=("image",),
+            build=_unbuildable_executor,
+        ),
+        ExecutorType(
+            name="batch",
+            label="GCP Batch",
+            required_settings=("project", "image"),
+            build=_unbuildable_executor,
+        ),
+    ),
+)
+"""Executor types named like the first-party ones, for config tests.
+
+Core's tests run without plugins installed, so a test that configures executors
+gets these instead of ginkgo-k8s and ginkgo-gcp. They mirror the real types'
+labels and required settings and refuse to build anything.
+"""
+
+
+@pytest.fixture
+def stub_executor_types():
+    """Run the test against core's plugin plus ``STUB_EXECUTORS`` only."""
+    with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, STUB_EXECUTORS))) as registry:
+        yield registry

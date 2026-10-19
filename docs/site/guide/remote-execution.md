@@ -41,26 +41,59 @@ def train(dataset: str) -> str:
     ...
 ```
 
-Run the workflow with a remote executor:
+Run the workflow with a remote executor, naming a table from
+`[remote.executors]`:
 
 ```bash
-ginkgo run --executor k8s flow.py
+ginkgo run --executor gpu-k8s flow.py
 # or
-ginkgo run --executor batch flow.py
-# or any name from [remote.executors]
 ginkgo run --executor cheap-batch flow.py
 ```
 
+## Installing an Executor
+
+Executors are plugins, not part of core. Each executor type comes from a
+separate distribution in the ginkgo repository:
+
+| Type | Backend | Plugin |
+|------|---------|--------|
+| `k8s` | Kubernetes | `ginkgo-k8s` |
+| `batch` | GCP Batch | `ginkgo-gcp` |
+
+Install ginkgo with every first-party plugin:
+
+```bash
+uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+```
+
+or add only the one you need:
+
+```bash
+uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
+  --with "ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp"
+```
+
+`ginkgo plugins` lists the installed executor types. A config that names a type
+no installed plugin provides fails before the run starts:
+
+```text
+[remote.executors.k8s]: No installed plugin provides executor type 'k8s'. Available: none. Install ginkgo-k8s to add it.
+```
+
+The plugins are needed where `ginkgo run` submits jobs, not in the worker image
+(see [Worker Docker Image](#worker-docker-image)).
+
 ## Named Executors
 
-A workflow can span several backends: training on a GPU Kubernetes namespace,
-bulk work on a cheap batch queue. Name each one under `[remote.executors]` and
-route tasks to it by name:
+Every executor is a named table under `[remote.executors]`, with a `type`
+saying which backend it uses. A workflow can span several backends — training
+on a GPU Kubernetes namespace, bulk work on a cheap batch queue — by naming
+each one and routing tasks to it by name:
 
 ```toml
 # ginkgo.toml
 [remote.executors.gpu-k8s]
-type = "k8s"                 # k8s | batch
+type = "k8s"                 # an installed executor type: k8s | batch
 namespace = "ml"
 image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
 gpu_type = "nvidia-l4"
@@ -76,9 +109,10 @@ mode = "sync"
 package = "my_workflow"
 ```
 
-Each table takes a `type` plus the same settings the corresponding
-single-executor section accepts (see below), and its own optional `code`
-sub-table for code sync.
+Each table takes a `type`, the settings for that type (see
+[Supported Executors](#supported-executors)), and its own optional `code`
+sub-table for code sync. The name is yours to choose: `--executor k8s` needs a
+table named `k8s`, and there is no implicit executor per type.
 
 - **`@task(executor="gpu-k8s")`** always runs on that executor. An unknown name
   fails at build time, before any task runs, listing the configured names.
@@ -91,10 +125,6 @@ sub-table for code sync.
   GPU overflow fail with a build error.
 - Executor clients are constructed on first dispatch, so a configured executor
   no task reaches is never contacted.
-
-`[remote.k8s]` and `[remote.batch]` keep working and are read as executors
-implicitly named `k8s` and `batch`, so `--executor k8s` and
-`@task(executor="k8s")` both resolve to `[remote.k8s]`.
 
 ## Task Resource Declarations
 
@@ -111,17 +141,18 @@ and map to cloud resource requests remotely:
 
 ## Supported Executors
 
-Both backend types below can also be declared under `[remote.executors.<name>]`
-with a `type` key, several times over, as shown above.
+Each type below is configured as a `[remote.executors.<name>]` table, as many
+times over as you need. The examples name each executor after its type.
 
-### Kubernetes (`--executor k8s`)
+### Kubernetes (`type = "k8s"`)
 
 Submits tasks as `batch/v1` Jobs on any Kubernetes cluster. Works with GKE,
-EKS, OKE, or any standard K8s installation.
+EKS, OKE, or any standard K8s installation. Requires the `ginkgo-k8s` plugin.
 
 ```toml
 # ginkgo.toml
-[remote.k8s]
+[remote.executors.k8s]
+type = "k8s"
 image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
 namespace = "ginkgo"
 gpu_type = "nvidia-l4"        # GKE accelerator node selector (GPU tasks only)
@@ -142,14 +173,15 @@ bash scripts/gke-setup.sh     # creates cluster, registry, builds/pushes image
 bash scripts/gke-teardown.sh   # deletes everything when done
 ```
 
-### GCP Batch (`--executor batch`)
+### GCP Batch (`type = "batch"`)
 
 Submits tasks as serverless GCP Batch jobs. No cluster to manage -- each job
 runs on Google-managed infrastructure and you pay only for compute time.
 
 ```toml
 # ginkgo.toml
-[remote.batch]
+[remote.executors.batch]
+type = "batch"
 project = "my-gcp-project"
 region = "europe-west2"
 image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
@@ -163,8 +195,11 @@ service_account = "sa@proj.iam"    # optional
 
 ```bash
 gcloud services enable batch.googleapis.com
-pip install google-cloud-batch google-cloud-logging
 ```
+
+and the `ginkgo-gcp` plugin installed where you run `ginkgo` (see
+[Installing an Executor](#installing-an-executor)); it brings
+`google-cloud-batch` and `google-cloud-logging` with it.
 
 ## Code Sync
 
@@ -176,7 +211,7 @@ downloads and extracts it before executing the task.
 ```toml
 # ginkgo.toml — add alongside your executor config
 
-[remote.k8s.code]       # or [remote.batch.code], or [remote.executors.<name>.code]
+[remote.executors.k8s.code]   # [remote.executors.<name>.code]
 mode = "sync"
 package = "my_workflow"  # directory name of your Python package
 exclude = ["*.ipynb_checkpoints", "notebooks/scratch/"]  # optional extra excludes
@@ -190,7 +225,8 @@ re-uploaded, and executors sharing a package and exclude list share one
 bundle rather than uploading it twice.
 
 Code config is read from the executor that runs the task, and only from it.
-A `[remote.k8s.code]` table does not apply to `--executor batch` — give each
+A `[remote.executors.k8s.code]` table does not apply to an executor named
+`batch` — give each
 executor that needs code sync its own `code` table. When one executor syncs
 code and an executor the run dispatches to has no `code` table, the run warns
 before starting, since tasks there would silently use the code baked into the
@@ -198,7 +234,10 @@ image.
 
 ## Worker Docker Image
 
-The worker image needs Python 3.11+ and ginkgo installed:
+The worker image needs Python 3.11+ and ginkgo installed. It needs no
+executor plugin — a worker runs tasks, it does not submit them — so core with
+the `cloud` extra (the GCS object store) is enough. The repository's
+`Dockerfile`:
 
 ```dockerfile
 FROM python:3.11-slim
@@ -208,7 +247,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 COPY pyproject.toml .
-COPY ginkgo/ ginkgo/
+COPY src/ginkgo/ src/ginkgo/
 RUN pip install --no-cache-dir ".[cloud]"
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
@@ -352,7 +391,8 @@ docker buildx build --platform linux/amd64 \
 Wire it in `ginkgo.toml`:
 
 ```toml
-[remote.k8s]        # or [remote.batch]
+[remote.executors.k8s]   # any executor table
+type = "k8s"
 image = "<registry>/ginkgo/worker:v2"            # regular workloads
 fuse_image = "<registry>/ginkgo/worker-fuse:latest"  # swapped in when a
                                                      # task needs fuse

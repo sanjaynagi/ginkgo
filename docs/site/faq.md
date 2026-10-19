@@ -720,19 +720,27 @@ def train_model(dataset: str) -> str:
 
 ### Which remote backends are actually supported?
 
-Two executor *types* exist: Kubernetes and GCP Batch. `--executor` takes
-`local` (the default), any name declared under `[remote.executors]` in
-ginkgo.toml, or `k8s` / `batch` for the legacy single-executor config
-sections. Several named executors of either type can be configured at once,
-and a task routes to one with `@task(executor="name")`. There is a single
+Two executor *types* exist: Kubernetes (`k8s`, from the `ginkgo-k8s` plugin)
+and GCP Batch (`batch`, from the `ginkgo-gcp` plugin). Neither ships with core;
+install the plugin you need (see
+[Installing an Executor](guide/remote-execution.md#installing-an-executor)).
+`--executor` takes `local` (the default) or any name declared under
+`[remote.executors]` in ginkgo.toml. Several named executors of either type can
+be configured at once, and a task routes to one with
+`@task(executor="name")`. There is a single
 Kubernetes executor implementation that submits
 `batch/v1` Jobs, so GKE / EKS / OKE are not separate backends — they are just
 clusters the one Kubernetes executor talks to. GCP Batch is a distinct
 serverless executor.
 
+```toml
+[remote.executors.k8s]
+type = "k8s"
+image = "europe-west2-docker.pkg.dev/my-project/ginkgo/worker:latest"
+```
+
 ```bash
-ginkgo run --executor k8s flow.py
-ginkgo run --executor batch flow.py
+ginkgo run --executor k8s flow.py   # the table named k8s
 ```
 
 ### How does my code get packaged and synced to a remote worker?
@@ -746,7 +754,7 @@ each worker downloads and extracts it before running. The bundle is built once
 per run and reused, and unchanged code is not re-uploaded.
 
 ```toml
-[remote.k8s.code]        # or [remote.batch.code]
+[remote.executors.k8s.code]   # [remote.executors.<name>.code]
 mode = "sync"
 package = "my_workflow"
 
@@ -760,7 +768,7 @@ Use the `@task` decorator resource declarations: `threads` (int, CPU cores),
 `memory` (a string in Kubernetes notation such as `"16Gi"`), `gpu` (int), and
 `gpu_type` (accelerator type, e.g. `"nvidia-tesla-t4"`). These are sent to the
 worker as the job's resource request. A per-task `gpu_type` overrides the
-executor-level default (`gpu_type` under `[remote.k8s]` or `[remote.batch]`);
+executor-level default (`gpu_type` in the `[remote.executors.<name>]` table);
 GCP Batch rejects a GPU job that has no accelerator type from either source.
 
 ```python

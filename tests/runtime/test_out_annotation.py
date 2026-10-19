@@ -97,6 +97,7 @@ class _FakeRemoteExecutor(RemoteExecutor):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("stub_executor_types")
 class TestOutRemoteDispatchAllowed:
     """``Out[...]`` no longer blocks remote placement (issue #307 phase 2C).
 

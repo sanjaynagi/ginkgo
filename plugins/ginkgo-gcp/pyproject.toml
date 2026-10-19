@@ -1,0 +1,21 @@
+[project]
+name = "ginkgo-gcp"
+version = "0.1.0"
+description = "Google Cloud integrations for ginkgo: the GCP Batch executor"
+requires-python = ">= 3.11"
+license = "Apache-2.0"
+dependencies = [
+    "ginkgo==0.1.0",
+    "google-cloud-batch>=0.17",
+    "google-cloud-logging>=3.10",
+]
+
+[project.entry-points."ginkgo.plugins"]
+gcp = "ginkgo_gcp:PLUGIN"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ginkgo_gcp"]
