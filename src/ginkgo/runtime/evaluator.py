@@ -618,7 +618,12 @@ class ConcurrentEvaluator:
                         self._skip_blocked_nodes()
                         with self.profiler.timed("scheduler_prepare"):
                             self._prepare_pending_nodes()
-                            self._finalize_dynamic_nodes()
+                            if self._failure is None:
+                                self._finalize_dynamic_nodes()
+
+                    # A preparation failure stops the run here: nothing it
+                    # readied in the same pass is dispatched.
+                    if self._failure is None:
                         with self.profiler.timed("scheduler_dispatch"):
                             self._dispatch_ready_nodes(
                                 python_executor=executors.python,
@@ -1212,8 +1217,12 @@ class ConcurrentEvaluator:
 
             if future.cancelled():
                 self._remote_dispatch.pop_handle(node.node_id)
-                # Only a stopping run cancels work.
-                assert self._failure is not None
+                # Only a stopping run cancels work; anything else is a
+                # scheduler bug, which stops the run and closes the node.
+                if self._failure is None:
+                    raise RuntimeError(
+                        f"Task {node.display_label or node.task_def.name!r} was cancelled while the run was not stopping"
+                    )
                 self._close_unfinished_node(node=node, reason=self._failure)
                 continue
 
@@ -1321,8 +1330,17 @@ class ConcurrentEvaluator:
     ) -> None:
         """Either retry a failed task attempt or fail the run.
 
-        ``retryable=False`` records the failure without consulting the
-        task's retry policy.
+        Parameters
+        ----------
+        node : NodeRun
+            The task whose attempt failed.
+        exc : BaseException
+            What the attempt raised; secrets are redacted before it is
+            recorded.
+        retryable : bool
+            Whether the task's retry policy is consulted. ``False`` records
+            the failure outright, for failures that did not come from running
+            the task body (such as preparation) and would recur unchanged.
         """
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
         if (
