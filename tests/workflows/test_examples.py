@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shlex
 import shutil
 import subprocess
 from contextlib import contextmanager
@@ -126,67 +125,6 @@ def _mock_docker() -> Iterator[None]:
         yield
 
 
-@contextmanager
-def _mock_notebook_tools() -> Iterator[None]:
-    """Mock notebook tooling so example workflows do not need real installs."""
-    from ginkgo.runtime.task_runners.shell import ShellRunner
-
-    original_run_subprocess = ShellRunner.run_subprocess
-
-    def _patched_run_subprocess(
-        self_runner: Any,
-        *,
-        argv: str | list[str],
-        use_shell: bool,
-        on_stdout: Any = None,
-        on_stderr: Any = None,
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        if isinstance(argv, str) and "papermill" in argv:
-            parts = shlex.split(argv)
-            # `papermill <notebook> <executed>`. Locate it rather than indexing a
-            # fixed position: the command carries a leading `env VAR=... ` prefix
-            # whose length is not this mock's business.
-            output_path = Path(parts[parts.index("papermill") + 2])
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text("executed notebook", encoding="utf-8")
-            if on_stdout is not None:
-                on_stdout("papermill ok\n")
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=0,
-                stdout="papermill ok\n",
-                stderr="",
-            )
-
-        if isinstance(argv, str) and "nbconvert" in argv:
-            parts = shlex.split(argv)
-            output_stem = parts[parts.index("--output") + 1]
-            output_dir = Path(parts[parts.index("--output-dir") + 1])
-            html_path = output_dir / f"{output_stem}.html"
-            html_path.parent.mkdir(parents=True, exist_ok=True)
-            html_path.write_text("<html><body>notebook report</body></html>", encoding="utf-8")
-            if on_stdout is not None:
-                on_stdout("nbconvert ok\n")
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=0,
-                stdout="nbconvert ok\n",
-                stderr="",
-            )
-
-        return original_run_subprocess(
-            self_runner,
-            argv=argv,
-            use_shell=use_shell,
-            on_stdout=on_stdout,
-            on_stderr=on_stderr,
-        )
-
-    with patch.object(ShellRunner, "run_subprocess", _patched_run_subprocess):
-        yield
-
-
 @pytest.fixture
 def installed_plugins() -> Iterator[PluginRegistry]:
     """Run against the installed plugins rather than core's test stubs."""
@@ -197,8 +135,9 @@ def installed_plugins() -> Iterator[PluginRegistry]:
 @pytest.mark.integration
 class TestExamples:
     @pytest.mark.skipif(
-        importlib.util.find_spec("ginkgo_pixi") is None,
-        reason="the init scaffold's script task needs the ginkgo-pixi plugin",
+        importlib.util.find_spec("ginkgo_pixi") is None
+        or importlib.util.find_spec("ginkgo_notebook") is None,
+        reason="the init scaffold needs the ginkgo-pixi and ginkgo-notebook plugins",
     )
     def test_init_example_runs_and_caches(
         self,
@@ -209,7 +148,7 @@ class TestExamples:
         example_dir = _materialize_example(name="init", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
-        with _mock_docker(), _mock_notebook_tools():
+        with _mock_docker():
             first_run_dir, first_manifest = _run_example(example_dir=example_dir)
 
         notebook_task = next(
@@ -221,8 +160,7 @@ class TestExamples:
 
         assert first_manifest["status"] == "succeeded"
         assert len(first_manifest["tasks"]) == 15
-        assert notebook_task["task_type"] == "notebook"
-        assert notebook_task["render_status"] == "succeeded"
+        assert notebook_task["kind"] == "notebook"
         assert notebook_html.is_file()
         assert (example_dir / "results" / "summary.json").is_file()
         assert (example_dir / "results" / "delivery_manifest.md").is_file()
@@ -235,9 +173,9 @@ class TestExamples:
         assert seed_card_outputs
         assert all(output.get("artifact_id") for output in seed_card_outputs)
 
-        with _mock_docker(), _mock_notebook_tools():
+        with _mock_docker():
             _, second_manifest = _run_example(example_dir=example_dir)
-        with _mock_docker(), _mock_notebook_tools():
+        with _mock_docker():
             _, third_manifest = _run_example(example_dir=example_dir)
 
         assert second_manifest["status"] == "succeeded"
@@ -328,16 +266,20 @@ class TestExamples:
         _, second_manifest = _run_example(example_dir=example_dir)
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ginkgo_notebook") is None,
+        reason="the retail example's notebook task needs the ginkgo-notebook plugin",
+    )
     def test_retail_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        installed_plugins: PluginRegistry,
     ) -> None:
         example_dir = _materialize_example(name="retail", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
 
-        with _mock_notebook_tools():
-            first_run_dir, first_manifest = _run_example(example_dir=example_dir)
+        first_run_dir, first_manifest = _run_example(example_dir=example_dir)
         region_outputs = sorted((example_dir / "results" / "regions").glob("*.csv"))
         notebook_task = next(
             task
@@ -349,16 +291,14 @@ class TestExamples:
         assert first_manifest["status"] == "succeeded"
         assert len(first_manifest["tasks"]) == 14
         assert len(region_outputs) == 4
-        assert notebook_task["task_type"] == "notebook"
-        assert notebook_task["render_status"] == "succeeded"
+        assert notebook_task["kind"] == "notebook"
         assert notebook_html.is_file()
         assert (example_dir / "results" / "delivery_manifest.txt").is_file()
         assert "Top region:" in (example_dir / "results" / "executive_report.md").read_text(
             encoding="utf-8"
         )
 
-        with _mock_notebook_tools():
-            second_run_dir, second_manifest = _run_example(example_dir=example_dir)
+        second_run_dir, second_manifest = _run_example(example_dir=example_dir)
         assert second_run_dir is not None
         assert second_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in second_manifest["tasks"].values())

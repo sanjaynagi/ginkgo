@@ -14,7 +14,7 @@ package `ginkgo_report`), which contributes `ginkgo report <run-id>` as a
 - **Shareable.** Opens in any modern browser directly from `file://`; can be
   zipped or mailed without losing fidelity.
 - **Read-only.** Consumes the run summary, params, logs, and rendered
-  notebooks. Writes nothing back to workspace state.
+  pages. Writes nothing back to workspace state.
 - **Intentional aesthetic.** A document, not a control panel; typography
   and palette are fixed tokens with no runtime theming.
 - **Provenance-bound content.** Every rendered string is either a fixed
@@ -52,7 +52,7 @@ ginkgo_report/
 │   ├── _graph.html.j2
 │   ├── _tasks.html.j2
 │   ├── _failure.html.j2
-│   ├── _notebooks.html.j2
+│   ├── _notebooks.html.j2   # the "Rendered pages" section
 │   ├── _environment.html.j2
 │   └── _footer.html.j2
 └── static/
@@ -105,11 +105,15 @@ uses Rich styles and icons, the report uses tone tokens (`ok` / `fail` /
 │       ├── fraunces-roman.woff2
 │       ├── fraunces-italic.woff2
 │       └── jetbrains-mono.woff2
-├── notebooks/<task>.html                       # copied rendered_html sidecars
+├── notebooks/<task_key>_<task>.html            # copied rendered_html pages
 └── logs/<log_filename>                         # failed-task logs
 ```
 
-Notebooks and logs are copied rather than inlined. The `--single-file` mode
+Rendered pages and logs are copied rather than inlined. A task that records a
+`rendered_html` annotation (`TaskSummary.rendered_html`) gets a card in the
+"Rendered pages" section, titled by the task's label; a page a cache hit
+reused carries `from run <id>` in its sub-line. The report knows nothing about
+notebooks: any task kind that records the annotation is listed. The `--single-file` mode
 inlines the stylesheet, fonts and islands script so the document stands on
 its own.
 
@@ -194,7 +198,7 @@ structure is drawn with hairline `--line*` borders on neutral panels.
 ## Layout
 
 - Fixed 248 px left sidebar (warm-tinted, sticky): brand, run_id,
-  status, TOC groups (Execution, Results when the run produced notebooks,
+  status, TOC groups (Execution, Results when the run has rendered pages,
   Appendix), optional
   workspace link.
 - Main column (max 1040 px): breadcrumb → H1 + run tag → chip strip →
@@ -202,7 +206,7 @@ structure is drawn with hairline `--line*` borders on neutral panels.
 - Mobile (< 960 px) collapses to a single column.
 
 Sections are numbered over the ones a given run actually renders, so the
-numerals are always contiguous: a clean run with no notebooks reads
+numerals are always contiguous: a clean run with no rendered pages reads
 `01..05`, and the same run with a failure reads `01..06` with `05 Failure`
 inserted. `_SECTION_LAYOUT` in `model.py` is the single home for section
 order, titles, anchors, and sidebar grouping; `build_report_data` turns it
@@ -212,7 +216,7 @@ partial is what previously left holes (`01 02 03 04 06 08`) and read as
 sections having silently vanished.
 
 `Failure` renders — and is linked from the sidebar — only when the manifest
-reports at least one failure; `Notebooks` only when the run produced one.
+reports at least one failure; `Rendered pages` only when the run has one.
 Both conditions live in `index.html.j2` beside the include.
 
 ## Interactivity (islands)
@@ -235,7 +239,7 @@ enhancement. There is no framework, no bundler, no build step.
 - Fonts rewritten to `data:font/woff2;base64,…` URIs inside `@font-face`.
 - Islands script inlined in a `<script type="module">` block.
 
-Notebook iframes remain as relative references (their content is too
+Rendered pages remain as relative references (their content is too
 large to reasonably base64 into a single document); `--single-file` is
 intended for short, self-contained report sharing. Logs copied into the
 bundle default mode are also referenced by relative path.

@@ -16,28 +16,6 @@ def _rendered(details: FailureDetails) -> str:
     return console.file.getvalue()
 
 
-def test_a_notebook_failures_error_row_is_a_headline_not_the_full_traceback() -> None:
-    traceback_text = (
-        "Notebook task survey failed during execute with exit code 1: papermill ...\n"
-        'Exception encountered at "In [7]":\n'
-        "KeyError                                 Traceback (most recent call last)\n"
-        "KeyError: 'slope_per_year'"
-    )
-    details = FailureDetails(
-        task_label="survey",
-        exit_code=1,
-        log_path=None,
-        log_tail=traceback_text.splitlines(),
-        error=traceback_text,
-        task_kind="notebook",
-    )
-
-    text = _rendered(details)
-
-    assert "papermill failed executing cell 7: KeyError: 'slope_per_year'" in text
-    assert text.count("Traceback (most recent call last)") == 1
-
-
 def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line() -> None:
     details = FailureDetails(
         task_label="task_a",

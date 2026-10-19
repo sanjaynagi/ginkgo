@@ -27,7 +27,7 @@ from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
 from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE
 from ginkgo.cli.renderers.models import (
     FailureDetails,
-    CliNotebookSummary,
+    CliRenderedPage,
     ResourceRenderState,
     CliRunSummary,
     SkipDetails,
@@ -718,7 +718,7 @@ def run_workflow(
                                 run_summary=run_summary,
                                 renderer=renderer,
                             ),
-                            notebooks=_render_notebooks(
+                            pages=_rendered_pages(
                                 run_summary=run_summary,
                                 renderer=renderer,
                             ),
@@ -737,7 +737,7 @@ def run_workflow(
                         elapsed=time.perf_counter() - run_started,
                         success=True,
                         resources=resource_summary,
-                        notebooks=_render_notebooks(
+                        pages=_rendered_pages(
                             run_summary=run_summary,
                             renderer=renderer,
                         ),
@@ -890,44 +890,29 @@ def _print_profile_table(
     console.print(table)
 
 
-def _render_notebooks(
+def _rendered_pages(
     *,
     run_summary: RunSummary,
     renderer: CliRunRenderer,
-) -> list[CliNotebookSummary]:
-    """Build CLI-renderer notebook rows from a run summary.
-
-    Resolves rendered HTML paths against the run directory, substitutes
-    runtime task labels when the renderer has them, and marks rows whose
-    artifact an earlier run produced and this run only replayed from cache.
-    """
-    rows: list[CliNotebookSummary] = []
-    for notebook in run_summary.notebooks:
-        if notebook.rendered_html is None:
+) -> list[CliRenderedPage]:
+    """List the pages this run's tasks rendered, under their runtime labels."""
+    pages: list[CliRenderedPage] = []
+    for task in run_summary.tasks:
+        html_path = task.rendered_html_absolute(run_dir=run_summary.run_dir)
+        if html_path is None:
             continue
-        html_path = (run_summary.run_dir / notebook.rendered_html).resolve()
-        task_summary = next(
-            (task for task in run_summary.tasks if task.task_key == notebook.task_key),
-            None,
-        )
-        node_id = task_summary.node_id if task_summary is not None else None
-        task_label = (
-            renderer.label_for_node(node_id) if isinstance(node_id, int) else None
-        ) or notebook.base_name
-        rows.append(
-            CliNotebookSummary(
-                task_label=task_label,
+        pages.append(
+            CliRenderedPage(
+                task_label=renderer.label_for_node(task.node_id) or task.label,
                 html_path=html_path,
-                render_status=notebook.render_status,
-                render_error=notebook.render_error,
                 replayed_from_run_id=(
-                    notebook.notebook_artifact_run_id
-                    if notebook.notebook_artifact_run_id not in (None, run_summary.run_id)
+                    task.rendered_html_run_id
+                    if task.rendered_html_run_id not in (None, run_summary.run_id)
                     else None
                 ),
             )
         )
-    return rows
+    return pages
 
 
 def _count_path_tracked_inputs(*, run_summary: RunSummary) -> int:

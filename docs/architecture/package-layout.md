@@ -24,7 +24,6 @@ ginkgo/
 │   ├── expr.py
 │   ├── flow.py
 │   ├── hashing.py        # BLAKE3 content-hash helpers (dependency-free)
-│   ├── notebook.py
 │   ├── optional.py       # optional() output declarations for driver tasks
 │   ├── remote.py         # remote_file / remote_folder input references
 │   ├── resources.py      # declarative per-task resource requirements
@@ -42,7 +41,6 @@ ginkgo/
 │   ├── scheduler.py
 │   ├── worker.py
 │   ├── module_loader.py
-│   ├── notebook_kernels.py
 │   ├── events.py
 │   ├── log_drain.py      # worker log chunks to TaskLog events
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
@@ -61,7 +59,6 @@ ginkgo/
 │   ├── task_runners/
 │   │   ├── driver.py           # shared base for out-of-process runners
 │   │   ├── shell.py            # ShellRunner: subprocess + shell driver tasks
-│   │   ├── notebook.py         # NotebookRunner
 │   │   ├── script.py           # ScriptRunner
 │   │   └── subworkflow.py      # child `ginkgo run` subprocess
 │   ├── caching/
@@ -121,9 +118,9 @@ ginkgo/
 │   ├── errors.py            # how a top-level failure is reported
 │   ├── workspace.py         # canonical workflow discovery
 │   ├── workflow_params.py   # CLI side of ginkgo.param
-│   ├── commands/            # one module per command: run, inspect, cache,
-│   │                        # db, debug, doctor, env, export, history, init,
-│   │                        # notebooks, query, report, runs, secrets, why
+│   ├── commands/            # one module per core command: run, inspect,
+│   │                        # cache, db, debug, doctor, export, history, init,
+│   │                        # plugins, query, runs, secrets, why
 │   └── renderers/           # rich live output, JSONL agent output, dry-run
 │                            # and debug renderers, shared formatting
 └── templates/
@@ -163,6 +160,13 @@ plugins/
 │   │   ├── __init__.py      # PLUGIN: the oci object store and FUSE driver
 │   │   ├── store.py         # OCIFileSystemBackend, parse_oci_uri
 │   │   └── rclone.py        # RcloneDriver
+│   └── tests/
+├── ginkgo-notebook/
+│   ├── pyproject.toml       # entry point notebook = "ginkgo_notebook:PLUGIN"
+│   ├── src/ginkgo_notebook/
+│   │   ├── __init__.py      # PLUGIN: the notebook task kind
+│   │   ├── directive.py     # notebook() and NotebookDirective
+│   │   └── runner.py        # NotebookRunner: one `marimo export html` per task
 │   └── tests/
 ├── ginkgo-pixi/
 │   ├── pyproject.toml       # entry point pixi = "ginkgo_pixi:PLUGIN"

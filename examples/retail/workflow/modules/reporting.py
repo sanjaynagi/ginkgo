@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import file, notebook, task
+from ginkgo import file, task
+from ginkgo_notebook import notebook
 
 _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 
@@ -51,7 +52,7 @@ def render_channel_performance_notebook(
     report_title: str,
 ) -> file:
     """Render a notebook view of channel performance trends."""
-    return notebook(_NOTEBOOKS_DIR / "channel_performance.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "channel_performance.py")
 
 
 @task()

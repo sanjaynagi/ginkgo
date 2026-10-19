@@ -2470,7 +2470,7 @@ class ConcurrentEvaluator:
         )
 
     def _emit_task_notice(self, node: NodeRun, message: str) -> None:
-        """Surface a runner notice (e.g. an ipykernel install) as an event."""
+        """Surface a runner notice as an event."""
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,

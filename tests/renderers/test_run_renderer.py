@@ -17,7 +17,7 @@ from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
 from ginkgo.cli.renderers.common import _status_icon
 from ginkgo.cli.renderers.models import (
-    CliNotebookSummary,
+    CliRenderedPage,
     CliRunSummary,
     FailureDetails,
     SkipDetails,
@@ -655,13 +655,13 @@ def test_a_notice_from_an_unplanned_task_uses_its_display_label(tmp_path: Path) 
                 "status": "notice",
                 "node_id": 9,
                 "display_label": "child[b]",
-                "message": "installing ipykernel",
+                "message": "installing tools",
             }
         )
         + "\n"
     )
 
-    assert renderer._state.notices == ["child[b]: installing ipykernel"]
+    assert renderer._state.notices == ["child[b]: installing tools"]
 
 
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
@@ -765,7 +765,7 @@ def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
 
 
 def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
-    """Exit 3 is a finished run: its notebooks and directory are real."""
+    """Exit 3 is a finished run: its rendered pages and directory are real."""
     renderer, output = _renderer(tmp_path)
     html = tmp_path / "report.html"
     html.write_text("<html></html>", encoding="utf-8")
@@ -784,11 +784,11 @@ def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
                 ignored=True,
             )
         ],
-        notebooks=[CliNotebookSummary(task_label="survey", html_path=html)],
+        pages=[CliRenderedPage(task_label="survey", html_path=html)],
     )
 
     text = output.getvalue()
-    assert "Notebooks materialised (1)" in text
+    assert "Rendered pages (1)" in text
     assert "survey" in text
     assert "Run directory" in text
 
@@ -801,35 +801,6 @@ def test_a_run_a_failure_ended_lists_no_products(tmp_path: Path) -> None:
     renderer.finish(elapsed=1.0, success=False)
 
     assert "Run directory" not in output.getvalue()
-
-
-def test_a_notebook_failures_reason_is_a_headline_not_the_full_traceback(
-    tmp_path: Path,
-) -> None:
-    """The Reason row names the root cause once; the traceback lives only in the tail."""
-    renderer, _ = _renderer(tmp_path)
-    traceback_text = (
-        "Notebook task survey failed during execute with exit code 1: papermill ...\n"
-        'Exception encountered at "In [7]":\n'
-        "KeyError                                 Traceback (most recent call last)\n"
-        "KeyError: 'slope_per_year'"
-    )
-    details = FailureDetails(
-        task_label="survey",
-        exit_code=1,
-        log_path=None,
-        log_tail=traceback_text.splitlines(),
-        error=traceback_text,
-        task_kind="notebook",
-    )
-
-    console = Console(file=StringIO(), width=120, force_terminal=False)
-    console.print(renderer._layout.render_failure_panel(details))
-    text = console.file.getvalue()
-
-    assert "papermill failed executing cell 7: KeyError: 'slope_per_year'" in text
-    # The full traceback line appears once, under "Log tail" - not again in "Reason".
-    assert text.count("Traceback (most recent call last)") == 1
 
 
 @pytest.mark.parametrize("label", ["clean[bad]", "clean[bad[/x]]", "clean[bold]"])
@@ -858,7 +829,7 @@ def test_a_bracketed_label_is_printed_verbatim_in_the_failure_panel(
 def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line(
     tmp_path: Path,
 ) -> None:
-    """The general dedupe applies beyond notebooks, whenever error duplicates the tail."""
+    """A multi-line error that repeats the log tail is shown by its last line."""
     renderer, _ = _renderer(tmp_path)
     details = FailureDetails(
         task_label="task_a",

@@ -20,7 +20,8 @@ at the nearest `ginkgo.toml`.
   (`inspect workflow`).
 
 `ginkgo runs`
-: List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`).
+: List recorded runs (`runs ls`) and show one of them (`runs show <run_id>`),
+  including the pages its tasks rendered, such as marimo notebooks.
   See [Querying Provenance](querying-provenance.md).
 
 `ginkgo history`
@@ -64,9 +65,6 @@ at the nearest `ginkgo.toml`.
   environments and CLI commands (the bare-name environment shows as
   `(bare name)`). The Kubernetes and GCP Batch executors, Slack notifications
   and `ginkgo report` appear only once their plugins are installed. Add `--json` for a structured payload.
-
-`ginkgo notebooks`
-: List the rendered notebook HTML artifacts produced by runs.
 
 `ginkgo env`
 : Provided by the `ginkgo-pixi` plugin. List and reset the Pixi environments

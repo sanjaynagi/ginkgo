@@ -19,7 +19,7 @@ The evaluator emits typed runtime events through an in-process event bus in
   no `task_id` and of the task when it does
 - open-ended facts about a task — `TaskAnnotated`, whose `fields` carry things
   with no lifecycle of their own: a container image digest, a copied lockfile,
-  remote access statistics, notebook artefact pointers, a sub-run id
+  remote access statistics, a rendered page (`rendered_html`), a sub-run id
 
 A task reaches exactly one of three terminal events: `task_completed`,
 `task_failed`, or `task_skipped`. `TaskFailed` (v2) carries `ignored`, true

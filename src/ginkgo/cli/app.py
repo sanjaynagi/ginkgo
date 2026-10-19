@@ -17,7 +17,6 @@ from ginkgo.cli.commands.export import command_export
 from ginkgo.cli.commands.history import command_history
 from ginkgo.cli.commands.init import command_init
 from ginkgo.cli.commands.inspect import command_inspect
-from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.plugins import command_plugins
 from ginkgo.cli.commands.query import command_query
 from ginkgo.cli.commands.run import command_run, command_run_help
@@ -172,8 +171,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_why(args)
         if args.command == "plugins":
             return command_plugins(args)
-        if args.command == "notebooks":
-            return command_notebooks(args)
         if args.command == "runs":
             return command_runs(args)
         if args.command == "history":
@@ -595,8 +592,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "plugins", help="List installed plugins and what they contribute"
     )
     plugins_parser.add_argument("--json", action="store_true", help="Emit JSON")
-
-    subparsers.add_parser("notebooks", help="Manage notebook workflows")
 
     secrets_parser = subparsers.add_parser("secrets", help="Manage and validate workflow secrets")
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)

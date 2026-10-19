@@ -144,7 +144,7 @@ class FailureCard:
 
 @dataclass(frozen=True, kw_only=True)
 class NotebookCard:
-    """One rendered notebook accompanying the report."""
+    """One page a task rendered, such as a notebook's HTML, copied with the report."""
 
     task_key: str
     title: str
@@ -320,7 +320,7 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "Results",
-        (("notebooks", "Notebooks"),),
+        (("notebooks", "Rendered pages"),),
     ),
     (
         "Appendix",
@@ -657,7 +657,7 @@ def _graph_tone(*, task: TaskSummary, failure_keys: set[str]) -> str:
     """Return the graph tone for one task node."""
     if task.task_key in failure_keys or task.status == "failed":
         return "fail"
-    if task.task_type == "notebook":
+    if task.rendered_html is not None:
         return "terminal"
     if task.status in {"succeeded", "cached"}:
         return "ok"
@@ -733,7 +733,7 @@ def _build_notebooks(
     run_dir: Path,
     artifact_copies: list[ArtifactCopy],
 ) -> tuple[NotebookCard, ...]:
-    """Build notebook cards from notebook tasks that produced HTML."""
+    """Build a card for each page a task rendered, such as a notebook's HTML."""
     cards: list[NotebookCard] = []
     for task in summary.tasks:
         if task.rendered_html is None:
@@ -746,32 +746,16 @@ def _build_notebooks(
         artifact_copies.append(ArtifactCopy(source=source, dest_relpath=dest))
 
         size_bytes = source.stat().st_size
-        sub_parts: list[str] = []
-        if task.notebook_kind:
-            sub_parts.append(task.notebook_kind)
-        sub_parts.append(format_duration(task.duration_s))
-        sub_parts.append(format_bytes(size_bytes))
-        if task.notebook_description:
-            sub_parts.append(task.notebook_description)
-        if task.notebook_artifact_run_id not in (None, summary.run_id):
-            sub_parts.append(f"from run {task.notebook_artifact_run_id}")
-        if task.render_status == "failed":
-            sub_parts.append("HTML export failed")
-
-        title = task.notebook_path or task.base_name
-        if isinstance(title, str):
-            title = Path(title).name
-        status_tone = (
-            "warn" if task.render_status == "failed" else _STATUS_TONE.get(task.status, "warn")
-        )
-
+        sub_parts = [format_duration(task.duration_s), format_bytes(size_bytes)]
+        if task.rendered_html_run_id not in (None, summary.run_id):
+            sub_parts.append(f"from run {task.rendered_html_run_id}")
         cards.append(
             NotebookCard(
                 task_key=task.task_key,
-                title=title or task.base_name,
+                title=task.label,
                 sub_line=" · ".join(sub_parts),
                 link_relpath=dest,
-                status_tone=status_tone,
+                status_tone=_STATUS_TONE.get(task.status, "warn"),
             )
         )
     return tuple(cards)

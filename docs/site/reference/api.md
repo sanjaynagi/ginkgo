@@ -39,6 +39,15 @@ worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md) and
    :members:
 ```
 
+## Notebook API
+
+From the `ginkgo-notebook` plugin.
+
+```{eval-rst}
+.. automodule:: ginkgo_notebook.directive
+   :members: notebook
+```
+
 ## Authoring Helpers
 
 ```{eval-rst}

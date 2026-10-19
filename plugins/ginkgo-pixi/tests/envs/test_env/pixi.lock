@@ -956,13 +956,10 @@ packages:
   - pyarrow>=23.0.1,<24
   - pyyaml>=6.0
   - rich>=13.9
-  - papermill>=2.6 ; extra == 'notebooks'
-  - ipykernel>=6.29 ; extra == 'notebooks'
-  - marimo>=0.11 ; extra == 'notebooks'
-  - nbconvert>=7.16 ; extra == 'notebooks'
   - ginkgo-aws @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-aws ; extra == 'all'
   - ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s ; extra == 'all'
   - ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp ; extra == 'all'
+  - ginkgo-notebook @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-notebook ; extra == 'all'
   - ginkgo-oci @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-oci ; extra == 'all'
   - ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi ; extra == 'all'
   - ginkgo-report @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-report ; extra == 'all'

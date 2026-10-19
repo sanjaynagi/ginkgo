@@ -224,9 +224,11 @@ or by keyword (`@task(kind="shell")`); `python` is the default.
   arguments, and the interpreter is inferred from the extension (`.py` →
   `python`, `.R`/`.r` → `rscript`) unless overridden.
 - **Notebook** — `@task("notebook")`. The body returns
-  `notebook(path, output=..., log=...)`. Use to execute a `.ipynb`
-  (Jupyter/Papermill) or `.py` (marimo) notebook; it is rendered to HTML, and
-  when `output` is omitted the managed rendered-HTML path is returned.
+  `notebook(path, output=..., log=...)`. Use to run a marimo notebook (a `.py`
+  file), which reads the task's inputs with `mo.cli_args()`; it is rendered to
+  HTML, and when `output` is omitted the rendered-HTML path is returned. This
+  kind comes from the `ginkgo-notebook` plugin (`from ginkgo_notebook import
+  notebook`).
 - **Subworkflow** — `@task("subworkflow")`. The body returns
   `subworkflow(path, params=..., config=...)`. Use to run a nested workflow as a
   self-contained child `ginkgo run`, yielding a `SubWorkflowResult`.
@@ -234,7 +236,7 @@ or by keyword (`@task(kind="shell")`); `python` is the default.
 ```python
 from pathlib import Path
 
-from ginkgo import Out, file, notebook, script, shell, subworkflow, task
+from ginkgo import Out, file, script, shell, subworkflow, task
 
 
 @task("shell", env="bioinfo_tools")
@@ -653,11 +655,12 @@ ginkgo report <run_id> --open   # a specific run, opened in the browser
 
 The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
-with log tails, and links to rendered notebooks. By default it is written as a
+with log tails, and links to rendered pages such as notebooks. By default it is written as a
 directory bundle at `.ginkgo/reports/<run-id>/` that you can open or share.
 Useful flags: `--single-file` (inline CSS, fonts and script into one file),
-`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. To
-list rendered notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
+`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. In
+the terminal, `ginkgo run` lists the run's rendered pages when it finishes;
+they live under the run directory's `notebooks/`.
 
 ## Failures And Retries
 
@@ -894,7 +897,7 @@ timestamp plus a discriminator) holding the bytes:
   history.
 - `envs/` — copies of the environment lock files used by the run.
 - `logs/` — per-task stdout/stderr.
-- `notebooks/` — executed notebooks and their rendered HTML.
+- `notebooks/` — rendered notebook HTML pages (`task_NNNN.html`).
 
 Runs recorded by a version of ginkgo older than the database are not migrated
 and are not visible. Delete `.ginkgo/`, or keep it and accept that the older

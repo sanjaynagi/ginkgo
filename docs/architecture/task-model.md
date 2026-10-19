@@ -64,88 +64,59 @@ only for executable shell payloads.
 
 ## Notebook Tasks
 
+The `notebook` task kind is not in core: it is contributed by the first-party
+`ginkgo-notebook` plugin (`plugins/ginkgo-notebook`, package
+`ginkgo_notebook`), which depends on marimo. Without the plugin, a
+`@task("notebook")` fails at graph build, naming `ginkgo-notebook` as the
+plugin to install (see [plugins](plugins.md)).
+
 Notebook execution is expressed by declaring `@task("notebook")` and returning
-a `notebook(...)` sentinel from the task body. The task decorator defines the
-typed parameter schema, while the notebook file itself is treated as the
-executable source artifact.
+a `notebook(...)` directive (`NotebookDirective`) from the task body. The task
+decorator defines the typed parameter schema, while the notebook file itself is
+treated as the executable source artifact.
 
 Task body pattern:
 
 ```python
+from ginkgo_notebook import notebook
+
+
 @task("notebook")
 def analyze_data(input_file: file) -> file:
-    return notebook(
-        path="notebooks/analysis.ipynb",
-        output="output.html"
-    )
+    return notebook(path="notebooks/analysis.py")
 ```
 
-Implemented notebook behavior includes:
+Only marimo notebooks are supported: `notebook()` refuses a path that is not a
+`.py` file. Implemented notebook behavior includes:
 
-- `.ipynb` execution through Papermill with standard parameters-cell injection
-- managed Ginkgo kernelspecs under `.ginkgo/jupyter/` for `.ipynb` execution,
-  with explicit `ipykernel` validation and deterministic kernel naming derived
-  from the selected execution environment
-- marimo notebook execution through a CLI/script invocation with resolved task arguments forwarded as CLI parameters
-- stable run-scoped notebook artifacts under `.ginkgo/runs/<run_id>/notebooks/`
-- HTML export recorded in provenance as explicit task metadata rather than inferred from filenames
-- notebook source hashing folded into cache identity so notebook edits invalidate cache even when the task wrapper is unchanged
-- explicit `output=` parameter for declaring and validating post-execution outputs (optional; runtime-managed artifacts are still recorded even when `output` is omitted)
+- one subprocess per task, `python -m marimo export html <copy> -o
+  <run_dir>/notebooks/task_NNNN.html --force -- --arg-name value ...`, which
+  runs the notebook with the task's arguments and renders it in the same pass;
+  the notebook reads them with `mo.cli_args()`
+- the export runs on a hidden temporary copy beside the notebook, since marimo
+  rewrites the file it exports (stamping `__generated_with`); relative paths
+  still resolve and the user's file is never written
+- with `env=`, `python` resolves inside that environment, which must provide
+  marimo; without it, the notebook runs under Ginkgo's own interpreter
+- run-scoped rendered pages under `.ginkgo/runs/<run_id>/notebooks/`, or
+  `.ginkgo/notebooks/` when there is no run directory
+- notebook source hashing folded into cache identity so notebook edits
+  invalidate cache even when the task wrapper is unchanged
+- explicit `output=` parameter for declaring and validating post-execution
+  outputs (optional); when omitted, the rendered HTML is the task's result
 
-A failed HTML export is handled by whether the export is the task's result. In
-every case the runner writes the placeholder failure page, records
-`render_status="failed"` with the captured `render_error`, and emits a
-`TaskNotice` so the outcome reaches the event stream that `--agent-output`
-writes. From there:
+If a cell fails, marimo exits non-zero but still writes the page showing the
+failing cell. The runner raises `NotebookTaskError`, whose message points at
+that page, so the task fails and nothing is cached.
 
-- when the task declares no `output`, or declares one naming the rendered HTML,
-  the page would become the task's return value; the runner raises
-  `NotebookTaskError(phase="render")` instead, so the task fails, the run status
-  reflects it, and no cache entry is written for a run that produced no report;
-- when the task declares its own outputs, the HTML is a side artifact; the
-  declared outputs are validated and returned as normal and the task succeeds,
-  with the notice carrying the export failure.
-
-The rule is that a placeholder failure page never satisfies a task's output
-contract — `NotebookRunner._html_is_task_result` decides which case applies,
-rather than a configuration flag.
-
-The succeeding case does cache, failed export and all, so a later cache hit
-replays the earlier run's placeholder page as this run's notebook artifact.
-`NotebookRunner.replay_cached` re-emits the notice on such a hit: a run whose report
-links a traceback page says so on every run, not only the first.
-
-Both Jupyter subprocesses — Papermill execution and the nbconvert HTML export —
-run under `build_jupyter_env_prefix`. Every such subprocess walks
-`jupyter_core.paths.jupyter_path()`, which always ends with
-`SYSTEM_JUPYTER_PATH`, so an unreadable `conf.json` under a host system
-directory can fail a render before any HTML is written. The prefix sets three
-variables to put that search path under Ginkgo's control:
-
-- `JUPYTER_PATH` — Ginkgo's managed kernel prefix, so Papermill finds the
-  kernelspec Ginkgo installed. Purely additive, so it cannot remove anything.
-- `JUPYTER_PLATFORM_DIRS=1` — makes `SYSTEM_JUPYTER_PATH` come from
-  `platformdirs.site_data_dir` rather than the hardcoded `/usr/local/share/jupyter`
-  and `/usr/share/jupyter`.
-- `XDG_DATA_DIRS` — what `site_data_dir` reads on Linux and macOS alike, pointed
-  at Ginkgo's own prefix.
-
-The last two are both required. `JUPYTER_PLATFORM_DIRS=1` on its own relocates
-the system directories on macOS but not on Linux, where the platform-appropriate
-data directories *are* `/usr/local/share` and `/usr/share`. The user-level and
-environment-level search entries are left alone: they are the user's own home
-directory and Ginkgo's interpreter prefix, where nbconvert's templates live.
-
-A notebook task records `notebook_artifact_run_id` alongside its artifact
-pointers, naming the run that rendered them. The value travels into the cache
-entry with the pointers, so a later run that replays them on a cache hit can
-report a reused artifact — and its recorded render status — as belonging to the
-run that produced it rather than to itself.
-
-For Papermill-backed notebooks, Ginkgo prefers the runtime-selected task
-environment over embedded notebook kernelspec metadata. When a notebook task
-declares `env=...`, the managed kernelspec is prepared from that environment;
-otherwise the current interpreter environment is used.
+The runner records the page against the task as the generic `rendered_html`
+annotation (relative to the run directory) with `rendered_html_run_id`, and
+stores an absolute pointer plus the run id in `node.runner_extras`, which the
+evaluator saves with the cache entry. On a cache hit,
+`NotebookRunner.replay_cached` re-applies that pointer if the page still
+exists, so the run lists the page the producing run rendered and names that
+run. Core treats `rendered_html` as a convention any task kind may use; it
+knows nothing about notebooks.
 
 Notebook tasks run on the same driver-side execution path as shell tasks,
 preserving scheduler semantics for dependency resolution, retries, environment
@@ -179,7 +150,7 @@ Implemented script behavior includes:
   forwards as a flag pairing with `action="store_true"`: `True` is the bare
   option, `False` omits it. Anything else a list can hold — `None`, a `bool`,
   a nested list, a dict — has no positional form and forwards as a single
-  JSON-encoded token, same as a dict always does. A marimo notebook task
+  JSON-encoded token, same as a dict always does. A notebook task
   builds its command line the same way except for what `mo.cli_args()` can
   read back: a flat list repeats the option per item (`--arg-name item1
   --arg-name item2`, read with `get_all`), an empty list omits it, and a
@@ -193,8 +164,8 @@ preserve full scheduler semantics.
 ## What a Script or Notebook Argument May Be
 
 Script and notebook tasks are the two kinds whose runners forward resolved
-arguments to another process — a script task as `--arg-name value` options, a
-notebook task through a parameter file. Both go through
+arguments to another process, both as `--arg-name value` options. Both go
+through
 `serialize_cli_argument_value` in `task_runners/shell.py`, which is the single
 home for what that boundary accepts: `None`, booleans, numbers, strings, path
 types, dates and times (as ISO text), and lists, tuples, and dicts of

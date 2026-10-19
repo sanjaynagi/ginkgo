@@ -39,18 +39,22 @@ A relative path given to `script()` or `notebook()` resolves against the
 project root (the directory holding `ginkgo.toml`), not against the file that
 contains the call, so anchor it with `Path(__file__)` as above.
 
-Use notebook tasks when the notebook is part of the workflow output:
+Use notebook tasks when a marimo notebook is part of the workflow output
+(they come from the `ginkgo-notebook` plugin). The task's arguments reach the
+notebook as `mo.cli_args()`, with `_` spelled `-` (`sample-id`), and the
+rendered HTML is the task's result unless it declares outputs:
 
 ```python
 from pathlib import Path
 
-from ginkgo import Out, file, notebook, task
+from ginkgo import file, task
+from ginkgo_notebook import notebook
 
 _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 
 @task("notebook")
-def render_report(sample_id: str, output_path: Out[file]):
-    return notebook(path=_NOTEBOOKS_DIR / f"report_{sample_id}.ipynb")
+def render_report(sample_id: str) -> file:
+    return notebook(_NOTEBOOKS_DIR / "report.py")
 ```
 
 ## Ginkgo types and cache correctness

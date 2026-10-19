@@ -116,4 +116,18 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
         )
     rich_console.print("")
     rich_console.print(table)
+
+    pages = [
+        (task, path)
+        for task in summary.tasks
+        if (path := task.rendered_html_absolute(run_dir=summary.run_dir)) is not None
+    ]
+    if pages:
+        rich_console.print("\n[bold]Rendered pages[/]")
+        for task, path in pages:
+            line = Text(f"  {task.label}  ", style="bold")
+            line.append(str(path), style=f"link {path.as_uri()}")
+            if task.rendered_html_run_id not in (None, summary.run_id):
+                line.append(f"  from run {task.rendered_html_run_id}", style="dim")
+            rich_console.print(line)
     return 0

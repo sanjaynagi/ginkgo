@@ -16,7 +16,7 @@ ginkgo report <run_id> --open   # a specific run, opened in the browser
 
 The report includes the run summary, the run parameters, the task graph,
 per-task status and timing, failure detail with log tails, and links to
-rendered notebooks. By default it is written to `.ginkgo/reports/<run-id>/`.
+rendered pages such as notebooks. By default it is written to `.ginkgo/reports/<run-id>/`.
 
 The task ledger's **Peak RSS** column shows each task's measured peak memory
 against what it declared (`3.2 GiB / 16 GiB`), or the measured figure alone
@@ -26,7 +26,7 @@ ran or were served from cache. See [Measured Usage](resources.md#measured-usage)
 Useful flags:
 
 - `--single-file` — emit one HTML file with the CSS, fonts and script inlined;
-  easy to share or attach. Notebook and log links are not inlined and remain
+  easy to share or attach. Rendered-page and log links are not inlined and remain
   relative references. A small `.ginkgo-report.json` marker is written beside
   it so the directory can be re-rendered; the HTML itself is self-contained and
   can be shared on its own.
@@ -41,12 +41,13 @@ Useful flags:
 - `--max-log-lines N` — control how many log lines are shown per failed task
   (default 80).
 
-To list just the rendered notebook artifacts produced by runs, use
-`ginkgo notebooks`.
+Any task that renders a page for people to read — a notebook task's HTML, for
+example — gets a card in the report's **Rendered pages** section, titled by the
+task's label. A page reused from a cache hit says which run rendered it.
 
 ## See Also
 
-- [Tasks and Flows](tasks-and-flows.md) — notebook tasks render to HTML and
-  appear in reports.
+- [Tasks and Flows](tasks-and-flows.md) — notebook tasks render marimo
+  notebooks to HTML, which appear in reports.
 - [Caching and Provenance](caching-and-provenance.md) — how run outputs are
   stored and reused.

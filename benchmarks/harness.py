@@ -671,37 +671,12 @@ def _mock_notebook_tools() -> Iterator[None]:
         on_stderr: Any = None,
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
-        if isinstance(argv, str) and "papermill" in argv:
+        if isinstance(argv, str) and "marimo export html" in argv:
             parts = shlex.split(argv)
-            # `papermill <notebook> <executed>`. Locate it rather than indexing a
-            # fixed position: the command carries a leading `env VAR=... ` prefix
-            # whose length is not this harness's business.
-            output_path = Path(parts[parts.index("papermill") + 2])
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text("executed notebook", encoding="utf-8")
-            if on_stdout is not None:
-                on_stdout("papermill ok\n")
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=0,
-                stdout="papermill ok\n",
-                stderr="",
-            )
-        if isinstance(argv, str) and "nbconvert" in argv:
-            parts = shlex.split(argv)
-            output_stem = parts[parts.index("--output") + 1]
-            output_dir = Path(parts[parts.index("--output-dir") + 1])
-            html_path = output_dir / f"{output_stem}.html"
+            html_path = Path(parts[parts.index("-o") + 1])
             html_path.parent.mkdir(parents=True, exist_ok=True)
             html_path.write_text("<html><body>notebook report</body></html>", encoding="utf-8")
-            if on_stdout is not None:
-                on_stdout("nbconvert ok\n")
-            return subprocess.CompletedProcess(
-                args=argv,
-                returncode=0,
-                stdout="nbconvert ok\n",
-                stderr="",
-            )
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
         return original_run_subprocess(
             self_runner,
             argv=argv,

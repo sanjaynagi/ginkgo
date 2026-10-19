@@ -69,62 +69,6 @@ def _manifest(run_dir: Path) -> dict[str, Any]:
     return {**data, "tasks": {task["task_id"]: task for task in data["tasks"]}}
 
 
-def _record_notebook_run(
-    *,
-    run_id: str,
-    started_at: str,
-    task_id: str,
-    task_name: str,
-    render_status: str | None = None,
-    artifact_run_id: str | None = None,
-    pointers: dict[str, str] | None = None,
-) -> Path:
-    """Record a run whose one task rendered a notebook, and write the artifacts.
-
-    Returns the run directory, so a caller can name the files it produced.
-    """
-    from ginkgo.runtime.events import GraphNodeRegistered, TaskAnnotated, TaskCompleted
-
-    from tests.conftest import Ledger
-
-    ledger = Ledger.start(root=Path.cwd(), run_id=run_id, workflow="workflow.py", ts=started_at)
-    notebooks = ledger.path / "notebooks"
-    notebooks.mkdir(parents=True, exist_ok=True)
-    (notebooks / f"{task_id}.ipynb").write_text("{}", encoding="utf-8")
-    (notebooks / f"{task_id}.html").write_text("<html></html>", encoding="utf-8")
-    ledger.bus.emit(
-        GraphNodeRegistered(
-            run_id=run_id,
-            task_id=task_id,
-            node_id=int(task_id.rsplit("_", 1)[1]),
-            task_name=task_name,
-        )
-    )
-    ledger.bus.emit(
-        TaskAnnotated(
-            run_id=run_id,
-            task_id=task_id,
-            task_name=task_name,
-            fields={
-                "task_type": "notebook",
-                "render_status": render_status,
-                "notebook_artifact_run_id": artifact_run_id,
-                **(
-                    pointers
-                    or {
-                        "executed_notebook": f"notebooks/{task_id}.ipynb",
-                        "rendered_html": f"notebooks/{task_id}.html",
-                    }
-                ),
-            },
-        )
-    )
-    ledger.bus.emit(TaskCompleted(run_id=run_id, task_id=task_id, task_name=task_name, attempt=1))
-    ledger.finish()
-    ledger.close()
-    return ledger.path
-
-
 def _extract_run_dir(output: str) -> Path:
     match = re.search(r"Run directory: (.+)", output)
     if match is None:
@@ -363,31 +307,6 @@ def main():
         assert f"Removed cache entry {cache_key}" in cleared.stdout
         assert not (Path(".ginkgo") / "cache" / cache_key).exists()
 
-    def test_run_notebook_reports_managed_ipykernel_install(self) -> None:
-        Path("report.ipynb").write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, notebook, task
-
-@task("notebook")
-def render_report() -> str:
-    return notebook("report.ipynb")
-
-@flow
-def main():
-    return render_report()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "📦 Installing ipykernel for local..." in result.stdout
-
     def test_cache_ls_empty_state_is_styled(self) -> None:
         result = _run_cli("cache", "ls", cwd=Path.cwd())
         assert result.returncode == 0
@@ -577,72 +496,6 @@ def main():
         assert not entries[0].exists()
         assert entries[1].exists()
         assert entries[2].exists()
-
-    def test_notebooks_lists_pairs_in_most_recent_run_order(self) -> None:
-        older_run = _record_notebook_run(
-            run_id="20260301_090000_000000_aaaaaaaa",
-            started_at="2026-03-01T09:00:00+00:00",
-            task_id="task_0000",
-            task_name="demo.render_old",
-        )
-        newer_run = _record_notebook_run(
-            run_id="20260302_090000_000000_bbbbbbbb",
-            started_at="2026-03-02T09:00:00+00:00",
-            task_id="task_0001",
-            task_name="demo.render_new",
-        )
-        newer_html = newer_run / "notebooks" / "task_0001.html"
-        newer_notebook = newer_run / "notebooks" / "task_0001.ipynb"
-
-        result = _run_cli("notebooks", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "🌿 ginkgo notebooks" in result.stdout
-        assert "render_new" in result.stdout
-        assert "render_old" in result.stdout
-        assert result.stdout.index("render_new") < result.stdout.index("render_old")
-        assert str(newer_html.resolve()) in result.stdout
-        assert str(newer_notebook.resolve()) in result.stdout
-        assert older_run.name in result.stdout
-
-    def test_notebooks_attributes_a_replayed_artifact_to_the_producing_run(self) -> None:
-        """A cached rerun must not claim the earlier run's artifact (#202)."""
-        producing_run = _record_notebook_run(
-            run_id="20260301_090000_000000_aaaaaaaa",
-            started_at="2026-03-01T09:00:00+00:00",
-            task_id="task_0014",
-            task_name="demo.render_overview_notebook",
-            render_status="failed",
-            artifact_run_id="20260301_090000_000000_aaaaaaaa",
-        )
-        executed = producing_run / "notebooks" / "task_0014.ipynb"
-        html = producing_run / "notebooks" / "task_0014.html"
-        # A cache hit replays the producing run's absolute pointers.
-        replaying_run = _record_notebook_run(
-            run_id="20260302_090000_000000_bbbbbbbb",
-            started_at="2026-03-02T09:00:00+00:00",
-            task_id="task_0014",
-            task_name="demo.render_overview_notebook",
-            render_status="failed",
-            artifact_run_id=producing_run.name,
-            pointers={
-                "executed_notebook": str(executed.resolve()),
-                "rendered_html": str(html.resolve()),
-            },
-        )
-
-        result = _run_cli("notebooks", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert f"run={producing_run.name}" in result.stdout
-        assert f"run={replaying_run.name}" not in result.stdout
-        assert f"↺ replayed in {replaying_run.name}" in result.stdout
-
-    def test_notebooks_empty_state_is_styled(self) -> None:
-        result = _run_cli("notebooks", cwd=Path.cwd())
-        assert result.returncode == 0
-        assert "🌿 ginkgo notebooks" in result.stdout
-        assert "No executed notebooks found." in result.stdout
 
 
 class TestCliWhy:
@@ -1117,18 +970,12 @@ def _template_ginkgo_symbols() -> set[str]:
     return symbols
 
 
-def _scaffold_notebook(*, project_dir: Path) -> dict:
-    """Return the parsed starter notebook from a scaffolded project."""
-    notebook_path = project_dir / "workflow" / "notebooks" / "overview.ipynb"
-    return json.loads(notebook_path.read_text(encoding="utf-8"))
-
-
 def _third_party_imports(*, project_dir: Path) -> set[str]:
     """Return the root module names a scaffolded project imports from outside the stdlib.
 
-    Covers both the Python sources and the code cells of the starter notebook,
-    since a notebook task's body executes in the same environment as the CLI.
-    Relative imports are skipped by the extraction, so the project's own
+    Covers every Python source, the starter marimo notebook among them, since a
+    notebook task's body executes in the same environment as the CLI. Relative
+    imports are skipped by the extraction, so the project's own
     packages do not appear.
 
     Extraction is shared with ``ginkgo.envs.interpreter``, which asks the same
@@ -1136,11 +983,6 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
     counts as an import.
     """
     sources = [path.read_text(encoding="utf-8") for path in sorted(project_dir.rglob("*.py"))]
-    sources.extend(
-        "".join(cell["source"])
-        for cell in _scaffold_notebook(project_dir=project_dir)["cells"]
-        if cell["cell_type"] == "code"
-    )
     roots = {root for text in sources for root in source_import_roots(text=text)}
     return {root for root in roots if root not in sys.stdlib_module_names and root != "workflow"}
 
@@ -1167,7 +1009,7 @@ class TestCliInit:
         assert (project_dir / "workflow" / "modules" / "reporting.py").is_file()
         assert (project_dir / "workflow" / "envs" / "analysis_tools" / "pixi.toml").is_file()
         assert (project_dir / "workflow" / "scripts" / "build_brief.py").is_file()
-        assert (project_dir / "workflow" / "notebooks" / "overview.ipynb").is_file()
+        assert (project_dir / "workflow" / "notebooks" / "overview.py").is_file()
         assert not (project_dir / "demo_project").exists()
         assert (project_dir / "skills" / "index.md").is_file()
         assert (project_dir / "skills" / "commands.md").is_file()
@@ -1209,12 +1051,17 @@ class TestCliInit:
 
         project_dir = Path("demo-project")
         manifest = tomllib.loads((project_dir / "pixi.toml").read_text(encoding="utf-8"))
-        declared = set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
+        # Distributions are spelt with dashes, the modules they install with
+        # underscores (ginkgo-notebook / ginkgo_notebook).
+        declared = {
+            name.replace("-", "_")
+            for name in set(manifest["dependencies"]) | set(manifest["pypi-dependencies"])
+        }
 
         assert manifest["workspace"]["name"] == "demo-project"
         assert "ginkgo" in declared
         # The scaffold's script task names a Pixi environment.
-        assert "ginkgo-pixi" in declared
+        assert "ginkgo_pixi" in declared
         assert _third_party_imports(project_dir=project_dir) <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
 
@@ -1279,34 +1126,24 @@ class TestCliInit:
             "scaffold projects that install cleanly and then fail at run time."
         )
 
-    def test_init_notebook_has_a_parameters_tagged_cell(self) -> None:
-        """Papermill injects into the ``parameters``-tagged cell, so one must exist.
-
-        Without the tag every run prints ``Passed unknown parameter`` per
-        argument plus ``Input notebook does not contain a cell with tag
-        'parameters'``, which reads like failure on a successful run.
-        """
+    def test_init_notebook_reads_the_notebook_tasks_arguments(self) -> None:
+        """The marimo notebook reads each argument of the task that renders it."""
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
 
-        cells = _scaffold_notebook(project_dir=Path("demo-project"))["cells"]
-        parameter_cells = [
-            cell for cell in cells if "parameters" in cell["metadata"].get("tags", [])
-        ]
-        assert len(parameter_cells) == 1
-
-        assigned = {
-            line.split("=", 1)[0].strip()
-            for line in "".join(parameter_cells[0]["source"]).splitlines()
-            if "=" in line
-        }
-        # The notebook task's signature in workflow/modules/reporting.py.
-        assert assigned == {"summary_path", "run_label"}
+        source = (Path("demo-project") / "workflow" / "notebooks" / "overview.py").read_text(
+            encoding="utf-8"
+        )
+        # The notebook task's signature in workflow/modules/reporting.py, as
+        # mo.cli_args() spells it.
+        assert 'args.get("summary-path")' in source
+        assert 'args.get("run-label")' in source
 
     @pytest.mark.integration
-    def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
-        if importlib.util.find_spec("ginkgo_pixi") is None:
-            pytest.skip("the scaffold's script task needs the ginkgo-pixi plugin")
+    def test_init_scaffold_runs_end_to_end(self) -> None:
+        for plugin in ("ginkgo_pixi", "ginkgo_notebook"):
+            if importlib.util.find_spec(plugin) is None:
+                pytest.skip(f"the scaffold needs the {plugin} plugin")
         if shutil.which("docker") is None or shutil.which("pixi") is None:
             pytest.skip("running the scaffold end to end needs docker and pixi")
         # The client binary existing does not mean the daemon is reachable.
@@ -1319,17 +1156,7 @@ class TestCliInit:
         project_dir = Path("demo-project").resolve()
         run_result = _run_cli("run", cwd=project_dir)
         assert run_result.returncode == 0, run_result.stderr
-
-        notebook_logs = [
-            path.read_text(encoding="utf-8")
-            for path in (project_dir / ".ginkgo" / "runs").rglob(
-                "*render_overview_notebook*.stderr.log"
-            )
-        ]
-        assert notebook_logs
-        for log_text in notebook_logs:
-            assert "does not contain a cell with tag" not in log_text
-            assert "Passed unknown parameter" not in log_text
+        assert "Rendered pages (1)" in run_result.stdout
 
     def test_init_into_the_current_directory_omits_the_cd_step(self) -> None:
         """There is nowhere to cd to when the project root is already the cwd."""

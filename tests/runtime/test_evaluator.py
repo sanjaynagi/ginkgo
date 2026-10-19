@@ -2,7 +2,6 @@
 
 from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -13,14 +12,12 @@ import pandas as pd
 import pytest
 
 from ginkgo import (
-    NotebookDirective,
     Out,
     ScriptDirective,
     SubWorkflowDirective,
     evaluate,
     file,
     folder,
-    notebook,
     script,
     secret,
     shell,
@@ -30,14 +27,11 @@ from ginkgo import (
 )
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executors import Executors
-from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector, ShellEnvironment
 from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import (
-    EventBus,
     TaskCompleted,
     TaskFailed,
-    TaskNotice,
     TaskSkipped,
 )
 from ginkgo.runtime.caching.index import CacheIndex
@@ -46,97 +40,6 @@ from ginkgo.runtime.rundir import make_run_id
 from tests.conftest import Ledger
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from tests._vw_support import append_line
-
-
-def _notebook_subprocess_stub(
-    *,
-    tmp_path: Path,
-    run_dir: Path,
-    calls: list[str] | None = None,
-    declared_output: Path | None = None,
-    render_fails: bool = False,
-):
-    """Build a fake ``run_subprocess`` for a single-task ipynb notebook run.
-
-    Handles the four commands a notebook task issues — the ipykernel probe,
-    kernel install, papermill execution, and nbconvert render — materialising
-    the expected ``task_0000`` outputs under ``run_dir / 'notebooks'``.
-
-    Parameters
-    ----------
-    tmp_path : Path
-        Test temp dir; the managed Jupyter kernel is installed beneath it.
-    run_dir : Path
-        Provenance run directory; ``task_0000.ipynb`` / ``.html`` land here.
-    calls : list[str] | None
-        When given, every issued command line is appended to it.
-    declared_output : Path | None
-        When given, the papermill branch also writes this declared output file.
-    render_fails : bool
-        When true, the nbconvert branch fails without writing any HTML.
-    """
-
-    def fake_run_subprocess(
-        *,
-        argv: str | list[str],
-        use_shell: bool,
-        on_stdout: Any = None,
-        on_stderr: Any = None,
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        command = " ".join(argv) if isinstance(argv, list) else str(argv)
-        if calls is not None:
-            calls.append(command)
-        if "import ipykernel" in command:
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-        if "ipykernel install" in command:
-            kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-            kernel_name = command.split("--name", 1)[1].strip().split()[0]
-            kernel_dir = kernel_root / kernel_name
-            kernel_dir.mkdir(parents=True, exist_ok=True)
-            (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-        if "papermill" in command:
-            (run_dir / "notebooks" / "task_0000.ipynb").write_text("executed", encoding="utf-8")
-            if declared_output is not None:
-                declared_output.write_text("declared output", encoding="utf-8")
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-        if "nbconvert" in command:
-            if render_fails:
-                return subprocess.CompletedProcess(
-                    args=argv, returncode=2, stdout="", stderr="nbconvert exploded"
-                )
-            (run_dir / "notebooks" / "task_0000.html").write_text(
-                "<html>report</html>", encoding="utf-8"
-            )
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-        raise AssertionError(command)
-
-    return fake_run_subprocess
-
-
-@task("notebook")
-def notebook_ipynb_task(*, notebook_path: str, value: int) -> Path:
-    """Run an ipynb notebook by path."""
-    return notebook(notebook_path)
-
-
-@task("notebook")
-def notebook_ipynb_with_output_task(*, notebook_path: str, output_path: Out[file]) -> Path:
-    """Run an ipynb notebook that declares an output file."""
-    return notebook(notebook_path, output=output_path)
-
-
-@task("notebook")
-def notebook_marimo_task(*, notebook_path: str, sample_id: str) -> Path:
-    """Run a marimo notebook by path."""
-    return notebook(notebook_path)
-
-
-@task("notebook", env="test_env")
-def notebook_ipynb_env_task(*, notebook_path: str, value: int) -> Path:
-    """Run an ipynb notebook inside a managed task environment."""
-    return notebook(notebook_path)
 
 
 @task("script")
@@ -365,13 +268,6 @@ def python_returns_shell_directive_task(output_path: str) -> file:
 
 
 @task()
-def python_returns_notebook_directive_task() -> None:
-    from pathlib import Path
-
-    return NotebookDirective(path=Path("/fake.ipynb"), output=None, log=None, source_hash="test")
-
-
-@task()
 def python_returns_script_directive_task() -> None:
     from pathlib import Path
 
@@ -579,405 +475,6 @@ class TestEvaluate:
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["work:2"]
         assert (Path(".ginkgo") / "cache").exists()
 
-    def test_ipynb_notebook_task_records_html_and_uses_cache(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
-
-        recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
-        )
-
-        calls: list[str] = []
-        fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=recorder.path, calls=calls
-        )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-        result = evaluator.evaluate(expr)
-        tasks = recorder.tasks()
-
-        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
-        assert len(calls) == 4
-        assert "import ipykernel" in calls[0]
-        assert "ipykernel install" in calls[1]
-        assert "JUPYTER_PATH=" in calls[2]
-        assert " -k ginkgo-" in calls[2]
-        assert tasks["task_0000"]["task_type"] == "notebook"
-        assert tasks["task_0000"]["render_status"] == "succeeded"
-        assert tasks["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
-        assert tasks["task_0000"]["managed_kernel_name"].startswith("ginkgo-")
-
-        # Re-evaluating with the same notebook hits cache.
-        cached = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(
-            cached._shell_runner,
-            "run_subprocess",
-            lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
-        )
-        assert cached.evaluate(expr) == Path(recorder.path / "notebooks" / "task_0000.html")
-
-    def test_cached_notebook_with_declared_output_replays_rendered_html(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Cache hits on notebook tasks with declared outputs must still
-        populate ``rendered_html`` so the run summary can list the notebook.
-        """
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        output_path = tmp_path / "output.txt"
-        expr = notebook_ipynb_with_output_task(
-            notebook_path=str(nb_path), output_path=str(output_path)
-        )
-
-        first_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
-        )
-
-        fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=first_recorder.path, declared_output=output_path
-        )
-
-        first_evaluator = ConcurrentEvaluator(
-            run_dir=first_recorder.run_dir, event_bus=first_recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(first_evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-        first_result = first_evaluator.evaluate(expr)
-        first_tasks = first_recorder.tasks()
-        first_html = first_recorder.path / "notebooks" / "task_0000.html"
-
-        assert first_result == output_path
-        assert first_tasks["task_0000"]["rendered_html"] == "notebooks/task_0000.html"
-
-        # Second run reuses the same cwd-scoped cache but a fresh recorder
-        # (and therefore a fresh run_dir). The notebook body must be skipped
-        # entirely yet rendered_html still has to surface in the new manifest.
-        second_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py") + "-2"
-        )
-        cached_evaluator = ConcurrentEvaluator(
-            run_dir=second_recorder.run_dir, event_bus=second_recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(
-            cached_evaluator._shell_runner,
-            "run_subprocess",
-            lambda **_: (_ for _ in ()).throw(AssertionError("cache miss")),
-        )
-
-        cached_result = cached_evaluator.evaluate(expr)
-        second_tasks = second_recorder.tasks()
-        replayed_html = second_tasks["task_0000"].get("rendered_html")
-
-        assert cached_result == output_path
-        assert second_tasks["task_0000"].get("cached") is True
-        assert isinstance(replayed_html, str)
-        # Absolute path pointing back at the original run's HTML artifact.
-        assert Path(replayed_html) == first_html
-        assert (second_recorder.path / replayed_html).resolve() == first_html.resolve()
-        # And the replayed pointer names the run that actually rendered it,
-        # so the second run does not claim the artifact as its own (#202).
-        assert first_tasks["task_0000"]["notebook_artifact_run_id"] == (first_recorder.run_id)
-        assert second_tasks["task_0000"]["notebook_artifact_run_id"] == (first_recorder.run_id)
-        assert second_recorder.run_id != first_recorder.run_id
-
-    def test_ipynb_notebook_task_uses_env_managed_kernel(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        expr = notebook_ipynb_env_task(notebook_path=str(nb_path), value=7)
-
-        recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
-        )
-
-        calls: list[str] = []
-        fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path, run_dir=recorder.path, calls=calls
-        )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir,
-            event_bus=recorder.bus,
-            jobs=1,
-            cores=1,
-            backend=ShellEnvironment(),
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        result = evaluator.evaluate(expr)
-
-        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
-        assert any("python -c 'import ipykernel'" in call for call in calls)
-        assert any("python -m ipykernel install" in call for call in calls)
-        assert any("JUPYTER_PATH=" in call and "papermill" in call for call in calls)
-        assert any("nbconvert" in call for call in calls)
-
-    def test_ipynb_notebook_task_emits_kernel_install_notice(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
-
-        bus = EventBus()
-        events: list[object] = []
-        bus.subscribe(events.append)
-        recorder = Ledger.start(
-            root=tmp_path,
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            bus=bus,
-        )
-
-        fake_run_subprocess = _notebook_subprocess_stub(tmp_path=tmp_path, run_dir=recorder.path)
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        result = evaluator.evaluate(expr)
-
-        assert result == Path(recorder.path / "notebooks" / "task_0000.html")
-        notices = [event for event in events if isinstance(event, TaskNotice)]
-        assert len(notices) == 1
-        assert notices[0].message == "📦 Installing ipykernel for local..."
-
-    def test_ipynb_notebook_task_fails_early_when_ipykernel_is_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        expr = notebook_ipynb_task(notebook_path=str(nb_path), value=7)
-        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
-
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(
-                    args=argv,
-                    returncode=1,
-                    stdout="",
-                    stderr="ModuleNotFoundError: No module named 'ipykernel'",
-                )
-            raise AssertionError(command)
-
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        with pytest.raises(RuntimeError, match="ipykernel"):
-            evaluator.evaluate(expr)
-
-    def test_concurrent_ipynb_notebooks_install_kernel_once_per_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        notebooks = []
-        for index in range(2):
-            nb_path = tmp_path / f"report_{index}.ipynb"
-            nb_path.write_text(
-                '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
-                encoding="utf-8",
-            )
-            notebooks.append(notebook_ipynb_env_task(notebook_path=str(nb_path), value=index + 1))
-
-        recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
-        )
-
-        install_calls = 0
-
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            nonlocal install_calls
-            command = " ".join(argv) if isinstance(argv, list) else str(argv)
-            if "import ipykernel" in command:
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "ipykernel install" in command:
-                install_calls += 1
-                kernel_root = tmp_path / ".ginkgo" / "jupyter" / "share" / "jupyter" / "kernels"
-                kernel_name = command.split("--name", 1)[1].strip().split()[0]
-                kernel_dir = kernel_root / kernel_name
-                kernel_dir.mkdir(parents=True, exist_ok=True)
-                (kernel_dir / "kernel.json").write_text("{}", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "papermill" in command:
-                match = re.search(r"(/[^ ]+/notebooks/task_\d+\.ipynb)", command)
-                assert match is not None
-                output_path = Path(match.group(1))
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text("executed", encoding="utf-8")
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            if "nbconvert" in command:
-                match = re.search(
-                    r"--output-dir (/[^ ]+/notebooks) (/[^ ]+/notebooks/task_\d+\.ipynb)", command
-                )
-                assert match is not None
-                html_dir = Path(match.group(1))
-                executed_name = Path(match.group(2)).stem
-                html_dir.mkdir(parents=True, exist_ok=True)
-                (html_dir / f"{executed_name}.html").write_text(
-                    "<html>report</html>", encoding="utf-8"
-                )
-                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
-            raise AssertionError(command)
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir,
-            event_bus=recorder.bus,
-            jobs=2,
-            cores=2,
-            backend=ShellEnvironment(),
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        result = evaluator.evaluate(notebooks)
-
-        assert len(result) == 2
-        assert install_calls == 1
-
-    def test_marimo_notebook_render_failure_fails_the_task(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A failed export fails a task whose result is the rendered HTML.
-
-        The placeholder failure page must never become the task's return
-        value: downstream tasks would consume a traceback as the report and
-        the run would still report success — see issues #218 and #219.
-        """
-        nb_path = tmp_path / "explore.py"
-        nb_path.write_text("print('marimo')\n", encoding="utf-8")
-        expr = notebook_marimo_task(notebook_path=str(nb_path), sample_id="s1")
-
-        collector = EventCollector()
-        recorder = Ledger.start(
-            root=tmp_path,
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            bus=collector.bus,
-        )
-
-        def fake_run_subprocess(
-            *,
-            argv: str | list[str],
-            use_shell: bool,
-            on_stdout: Any = None,
-            on_stderr: Any = None,
-            **kwargs: Any,
-        ) -> subprocess.CompletedProcess[str]:
-            command = str(argv)
-            if "export html" in command:
-                return subprocess.CompletedProcess(
-                    args=argv, returncode=2, stdout="", stderr="render blew up"
-                )
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="run ok", stderr="")
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        with pytest.raises(NotebookTaskError, match="failed during render"):
-            evaluator.evaluate(expr)
-
-        recorder.finish(status="failed")
-        tasks = recorder.tasks()
-        html_path = recorder.path / "notebooks" / "task_0000.html"
-        assert html_path.is_file()
-        assert "HTML export failed" in html_path.read_text(encoding="utf-8")
-        assert tasks["task_0000"]["status"] == "failed"
-        assert tasks["task_0000"]["render_status"] == "failed"
-        assert tasks["task_0000"]["render_error"] == "render blew up"
-
-        # The failure must be visible through the run-summary model, not just
-        # buried in the manifest — see issue #138.
-        run_summary = recorder.summary()
-        assert len(run_summary.notebooks) == 1
-        notebook_summary = run_summary.notebooks[0]
-        assert notebook_summary.render_status == "failed"
-        assert notebook_summary.render_error == "render blew up"
-
-        # And through the event stream, which is what --agent-output emits.
-        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
-        assert [notice.message for notice in notices] == [
-            f"HTML export failed; {html_path} holds the export error "
-            "instead of the rendered notebook."
-        ]
-
-    def test_notebook_render_failure_with_declared_output_succeeds_with_notice(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A task with its own declared output survives a failed export.
-
-        The HTML is a side artifact there, so the task keeps its declared
-        output — but the export failure still reaches the event stream as a
-        ``task_notice`` rather than only the manifest.
-        """
-        nb_path = tmp_path / "report.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        output_path = tmp_path / "declared.txt"
-        expr = notebook_ipynb_with_output_task(
-            notebook_path=str(nb_path), output_path=str(output_path)
-        )
-
-        collector = EventCollector()
-        recorder = Ledger.start(
-            root=tmp_path,
-            run_id=make_run_id(workflow_path=tmp_path / "workflow.py"),
-            bus=collector.bus,
-        )
-        fake_run_subprocess = _notebook_subprocess_stub(
-            tmp_path=tmp_path,
-            run_dir=recorder.path,
-            declared_output=output_path,
-            render_fails=True,
-        )
-
-        evaluator = ConcurrentEvaluator(
-            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
-        )
-        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
-
-        result = evaluator.evaluate(expr)
-
-        assert result == output_path
-        tasks = recorder.tasks()
-        assert tasks["task_0000"]["status"] == "succeeded"
-        assert tasks["task_0000"]["render_status"] == "failed"
-        assert tasks["task_0000"]["render_error"] == "nbconvert exploded"
-
-        notices = [event for event in collector.events if isinstance(event, TaskNotice)]
-        assert any("HTML export failed" in notice.message for notice in notices)
-
     def test_script_task_runs_and_validates_outputs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1041,41 +538,6 @@ class TestEvaluate:
         assert sys.executable not in calls[0]
         assert "python" in calls[0]
 
-    def test_notebook_cache_invalidates_when_source_changes(self, tmp_path: Path) -> None:
-        from ginkgo.core.notebook import notebook as make_notebook
-        from ginkgo.runtime.caching.cache import CacheStore
-
-        nb_path = tmp_path / "nb.ipynb"
-        nb_path.write_text(
-            '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
-        )
-        directive_v1 = make_notebook(str(nb_path))
-
-        nb_path.write_text(
-            '{"cells": [{"source": "changed"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}',
-            encoding="utf-8",
-        )
-        directive_v2 = make_notebook(str(nb_path))
-
-        # Editing the notebook changes its source hash, which the evaluator
-        # folds into the task's cache key via ``extra_source_hash`` — so the
-        # two source hashes, and the resulting cache keys, must differ.
-        assert directive_v1.source_hash != directive_v2.source_hash
-
-        cache = CacheStore(root=tmp_path / ".ginkgo" / "cache", index=CacheIndex.in_memory())
-        resolved_args = {"notebook_path": str(nb_path), "value": 1}
-        key_v1, _ = cache.build_cache_key(
-            task_def=notebook_ipynb_task,
-            resolved_args=resolved_args,
-            extra_source_hash=directive_v1.source_hash,
-        )
-        key_v2, _ = cache.build_cache_key(
-            task_def=notebook_ipynb_task,
-            resolved_args=resolved_args,
-            extra_source_hash=directive_v2.source_hash,
-        )
-        assert key_v1 != key_v2
-
     def test_local_task_fails_immediately_at_runtime(self):
         @task()
         def local_task(x: int) -> int:
@@ -1099,10 +561,6 @@ class TestEvaluate:
 
         with pytest.raises(TypeError, match=r"ShellDirective.*Use @task\(kind='shell'\)"):
             evaluate(python_returns_shell_directive_task(output_path=str(output)))
-
-    def test_python_tasks_must_not_return_notebook_directives(self) -> None:
-        with pytest.raises(TypeError, match=r"NotebookDirective.*Use @task\(kind='notebook'\)"):
-            evaluate(python_returns_notebook_directive_task())
 
     def test_python_tasks_must_not_return_script_directives(self) -> None:
         with pytest.raises(TypeError, match=r"ScriptDirective.*Use @task\(kind='script'\)"):

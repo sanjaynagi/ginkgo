@@ -20,7 +20,7 @@ not a contract" and "Discovery" below for exactly what is and is not enforced.
 │   ├── flow.py         # contains flow definition
 │   ├── modules/        # contains tasks, grouped in modules
 │   ├── envs/           # per-task Pixi manifests
-│   ├── notebooks/      # notebook-task source
+│   ├── notebooks/      # notebook-task source (marimo .py)
 │   └── scripts/        # script-task source
 ├── tests/
 │   └── workflows/
@@ -140,7 +140,7 @@ Runtime state lives under `.ginkgo/`, one subdirectory per concern:
 ├── artifacts/            # content-addressed artifact store
 ├── staging/              # downloaded remote inputs
 ├── fuse/                 # mount points for streamed remote inputs
-├── notebooks/            # notebook artifacts for runs without provenance
+├── notebooks/            # rendered notebook pages for runs without a run directory
 └── reports/              # exported HTML report bundles
 ```
 
@@ -254,8 +254,9 @@ bodies with them. Install the CLI globally and run it inside such a project and
 the two part company: the manifest is right, the interpreter is wrong, and the
 only symptom is a bare `ModuleNotFoundError`.
 
-`ginkgo/envs/interpreter.py` detects that. It scans the Python files and
-notebook code cells beside the workflow for the root modules they import,
+`ginkgo/envs/interpreter.py` detects that. It scans the Python files
+beside the workflow — marimo notebooks included, since they are `.py` files —
+for the root modules they import,
 skipping `envs/`, `scripts/`, `tests/` and hidden directories — those bodies
 run somewhere else — then checks each against the running interpreter with
 `importlib.util.find_spec`. Imports are read from the parsed syntax tree, not

@@ -5,10 +5,6 @@ This package collects the per-kind execution helpers used by
 keeps each runner small enough to reason about and unit-test in isolation.
 """
 
-from ginkgo.runtime.task_runners.notebook import (
-    NotebookRunner,
-    NotebookTaskError,
-)
 from ginkgo.runtime.task_runners.script import ScriptRunner
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
@@ -24,8 +20,6 @@ from ginkgo.runtime.task_runners.subworkflow import (
 )
 
 __all__ = [
-    "NotebookRunner",
-    "NotebookTaskError",
     "ScriptRunner",
     "ShellRunner",
     "ShellTaskError",

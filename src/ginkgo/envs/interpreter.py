@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import json
 import os
 import re
 import sys
@@ -58,7 +57,6 @@ reason to declare for a run. Hidden directories (``.pixi/``, ``.ginkgo/``) are
 skipped too, so a materialized environment is never mistaken for source.
 """
 
-_SOURCE_SUFFIXES = (".py", ".ipynb")
 
 _GUARDED_IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError"})
 """Exceptions whose handler marks the imports in a ``try`` body as optional."""
@@ -281,7 +279,7 @@ def _handles_import_error(handler: ast.ExceptHandler) -> bool:
 def workflow_import_roots(*, workflow_path: Path) -> tuple[str, ...]:
     """Return the third-party root modules the workflow's sources import.
 
-    Scans the Python files and notebook code cells beside *workflow_path*,
+    Scans the Python files (marimo notebooks among them) beside *workflow_path*,
     which is where the bodies that run in the CLI's interpreter live. Standard
     library modules and the project's own packages are dropped, so what
     remains is what the project's environment has to supply.
@@ -454,9 +452,7 @@ def _is_importable(name: str) -> bool:
 def _iter_source_texts(*, scan_root: Path) -> Iterator[str]:
     """Yield each separately parseable source text under *scan_root*.
 
-    A Python file yields once. A notebook yields once per code cell: cells are
-    parsed apart so a cell carrying an IPython magic — which is not Python —
-    costs only itself, not the rest of the notebook.
+    Each Python file yields once (a marimo notebook is a Python file).
 
     Skipped directories are pruned as the walk descends rather than filtered
     afterwards: a materialized ``.pixi/`` holds an entire environment, and
@@ -472,27 +468,13 @@ def _iter_source_texts(*, scan_root: Path) -> Iterator[str]:
         )
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
-            if path.suffix not in _SOURCE_SUFFIXES:
+            if path.suffix != ".py":
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if path.suffix == ".ipynb":
-                yield from _notebook_code_cells(text)
-            else:
-                yield text
-
-
-def _notebook_code_cells(text: str) -> Iterator[str]:
-    """Yield the source of each code cell of a notebook, nothing if unreadable."""
-    try:
-        cells = json.loads(text)["cells"]
-    except (ValueError, KeyError, TypeError):
-        return
-    for cell in cells:
-        if isinstance(cell, dict) and cell.get("cell_type") == "code":
-            yield "".join(cell.get("source", ()))
+            yield text
 
 
 def _is_local_module(*, name: str, scan_root: Path) -> bool:
