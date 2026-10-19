@@ -2002,7 +2002,8 @@ def main():
             + "\n",
             encoding="utf-8",
         )
-        _run_cli("run", "workflow.py", cwd=Path.cwd())
+        first = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert first.returncode == 0, first.stderr
         second = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert second.returncode == 0, second.stderr
         run_dir = _extract_run_dir(second.stdout)
