@@ -56,7 +56,11 @@ row per execution of that task, with status, duration, cache key and attempts,
 resolved through `Query.task_history`. The task is matched on its name, its
 fully qualified name, or the display label of one fan-out branch. Rows are
 ordered by the *run's* start time: a cached task never started, so its own
-timestamp is null and would sort out of the history it belongs to.
+timestamp is null and would sort out of the history it belongs to. A run in
+which the task is still pending and never started, such as one blocked by an
+upstream failure, is left out, because it holds no history of the task; a task
+waiting to retry has started and stays. `--include-pending` lists those runs
+too, and `--json` applies the same filter.
 
 `ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
 table, `--json`, or `--csv`. Three things are refused: a statement that is not a
