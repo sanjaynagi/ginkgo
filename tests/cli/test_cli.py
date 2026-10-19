@@ -2559,7 +2559,8 @@ class TestFailureOutputReadability:
     def test_identical_branch_failures_share_one_panel(self) -> None:
         Path("workflow.py").write_text(_FANOUT_FAILURE_WORKFLOW, encoding="utf-8")
 
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        # One slot per branch, so all three fail whatever the CPU count.
+        result = _run_cli("run", "workflow.py", "--jobs", "3", cwd=Path.cwd())
 
         assert result.returncode == 1
         assert result.stdout.count("Failure Details:") == 1

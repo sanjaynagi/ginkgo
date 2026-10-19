@@ -217,11 +217,11 @@ def run_workflow(
     rich_console = stdout_console()
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [bold]--dry-run[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [bold]--dry-run[/]\n"
         )
     elif output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_path.name}[/] [dim]({run_id})[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [dim]({run_id})[/]\n"
         )
 
     profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
@@ -436,7 +436,7 @@ def run_workflow(
                 return 1
         else:
             rich_console.print(
-                f"[green]✓[/] [bold]{workflow_path.name}[/] "
+                f"[green]✓[/] [bold]{escape(workflow_path.name)}[/] "
                 f"[dim](dry-run)[/] [dim]- {task_count} tasks validated[/]"
             )
         return 0
