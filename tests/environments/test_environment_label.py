@@ -12,8 +12,9 @@ def test_none_env_is_local() -> None:
     assert environment_label(None) == "local"
 
 
-def test_named_env_is_pixi_prefixed() -> None:
-    assert environment_label("analysis_tools") == "pixi:analysis_tools"
+def test_a_bare_name_with_no_environment_plugin_is_shown_as_is() -> None:
+    # ginkgo-pixi labels bare names ``pixi:<name>``; core alone has no label.
+    assert environment_label("analysis_tools") == "analysis_tools"
 
 
 @pytest.mark.parametrize("scheme", _CONTAINER_SCHEMES)

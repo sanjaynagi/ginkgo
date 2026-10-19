@@ -69,8 +69,8 @@ at the nearest `ginkgo.toml`.
 : List the rendered notebook HTML artifacts produced by runs.
 
 `ginkgo env`
-: List and reset the Pixi and container environments backing shell tasks. See
-  [Environments](environments.md).
+: Provided by the `ginkgo-pixi` plugin. List and reset the Pixi environments
+  backing shell tasks. See [Environments](environments.md).
 
 `ginkgo secrets`
 : List and validate the secret references a workflow resolves at run time.

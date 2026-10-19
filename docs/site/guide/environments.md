@@ -9,7 +9,9 @@ Three environments are in play, and it pays to keep them apart:
   every `kind="python"` task body. You provision it — see
   [Python Tasks Run In The CLI's Own Environment](#python-tasks-run-in-the-clis-own-environment).
 - **Pixi environments**, named or pointed at by `env=`. You write the manifest;
-  Ginkgo installs it.
+  Ginkgo installs it. Pixi environments come from the `ginkgo-pixi` plugin
+  (see [Plugins](../getting-started/installation.md#plugins)); without it, a
+  bare `env="name"` fails before the run starts, naming the plugin.
 - **Container images**, named by a `docker://` or `oci://` URI. You name the
   image; Ginkgo pulls it.
 
@@ -246,7 +248,8 @@ How you add a package to it depends on how you installed Ginkgo:
 - Installed as a uv tool (the [curl installer](../getting-started/installation.md#quick-install-curl)):
   reinstall with the extras listed, since `uv tool` keeps the tool's environment
   isolated by design —
-  `uv tool install --force --with pandas "git+https://github.com/sanjaynagi/ginkgo.git@main"`.
+  `uv tool install --force --with pandas --with "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi" "git+https://github.com/sanjaynagi/ginkgo.git@main"`.
+  `--force` replaces the tool's `--with` set, so keep ginkgo-pixi in it.
 - Running from a Pixi workspace: add the package to that workspace's manifest
   and `pixi install`.
 - A plain `pip install -e .` environment: `pip install pandas` into the same
@@ -263,7 +266,7 @@ Lifting the restriction so that `kind="python"` can take `env=` is tracked in
 
 ## Environment Commands
 
-The CLI includes environment inspection and cleanup commands:
+The `ginkgo-pixi` plugin adds environment inspection and cleanup commands:
 
 ```bash
 ginkgo env ls

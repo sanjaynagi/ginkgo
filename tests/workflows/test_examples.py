@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shlex
 import shutil
@@ -18,6 +19,7 @@ from ginkgo.cli.commands.init import write_starter_project
 from ginkgo.cli.workspace import discover_default_workflow
 from ginkgo.cli.commands.run import run_workflow
 from ginkgo.envs.container import ContainerBackend
+from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
 from tests.conftest import latest_run_view
 
 
@@ -185,12 +187,24 @@ def _mock_notebook_tools() -> Iterator[None]:
         yield
 
 
+@pytest.fixture
+def installed_plugins() -> Iterator[PluginRegistry]:
+    """Run against the installed plugins rather than core's test stubs."""
+    with use_plugin_registry(PluginRegistry.discover()) as registry:
+        yield registry
+
+
 @pytest.mark.integration
 class TestExamples:
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ginkgo_pixi") is None,
+        reason="the init scaffold's script task needs the ginkgo-pixi plugin",
+    )
     def test_init_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        installed_plugins: PluginRegistry,
     ) -> None:
         example_dir = _materialize_example(name="init", destination_root=tmp_path)
         monkeypatch.chdir(example_dir)
@@ -231,10 +245,16 @@ class TestExamples:
         assert third_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ginkgo_pixi") is None
+        or importlib.util.find_spec("ginkgo_oci") is None,
+        reason="the bioinfo example needs the ginkgo-pixi and ginkgo-oci plugins",
+    )
     def test_bioinfo_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        installed_plugins: PluginRegistry,
     ) -> None:
         profile = os.environ.get("GINKGO_REMOTE_OCI_PROFILE")
         if not profile:

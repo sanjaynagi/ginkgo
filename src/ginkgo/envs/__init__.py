@@ -16,12 +16,6 @@ from ginkgo.envs.mounts import (
     parse_extra_mount,
     resolve_mounts,
 )
-from ginkgo.envs.pixi import (
-    PixiEnvironment,
-    PixiEnvNotFoundError,
-    PixiEnvPrepareError,
-    PixiRegistry,
-)
 
 __all__ = [
     "ContainerBackend",
@@ -30,10 +24,6 @@ __all__ = [
     "MissingMountError",
     "Mount",
     "MountModeConflictError",
-    "PixiEnvNotFoundError",
-    "PixiEnvironment",
-    "PixiEnvPrepareError",
-    "PixiRegistry",
     "UnsafeMountError",
     "container_backend_from_config",
     "is_container_env",

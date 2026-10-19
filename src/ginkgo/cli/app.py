@@ -13,7 +13,6 @@ from ginkgo.cli.commands.cache import command_cache
 from ginkgo.cli.commands.db import command_db
 from ginkgo.cli.commands.debug import command_debug
 from ginkgo.cli.commands.doctor import command_doctor
-from ginkgo.cli.commands.env import command_env
 from ginkgo.cli.commands.export import command_export
 from ginkgo.cli.commands.history import command_history
 from ginkgo.cli.commands.init import command_init
@@ -159,8 +158,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_run(args, output_mode=_run_mode_from_args(args))
         if args.command == "cache":
             return command_cache(args)
-        if args.command == "env":
-            return command_env(args)
         if args.command == "db":
             return command_db(args)
         if args.command == "debug":
@@ -451,14 +448,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Give up the entries nobody has used lately before the oldest ones.",
     )
     prune_parser.add_argument("--dry-run", action="store_true")
-
-    env_parser = subparsers.add_parser("env", help="Manage task execution environments")
-    env_subparsers = env_parser.add_subparsers(dest="env_command", required=True)
-    env_subparsers.add_parser("ls", help="List environments")
-    env_clear_parser = env_subparsers.add_parser("clear", help="Clear environment caches")
-    env_clear_parser.add_argument("env", nargs="?")
-    env_clear_parser.add_argument("--all", action="store_true")
-    env_clear_parser.add_argument("--dry-run", action="store_true")
 
     db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)

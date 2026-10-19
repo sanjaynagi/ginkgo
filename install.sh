@@ -24,9 +24,12 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-# Install (or reinstall) the ginkgo CLI into its own isolated environment.
+# Install (or reinstall) the ginkgo CLI into its own isolated environment,
+# with ginkgo-pixi: tasks' bare env= names (and `ginkgo init`'s scaffold) need
+# it, and it brings no dependencies beyond the pixi binary.
+PIXI_PLUGIN_URL="ginkgo-pixi @ ${REPO_URL}#subdirectory=plugins/ginkgo-pixi"
 info "Installing ginkgo from ${REPO_URL}"
-uv tool install --force "$REPO_URL"
+uv tool install --force "$REPO_URL" --with "$PIXI_PLUGIN_URL"
 
 # Pixi is needed at runtime for pixi-backed task environments; warn if absent.
 if ! command -v pixi >/dev/null 2>&1; then

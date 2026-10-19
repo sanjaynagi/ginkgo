@@ -36,13 +36,15 @@ install`. Re-run the same command to upgrade.
 
 ### Plugins
 
-The installer gives you core only. Optional integrations ship as separate
+The installer gives you core plus `ginkgo-pixi`, which runs tasks' bare
+`env="name"` Pixi environments. Other optional integrations ship as separate
 plugins in this repository:
 
 - `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver
 - `ginkgo-gcp`: the `gs://` object store, the gcsfuse FUSE driver and the GCP
   Batch executor
 - `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
+- `ginkgo-pixi`: Pixi environments for tasks' `env="name"`, and `ginkgo env`
 - `ginkgo-k8s`: the Kubernetes executor
 - `ginkgo-report`: the `ginkgo report` command, for HTML run reports
 - `ginkgo-slack`: Slack run notifications
@@ -228,7 +230,7 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo cache explain`
-- `ginkgo env ls`
+- `ginkgo env ls` (from the `ginkgo-pixi` plugin)
 - `ginkgo db` (`db path`, `db migrate`, `db check`, `db prune`, `db vacuum`)
 
 For full details on every command, see the [CLI reference](docs/site/guide/cli.md).

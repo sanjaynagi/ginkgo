@@ -28,11 +28,10 @@ from ginkgo import (
     tmp_dir,
     untracked,
 )
-from ginkgo.envs.pixi import PixiEnvironment, PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.task_runners.notebook import NotebookTaskError
-from tests.conftest import EventCollector
+from tests.conftest import EventCollector, ShellEnvironment
 from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import (
     EventBus,
@@ -290,11 +289,6 @@ def shell_retry_skip_mismatched_exit_code_task(output_path: str, log_path: untra
     return shell(cmd="exit 7", output=output_path, log=log_path)
 
 
-@task(kind="shell", env="test_env")
-def shell_env_write_output_task(output_path: Out[file]) -> file:
-    return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
-
-
 @task(kind="shell")
 def shell_write_output_task(output_path: str, log_path: untracked) -> file:
     return shell(
@@ -493,17 +487,6 @@ def make_pair_task(x: int) -> tuple[int, int]:
 @task()
 def sum_pair_task(a: int, b: int) -> int:
     return a + b
-
-
-_PIXI_TEST_ENV = "race_env"
-
-
-@task(env=_PIXI_TEST_ENV, kind="shell")
-def pixi_shell_output_task(output_path: str) -> file:
-    return shell(
-        cmd=f"printf 'payload' > {output_path}",
-        output=output_path,
-    )
 
 
 class TestEvaluate:
@@ -715,24 +698,10 @@ class TestEvaluate:
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
         expr = notebook_ipynb_env_task(notebook_path=str(nb_path), value=7)
 
         recorder = Ledger.start(
             root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
-        )
-        registry = PixiRegistry(project_root=tmp_path)
-        monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
-        monkeypatch.setattr(registry, "lock_hash", lambda *, env: "lock-hash-123")
-        monkeypatch.setattr(
-            registry,
-            "exec_argv",
-            lambda *, env, cmd: ["bash", "-c", cmd],
         )
 
         calls: list[str] = []
@@ -745,7 +714,7 @@ class TestEvaluate:
             event_bus=recorder.bus,
             jobs=1,
             cores=1,
-            backend=PixiEnvironment(pixi_registry=registry),
+            backend=ShellEnvironment(),
         )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
@@ -825,12 +794,6 @@ class TestEvaluate:
     def test_concurrent_ipynb_notebooks_install_kernel_once_per_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
         notebooks = []
         for index in range(2):
             nb_path = tmp_path / f"report_{index}.ipynb"
@@ -843,10 +806,6 @@ class TestEvaluate:
         recorder = Ledger.start(
             root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
         )
-        registry = PixiRegistry(project_root=tmp_path)
-        monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
-        monkeypatch.setattr(registry, "lock_hash", lambda *, env: "lock-hash-123")
-        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
 
         install_calls = 0
 
@@ -896,7 +855,7 @@ class TestEvaluate:
             event_bus=recorder.bus,
             jobs=2,
             cores=2,
-            backend=PixiEnvironment(pixi_registry=registry),
+            backend=ShellEnvironment(),
         )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
@@ -1059,17 +1018,6 @@ class TestEvaluate:
         output_path = tmp_path / "out.txt"
         expr = python_script_env_task(script_path=str(script_path), output_path=str(output_path))
 
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
-        registry = PixiRegistry(project_root=tmp_path)
-        monkeypatch.setattr(registry, "prepare", lambda *, env: env_dir / "pixi.toml")
-        monkeypatch.setattr(registry, "lock_hash", lambda *, env: "lock-hash-123")
-        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
-
         calls: list[str] = []
 
         def fake_run_subprocess(
@@ -1084,9 +1032,7 @@ class TestEvaluate:
             output_path.write_text("done\n", encoding="utf-8")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
-        evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, backend=PixiEnvironment(pixi_registry=registry)
-        )
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, backend=ShellEnvironment())
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
 
@@ -1587,145 +1533,6 @@ class TestFailurePolicy:
         assert len(evaluator.ignored_failures) == 1
 
 
-class TestEnvBackedCaching:
-    """Declaring ``env=`` must not cost a task its cache hit on the next run."""
-
-    def _declare_env(self, *, project_root: Path) -> Path:
-        """Write an ``envs/test_env/pixi.toml`` with no lock file beside it."""
-        env_dir = project_root / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        manifest = env_dir / "pixi.toml"
-        manifest.write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n", encoding="utf-8"
-        )
-        return manifest
-
-    def _run(
-        self,
-        *,
-        expr: Any,
-        project_root: Path,
-        manifest: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> tuple[Any, EventCollector]:
-        """Evaluate *expr* the way a fresh process would, and report its events.
-
-        Each call builds its own registry, so no in-memory environment state
-        carries over between runs, while all of them share the cwd-scoped
-        on-disk cache. ``prepare`` stands in for ``pixi install``: the side
-        effect that matters here is writing the lock file next to the manifest.
-        """
-        registry = PixiRegistry(project_root=project_root)
-
-        def fake_prepare(*, env: str) -> Path:
-            lock_path = manifest.parent / "pixi.lock"
-            if not lock_path.is_file():
-                lock_path.write_text("version: 6\nsolved: first\n", encoding="utf-8")
-            return manifest
-
-        monkeypatch.setattr(registry, "prepare", fake_prepare)
-        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
-
-        collector = EventCollector()
-        evaluator = ConcurrentEvaluator(
-            jobs=1,
-            cores=1,
-            backend=PixiEnvironment(pixi_registry=registry),
-            event_bus=collector.bus,
-        )
-        return evaluator.evaluate(expr), collector
-
-    def test_pixi_env_task_is_cached_on_the_second_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Regression test for issue #194.
-
-        The cache key is built before the environment is materialised, so an
-        environment identity that only becomes knowable once the environment is
-        installed differs between the run that installed it and every run after
-        it — and every env-backed task re-ran once, on the second run of an
-        otherwise unchanged workflow.
-        """
-        manifest = self._declare_env(project_root=tmp_path)
-        output_path = tmp_path / "out.txt"
-        expr = shell_env_write_output_task(output_path=str(output_path))
-
-        result, first = self._run(
-            expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
-        )
-
-        assert result == file(str(output_path))
-        assert first.cached() == []
-        # The first run materialised the environment, which is what wrote the
-        # lock file the identity used to be taken from.
-        assert (manifest.parent / "pixi.lock").is_file()
-
-        result, second = self._run(
-            expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
-        )
-
-        assert result == file(str(output_path))
-        assert second.cached() != []
-        assert second.started() == []
-
-    def test_pixi_env_task_reruns_when_the_installed_environment_drifts(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A re-solved lock file invalidates the entry, though the key is the same.
-
-        Cache keys name the declared environment, so ``pixi update`` — which
-        re-solves every dependency while leaving ``pixi.toml`` untouched — does
-        not move the key. The entry records the digest of the environment as
-        installed when it was written, and that is what catches the drift.
-        """
-        manifest = self._declare_env(project_root=tmp_path)
-        output_path = tmp_path / "out.txt"
-        expr = shell_env_write_output_task(output_path=str(output_path))
-
-        self._run(expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch)
-
-        # `pixi update`: dependencies re-solved, declaration unchanged.
-        (manifest.parent / "pixi.lock").write_text("version: 6\nsolved: again\n", encoding="utf-8")
-        before = manifest.read_text(encoding="utf-8")
-
-        result, rerun = self._run(
-            expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
-        )
-
-        assert manifest.read_text(encoding="utf-8") == before
-        assert result == file(str(output_path))
-        assert rerun.cached() == []
-        assert rerun.started() != []
-
-    def test_pixi_env_task_is_cached_when_the_environment_is_not_installed_here(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With no local environment there is no evidence of drift, so entries stand.
-
-        This is the case a shared cache lands in on a machine that has never
-        installed the environment. Establishing evidence would mean installing
-        it to serve a cache hit, which is the cost the deferred materialisation
-        exists to avoid.
-        """
-        manifest = self._declare_env(project_root=tmp_path)
-        output_path = tmp_path / "out.txt"
-        expr = shell_env_write_output_task(output_path=str(output_path))
-
-        self._run(expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch)
-
-        (manifest.parent / "pixi.lock").unlink()
-
-        result, second = self._run(
-            expr=expr, project_root=tmp_path, manifest=manifest, monkeypatch=monkeypatch
-        )
-
-        assert result == file(str(output_path))
-        assert second.cached() != []
-        assert second.started() == []
-        # Serving the hit did not install anything.
-        assert not (manifest.parent / "pixi.lock").exists()
-
-
 class TestShellTask:
     def test_shell_task_executes_and_returns_output_file(self, tmp_path: Path):
         output = tmp_path / "out.txt"
@@ -1841,50 +1648,6 @@ class TestShellTask:
         assert second == first
         assert marker.read_text(encoding="utf-8").splitlines() == ["run"]
 
-    def test_pixi_environment_is_prepared_once_before_shell_fan_out(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        env_dir = tmp_path / "envs" / _PIXI_TEST_ENV
-        env_dir.mkdir(parents=True)
-        manifest = env_dir / "pixi.toml"
-        manifest.write_text(
-            "[workspace]\nname = 'race-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
-
-        install_calls: list[list[str]] = []
-        real_subprocess_run = subprocess.run
-
-        def fake_pixi_install(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            if argv[:2] != ["pixi", "install"]:
-                return real_subprocess_run(
-                    argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-            install_calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-        registry = PixiRegistry(project_root=tmp_path)
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_pixi_install)
-        monkeypatch.setattr(
-            registry,
-            "exec_argv",
-            lambda *, env, cmd: ["bash", "-c", cmd],
-        )
-
-        outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
-        result = evaluate(
-            [pixi_shell_output_task(output_path=str(path)) for path in outputs],
-            backend=PixiEnvironment(pixi_registry=registry),
-        )
-
-        assert result == [file(str(path)) for path in outputs]
-        assert install_calls == [["pixi", "install", "--manifest-path", str(manifest.resolve())]]
-        for path in outputs:
-            assert path.read_text(encoding="utf-8") == "payload"
-
 
 class _FakeShellExecutor:
     def __init__(self) -> None:
@@ -1986,7 +1749,7 @@ class TestInterruptHandling:
             assert popen_calls[0][1]["start_new_session"] is True
 
 
-class TestPixiWorkerPayload:
+class TestWorkerPayload:
     def test_build_worker_payload_does_not_contain_import_roots(self, tmp_path: Path) -> None:
         evaluator = ConcurrentEvaluator()
         expr = add_one_task(x=1)

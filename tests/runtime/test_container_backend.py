@@ -22,9 +22,11 @@ from ginkgo.envs.container import (
     parse_container_uri,
 )
 from ginkgo.envs.mounts import mount
-from ginkgo.plugins.api import EnvironmentContext
-from ginkgo.plugins.registry import PluginNotFoundError
+from ginkgo.plugins.api import EnvironmentContext, EnvironmentType, Plugin
+from ginkgo.plugins.builtin import BUILTIN
+from ginkgo.plugins.registry import PluginNotFoundError, PluginRegistry, use_plugin_registry
 from ginkgo.runtime.backend import EnvironmentRouter
+from tests.conftest import ShellEnvironment
 
 
 # ------------------------------------------------------------------
@@ -733,15 +735,23 @@ class TestEnvironmentRouter:
         assert argv[0] == "docker"
         assert "run" in argv
 
-    def test_routes_pixi_env_to_local_backend(self, tmp_path: Path):
-        env_dir = tmp_path / "envs" / "myenv"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test'\nchannels = []\nplatforms = []\n"
+    def test_routes_a_bare_name_to_the_bare_name_environment(self, tmp_path: Path):
+        bare = Plugin(
+            name="bare",
+            contributions=(
+                EnvironmentType(
+                    name="shell", schemes=("",), label="shell", build=lambda _: ShellEnvironment()
+                ),
+            ),
         )
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, bare))):
+            argv = self._make_composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
+        assert argv == ["bash", "-c", "echo hi"]
+
+    def test_a_bare_name_without_ginkgo_pixi_names_the_plugin(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
-        argv = composite.exec_argv(env="myenv", cmd="echo hi")
-        assert argv[0] == "pixi"
+        with pytest.raises(PluginNotFoundError, match="Install ginkgo-pixi to add it"):
+            composite.exec_argv(env="myenv", cmd="echo hi")
 
     def test_validate_envs_partitions(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)

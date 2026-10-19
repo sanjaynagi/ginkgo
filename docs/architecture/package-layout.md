@@ -113,8 +113,8 @@ ginkgo/
 ├── envs/
 │   ├── container.py         # ContainerBackend (Docker/Podman)
 │   ├── interpreter.py       # what the running interpreter cannot import
-│   ├── mounts.py            # bind-mount model for container execution
-│   └── pixi.py
+│   ├── manifest.py          # find_pixi_manifest: the project's own Pixi manifest
+│   └── mounts.py            # bind-mount model for container execution
 ├── cli/
 │   ├── app.py               # parser tree and dispatch
 │   ├── common.py            # the shared console, table style, and run opener
@@ -163,6 +163,13 @@ plugins/
 │   │   ├── __init__.py      # PLUGIN: the oci object store and FUSE driver
 │   │   ├── store.py         # OCIFileSystemBackend, parse_oci_uri
 │   │   └── rclone.py        # RcloneDriver
+│   └── tests/
+├── ginkgo-pixi/
+│   ├── pyproject.toml       # entry point pixi = "ginkgo_pixi:PLUGIN"
+│   ├── src/ginkgo_pixi/
+│   │   ├── __init__.py      # PLUGIN: bare-name environments and `ginkgo env`
+│   │   ├── environment.py   # PixiRegistry, PixiEnvironment
+│   │   └── command.py       # `ginkgo env ls` / `clear`
 │   └── tests/
 ├── ginkgo-report/
 │   ├── pyproject.toml       # entry point report = "ginkgo_report:PLUGIN"

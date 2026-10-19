@@ -285,6 +285,42 @@ labels and required settings and refuse to build anything.
 """
 
 
+@dataclass(kw_only=True)
+class ShellEnvironment:
+    """An execution environment that runs commands under ``bash -c``.
+
+    For core tests of task kinds that run in an ``env=``: core ships no
+    environment for bare names, so these tests pass this as the evaluator's
+    backend. It prepares nothing and reports a fixed identity.
+    """
+
+    identity: str = "test-env-identity"
+
+    def validate_envs(self, *, env_names: set[str]) -> None:
+        pass
+
+    def prepare(self, *, env: str) -> None:
+        pass
+
+    def env_identity(self, *, env: str) -> str:
+        return self.identity
+
+    def materialized_digest(self, *, env: str) -> str | None:
+        return None
+
+    def exec_argv(self, *, env: str, cmd: str, mounts: Any = (), env_vars: Any = ()) -> list[str]:
+        return ["bash", "-c", cmd]
+
+    def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:
+        return None
+
+    def env_lock_path(self, *, env: str) -> Path | None:
+        return None
+
+    def provenance_fields(self, *, env: str) -> dict[str, Any]:
+        return {"backend": "test"}
+
+
 def _unbuildable_store(context: Any) -> Any:
     raise AssertionError("a test reached a real object store build; patch resolve_backend instead")
 

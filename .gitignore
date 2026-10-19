@@ -41,6 +41,7 @@ docs/_build/
 # output: an example whose lock is missing re-solves on first use, which
 # changes its env identity between runs and silently breaks cache reuse.
 !tests/**/pixi.lock
+!plugins/**/pixi.lock
 !examples/**/pixi.lock
 
 # Maintainer working documents (CLAUDE.md: plans are not committed)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import ast
 from collections import Counter
 import re
@@ -203,7 +204,6 @@ def test_init_help_describes_every_flag() -> None:
     ("command", "subcommands"),
     [
         ("cache", "{ls,stats,clear,explain,prune}"),
-        ("env", "{ls,clear}"),
         ("inspect", "{workflow}"),
         ("runs", "{ls,show}"),
         ("export", "{events,manifest}"),
@@ -695,64 +695,6 @@ def main():
         assert "Nothing in the ledger produced" in result.stderr
 
 
-class TestCliEnv:
-    def test_env_ls_empty_state_is_styled(self) -> None:
-        result = _run_cli("env", "ls", cwd=Path.cwd())
-        assert result.returncode == 0
-        assert "🌿 ginkgo env ls" in result.stdout
-        assert "No Pixi environments found. Searched:" in result.stdout
-
-    def test_env_ls_and_clear_manage_project_local_pixi_installs(self) -> None:
-        analysis_dir = Path("envs") / "analysis_tools"
-        analysis_dir.mkdir(parents=True)
-        (analysis_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'analysis-tools'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
-        analysis_install = analysis_dir / ".pixi" / "envs" / "default"
-        analysis_install.mkdir(parents=True)
-        (analysis_install / "marker.txt").write_text("installed", encoding="utf-8")
-
-        bioinfo_dir = Path("envs") / "bioinfo_tools"
-        bioinfo_dir.mkdir(parents=True)
-        (bioinfo_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'bioinfo-tools'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
-        bioinfo_install = bioinfo_dir / ".pixi" / "envs" / "default"
-        bioinfo_install.mkdir(parents=True)
-        (bioinfo_install / "marker.txt").write_text("installed", encoding="utf-8")
-
-        listed = _run_cli("env", "ls", cwd=Path.cwd())
-        assert listed.returncode == 0, listed.stderr
-        assert "analysis_tools" in listed.stdout
-        assert "bioinfo_tools" in listed.stdout
-        assert "yes" in listed.stdout
-
-        preview = _run_cli("env", "clear", "--all", "--dry-run", cwd=Path.cwd())
-        assert preview.returncode == 0, preview.stderr
-        assert "would be removed" in preview.stdout
-        assert analysis_dir.joinpath(".pixi").exists()
-        assert bioinfo_dir.joinpath(".pixi").exists()
-
-        cleared_one = _run_cli("env", "clear", "analysis_tools", cwd=Path.cwd())
-        assert cleared_one.returncode == 0, cleared_one.stderr
-        assert "🌿 ginkgo env clear" in cleared_one.stdout
-        assert "✓ Removed 1 Pixi env" in cleared_one.stdout
-        assert not analysis_dir.joinpath(".pixi").exists()
-        assert bioinfo_dir.joinpath(".pixi").exists()
-
-        cleared_all = _run_cli("env", "clear", "--all", cwd=Path.cwd())
-        assert cleared_all.returncode == 0, cleared_all.stderr
-        assert "✓ Removed 1 Pixi env" in cleared_all.stdout
-        assert not bioinfo_dir.joinpath(".pixi").exists()
-
-    def test_env_clear_requires_exactly_one_target(self) -> None:
-        result = _run_cli("env", "clear", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Specify exactly one of <env> or --all." in result.stderr
-
-
 class TestCliDebug:
     def test_debug_reports_failed_task_inputs_and_log_tail(self) -> None:
         Path("failing_workflow.py").write_text(
@@ -1151,45 +1093,6 @@ def main():
         assert "Detected cycle in workflow graph" in result.stderr
         assert "Run directory:" not in result.stdout
 
-    def test_envs_resolve_from_the_canonical_package_not_the_workflow_parent(self) -> None:
-        """Regression test for issue #119.
-
-        On a canonical ``ginkgo init`` layout, Pixi environments live under
-        ``workflow/envs/``, a sibling of ``workflow/flow.py`` -- not of
-        ``tests/workflows/*.py``. Running a validation workflow by path must
-        still resolve them.
-        """
-        package_dir = Path("workflow")
-        (package_dir / "envs" / "analysis_tools").mkdir(parents=True)
-        (package_dir / "__init__.py").write_text("")
-        (package_dir / "flow.py").write_text("")
-        (package_dir / "envs" / "analysis_tools" / "pixi.toml").write_text(
-            "[workspace]\nname = 'analysis_tools'\nchannels = []\nplatforms = []\n"
-        )
-
-        tests_workflows_dir = Path("tests") / "workflows"
-        tests_workflows_dir.mkdir(parents=True)
-        (tests_workflows_dir / "smoke.py").write_text(
-            """
-from ginkgo import flow, shell, task
-
-@task(env="analysis_tools", kind="shell")
-def touch() -> str:
-    return shell(cmd="true", output="marker.txt")
-
-@flow
-def main():
-    return touch()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "tests/workflows/smoke.py", "--dry-run", cwd=Path.cwd())
-
-        assert result.returncode == 0, result.stderr
-        assert "Pixi environment 'analysis_tools' not found" not in result.stderr
-
 
 _TEMPLATE_ROOT = REPO_ROOT / "src" / "ginkgo" / "templates" / "init" / "base"
 
@@ -1310,6 +1213,8 @@ class TestCliInit:
 
         assert manifest["workspace"]["name"] == "demo-project"
         assert "ginkgo" in declared
+        # The scaffold's script task names a Pixi environment.
+        assert "ginkgo-pixi" in declared
         assert _third_party_imports(project_dir=project_dir) <= declared
         assert manifest["tasks"]["run"] == "ginkgo run"
 
@@ -1400,6 +1305,8 @@ class TestCliInit:
 
     @pytest.mark.integration
     def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
+        if importlib.util.find_spec("ginkgo_pixi") is None:
+            pytest.skip("the scaffold's script task needs the ginkgo-pixi plugin")
         if shutil.which("docker") is None or shutil.which("pixi") is None:
             pytest.skip("running the scaffold end to end needs docker and pixi")
         # The client binary existing does not mean the daemon is reachable.
@@ -1853,9 +1760,11 @@ class TestCliLabelTruncation:
 
 
 class TestCliEnvironmentLabels:
-    def test_environment_label_formats_local_and_pixi_tasks(self) -> None:
+    def test_environment_label_formats_local_and_bare_names(self) -> None:
         assert environment_label(None) == "local"
-        assert environment_label("bioinfo_tools") == "pixi:bioinfo_tools"
+        # Core serves no bare names, so there is no backend label to prefix.
+        assert environment_label("bioinfo_tools") == "bioinfo_tools"
+        assert environment_label("docker://ubuntu:24.04") == "docker://ubuntu:24.04"
 
 
 class TestCliCoreLabels:
