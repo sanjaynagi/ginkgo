@@ -44,6 +44,11 @@ The same workflow on the second run:
 Because Ginkgo shells out to do this, the tools must be on your `PATH`: `pixi`
 for Pixi environments, and `docker` or `podman` for container environments. See
 [Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
+Container environments also need the runtime's daemon running (on macOS and
+Windows, the Podman machine). `ginkgo doctor` and `ginkgo run --dry-run` check
+it and name a stopped or inaccessible daemon. `ginkgo run` does not check it up
+front, so a run whose container tasks are all cached still succeeds; one that
+has to run a container task fails when it reaches it.
 
 ## Pixi Environments
 

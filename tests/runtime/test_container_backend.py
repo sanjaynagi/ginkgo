@@ -236,7 +236,6 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
             pytest.raises(ContainerImageNotFoundError, match="pull_policy") as excinfo,
         ):
             backend.validate_envs(env_names={"docker://nope-does-not-exist:99.99"})
@@ -334,7 +333,6 @@ class TestContainerBackendValidateImageAvailability:
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
-            patch.object(ContainerBackend, "_require_daemon_reachable"),
             patch("ginkgo.envs.container.subprocess.run") as mock_run,
         ):
             backend.validate_envs(env_names={"docker://img:1"})
@@ -346,11 +344,61 @@ def _completed(*, returncode: int, stderr: str = "") -> subprocess.CompletedProc
 
 
 class TestContainerBackendDaemonProbe:
-    """Issue #343: a runtime installed with its daemon down is reported as
-    such at validation, not as a missing image or a failed pull mid-run."""
+    """Issue #343: under ``doctor`` and ``--dry-run`` (``probe_registry``), a
+    runtime installed with its daemon down is reported as such, not as a
+    missing image or a failed pull mid-run."""
+
+    def test_real_run_does_not_probe_the_daemon(self, tmp_path: Path):
+        """A real run may never dispatch a container task (all cached), so a
+        stopped daemon must not fail it up front."""
+        backend = ContainerBackend(project_root=tmp_path)
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch(
+                "ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)
+            ) as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        mock_run.assert_not_called()
+
+    def test_permission_denied_suggests_the_docker_group(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        denied = _completed(
+            returncode=1,
+            stderr=(
+                "permission denied while trying to connect to the Docker daemon socket "
+                "at unix:///var/run/docker.sock"
+            ),
+        )
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=denied),
+            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        message = str(excinfo.value)
+        assert "denied access to the docker daemon" in message
+        assert "docker group" in message
+        assert "systemctl start" not in message
+
+    def test_local_lookup_timeout_reads_as_cannot_tell(self, tmp_path: Path):
+        """A hung daemon must not stall validation, nor get the image blamed."""
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        with (
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch(
+                "ginkgo.envs.container.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=10),
+            ) as mock_run,
+        ):
+            backend.validate_envs(env_names={"docker://img:1"})
+        assert mock_run.call_args[0][0] == ["docker", "image", "inspect", "img:1"]
+        assert mock_run.call_args.kwargs["timeout"] > 0
 
     def test_unreachable_daemon_raises(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         refused = _completed(
             returncode=1, stderr="failed to connect to the docker API at unix:///x/docker.sock"
         )
@@ -369,7 +417,7 @@ class TestContainerBackendDaemonProbe:
         assert mock_run.call_args.kwargs["timeout"] > 0
 
     def test_unreachable_daemon_is_not_reported_as_a_missing_image(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
@@ -379,7 +427,7 @@ class TestContainerBackendDaemonProbe:
             backend.validate_envs(env_names={"docker://img:1"})
 
     def test_reachable_daemon_goes_on_to_check_the_image(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, pull_policy="never")
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
@@ -390,7 +438,7 @@ class TestContainerBackendDaemonProbe:
 
     def test_local_image_needs_no_probe(self, tmp_path: Path):
         """A successful local lookup already proves the daemon is up."""
-        backend = ContainerBackend(project_root=tmp_path)
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
@@ -400,7 +448,7 @@ class TestContainerBackendDaemonProbe:
         mock_run.assert_not_called()
 
     def test_probe_timeout_does_not_block_run(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
@@ -412,10 +460,11 @@ class TestContainerBackendDaemonProbe:
             backend.validate_envs(env_names={"docker://img:1"})
 
     def test_daemon_is_probed_once_per_backend(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path)
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch.object(ContainerBackend, "_registry_reports_missing", return_value=False),
             patch(
                 "ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=0)
             ) as mock_run,
@@ -425,7 +474,7 @@ class TestContainerBackendDaemonProbe:
         mock_run.assert_called_once()
 
     def test_podman_is_probed_with_its_own_info(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, runtime="podman")
+        backend = ContainerBackend(project_root=tmp_path, runtime="podman", probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/podman"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
@@ -439,7 +488,9 @@ class TestContainerBackendDaemonProbe:
         assert mock_run.call_args[0][0] == ["podman", "info"]
 
     def test_unknown_runtime_is_not_probed(self, tmp_path: Path):
-        backend = ContainerBackend(project_root=tmp_path, runtime="custom-runtime")
+        backend = ContainerBackend(
+            project_root=tmp_path, runtime="custom-runtime", probe_registry=True
+        )
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/custom-runtime"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
