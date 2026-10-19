@@ -27,14 +27,27 @@ def failure_pipeline_transient(items: list[str], log_path: str):
     return may_fail_transient(log_path=log_path).map(item=items)
 
 
+def _wait_for_lines(log_path: str, lines: set[str]) -> None:
+    """Block until every one of *lines* is in the log, or fail after 30 seconds."""
+    deadline = time.monotonic() + 30
+    while not lines <= set(Path(log_path).read_text(encoding="utf-8").splitlines()):
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"never saw {sorted(lines)} in {log_path}")
+        time.sleep(0.01)
+
+
 @task()
 def may_fail(item: str, log_path: untracked) -> str:
     append_line(log_path, f"start:{item}")
 
+    # Sequenced through the log rather than by sleeps, so a slow worker start
+    # cannot let a task finish, and free a slot, before item_0 has failed.
     if item == "item_0":
-        time.sleep(0.05)
+        _wait_for_lines(log_path, {"start:item_1", "start:item_2", "start:item_3"})
+        append_line(log_path, "fail:item_0")
         raise RuntimeError("deliberate failure on item_0")
 
+    _wait_for_lines(log_path, {"fail:item_0"})
     time.sleep(0.15)
     append_line(log_path, f"finish:{item}")
     return f"ok:{item}"
@@ -91,9 +104,8 @@ class TestVW6Failure:
 
         events = Path(log_path).read_text(encoding="utf-8").splitlines()
 
-        # Which items started, not the order events landed in. The four workers
-        # need not start within one task's sleep of each other, so a finish may
-        # interleave among the first starts on a loaded machine.
+        # Which items started, not the order events landed in: the four workers
+        # may start in any order.
         started = {line.removeprefix("start:") for line in events if line.startswith("start:")}
         assert started == {"item_0", "item_1", "item_2", "item_3"}
 
