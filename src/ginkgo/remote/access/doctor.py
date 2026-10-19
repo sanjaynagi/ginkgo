@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import functools
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ def local_streaming_available(*, scheme: str) -> bool:
     Parameters
     ----------
     scheme : str
-        Remote URI scheme (``"s3"`` / ``"gs"`` / ``"oci"``).
+        Remote URI scheme, e.g. ``"s3"``.
 
     Returns
     -------
@@ -151,16 +150,26 @@ def _streaming_ever_enabled(*, config: AccessConfig) -> bool:
 
 
 def _probe_driver_binaries() -> list[AccessDiagnostic]:
-    """Warn about missing driver binaries. Not an error — the worker image
-    may carry them instead."""
+    """Report each installed FUSE driver that fails its health check here.
+
+    Probes the drivers contributed by installed plugins, so a host is only
+    told about drivers for schemes it can use. Not an error: the worker image
+    may carry the binaries instead.
+    """
+    if os.environ.get("GINKGO_FUSE_SKIP_DRIVER_PROBE"):
+        return []
+    from ginkgo.plugins.api import MountDriverType
+    from ginkgo.plugins.registry import plugin_registry
+    from ginkgo.remote.access.drivers.base import DriverUnavailableError
+
+    missing: list[str] = []
+    for driver_type in plugin_registry().all(MountDriverType):
+        driver = driver_type.build()
+        try:
+            driver.health_check()
+        except DriverUnavailableError:
+            missing.append(f"{driver.name} ({driver_type.scheme}://)")
     results: list[AccessDiagnostic] = []
-    missing = []
-    if shutil.which("gcsfuse") is None:
-        missing.append("gcsfuse")
-    if shutil.which("mount-s3") is None and shutil.which("mountpoint-s3") is None:
-        missing.append("mountpoint-s3")
-    if shutil.which("rclone") is None:
-        missing.append("rclone")
     if missing:
         results.append(
             AccessDiagnostic(
@@ -175,7 +184,4 @@ def _probe_driver_binaries() -> list[AccessDiagnostic]:
                 ),
             )
         )
-
-    if os.environ.get("GINKGO_FUSE_SKIP_DRIVER_PROBE"):
-        return []
     return results

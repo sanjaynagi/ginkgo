@@ -88,8 +88,10 @@ The worker entry point (`remote/worker.py`) runs as
 4. Prints a JSON result line to stdout for the handle to parse
 
 The same worker image serves both K8s and GCP Batch executors. It installs
-`ginkgo[cloud]` only: the worker runs tasks and never submits them, so it needs
-no executor plugin.
+core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci), so a
+worker can stage and publish to any supported store. It needs no executor
+plugin, since it runs tasks and never submits them; ginkgo-gcp brings the Batch
+client libraries along with its `gs://` store regardless.
 
 ## Code Sync
 
@@ -120,12 +122,14 @@ systems:
 - `ginkgo runs show --json` surfaces all remote metadata.
 - Pod/container logs are captured at task completion via `handle.logs_tail()`.
 
-## GCS Backend
+## Object Stores
 
-`GCSFileSystemBackend` (`remote/fsspec_backends.py`) extends the fsspec base
-class with Google Cloud Storage support via `gcsfs`. It supports
-`head()`, `download()`, `upload()`, and `list_prefix()` operations and is
-used for both remote input staging and code bundle publishing.
+Each store is a plugin contribution (`ObjectStoreType`): `s3://` from
+ginkgo-aws (`s3fs`), `gs://` from ginkgo-gcp (`gcsfs`) and `oci://` from
+ginkgo-oci (`ocifs`). Each subclasses `FsspecBackend`
+(`remote/fsspec_backends.py`), which provides `head()`, `download()`,
+`upload()` and `list_prefix()` over the plugin's filesystem, and is used for
+remote input staging, output publishing and code bundles.
 
 ## Infrastructure Scripts
 
@@ -141,7 +145,7 @@ ginkgo/
 │   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # tarball creation, publish, download+extract
 │   ├── executor_support.py  # worker-protocol helpers for executor plugins
-│   ├── fsspec_backends.py   # S3, OCI, GCS fsspec backends
+│   ├── fsspec_backends.py   # FsspecBackend, the base the store plugins extend
 │   ├── publisher.py         # RemotePublisher for remote outputs
 │   ├── resolve.py           # resolve_backend() factory
 │   ├── staging.py           # remote input staging

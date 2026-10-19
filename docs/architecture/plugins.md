@@ -16,7 +16,7 @@ without breaking plugins.
 | Spec | Keys | `build` |
 |---|---|---|
 | `ExecutorType` | the `type` of a `[remote.executors.<name>]` table | `build(settings) -> RemoteExecutor`; also carries `label` and `required_settings` |
-| `ObjectStoreType` | URI scheme | `build(ObjectStoreContext) -> ObjectStore` |
+| `ObjectStoreType` | URI scheme | `build(ObjectStoreContext) -> ObjectStore`; also carries `parse_uri(uri) -> RemoteLocation`, which splits the scheme's URIs into bucket and key (`core.remote.parse_bucket_key_uri` for `scheme://bucket/key` layouts) |
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(SecretBackendContext) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
@@ -63,8 +63,9 @@ The other errors are explicit:
   message lists what is available, names the distribution to install when a
   first-party plugin provides the key (`_FIRST_PARTY_PROVIDERS` in
   `registry.py`: executor types `k8s` → ginkgo-k8s and `batch` → ginkgo-gcp,
-  event subscriber `slack` → ginkgo-slack, CLI command `report` →
-  ginkgo-report), and lists any plugin that failed to load.
+  object stores and FUSE drivers `s3` → ginkgo-aws, `gs` → ginkgo-gcp and
+  `oci` → ginkgo-oci, event subscriber `slack` → ginkgo-slack, CLI command
+  `report` → ginkgo-report), and lists any plugin that failed to load.
 
 `use_plugin_registry(registry)` swaps the process's registry for a block, for
 tests and embedders that need a known set of plugins.
@@ -78,12 +79,21 @@ tests and embedders that need a known set of plugins.
   'k8s'. ...`). It checks `required_settings` before the run starts, labels
   run headers with `label`, and builds lazily through `build`. `ginkgo doctor`
   probes the same tables. Core contributes no executor type.
-- **Object stores.** `remote.resolve.resolve_backend(scheme)` looks the scheme
-  up and passes an `ObjectStoreContext` of the merged runtime config and any
-  region override; each store reads its own provider settings.
+- **Object stores.** `core.remote.parse_remote_uri(uri)` — behind
+  `remote_file()`, `remote_folder()` and the configured `[remote]` stores —
+  parses a URI with its scheme's `parse_uri`, so core knows no scheme by name.
+  `is_remote_uri` counts a scheme an installed store serves, or one a
+  first-party plugin would: `s3://` without ginkgo-aws is still a remote URI,
+  and using it names the plugin to install instead of being read as a local
+  path. `remote.resolve.resolve_backend(scheme)` builds the store from an
+  `ObjectStoreContext` of the merged runtime config and any region override;
+  each store reads its own provider settings, with the public
+  `config_table`/`config_string`/`first_defined` helpers. The fsspec-based
+  stores share `FsspecBackend` (`remote/fsspec_backends.py`).
 - **FUSE drivers.** `remote.access.drivers.base.resolve_driver(scheme)`. A
   missing driver raises `DriverUnavailableError`, which callers already treat
-  as a reason to fall back to staging.
+  as a reason to fall back to staging. Every driver unmounts with
+  `drivers.base.unmount_fuse`.
 - **Secrets.** `SecretResolver` builds a backend's chain from its plugin the
   first time a ref names it, so a run resolving only `env` secrets never builds
   (or authenticates) another backend, and a ref naming an uninstalled backend
@@ -138,14 +148,16 @@ load, exiting 1 if one did.
 
 ## First-party plugins
 
-The Kubernetes and GCP Batch executors, Slack notifications and HTML reports
-are not in core. They live in separate distributions in this repository, under
+Remote executors, object stores, FUSE drivers, Slack notifications and HTML
+reports are not in core. They live in separate distributions in this repository, under
 `plugins/`:
 
 | Distribution | Package | Entry point | Contributes | Depends on |
 |---|---|---|---|---|
+| `plugins/ginkgo-aws` | `ginkgo_aws` | `aws = "ginkgo_aws:PLUGIN"` | `ObjectStoreType` `s3`, `MountDriverType` `s3` (mountpoint-s3) | `s3fs` |
 | `plugins/ginkgo-k8s` | `ginkgo_k8s` | `k8s = "ginkgo_k8s:PLUGIN"` | `ExecutorType` `k8s` (label `Kubernetes`, requires `image`) | `kubernetes` |
-| `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `google-cloud-batch`, `google-cloud-logging` |
+| `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ObjectStoreType` `gs`, `MountDriverType` `gs` (gcsfuse), `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `gcsfs`, `google-auth`, `google-cloud-batch`, `google-cloud-logging` |
+| `plugins/ginkgo-oci` | `ginkgo_oci` | `oci = "ginkgo_oci:PLUGIN"` | `ObjectStoreType` `oci` (with its `oci://namespace/bucket/key` parser), `MountDriverType` `oci` (rclone) | `ocifs` |
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 
@@ -159,7 +171,8 @@ An executor plugin implements `RemoteExecutor` / `RemoteJobHandle`
 `remote/executor_support.py` — `encode_payload`, `generate_job_name`,
 `payload_requires_fuse`, `parse_worker_output` — speak that worker protocol, so
 a plugin never reimplements the payload or result format. Worker images install
-`ginkgo[cloud]` only: a worker runs tasks and needs no executor plugin.
+core and the object-store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci): a worker
+stages and publishes but never submits, so it needs no executor plugin.
 
 ### Writing one
 
@@ -200,13 +213,16 @@ none, and `pixi run -e core test-core` runs `tests/` there; CI runs it as a
 separate `core-without-plugins` job. A core test that configures `k8s` or
 `batch` executors uses the `stub_executor_types` fixture (`tests/conftest.py`),
 which swaps in a registry of core's plugin plus stub executor types that mirror
-the real labels and required settings and refuse to build.
+the real labels and required settings and refuse to build. Core's tests use
+`s3://` and `gs://` URIs as examples of any object store: an autouse fixture,
+`stub_object_stores`, gives every test core's plugin plus stores for those two
+schemes that parse but refuse to build, so core's tests behave the same whether
+or not the store plugins are installed. The real stores are tested in their
+plugins.
 
 ## Not yet extension points
 
-Value codecs are still wired directly. URI parsing for `remote_file` /
-`remote_folder` (`core/remote.py`) still knows the `s3`, `oci` and `gs`
-schemes by name.
+Value codecs are still wired directly.
 
 Two parts of the task-kind contract are still loose, and are to be tightened
 before a task kind moves out of core: a runner receives the evaluator's own

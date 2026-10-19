@@ -1292,7 +1292,7 @@ class TestCliInit:
         assert "`project.md`:" in skills_index_text
         assert "JSONL runtime events" in commands_text
         assert '@task(kind="shell")' in patterns_text
-        assert "oci://registry/path:tag" in patterns_text
+        assert "gs://bucket/reads.bam" in patterns_text
 
     def test_init_pixi_manifest_declares_what_the_workflow_needs(self) -> None:
         """The scaffolded manifest must install everything the scaffold imports.

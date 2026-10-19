@@ -26,6 +26,8 @@ from ginkgo.plugins.api import (
     Contribution,
     EventSubscriberType,
     ExecutorType,
+    MountDriverType,
+    ObjectStoreType,
     Plugin,
     TaskKind,
 )
@@ -47,6 +49,12 @@ _FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
     (ExecutorType, "k8s"): "ginkgo-k8s",
     (ExecutorType, "batch"): "ginkgo-gcp",
     (EventSubscriberType, "slack"): "ginkgo-slack",
+    (ObjectStoreType, "s3"): "ginkgo-aws",
+    (ObjectStoreType, "gs"): "ginkgo-gcp",
+    (ObjectStoreType, "oci"): "ginkgo-oci",
+    (MountDriverType, "s3"): "ginkgo-aws",
+    (MountDriverType, "gs"): "ginkgo-gcp",
+    (MountDriverType, "oci"): "ginkgo-oci",
     (CliCommand, "report"): "ginkgo-report",
 }
 """Which first-party distribution provides a key core does not ship, for hints."""
@@ -215,6 +223,10 @@ class PluginRegistry:
             if kind is point and isinstance(contribution, point) and contribution not in seen:
                 seen.append(contribution)
         return seen
+
+    def has(self, point: type[Contribution], key: str) -> bool:
+        """Return whether a loaded plugin contributes *key* to *point*."""
+        return (point, key) in self._index
 
     def keys(self, point: type[Contribution]) -> list[str]:
         """Return the keys registered for *point*, sorted."""

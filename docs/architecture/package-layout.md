@@ -85,7 +85,7 @@ ginkgo/
 │   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # code packaging for remote workers
 │   ├── executor_support.py  # worker-protocol helpers for executor plugins
-│   ├── fsspec_backends.py   # S3, OCI, GCS backends
+│   ├── fsspec_backends.py   # FsspecBackend, the base the store plugins extend
 │   ├── publisher.py         # remote output publishing
 │   ├── resolve.py           # backend factory
 │   ├── staging.py           # remote input staging; StagingIndex owns staging_entries
@@ -97,7 +97,7 @@ ginkgo/
 │       ├── resolver.py      # RemoteInputResolver
 │       ├── staged.py        # staged (download) access path
 │       ├── worker_hydration.py  # worker-side input hydration
-│       └── drivers/         # per-provider FUSE drivers (s3, gcsfuse, rclone)
+│       └── drivers/         # MountDriver protocol, dispatch and unmount; drivers are plugins
 ├── query.py                 # ginkgo.query: the public read API over the ledger
 ├── store/                   # rows and SQL; imports nothing from runtime/
 │   ├── __init__.py          # open_store, ProvenanceStore
@@ -136,6 +136,13 @@ package with its own `pyproject.toml` and tests (see
 
 ```text
 plugins/
+├── ginkgo-aws/
+│   ├── pyproject.toml       # entry point aws = "ginkgo_aws:PLUGIN"
+│   ├── src/ginkgo_aws/
+│   │   ├── __init__.py      # PLUGIN: the s3 object store and FUSE driver
+│   │   ├── store.py         # S3FileSystemBackend
+│   │   └── mountpoint.py    # MountpointS3Driver
+│   └── tests/
 ├── ginkgo-k8s/
 │   ├── pyproject.toml       # entry point k8s = "ginkgo_k8s:PLUGIN"
 │   ├── src/ginkgo_k8s/
@@ -145,8 +152,17 @@ plugins/
 ├── ginkgo-gcp/
 │   ├── pyproject.toml       # entry point gcp = "ginkgo_gcp:PLUGIN"
 │   ├── src/ginkgo_gcp/
-│   │   ├── __init__.py      # PLUGIN: the batch executor type
+│   │   ├── __init__.py      # PLUGIN: the gs object store, FUSE driver, batch executor
+│   │   ├── store.py         # GCSFileSystemBackend
+│   │   ├── gcsfuse.py       # GcsFuseDriver
 │   │   └── batch.py         # GCPBatchExecutor
+│   └── tests/
+├── ginkgo-oci/
+│   ├── pyproject.toml       # entry point oci = "ginkgo_oci:PLUGIN"
+│   ├── src/ginkgo_oci/
+│   │   ├── __init__.py      # PLUGIN: the oci object store and FUSE driver
+│   │   ├── store.py         # OCIFileSystemBackend, parse_oci_uri
+│   │   └── rclone.py        # RcloneDriver
 │   └── tests/
 ├── ginkgo-report/
 │   ├── pyproject.toml       # entry point report = "ginkgo_report:PLUGIN"

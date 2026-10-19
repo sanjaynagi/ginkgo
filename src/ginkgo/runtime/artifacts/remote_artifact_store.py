@@ -359,7 +359,7 @@ def load_remote_artifact_store(
     RemoteArtifactStore | None
     """
     from ginkgo.config import load_runtime_config
-    from ginkgo.core.remote import _parse_uri
+    from ginkgo.core.remote import parse_remote_uri
     from ginkgo.remote.resolve import resolve_backend
 
     config = load_runtime_config(project_root=Path.cwd())
@@ -368,17 +368,17 @@ def load_remote_artifact_store(
     if store_uri is None:
         return None
 
-    parsed = _parse_uri(store_uri)
-    backend = resolve_backend(parsed["scheme"])
+    location = parse_remote_uri(store_uri)
+    backend = resolve_backend(location.scheme)
 
-    prefix = parsed["key"]
+    prefix = location.key
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
     return RemoteArtifactStore(
         local=local,
         backend=backend,
-        bucket=parsed["bucket"],
+        bucket=location.bucket,
         prefix=prefix,
-        scheme=parsed["scheme"],
+        scheme=location.scheme,
     )

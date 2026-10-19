@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 if TYPE_CHECKING:
     from ginkgo.core.directive import ExecutionDirective
+    from ginkgo.core.remote import RemoteLocation
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
@@ -122,6 +123,10 @@ class ObjectStoreType:
     ----------
     scheme : str
         URI scheme, e.g. ``"s3"``.
+    parse_uri : Callable[[str], RemoteLocation]
+        Split one of the scheme's URIs into bucket and key, raising
+        ``ValueError`` if it is malformed. Stores laid out as
+        ``scheme://bucket/key`` pass :func:`ginkgo.core.remote.parse_bucket_key_uri`.
     build : Callable[[ObjectStoreContext], ObjectStore]
         Construct the store.
     """
@@ -129,6 +134,7 @@ class ObjectStoreType:
     point_name: ClassVar[str] = "object store for scheme"
 
     scheme: str
+    parse_uri: Callable[[str], RemoteLocation]
     build: Callable[[ObjectStoreContext], ObjectStore]
 
     @property

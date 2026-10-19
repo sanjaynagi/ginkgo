@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 
 from ginkgo.cli.commands.doctor import _extract_executor_configs
+from ginkgo.plugins.api import MountDriverType, Plugin
+from ginkgo.plugins.builtin import BUILTIN
+from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
 from ginkgo.remote.access import doctor as access_doctor
+from ginkgo.remote.access.drivers.base import DriverUnavailableError
 
 PYTHON = Path(sys.executable)
 
@@ -645,3 +649,33 @@ class TestDoctorInterpreterEnvironment:
 
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"ok": True, "diagnostics": []}
+
+
+class _Driver:
+    def __init__(self, *, name: str, healthy: bool) -> None:
+        self.name = name
+        self._healthy = healthy
+
+    def health_check(self) -> None:
+        if not self._healthy:
+            raise DriverUnavailableError(f"{self.name} not on PATH")
+
+
+def test_only_installed_drivers_that_fail_their_health_check_are_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GINKGO_FUSE_SKIP_DRIVER_PROBE", raising=False)
+    drivers = Plugin(
+        name="drivers",
+        contributions=(
+            MountDriverType(scheme="gs", build=lambda: _Driver(name="gcsfuse", healthy=True)),
+            MountDriverType(
+                scheme="s3", build=lambda: _Driver(name="mountpoint-s3", healthy=False)
+            ),
+        ),
+    )
+    with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, drivers))):
+        (diagnostic,) = access_doctor._probe_driver_binaries()
+
+    assert diagnostic.code == "FUSE_DRIVERS_NOT_ON_HOST"
+    assert diagnostic.message.endswith("mountpoint-s3 (s3://)")

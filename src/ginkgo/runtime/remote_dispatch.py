@@ -266,7 +266,7 @@ class RemoteDispatchManager:
 
         from ginkgo.remote.code_bundle import create_code_bundle, publish_code_bundle
         from ginkgo.remote.resolve import resolve_backend
-        from ginkgo.core.remote import _parse_uri
+        from ginkgo.core.remote import parse_remote_uri
 
         package_path = Path.cwd() / package
         if not package_path.is_dir():
@@ -283,9 +283,9 @@ class RemoteDispatchManager:
                 "Code-sync mode requires [remote.artifacts] store to be configured in ginkgo.toml"
             )
 
-        parsed = _parse_uri(store_uri)
-        backend = resolve_backend(parsed["scheme"])
-        prefix = parsed["key"]
+        location = parse_remote_uri(store_uri)
+        backend = resolve_backend(location.scheme)
+        prefix = location.key
         if prefix and not prefix.endswith("/"):
             prefix += "/"
 
@@ -296,7 +296,7 @@ class RemoteDispatchManager:
         try:
             remote_key = publish_code_bundle(
                 backend=backend,
-                bucket=parsed["bucket"],
+                bucket=location.bucket,
                 prefix=prefix,
                 bundle_path=bundle_path,
                 digest=digest,
@@ -305,8 +305,8 @@ class RemoteDispatchManager:
             Path(bundle_path).unlink(missing_ok=True)
 
         meta = {
-            "scheme": parsed["scheme"],
-            "bucket": parsed["bucket"],
+            "scheme": location.scheme,
+            "bucket": location.bucket,
             "key": remote_key,
             "digest": digest,
             "package": package,

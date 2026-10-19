@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -26,7 +28,7 @@ class MountSpec:
     Parameters
     ----------
     scheme : str
-        Remote scheme (``gs``/``s3``/``oci``).
+        Remote URI scheme, e.g. ``"gs"``.
     bucket : str
         Bucket / container authority.
     mount_point : Path
@@ -53,8 +55,9 @@ class MountSpec:
 class MountDriver(Protocol):
     """FUSE driver interface.
 
-    Implementations wrap a driver binary (``gcsfuse``,
-    ``mount-s3``/``mountpoint-s3``, ``rclone``) via :mod:`subprocess`.
+    Implementations, contributed by plugins as
+    :class:`~ginkgo.plugins.api.MountDriverType`, typically wrap a driver
+    binary via :mod:`subprocess`.
     """
 
     name: str
@@ -87,3 +90,23 @@ def resolve_driver(*, scheme: str) -> MountDriver:
     except PluginNotFoundError as exc:
         raise DriverUnavailableError(str(exc)) from exc
     return driver_type.build()
+
+
+def unmount_fuse(*, mount_point: Path) -> None:
+    """Unmount a FUSE mount, for any driver: gcsfuse, mountpoint-s3 or rclone.
+
+    Tries ``fusermount -u`` first (Linux, preferred), then falls back to
+    ``umount``. Any failure is re-raised as :class:`MountFailedError`.
+    """
+    last_err = "no unmount command available on PATH"
+    for cmd in (
+        ["fusermount", "-u", str(mount_point)],
+        ["umount", str(mount_point)],
+    ):
+        if shutil.which(cmd[0]) is None:
+            continue
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode == 0:
+            return
+        last_err = result.stderr.decode(errors="replace").strip() or f"rc={result.returncode}"
+    raise MountFailedError(f"Failed to unmount {mount_point}: {last_err}")

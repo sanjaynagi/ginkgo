@@ -124,8 +124,9 @@ The type annotation on the *return value* matters too — a task returning a
 `file`-typed path will have its output stored as an artifact; a task
 returning `str` will not.
 
-Remote-backed inputs such as `s3://bucket/data.csv` or `oci://registry/path:tag`
-should flow through Ginkgo task inputs. Let the runtime stage them locally;
+Remote-backed inputs such as `s3://bucket/data.csv` or `gs://bucket/reads.bam`
+should flow through Ginkgo task inputs (each scheme needs its object-store
+plugin: ginkgo-aws, ginkgo-gcp or ginkgo-oci). Let the runtime stage them locally;
 avoid manual download code inside tasks.
 
 Wrap the URI in `remote_file(...)` / `remote_folder(...)` when you want to

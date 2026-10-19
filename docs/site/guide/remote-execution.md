@@ -248,7 +248,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY pyproject.toml .
 COPY src/ginkgo/ src/ginkgo/
-RUN pip install --no-cache-dir ".[cloud]"
+COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
+COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
+COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
+RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
 ```
@@ -337,8 +340,13 @@ All of this is visible in `ginkgo runs show <run_id>`.
 
 ## Remote-Input Access: Stage or Stream
 
-Remote inputs (`gs://`, `s3://`, `oci://`, …) reach a worker in one of two
-modes. **Stage** (default) downloads the whole object to local disk before
+Remote inputs reach a worker in one of two modes. Each scheme comes from a
+plugin, which provides both the object store and its FUSE driver: `s3://` from
+`ginkgo-aws` (mountpoint-s3), `gs://` from `ginkgo-gcp` (gcsfuse) and `oci://`
+from `ginkgo-oci` (rclone). See
+[Plugins](../getting-started/installation.md#plugins).
+
+**Stage** (default) downloads the whole object to local disk before
 the task starts. **Fuse** mounts the bucket in-container and streams reads
 on demand — useful for sparse random access (BAM index lookups, Parquet
 column projection) or whole-file reads that would otherwise block on a

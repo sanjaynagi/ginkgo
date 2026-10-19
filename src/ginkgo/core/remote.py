@@ -5,11 +5,9 @@ workflow authors to declare remote object storage URIs as task inputs.
 The evaluator materializes these references into local paths before task
 execution.
 
-Supported URI schemes:
-
-- ``s3://bucket/key`` — AWS S3
-- ``oci://namespace/bucket/key`` — Oracle Cloud Infrastructure Object Storage
-- ``gs://bucket/key`` — Google Cloud Storage
+A URI's scheme selects the object store plugin that parses and serves it:
+``s3://`` comes from ginkgo-aws, ``gs://`` from ginkgo-gcp and ``oci://`` from
+ginkgo-oci. Core knows no scheme by name.
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-_SUPPORTED_SCHEMES = frozenset({"s3", "oci", "gs"})
 _VALID_ACCESS_MODES = frozenset({"stage", "fuse"})
 
 
@@ -30,15 +27,14 @@ class RemoteRef:
     uri : str
         Full URI (e.g. ``s3://bucket/key``).
     scheme : str
-        URI scheme (``"s3"`` or ``"oci"``).
+        URI scheme, e.g. ``"s3"``.
     bucket : str
-        Bucket/container authority used by the storage backend.
-        For S3 this is the bucket name. For OCI this is normalized to
-        ``"<bucket>@<namespace>"``.
+        Bucket authority the store addresses, as its plugin's parser
+        normalised it.
     key : str
         Object key within the bucket.
     namespace : str | None
-        Optional OCI namespace. ``None`` for S3.
+        Store-specific namespace, when the scheme has one.
     version_id : str | None
         Optional immutable version pin.
     access : str | None
@@ -90,18 +86,20 @@ def remote_file(
 
     Raises
     ------
+    PluginNotFoundError
+        If no installed plugin provides an object store for the URI's scheme.
     ValueError
-        If the URI scheme is unsupported or the URI is malformed, or if
-        ``access`` is not one of ``"stage"`` / ``"fuse"``.
+        If the URI is malformed, or ``access`` is not one of ``"stage"`` /
+        ``"fuse"``.
     """
-    parsed = _parse_uri(uri)
+    location = parse_remote_uri(uri)
     _validate_access(access)
     return RemoteFileRef(
         uri=uri,
-        scheme=parsed["scheme"],
-        bucket=parsed["bucket"],
-        key=parsed["key"],
-        namespace=parsed.get("namespace"),
+        scheme=location.scheme,
+        bucket=location.bucket,
+        key=location.key,
+        namespace=location.namespace,
         version_id=version_id,
         access=access,
     )
@@ -131,18 +129,20 @@ def remote_folder(
 
     Raises
     ------
+    PluginNotFoundError
+        If no installed plugin provides an object store for the URI's scheme.
     ValueError
-        If the URI scheme is unsupported or the URI is malformed, or if
-        ``access`` is not one of ``"stage"`` / ``"fuse"``.
+        If the URI is malformed, or ``access`` is not one of ``"stage"`` /
+        ``"fuse"``.
     """
-    parsed = _parse_uri(uri)
+    location = parse_remote_uri(uri)
     _validate_access(access)
     return RemoteFolderRef(
         uri=uri,
-        scheme=parsed["scheme"],
-        bucket=parsed["bucket"],
-        key=parsed["key"],
-        namespace=parsed.get("namespace"),
+        scheme=location.scheme,
+        bucket=location.bucket,
+        key=location.key,
+        namespace=location.namespace,
         version_id=version_id,
         access=access,
     )
@@ -159,8 +159,43 @@ def _validate_access(access: str | None) -> None:
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class RemoteLocation:
+    """Where a remote URI points: the store, the bucket and the object key.
+
+    Parameters
+    ----------
+    scheme : str
+        URI scheme, e.g. ``"s3"``.
+    bucket : str
+        Bucket authority the store addresses. A store may normalise it (OCI
+        uses ``"<bucket>@<namespace>"``).
+    key : str
+        Object key or prefix within the bucket.
+    namespace : str | None
+        Store-specific namespace, when the scheme has one.
+    """
+
+    scheme: str
+    bucket: str
+    key: str
+    namespace: str | None = None
+
+
+def uri_scheme(value: str) -> str | None:
+    """Return the lower-cased scheme of ``scheme://...``, or ``None`` if there is none."""
+    scheme, separator, _ = value.partition("://")
+    return scheme.lower() if separator and scheme else None
+
+
 def is_remote_uri(value: str) -> bool:
-    """Check whether a string looks like a supported remote URI.
+    """Check whether a string is a URI for an object store.
+
+    A scheme counts when an installed plugin provides a store for it, or a
+    first-party plugin would: ``s3://`` without ginkgo-aws is still a remote
+    URI, so using it fails with the plugin to install rather than being
+    mistaken for a local path. A store therefore claims every string with its
+    scheme: a task argument like that is treated as a remote input.
 
     Parameters
     ----------
@@ -170,156 +205,53 @@ def is_remote_uri(value: str) -> bool:
     Returns
     -------
     bool
-        ``True`` if the string starts with a supported scheme.
     """
-    try:
-        scheme = value.split("://", 1)[0].lower()
-    except (AttributeError, IndexError):
+    from ginkgo.plugins.api import ObjectStoreType
+    from ginkgo.plugins.registry import first_party_provider, plugin_registry
+
+    scheme = uri_scheme(value) if isinstance(value, str) else None
+    if scheme is None:
         return False
-    return scheme in _SUPPORTED_SCHEMES
+    if plugin_registry().has(ObjectStoreType, scheme):
+        return True
+    return first_party_provider(ObjectStoreType, scheme) is not None
 
 
-def _parse_uri(uri: str) -> dict[str, str]:
-    """Parse a remote URI into scheme, bucket, and key components.
+def parse_remote_uri(uri: str) -> RemoteLocation:
+    """Parse a remote URI with the object store plugin its scheme selects.
 
-    Parameters
-    ----------
-    uri : str
-        Remote URI to parse.
+    Raises
+    ------
+    PluginNotFoundError
+        If no installed plugin provides an object store for the scheme.
+    ValueError
+        If the URI has no scheme or is malformed for its store.
+    """
+    from ginkgo.plugins.api import ObjectStoreType
+    from ginkgo.plugins.registry import plugin_registry
 
-    Returns
-    -------
-    dict[str, str]
-        Parsed components with keys ``scheme``, ``bucket``, ``key``.
+    scheme = uri_scheme(uri)
+    if scheme is None:
+        raise ValueError(f"Remote URI must have the form scheme://...: {uri!r}")
+    return plugin_registry().get(ObjectStoreType, scheme).parse_uri(uri)
+
+
+def parse_bucket_key_uri(uri: str) -> RemoteLocation:
+    """Parse ``scheme://bucket/key``, the layout S3 and GCS share.
+
+    An object store plugin whose URIs have this shape passes this as its
+    ``parse_uri``.
 
     Raises
     ------
     ValueError
-        If the scheme is unsupported or the URI is malformed.
+        If the bucket or key is missing.
     """
     parsed = urlparse(uri)
     scheme = parsed.scheme.lower()
-
-    if scheme not in _SUPPORTED_SCHEMES:
-        raise ValueError(
-            f"Unsupported remote URI scheme {scheme!r} in {uri!r}. "
-            f"Supported schemes: {', '.join(sorted(_SUPPORTED_SCHEMES))}"
-        )
-
-    if scheme == "s3":
-        return _parse_s3_uri(parsed, uri)
-    if scheme == "oci":
-        return _parse_oci_uri(parsed, uri)
-    if scheme == "gs":
-        return _parse_gs_uri(parsed, uri)
-
-    raise ValueError(f"Unsupported scheme: {scheme!r}")
-
-
-def _parse_s3_uri(parsed: object, uri: str) -> dict[str, str]:
-    """Parse an S3 URI: ``s3://bucket/key``.
-
-    Parameters
-    ----------
-    parsed : ParseResult
-        Result from ``urlparse``.
-    uri : str
-        Original URI for error messages.
-
-    Returns
-    -------
-    dict[str, str]
-    """
-    bucket = parsed.netloc  # type: ignore[union-attr]
-    if not bucket:
-        raise ValueError(f"S3 URI missing bucket: {uri!r}")
-
-    key = parsed.path.lstrip("/")  # type: ignore[union-attr]
+    if not parsed.netloc:
+        raise ValueError(f"{scheme}:// URI missing bucket: {uri!r}")
+    key = parsed.path.lstrip("/")
     if not key:
-        raise ValueError(f"S3 URI missing key: {uri!r}")
-
-    return {"scheme": "s3", "bucket": bucket, "key": key}
-
-
-def _parse_oci_uri(parsed: object, uri: str) -> dict[str, str]:
-    """Parse an OCI Object Storage URI.
-
-    Supports both of these forms:
-
-    - ``oci://namespace/bucket/key``
-    - ``oci://bucket@namespace/key``
-
-    Parameters
-    ----------
-    parsed : ParseResult
-        Result from ``urlparse``.
-    uri : str
-        Original URI for error messages.
-
-    Returns
-    -------
-    dict[str, str]
-    """
-    authority = parsed.netloc  # type: ignore[union-attr]
-    if not authority:
-        raise ValueError(f"OCI URI missing namespace or bucket: {uri!r}")
-
-    key = parsed.path.lstrip("/")  # type: ignore[union-attr]
-    if not key:
-        raise ValueError(
-            "OCI URI must have the form oci://namespace/bucket/key "
-            f"or oci://bucket@namespace/key: {uri!r}"
-        )
-
-    if "@" in authority:
-        bucket, namespace = authority.split("@", 1)
-        if not bucket or not namespace:
-            raise ValueError(f"OCI URI must have the form oci://bucket@namespace/key: {uri!r}")
-        return {
-            "scheme": "oci",
-            "bucket": f"{bucket}@{namespace}",
-            "key": key,
-            "namespace": namespace,
-        }
-
-    path_parts = key.split("/", 1)
-    if len(path_parts) < 2 or not path_parts[1]:
-        raise ValueError(
-            "OCI URI must have the form oci://namespace/bucket/key "
-            f"or oci://bucket@namespace/key: {uri!r}"
-        )
-
-    namespace = authority
-    bucket = path_parts[0]
-    object_key = path_parts[1]
-    return {
-        "scheme": "oci",
-        "bucket": f"{bucket}@{namespace}",
-        "key": object_key,
-        "namespace": namespace,
-    }
-
-
-def _parse_gs_uri(parsed: object, uri: str) -> dict[str, str]:
-    """Parse a GCS URI: ``gs://bucket/key``.
-
-    Parameters
-    ----------
-    parsed : ParseResult
-        Result from ``urlparse``.
-    uri : str
-        Original URI for error messages.
-
-    Returns
-    -------
-    dict[str, str]
-    """
-    bucket = parsed.netloc  # type: ignore[union-attr]
-    if not bucket:
-        raise ValueError(f"GCS URI missing bucket: {uri!r}")
-
-    key = parsed.path.lstrip("/")  # type: ignore[union-attr]
-    if not key:
-        raise ValueError(f"GCS URI missing key: {uri!r}")
-
-    return {"scheme": "gs", "bucket": bucket, "key": key}
+        raise ValueError(f"{scheme}:// URI missing key: {uri!r}")
+    return RemoteLocation(scheme=scheme, bucket=parsed.netloc, key=key)

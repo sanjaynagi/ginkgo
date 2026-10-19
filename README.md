@@ -36,8 +36,17 @@ install`. Re-run the same command to upgrade.
 
 ### Plugins
 
-The installer gives you core only. Remote executors ship as separate plugins
-in this repository: `ginkgo-k8s` (Kubernetes) and `ginkgo-gcp` (GCP Batch).
+The installer gives you core only. Optional integrations ship as separate
+plugins in this repository:
+
+- `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver
+- `ginkgo-gcp`: the `gs://` object store, the gcsfuse FUSE driver and the GCP
+  Batch executor
+- `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
+- `ginkgo-k8s`: the Kubernetes executor
+- `ginkgo-report`: the `ginkgo report` command, for HTML run reports
+- `ginkgo-slack`: Slack run notifications
+
 To install ginkgo with every first-party plugin:
 
 ```bash
@@ -51,9 +60,9 @@ uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@m
   --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
 ```
 
-`ginkgo plugins` lists what is installed. The `cloud` extra
-(`ginkgo[cloud]`) adds the Google Cloud Storage object store (`gcsfs`,
-`google-auth`); it installs no executor.
+`ginkgo plugins` lists what is installed. A `remote_file()` or
+`remote_folder()` URI needs the plugin for its scheme; without it, ginkgo names
+the plugin to install.
 
 ### Pixi
 

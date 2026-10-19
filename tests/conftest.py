@@ -8,7 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ginkgo.plugins.api import ExecutorType, Plugin
+from ginkgo.core.remote import parse_bucket_key_uri
+from ginkgo.plugins.api import ExecutorType, ObjectStoreType, Plugin
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import PluginRegistry, use_plugin_registry
 from ginkgo.remote.backend import RemoteObjectMeta
@@ -284,8 +285,40 @@ labels and required settings and refuse to build anything.
 """
 
 
+def _unbuildable_store(context: Any) -> Any:
+    raise AssertionError("a test reached a real object store build; patch resolve_backend instead")
+
+
+STUB_OBJECT_STORES = Plugin(
+    name="stub-object-stores",
+    contributions=(
+        ObjectStoreType(scheme="s3", parse_uri=parse_bucket_key_uri, build=_unbuildable_store),
+        ObjectStoreType(scheme="gs", parse_uri=parse_bucket_key_uri, build=_unbuildable_store),
+    ),
+)
+"""Object stores for ``s3://`` and ``gs://`` URIs that parse but never build.
+
+Core's tests use those schemes as examples of any object store, and run without
+ginkgo-aws or ginkgo-gcp installed. The real stores are tested in their plugins.
+"""
+
+
+@pytest.fixture(autouse=True)
+def stub_object_stores():
+    """Run every test against core's plugin plus ``STUB_OBJECT_STORES``.
+
+    Core's tests then behave the same whether or not plugins are installed. A
+    test that needs other plugins swaps in its own registry. Function-scoped:
+    a module- or session-scoped fixture runs before it and sees the real
+    registry.
+    """
+    with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, STUB_OBJECT_STORES))) as registry:
+        yield registry
+
+
 @pytest.fixture
 def stub_executor_types():
-    """Run the test against core's plugin plus ``STUB_EXECUTORS`` only."""
-    with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, STUB_EXECUTORS))) as registry:
+    """Run the test against core's plugin plus the executor and object store stubs."""
+    plugins = (BUILTIN, STUB_OBJECT_STORES, STUB_EXECUTORS)
+    with use_plugin_registry(PluginRegistry(plugins=plugins)) as registry:
         yield registry

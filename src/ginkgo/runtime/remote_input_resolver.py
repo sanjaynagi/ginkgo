@@ -143,24 +143,24 @@ def load_remote_publisher() -> Any | None:
     if store_uri is None:
         return None
 
-    from ginkgo.core.remote import _parse_uri
+    from ginkgo.core.remote import parse_remote_uri
     from ginkgo.remote.publisher import RemotePublisher
     from ginkgo.remote.resolve import resolve_backend
 
-    parsed = _parse_uri(store_uri)
-    backend = resolve_backend(parsed["scheme"])
+    location = parse_remote_uri(store_uri)
+    backend = resolve_backend(location.scheme)
 
     # The key from the URI becomes the prefix for all published artifacts.
-    prefix = parsed["key"]
+    prefix = location.key
     if prefix and not prefix.endswith("/"):
         prefix += "/"
 
     artifacts_root = WorkspaceLayout.for_cwd().artifacts
     return RemotePublisher(
         backend=backend,
-        bucket=parsed["bucket"],
+        bucket=location.bucket,
         prefix=prefix,
-        scheme=parsed["scheme"],
+        scheme=location.scheme,
         local_blobs_dir=artifacts_root / "blobs",
         local_trees_dir=artifacts_root / "trees",
     )
