@@ -206,3 +206,28 @@ def test_a_dependency_on_an_unregistered_task_is_dropped(
 
     assert [task.dependency_ids for task in summary.tasks] == [(), ()]
     assert "which the run has no task row for" in caplog.text
+
+
+def test_a_task_that_failed_before_any_attempt_reports_no_attempts(tmp_path: Path) -> None:
+    """A failure before dispatch records zero attempts, which reads as "—"."""
+    recorder, bus, db = _recorder(tmp_path)
+    bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
+    bus.emit(GraphNodeRegistered(run_id="run-1", task_id="task_0000", node_id=0, task_name="t"))
+    bus.emit(
+        TaskFailed(
+            run_id="run-1",
+            task_id="task_0000",
+            task_name="t",
+            attempt=0,
+            failure={"kind": "user_code_error", "message": "boom"},
+        )
+    )
+    bus.emit(RunCompleted(run_id="run-1", status="failed", error="boom"))
+    recorder.close()
+
+    with open_store(db, readonly=True) as store:
+        (task,) = RunSummary.load(store, "run-1", runs_root=tmp_path / ".ginkgo" / "runs").tasks
+
+    assert task.status == "failed"
+    assert task.attempts == 0
+    assert task.attempts_label == "—"
