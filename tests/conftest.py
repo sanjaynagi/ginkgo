@@ -308,7 +308,9 @@ def stub_object_stores():
     """Run every test against core's plugin plus ``STUB_OBJECT_STORES``.
 
     Core's tests then behave the same whether or not plugins are installed. A
-    test that needs other plugins swaps in its own registry.
+    test that needs other plugins swaps in its own registry. Function-scoped:
+    a module- or session-scoped fixture runs before it and sees the real
+    registry.
     """
     with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, STUB_OBJECT_STORES))) as registry:
         yield registry

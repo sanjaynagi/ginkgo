@@ -224,6 +224,10 @@ class PluginRegistry:
                 seen.append(contribution)
         return seen
 
+    def has(self, point: type[Contribution], key: str) -> bool:
+        """Return whether a loaded plugin contributes *key* to *point*."""
+        return (point, key) in self._index
+
     def keys(self, point: type[Contribution]) -> list[str]:
         """Return the keys registered for *point*, sorted."""
         return sorted(key for kind, key in self._index if kind is point)

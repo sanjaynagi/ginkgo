@@ -28,7 +28,7 @@ class MountSpec:
     Parameters
     ----------
     scheme : str
-        Remote scheme (``gs``/``s3``/``oci``).
+        Remote URI scheme, e.g. ``"gs"``.
     bucket : str
         Bucket / container authority.
     mount_point : Path
@@ -55,8 +55,9 @@ class MountSpec:
 class MountDriver(Protocol):
     """FUSE driver interface.
 
-    Implementations wrap a driver binary (``gcsfuse``,
-    ``mount-s3``/``mountpoint-s3``, ``rclone``) via :mod:`subprocess`.
+    Implementations, contributed by plugins as
+    :class:`~ginkgo.plugins.api.MountDriverType`, typically wrap a driver
+    binary via :mod:`subprocess`.
     """
 
     name: str

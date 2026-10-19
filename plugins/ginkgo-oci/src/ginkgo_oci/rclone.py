@@ -1,8 +1,7 @@
-"""``rclone mount`` driver wrapper.
+"""``rclone mount`` driver wrapper, ginkgo-oci's driver for ``oci://`` mounts.
 
-Used as the fallback for schemes without a first-class driver (currently
-``oci``). rclone's per-remote configuration is the user's responsibility;
-we assume a remote named ``<scheme>`` is configured.
+rclone's per-remote configuration is the user's responsibility; we assume a
+remote named ``<scheme>`` is configured.
 """
 
 from __future__ import annotations

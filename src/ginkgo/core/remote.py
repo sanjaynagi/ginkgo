@@ -29,13 +29,12 @@ class RemoteRef:
     scheme : str
         URI scheme, e.g. ``"s3"``.
     bucket : str
-        Bucket/container authority used by the storage backend.
-        For S3 this is the bucket name. For OCI this is normalized to
-        ``"<bucket>@<namespace>"``.
+        Bucket authority the store addresses, as its plugin's parser
+        normalised it.
     key : str
         Object key within the bucket.
     namespace : str | None
-        Optional OCI namespace. ``None`` for S3.
+        Store-specific namespace, when the scheme has one.
     version_id : str | None
         Optional immutable version pin.
     access : str | None
@@ -195,7 +194,8 @@ def is_remote_uri(value: str) -> bool:
     A scheme counts when an installed plugin provides a store for it, or a
     first-party plugin would: ``s3://`` without ginkgo-aws is still a remote
     URI, so using it fails with the plugin to install rather than being
-    mistaken for a local path.
+    mistaken for a local path. A store therefore claims every string with its
+    scheme: a task argument like that is treated as a remote input.
 
     Parameters
     ----------
@@ -212,7 +212,7 @@ def is_remote_uri(value: str) -> bool:
     scheme = uri_scheme(value) if isinstance(value, str) else None
     if scheme is None:
         return False
-    if scheme in plugin_registry().keys(ObjectStoreType):
+    if plugin_registry().has(ObjectStoreType, scheme):
         return True
     return first_party_provider(ObjectStoreType, scheme) is not None
 
