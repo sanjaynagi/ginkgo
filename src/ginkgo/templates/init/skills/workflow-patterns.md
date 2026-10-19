@@ -142,7 +142,9 @@ ref = remote_file("gs://bucket/ref.fa", access="stage")
 ```
 
 Fuse mode requires a worker image with FUSE drivers and `fuse_image` /
-`fuse_privileged` set in `[remote.k8s]` or `[remote.batch]`. If a mount
+`fuse_privileged` set on the executor's `[remote.executors.<name>]` table
+(a `k8s` or `batch` executor, from the `ginkgo-k8s` / `ginkgo-gcp` plugins).
+If a mount
 fails the worker falls back to staging and the CLI surfaces a warning;
 cache keys are stable across modes so switching is free.
 
@@ -192,7 +194,9 @@ a grid, build one row per combination in a DataFrame and map over its columns:
 
 ## Shell commands are not strict
 
-Local shell tasks run under `/bin/sh -c`, and Pixi and container environments
-run under `bash -c`; none sets `errexit` or `pipefail`, so a failing line or a
-failing stage of a pipeline does not fail the task. Start strict commands with
+Local shell tasks run under `/bin/sh -c`, Pixi and Conda environments under
+`bash -c`, and container environments under the shell named by `[container]
+shell` in `ginkgo.toml` (`bash` by default). None sets `errexit` or
+`pipefail`, so a failing line or a failing stage of a pipeline does not fail
+the task. Start strict commands with
 `set -eo pipefail;`.

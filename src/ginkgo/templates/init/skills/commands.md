@@ -34,8 +34,8 @@ When you already have a run id:
 - `ginkgo debug <run_id> --json`
   Emits structured diagnostics for programmatic consumers.
 - `ginkgo report <run_id>`
-  Renders a run as an HTML report; `--no-open --out <dir>` writes it to a
-  directory without opening a browser, with rendered notebooks under
+  Renders a run as an HTML report; needs the `ginkgo-report` plugin.
+  `--out <dir>` writes it to a directory, with rendered notebooks under
   `<dir>/notebooks/`.
 - `ginkgo cache ls`
   Lists cache entries with their full keys.

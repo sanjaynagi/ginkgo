@@ -319,9 +319,10 @@ runs against that environment's kernel.
 
 Inside the run directory the rendered page is stored under
 `.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
-export it under the task's name, build the report bundle:
-`ginkgo report --no-open --out deliver` writes `deliver/notebooks/<task>.html`
-next to `deliver/index.html`. See [Reports](reports.md).
+export it under the task's name, build the report bundle with the
+`ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
+`deliver/notebooks/<task>.html` next to `deliver/index.html`. See
+[Reports](reports.md).
 
 A marimo notebook reads its parameters with `mo.cli_args()`, which collects a
 repeated option into a list but joins space-separated values into one string.

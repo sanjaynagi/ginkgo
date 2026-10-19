@@ -131,7 +131,7 @@ events, for programmatic use by AI coding agents &mdash; see
 | --- | --- |
 | 0 | Success. |
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc`, no command at all), or a command found an argument missing in its own check: `cache clear` with no key, `cache prune` with no limit, `query` with no statement. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key, `cache prune` with no limit, `query` with no statement. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
 | 130 | Interrupted with Ctrl-C. |
 
@@ -224,7 +224,8 @@ without touching the filesystem, a parameter whose name looks like a path
 (`path`, `output_dir`, `report_files`, ...) but is annotated a bare `str`
 shape rather than `file`/`folder` — a `path_like_str_param` warning. Such a
 parameter is content-tracked only when its value names an existing regular
-file; a directory or any other non-file path is tracked by its path string
+file and reads as a path (it contains a separator or has a file extension); a
+directory, a bare word, or any other non-file path is tracked by its string
 alone, and nothing checks that it exists. A path the task writes belongs in
 `Out[...]` (see the FAQ entry on `file`/`folder`).
 
