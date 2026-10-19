@@ -135,9 +135,13 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - **Cache key:** contributes its path string only, never content — the same
   as leaving the parameter `str`, but declared rather than implied.
 - **After execution:** the path must exist, with the right kind, or the task
-  fails naming the parameter and the path. A cache hit whose declared output
-  is missing on disk (or the wrong kind) is treated as a miss and the task
-  re-runs.
+  fails naming the parameter and the path. On a cache hit, a tracked output
+  file or folder that is missing or modified on disk is restored from the
+  artifact store without re-running the task and without a log line. This
+  covers `file(...)` returns and inferred returns (below). The restore
+  overwrites hand edits: an edited output is reset to the cached bytes. A miss
+  and re-run happens only when no stored artifact exists to restore from, for
+  example a task with an explicit `-> None` return.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned

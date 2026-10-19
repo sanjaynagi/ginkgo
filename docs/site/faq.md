@@ -549,8 +549,12 @@ source, or `ginkgo cache clear <cache-key>` for that entry.
 File and folder outputs are copied into a content-addressed artifact store under
 `.ginkgo/artifacts/` (hashed with BLAKE3), and that store — not the task's
 declared output path — is the durable source of truth. On a cache hit, the
-artifact store re-materialises the output into the working tree; large
-serialized return values are also offloaded here rather than inlined.
+artifact store re-materialises the output into the working tree: a tracked
+output file or folder that is missing or modified on disk is restored without
+re-running the task, overwriting any hand edits. Only when no stored artifact
+exists to restore from, such as a task with an explicit `-> None` return, does
+the missing output count as a miss and the task re-run. Large serialized return
+values are also offloaded to the store rather than inlined.
 
 ## Value Transport And Serialization
 
