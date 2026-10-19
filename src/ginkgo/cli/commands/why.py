@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+
+from rich.markup import escape
 
 from ginkgo import query
 from ginkgo.cli.common import stdout_console
 from ginkgo.query import Provenance
+from ginkgo.store.jsonio import loads
 
 __all__ = ["command_why"]
 
@@ -28,7 +32,7 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
         return 0
     rich_console.print("[bold green]🌿 ginkgo why[/]\n")
     if provenance.path:
-        rich_console.print(f"Path: {provenance.path}")
+        rich_console.print(f"Path: {escape(provenance.path)}")
     rich_console.print(f"Artifact ID: [bold]{provenance.artifact_id}[/]")
     rich_console.print(
         f"Produced by: {provenance.task_name or '-'} [dim]({provenance.task_id})[/]"
@@ -39,6 +43,27 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
         return 0
     rich_console.print("\n[bold]Inputs[/]")
     for entry in provenance.inputs:
-        detail = entry.get("value_summary") or entry.get("digest") or "-"
-        rich_console.print(f"  {entry.get('param')} = {detail}")
+        rich_console.print(f"  {escape(str(entry.get('param')))} = {_input_detail(entry)}")
     return 0
+
+
+# Inputs tracked by their bytes or remote version: the digest says which bytes.
+_DIGEST_TRACKED = frozenset({"content", "version"})
+
+
+def _input_detail(entry: dict[str, Any]) -> str:
+    """Return one recorded input as Rich markup.
+
+    The value is shown decoded, and a file or remote input tracked by its bytes
+    also shows a short content digest, which is what its cache key used.
+    """
+    digest = entry.get("digest")
+    short = f"[dim]({escape(digest[:12])})[/]" if digest else None
+    summary = entry.get("value_summary")
+    if summary is None:
+        return short or "-"
+    value = loads(summary)
+    text = escape(value if isinstance(value, str) else json.dumps(value))
+    if short is not None and entry.get("tracking") in _DIGEST_TRACKED:
+        return f"{text} {short}"
+    return text

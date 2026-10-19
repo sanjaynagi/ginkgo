@@ -132,22 +132,43 @@ class TestWhy:
 
 
 class TestWhyRendering:
-    def test_a_parameter_prefers_its_value_to_its_digest(self) -> None:
-        provenance = Provenance(
-            artifact_id="artifact-1",
-            inputs=(
-                {"param": "baseline_weeks", "value_summary": "52", "digest": "baseline-digest"},
-                {"param": "label", "digest": "9f9f9f9f"},
-            ),
-        )
+    @staticmethod
+    def _render(provenance: Provenance) -> str:
         buffer = io.StringIO()
-
         _render_why(
-            Console(file=buffer, width=200, force_terminal=False),
+            Console(file=buffer, width=400, force_terminal=False),
             provenance=provenance,
             as_json=False,
         )
+        return buffer.getvalue()
 
-        output = buffer.getvalue()
-        assert "baseline_weeks = 52" in output
-        assert "label = 9f9f9f9f" in output
+    def test_a_recorded_run_shows_values_and_file_digests(
+        self, chained_run: Path, tmp_path: Path
+    ) -> None:
+        with _reader(chained_run) as reader:
+            summary = reader.why(str(tmp_path / "results" / "summary.txt"))
+            report = reader.why(str(tmp_path / "results" / "report.txt"))
+        file_digest = next(e["digest"] for e in summary.inputs if e["param"] == "report")
+
+        summary_output = self._render(summary)
+        report_output = self._render(report)
+
+        # A file input names its path unquoted, plus the digest its key used.
+        assert f"report = results/report.txt ({file_digest[:12]})" in summary_output
+        assert "output_path = results/summary.txt\n" in summary_output
+        # A string parameter shows its value, not its JSON encoding or digest.
+        assert "label = a\n" in report_output
+
+    def test_a_non_string_value_is_shown_as_json_and_not_read_as_markup(self) -> None:
+        output = self._render(
+            Provenance(
+                artifact_id="artifact-1",
+                inputs=(
+                    {"param": "flags", "value_summary": "[true]", "tracking": "value"},
+                    {"param": "scratch", "digest": "untracked-digest"},
+                ),
+            )
+        )
+
+        assert "flags = [true]" in output
+        assert "scratch = (untracked-di)" in output
