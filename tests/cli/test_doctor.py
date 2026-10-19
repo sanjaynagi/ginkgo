@@ -230,11 +230,10 @@ def main():
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "INCOMPLETECALLERROR"
-        assert (
-            "join() is missing required argument(s): right"
-            in (payload["diagnostics"][0]["message"])
-        )
+        [diagnostic] = payload["diagnostics"]
+        assert diagnostic["code"] == "INCOMPLETE_CALL"
+        assert "join() is missing required argument(s): right" in diagnostic["message"]
+        assert ".map()" in diagnostic["suggestion"]
 
 
 class TestDoctorPathLikeStrParam:

@@ -137,6 +137,11 @@ class IncompleteCallError(GinkgoError, TypeError):
         returned it.
     """
 
+    diagnostic_code: ClassVar[str] = "INCOMPLETE_CALL"
+    diagnostic_suggestion: ClassVar[str] = (
+        "Pass every required argument, or complete the call with .map() or .product_map()."
+    )
+
     def __init__(self, *, partial_call: PartialCall, consumer: str | None) -> None:
         name = partial_call.task_def.fn.__name__
         missing = ", ".join(partial_call.missing_params)
@@ -580,7 +585,7 @@ class ConcurrentEvaluator:
     def task_nodes(self) -> Mapping[int, NodeRun]:
         """Read-only view of the task graph, keyed by scheduler node id.
 
-        Populated once the graph has been built (after :meth:`build_and_validate` or
+        Populated once the graph has been built (after :meth:`build_graph` or
         during :meth:`evaluate`). Intended for read-only consumers such as
         the dry-run planner.
         """
@@ -870,7 +875,7 @@ class ConcurrentEvaluator:
         """Infer ``Out[...]`` path dependency edges and emit deferred events.
 
         Called once after every top-level registration batch — the initial
-        graph build (``evaluate``/``build_and_validate``) and each dynamic
+        graph build (``evaluate``/``build_graph``) and each dynamic
         expansion (``GraphExpanded``). Implements issue #280/#307's phase 2:
 
         1. Collect the literal produced (``Out[...]``) and consumed path
@@ -2178,7 +2183,7 @@ class ConcurrentEvaluator:
         cannot satisfy falls back to that same default. Any route without a
         usable executor is an error rather than a silent local run.
         Placement depends only on the task definition, so it is validated
-        for every node up front in ``build_and_validate``.
+        for every node up front in ``validate_graph``.
         """
         registry = self.executor_registry
         if task_def.executor is not None:

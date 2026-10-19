@@ -660,6 +660,17 @@ class TestUnreachableCalls:
         assert plan.task_count == 1
         assert plan.dropped_labels == ("make_label()",)
 
+    def test_dry_run_plan_names_what_a_dropped_partial_call_is_missing(self) -> None:
+        @flow
+        def main():
+            join_labels(left="a")
+            return make_label(text="kept")
+
+        evaluator = _validated_evaluator(main)
+        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+
+        assert plan.dropped_labels == ("join_labels() (missing required argument(s): right)",)
+
 
 class TestPartialCalls:
     """#332 — a call missing a required argument is a ``PartialCall``, not a task."""

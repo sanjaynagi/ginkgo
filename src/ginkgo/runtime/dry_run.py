@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from ginkgo.core.expr import ConstructedCall
 from ginkgo.runtime.caching.cache import MISSING
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.runtime.task_kinds import task_kind
@@ -189,7 +190,8 @@ class DryRunPlan:
         Task counts per cache status.
     dropped_labels : tuple[str, ...]
         Labels of task calls constructed by the flow but unreachable from its
-        return value, and so absent from the waves above.
+        return value, and so absent from the waves above. A partial call's
+        label names the required arguments it left out.
     diagnostics : tuple[PlanDiagnostic, ...]
         Input-contract violations found while probing the cache: a task whose
         resolved arguments the validator already refuses. Only provable on a
@@ -219,9 +221,10 @@ class DryRunPlan:
 def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
     """Build a static execution plan from a validated evaluator.
 
-    Must be called after ``evaluator.build_and_validate(...)``. Read-only: it resolves
-    arguments and probes the cache, but executes no tasks and materialises
-    nothing into the workspace.
+    Must be called after ``evaluator.build_graph(...)`` and
+    ``evaluator.validate_graph()``. Read-only: it resolves arguments and
+    probes the cache, but executes no tasks and materialises nothing into the
+    workspace.
 
     Parameters
     ----------
@@ -281,10 +284,17 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         cached_count=statuses.count("cached"),
         will_run_count=statuses.count("will_run"),
         unknown_count=statuses.count("unknown"),
-        dropped_labels=tuple(call.label for call in evaluator.unreachable_calls),
+        dropped_labels=tuple(_dropped_label(call) for call in evaluator.unreachable_calls),
         diagnostics=tuple(diagnostics),
         probe_failures=tuple(probe_failures),
     )
+
+
+def _dropped_label(call: ConstructedCall) -> str:
+    """Label one dropped call, naming what a partial call is missing."""
+    if call.is_partial:
+        return f"{call.label} (missing required argument(s): {', '.join(call.missing_params)})"
+    return call.label
 
 
 def _assign_waves(nodes: Mapping[int, NodeRun]) -> dict[int, int]:
