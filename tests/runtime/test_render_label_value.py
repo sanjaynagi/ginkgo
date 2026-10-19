@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ginkgo.runtime.task_runners.notebook import render_label_value
+from ginkgo.runtime.display_labels import render_label_value
 
 
 def test_a_path_is_labelled_by_its_file_name() -> None:

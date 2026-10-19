@@ -15,6 +15,10 @@ ginkgo/
 ├── workspace_layout.py   # the .ginkgo/ directory convention
 ├── errors.py             # error taxonomy and user-code failure location
 ├── formatting.py         # value formatters shared by read-only presenters
+├── plugins/
+│   ├── api.py            # Plugin and the extension-point specs
+│   ├── registry.py       # entry-point discovery and lookup
+│   └── builtin.py        # core's own contributions
 ├── core/
 │   ├── directive.py      # ExecutionDirective base type
 │   ├── expr.py
@@ -32,7 +36,7 @@ ginkgo/
 │   ├── task.py
 │   └── types.py          # file / folder / tmp_dir path-oriented types
 ├── runtime/
-│   ├── backend.py        # ExecutionEnvironment protocol, Local, Composite
+│   ├── backend.py        # ExecutionEnvironment protocol and EnvironmentRouter
 │   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
 │   ├── executors.py      # the evaluator's heterogeneous executor pool
 │   ├── scheduler.py
@@ -83,10 +87,8 @@ ginkgo/
 ├── remote/
 │   ├── backend.py           # ObjectStore protocol
 │   ├── code_bundle.py       # code packaging for remote workers
+│   ├── executor_support.py  # worker-protocol helpers for executor plugins
 │   ├── fsspec_backends.py   # S3, OCI, GCS backends
-│   ├── gcp_batch.py         # GCP Batch executor
-│   ├── kubernetes.py        # Kubernetes executor
-│   ├── _executor_common.py  # helpers shared by both remote executors
 │   ├── publisher.py         # remote output publishing
 │   ├── resolve.py           # backend factory
 │   ├── staging.py           # remote input staging; StagingIndex owns staging_entries
@@ -133,4 +135,24 @@ ginkgo/
 │                            # and debug renderers, shared formatting
 └── templates/
     └── init/                # the only copy of the starter project scaffold
+```
+
+The repository also holds the first-party plugin distributions, each its own
+package with its own `pyproject.toml` and tests (see
+[Plugins](plugins.md#first-party-plugins)):
+
+```text
+plugins/
+├── ginkgo-k8s/
+│   ├── pyproject.toml       # entry point k8s = "ginkgo_k8s:PLUGIN"
+│   ├── src/ginkgo_k8s/
+│   │   ├── __init__.py      # PLUGIN: the k8s executor type
+│   │   └── executor.py      # KubernetesExecutor
+│   └── tests/
+└── ginkgo-gcp/
+    ├── pyproject.toml       # entry point gcp = "ginkgo_gcp:PLUGIN"
+    ├── src/ginkgo_gcp/
+    │   ├── __init__.py      # PLUGIN: the batch executor type
+    │   └── batch.py         # GCPBatchExecutor
+    └── tests/
 ```

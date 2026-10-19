@@ -471,7 +471,7 @@ def path_binding_remedy(*, execution_mode: str | None) -> str:
     Parameters
     ----------
     execution_mode : str | None
-        ``TaskDef.execution_mode`` of the consuming task, or ``None`` when
+        The consuming task kind's ``execution_mode``, or ``None`` when
         the consumer is not known.
 
     Returns
@@ -511,7 +511,7 @@ def require_path_value(
         Diagnostic label for the parameter or return value, e.g.
         ``"summarise.return"``.
     execution_mode : str | None
-        ``TaskDef.execution_mode`` of the consuming task, used to pick the
+        The consuming task kind's ``execution_mode``, used to pick the
         remedies worth offering.
 
     Raises

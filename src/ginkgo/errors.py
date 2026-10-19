@@ -19,8 +19,30 @@ import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
+from typing import Literal, get_args
 
-__all__ = ["FailureLocation", "GinkgoError", "failure_location"]
+__all__ = ["FAILURE_KINDS", "FailureKind", "FailureLocation", "GinkgoError", "failure_location"]
+
+
+FailureKind = Literal[
+    "cycle_detected",
+    "env_mismatch",
+    "import_error",
+    "serialization_error",
+    "shell_command_error",
+    "invalid_path",
+    "missing_input",
+    "output_validation_error",
+    "user_code_error",
+]
+"""The category a task failure is reported under.
+
+An exception names its own category with a ``failure_kind: ClassVar[FailureKind]``
+class attribute; ``classify_failure`` reads it rather than importing the class.
+"""
+
+FAILURE_KINDS: frozenset[str] = frozenset(get_args(FailureKind))
+"""Every valid ``FailureKind``, for checking a declared one at runtime."""
 
 
 class GinkgoError(Exception):

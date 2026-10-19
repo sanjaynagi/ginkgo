@@ -26,6 +26,17 @@ def _summarise(report: file, output_path: Out[file]) -> file:
     return file(output_path)
 
 
+@task()
+def _write_marker(name: str, output_path: Out[file]) -> file:
+    Path(output_path).write_text("ok\n", encoding="utf-8")
+    return file(output_path)
+
+
+@task()
+def _both_markers(first: file, second: file) -> list[str]:
+    return [str(first), str(second)]
+
+
 @pytest.fixture
 def chained_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Run report -> summary through the evaluator and return the database."""
@@ -84,6 +95,32 @@ class TestWhy:
 
         assert by_id.task_id == by_path.task_id
         assert by_id.path is None
+
+    def test_identical_bytes_at_two_paths_name_their_own_producers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ledger = Ledger.start(root=tmp_path)
+        evaluator = ConcurrentEvaluator(
+            run_dir=ledger.run_dir, event_bus=ledger.bus, jobs=1, cores=1
+        )
+        evaluator.evaluate(
+            _both_markers(
+                first=_write_marker(name="a", output_path="out/a.ok"),
+                second=_write_marker(name="b", output_path="out/b.ok"),
+            )
+        )
+        ledger.finish()
+
+        with _reader(ledger.db) as reader:
+            first = reader.why(str(tmp_path / "out" / "a.ok"))
+            second = reader.why(str(tmp_path / "out" / "b.ok"))
+
+        assert first.artifact_id == second.artifact_id
+        assert first.task_id != second.task_id
+        assert [entry["value_summary"] for entry in first.inputs if entry["param"] == "name"] == [
+            '"a"'
+        ]
 
     def test_an_unknown_target_is_not_found(self, chained_run: Path) -> None:
         with _reader(chained_run) as reader, pytest.raises(FileNotFoundError, match="Nothing"):

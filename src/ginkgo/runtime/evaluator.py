@@ -20,21 +20,17 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
-from ginkgo.core.subworkflow import SubWorkflowResult
-from ginkgo.core.notebook import NotebookDirective
-from ginkgo.core.script import ScriptDirective
-from ginkgo.core.shell import ShellDirective
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.params import ParamContext
-from ginkgo.core.subworkflow import SubWorkflowDirective
+from ginkgo.plugins.api import RunnerContext, TaskKind, TaskRunner
+from ginkgo.plugins.registry import plugin_registry
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
-from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.edge_inference import (
     ConsumedPath,
@@ -92,19 +88,14 @@ from ginkgo.runtime.remote_input_resolver import (
     load_remote_publisher,
     resolve_staging_jobs,
 )
-from ginkgo.runtime.task_runners.notebook import (
-    NotebookRunner,
-    first_label_param_name,
-    render_label_value,
-)
-from ginkgo.runtime.task_runners.script import ScriptRunner
+from ginkgo.runtime.display_labels import first_label_param_name, render_label_value
+from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     SignalMonitor,
     classify_failure,
     sanitize_exception,
 )
-from ginkgo.runtime.task_runners.subworkflow import SubworkflowRunner
 from ginkgo.runtime.task_validation import (
     TaskValidator,
     contains_dynamic_expression,
@@ -115,26 +106,11 @@ from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 from ginkgo.workspace_layout import WorkspaceLayout
 
-# Maps each ExecutionDirective subclass to the (runner_attr, method_name) pair used
-# to dispatch it. The completeness check below catches any imported subclass that
-# has no entry; it does not catch a subclass whose module is never imported.
-_DIRECTIVE_RUNNER: dict[type[ExecutionDirective], tuple[str, str]] = {
-    ShellDirective: ("_shell_runner", "run_shell"),
-    NotebookDirective: ("_notebook_runner", "run_notebook"),
-    ScriptDirective: ("_script_runner", "run_script"),
-    SubWorkflowDirective: ("_subworkflow_runner", "run_subworkflow"),
-}
-_unregistered = set(ExecutionDirective.__subclasses__()) - set(_DIRECTIVE_RUNNER)
-if _unregistered:
-    raise ImportError(
-        "ExecutionDirective subclasses with no runner entry: "
-        + ", ".join(sorted(t.__name__ for t in _unregistered))
-    )
-del _unregistered
-
 
 class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
+
+    failure_kind: ClassVar[FailureKind] = "cycle_detected"
 
     def __init__(self, cycle: list[str]) -> None:
         self.cycle = cycle
@@ -347,7 +323,7 @@ class NodeRun:
     secret_values: tuple[str, ...] = ()
     driver_directive: Any = None
     extra_source_hash: str | None = None
-    notebook_extras: dict[str, Any] | None = None
+    runner_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
     blocked_by_task_id: str | None = None
@@ -528,25 +504,21 @@ class ConcurrentEvaluator:
             log_emitter_factory=self._log_drain.make_emitter,
             usage_recorder=self._record_measured_usage,
         )
-        self._notebook_runner = NotebookRunner(
+        # Runners for the other task kinds are built on first use, from the
+        # kind's plugin spec, so a run builds only the runners it needs.
+        self._runner_context = RunnerContext(
             backend=self.backend,
-            shell_runner=self._shell_runner,
             validator=self._validator,
+            shell_runner=self._shell_runner,
             cache_store=self._cache_store,
             run_dir=self.run_dir,
+            runtime_root=self._runtime_root,
             annotate=self._annotate_task,
-            notice_emitter=self._emit_notebook_notice,
-            runtime_root_factory=self._notebook_runtime_root,
-        )
-        self._script_runner = ScriptRunner(
-            shell_runner=self._shell_runner,
-            validator=self._validator,
-        )
-        self._subworkflow_runner = SubworkflowRunner(
-            shell_runner=self._shell_runner,
-            run_id_provider=lambda: self._run_id or "",
+            notice=self._emit_task_notice,
+            run_id=lambda: self._run_id or "",
             db_path=WorkspaceLayout.for_cwd().db,
         )
+        self._runners: dict[str, TaskRunner] = {}
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
 
     @property
@@ -774,6 +746,7 @@ class ConcurrentEvaluator:
 
         if expr_id in self._expr_nodes:
             return self._expr_nodes[expr_id]
+        self._validate_task_kind(task_def=expr.task_def)
 
         node_id = self._next_node_id
         self._next_node_id += 1
@@ -936,7 +909,7 @@ class ConcurrentEvaluator:
                     node_id=node_id,
                     task_name=node.task_def.name,
                     kind=node.task_def.kind,
-                    execution_mode=node.task_def.execution_mode,
+                    execution_mode=task_kind(node.task_def).execution_mode,
                     env=node.task_def.env,
                     retries=node.task_def.retries,
                     dependency_ids=[
@@ -1024,10 +997,10 @@ class ConcurrentEvaluator:
             resolved_args=resolved_args,
         )
 
-        # For notebook/script tasks, eagerly evaluate the body to capture the
-        # source hash of the underlying file and fold it into the cache key.
+        # For kinds whose directive names a source file (a notebook, a script),
+        # evaluate the body now so that file's hash joins the cache key.
         extra_source_hash: str | None = None
-        if node.task_def.kind in {"notebook", "script"}:
+        if task_kind(node.task_def).eager_source_hash:
             directive = node.task_def.fn(**resolved_args)
             node.driver_directive = directive
             extra_source_hash = directive.source_hash
@@ -1432,8 +1405,8 @@ class ConcurrentEvaluator:
         finalize_started = time.perf_counter()
         self._cleanup_transport(node)
         extra_meta: dict[str, Any] | None = None
-        if node.notebook_extras is not None:
-            extra_meta = {"notebook_extras": node.notebook_extras}
+        if node.runner_extras is not None:
+            extra_meta = {"runner_extras": node.runner_extras}
         self._warn_on_written_str_inputs(node=node)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
@@ -1463,8 +1436,6 @@ class ConcurrentEvaluator:
         node.dynamic_dependency_ids.clear()
         node.execution_args = None
         node.secret_values = ()
-        if isinstance(value, SubWorkflowResult):
-            self._annotate_task(node=node, fields={"sub_run_id": value.run_id})
         self._emit_event(
             TaskCompleted(
                 run_id=self._run_id,
@@ -1887,7 +1858,7 @@ class ConcurrentEvaluator:
                 execution_backend=execution_backend,
             )
         )
-        if node.task_def.kind in {"notebook", "script", "shell"}:
+        if task_kind(node.task_def).execution_mode == "driver":
             future = shell_executor.submit(
                 self._run_driver_task,
                 node=node,
@@ -2073,11 +2044,11 @@ class ConcurrentEvaluator:
             return registry.default_name
         gpu = self.effective_resources(task_def=task_def).gpu
         if gpu > (self.gpus or 0):
-            if task_def.kind != "python":
+            if not task_kind(task_def).remote_capable:
                 raise ValueError(
                     f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus), and remote dispatch only "
-                    f"supports python tasks, not kind={task_def.kind!r}"
+                    "are available locally (--gpus), and kind="
+                    f"{task_def.kind!r} cannot be dispatched remotely"
                 )
             self._require_remote_capable_kind(task_def=task_def, reason="a GPU requirement")
             if not registry.has_default:
@@ -2102,13 +2073,13 @@ class ConcurrentEvaluator:
         store, ``Out[...]`` paths are sent to the worker unchanged, which only
         works when the worker shares the driver's filesystem.
         """
-        if task_def.kind != "python":
+        if not task_kind(task_def).remote_capable:
             declaration = (
                 "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
             )
             raise ValueError(
-                f"{task_def.name} declares {declaration} but remote dispatch "
-                f"only supports python tasks, not kind={task_def.kind!r}"
+                f"{task_def.name} declares {declaration} but kind={task_def.kind!r} "
+                "cannot be dispatched remotely"
             )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
@@ -2153,14 +2124,6 @@ class ConcurrentEvaluator:
         if encoding == "direct":
             # Process-pool path: Python object passed directly (no serialization).
             return payload["result"]
-
-        if encoding == "pixi_direct_pickled":
-            # Pixi subprocess path: dynamic result (ExecutionDirective / Expr / ExprList)
-            # was pickle+base64 encoded to cross the JSON bridge.
-            import base64
-            import pickle
-
-            return pickle.loads(base64.b64decode(payload["result"]))
 
         assert node.transport_path is not None
         return decode_value(payload["result"], base_dir=node.transport_path)
@@ -2234,8 +2197,8 @@ class ConcurrentEvaluator:
             annotation=annotation, value=node.resolved_args.get(name)
         )
 
-    def _notebook_runtime_root(self) -> Path:
-        """Return the shared runtime root for notebook support files."""
+    def _runtime_root(self) -> Path:
+        """Return the workspace directory for shared runner support files."""
         if self.run_dir is not None:
             return self.run_dir.root.parent
         return WorkspaceLayout.for_cwd().root
@@ -2344,8 +2307,8 @@ class ConcurrentEvaluator:
             )
         )
 
-    def _emit_notebook_notice(self, node: NodeRun, message: str) -> None:
-        """Surface a notebook runner notice (e.g. ipykernel install) as an event."""
+    def _emit_task_notice(self, node: NodeRun, message: str) -> None:
+        """Surface a runner notice (e.g. an ipykernel install) as an event."""
         self._emit_event(
             TaskNotice(
                 run_id=self._run_id,
@@ -2456,8 +2419,9 @@ class ConcurrentEvaluator:
         for path in node.tmp_paths:
             shutil.rmtree(path)
         node.tmp_paths = []
-        if self.run_dir is not None:
-            self._notebook_runner.replay_cached_extras(node=node, cache_key=cache_key)
+        kind = task_kind(node.task_def)
+        if kind.runner is not None:
+            self._runner_for(kind).replay_cached(node=node, cache_key=cache_key)
         self._emit_event(
             TaskCacheHit(
                 run_id=self._run_id,
@@ -2524,15 +2488,7 @@ class ConcurrentEvaluator:
         if node.task_def.env is None or self.backend is None:
             return
 
-        if is_container_env(node.task_def.env):
-            fields: dict[str, Any] = {"backend": "container"}
-            digest = self.backend.materialized_digest(env=node.task_def.env)
-            if digest is not None:
-                fields["container_image_digest"] = digest
-            self._annotate_task(node=node, fields=fields)
-            return
-
-        fields = {"backend": "local"}
+        fields = self.backend.provenance_fields(env=node.task_def.env)
         lock_path = self.backend.env_lock_path(env=node.task_def.env)
         if lock_path is not None and self.run_dir is not None:
             copied = self.run_dir.copy_env_lock(env_name=node.task_def.env, lock_path=lock_path)
@@ -2658,8 +2614,8 @@ class ConcurrentEvaluator:
     def _run_driver_task(self, *, node: NodeRun) -> Any:
         """Run a driver-task wrapper on the scheduler process.
 
-        For notebook and script tasks the body was already evaluated eagerly
-        in ``_prepare_node`` to extract the source hash for the cache key.
+        For a kind with ``eager_source_hash`` the body was already evaluated
+        in ``_prepare_node`` to fold its source file's hash into the cache key.
         The stored directive is returned directly to avoid re-running the body.
         """
         assert node.execution_args is not None
@@ -2689,14 +2645,14 @@ class ConcurrentEvaluator:
             node.state = "failed"
             return
 
-        if node.task_def.kind == "python":
+        kind = task_kind(node.task_def)
+        if kind.directive is None:
             if isinstance(completed_value, ExecutionDirective):
                 directive_name = type(completed_value).__name__
                 self._cleanup_transport(node)
                 raise TypeError(
                     f"{node.task_def.name} returned {directive_name}, but the task is declared "
-                    "with kind='python'. Use @task(kind='shell'), @task('notebook'), "
-                    "@task('script'), or @task('subworkflow') for the appropriate task kind."
+                    f"with kind={kind.name!r}. {self._kind_suggestion(type(completed_value))}"
                 )
 
             self._validator.validate_process_safe_value(
@@ -2727,15 +2683,21 @@ class ConcurrentEvaluator:
             self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
             return
 
-        # Driver task: dispatch to the appropriate runner via the type-keyed table.
+        # A task runs its own kind's directive on its own kind's runner, so the
+        # capabilities checked against the kind are those of what runs.
         assert self._executors is not None
-        runner_entry = _DIRECTIVE_RUNNER.get(type(completed_value))
-        if runner_entry is not None:
-            runner_attr, method_name = runner_entry
-            runner_fn = getattr(getattr(self, runner_attr), method_name)
+        if isinstance(completed_value, ExecutionDirective):
+            if not isinstance(completed_value, kind.directive):
+                self._cleanup_transport(node)
+                raise TypeError(
+                    f"{node.task_def.name} is declared with kind={kind.name!r} and must "
+                    f"return {kind.call_form}, not {type(completed_value).__name__}. "
+                    f"{self._kind_suggestion(type(completed_value))}"
+                )
+            runner = self._runner_for(kind)
             self._cleanup_transport(node)
             node.state = "running_shell"
-            future = self._executors.shell.submit(runner_fn, node=node, directive=completed_value)
+            future = self._executors.shell.submit(runner.run, node=node, directive=completed_value)
             self._running_futures[future] = (node.node_id, "shell")
             return
 
@@ -2759,17 +2721,45 @@ class ConcurrentEvaluator:
             return
 
         self._cleanup_transport(node)
-        kind = node.task_def.kind
-        _expected = {
-            "shell": "shell(...)",
-            "notebook": "notebook(...)",
-            "script": "script(...)",
-            "subworkflow": "subworkflow(...)",
-        }
         raise TypeError(
-            f"{node.task_def.name} is declared with kind={kind!r} and must return "
-            f"{_expected.get(kind, 'an execution directive')} or dynamic task expressions."
+            f"{node.task_def.name} is declared with kind={kind.name!r} and must return "
+            f"{kind.call_form or 'an execution directive'} or dynamic task expressions."
         )
+
+    def _validate_task_kind(self, *, task_def: TaskDef) -> None:
+        """Raise at graph build if *task_def*'s kind is not usable as declared.
+
+        Raises
+        ------
+        PluginNotFoundError
+            If no installed plugin provides the kind.
+        ValueError
+            If the task declares ``retry_on_exit_codes`` for a kind without
+            exit codes to retry on.
+        """
+        kind = task_kind(task_def)
+        if task_def.retry_on_exit_codes is not None and not kind.exit_code_retries:
+            raise ValueError(
+                f"{task_def.name} declares retry_on_exit_codes, which kind={kind.name!r} "
+                "does not support"
+            )
+
+    def _runner_for(self, kind: TaskKind) -> TaskRunner:
+        """Return the runner for *kind*, building it on first use."""
+        runner = self._runners.get(kind.name)
+        if runner is None:
+            assert kind.runner is not None, f"task kind {kind.name!r} has no runner"
+            runner = kind.runner(self._runner_context)
+            self._runners[kind.name] = runner
+        return runner
+
+    @staticmethod
+    def _kind_suggestion(directive_type: type[ExecutionDirective]) -> str:
+        """Name the kind that returns *directive_type*, for a mismatch error."""
+        kind = plugin_registry().kind_for_directive(directive_type)
+        if kind is None:
+            return "No installed task kind returns it."
+        return f"Use @task(kind={kind.name!r})."
 
 
 def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:

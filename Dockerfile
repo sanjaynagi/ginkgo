@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-# Install ginkgo with cloud dependencies (kubernetes, gcsfs, google-auth).
+# Install ginkgo with cloud object-store dependencies (gcsfs, google-auth). A
+# worker runs tasks, so it needs no executor plugin.
 COPY pyproject.toml .
 COPY src/ginkgo/ src/ginkgo/
 RUN pip install --no-cache-dir ".[cloud]"

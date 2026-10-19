@@ -10,14 +10,15 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ginkgo.remote._executor_common import (
-    _encode_payload,
-    _generate_job_name,
-    _parse_worker_output,
-    _payload_requires_fuse,
+from ginkgo.remote.executor_support import (
+    encode_payload,
+    generate_job_name,
+    parse_worker_output,
+    payload_requires_fuse,
 )
 from ginkgo.runtime.remote_executor import (
     RemoteJobResult,
@@ -103,7 +104,7 @@ class GCPBatchExecutor:
                 "GPU task requires an accelerator type: declare gpu_type on the task "
                 "or configure gpu_type on the GCP Batch executor"
             )
-        fuse_required = _payload_requires_fuse(attempt)
+        fuse_required = payload_requires_fuse(attempt)
 
         # Container configuration.
         container_kwargs: dict[str, Any] = {
@@ -117,7 +118,7 @@ class GCPBatchExecutor:
         runnable = batch_v1.Runnable(
             container=container,
             environment=batch_v1.Environment(
-                variables={"GINKGO_WORKER_PAYLOAD": _encode_payload(attempt)},
+                variables={"GINKGO_WORKER_PAYLOAD": encode_payload(attempt)},
             ),
         )
 
@@ -179,7 +180,7 @@ class GCPBatchExecutor:
             ),
         )
 
-        job_id = _generate_job_name(attempt)
+        job_id = generate_job_name(attempt)
         parent = f"projects/{self.project}/locations/{self.region}"
 
         created = client.create_job(
@@ -268,7 +269,7 @@ class GCPBatchJobHandle:
             logs = self._terminal_logs
         else:
             logs = self.logs_tail(lines=1000)
-        payload = _parse_worker_output(logs)
+        payload = parse_worker_output(logs)
 
         exit_code = None
         if current == RemoteJobState.FAILED:
@@ -316,17 +317,17 @@ class GCPBatchJobHandle:
                 )
             )
             entries.reverse()
-            lines = []
+            log_lines: list[str] = []
             for entry in entries:
                 if isinstance(entry.payload, str):
-                    lines.append(entry.payload)
+                    log_lines.append(entry.payload)
                 elif isinstance(entry.payload, dict):
                     # Cloud Logging stores structured output as jsonPayload;
-                    # serialize back to JSON so _parse_worker_output can find it.
-                    lines.append(json.dumps(entry.payload))
+                    # serialize back to JSON so parse_worker_output can find it.
+                    log_lines.append(json.dumps(entry.payload))
                 else:
-                    lines.append(str(entry.payload))
-            return "\n".join(lines)
+                    log_lines.append(str(entry.payload))
+            return "\n".join(log_lines)
         except Exception:
             logger.debug("Failed to fetch logs for job %s", self.job_name, exc_info=True)
             return ""
@@ -336,3 +337,18 @@ class GCPBatchJobHandle:
         # Format: projects/{project}/locations/{region}/jobs/{job_id}
         parts = self.job_name.split("/")
         return parts[1] if len(parts) >= 2 else ""
+
+
+def build_gcp_batch_executor(settings: Mapping[str, Any]) -> GCPBatchExecutor:
+    """Construct a ``GCPBatchExecutor`` from an executor table's settings."""
+    return GCPBatchExecutor(
+        project=settings["project"],
+        region=settings.get("region", "europe-west2"),
+        image=settings["image"],
+        service_account=settings.get("service_account"),
+        gpu_type=settings.get("gpu_type"),
+        gpu_driver_version=settings.get("gpu_driver_version", "LATEST"),
+        max_run_duration=settings.get("max_run_duration", "3600s"),
+        fuse_image=settings.get("fuse_image"),
+        fuse_privileged=bool(settings.get("fuse_privileged", False)),
+    )

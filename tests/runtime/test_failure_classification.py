@@ -53,14 +53,12 @@ class TestFrameworkClassification:
     def test_framework_exceptions_keep_their_kind(self, exc: Exception, kind: str) -> None:
         assert classify_failure(exc=exc)["kind"] == kind
 
-    @pytest.mark.parametrize(
-        ("exc_name", "kind"),
-        [
-            ("EnvResolutionError", "env_mismatch"),
-            ("ContainerLaunchError", "env_mismatch"),
-            ("CacheStoreError", "cache_error"),
-        ],
-    )
-    def test_name_heuristics_still_apply(self, exc_name: str, kind: str) -> None:
-        exc = type(exc_name, (Exception,), {})("failed")
-        assert classify_failure(exc=exc)["kind"] == kind
+    def test_an_exception_declaring_its_kind_classifies_itself(self) -> None:
+        class PluginEnvError(Exception):
+            failure_kind = "env_mismatch"
+
+        assert classify_failure(exc=PluginEnvError("failed"))["kind"] == "env_mismatch"
+
+    def test_a_framework_sounding_name_alone_is_user_code(self) -> None:
+        exc = type("EnvResolutionError", (Exception,), {})("failed")
+        assert classify_failure(exc=exc)["kind"] == "user_code_error"

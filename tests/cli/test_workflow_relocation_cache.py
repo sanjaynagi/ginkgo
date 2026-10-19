@@ -11,10 +11,10 @@ the identical bytes under a new file name.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
+PYTHON = Path(sys.executable)
 
 WORKFLOW_SOURCE = (
     """

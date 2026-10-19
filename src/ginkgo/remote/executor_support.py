@@ -1,8 +1,9 @@
-"""Shared helpers for the remote executor backends (Kubernetes, GCP Batch).
+"""Helpers every remote executor plugin needs to speak the worker protocol.
 
-The two executor modules (`kubernetes.py`, `gcp_batch.py`) share a small set
-of attempt-payload helpers — encoding, naming, fuse detection, and worker
-log parsing. They live here so both backends import a single copy.
+An executor ships an attempt payload to ``python -m ginkgo.remote.worker`` and
+reads back the JSON line the worker prints last. These helpers encode the
+payload, name the job, detect whether it needs FUSE, and parse the result, so
+each executor plugin implements only its own submission and polling.
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ import json
 from typing import Any
 
 
-def _encode_payload(attempt: dict[str, Any]) -> str:
+def encode_payload(attempt: dict[str, Any]) -> str:
     """Encode a worker payload as a base64 JSON string."""
     payload_json = json.dumps(attempt, default=str)
     return base64.b64encode(payload_json.encode()).decode()
 
 
-def _generate_job_name(attempt: dict[str, Any]) -> str:
+def generate_job_name(attempt: dict[str, Any]) -> str:
     """Generate a unique remote-job identifier from the attempt payload.
 
     Produces a name compatible with both Kubernetes Jobs and GCP Batch
@@ -39,7 +40,7 @@ def _generate_job_name(attempt: dict[str, Any]) -> str:
     return name.rstrip("-")
 
 
-def _payload_requires_fuse(attempt: dict[str, Any]) -> bool:
+def payload_requires_fuse(attempt: dict[str, Any]) -> bool:
     """Return True when the payload contains any fuse-marked inputs."""
     from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
 
@@ -57,7 +58,7 @@ def _payload_requires_fuse(attempt: dict[str, Any]) -> bool:
     return walk(attempt.get("args"))
 
 
-def _parse_worker_output(logs: str, *, source_label: str = "job logs") -> dict[str, Any]:
+def parse_worker_output(logs: str, *, source_label: str = "job logs") -> dict[str, Any]:
     """Parse the worker result from container log output.
 
     The remote worker prints a single JSON line to stdout as its last

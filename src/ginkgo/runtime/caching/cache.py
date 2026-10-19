@@ -10,8 +10,9 @@ import socket
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, ClassVar, get_args, get_origin
 
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
@@ -52,6 +53,9 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 logger = logging.getLogger(__name__)
 
+_UNREADABLE_ENTRY_ERRORS = (OSError, ValueError, KeyError, CodecError)
+"""What reading a cache entry raises when the entry cannot be used."""
+
 MISSING = object()
 
 
@@ -80,8 +84,10 @@ def key_components(meta: dict[str, Any]) -> dict[str, Any]:
     return components
 
 
-class UnresolvedEnvIdentityError(RuntimeError):
+class UnresolvedEnvIdentityError(GinkgoError, RuntimeError):
     """Raised when a backend cannot identify an environment a task declares."""
+
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
 
     def __init__(self, *, env: str, backend: Any) -> None:
         super().__init__(
@@ -249,21 +255,28 @@ class CacheStore:
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
             return MISSING
 
-        # An entry this codec cannot read — cut short, or written by a codec
-        # this version no longer has — is a miss. Its directory and rows are
-        # removed because ``save`` never overwrites an existing entry, so
-        # leaving it would make the task miss on every run.
+        # An entry this codec cannot read — cut short, written by a codec this
+        # version no longer has, or removed by a concurrent run mid-read — is a
+        # miss. Loading never deletes it: a dry run loads too, and ``save``
+        # replaces it once the task has actually run.
         try:
             return decode_value(
                 json.loads(output_path.read_text(encoding="utf-8")),
                 base_dir=entry_dir,
                 artifact_store=self._artifact_store,
             )
-        except (ValueError, CodecError) as exc:
-            logger.warning("Discarding unreadable cache entry %s: %s", cache_key, exc)
-            shutil.rmtree(entry_dir, ignore_errors=True)
-            self.index.forget_entries([cache_key])
+        except _UNREADABLE_ENTRY_ERRORS as exc:
+            logger.warning("Ignoring unreadable cache entry %s: %s", cache_key, exc)
             return MISSING
+
+    @staticmethod
+    def _entry_readable(entry_dir: Path) -> bool:
+        """Return whether an entry's ``output.json`` is one this codec can decode."""
+        try:
+            check_encoded(json.loads((entry_dir / "output.json").read_text(encoding="utf-8")))
+        except _UNREADABLE_ENTRY_ERRORS:
+            return False
+        return True
 
     def has_entry(self, *, cache_key: str, task_def: TaskDef) -> bool:
         """Return whether a usable cache entry exists for the given key.
@@ -333,6 +346,9 @@ class CacheStore:
         artifact_ids = {path: record.artifact_id for path, record in records.items()}
 
         entry_dir = self._entry_dir(cache_key)
+        if entry_dir.exists() and not self._entry_readable(entry_dir):
+            # An unreadable entry would otherwise outlive every re-run.
+            shutil.rmtree(entry_dir, ignore_errors=True)
         if not entry_dir.exists():
             temp_dir = Path(tempfile.mkdtemp(prefix=f"{cache_key}.tmp-", dir=self._root))
             try:
@@ -348,8 +364,13 @@ class CacheStore:
 
                 try:
                     os.replace(temp_dir, entry_dir)
-                except FileExistsError:
-                    pass
+                except OSError:
+                    # A concurrent run published this entry first. Renaming a
+                    # directory onto a non-empty one fails with ENOTEMPTY or
+                    # EEXIST depending on the platform; either way its entry
+                    # holds the same result, so keep it.
+                    if not entry_dir.exists():
+                        raise
             finally:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
@@ -676,7 +697,7 @@ class CacheStore:
                 continue
             try:
                 check_encoded(json.loads(output_path.read_text(encoding="utf-8")))
-            except (ValueError, KeyError, CodecError) as exc:
+            except _UNREADABLE_ENTRY_ERRORS as exc:
                 problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
         problems += [
             f"cache directory {entry.name} has no row (orphan)"

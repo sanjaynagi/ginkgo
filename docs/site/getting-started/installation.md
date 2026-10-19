@@ -14,6 +14,30 @@ curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh |
 This installs `ginkgo` from `main` into an isolated environment via
 `uv tool install`. Re-run the same command to upgrade.
 
+## Plugins
+
+The installer gives you core only. Remote executors ship as separate plugins
+in this repository: `ginkgo-k8s` (Kubernetes) and `ginkgo-gcp` (GCP Batch).
+To install ginkgo with every first-party plugin:
+
+```bash
+uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+```
+
+Or add a single plugin alongside core:
+
+```bash
+uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
+  --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
+```
+
+`ginkgo plugins` lists what is installed. The `cloud` extra
+(`ginkgo[cloud]`) adds the Google Cloud Storage object store (`gcsfs`,
+`google-auth`); it installs no executor.
+
+See [Remote Execution](../guide/remote-execution.md#installing-an-executor) for
+configuring the executors.
+
 ## Recommended For Development: Pixi
 
 This repository already includes a Pixi workspace. Install the environment and
@@ -24,6 +48,10 @@ pixi install
 pixi run test
 pixi run docs-build
 ```
+
+The default environment installs both first-party plugins editable, so
+`pixi run test` covers core and the plugins. The `core` environment has no
+plugins: `pixi run -e core test-core` runs core's tests there.
 
 ## Runtime Prerequisites
 
@@ -50,6 +78,7 @@ If you prefer a plain Python environment:
 
 ```bash
 pip install -e .
+pip install -e plugins/ginkgo-k8s plugins/ginkgo-gcp   # optional executors
 ```
 
 That installs the `ginkgo` console script defined in the project metadata.

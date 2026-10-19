@@ -16,6 +16,8 @@ from typing import Any, Sequence
 from rich.markup import escape
 
 from ginkgo import query
+from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
+from ginkgo.plugins.registry import plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
@@ -52,9 +54,7 @@ from ginkgo.core.resources import (
 )
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
-from ginkgo.envs.container import container_backend_from_config
-from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
@@ -76,7 +76,6 @@ from ginkgo.runtime.events import (
     RunValidated,
     TaskNotice,
 )
-from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -258,25 +257,23 @@ def run_workflow(
     runtime_params.update(params)
     load_elapsed = time.perf_counter() - load_started
 
-    registry = PixiRegistry(
-        project_root=Path.cwd(),
-        workflow_root=resolve_envs_workflow_root(
-            project_root=Path.cwd(),
-            fallback=workflow_path.parent,
-        ),
-    )
     secret_resolver = build_secret_resolver(
         project_root=Path.cwd(),
         config=runtime_params,
         environ=os.environ,
     )
-    backend = CompositeEnvironment(
-        local=LocalEnvironment(pixi_registry=registry),
-        # Only a dry run asks registries about missing images: a real run
-        # pulls them anyway, and its pull reports a missing one.
-        container=container_backend_from_config(
-            project_root=Path.cwd(), config=runtime_config, probe_registry=dry_run
-        ),
+    backend = EnvironmentRouter(
+        context=EnvironmentContext(
+            project_root=Path.cwd(),
+            workflow_root=resolve_envs_workflow_root(
+                project_root=Path.cwd(),
+                fallback=workflow_path.parent,
+            ),
+            config=runtime_config,
+            # Only a dry run asks registries about missing images: a real run
+            # pulls them anyway, and its pull reports a missing one.
+            probe_registry=dry_run,
+        )
     )
 
     # Named executors: --executor picks the run default, and tasks may pin
@@ -473,21 +470,24 @@ def run_workflow(
         with ExitStack() as stack:
             stack.callback(recorder.close)
             reader = stack.enter_context(query.open())
-            notification_service = build_notification_service(
+            subscriber_context = EventSubscriberContext(
                 config=runtime_params,
-                resolver=secret_resolver,
+                secret_resolver=secret_resolver,
                 store=reader.store,
                 run_id=run_id,
                 run_dir=run_dir.path,
                 workflow_path=workflow_path,
-                logger=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
+                warn=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
             )
-            if notification_service is not None:
-                stack.callback(notification_service.close)
-                # Registered on the recorder, not the bus: the service asks the
-                # store which tasks failed, so it must not run until the events
-                # it is reacting to are committed.
-                recorder.on_committed(notification_service.handle)
+            for subscriber_type in plugin_registry().all(EventSubscriberType):
+                subscriber = subscriber_type.build(subscriber_context)
+                if subscriber is None:
+                    continue
+                stack.callback(subscriber.close)
+                # Registered on the recorder, not the bus: a subscriber may ask
+                # the store about what it is reacting to, so it must not run
+                # until those events are committed.
+                recorder.on_committed(subscriber.handle)
             renderer = None
             if output_mode in {"agent", "agent_verbose"}:
                 bus.subscribe(

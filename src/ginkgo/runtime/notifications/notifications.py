@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.secret import SecretRef
+from ginkgo.plugins.api import EventSubscriberContext
 from ginkgo.runtime.events import GinkgoEvent, RunCompleted, RunStarted, TaskFailed
 from ginkgo.runtime.notifications.slack import (
     SlackTaskFailure,
@@ -19,7 +20,7 @@ from ginkgo.runtime.notifications.slack import (
     post_slack_message,
 )
 from ginkgo.runtime.rundir import combined_log_tail
-from ginkgo.runtime.environment.secrets import SecretResolutionError, SecretResolver
+from ginkgo.runtime.environment.secrets import SecretResolutionError
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.store.protocol import ProvenanceStore
 
@@ -197,18 +198,23 @@ class NotificationService:
             return str(self.workflow_path)
 
 
-def build_notification_service(
-    *,
-    config: Mapping[str, Any] | None,
-    resolver: SecretResolver | None,
-    store: ProvenanceStore,
-    run_id: str,
-    run_dir: Path,
-    workflow_path: Path,
-    logger: Callable[[str], None],
-) -> NotificationService | None:
-    """Return a ready-to-use notification service when Slack is configured."""
-    notification_config = parse_notification_config(config=config)
+def build_notification_service(context: EventSubscriberContext) -> NotificationService | None:
+    """Return a ready-to-use notification service when Slack is configured.
+
+    Parameters
+    ----------
+    context : EventSubscriberContext
+        The run being observed.
+
+    Returns
+    -------
+    NotificationService | None
+        ``None`` when ``[notifications.slack]`` is disabled or unusable; the
+        reason is reported through ``context.warn``.
+    """
+    logger = context.warn
+    resolver = context.secret_resolver
+    notification_config = parse_notification_config(config=context.config)
     slack = notification_config.slack
     if not slack.enabled:
         return None
@@ -230,10 +236,10 @@ def build_notification_service(
     return NotificationService(
         config=notification_config,
         webhook_url=webhook_url,
-        store=store,
-        run_id=run_id,
-        run_dir=run_dir,
-        workflow_path=workflow_path,
+        store=context.store,
+        run_id=context.run_id,
+        run_dir=context.run_dir,
+        workflow_path=context.workflow_path,
         logger=logger,
     )
 

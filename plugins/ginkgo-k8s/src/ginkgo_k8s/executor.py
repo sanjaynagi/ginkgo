@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ginkgo.remote._executor_common import (
-    _encode_payload,
-    _generate_job_name,
-    _parse_worker_output,
-    _payload_requires_fuse,
+from ginkgo.remote.executor_support import (
+    encode_payload,
+    generate_job_name,
+    parse_worker_output,
+    payload_requires_fuse,
 )
 from ginkgo.runtime.remote_executor import (
     RemoteJobResult,
@@ -171,7 +172,7 @@ class KubernetesExecutor:
         resources = attempt.get("resources", {})
         threads = resources.get("threads", 1)
         memory_gb = resources.get("memory_gb", 0)
-        fuse_required = _payload_requires_fuse(attempt)
+        fuse_required = payload_requires_fuse(attempt)
 
         # Build resource requests and limits.
         resource_requests: dict[str, str] = {"cpu": str(threads)}
@@ -196,7 +197,7 @@ class KubernetesExecutor:
             "env": [
                 k8s_client.V1EnvVar(
                     name="GINKGO_WORKER_PAYLOAD",
-                    value=_encode_payload(attempt),
+                    value=encode_payload(attempt),
                 ),
             ],
             "resources": k8s_client.V1ResourceRequirements(
@@ -208,7 +209,7 @@ class KubernetesExecutor:
             container_kwargs["security_context"] = k8s_client.V1SecurityContext(privileged=True)
         container = k8s_client.V1Container(**container_kwargs)
 
-        job_name = _generate_job_name(attempt)
+        job_name = generate_job_name(attempt)
         pod_spec_kwargs: dict[str, Any] = {
             "containers": [container],
             "restart_policy": "Never",
@@ -422,7 +423,7 @@ class KubernetesJobHandle:
                 },
             }
         else:
-            payload = _parse_worker_output(logs, source_label="pod logs")
+            payload = parse_worker_output(logs, source_label="pod logs")
 
         exit_code = None
         if current == RemoteJobState.FAILED:
@@ -480,3 +481,23 @@ class KubernetesJobHandle:
             return resp.read().decode("utf-8", errors="replace")
         except Exception:
             return ""
+
+
+def build_kubernetes_executor(settings: Mapping[str, Any]) -> KubernetesExecutor:
+    """Construct a ``KubernetesExecutor`` from an executor table's settings."""
+    return KubernetesExecutor(
+        namespace=settings.get("namespace", "default"),
+        image=settings["image"],
+        service_account=settings.get("service_account"),
+        pull_policy=settings.get("pull_policy", "IfNotPresent"),
+        gpu_type=settings.get("gpu_type"),
+        node_selector=settings.get("node_selector"),
+        tolerations=settings.get("tolerations"),
+        ttl_seconds_after_finished=int(settings.get("ttl_seconds_after_finished", 3600)),
+        unschedulable_timeout=float(settings.get("unschedulable_timeout", 300.0)),
+        ephemeral_storage=settings.get("ephemeral_storage", "10Gi"),
+        backoff_limit=int(settings.get("backoff_limit", 2)),
+        fuse_image=settings.get("fuse_image"),
+        fuse_annotations=settings.get("fuse_annotations"),
+        fuse_privileged=bool(settings.get("fuse_privileged", False)),
+    )

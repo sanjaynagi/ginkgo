@@ -15,6 +15,7 @@ The current CLI supports:
 - `ginkgo secrets`
 - `ginkgo init`
 - `ginkgo why`
+- `ginkgo plugins`
 - `ginkgo cache ls`
 - `ginkgo cache stats`
 - `ginkgo cache explain`

@@ -29,7 +29,6 @@ from ginkgo.core.types import (
 )
 from ginkgo.wildcards import ExpandedTemplate, PerBranch
 
-_TASK_KINDS = frozenset({"notebook", "python", "script", "shell", "subworkflow"})
 _ON_FAILURE_POLICIES = frozenset({"fail_fast", "ignore"})
 _FanOutMode = Literal["zip", "product"]
 
@@ -123,9 +122,10 @@ class TaskDef:
     def __post_init__(self) -> None:
         if self.retries < 0:
             raise ValueError("retries must be at least 0")
-        if self.kind not in _TASK_KINDS:
-            supported = ", ".join(sorted(_TASK_KINDS))
-            raise ValueError(f"kind must be one of {{{supported}}}, got {self.kind!r}")
+        # Whether an installed plugin provides the kind is checked when the
+        # graph is built, so decorating a task never loads the plugins.
+        if not isinstance(self.kind, str) or not self.kind.strip():
+            raise ValueError(f"kind must be a non-empty string, got {self.kind!r}")
         if self.on_failure not in _ON_FAILURE_POLICIES:
             supported = ", ".join(sorted(_ON_FAILURE_POLICIES))
             raise ValueError(f"on_failure must be one of {{{supported}}}, got {self.on_failure!r}")
@@ -151,8 +151,6 @@ class TaskDef:
         if abs(self.priority) > 1000:
             raise ValueError(f"priority must be in range [-1000, 1000], got {self.priority}")
         if self.retry_on_exit_codes is not None:
-            if self.kind != "shell":
-                raise ValueError("retry_on_exit_codes is only valid for shell tasks")
             for code in self.retry_on_exit_codes:
                 if not isinstance(code, int) or isinstance(code, bool):
                     raise ValueError(f"retry_on_exit_codes must be integers, got {code!r}")
@@ -208,13 +206,6 @@ class TaskDef:
     def required_params(self) -> frozenset[str]:
         """Parameter names that have no default value."""
         return self._required_params
-
-    @property
-    def execution_mode(self) -> str:
-        """Return whether the task body runs on the driver or a worker."""
-        if self.kind in {"notebook", "script", "shell"}:
-            return "driver"
-        return "worker"
 
     @property
     def all_params(self) -> dict[str, inspect.Parameter]:

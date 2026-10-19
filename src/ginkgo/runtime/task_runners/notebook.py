@@ -19,14 +19,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 import yaml
 
 from ginkgo.core.notebook import NotebookDirective
-from ginkgo.core.task import TaskDef
-from ginkgo.core.types import tmp_dir
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.rundir import RunDir
@@ -47,12 +45,17 @@ from ginkgo.runtime.task_runners.shell import (
 )
 from ginkgo.workspace_layout import WorkspaceLayout
 
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import RunnerContext
+
 
 # ----- Exceptions -----------------------------------------------------------
 
 
 class NotebookTaskError(GinkgoError, RuntimeError):
     """Notebook task execution failure."""
+
+    failure_kind: ClassVar[FailureKind] = "shell_command_error"
 
     def __init__(
         self,
@@ -173,33 +176,6 @@ def notebook_failure_headline(output: str) -> str | None:
     return f"notebook failed: {exception_line}"
 
 
-def first_label_param_name(*, task_def: TaskDef) -> str | None:
-    """Return the first user-declared parameter name for CLI labeling."""
-    for name, parameter in task_def.signature.parameters.items():
-        annotation = task_def.type_hints.get(name, parameter.annotation)
-        if annotation is tmp_dir:
-            continue
-        return name
-    return None
-
-
-def render_label_value(value: Any) -> str | None:
-    """Return a compact string for a mapped-task display label."""
-    if isinstance(value, Path):
-        text = value.name or str(value)
-    elif isinstance(value, (str, int, float, bool)):
-        text = str(value)
-    else:
-        text = repr(value)
-
-    compact = " ".join(text.split()).strip()
-    if not compact:
-        return None
-    if len(compact) > 24:
-        compact = f"{compact[:21]}..."
-    return compact
-
-
 def fn_description(fn: Any) -> str | None:
     """Return the function docstring (used as the notebook description)."""
     return inspect.getdoc(fn)
@@ -286,7 +262,7 @@ class NotebookRunner(DriverTaskRunner):
 
     # Public driver entry points ---------------------------------------------
 
-    def run_notebook(self, *, node: Any, directive: NotebookDirective) -> Any:
+    def run(self, *, node: Any, directive: NotebookDirective) -> Any:
         """Execute a notebook task from a ``NotebookDirective``.
 
         Determines the notebook backend from the file extension, runs
@@ -465,7 +441,7 @@ class NotebookRunner(DriverTaskRunner):
 
     # Cache replay -----------------------------------------------------------
 
-    def replay_cached_extras(self, *, node: Any, cache_key: str) -> None:
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
         """Replay notebook manifest extras stored on a previous cache save.
 
         Notebook tasks render an HTML artifact whose path is not part of the
@@ -479,15 +455,15 @@ class NotebookRunner(DriverTaskRunner):
         consumer of the event stream should hear about it on every run rather
         than only the first.
         """
-        if self.run_dir is None or node.task_def.kind != "notebook":
+        if self.run_dir is None:
             return
         cached_extra = self.cache_store.load_extra_meta(cache_key=cache_key)
         if cached_extra is None:
             return
-        notebook_extras = cached_extra.get("notebook_extras")
-        if not isinstance(notebook_extras, dict):
+        runner_extras = cached_extra.get("runner_extras")
+        if not isinstance(runner_extras, dict):
             return
-        replayed = resolve_cached_artifact_pointers(extras=notebook_extras)
+        replayed = resolve_cached_artifact_pointers(extras=runner_extras)
         self.annotate(node=node, fields=replayed)
         rendered_html = replayed.get("rendered_html")
         if replayed.get("render_status") == "failed" and isinstance(rendered_html, str):
@@ -723,7 +699,7 @@ class NotebookRunner(DriverTaskRunner):
         cache_extras["rendered_html"] = str(rendered_html.resolve())
         if executed_path is not None:
             cache_extras["executed_notebook"] = str(executed_path.resolve())
-        node.notebook_extras = cache_extras
+        node.runner_extras = cache_extras
 
     def _render_notebook_failure_page(
         self,
@@ -750,3 +726,17 @@ class NotebookRunner(DriverTaskRunner):
             encoding="utf-8",
         )
         return message
+
+
+def build_notebook_runner(context: RunnerContext) -> NotebookRunner:
+    """Build the notebook runner for a run."""
+    return NotebookRunner(
+        backend=context.backend,
+        shell_runner=context.shell_runner,
+        validator=context.validator,
+        cache_store=context.cache_store,
+        run_dir=context.run_dir,
+        annotate=context.annotate,
+        notice_emitter=context.notice,
+        runtime_root_factory=context.runtime_root,
+    )

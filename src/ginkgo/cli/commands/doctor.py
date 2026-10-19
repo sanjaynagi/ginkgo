@@ -9,14 +9,13 @@ import sys
 
 from rich.markup import escape
 
+from ginkgo.plugins.api import EnvironmentContext
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
-from ginkgo.envs.container import container_backend_from_config
 from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
-from ginkgo.envs.pixi import PixiRegistry
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
-from ginkgo.runtime.backend import CompositeEnvironment, LocalEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
@@ -55,20 +54,17 @@ def command_doctor(args) -> int:
     # probes PATH; nothing is built or installed. Built inside
     # collect_workflow_diagnostics's try/except so construction failures
     # surface as a diagnostic, not a crash.
-    def build_backend() -> CompositeEnvironment:
-        return CompositeEnvironment(
-            local=LocalEnvironment(
-                pixi_registry=PixiRegistry(
+    def build_backend() -> EnvironmentRouter:
+        return EnvironmentRouter(
+            context=EnvironmentContext(
+                project_root=Path.cwd(),
+                workflow_root=resolve_envs_workflow_root(
                     project_root=Path.cwd(),
-                    workflow_root=resolve_envs_workflow_root(
-                        project_root=Path.cwd(),
-                        fallback=workflow_path.parent,
-                    ),
-                )
-            ),
-            container=container_backend_from_config(
-                project_root=Path.cwd(), config=config, probe_registry=True
-            ),
+                    fallback=workflow_path.parent,
+                ),
+                config=config,
+                probe_registry=True,
+            )
         )
 
     diagnostics = collect_workflow_diagnostics(
@@ -179,18 +175,14 @@ def _extract_executor_configs(*, config: dict) -> dict[str, dict]:
     A task may be pinned to any configured executor, so the FUSE probes
     have to see all of them: diagnosing only one section would clear a run
     whose other executors cannot mount. Keys are the section names as they
-    appear in ``ginkgo.toml`` (``"[remote.k8s]"``,
-    ``"[remote.executors.gpu-k8s]"``) so a diagnostic can name the section
+    appear in ``ginkgo.toml`` (``"[remote.executors.gpu-k8s]"``) so a
+    diagnostic can name the section
     the user has to edit.
     """
     remote = config.get("remote") if isinstance(config, dict) else None
     if not isinstance(remote, dict):
         return {}
     sections: dict[str, dict] = {}
-    for type_name in ("k8s", "batch"):
-        section = remote.get(type_name)
-        if isinstance(section, dict):
-            sections[f"[remote.{type_name}]"] = section
     named = remote.get("executors")
     if isinstance(named, dict):
         for name, table in named.items():

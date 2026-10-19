@@ -163,7 +163,9 @@ default_for_pattern = [
   { glob = "*.bai",       access = "stage" },
 ]
 
-[remote.k8s]
+[remote.executors.k8s]
+type = "k8s"
+image = "gcr.io/<project>/ginkgo-worker:<tag>"
 fuse_image = "gcr.io/<project>/ginkgo-worker-fuse:<tag>"
 fuse_privileged = false
 # fuse_annotations defaults to {"gke-gcsfuse/volumes" = "true"}
@@ -216,5 +218,6 @@ will be picked up post-benchmark:
 | Payload pass-through | `ginkgo/runtime/artifacts/remote_arg_transfer.py` |
 | Worker hydration | `ginkgo/remote/access/worker_hydration.py` |
 | Worker entry point | `ginkgo/remote/worker.py` |
-| Executor pod spec | `ginkgo/remote/kubernetes.py`, `ginkgo/remote/gcp_batch.py` |
+| Executor pod spec | `plugins/ginkgo-k8s/src/ginkgo_k8s/executor.py`, `plugins/ginkgo-gcp/src/ginkgo_gcp/batch.py` |
+| Worker-protocol helpers | `ginkgo/remote/executor_support.py` |
 | Worker image | `Dockerfile.worker-fuse` |

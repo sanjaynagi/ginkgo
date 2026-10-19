@@ -11,7 +11,7 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ginkgo.core.script import ScriptDirective
 from ginkgo.runtime.environment.secrets import redact_text
@@ -25,12 +25,18 @@ from ginkgo.runtime.task_runners.shell import (
     resolve_declared_output,
 )
 
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import RunnerContext
+
 
 @dataclass(kw_only=True)
 class ScriptRunner(DriverTaskRunner):
     """Execute script driver tasks."""
 
-    def run_script(self, *, node: Any, directive: ScriptDirective) -> Any:
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
+        """A script task records nothing beyond its result."""
+
+    def run(self, *, node: Any, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         assert node.resolved_args is not None
@@ -66,9 +72,8 @@ class ScriptRunner(DriverTaskRunner):
                     option=option,
                     value=value,
                     label=f"{node.task_def.name}.{name}",
-                    # This runner *is* the script boundary: a task declared
-                    # ``kind="shell"`` whose body returns ``script(...)`` lands
-                    # here too, and its arguments cross the same way.
+                    # This runner *is* the script boundary: every argument
+                    # crosses into the script process here.
                     task_kind="script",
                 )
             )
@@ -100,3 +105,8 @@ class ScriptRunner(DriverTaskRunner):
             task_def=node.task_def,
             output=output,
         )
+
+
+def build_script_runner(context: RunnerContext) -> ScriptRunner:
+    """Build the script runner for a run."""
+    return ScriptRunner(shell_runner=context.shell_runner, validator=context.validator)

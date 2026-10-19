@@ -28,8 +28,7 @@ from ginkgo import (
     tmp_dir,
     untracked,
 )
-from ginkgo.envs.pixi import PixiRegistry
-from ginkgo.runtime.backend import LocalEnvironment
+from ginkgo.envs.pixi import PixiEnvironment, PixiRegistry
 from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.task_runners.notebook import NotebookTaskError
@@ -359,6 +358,11 @@ def flaky_shell_task(marker_path: untracked, output_path: str, log_path: untrack
         output=output_path,
         log=log_path,
     )
+
+
+@task(kind="shell")
+def shell_returns_script_directive_task(output_path: str) -> file:
+    return script("copy.py", output=output_path)
 
 
 @task()
@@ -741,7 +745,7 @@ class TestEvaluate:
             event_bus=recorder.bus,
             jobs=1,
             cores=1,
-            backend=LocalEnvironment(pixi_registry=registry),
+            backend=PixiEnvironment(pixi_registry=registry),
         )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
@@ -892,7 +896,7 @@ class TestEvaluate:
             event_bus=recorder.bus,
             jobs=2,
             cores=2,
-            backend=LocalEnvironment(pixi_registry=registry),
+            backend=PixiEnvironment(pixi_registry=registry),
         )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
 
@@ -1081,7 +1085,7 @@ class TestEvaluate:
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
         evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, backend=LocalEnvironment(pixi_registry=registry)
+            jobs=1, cores=1, backend=PixiEnvironment(pixi_registry=registry)
         )
         monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
         result = evaluator.evaluate(expr)
@@ -1134,22 +1138,34 @@ class TestEvaluate:
         with pytest.raises(TypeError, match="top-level function"):
             evaluate(local_task(x=1))
 
+    def test_a_task_must_return_its_own_kinds_directive(self, tmp_path: Path) -> None:
+        Path("copy.py").write_text("", encoding="utf-8")
+
+        with pytest.raises(
+            TypeError,
+            match=r"kind='shell' and must return shell\(\.\.\.\), not ScriptDirective\. "
+            r"Use @task\(kind='script'\)",
+        ):
+            evaluate(shell_returns_script_directive_task(output_path=str(tmp_path / "out")))
+
     def test_python_tasks_must_not_return_shell_directives(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"
 
-        with pytest.raises(TypeError, match="ShellDirective.*appropriate task kind"):
+        with pytest.raises(TypeError, match=r"ShellDirective.*Use @task\(kind='shell'\)"):
             evaluate(python_returns_shell_directive_task(output_path=str(output)))
 
     def test_python_tasks_must_not_return_notebook_directives(self) -> None:
-        with pytest.raises(TypeError, match="NotebookDirective.*appropriate task kind"):
+        with pytest.raises(TypeError, match=r"NotebookDirective.*Use @task\(kind='notebook'\)"):
             evaluate(python_returns_notebook_directive_task())
 
     def test_python_tasks_must_not_return_script_directives(self) -> None:
-        with pytest.raises(TypeError, match="ScriptDirective.*appropriate task kind"):
+        with pytest.raises(TypeError, match=r"ScriptDirective.*Use @task\(kind='script'\)"):
             evaluate(python_returns_script_directive_task())
 
     def test_python_tasks_must_not_return_subworkflow_directives(self) -> None:
-        with pytest.raises(TypeError, match="SubWorkflowDirective.*appropriate task kind"):
+        with pytest.raises(
+            TypeError, match=r"SubWorkflowDirective.*Use @task\(kind='subworkflow'\)"
+        ):
             evaluate(python_returns_subworkflow_directive_task())
 
     def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:
@@ -1614,7 +1630,7 @@ class TestEnvBackedCaching:
         evaluator = ConcurrentEvaluator(
             jobs=1,
             cores=1,
-            backend=LocalEnvironment(pixi_registry=registry),
+            backend=PixiEnvironment(pixi_registry=registry),
             event_bus=collector.bus,
         )
         return evaluator.evaluate(expr), collector
@@ -1861,7 +1877,7 @@ class TestShellTask:
         outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]
         result = evaluate(
             [pixi_shell_output_task(output_path=str(path)) for path in outputs],
-            backend=LocalEnvironment(pixi_registry=registry),
+            backend=PixiEnvironment(pixi_registry=registry),
         )
 
         assert result == [file(str(path)) for path in outputs]

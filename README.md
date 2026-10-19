@@ -34,6 +34,27 @@ curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh |
 This installs `ginkgo` from `main` into an isolated environment via `uv tool
 install`. Re-run the same command to upgrade.
 
+### Plugins
+
+The installer gives you core only. Remote executors ship as separate plugins
+in this repository: `ginkgo-k8s` (Kubernetes) and `ginkgo-gcp` (GCP Batch).
+To install ginkgo with every first-party plugin:
+
+```bash
+uv tool install --force "ginkgo[all] @ git+https://github.com/sanjaynagi/ginkgo.git@main"
+```
+
+Or add a single plugin alongside core:
+
+```bash
+uv tool install --force "ginkgo @ git+https://github.com/sanjaynagi/ginkgo.git@main" \
+  --with "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s"
+```
+
+`ginkgo plugins` lists what is installed. The `cloud` extra
+(`ginkgo[cloud]`) adds the Google Cloud Storage object store (`gcsfs`,
+`google-auth`); it installs no executor.
+
 ### Pixi
 
 For local development:
@@ -42,6 +63,14 @@ For local development:
 pixi install
 pixi run test
 pixi run typecheck
+```
+
+The default environment installs both first-party plugins editable, and
+`pixi run test` runs core's tests and the plugins' (`tests/` and `plugins/`).
+To check that core works with no plugin installed, as CI does:
+
+```bash
+pixi run -e core test-core
 ```
 
 After `pixi install`, build the [uncoded](https://github.com/alimanfoo/uncoded)

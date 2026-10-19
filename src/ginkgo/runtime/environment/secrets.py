@@ -9,6 +9,8 @@ from typing import Any, Protocol
 
 from ginkgo.core.secret import SecretRef
 from ginkgo.errors import GinkgoError
+from ginkgo.plugins.api import SecretBackendContext, SecretBackendType
+from ginkgo.plugins.registry import plugin_registry
 
 
 class SecretResolutionError(GinkgoError, RuntimeError):
@@ -50,17 +52,46 @@ class DotenvSecretBackend:
 
 @dataclass(kw_only=True)
 class SecretResolver:
-    """Resolve secret references through configured backend chains."""
+    """Resolve secret references through the backend chain each one names.
 
-    backends: dict[str, tuple[SecretBackend, ...]] = field(default_factory=dict)
+    A backend's chain is built from its plugin the first time a ref names it,
+    so a run that resolves only ``env`` secrets never builds (or authenticates)
+    any other backend.
+
+    Parameters
+    ----------
+    context : SecretBackendContext
+        Handed to each backend's ``build``.
+    """
+
+    context: SecretBackendContext
+    _chains: dict[str, tuple[SecretBackend, ...]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def resolve(self, *, ref: SecretRef) -> str:
-        """Resolve *ref* or raise ``SecretResolutionError``."""
-        for backend in self.backends.get(ref.backend, ()):
+        """Resolve *ref* or raise ``SecretResolutionError``.
+
+        Raises
+        ------
+        SecretResolutionError
+            If no backend in the chain has the secret.
+        PluginNotFoundError
+            If no installed plugin provides the backend *ref* names.
+        """
+        for backend in self._chain(ref.backend):
             value = backend.resolve(ref=ref)
             if value is not None:
                 return value
         raise SecretResolutionError(ref)
+
+    def _chain(self, name: str) -> tuple[SecretBackend, ...]:
+        """Return the backend chain for *name*, building it on first use."""
+        chain = self._chains.get(name)
+        if chain is None:
+            chain = plugin_registry().get(SecretBackendType, name).build(self.context)
+            self._chains[name] = chain
+        return chain
 
     def can_resolve(self, *, ref: SecretRef) -> bool:
         """Return whether *ref* is resolvable."""
@@ -81,7 +112,22 @@ def build_secret_resolver(
     config: Mapping[str, Any] | None,
     environ: Mapping[str, str],
 ) -> SecretResolver:
-    """Build a resolver from project config and process environment."""
+    """Build a resolver over the secret backends installed plugins provide."""
+    return SecretResolver(
+        context=SecretBackendContext(
+            project_root=project_root, config=config or {}, environ=environ
+        )
+    )
+
+
+def build_env_backends(context: SecretBackendContext) -> tuple[SecretBackend, ...]:
+    """Return the ``env`` backend chain: the process environment, then ``.env``.
+
+    The ``.env`` file is consulted only when ``[secrets.dotenv]`` enables it.
+    """
+    config = context.config
+    project_root = context.project_root
+    environ = context.environ
     secrets_config = config.get("secrets", {}) if isinstance(config, Mapping) else {}
     dotenv_config = secrets_config.get("dotenv", {}) if isinstance(secrets_config, Mapping) else {}
 
@@ -89,8 +135,7 @@ def build_secret_resolver(
     if _dotenv_enabled(dotenv_config):
         dotenv_path = _dotenv_path(project_root=project_root, dotenv_config=dotenv_config)
         env_chain.append(DotenvSecretBackend(values=_load_dotenv(path=dotenv_path)))
-
-    return SecretResolver(backends={"env": tuple(env_chain)})
+    return tuple(env_chain)
 
 
 def collect_secret_refs(value: Any) -> set[SecretRef]:

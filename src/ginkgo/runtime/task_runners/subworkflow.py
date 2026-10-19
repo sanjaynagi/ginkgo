@@ -22,7 +22,7 @@ import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import yaml
 
@@ -33,6 +33,9 @@ from ginkgo.errors import GinkgoError
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.runtime.task_runners.shell import ShellRunner
 from ginkgo.store.sqlite import open_store
+
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import RunnerContext
 
 
 DEPTH_ENV = "GINKGO_CALL_DEPTH"
@@ -87,6 +90,8 @@ class SubworkflowRunner:
         ``GINKGO_PARENT_RUN_ID`` and used in recursion diagnostics.
     db_path : Path
         The provenance database, read to resolve which run the child was.
+    annotate : Callable[..., None]
+        Records the child's run id against the parent task as ``sub_run_id``.
     python_executable : str
         Interpreter to use for the child subprocess.
     max_depth : int
@@ -96,10 +101,14 @@ class SubworkflowRunner:
     shell_runner: ShellRunner
     run_id_provider: Callable[[], str]
     db_path: Path
+    annotate: Callable[..., None]
     python_executable: str = field(default_factory=lambda: sys.executable)
     max_depth: int = DEFAULT_MAX_CALL_DEPTH
 
-    def run_subworkflow(
+    def replay_cached(self, *, node: Any, cache_key: str) -> None:
+        """A cached sub-workflow ran no child, so there is no run id to record."""
+
+    def run(
         self,
         *,
         node: Any,
@@ -184,6 +193,7 @@ class SubworkflowRunner:
                     f"successfully but recorded no run in {self.db_path}."
                 )
 
+            self.annotate(node=node, fields={"sub_run_id": child_run_id})
             return SubWorkflowResult(run_id=child_run_id, status="success")
         finally:
             if tmp_params_path is not None:
@@ -205,3 +215,13 @@ class SubworkflowRunner:
                 (self.run_id_provider() or "", parent_task_id),
             )
         return str(rows[0][0]) if rows else None
+
+
+def build_subworkflow_runner(context: RunnerContext) -> SubworkflowRunner:
+    """Build the sub-workflow runner for a run."""
+    return SubworkflowRunner(
+        shell_runner=context.shell_runner,
+        run_id_provider=context.run_id,
+        db_path=context.db_path,
+        annotate=context.annotate,
+    )

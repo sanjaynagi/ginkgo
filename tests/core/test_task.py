@@ -5,6 +5,9 @@ from typing import Annotated
 
 import pytest
 
+from ginkgo import evaluate
+from ginkgo.plugins.registry import PluginNotFoundError
+from ginkgo.runtime.task_kinds import task_kind
 from ginkgo import (
     Expr,
     ExprList,
@@ -73,12 +76,28 @@ class TestTaskDecorator:
             def my_fn(x: int) -> int:
                 return x
 
-    def test_task_rejects_unknown_kind(self):
-        with pytest.raises(ValueError, match="kind must be one of"):
+    def test_task_rejects_an_empty_kind(self):
+        with pytest.raises(ValueError, match="kind must be a non-empty string"):
 
-            @task(kind="bash")
+            @task(kind=" ")
             def my_fn(x: int) -> int:
                 return x
+
+    def test_an_unknown_kind_is_refused_when_the_graph_is_built(self):
+        @task(kind="bash")
+        def my_fn(x: int) -> int:
+            return x
+
+        with pytest.raises(PluginNotFoundError, match="task kind 'bash'"):
+            evaluate(my_fn(x=1))
+
+    def test_exit_code_retries_are_refused_for_a_kind_without_them(self):
+        @task(kind="script", retries=1, retry_on_exit_codes=(1,))
+        def my_fn(x: int) -> int:
+            return x
+
+        with pytest.raises(ValueError, match="kind='script' does not support"):
+            evaluate(my_fn(x=1))
 
     @pytest.mark.parametrize("kind", ["shell", "notebook", "script"])
     def test_task_positional_kind(self, kind: str) -> None:
@@ -109,7 +128,7 @@ class TestTaskDecorator:
         def run(x: str) -> str:
             return x
 
-        assert run.execution_mode == "driver"
+        assert task_kind(run).execution_mode == "driver"
 
 
 class TestTaskDefCall:

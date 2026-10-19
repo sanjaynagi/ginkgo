@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ginkgo.remote.kubernetes import (
+from ginkgo_k8s.executor import (
     KubernetesExecutor,
     KubernetesJobHandle,
-    _encode_payload,
-    _generate_job_name,
-    _parse_worker_output,
+    encode_payload,
+    generate_job_name,
+    parse_worker_output,
     _RefreshingApi,
 )
 from ginkgo.runtime.remote_executor import RemoteExecutor, RemoteJobState
@@ -25,34 +25,34 @@ class TestHelpers:
         import base64
 
         payload = {"task_id": "task_001", "args": {"x": 42}}
-        encoded = _encode_payload(payload)
+        encoded = encode_payload(payload)
         decoded = json.loads(base64.b64decode(encoded))
         assert decoded == payload
 
     def test_generate_job_name(self) -> None:
         attempt = {"run_id": "20260410_ABC", "task_id": "task_001", "attempt": 1}
-        name = _generate_job_name(attempt)
+        name = generate_job_name(attempt)
         assert name.startswith("ginkgo-")
         assert "_" not in name
         assert len(name) <= 63
 
     def test_generate_job_name_truncation(self) -> None:
         attempt = {"run_id": "a" * 50, "task_id": "b" * 50, "attempt": 1}
-        name = _generate_job_name(attempt)
+        name = generate_job_name(attempt)
         assert len(name) <= 63
 
     def test_parse_worker_output_valid(self) -> None:
         logs = "Starting task...\nsome debug output\n" + json.dumps({"ok": True, "result": 42})
-        result = _parse_worker_output(logs)
+        result = parse_worker_output(logs)
         assert result == {"ok": True, "result": 42}
 
     def test_parse_worker_output_no_json(self) -> None:
         logs = "no json here\njust text"
-        result = _parse_worker_output(logs)
+        result = parse_worker_output(logs)
         assert result["ok"] is False
 
     def test_parse_worker_output_empty(self) -> None:
-        result = _parse_worker_output("")
+        result = parse_worker_output("")
         assert result["ok"] is False
 
 
@@ -95,7 +95,7 @@ class TestKubernetesExecutor:
         # Only the API round-trip is mocked; submit() builds a real V1Job from
         # the installed kubernetes client, so we can assert on its actual spec.
         created_job = MagicMock()
-        created_job.metadata.name = _generate_job_name(attempt)
+        created_job.metadata.name = generate_job_name(attempt)
         executor._batch_api.create_namespaced_job.return_value = created_job
 
         handle = executor.submit(attempt=attempt)

@@ -44,7 +44,7 @@ class _StubNode:
     """Minimal DAG node accepting the stashed cache extras."""
 
     node_id: int = 14
-    notebook_extras: dict[str, Any] | None = None
+    runner_extras: dict[str, Any] | None = None
     task_def: Any = None
 
 
@@ -92,7 +92,7 @@ class TestStoredPointerForm:
         assert annotations.fields["rendered_html"] == "notebooks/task_0014.html"
         assert annotations.fields["executed_notebook"] == "notebooks/task_0014.ipynb"
 
-        cache_extras = node.notebook_extras
+        cache_extras = node.runner_extras
         assert cache_extras is not None
         for key, path in (
             ("rendered_html", html),
@@ -168,7 +168,7 @@ class TestReplayedPointerResolves:
         # The producing run names itself against its own task.
         assert annotations.fields["notebook_artifact_run_id"] == "old_run"
 
-        cache_extras = node.notebook_extras
+        cache_extras = node.runner_extras
         assert cache_extras is not None
         replayed = resolve_cached_artifact_pointers(extras=cache_extras)
 
@@ -213,9 +213,9 @@ def _replay(*, cached_extras: dict[str, Any], run_dir: Path) -> list[str]:
     runner = NotebookRunner.__new__(NotebookRunner)
     runner.run_dir = _StubRunDir(path=run_dir, run_id="new_run")
     runner.annotate = _Annotations()
-    runner.cache_store = _StubCacheStore(extra={"notebook_extras": cached_extras})
+    runner.cache_store = _StubCacheStore(extra={"runner_extras": cached_extras})
     runner.notice_emitter = lambda node, message: notices.append(message)
-    runner.replay_cached_extras(node=_StubNode(task_def=_StubTaskDef()), cache_key="key")
+    runner.replay_cached(node=_StubNode(task_def=_StubTaskDef()), cache_key="key")
     return notices
 
 

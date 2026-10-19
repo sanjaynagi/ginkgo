@@ -33,12 +33,8 @@ from ginkgo.remote.access.resolver import (
     load_access_config,
     resolve_access,
 )
+from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.workspace_layout import WorkspaceLayout
-
-# Task kinds whose bodies run on the scheduler thread / in a driver
-# subprocess rather than through ``run_task`` in the process pool. These
-# have no local mount lifecycle, so they always stage remote inputs.
-_DRIVER_KINDS = frozenset({"notebook", "script", "shell"})
 
 
 def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
@@ -253,7 +249,10 @@ class RemoteStager:
             or getattr(task_def, "executor", None) is not None
             or getattr(task_def, "gpu", 0) > 0
         )
-        is_driver_kind = getattr(task_def, "kind", None) in _DRIVER_KINDS
+        # A driver kind's body runs on the scheduler or in a driver subprocess,
+        # not through ``run_task`` in the process pool, so it has no local
+        # mount lifecycle and always stages remote inputs.
+        is_driver_kind = task_kind(task_def).execution_mode == "driver"
         require_local_driver = False
         if not dispatches_remote:
             if is_driver_kind:

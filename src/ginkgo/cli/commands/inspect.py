@@ -14,6 +14,7 @@ from ginkgo.core.flow import discover_flow
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.task_kinds import task_kind
 
 
 def command_inspect(args) -> int:
@@ -95,7 +96,7 @@ def inspect_workflow(
                 "task_name": task_base_name(node.task_def.name),
                 "kind": node.task_def.kind,
                 "env": node.task_def.env,
-                "execution_mode": node.task_def.execution_mode,
+                "execution_mode": task_kind(node.task_def).execution_mode,
                 "retries": node.task_def.retries,
                 "dependencies": [f"task_{dep_id:04d}" for dep_id in sorted(node.dependency_ids)],
             }

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 from ginkgo.errors import GinkgoError
+from ginkgo.plugins.api import MountDriverType
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 
 
 class MountFailedError(GinkgoError, RuntimeError):
@@ -70,34 +72,18 @@ class MountDriver(Protocol):
         ...
 
 
-_DRIVER_FACTORIES: dict[str, Callable[[], MountDriver]] = {}
-
-
-def register_driver(scheme: str, factory: Callable[[], MountDriver]) -> None:
-    """Register a driver factory for ``scheme``."""
-    _DRIVER_FACTORIES[scheme] = factory
-
-
 def resolve_driver(*, scheme: str) -> MountDriver:
-    """Return a driver instance for ``scheme`` or raise.
+    """Return a driver instance for ``scheme`` from the plugin registry.
 
-    Factories are registered lazily by their module so they are not
-    imported when streaming is not in use.
+    Raises
+    ------
+    DriverUnavailableError
+        If no installed plugin provides a driver for the scheme. Callers treat
+        this like a driver that failed its health check and fall back to
+        staging.
     """
-    if scheme not in _DRIVER_FACTORIES:
-        _bootstrap_defaults()
-    factory = _DRIVER_FACTORIES.get(scheme)
-    if factory is None:
-        raise DriverUnavailableError(f"No FUSE driver registered for scheme {scheme!r}")
-    return factory()
-
-
-def _bootstrap_defaults() -> None:
-    """Register the bundled drivers on first use."""
-    from ginkgo.remote.access.drivers.gcsfuse import GcsFuseDriver
-    from ginkgo.remote.access.drivers.rclone import RcloneDriver
-    from ginkgo.remote.access.drivers.s3 import MountpointS3Driver
-
-    register_driver("gs", GcsFuseDriver)
-    register_driver("s3", MountpointS3Driver)
-    register_driver("oci", RcloneDriver)
+    try:
+        driver_type = plugin_registry().get(MountDriverType, scheme)
+    except PluginNotFoundError as exc:
+        raise DriverUnavailableError(str(exc)) from exc
+    return driver_type.build()

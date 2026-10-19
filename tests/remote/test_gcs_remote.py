@@ -2,6 +2,7 @@
 
 import pytest
 
+from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.core.remote import is_remote_uri, remote_file, remote_folder
 
 
@@ -48,11 +49,7 @@ class TestResolveBackendGCS:
     def test_resolve_gs_returns_gcs_backend(self, monkeypatch) -> None:
         from ginkgo.remote.resolve import resolve_backend
 
-        # Avoid loading config from filesystem.
-        monkeypatch.setattr(
-            "ginkgo.remote.resolve._load_remote_settings",
-            lambda project_root: {"gcs_project": "test-project"},
-        )
+        monkeypatch.setenv("GINKGO_REMOTE_GCS_PROJECT", "test-project")
 
         backend = resolve_backend("gs")
         from ginkgo.remote.fsspec_backends import GCSFileSystemBackend
@@ -60,12 +57,21 @@ class TestResolveBackendGCS:
         assert isinstance(backend, GCSFileSystemBackend)
         assert backend._project == "test-project"
 
-    def test_resolve_unsupported_raises(self, monkeypatch) -> None:
+    def test_gcs_project_comes_from_the_remote_gcs_table(self, monkeypatch) -> None:
+        from ginkgo.plugins.api import ObjectStoreContext
+        from ginkgo.remote.resolve import build_gcs_store
+
+        monkeypatch.delenv("GINKGO_REMOTE_GCS_PROJECT", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+
+        backend = build_gcs_store(
+            ObjectStoreContext(config={"remote": {"gcs": {"project": "p1"}}})
+        )
+
+        assert backend._project == "p1"
+
+    def test_resolve_unsupported_raises(self) -> None:
         from ginkgo.remote.resolve import resolve_backend
 
-        monkeypatch.setattr(
-            "ginkgo.remote.resolve._load_remote_settings",
-            lambda project_root: {},
-        )
-        with pytest.raises(ValueError, match="Unsupported remote scheme"):
+        with pytest.raises(PluginNotFoundError, match="No installed plugin provides object store"):
             resolve_backend("ftp")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,8 +16,7 @@ from ginkgo.runtime.notifications.notifications import parse_notification_config
 from ginkgo.runtime.notifications.slack import build_run_failed_payload
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
+PYTHON = Path(sys.executable)
 
 
 def _run_cli(

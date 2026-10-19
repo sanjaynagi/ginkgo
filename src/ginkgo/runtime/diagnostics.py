@@ -12,8 +12,6 @@ from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_str_path_annotation, looks_path_like_param_name
-from ginkgo.envs.container import ContainerImageNotFoundError
-from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
@@ -252,29 +250,8 @@ def _diagnostic_from_exception(
     reaches it, and the workflow path otherwise — a diagnostic that only names
     the file the user already passed in tells them nothing.
     """
-    code = exc.__class__.__name__.upper()
     message = str(exc)
-    suggestion = None
-    if isinstance(exc, PixiEnvNotFoundError):
-        code = "MISSING_ENV"
-        suggestion = "Create the environment manifest, or correct the env= name on the task."
-    elif isinstance(exc, ContainerImageNotFoundError):
-        code = "MISSING_IMAGE"
-        suggestion = "Pull the image, correct its name/tag, or adjust [container] pull_policy."
-    elif isinstance(exc, RuntimeError) and "Missing secrets:" in message:
-        code = "MISSING_SECRET"
-        suggestion = "Provide the referenced secret through the configured resolver."
-    elif isinstance(exc, TypeError) and "top-level function" in message:
-        code = "NON_IMPORTABLE_TASK"
-        suggestion = "Define tasks at module scope as plain importable functions."
-    elif isinstance(exc, TypeError) and "kind='python'" in message:
-        code = "INVALID_ENV_KIND"
-        suggestion = "Use shell, notebook, or script task kinds for foreign environments."
-    elif isinstance(exc, RuntimeError) and "Expected exactly one @flow" in message:
-        code = "FLOW_DISCOVERY_ERROR"
-        suggestion = "Keep one unambiguous @flow entrypoint per workflow module."
-    elif isinstance(exc, ValueError):
-        code = "INVALID_VALUE"
+    code, suggestion = _diagnostic_code_and_suggestion(exc=exc, message=message)
 
     located = failure_location(exc)
     return WorkflowDiagnostic(
@@ -284,3 +261,24 @@ def _diagnostic_from_exception(
         location=str(located) if located is not None else str(workflow_path),
         suggestion=suggestion,
     )
+
+
+def _diagnostic_code_and_suggestion(*, exc: BaseException, message: str) -> tuple[str, str | None]:
+    """Return the diagnostic code and suggested fix for one validation error.
+
+    An error that knows its diagnostic declares it through ``diagnostic_code``
+    and ``diagnostic_suggestion`` class attributes, so this module never imports
+    the environment backends that raise them. The rest are recognised here.
+    """
+    declared_code = getattr(exc, "diagnostic_code", None)
+    if isinstance(declared_code, str):
+        return declared_code, getattr(exc, "diagnostic_suggestion", None)
+    if isinstance(exc, RuntimeError) and "Missing secrets:" in message:
+        return "MISSING_SECRET", "Provide the referenced secret through the configured resolver."
+    if isinstance(exc, TypeError) and "top-level function" in message:
+        return "NON_IMPORTABLE_TASK", "Define tasks at module scope as plain importable functions."
+    if isinstance(exc, RuntimeError) and "Expected exactly one @flow" in message:
+        return "FLOW_DISCOVERY_ERROR", "Keep one unambiguous @flow entrypoint per workflow module."
+    if isinstance(exc, ValueError):
+        return "INVALID_VALUE", None
+    return exc.__class__.__name__.upper(), None

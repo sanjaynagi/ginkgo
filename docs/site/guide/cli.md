@@ -56,6 +56,13 @@ at the nearest `ginkgo.toml`.
   its cache key, and the inputs that task recorded. Add `--json` for a
   structured payload. See [Querying Provenance](querying-provenance.md).
 
+`ginkgo plugins`
+: List the installed plugins and what each contributes: executor types,
+  object stores, FUSE drivers, secret backends, run notifications, task kinds
+  and environments (the bare-name environment shows as `(bare name)`). The
+  Kubernetes and GCP Batch executors appear only once the `ginkgo-k8s` /
+  `ginkgo-gcp` plugins are installed. Add `--json` for a structured payload.
+
 `ginkgo notebooks`
 : List the rendered notebook HTML artifacts produced by runs.
 
