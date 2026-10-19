@@ -12,12 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import final
 
-from ginkgo.core.asset import AssetResult
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.hashing import hash_file
 
-_ScriptOutputItem = str | AssetResult | OptionalOutput
+_ScriptOutputItem = str | OptionalOutput
 _ScriptOutput = _ScriptOutputItem | list[_ScriptOutputItem] | None
 
 # Maps file extension (lower-case) to interpreter command.
@@ -36,7 +35,7 @@ class ScriptDirective(ExecutionDirective):
     ----------
     path : Path
         Resolved source script path.
-    output : str | AssetResult | list[those] | None
+    output : str | OptionalOutput | list[those] | None
         Declared output path or paths. When provided, every path is
         validated for existence after execution.
     log : str | None
@@ -78,7 +77,7 @@ def script(
     path : str | Path
         Source script file. Relative paths resolve from the current working
         directory at the time of the call.
-    output : str | AssetResult | list[those] | None
+    output : str | OptionalOutput | list[those] | None
         Declared output path or paths, validated for existence after
         execution.
     log : str | None

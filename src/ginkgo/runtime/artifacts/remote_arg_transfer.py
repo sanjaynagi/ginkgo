@@ -622,15 +622,6 @@ def _stage_encoded_value(
                 for item in value.get("items", [])
             ],
         }
-    if kind == "asset_result":
-        return {
-            **value,
-            "payload": _stage_encoded_value(
-                value=value["payload"],
-                remote_store=remote_store,
-                output_param_paths=output_param_paths,
-            ),
-        }
     return value
 
 
@@ -718,13 +709,6 @@ def _hydrate_encoded_value(
                 }
                 for item in value.get("items", [])
             ],
-        }
-    if kind == "asset_result":
-        return {
-            **value,
-            "payload": _hydrate_encoded_value(
-                value=value["payload"], remote_store=remote_store, scratch_dir=scratch_dir
-            ),
         }
     return value
 

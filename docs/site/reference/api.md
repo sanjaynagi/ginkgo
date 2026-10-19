@@ -39,13 +39,6 @@ worked examples, see [Tasks and Flows](../guide/tasks-and-flows.md) and
    :members:
 ```
 
-## Asset API
-
-```{eval-rst}
-.. automodule:: ginkgo.core.asset
-   :members: asset, table, array, fig, text, model, AssetResult, AssetRef
-```
-
 ## Authoring Helpers
 
 ```{eval-rst}

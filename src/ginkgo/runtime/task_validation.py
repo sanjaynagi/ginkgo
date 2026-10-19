@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, get_args, get_origin
 
-from ginkgo.core.asset import AssetRef
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
 from ginkgo.core.remote import RemoteRef, is_remote_uri
@@ -67,8 +66,8 @@ def _resolved_existing_path_text(value: Any) -> str | None:
     if not text or is_remote_uri(text):
         return None
     # os.path.exists, not Path.exists: a string that cannot name a path at all
-    # — a rehydrated ``text`` asset's contents, say, longer than NAME_MAX or
-    # carrying a NUL — must answer "not an existing path" rather than raise.
+    # — a long piece of text, say, longer than NAME_MAX or carrying a NUL —
+    # must answer "not an existing path" rather than raise.
     if not os.path.exists(text):
         return None
     return text
@@ -161,10 +160,7 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     never invalidate it.
 
     A ``file`` / ``folder`` marker instance is excluded because the cache key
-    content-hashes it whatever the annotation says. An ``AssetRef`` is excluded
-    for free: it is not path-like, so it never reaches the check — which is the
-    right answer, since the cache keys it by version id and a content change
-    therefore does invalidate the consumer.
+    content-hashes it whatever the annotation says.
 
     Parameters
     ----------
@@ -223,7 +219,7 @@ def is_untracked_directory_value(*, annotation: Any, value: Any) -> bool:
 
 #: The tracking labels ``label_input_value`` returns, in the order a mixed
 #: container's label is chosen from (see its docstring).
-INPUT_TRACKING_LABELS = ("path", "output", "value", "asset", "content", "untracked")
+INPUT_TRACKING_LABELS = ("path", "output", "value", "version", "content", "untracked")
 
 
 def _combine_container_labels(labels: list[str]) -> str:
@@ -253,7 +249,7 @@ def label_input_value(
     One of ``"content"`` (file/folder bytes are hashed — including, since
     #307 phase 2, a plain ``str``/``Any``/``list[str]``/... value that names
     an existing regular file, see :func:`is_content_trackable_path_value`),
-    ``"asset"`` (an ``AssetRef``, ``RemoteRef``, or fuse-streamed ref —
+    ``"version"`` (a ``RemoteRef`` or fuse-streamed ref —
     tracked by version id), ``"path"`` (a value that names an existing path
     but is not content-hashed — a directory, or a bare word colliding with a
     file name — tracked by its path *string* only), ``"output"`` (an ``Out[...]`` parameter — tracked by
@@ -286,7 +282,7 @@ def label_input_value(
     Returns
     -------
     str
-        One of ``"content"``, ``"asset"``, ``"path"``, ``"value"``,
+        One of ``"content"``, ``"version"``, ``"path"``, ``"value"``,
         ``"output"``, ``"untracked"``.
     """
     if annotation is tmp_dir or isinstance(value, tmp_dir):
@@ -299,10 +295,8 @@ def label_input_value(
         return "value"
     if is_output:
         return "output"
-    if isinstance(value, AssetRef):
-        return "asset"
     if isinstance(value, RemoteRef):
-        return "asset"
+        return "version"
 
     from ginkgo.remote.access.protocol import FUSE_FILE_TYPE, FUSE_FOLDER_TYPE
 
@@ -310,7 +304,7 @@ def label_input_value(
         FUSE_FILE_TYPE,
         FUSE_FOLDER_TYPE,
     }:
-        return "asset"
+        return "version"
     if isinstance(value, SecretRef):
         return "value"
 
@@ -713,8 +707,8 @@ class TaskValidator:
         """Validate an ``Out[...]`` argument before execution.
 
         Unlike a read (``file``/``folder``), an output need not already
-        exist. It must be a local path-like value — not an ``AssetRef`` and
-        not a remote reference, since remote output paths are out of scope —
+        exist. It must be a local path-like value — not a remote reference,
+        since remote output paths are out of scope —
         and if something already exists at the path, it must be the right
         kind: an ``Out[file]`` pointing at an existing directory is an error,
         and vice versa.
@@ -749,12 +743,6 @@ class TaskValidator:
                 )
             return
 
-        if isinstance(value, AssetRef):
-            raise TypeError(
-                f"{label} is declared `Out[...]` but received an asset reference. "
-                "Pass a local path string; an Out[...] parameter names a path this "
-                "task writes, not an upstream asset."
-            )
         if is_remote_path_value(value):
             raise TypeError(
                 f"{label} is declared `Out[...]` but received a remote path. "
@@ -874,22 +862,6 @@ class TaskValidator:
                     execution_mode=execution_mode,
                     produced_paths=produced_paths,
                 )
-            return
-
-        if isinstance(value, AssetRef) and is_path_shaped_annotation(annotation):
-            # A path-shaped annotation binds a filesystem path, whether it is a
-            # bare ``file`` or a union such as ``file | AssetRef``. The union is
-            # how a consumer says "a path, or the ref that carries one", so the
-            # kind rule has to hold there too: without it a ``table`` ref binds
-            # silently and the task reads Parquet where it expected text.
-            require_path_value(
-                value=value,
-                annotation_label="file"
-                if annotation_includes(annotation=annotation, expected=file)
-                else "folder",
-                label=label,
-                execution_mode=execution_mode,
-            )
             return
 
         if annotation is file:

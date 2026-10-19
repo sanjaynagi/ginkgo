@@ -34,7 +34,6 @@ def _fixture(name: str, **overrides: Any) -> StoredEvent:
         task_id=payload.get("task_id"),
         attempt=payload.get("attempt"),
         cache_key=payload.get("cache_key"),
-        asset_key=payload.get("asset_key"),
         payload=json.dumps(payload, sort_keys=True),
     )
 
@@ -132,66 +131,6 @@ def test_scalar_columns_are_stored_as_the_scalars_they_are(started: SqliteStore)
         assert task[column] == expected, column
 
 
-def test_an_asset_input_is_indexed_and_gets_a_consumed_edge(started: SqliteStore) -> None:
-    """The hash entry names the asset, so the row and the edge follow from it."""
-    _apply(
-        started,
-        _fixture(
-            "task_planned",
-            inputs={"frame": {"type": "asset_ref", "asset": "table:rows", "version_id": "v1"}},
-            input_hashes=[
-                {
-                    "param": "frame",
-                    "type": "asset_ref",
-                    "asset": "table:rows",
-                    "version_id": "v1",
-                }
-            ],
-        ),
-    )
-
-    row = _row(started, "SELECT * FROM task_inputs")
-    assert (row["asset_key"], row["asset_version_id"]) == ("table:rows", "v1")
-    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
-    assert (edge["src_kind"], edge["src_id"], edge["dst_id"]) == ("asset_version", "v1", TASK_ID)
-
-
-def test_an_asset_passed_to_a_file_parameter_is_still_indexed_as_an_asset(
-    started: SqliteStore,
-) -> None:
-    """An `AssetRef` bound to a `file:` parameter hashes as the file it is.
-
-    The cache keys on content there and that payload cannot change without
-    invalidating every entry, so the asset's identity comes from the rendered
-    argument instead. Without that the ledger loses the `consumed` edge and
-    `why` reports the input as an anonymous digest.
-    """
-    _apply(
-        started,
-        _fixture(
-            "task_planned",
-            inputs={
-                "frame": {
-                    "type": "asset_ref",
-                    "asset": "table:rows",
-                    "version_id": "v1",
-                    "artifact_id": "artifact_abcdef",
-                }
-            },
-            input_hashes=[
-                {"param": "frame", "type": "file", "digest": "b3:abcdef"},
-            ],
-        ),
-    )
-
-    row = _row(started, "SELECT * FROM task_inputs")
-    assert row["digest"] == "b3:abcdef"
-    assert (row["asset_key"], row["asset_version_id"]) == ("table:rows", "v1")
-    assert row["artifact_id"] == "artifact_abcdef"
-    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
-    assert (edge["src_id"], edge["dst_id"]) == ("v1", TASK_ID)
-
-
 def test_a_hashed_input_with_no_rendered_value_still_gets_a_row(
     started: SqliteStore,
 ) -> None:
@@ -228,56 +167,10 @@ def test_replanning_replaces_the_inputs_rather_than_adding_to_them(
     _apply(started, _fixture("task_planned"))
     _apply(started, _fixture("task_planned", inputs={"columns": 4}))
 
-    rows = started.query("SELECT param FROM task_inputs ORDER BY param, position")
+    rows = started.query("SELECT param FROM task_inputs ORDER BY param")
     # "rows" came from the first plan and is gone; "table" is the hashed input
-    # the fixture carries either way, and it binds two assets so it holds two
-    # positions.
-    assert [row["param"] for row in rows] == ["columns", "table", "table"]
-
-
-def test_a_fan_in_parameter_gets_a_row_and_an_edge_per_asset(started: SqliteStore) -> None:
-    """Every asset bound to one parameter is recorded, not just the first (#264)."""
-    _apply(started, _fixture("task_planned"))
-
-    rows = started.query(
-        "SELECT position, asset_key, asset_version_id, value_summary FROM task_inputs "
-        "WHERE param = 'table' ORDER BY position"
-    )
-    edges = started.query("SELECT src_id FROM edges WHERE edge = 'consumed' ORDER BY src_id")
-
-    assert [(row["position"], row["asset_key"]) for row in rows] == [
-        (0, "table:rows"),
-        (1, "table:more_rows"),
-    ]
-    assert [row["src_id"] for row in edges] == ["v-abcdef", "v-bcdefa"]
-
-
-def test_an_event_recorded_before_the_list_shape_still_projects(started: SqliteStore) -> None:
-    """A ``task_planned`` written at ``v=1`` maps each parameter to one mapping.
-
-    Events are kept forever, so the projector reads the old shape rather than
-    the ledger being migrated to the new one.
-    """
-    _apply(
-        started,
-        _fixture(
-            "task_planned",
-            v=1,
-            asset_inputs={
-                "table": {
-                    "asset_key": "table:rows",
-                    "version_id": "v-abcdef",
-                    "artifact_id": "artifact-abcdef",
-                }
-            },
-        ),
-    )
-
-    rows = started.query("SELECT position, asset_key FROM task_inputs WHERE param = 'table'")
-    edge = _row(started, "SELECT * FROM edges WHERE edge = 'consumed'")
-
-    assert [(row["position"], row["asset_key"]) for row in rows] == [(0, "table:rows")]
-    assert edge["src_id"] == "v-abcdef"
+    # the fixture carries either way.
+    assert [row["param"] for row in rows] == ["columns", "table"]
 
 
 def test_task_started_opens_an_attempt(started: SqliteStore) -> None:
@@ -298,10 +191,19 @@ def test_task_completed_closes_the_task_and_indexes_its_outputs(started: SqliteS
     assert task["status"] == "succeeded"
     assert task["exit_code"] == 0
     assert task["cached"] == 0
-    assert json.loads(task["output_summary"])[0]["name"] == "table"
-    assert json.loads(task["extra"])["assets"]
+    assert json.loads(task["output_summary"])[0]["name"] == "return"
     output = _row(started, "SELECT * FROM task_outputs")
-    assert (output["name"], output["value_type"]) == ("table", "table")
+    assert (output["name"], output["value_type"], output["artifact_id"]) == (
+        "return",
+        "file",
+        "artifact_abcdef",
+    )
+    edge = _row(started, "SELECT * FROM edges WHERE edge = 'produced'")
+    assert (edge["src_id"], edge["dst_kind"], edge["dst_id"]) == (
+        TASK_ID,
+        "artifact",
+        "artifact_abcdef",
+    )
 
 
 def test_a_cache_hit_marks_the_task_cached(started: SqliteStore) -> None:

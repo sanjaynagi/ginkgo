@@ -17,7 +17,6 @@ from ginkgo import per_branch, shell, task
 from ginkgo.cli.commands.run import planned_task_rows
 from ginkgo.cli.renderers.common import _status_icon
 from ginkgo.cli.renderers.models import (
-    CliAssetSummary,
     CliNotebookSummary,
     CliRunSummary,
     FailureDetails,
@@ -34,7 +33,6 @@ from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import (
-    AssetMaterialized,
     EnvPrepareCompleted,
     EnvPrepareFailed,
     EnvPrepareStarted,
@@ -152,7 +150,6 @@ def test_ledger_only_events_are_ignored_silently() -> None:
         warnings.simplefilter("error")
         adapter(TaskPlanned(**task_scope))
         adapter(TaskAnnotated(**task_scope, fields={"env_lock": "envs/analysis.lock"}))
-        adapter(AssetMaterialized(**task_scope, asset_key="table:rows", version_id="v1"))
         adapter(PhaseTimed(run_id="r1", phase="validate", seconds=0.5))
         adapter(RunResourcesSampled(run_id="r1", resources={"cpu_percent": 1.0}))
 
@@ -665,7 +662,7 @@ def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
 
 
 def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
-    """Exit 3 is a finished run: its notebooks, assets and directory are real."""
+    """Exit 3 is a finished run: its notebooks and directory are real."""
     renderer, output = _renderer(tmp_path)
     html = tmp_path / "report.html"
     html.write_text("<html></html>", encoding="utf-8")
@@ -685,14 +682,11 @@ def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
             )
         ],
         notebooks=[CliNotebookSummary(task_label="survey", html_path=html)],
-        assets=[CliAssetSummary(name="table:rows")],
     )
 
     text = output.getvalue()
     assert "Notebooks materialised (1)" in text
     assert "survey" in text
-    assert "Assets materialised (1)" in text
-    assert "table:rows" in text
     assert "Run directory" in text
 
 

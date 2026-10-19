@@ -263,7 +263,7 @@ removes them.
 
 Notebook tasks support `.ipynb` execution through Papermill as well as marimo
 notebooks. The HTML export is recorded in provenance and appears in the
-[run report](assets.md). A notebook task can declare an `env` so the notebook
+[run report](reports.md). A notebook task can declare an `env` so the notebook
 runs against that environment's kernel.
 
 A marimo notebook reads its parameters with `mo.cli_args()`, which collects a
@@ -292,45 +292,43 @@ What happens to the task depends on whether that page would be its result:
   task caches as usual, so a later run that hits the cache reuses that
   placeholder page — and emits the notice again to say so.
 
-### Staging A `table`, `array`, Or `model` Asset For A Notebook
+### Staging A Python Value For A Notebook
 
-A notebook task's arguments cross into another process as text, so a `table`,
-`array`, or `model` asset cannot bind to one of its parameters: the payload has
-no text form, and the asset's artifact holds Ginkgo's encoding (Parquet, zarr, a
-model dump) rather than the file the parameter's name implies. Binding one is
-refused by name when the notebook task's inputs are resolved.
+A notebook task's arguments cross into another process as text, so a Python
+value such as a DataFrame, an array, or a fitted model cannot bind to one of its
+parameters: the payload has no text form. Passing one is refused by name when
+the notebook task's arguments are rendered.
 
 Do not reach for the path as a plain `str` instead. A literal path is just a
 string to Ginkgo: it creates no dependency edge, so the notebook can run before
 the file exists, and it stays out of the cache key, so the notebook serves a
 stale render after the upstream data changes.
 
-Put a small `python` task in between. It takes the payload — annotated `object`,
-so the ref is rehydrated into the live payload — writes the format the notebook
-expects, and returns that path as a `file` asset. The notebook task then
-consumes a real `file`, with the edge and the cache key that come with it:
+Put a small `python` task in between. It takes the value — annotated `object`
+or the payload's own type — writes the format the notebook expects, and returns
+that path as a `file`. The notebook task then takes a real `file`, with the
+edge and the cache key that come with it:
 
 ```python
 from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import Out, asset, file, flow, notebook, table, task
+from ginkgo import Out, file, flow, notebook, task
 
 
 @task()
-def differential_expression() -> object:
-    """Fit contrasts and register the result as a `table` asset."""
-    frame = fit_contrasts()
-    return table(frame, name="rnaseq/differential_expression")
+def differential_expression() -> pd.DataFrame:
+    """Fit contrasts and return the result table."""
+    return fit_contrasts()
 
 
 @task()
-def stage_de_csv(de_table: object, output_path: Out[file]) -> file:
-    """Write the `table` payload as the CSV the notebook reads."""
+def stage_de_csv(de_table: pd.DataFrame, output_path: Out[file]) -> file:
+    """Write the table as the CSV the notebook reads."""
     output = Path(output_path)
-    pd.DataFrame(de_table).to_csv(output, index=False)
-    return asset(output, name="rnaseq/de_csv")
+    de_table.to_csv(output, index=False)
+    return file(output)
 
 
 @task("notebook")
@@ -351,17 +349,12 @@ own output goes, which is not the same move as handing a path from one task to
 another: what the notebook depends on is `de_csv`, the value the staging task
 returns.
 
-`de_csv_path` arrives in the notebook as the staged CSV's artifact path, so the
-notebook's `parameters` cell can keep a hand-run default such as
-`de_csv_path = "results/de.csv"` and still read the tracked copy during a run.
-
 Writing the CSV inside the notebook task's own body does not work: the runner
-forwards *every* resolved argument to the notebook process, so the `table` still
-reaches the text boundary and is refused. If the bytes on disk, rather than the
-typed payload, are what downstream tasks want in the first place, skip the
-staging task and have the producer return `asset(csv_path)` directly. See
-[Consuming Assets Downstream](assets.md#consuming-assets-downstream) for which
-kinds bind a path.
+forwards *every* resolved argument to the notebook process, so the DataFrame
+still reaches the text boundary and is refused. If the bytes on disk, rather
+than the Python value, are what downstream tasks want in the first place, have
+the producer write the file and return `file(...)` directly, and skip the
+staging task.
 
 ## Subworkflow Tasks
 
@@ -569,13 +562,6 @@ def normalize_seed_card(
     return shell(cmd=...)
 ```
 
-`seed_card` stays plain `file` even though the upstream task returns an asset:
-a `file`/`folder` parameter receives the asset's bytes as a path (with the
-`AssetRef` reachable on `.asset`) — see
-[Consuming Assets Downstream](assets.md#consuming-assets-downstream). Widen it
-to `file | AssetRef` only to opt back into receiving the raw `AssetRef`
-itself.
-
 ```python
 norm_results = normalize_seed_card().map(
     seed_card=seed_cards,
@@ -637,7 +623,6 @@ task's actual `Out[...]` parameters.
   resolve Pixi and container environments.
 - [Caching and Provenance](caching-and-provenance.md) &mdash; how task
   boundaries become cache boundaries.
-- [Assets and Reports](assets.md) &mdash; return typed, versioned outputs
-  instead of plain files.
+- [Reports](reports.md) &mdash; render a finished run as an HTML report.
 - [Bioinformatics Workflow](../examples/bioinfo-workflow.md) &mdash; these
   patterns in a complete, runnable example.

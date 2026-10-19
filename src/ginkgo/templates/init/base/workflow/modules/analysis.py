@@ -79,8 +79,7 @@ def write_summary(
     items : list[str]
         Item identifiers for each fan-out branch.
     seed_cards : list[file]
-        Seed card assets. Each arrives as a path to the asset's bytes, with
-        the asset itself on ``.asset``.
+        Seed text artifacts.
     normalized_cards : list[file]
         Normalized text artifacts.
     checksums : list[file]
@@ -108,7 +107,7 @@ def write_summary(
         rows.append(
             {
                 "item": item,
-                "seed_card": seed_card.asset.key.name if seed_card.asset else str(seed_card),
+                "seed_card": str(seed_card),
                 "normalized_card": str(normalized_card),
                 "checksum": str(checksum),
                 "brief": str(brief),

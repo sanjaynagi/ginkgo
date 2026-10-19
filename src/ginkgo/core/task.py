@@ -197,8 +197,8 @@ class TaskDef:
         outcome, not a false collision.
         """
         # Imported lazily: ``core`` must not depend on ``runtime`` at module
-        # load time, only inside this property body (see similar lazy imports
-        # in ``ginkgo.core.asset`` and ``ginkgo.core.types``).
+        # load time, only inside this property body (see the similar import in
+        # ``ginkgo.core.source_hash``).
         from ginkgo.runtime.module_loader import cache_identity_module_name
 
         module = getattr(self.fn, "__module__", None) or ""

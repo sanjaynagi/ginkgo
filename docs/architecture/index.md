@@ -24,11 +24,10 @@ The repository currently implements:
   inspection and diagnostics through the CLI, all reading one event-sourced
   SQLite ledger at `.ginkgo/ginkgo.db`; each run directory keeps a
   `manifest.yaml` export of what that run did, for a person to read. The cache
-  index, the artifact records, the asset catalog and the remote-input staging
-  cache are tables in the same database — no file index survives — and
+  index, the artifact records and the remote-input staging cache are tables in the same database — no file index survives — and
   `ginkgo db check | prune | vacuum` maintain it
 - A read surface over that ledger — `ginkgo.query` in Python, and `runs`,
-  `history`, `lineage`, `export` and read-only `query` SQL from the CLI
+  `history`, `why`, `export` and read-only `query` SQL from the CLI
 - Remote task execution via Kubernetes (GKE, EKS, OKE) and GCP Batch, with
   per-task GPU/memory/CPU resource declarations, code-sync packaging, and
   full provenance integration
@@ -64,8 +63,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Execution Model](execution-model.md) — flow construction, dynamic DAG expansion, scheduling, remote references, worker-affine staging, execution backends.
 - [Task Model](task-model.md) — Python, shell, notebook, and script task kinds; path-oriented special types.
 - [Caching](caching.md) — cache keying, hashing, artifact store, and cache maintenance.
-- [Assets](assets.md) — asset catalog, wrapped asset sentinels (`table`/`array`/`fig`/`text`/`model`), and live-payload rehydration.
-- [Reporting](reporting.md) — static HTML report export, typed report data, asset previews, and bundle layout.
+- [Reporting](reporting.md) — static HTML report export, typed report data, and bundle layout.
 - [Value Transport](value-transport.md) — codec layer for cross-process task inputs/outputs.
 - [Configuration, Parameters, and Secrets](config-secrets.md) — config layering, `ginkgo.param` declarations and resolution, secret references, resolvers, and redaction.
 - [Provenance and Run State](provenance.md) — how a run is recorded, the read model, and the on-disk run layout.

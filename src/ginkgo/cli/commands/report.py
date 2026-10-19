@@ -26,10 +26,7 @@ def command_report(args) -> int:
     run_dir = summary.run_dir
 
     out_dir = _resolve_output_dir(run_dir=run_dir, out=args.out, single_file=args.single_file)
-    policy = SizingPolicy(
-        embed_full_assets=bool(args.embed_full_assets),
-        log_lines=int(args.max_log_lines) if args.max_log_lines else 80,
-    )
+    policy = SizingPolicy(log_lines=int(args.max_log_lines) if args.max_log_lines else 80)
 
     try:
         result = export_report(

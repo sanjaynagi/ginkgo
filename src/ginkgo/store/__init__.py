@@ -2,7 +2,7 @@
 
 Ginkgo records what a run did as an append-only sequence of runtime events in
 ``.ginkgo/ginkgo.db``, alongside projection tables — runs, tasks, cache
-entries, assets — derived from those events as they arrive. Bytes stay on
+entries — derived from those events as they arrive. Bytes stay on
 disk; only the index lives in SQL.
 
 This package deals in rows and SQL. It must not import from ``runtime/``,

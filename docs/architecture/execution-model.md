@@ -148,8 +148,8 @@ An ignored failure does not make the run a success. The task is recorded
 "stopped at the first failure" from "ran everything it could, and some of it
 failed". When the ignored failure leaves the workflow result unproducible, the
 evaluator raises `RootSkippedError` after the loop has drained; that is an
-outcome, not a crash, so the CLI reports the run normally — its notebooks and
-assets included, because they are real — and still exits 3. In phase 1 that is
+outcome, not a crash, so the CLI reports the run normally — its notebooks
+included, because they are real — and still exits 3. In phase 1 that is
 how a keep-going run with failures ends, since a flow's return value is
 downstream of its whole graph; the other limb, a run whose root outlives its
 ignored failures, is what phase 2's partial fan-in reaches.

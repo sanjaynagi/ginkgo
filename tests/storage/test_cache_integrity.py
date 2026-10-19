@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo import Out, evaluate, file, folder, shell, task
+from ginkgo import Out, evaluate, file, folder, shell, task, untracked
 from ginkgo.cli.commands.cache import _safe_rmtree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
@@ -959,3 +959,48 @@ class TestCachePruneReadOnly:
             _safe_rmtree(entry)
 
         assert not any(child.is_dir() for child in cache_root.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Unreadable entries
+# ---------------------------------------------------------------------------
+
+
+@task()
+def counted_square_task(log_path: untracked, value: int) -> int:
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write("run\n")
+    return value * value
+
+
+class TestUnreadableCacheEntry:
+    def test_an_entry_with_an_unknown_codec_tag_reruns_once_then_caches(self, tmp_path):
+        log_path = str(tmp_path / "runs.log")
+        evaluate(counted_square_task(log_path=log_path, value=3))
+
+        # Simulate an entry written by a codec this version no longer has.
+        (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
+        entry.write_text('{"__ginkgo_type__": "retired", "value": {}}', encoding="utf-8")
+
+        rerun = evaluate(counted_square_task(log_path=log_path, value=3))
+        collector = EventCollector()
+        cached = evaluate(counted_square_task(log_path=log_path, value=3), event_bus=collector.bus)
+
+        assert rerun == cached == 9
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
+        assert collector.cached()
+
+    def test_a_truncated_entry_reruns_once_then_caches(self, tmp_path):
+        log_path = str(tmp_path / "runs.log")
+        evaluate(counted_square_task(log_path=log_path, value=4))
+
+        (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
+        entry.write_text('{"__ginkgo_type__": "li', encoding="utf-8")
+
+        rerun = evaluate(counted_square_task(log_path=log_path, value=4))
+        collector = EventCollector()
+        cached = evaluate(counted_square_task(log_path=log_path, value=4), event_bus=collector.bus)
+
+        assert rerun == cached == 16
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
+        assert collector.cached()

@@ -20,7 +20,7 @@ extension would inform nobody.
 The metadata record for each artifact — kind, size, extension, where it was
 published — is a row in the ``artifacts`` table rather than a file beside the
 bytes, so one index answers "what is in the store" and a garbage collector can
-join it against the cache and asset tables in one query.
+join it against the cache tables in one query.
 """
 
 from __future__ import annotations

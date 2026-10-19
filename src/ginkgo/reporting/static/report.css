@@ -3,7 +3,7 @@
  * Plain, sleek document style: warm off-white neutrals, all-sans
  * headings and data text, a single dusk-blue accent, and JetBrains Mono
  * reserved for genuinely code-like content (params, logs, run ids,
- * text previews, the task graph).
+ * the task graph).
  *
  * Organised top-down: fonts, tokens, reset, layout, sidebar, main,
  * section components, utilities, responsive, print.
@@ -629,180 +629,6 @@ pre.log {
   font-weight: 600;
 }
 
-/* ========== Asset cards ========== */
-
-.asset-section {
-  margin: 22px 0 30px;
-}
-
-.asset-section h3 {
-  margin: 0 0 12px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.008em;
-  color: var(--ink-soft);
-}
-
-.asset {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  margin: 14px 0;
-  overflow: hidden;
-  scroll-margin-top: 20px;
-}
-
-.asset-head {
-  padding: 13px 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.asset-head .name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.asset-head .asset-link {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  margin-left: 6px;
-  text-decoration: none;
-  color: var(--accent);
-  opacity: 0;
-  transition: opacity 0.12s ease-in-out;
-}
-
-.asset:hover .asset-link,
-.asset:target .asset-link,
-.asset-head .asset-link:focus {
-  opacity: 1;
-}
-
-/* Without a pointer that hovers there is no way to reveal the link, so show it. */
-@media (hover: none) {
-  .asset-head .asset-link {
-    opacity: 1;
-  }
-}
-
-.asset:target {
-  border-color: var(--accent);
-}
-
-.asset-head .caption {
-  max-width: 680px;
-  margin: 5px 0 0 0;
-  color: var(--ink-soft);
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.asset-head .meta {
-  font-size: 11.5px;
-  color: var(--ink-muted);
-}
-
-.asset-body { padding: 16px 20px; }
-
-.kind-badge {
-  display: inline-block;
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  padding: 2px 8px;
-  margin-right: 10px;
-  vertical-align: middle;
-  border-radius: var(--radius);
-  border: 1px solid;
-}
-.kind-badge.kind-table { color: var(--warn);      border-color: var(--warn-line); background: var(--warn-soft); }
-.kind-badge.kind-fig   { color: var(--fail);      border-color: var(--fail-line); background: var(--fail-soft); }
-.kind-badge.kind-array { color: var(--cool);      border-color: var(--cool-line); background: var(--cool-soft); }
-.kind-badge.kind-text  { color: var(--ok);        border-color: var(--ok-line);   background: var(--ok-soft); }
-.kind-badge.kind-model { color: var(--cool);      border-color: var(--cool-line); background: var(--cool-soft); }
-.kind-badge.kind-file  { color: var(--ink-muted); border-color: var(--line);      background: transparent; }
-
-.check-badge {
-  display: inline-block;
-  font-size: 10px;
-  padding: 2px 7px;
-  margin-right: 6px;
-  vertical-align: middle;
-  border-radius: var(--radius);
-  border: 1px solid;
-}
-
-.check-badge.check-pass { color: var(--ok);   border-color: var(--ok-line);   background: var(--ok-soft); }
-.check-badge.check-fail { color: var(--fail); border-color: var(--fail-line); background: var(--fail-soft); }
-
-/* Data table in asset previews */
-
-.table-scroll {
-  max-height: 420px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-table.data {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-table.data th {
-  text-align: left;
-  padding: 7px 10px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--ink-muted);
-  font-weight: 500;
-  border-bottom: 1px solid var(--line-strong);
-  background: var(--panel);
-  position: sticky;
-  top: 0;
-}
-
-table.data td {
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--line-soft);
-  color: var(--ink-soft);
-  font-variant-numeric: tabular-nums;
-}
-
-table.data tr:last-child td { border-bottom: none; }
-
-.figure-wrap {
-  padding: 8px;
-  background: #FFFFFF;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-.figure-wrap img { max-width: 100%; height: auto; display: block; }
-.figure-wrap iframe { width: 100%; height: 560px; border: 0; background: #fff; }
-
-.text-preview {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  background: var(--panel-deep);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px 18px;
-  color: var(--ink-soft);
-  margin: 0;
-  max-height: 420px;
-  overflow: auto;
-}
-
 /* ========== Notebook card ========== */
 
 .notebook-card {
@@ -892,6 +718,5 @@ footer.fin .mark {
   main { padding: 24px; max-width: 100%; }
   h2 { page-break-before: always; }
   h2#summary { page-break-before: auto; }
-  .failure-card, .asset, .notebook-card, .stats, table.tbl { page-break-inside: avoid; }
-  .table-scroll, .text-preview { max-height: none; overflow: visible; }
+  .failure-card, .notebook-card, .stats, table.tbl { page-break-inside: avoid; }
 }

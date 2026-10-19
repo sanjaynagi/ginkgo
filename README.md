@@ -153,11 +153,7 @@ The docs and examples are centered on
 - Pixi-backed shell tasks
 - a container-backed shell task
 - `.map()` fan-out across samples
-- a local Python aggregation task
-- typed assets (`asset()`, `table()`) with data-quality checks
-- downstream consumption via `file | AssetRef`
-
-See the [assets guide](docs/site/guide/assets.md) for more on the asset system.
+- a local Python aggregation task that returns a DataFrame
 
 Run it with:
 
@@ -183,9 +179,8 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo history`
 - `ginkgo query`
 - `ginkgo export` (`export events`, `export manifest`)
-- `ginkgo asset` (`asset ls`, `asset versions`, `asset inspect`, `asset show`)
 - `ginkgo report`
-- `ginkgo models`
+- `ginkgo why`
 - `ginkgo notebooks`
 - `ginkgo secrets` (`secrets list`, `secrets validate`)
 - `ginkgo cache ls`

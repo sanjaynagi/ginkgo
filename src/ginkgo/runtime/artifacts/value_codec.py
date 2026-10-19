@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import io
 import logging
 import pickle
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from ginkgo.core.asset import AssetKind, AssetRef, AssetResult, is_picklable_by_reference
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.errors import GinkgoError
 
@@ -64,43 +62,6 @@ def encode_value(
 
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-
-    if isinstance(value, AssetRef):
-        return {"__ginkgo_type__": "asset_ref", "value": value.to_dict()}
-
-    if isinstance(value, AssetResult):
-        if value.kind == "file":
-            payload_encoded: Any = encode_value(
-                value.payload,
-                base_dir=base_dir,
-                artifact_store=artifact_store,
-                inline_limit=inline_limit,
-            )
-        else:
-            # Non-file asset payloads (DataFrames, arrays, figures, text
-            # bodies, trained models) need byte-exact round-trip so the
-            # driver-side registrar sees the producer's original Python
-            # object. The generic parquet encoder in ``_encode_bytes``
-            # silently turns a ``RangeIndex`` into a plain ``Index``,
-            # which would perturb downstream cache-key hashing and break
-            # cache reuse. Pickling the payload wholesale keeps type and
-            # metadata identity intact.
-            payload_encoded = {
-                "__ginkgo_type__": "pickled_payload",
-                "data": base64.b64encode(pickle.dumps(value.payload, protocol=5)).decode("ascii"),
-            }
-        return {
-            "__ginkgo_type__": "asset_result",
-            "name": value.name,
-            "group": value.group,
-            "caption": value.caption,
-            "kind": value.kind,
-            "sub_kind": value.sub_kind,
-            "metadata": dict(value.metadata),
-            "checks": _encode_asset_checks(checks=value.checks),
-            "kind_fields": dict(value.kind_fields),
-            "payload": payload_encoded,
-        }
 
     if isinstance(value, list):
         return {
@@ -196,32 +157,6 @@ def decode_value(
         return _decode_path_marker(marker_cls=file, payload=payload)
     if kind == "folder":
         return _decode_path_marker(marker_cls=folder, payload=payload)
-    if kind == "asset_ref":
-        return AssetRef.from_dict(payload["value"])
-    if kind == "asset_result":
-        raw_payload = payload["payload"]
-        if (
-            isinstance(raw_payload, dict)
-            and raw_payload.get("__ginkgo_type__") == "pickled_payload"
-        ):
-            decoded_payload = pickle.loads(base64.b64decode(raw_payload["data"]))
-        else:
-            decoded_payload = decode_value(
-                raw_payload,
-                base_dir=base_dir,
-                artifact_store=artifact_store,
-            )
-        return AssetResult(
-            payload=decoded_payload,
-            name=payload.get("name"),
-            group=payload.get("group"),
-            caption=payload.get("caption"),
-            kind=cast(AssetKind, payload.get("kind", "file")),
-            sub_kind=payload.get("sub_kind"),
-            metadata=dict(payload.get("metadata", {})),
-            checks=_decode_asset_checks(payload=payload.get("checks")),
-            kind_fields=dict(payload.get("kind_fields", {})),
-        )
     if kind == "tmp_dir":
         return tmp_dir(payload["value"])
     if kind == "list":
@@ -249,109 +184,68 @@ def decode_value(
         return _decode_binary_payload(
             payload=payload, base_dir=base_dir, artifact_store=artifact_store
         )
+
+    _reject_unknown_tag(payload)
     return payload
 
 
-def _encode_path_marker(*, kind: str, value: file | folder) -> dict[str, Any]:
-    """Encode a ``file``/``folder`` marker, carrying its ``.asset`` if set.
+def check_encoded(payload: Any) -> None:
+    """Raise if :func:`decode_value` could not read *payload*, without reading bytes.
 
-    A ``file``/``folder`` value bound to an asset upstream (rule #307)
-    carries the producing :class:`AssetRef` on ``.asset``; that attribute is
-    a plain Python instance attribute (``file``/``folder`` have no
-    ``__slots__``), which survives an in-process handoff for free but not a
-    pickle-free process-pool transport unless the codec carries it across
-    explicitly, which is what this does.
+    Walks the encoded structure and checks each tag, so a cache entry written
+    by a codec this version no longer has is diagnosable without loading the
+    artifacts behind it.
+
+    Parameters
+    ----------
+    payload : Any
+        Encoded payload from :func:`encode_value`.
+
+    Raises
+    ------
+    CodecError
+        If the payload carries a tag this codec cannot decode.
     """
-    encoded: dict[str, Any] = {"__ginkgo_type__": kind, "value": str(value)}
-    asset_ref = getattr(value, "asset", None)
-    if asset_ref is not None:
-        encoded["asset"] = asset_ref.to_dict()
-    return encoded
+    if not isinstance(payload, dict):
+        return
+    kind = payload.get("__ginkgo_type__")
+    if kind in {"list", "tuple"}:
+        for item in payload["items"]:
+            check_encoded(item)
+        return
+    if kind == "dict":
+        for item in payload["items"]:
+            check_encoded(item["key"])
+            check_encoded(item["value"])
+        return
+    if kind in {"file", "folder", "tmp_dir", "binary"}:
+        return
+    _reject_unknown_tag(payload)
+
+
+def _reject_unknown_tag(payload: dict[str, Any]) -> None:
+    """Raise for a tag no decoder branch handled.
+
+    Fuse markers pass through, mirroring ``encode_value``; the worker hydrates
+    them after decoding. Any other tag was written by a codec this version no
+    longer has, and returning it as a raw dict would hand the task a value it
+    never produced.
+    """
+    from ginkgo.remote.access.protocol import is_fuse_ref
+
+    kind = payload.get("__ginkgo_type__")
+    if kind is not None and not is_fuse_ref(payload):
+        raise CodecError(f"Unknown encoded value type: {kind!r}")
+
+
+def _encode_path_marker(*, kind: str, value: file | folder) -> dict[str, Any]:
+    """Encode a ``file``/``folder`` marker."""
+    return {"__ginkgo_type__": kind, "value": str(value)}
 
 
 def _decode_path_marker(*, marker_cls: type[file] | type[folder], payload: dict[str, Any]) -> Any:
-    """Decode a ``file``/``folder`` marker, restoring its ``.asset`` if present."""
-    marker = marker_cls(payload["value"])
-    asset_data = payload.get("asset")
-    if asset_data is not None:
-        marker.asset = AssetRef.from_dict(asset_data)
-    return marker
-
-
-def encoded_asset_refs(payload: Any) -> list[AssetRef]:
-    """Return every asset reference an encoded payload names, without decoding it.
-
-    Restoring a value through :func:`decode_value` needs the artifact store and
-    the bytes behind everything in it. Asking which asset versions the value
-    names does not: the refs are in the encoded form itself. That is what lets
-    an integrity check read a cache entry it could not otherwise load.
-
-    One blind spot, deliberately kept: a ref inside an ``asset_result``'s
-    pickled payload is invisible here, because seeing it would mean calling
-    ``pickle.loads`` on a file this function exists to inspect without
-    trusting. A reader that walks every entry in a workspace is the last place
-    to execute what an entry contains, so the check this feeds under-reports
-    rather than unpickles.
-    """
-    if isinstance(payload, list):
-        return [ref for item in payload for ref in encoded_asset_refs(item)]
-    if not isinstance(payload, dict):
-        return []
-    if payload.get("__ginkgo_type__") == "asset_ref":
-        return [AssetRef.from_dict(payload["value"])]
-    return [ref for item in payload.values() for ref in encoded_asset_refs(item)]
-
-
-def _encode_asset_checks(*, checks: tuple[Any, ...]) -> str:
-    """Encode asset checks for process and remote-result transport.
-
-    ``asset()`` already rejects a non-importable check before a task body
-    returns (see :func:`ginkgo.core.asset.is_picklable_by_reference`), so this
-    is normally unreachable for results built that way. It stays as a second
-    line of defense — e.g. an ``AssetResult`` built by hand rather than
-    through ``asset()`` — and names the offending check when it can.
-    """
-    for check in checks:
-        if callable(check) and not is_picklable_by_reference(check):
-            check_name = getattr(check, "__name__", type(check).__name__)
-            raise CodecError(
-                f"Asset check {check_name!r} is not an importable module-level "
-                "function. Asset checks must be importable module-level functions "
-                "when a task runs in a worker or remote executor: define "
-                f"{check_name!r} as a module-level function and pass it by name."
-            )
-    try:
-        data = pickle.dumps(checks, protocol=5)
-    except Exception as exc:
-        raise CodecError(
-            "Asset checks must be importable module-level functions when a task runs "
-            "in a worker or remote executor."
-        ) from exc
-    return base64.b64encode(data).decode("ascii")
-
-
-def _decode_asset_checks(*, payload: Any) -> tuple[Any, ...]:
-    """Decode asset checks from process and remote-result transport."""
-    if payload is None:
-        return ()
-    if not isinstance(payload, str):
-        raise CodecError("Encoded asset checks must be a base64 string.")
-
-    try:
-        checks = pickle.loads(base64.b64decode(payload))
-    except (
-        binascii.Error,
-        EOFError,
-        ImportError,
-        ValueError,
-        pickle.UnpicklingError,
-        TypeError,
-    ) as exc:
-        raise CodecError("Could not decode asset checks from a worker result.") from exc
-
-    if not isinstance(checks, tuple):
-        raise CodecError("Decoded asset checks must be a tuple.")
-    return checks
+    """Decode a ``file``/``folder`` marker."""
+    return marker_cls(payload["value"])
 
 
 def summarise_value(value: Any) -> Any:
@@ -366,21 +260,6 @@ def summarise_value(value: Any) -> Any:
 
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-    if isinstance(value, AssetRef):
-        return {
-            "type": "asset_ref",
-            "asset": str(value.key),
-            "version_id": value.version_id,
-            "artifact_id": value.artifact_id,
-        }
-    if isinstance(value, AssetResult):
-        return {
-            "type": "asset_result",
-            "kind": value.kind,
-            "name": value.name,
-            "group": value.group,
-            "caption": value.caption,
-        }
     if isinstance(value, list):
         return {
             "type": "list",
@@ -425,10 +304,6 @@ def summarise_value(value: Any) -> Any:
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:
     """Return the codec name and BLAKE3 digest for a Python value."""
-    if isinstance(value, AssetRef):
-        from ginkgo.core.hashing import hash_str
-
-        return "ginkgo.asset_ref", hash_str(value.version_id)
     if isinstance(value, np.ndarray) and value.dtype.hasobject is False:
         return "numpy.ndarray", _hash_numpy_array(value)
     if isinstance(value, pd.DataFrame):
@@ -450,7 +325,7 @@ def ensure_serializable(value: Any, *, label: str) -> None:
     """Validate that a value can be encoded by the Ginkgo codec registry."""
     if value is None or isinstance(
         value,
-        (bool, int, float, str, file, folder, tmp_dir, AssetRef, AssetResult),
+        (bool, int, float, str, file, folder, tmp_dir),
     ):
         return
 
@@ -575,9 +450,12 @@ def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
     portable across pandas/Python versions. The Parquet failure is logged
     rather than swallowed silently so the format downgrade is diagnosable.
     """
+    # ``index=None`` stores a ``RangeIndex`` as metadata so it decodes as a
+    # ``RangeIndex``; ``index=True`` would materialise it as an ``Index``,
+    # which hashes differently from the frame that was encoded.
     buffer = io.BytesIO()
     try:
-        value.to_parquet(buffer, index=True)
+        value.to_parquet(buffer, index=None)
     except Exception:
         logger.warning(
             "DataFrame could not be encoded as Parquet; falling back to "

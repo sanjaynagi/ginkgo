@@ -14,12 +14,7 @@ The current CLI supports:
 - `ginkgo export manifest`
 - `ginkgo secrets`
 - `ginkgo init`
-- `ginkgo asset ls`
-- `ginkgo asset versions`
-- `ginkgo asset show`
-- `ginkgo asset inspect`
-- `ginkgo models`
-- `ginkgo lineage`
+- `ginkgo why`
 - `ginkgo cache ls`
 - `ginkgo cache stats`
 - `ginkgo cache explain`
@@ -38,28 +33,15 @@ The current CLI supports:
 Implemented CLI features include the dry-run execution-plan preview, merged
 config overrides, human-readable run summaries, structured inspection and
 diagnostics, secret discovery and validation, cache inspection and eviction,
-failed-task debugging, and asset catalog inspection for local workspaces.
+failed-task debugging, and file provenance (`why`) for local workspaces.
 
-`asset versions`, `asset show`, and `asset inspect` resolve their key argument
-against the catalog rather than parsing it in isolation
-(`resolve_asset_key` in `cli/commands/asset.py`). A `<kind>:<name>` key is
-looked up directly; a bare `<name>` is searched across kinds, resolving when
-exactly one kind holds it and reporting the candidate keys when several do. An
-unknown key reports near matches from the catalog, so no lookup ever invents a
-kind the user did not use.
-
-`ginkgo lineage <asset-key[@version]>` walks the lineage edges around one asset
-version and renders them as a tree — `--downstream` for what came of it,
-`--depth N` to stop the walk, `--json` for the graph as data. Given a
-materialized file path or an artifact id in place of an asset key, it answers a
-different question with the same verb: which run and task produced those bytes,
-through which cache entry, and what that task consumed. Both readings are
-`ginkgo.query.Query.lineage` and `.why` underneath, and both open the database
-read-only. The consumed list prints one line per recorded input row, so a
-parameter handed several assets at once repeats its name down the list with a
-different asset each time; only its first line carries the rendered argument,
-its type and its digest, because those describe the whole argument rather than
-one asset inside it.
+`ginkgo why <path-or-artifact-id>` answers which run and task produced a
+materialized file's bytes, through which cache entry, and what that task
+recorded as its inputs — one line per parameter, with its digest or value
+summary. `--json` prints the same as data. It is `ginkgo.query.Query.why`
+underneath (`cli/commands/why.py`) and opens the database read-only. A path is
+resolved through `materializations`, then through the `task_outputs` row that
+carries the artifact id.
 
 `ginkgo runs` is where a recorded run is read. `runs ls` lists the run index
 with `--workflow`, `--status`, `--since` and `--limit` filters; `runs show`
@@ -128,7 +110,7 @@ by a leaf-anchored cascade — a task is checkable only while every upstream
 dependency is a confirmed cache hit — so a fully warm rerun previews as all
 `[cached]`. Probing a checkable task also validates its resolved arguments
 through the run's own `TaskValidator.validate_inputs` — cached upstream
-outputs included, so a kind/path mismatch such as a `table` asset bound to a
+outputs included, so a kind/path mismatch such as a DataFrame bound to a
 `file` parameter is provable before anything runs (#232). Each refusal is
 collected as a `PlanDiagnostic`, rendered under a red **Problems** section,
 and makes the command exit non-zero — in `--agent-output` mode each
@@ -300,7 +282,7 @@ of lines. Failures the policy let pass are diagnosed under their own heading,
 apart from the one that would otherwise have stopped the run, and are panelled
 up to a cap of ten with the rest counted — except the failure carrying the
 environment hint, which keeps its panel wherever it falls in that list. A run
-that ends this way still lists the notebooks and assets its surviving branches
+that ends this way still lists the notebooks its surviving branches
 produced: only the summary line differs from a success.
 `ginkgo doctor` reports the same user-code location under each diagnostic.
 

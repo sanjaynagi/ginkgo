@@ -1,7 +1,6 @@
 """Unit tests for the evaluator runtime."""
 
 from concurrent.futures import Future, ProcessPoolExecutor
-import json
 from pathlib import Path
 import re
 import shutil
@@ -14,12 +13,10 @@ import pandas as pd
 import pytest
 
 from ginkgo import (
-    AssetRef,
     NotebookDirective,
     Out,
     ScriptDirective,
     SubWorkflowDirective,
-    asset,
     evaluate,
     file,
     folder,
@@ -37,7 +34,6 @@ from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippe
 from ginkgo.runtime.executors import Executors
 from ginkgo.runtime.task_runners.notebook import NotebookTaskError
 from tests.conftest import EventCollector
-from ginkgo.runtime.artifacts.asset_store import AssetStore
 from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import (
     EventBus,
@@ -453,6 +449,12 @@ def dataframe_total_task(df: object) -> int:
 
 
 @task()
+def logged_dataframe_total_task(log_path: untracked, df: object) -> int:
+    append_line(log_path, "total")
+    return int(df["value"].sum())
+
+
+@task()
 def passthrough_task(value: object | None = None) -> object:
     return value
 
@@ -469,51 +471,6 @@ def reveal_secret_task(secret_value: str, output_path: Out[file]) -> file:
 def fail_with_secret_task(secret_value: str) -> str:
     print(f"task-secret:{secret_value}")
     raise RuntimeError(f"failure:{secret_value}")
-
-
-@task()
-def write_asset_task(output_path: untracked, text: str = "payload") -> file:
-    Path(output_path).write_text(text, encoding="utf-8")
-    return asset(output_path, name="prepared_data")
-
-
-@task()
-def transform_asset_task(source: object, output_path: untracked) -> file:
-    assert isinstance(source, AssetRef)
-    payload = Path(source.artifact_path).read_text(encoding="utf-8").upper()
-    Path(output_path).write_text(payload, encoding="utf-8")
-    return asset(output_path, name="transformed_data")
-
-
-@task()
-def read_asset_task(source: object, log_path: untracked) -> str:
-    assert isinstance(source, AssetRef)
-    Path(log_path).write_text(source.version_id, encoding="utf-8")
-    return Path(source.artifact_path).read_text(encoding="utf-8")
-
-
-@task(kind="shell")
-def shell_asset_task(output_path: str) -> file:
-    return shell(
-        cmd=f"printf 'shell-payload' > {output_path}",
-        output=asset(output_path, name="shell_asset"),
-    )
-
-
-@task(kind="shell")
-def shell_asset_with_payload_task(output_path: str, payload: str) -> file:
-    return shell(
-        cmd=f"printf '{payload}' > {output_path}",
-        output=asset(output_path, name="shell_payload_asset"),
-    )
-
-
-@task()
-def nested_asset_inputs_task(sources: list[object], output_path: str) -> str:
-    first = sources[0]
-    assert isinstance(first, AssetRef)
-    Path(output_path).write_text(first.version_id, encoding="utf-8")
-    return first.version_id
 
 
 @task()
@@ -1229,6 +1186,22 @@ class TestEvaluate:
         result = evaluate(dataframe_total_task(df=dataframe_task(log_path="df.log", start=4)))
 
         assert result == 17
+
+    def test_dataframe_consumer_stays_cached_when_producer_is_replayed(self):
+        # The producer's default RangeIndex must survive the cache round trip,
+        # or the replayed frame hashes differently and the consumer re-runs.
+        log_path = "dataframe-chain.log"
+
+        def build() -> object:
+            return logged_dataframe_total_task(
+                log_path=log_path, df=dataframe_task(log_path=log_path, start=5)
+            )
+
+        first = evaluate(build())
+        second = evaluate(build())
+
+        assert first == second == 21
+        assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["df:5", "total"]
 
     def test_validate_rejects_direct_expression_cycles(self):
         first = passthrough_task()
@@ -2113,185 +2086,6 @@ class TestSecrets:
         assert "super-secret" not in stderr_log.read_text(encoding="utf-8")
         recorder.finish()
         assert "super-secret" not in recorder.run_dir.manifest_path.read_text(encoding="utf-8")
-
-
-class TestAssets:
-    def test_python_asset_result_registers_catalog_and_lineage(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
-        evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=recorder.run_dir, event_bus=recorder.bus
-        )
-
-        result = evaluator.evaluate(
-            transform_asset_task(
-                source=write_asset_task(output_path="prepared.txt", text="hello"),
-                output_path="transformed.txt",
-            )
-        )
-
-        assert isinstance(result, AssetRef)
-        assert Path(result.artifact_path).read_text(encoding="utf-8") == "HELLO"
-        assert (tmp_path / "prepared.txt").is_file()
-        assert not (tmp_path / "prepared.txt").is_symlink()
-        assert (tmp_path / "transformed.txt").is_file()
-        assert not (tmp_path / "transformed.txt").is_symlink()
-
-        registered = {
-            task["assets"][0]["asset_key"]
-            for task in recorder.tasks().values()
-            if task.get("assets")
-        }
-        assert registered == {"file:prepared_data", "file:transformed_data"}
-
-        with AssetStore.for_reading(tmp_path / ".ginkgo" / "ginkgo.db") as catalog:
-            parents = catalog.parents_of(result.version_id)
-            assert len(parents) == 1
-            parent = catalog.version_by_id(parents[0])
-            assert parent is not None
-            assert parent.key.name == "prepared_data"
-
-        # The catalog row is the index; the ledger still records that each
-        # version came into being, with the parents it was built from.
-        recorder.recorder.flush()
-        with open_store(recorder.db, readonly=True) as store:
-            rows = store.query(
-                "SELECT asset_key, payload FROM events WHERE type = 'asset_materialized' "
-                "ORDER BY seq"
-            )
-        assert [row["asset_key"] for row in rows] == [
-            "file:prepared_data",
-            "file:transformed_data",
-        ]
-        downstream = json.loads(rows[1]["payload"])
-        assert downstream["version_id"] == result.version_id
-        assert [parent["asset_key"] for parent in downstream["parents"]] == ["file:prepared_data"]
-
-    def test_asset_ref_cache_identity_drives_downstream_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        expr = read_asset_task(
-            source=write_asset_task(output_path="prepared.txt", text="hello"),
-            log_path="consumer.log",
-        )
-
-        first_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
-        )
-        first_evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=first_recorder.run_dir, event_bus=first_recorder.bus
-        )
-        assert first_evaluator.evaluate(expr) == "hello"
-
-        second_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
-        )
-        second_evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=second_recorder.run_dir, event_bus=second_recorder.bus
-        )
-        assert second_evaluator.evaluate(expr) == "hello"
-
-        tasks = second_recorder.tasks()
-        statuses = [task["status"] for task in tasks.values()]
-        assert statuses == ["cached", "cached"]
-
-    def test_shell_task_can_register_asset_output(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-
-        result = evaluate(shell_asset_task(output_path="shell.txt"))
-
-        assert isinstance(result, AssetRef)
-        assert Path(result.artifact_path).read_text(encoding="utf-8") == "shell-payload"
-
-    def test_shell_rerun_leaves_writable_output_materialization(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-
-        first_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
-        )
-        first_evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=first_recorder.run_dir, event_bus=first_recorder.bus
-        )
-        first_result = first_evaluator.evaluate(
-            shell_asset_with_payload_task(output_path="shell.txt", payload="first")
-        )
-
-        assert isinstance(first_result, AssetRef)
-        assert (tmp_path / "shell.txt").is_file()
-        assert not (tmp_path / "shell.txt").is_symlink()
-
-        second_recorder = Ledger.start(
-            root=tmp_path, run_id=make_run_id(workflow_path=workflow_path)
-        )
-        second_evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=second_recorder.run_dir, event_bus=second_recorder.bus
-        )
-        second_result = second_evaluator.evaluate(
-            shell_asset_with_payload_task(output_path="shell.txt", payload="second")
-        )
-
-        assert isinstance(second_result, AssetRef)
-        assert Path(second_result.artifact_path).read_text(encoding="utf-8") == "second"
-        assert (tmp_path / "shell.txt").is_file()
-        assert not (tmp_path / "shell.txt").is_symlink()
-
-    def test_nested_asset_refs_are_serialized_in_cache_metadata(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        workflow_path = tmp_path / "workflow.py"
-        workflow_path.write_text("# placeholder\n", encoding="utf-8")
-        recorder = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=workflow_path))
-        evaluator = ConcurrentEvaluator(
-            jobs=1, cores=1, run_dir=recorder.run_dir, event_bus=recorder.bus
-        )
-
-        result = evaluator.evaluate(
-            nested_asset_inputs_task(
-                sources=[write_asset_task(output_path="prepared.txt", text="hello")],
-                output_path="asset_versions.txt",
-            )
-        )
-
-        tasks = recorder.tasks()
-        consumer_task = next(
-            task
-            for task in tasks.values()
-            if str(task["name"]).endswith(".nested_asset_inputs_task")
-        )
-        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
-            entry = index.entry(consumer_task["cache_key"])
-        assert entry is not None
-        inputs = entry["inputs"]
-
-        assert result
-        assert inputs["sources"]["type"] == "list"
-        first_item = inputs["sources"]["items"][0]
-        assert first_item["type"] == "asset_ref"
-        assert first_item["asset"] == "file:prepared_data"
 
 
 class TestValidation:

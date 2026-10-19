@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from ginkgo import file, table, task
+from ginkgo import file, task
 
 
 @task()
@@ -101,9 +101,7 @@ def enrich_orders(
     Returns
     -------
     pandas.DataFrame
-        Enriched order table. Wrapping with ``table(..., name=...)``
-        registers it as an asset so the UI and `ginkgo asset show` render
-        rich previews; downstream tasks still receive the plain DataFrame.
+        Enriched order table.
     """
     enriched = (
         orders.merge(customers, on="customer_id", how="left")
@@ -114,4 +112,4 @@ def enrich_orders(
     enriched["cost_basis"] = enriched["units"] * enriched["unit_cost"]
     enriched["gross_margin"] = enriched["gross_revenue"] - enriched["cost_basis"]
     enriched["priority_revenue"] = enriched["gross_revenue"].where(enriched["priority_flag"], 0.0)
-    return table(enriched, name="enriched_orders")
+    return enriched

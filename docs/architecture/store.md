@@ -2,9 +2,8 @@
 
 Ginkgo keeps one SQLite database per workspace, at `.ginkgo/ginkgo.db`
 (`WorkspaceLayout.db`, relocated by `GINKGO_DB=<path>`). It holds the index:
-what ran, what it consumed and produced, which cache entries and asset
-versions exist. Bytes — CAS blobs, cached `output.json`, logs, lockfiles,
-rendered notebooks — stay on disk.
+what ran, what it consumed and produced, which cache entries exist. Bytes — CAS
+blobs, cached `output.json`, logs, lockfiles, rendered notebooks — stay on disk.
 
 The package is `ginkgo/store/`. `core/` must not import it; `runtime/` and
 `cli/` may.
@@ -15,7 +14,7 @@ The store has two halves.
 
 - **The ledger.** One append-only `events` table. Each row is a runtime event
   from `runtime/events.py`: `run_id`, `ts`, `type`, `v`, the columns readers
-  filter and join on (`task_id`, `attempt`, `cache_key`, `asset_key`), and the
+  filter and join on (`task_id`, `attempt`, `cache_key`), and the
   whole payload as JSON. `seq` is assigned by SQLite, so insertion order is the
   order things happened. Because the payload is JSON, a new event type needs no
   migration.
@@ -25,34 +24,21 @@ The store has two halves.
   a cache of the ledger, never a second source of truth: if the two disagree,
   the ledger wins.
 
-The cache, asset and staging tables — `cache_entries`, `cache_artifacts`,
+The cache and staging tables — `cache_entries`, `cache_artifacts`,
 `artifacts`, `stat_index`, `materializations`, `digest_memo`,
-`env_materializations`, `asset_versions`, `asset_aliases`, `staging_entries` —
-are neither. They are **direct-write indexes** (`store/direct_index.py`), each
-owned entirely by one class that writes it synchronously: `CacheIndex`
-(`runtime/caching/index.py`) for the cache half, `AssetStore`
-(`runtime/artifacts/asset_store.py`) for the catalog, and `StagingIndex`
-(`remote/staging.py`) for downloaded remote inputs. That is deliberate. A cache
-save must be visible to the `load` that may follow it microseconds later, which
-an event queued for the writer thread cannot promise. Registering an asset
-version must read the parents registered moments earlier — possibly by a
-sibling task on another thread in the same run — to derive the child's
-`data_version`, and the projector is a pure function over one event that
-cannot query. In every case the facts held are not events that
-happened to a run; they are what the cache, the catalog and the staging cache
-currently hold.
+`env_materializations`, `staging_entries` — are neither. They are
+**direct-write indexes** (`store/direct_index.py`), each owned entirely by one
+class that writes it synchronously: `CacheIndex` (`runtime/caching/index.py`)
+for the cache half, and `StagingIndex` (`remote/staging.py`) for downloaded
+remote inputs. That is deliberate. A cache save must be visible to the `load`
+that may follow it microseconds later, which an event queued for the writer
+thread cannot promise, and the projector is a pure function over one event that
+cannot query. In both cases the facts held are not events that happened to a
+run; they are what the cache and the staging cache currently hold.
 
 Nothing else writes them, including the projector. `TaskCacheHit` updates the
 task's own row and leaves `hit_count` to the index, which counts the hit as it
-serves it. `AssetMaterialized` is appended to the ledger as the history of a
-version coming into being — and projected nowhere, because `AssetStore` has
-already written the row it would have written. `asset_versions` carries
-`code_version` and `data_version`; both are recorded and neither is yet read.
-See [Assets](assets.md).
-
-There is no `asset_keys` table. An asset key is the set of versions carrying
-it, so its latest version and its version count are questions about
-`asset_versions` and a summary row could only disagree with them.
+serves it.
 
 `env_materializations` records, per `(env_hash, host)`, the digest a *declared*
 environment actually installed as, whenever `CacheStore` observes one. A cache
@@ -74,10 +60,13 @@ Content-addressed identifiers — `cache_key`, `artifact_id`, `version_id`,
 renumbered, so a row means the same thing in every table it appears in.
 
 `edges` is the one graph table: `(run_id, src_kind, src_id, dst_kind, dst_id,
-edge)` over kinds `task | artifact | asset_version | run` and edges
-`depends_on | dynamic_depends_on | produced | consumed | derived_from |
-child_of`. Task dependencies, asset lineage and sub-workflow links are the same
-shape, so one query walks all of them.
+edge)` over kinds `task | artifact | run` and edges
+`depends_on | dynamic_depends_on | produced | child_of`. Task dependencies,
+the files a task produced and sub-workflow links are the same shape, so one
+query walks all of them. A `file` or `folder` output whose bytes the cache
+stored carries its `artifact_id` on its `TaskCompleted.outputs` entry, so its
+`task_outputs` row names the artifact and a `produced` task→artifact edge is
+written; that is what `ginkgo why` resolves through.
 
 ## Connections and pragmas
 
@@ -114,26 +103,28 @@ path and `GINKGO_DB`. Ginkgo never refuses to run there.
 
 `schema.py` holds `MIGRATIONS: list[tuple[int, str | Callable[[Connection],
 None]]]` and `migrate(conn)`, which applies the missing steps inside one
-transaction and records each in `schema_version`. Version 1 creates every
+transaction and records each in `schema_version`. The first step creates every
 table, including the ones later phases populate: one migration is easier to
-reason about than eight, and an empty table costs nothing. A shipped step is
-never edited — a schema change is another step. Version 2 is the first of
-those: it gives `artifacts` the `digest_hex` its records carry, and removes
-`cache_key_components` and the write-only columns of `digest_memo`, which held
-facts their own tables already had.
+reason about than eight, and an empty table costs nothing.
 
-Nothing in the phase that retired the file indexes needed a step: version 1
-already created `staging_entries` and `env_materializations`, so filling them
-was a matter of writing rows, not of changing the schema.
+Before 1.0 the schema is edited in place rather than migrated: a workspace is
+derived data, and carrying a step for every column change costs more than a
+cold cache. The schema is at version 3, and that is its first step — removing
+the asset catalog edited it in place. A database at a version `MIGRATIONS` has
+no step for (1 or 2, or a newer ginkgo's) is refused with
+`StaleWorkspaceError`, whose message names the workspace to delete; deleting
+`.ginkgo/` is the whole upgrade. A purely additive change, such as a nullable
+column, is cheap enough to step forward and gets a step of its own.
 
-`tests/store/fixtures/schema_v2.txt` is a snapshot of `sqlite_master` after the
-last migration. It is regenerated deliberately, as part of adding one, and a
-test migrates a version 1 database forward so the steps are exercised on a
-database that already exists rather than only on a fresh one.
+`tests/store/fixtures/schema.txt` is a snapshot of `sqlite_master` after the
+last migration. It is regenerated deliberately, as part of changing the
+schema, and tests check that a version 2 database and a newer one are both
+refused.
 
 ## Errors
 
-`StoreError`, `SchemaVersionError` and `StoreLockedError` are `GinkgoError`
+`StoreError`, `SchemaVersionError`, `StaleWorkspaceError` and
+`StoreLockedError` are `GinkgoError`
 subclasses, so the CLI prints the message and nothing else; each message names
 the database and the way out. A run whose ledger cannot be written fails —
 provenance never degrades silently.
@@ -151,17 +142,13 @@ provenance never degrades silently.
   notebooks of those runs are still on disk. It stays exit 0: nothing is
   corrupt, and no `db` subcommand can bring the ledger back. Each owner answers
   for its own half, in both directions:
-  - the cache — an entry row whose `output.json` is gone, an entry directory
-    with no row, a `cache_artifacts` row whose blob the artifact store lost;
+  - the cache — an entry row whose `output.json` is gone, an entry whose
+    `output.json` the codec cannot read ("has an unreadable output.json": cut
+    short, or written with an encoding this ginkgo no longer knows), an entry
+    directory with no row, a `cache_artifacts` row whose blob the artifact
+    store lost;
   - the artifact store — a row whose blob or tree manifest is missing, and a
     file in `blobs/` or `trees/` that no row (and no tree manifest) names;
-  - the cache and the asset catalog together — a cache entry whose stored
-    output would replay an `AssetRef` naming a version `asset_versions` has no
-    row for, and an entry whose `output.json` cannot be read at all
-    (`CacheStore.asset_reference_problems`). It walks the encoded form rather
-    than decoding it, so a ref inside a pickled `asset_result` payload is
-    invisible to it — a read-only check does not unpickle what it is
-    inspecting, and under-reports instead;
   - runs — a `runs` row with no run directory, and a run directory with no row;
   - the staging cache — a staged URI whose bytes are gone;
   - environments — a declared environment recorded as materializing two
@@ -237,21 +224,15 @@ database is what WAL is for, and every direct write is an `INSERT OR IGNORE` on
 a content-addressed key or an idempotent upsert, so the two writers cannot
 produce a row that disagrees with itself.
 
-The cache index and the asset catalog are two sets of tables, not two
-databases: inside a run the catalog is `AssetStore.attached_to(index)`, sharing
-the cache index's connection and its lock, so a save in one never waits on
-SQLite's write lock for a save in the other. Read paths do not construct either
-one: they open a `Query` and take `reader.catalog`, which is one catalog over
-the reader's own connection. A workspace with no database is opened with
-`query.open(missing_ok=True)` and reads an empty in-memory ledger rather than
-creating a file, so `asset ls`, `lineage`, `notebooks` and a report all answer
-an empty workspace with their own empty result instead of a missing-file
+A workspace with no database is opened with `query.open(missing_ok=True)` and
+reads an empty in-memory ledger rather than creating a file, so `why`,
+`notebooks` and a report all answer an empty workspace with their own empty
+result (or, for `why`, its own not-found error) instead of a missing-file
 error.
 
 Readers go through `ginkgo.query`, which opens read-only — including the cache
-readers `cache ls`, `cache explain` and `cache stats`, the asset readers
-`asset ls/versions/show/inspect`, `models`, the report, and `lineage`, and the
-run readers `runs ls/show`, `history`, `query` and `export`. No read path ever
+readers `cache ls`, `cache explain` and `cache stats`, the report, `why`, and
+the run readers `runs ls/show`, `history`, `query` and `export`. No read path ever
 opens a write connection, so listings work while a run is writing and can never
 migrate a database out from under one.
 

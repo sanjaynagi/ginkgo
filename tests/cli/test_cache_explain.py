@@ -100,13 +100,13 @@ def _component(explanation: dict[str, Any], name: str) -> dict[str, Any]:
 def _write_task_input(
     db_path: Path, *, run_id: str, task_id: str, param: str, tracking: str | None
 ) -> None:
-    """Record one position-0 ``task_inputs`` row with a tracking label."""
+    """Record one ``task_inputs`` row with a tracking label."""
     with open_store(db_path) as store, store.transaction():
         store.apply(
             [
                 ProjectionOp(
-                    sql="INSERT INTO task_inputs (run_id, task_id, param, position, tracking) "
-                    "VALUES (?, ?, ?, 0, ?)",
+                    sql="INSERT INTO task_inputs (run_id, task_id, param, tracking) "
+                    "VALUES (?, ?, ?, ?)",
                     params=(run_id, task_id, param, tracking),
                 )
             ]

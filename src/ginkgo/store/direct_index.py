@@ -1,22 +1,16 @@
 """The base of every index that writes its own rows.
 
 Most tables in the database are projections: the recorder's writer thread
-replays the event ledger into them and nothing else touches them. Two are not.
-The cache's rows and the asset catalog's rows are written *directly*, by the
-code that owns the fact, at the moment it becomes true — because a cache save
-has to be visible to the ``load`` that may follow it microseconds later, and an
-asset version's ``data_version`` is computed from parent rows written moments
-earlier by a sibling task.
+replays the event ledger into them and nothing else touches them. The cache's
+rows and the remote-input staging rows are not. They are written *directly*, by
+the code that owns the fact, at the moment it becomes true — because a cache
+save has to be visible to the ``load`` that may follow it microseconds later.
 
 A direct index is therefore a small thing: an open store, a lock so the
 evaluator's threads can share one connection, and a transaction helper. Opening
 one is a decision — to write (:meth:`open`), to read (:meth:`for_reading`), or
 to keep the rows to this process (:meth:`in_memory`) — because the first of
 those creates and migrates a database. Constructing one never does.
-
-Two indexes in one process share a connection with :meth:`attached_to` rather
-than opening a second: one SQLite connection with one lock in front of it is
-what keeps the evaluator's threads from waiting on each other's write locks.
 """
 
 from __future__ import annotations
@@ -37,25 +31,12 @@ class DirectIndex:
     Parameters
     ----------
     store : ProvenanceStore
-        An open store. The index owns it and closes it with :meth:`close`,
-        unless it was attached to another index's connection.
-    lock : threading.RLock | None
-        The lock guarding the connection. Passed only by :meth:`attached_to`,
-        which shares one lock across the indexes sharing one connection.
-    owns_store : bool
-        Whether :meth:`close` closes the connection.
+        An open store. The index owns it and closes it with :meth:`close`.
     """
 
-    def __init__(
-        self,
-        *,
-        store: ProvenanceStore,
-        lock: threading.RLock | None = None,
-        owns_store: bool = True,
-    ) -> None:
+    def __init__(self, *, store: ProvenanceStore) -> None:
         self._store = store
-        self._lock = lock if lock is not None else threading.RLock()
-        self._owns_store = owns_store
+        self._lock = threading.RLock()
 
     @classmethod
     def open(cls, *, path: Path, readonly: bool = False) -> Self:
@@ -97,29 +78,17 @@ class DirectIndex:
             return cls.in_memory()
         return cls.open(path=path, readonly=True)
 
-    @classmethod
-    def attached_to(cls, other: DirectIndex) -> Self:
-        """Return an index over *other*'s connection, sharing its lock.
-
-        Two indexes over one workspace are two sets of tables, not two
-        databases. Sharing the connection means a save in one never waits on
-        SQLite's write lock for a save in the other, and closing *other* closes
-        them both.
-        """
-        return cls(store=other._store, lock=other._lock, owns_store=False)
-
     @property
     def store(self) -> ProvenanceStore:
         """The store this index reads and writes."""
         return self._store
 
     def close(self) -> None:
-        """Release the connection, if this index owns it.
+        """Release the connection.
 
         Safe to call more than once.
         """
-        if self._owns_store:
-            self._store.close()
+        self._store.close()
 
     def __enter__(self) -> Self:
         return self

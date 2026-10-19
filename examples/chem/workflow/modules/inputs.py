@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import file, table, task
+from ginkgo import file, task
 
 
 @task()
@@ -51,9 +51,7 @@ def annotate_compounds(
     Returns
     -------
     pandas.DataFrame
-        Annotated compound table. Wrapping with ``table(..., name=...)``
-        registers it as an asset so the UI and `ginkgo asset show` render
-        rich previews; downstream tasks still receive the plain DataFrame.
+        Annotated compound table.
     """
     annotated = compounds.copy()
 
@@ -97,7 +95,7 @@ def annotate_compounds(
         ["series", "developability_score", "compound_id"],
         ascending=[True, False, True],
     ).reset_index(drop=True)
-    return table(sorted_annotated, name="annotated_compounds")
+    return sorted_annotated
 
 
 @task()

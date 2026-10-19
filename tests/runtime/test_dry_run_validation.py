@@ -1,8 +1,8 @@
 """#232 — a warm-cache dry run validates probe-resolved arguments.
 
-Once an upstream task is cached, the probe holds the real ``AssetRef`` its
-consumer would receive, so the run's own input validation can already prove a
-kind/path mismatch. The plan collects each refusal as a diagnostic instead of
+Once an upstream task is cached, the probe holds the real value its consumer
+would receive, so the run's own input validation can already prove a payload
+bound to a path. The plan collects each refusal as a diagnostic instead of
 reporting the doomed task as a plain ``[will run]``.
 """
 
@@ -15,7 +15,7 @@ import pytest
 from rich.console import Console
 
 import ginkgo
-from ginkgo import file, table, task, untracked
+from ginkgo import file, task, untracked
 from ginkgo.cli.app import main as cli_main
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.core.expr import record_constructed_calls
@@ -25,30 +25,29 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
 @task()
 def produce_summary(output_path: untracked) -> object:
-    """Write a CSV and return it as a ``table`` asset.
+    """Write a CSV and return its contents as a DataFrame.
 
-    ``output_path`` is annotated ``untracked``: it is a staging path for the
-    ``table`` asset built from it, not itself a tracked read or a declared
-    ``Out[...]`` write, so it must not be content-hashed — doing so would
-    make the key depend on whether the file happens to exist yet at
-    key-computation time (absent before the first run, present after),
-    self-invalidating on the very next probe or run.
+    ``output_path`` is annotated ``untracked``: it is a staging path, not a
+    tracked read or a declared ``Out[...]`` write, so it must not be
+    content-hashed — doing so would make the key depend on whether the file
+    happens to exist yet at key-computation time (absent before the first
+    run, present after), self-invalidating on the very next probe or run.
     """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"site": ["north", "south"], "count": [10, 20]}).to_csv(out, index=False)
-    return table(out, name="summary")
+    return pd.read_csv(out)
 
 
 @task()
 def consume_as_file(summary: file) -> str:
-    """A bare ``file`` parameter fed a table asset — always invalid."""
+    """A bare ``file`` parameter fed a DataFrame — always invalid."""
     return str(summary)
 
 
 @task()
 def consume_as_object(summary: object) -> str:
-    """The valid consumer for the same asset."""
+    """The valid consumer for the same value."""
     return str(type(summary))
 
 
@@ -83,7 +82,7 @@ def _plan_for(build):
 
 
 class TestWarmCacheDryRunValidation:
-    def test_a_cached_table_bound_to_file_is_a_diagnostic(
+    def test_a_cached_dataframe_bound_to_file_is_a_diagnostic(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -96,7 +95,7 @@ class TestWarmCacheDryRunValidation:
         assert len(plan.diagnostics) == 1
         diagnostic = plan.diagnostics[0]
         assert diagnostic.label.startswith("consume_as_file")
-        assert "annotated `file` but is a `table` asset" in diagnostic.message
+        assert "annotated `file` but received a pandas.DataFrame" in diagnostic.message
         statuses = {
             task.base_name: task.cache_status for wave in plan.waves for task in wave.tasks
         }
@@ -207,14 +206,14 @@ class TestWarmCacheDryRunValidation:
 
         assert "Problems — this run would fail" in text
         assert "consume_as_file" in text
-        assert "table" in text
+        assert "DataFrame" in text
 
 
 SWITCHED_WORKFLOW = """
 from pathlib import Path
 
 import pandas as pd
-from ginkgo import file, flow, param, table, task, untracked
+from ginkgo import file, flow, param, task, untracked
 
 mode = param("mode", default="produce")
 
@@ -224,7 +223,7 @@ def produce_summary(output_path: untracked) -> object:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"site": ["north"], "count": [1]}).to_csv(out, index=False)
-    return table(out, name="summary")
+    return pd.read_csv(out)
 
 
 @task()

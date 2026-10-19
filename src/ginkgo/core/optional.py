@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import final
 
-from ginkgo.core.asset import AssetResult
-
 
 @final
 @dataclass(frozen=True)
@@ -22,15 +20,15 @@ class OptionalOutput:
 
     Parameters
     ----------
-    payload : str | AssetResult
-        The wrapped output declaration, exactly as it would have been written
+    payload : str
+        The wrapped output path, exactly as it would have been written
         without the wrapper.
     """
 
-    payload: str | AssetResult
+    payload: str
 
 
-def optional(payload: str | AssetResult) -> OptionalOutput:
+def optional(payload: str) -> OptionalOutput:
     """Declare an output path that may be absent after the task runs.
 
     A present path is hashed, stored, restored, and validated like any other
@@ -40,8 +38,8 @@ def optional(payload: str | AssetResult) -> OptionalOutput:
 
     Parameters
     ----------
-    payload : str | AssetResult
-        The output path, or an asset wrapping one.
+    payload : str
+        The output path.
 
     Returns
     -------
@@ -51,19 +49,18 @@ def optional(payload: str | AssetResult) -> OptionalOutput:
     Raises
     ------
     TypeError
-        If the payload is already optional, or is not a path or asset.
+        If the payload is already optional, or is not a path string.
     """
     if isinstance(payload, OptionalOutput):
         raise TypeError("optional() must not be nested — wrap the path once")
 
     if isinstance(payload, Path):
         raise TypeError(
-            "optional() takes a path string or an asset, not a Path — "
-            f"pass str({payload!r}) instead"
+            f"optional() takes a path string, not a Path — pass str({payload!r}) instead"
         )
 
-    if not isinstance(payload, (str, AssetResult)):
+    if not isinstance(payload, str):
         received = f"{type(payload).__module__}.{type(payload).__name__}"
-        raise TypeError(f"optional() takes a path string or an asset, received a {received}")
+        raise TypeError(f"optional() takes a path string, received a {received}")
 
     return OptionalOutput(payload=payload)

@@ -474,8 +474,8 @@ key.
 The key hashes a sorted object with exactly these fields: the task name, the task
 `version`, the task `source_hash` (source plus local import closure), the
 resolved `inputs`, the declared `env`, and an `env_hash`. Each input is hashed by
-declared type: `file`/`folder` arguments are hashed by content, an `AssetRef`
-contributes its content hash, a remote reference contributes its object-store
+declared type: `file`/`folder` arguments are hashed by content, a remote
+reference contributes its object-store
 version id (staging first if needed), primitives are hashed from their `repr`,
 and any other object is hashed via the value codec. `tmp_dir` parameters are
 deliberately excluded. The `env_hash` is `None` when the task declares no env;
@@ -554,9 +554,8 @@ serialized return values are also offloaded here rather than inlined.
 
 Values crossing a task boundary go through a codec that turns a Python object
 into a JSON-safe payload tagged with a type marker. Primitives (`None`, `bool`,
-`int`, `float`, `str`) pass through as-is; `file`/`folder`/`tmp_dir`,
-`AssetRef`, and `AssetResult` get typed wrappers; and `list`/`tuple`/`dict` are
-encoded recursively. Anything else falls through to a binary encoder, which
+`int`, `float`, `str`) pass through as-is; `file`/`folder`/`tmp_dir` get typed
+wrappers; and `list`/`tuple`/`dict` are encoded recursively. Anything else falls through to a binary encoder, which
 serializes a NumPy array via `.npy`, a pandas DataFrame via Parquet (falling
 back to pickle), and every other object via `pickle` (protocol 5).
 
@@ -589,77 +588,27 @@ object that cannot be pickled fails. Ginkgo validates process-bound values up
 front and raises an error naming the offending value's type if it cannot be
 encoded, so unpicklable objects fail loudly rather than mid-transport.
 
-## Assets And Outputs
+## Outputs
 
-### What is an asset, and how is it different from an ordinary task return value?
+### How do I hand a DataFrame or other Python value to a notebook, script, or shell task?
 
-An asset is a typed, named, versioned task output, produced by returning
-`asset(...)` (or a typed helper) instead of a plain value. Where an ordinary
-`file` return is just bytes at a path, an asset also carries a *kind*, a stable
-*key* (`<kind>:<name>`, where the name is exactly what you passed as `name=`),
-a content hash, a producer task, and metadata, and it
-is registered in the catalog in `.ginkgo/ginkgo.db` and tracked across runs.
-Re-running a task that produces identical content adds a new *version* pointing
-at the same bytes, so the key stays a stable handle with full version history.
-Assets can also be consumed by downstream tasks; what the consumer receives —
-an `AssetRef` or the live payload — depends on its parameter annotation, which
-[Consuming Assets Downstream](guide/assets.md#consuming-assets-downstream)
-covers.
+Between `python` tasks a DataFrame, array, or any other picklable object passes
+as a plain value through the codec above. A notebook or script task forwards its
+arguments to another process as text, so a Python value has no form there and is
+refused by name. Put a small `python` task in between that writes the value to
+the format the notebook or script expects and returns it as a `file`; the
+downstream task then takes that `file`, with the dependency edge and the cache
+key that come with it. A shell task's body is Python, so it can take the value
+itself and write the file before building its command.
+[Staging A Python Value For A Notebook](guide/tasks-and-flows.md#staging-a-python-value-for-a-notebook)
+works this through end to end.
 
-### What asset kinds exist, and how does Ginkgo detect the kind?
+### How do I find out which task produced a file?
 
-The kinds are `file`, `table`, `array`, `fig`, `text`, and `model`. Ginkgo does
-not sniff the top-level kind from the payload — you choose it by calling the
-matching helper (`table()`, `array()`, `fig()`, `text()`, `model()`) or
-`asset(payload, kind=...)`. Within a kind, Ginkgo inspects the payload to pick a
-serialization *sub-kind*: for example `table()` accepts a
-pandas/polars/pyarrow/duckdb object or a `.csv`/`.tsv` path, and `model()`
-derives the framework from the payload's top-level module (or from an explicit
-`framework=`), falling back to stdlib `pickle` for any payload outside the five
-natively serialized frameworks — see
-[What `model()` accepts](guide/assets.md#what-model-accepts). A `file` asset expects a path-like payload and is the only kind
-that stores its bytes by copying the declared source path directly.
-
-### What are asset checks, and what happens to a run when a check fails?
-
-Checks are small data-quality functions passed as `checks=[...]`; each receives
-the wrapped payload and must return a `bool`. During registration Ginkgo runs
-every check *before* it writes the catalog version — if a check returns `False`,
-returns a non-bool, is not callable, or raises, Ginkgo raises `AssetCheckError`,
-which aborts registration and fails the producing task. This means a failed check
-leaves **no** asset version written for that asset. Passing outcomes are stored
-on the version under the `ginkgo_checks` metadata key and shown both on HTML
-report cards and by `ginkgo asset show`. Define checks as importable top-level
-functions (not lambdas or closures) so they survive transport to worker and
-remote execution, and note that checks are not re-run for cached assets.
-
-### How do captions and groups affect how assets appear in the report?
-
-`group` and `caption` are stored on the version under the `ginkgo_group` and
-`ginkgo_caption` metadata keys. Assets sharing a `group` are rendered together
-under a named heading in the HTML report, and assets without one fall under an
-"Ungrouped assets" section. The `caption` is shown as a short subtitle on the
-asset's report card and is also printed by `ginkgo asset show`.
-
-### How do I browse, inspect, and load a specific asset version from the CLI?
-
-The `ginkgo asset` command has four subcommands:
-
-```bash
-ginkgo asset ls                 # every asset key, its latest version, and version count
-ginkgo asset versions <key>     # full version history for one key
-ginkgo asset show <ref>         # kind-specific metadata: caption, check outcomes, schema/shape/metrics
-ginkgo asset inspect <ref>      # raw AssetVersion record, including the on-disk artifact path
-```
-
-A `<ref>` is an asset key with an optional version/alias selector resolved by the
-catalog; `<key>` is either the full `<kind>:<name>` printed by `ginkgo asset ls`
-or the bare `<name>`, which the catalog searches across kinds and asks you to
-qualify only when several kinds share it. There is no CLI subcommand that
-streams the payload bytes for you — `ginkgo asset inspect` prints the resolved
-artifact path so you can open the bytes directly, and within a workflow a
-downstream task loads a version through the `AssetRef` it receives. Separately,
-`ginkgo models [run_id]` lists model assets with their recorded metrics.
+`ginkgo why <path>` names the task and run that produced a materialized file,
+the cache entry that holds its bytes, and the inputs that task recorded. It also
+takes an artifact id, and `--json` emits the same as a structured payload. From
+Python, `ginkgo.query.Query.why` returns the same answer.
 
 ## Reports
 
@@ -677,14 +626,11 @@ ginkgo report <run_id> --open   # a specific run, opened in the browser
 
 The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
-with log tails, asset previews (tables, figures, arrays, text, model metrics)
-with any check outcomes, and links to rendered notebooks. By default it is
-written as a directory bundle at `.ginkgo/reports/<run-id>/` that you can open or
-share. Useful flags: `--single-file` (inline CSS, fonts, figures, and logs into
-one file), `--out <dir>`, `--embed-full-assets` (copy single-file artifact bytes
-into the bundle; directory-backed artifacts such as zarr are excluded),
-`--max-log-lines N` (default 80), and `--open`/`--no-open`. To list rendered
-notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
+with log tails, and links to rendered notebooks. By default it is written as a
+directory bundle at `.ginkgo/reports/<run-id>/` that you can open or share.
+Useful flags: `--single-file` (inline CSS, fonts and script into one file),
+`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. To
+list rendered notebook artifacts across runs from the terminal, use `ginkgo notebooks`.
 
 ## Failures And Retries
 

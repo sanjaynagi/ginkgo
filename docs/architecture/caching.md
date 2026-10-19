@@ -30,6 +30,12 @@ rows. There is no `meta.json`, no `refs/<id>.json`, no `stat_index.json`, no
 `materializations.json` and no `remote-staged.json` — each was a file index of
 facts the database now holds, and each is gone.
 
+An `output.json` the codec cannot decode — cut short, or carrying a
+`__ginkgo_type__` this ginkgo does not know, which raises `CodecError` — is a
+miss: `CacheStore` logs it, removes the entry's directory and rows, and the task
+re-runs.
+`ginkgo db check` reports such an entry as "has an unreadable output.json".
+
 Three classes divide the work, and the split is worth knowing before reading
 them:
 
@@ -270,8 +276,9 @@ hold:
   (`is_untracked_path_value` in `ginkgo/runtime/task_validation.py`, built from
   the `core/types.py` predicates rather than repeating them).
 
-An `AssetRef` never trips this: it is not path-like, and the cache keys it by
-version id, so a content change does invalidate the consumer.
+A remote reference never trips this: it is not path-like, and the cache keys
+it by version id (its `version` label), so a content change does invalidate the
+consumer.
 
 Arguments are walked in step with their resolved values, so a path reaching the
 task inside a list, tuple, dict, or fan-out `ExprList` — the ordinary fan-in
@@ -341,5 +348,5 @@ together: `--older-than` selects unconditionally, and `--max-size` /
 first rather than oldest first, with a never-hit entry counting as never used
 and age breaking ties. Age is not use — an old entry that hits on every run is
 worth more than a young one nothing has touched. Orphan artifacts are
-garbage-collected once at the end, against the union of what the cache and the
-asset catalog still reference.
+garbage-collected once at the end: an artifact no cache entry references is
+deleted.

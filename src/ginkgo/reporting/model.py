@@ -1,4 +1,4 @@
-"""Typed report data model built from provenance and the asset catalog.
+"""Typed report data model built from a run's provenance.
 
 The renderer consumes an immutable :class:`ReportData` instance. Every field
 is either a fixed label or a value derived from provenance — no generated
@@ -15,32 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ginkgo.core.asset import AssetKey, AssetVersion
-from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
-from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo import query
-from ginkgo.query import Query
-from ginkgo.runtime.artifacts.asset_store import AssetStore
-from ginkgo.runtime.caching.index import CacheIndex
-from ginkgo.runtime.artifacts.asset_registration import (
-    ASSET_CAPTION_METADATA_KEY,
-    ASSET_CHECKS_METADATA_KEY,
-    ASSET_GROUP_METADATA_KEY,
-)
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
-from ginkgo.wildcards import slug
-from ginkgo.workspace_layout import WorkspaceLayout
 
-from .sizing import (
-    LogTail,
-    SizingPolicy,
-    TablePreview,
-    TextPreview,
-    build_log_tail,
-    build_table_preview,
-    build_text_preview,
-)
+from .sizing import LogTail, SizingPolicy, build_log_tail
 
 
 # ----- Masthead and summary ---------------------------------------------
@@ -159,83 +137,6 @@ class FailureCard:
     log_relpath: str | None
 
 
-# ----- Assets ------------------------------------------------------------
-
-
-@dataclass(frozen=True, kw_only=True)
-class AssetStat:
-    """One row in an asset stats grid."""
-
-    key: str
-    value: str
-
-
-@dataclass(frozen=True, kw_only=True)
-class AssetPreview:
-    """Kind-specific preview payload.
-
-    Exactly one of the preview-kind fields is populated; the ``kind`` field
-    selects which.
-    """
-
-    kind: str  # "table" | "image" | "text" | "stats" | "iframe" | "missing" | "binary"
-    table: TablePreview | None = None
-    image_relpath: str | None = None
-    image_alt: str | None = None
-    text: TextPreview | None = None
-    text_format: str | None = None
-    iframe_relpath: str | None = None
-    stats: tuple[AssetStat, ...] = ()
-    message: str | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class CheckOutcome:
-    """One persisted result from an asset check.
-
-    Parameters
-    ----------
-    name : str
-        Human-readable check function name.
-    passed : bool
-        Whether the check passed.
-    """
-
-    name: str
-    passed: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class AssetCard:
-    """One asset version produced by the run.
-
-    ``anchor`` is the fragment id the card carries in the document, so a reader
-    can deep-link a single asset (``report.html#asset-fig-pca-plot``). It is
-    derived from the asset key and made unique across the whole report.
-    """
-
-    asset_key: str
-    anchor: str
-    name: str
-    caption: str | None
-    namespace: str
-    kind_label: str
-    kind_tone: str
-    artifact_id: str
-    meta_line: str
-    version_id: str
-    checks: tuple[CheckOutcome, ...]
-    preview: AssetPreview
-
-
-@dataclass(frozen=True, kw_only=True)
-class AssetSection:
-    """Named report section containing related asset cards."""
-
-    title: str
-    cards: tuple[AssetCard, ...]
-
-
 # ----- Notebook ----------------------------------------------------------
 
 
@@ -335,7 +236,6 @@ class ReportData:
     graph: Graph
     tasks: tuple[TaskRow, ...]
     failures: tuple[FailureCard, ...]
-    assets: tuple[AssetSection, ...]
     notebooks: tuple[NotebookCard, ...]
     environment: tuple[KVEntry, ...]
 
@@ -371,15 +271,6 @@ class ReportData:
 # Builder
 # ------------------------------------------------------------------------
 
-
-_KIND_TONE: dict[str, str] = {
-    "table": "table",
-    "array": "array",
-    "fig": "fig",
-    "text": "text",
-    "model": "model",
-    "file": "file",
-}
 
 _STATUS_TONE: dict[str, str] = {
     "succeeded": "ok",
@@ -427,10 +318,7 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "Results",
-        (
-            ("assets", "Assets"),
-            ("notebooks", "Notebooks"),
-        ),
+        (("notebooks", "Notebooks"),),
     ),
     (
         "Appendix",
@@ -443,7 +331,6 @@ def build_report_data(
     *,
     summary: RunSummary,
     workspace_label: str | None = None,
-    artifacts_root: Path | None = None,
     policy: SizingPolicy | None = None,
     ginkgo_version: str | None = None,
     generated_at: datetime | None = None,
@@ -457,11 +344,9 @@ def build_report_data(
     workspace_label : str | None
         Display label for the enclosing workspace. Inferred from the run
         directory's grandparent when omitted.
-    artifacts_root : Path | None
-        Root of the artifact store. Defaults to ``<workspace>/.ginkgo/artifacts``.
     policy : SizingPolicy | None
-        Per-kind size caps applied at export time. Defaults to
-        :class:`SizingPolicy` defaults.
+        Size caps applied at export time. Defaults to :class:`SizingPolicy`
+        defaults.
     ginkgo_version : str | None
         Version string to render in the footer. Inferred from installed
         package metadata when omitted.
@@ -484,44 +369,8 @@ def build_report_data(
 
     policy = policy or SizingPolicy()
     workspace_root = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
-    layout = WorkspaceLayout(root=workspace_root)
-    artifacts_root = artifacts_root if artifacts_root is not None else layout.artifacts
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
-
-    # A report is a read: it opens the ledger read-only through the same
-    # reader every other read path uses, and where a workspace has no database
-    # it reads an empty one rather than creating it.
-    with query.open(layout, missing_ok=True) as reader:
-        return _build(
-            summary=summary,
-            reader=reader,
-            run_dir=run_dir,
-            artifacts_root=artifacts_root,
-            workspace_label=workspace_label,
-            ginkgo_version=ginkgo_version,
-            generated_at=generated_at,
-            policy=policy,
-        )
-
-
-def _build(
-    *,
-    summary: RunSummary,
-    reader: Query,
-    run_dir: Path,
-    artifacts_root: Path,
-    workspace_label: str,
-    ginkgo_version: str,
-    generated_at: datetime | None,
-    policy: SizingPolicy,
-) -> ReportData:
-    """Assemble the report's sections against one open reader."""
-    artifact_store = (
-        LocalArtifactStore(root=artifacts_root, index=CacheIndex.attached_to(reader.catalog))
-        if artifacts_root.exists()
-        else None
-    )
 
     # Sections — each returns its typed pieces plus any copy instructions.
     artifact_copies: list[ArtifactCopy] = []
@@ -534,15 +383,8 @@ def _build(
         artifact_copies=artifact_copies,
     )
     graph = _build_graph(summary=summary, failures=failures)
-    assets = _build_assets(
-        summary=summary,
-        catalog=reader.catalog,
-        artifact_store=artifact_store,
-        policy=policy,
-        artifact_copies=artifact_copies,
-    )
     notebooks = _build_notebooks(summary=summary, run_dir=run_dir, artifact_copies=artifact_copies)
-    summary_cards = _build_summary_cards(summary=summary, assets=assets)
+    summary_cards = _build_summary_cards(summary=summary)
 
     status_raw = summary.status
     status_tone = _STATUS_TONE.get(status_raw, "warn")
@@ -595,7 +437,6 @@ def _build(
         graph=graph,
         tasks=tasks,
         failures=failures,
-        assets=assets,
         notebooks=notebooks,
         environment=environment,
         ginkgo_version=ginkgo_version,
@@ -691,7 +532,6 @@ _GRAPH_NODE_W = 150
 _GRAPH_NODE_H = 40
 _GRAPH_MARGIN_X = 24
 _GRAPH_MARGIN_Y = 24
-_DEFAULT_ASSET_SECTION_TITLE = "Ungrouped assets"
 
 
 def _build_graph(*, summary: RunSummary, failures: tuple[FailureCard, ...]) -> Graph:
@@ -882,429 +722,6 @@ def _first_log_path(*, task: TaskSummary, run_dir: Path) -> Path | None:
     return None
 
 
-# ----- Assets -------------------------------------------------------------
-
-
-def _build_assets(
-    *,
-    summary: RunSummary,
-    catalog: AssetStore,
-    artifact_store: LocalArtifactStore | None,
-    policy: SizingPolicy,
-    artifact_copies: list[ArtifactCopy],
-) -> tuple[AssetSection, ...]:
-    """Build asset cards for every asset referenced by this run.
-
-    A task reference cites ``(asset_key, version_id)``. Cached tasks replay
-    references to versions produced by earlier runs; the report still wants
-    to show those, so we resolve each ``(key, version_id)`` pair directly
-    rather than filtering on producer ``run_id``.
-    """
-    if artifact_store is None:
-        return ()
-
-    seen_version_ids: set[str] = set()
-    taken_anchors: set[str] = set()
-    cards_by_section: dict[str, list[AssetCard]] = {}
-
-    references: list[tuple[str, str]] = []
-    for task in summary.tasks:
-        for asset in task.assets:
-            key = asset.get("asset_key")
-            version_id = asset.get("version_id")
-            if isinstance(key, str) and isinstance(version_id, str):
-                references.append((key, version_id))
-
-    for key_text, version_id in references:
-        if version_id in seen_version_ids:
-            continue
-        seen_version_ids.add(version_id)
-        try:
-            version = catalog.get_version(key=AssetKey.parse(key_text), version_id=version_id)
-        except (FileNotFoundError, ValueError):
-            # A missing version or a manifest key that is not ``<kind>:<name>``
-            # only costs this report one card.
-            continue
-        card = _build_asset_card(
-            version=version,
-            anchor=_reserve_asset_anchor(
-                namespace=version.key.namespace,
-                name=version.key.name,
-                taken=taken_anchors,
-            ),
-            artifact_store=artifact_store,
-            policy=policy,
-            artifact_copies=artifact_copies,
-        )
-        if card is not None:
-            section_title = _asset_group_title(metadata=version.metadata)
-            cards_by_section.setdefault(section_title, []).append(card)
-
-    sections: list[AssetSection] = []
-    for title, cards in cards_by_section.items():
-        cards.sort(key=lambda card: (card.namespace, card.name))
-        sections.append(AssetSection(title=title, cards=tuple(cards)))
-    return tuple(sections)
-
-
-def _reserve_asset_anchor(*, namespace: str, name: str, taken: set[str]) -> str:
-    """Return the fragment id for one asset card, and record it in ``taken``.
-
-    The id is ``asset-`` followed by the slug of ``<namespace> <name>`` with the
-    slug's underscores rewritten as hyphens, so ``table:sales/by-region``
-    deep-links as ``#asset-table-sales-by-region``. A key holding nothing
-    alphanumeric slugs to nothing and lands on the bare ``asset``.
-
-    Two keys can reduce to the same slug — ``pca plot`` and ``pca-plot`` both
-    become ``pca-plot`` — so a later claimant takes a ``--2``, ``--3`` suffix.
-    The doubled hyphen is what makes that safe: :func:`slug` collapses each run
-    of non-alphanumerics to a single separator, so no key slugs to an id ending
-    in ``--2``, and a suffixed id can never shadow the id another asset would
-    claim for itself.
-    """
-    body = slug(f"{namespace} {name}").replace("_", "-")
-    base = f"asset-{body}" if body else "asset"
-    anchor = base
-    ordinal = 2
-    while anchor in taken:
-        anchor = f"{base}--{ordinal}"
-        ordinal += 1
-    taken.add(anchor)
-    return anchor
-
-
-def _build_asset_card(
-    *,
-    version: AssetVersion,
-    anchor: str,
-    artifact_store: LocalArtifactStore,
-    policy: SizingPolicy,
-    artifact_copies: list[ArtifactCopy],
-) -> AssetCard | None:
-    """Build one :class:`AssetCard` for a stored asset version."""
-    record = artifact_store.load_record(artifact_id=version.artifact_id)
-    path = _artifact_path(artifact_store=artifact_store, artifact_id=version.artifact_id)
-
-    namespace = version.key.namespace
-    preview = _build_preview(
-        namespace=namespace,
-        record=record,
-        path=path,
-        metadata=version.metadata,
-        policy=policy,
-        artifact_id=version.artifact_id,
-        artifact_copies=artifact_copies,
-    )
-
-    meta_line = _asset_meta_line(namespace=namespace, record=record, metadata=version.metadata)
-    kind_tone = _KIND_TONE.get(namespace, "file")
-
-    if policy.embed_full_assets and path is not None and path.is_file():
-        dest = f"artifacts/{version.artifact_id}{record.extension if record else ''}"
-        artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
-
-    return AssetCard(
-        asset_key=str(version.key),
-        anchor=anchor,
-        name=version.key.name,
-        caption=_asset_caption(metadata=version.metadata),
-        namespace=namespace,
-        kind_label=namespace,
-        kind_tone=kind_tone,
-        artifact_id=version.artifact_id,
-        meta_line=meta_line,
-        version_id=version.version_id,
-        checks=_asset_checks(metadata=version.metadata),
-        preview=preview,
-    )
-
-
-def _build_preview(
-    *,
-    namespace: str,
-    record: ArtifactRecord | None,
-    path: Path | None,
-    metadata: Mapping[str, Any],
-    policy: SizingPolicy,
-    artifact_id: str,
-    artifact_copies: list[ArtifactCopy],
-) -> AssetPreview:
-    """Dispatch to a kind-specific preview builder."""
-    if path is None or not path.exists():
-        return AssetPreview(kind="missing", message="Artifact content is unavailable.")
-
-    extension = (record.extension if record is not None else path.suffix).lower()
-
-    if namespace == "table":
-        preview = build_table_preview(path=path, extension=extension, policy=policy)
-        if preview is not None:
-            return AssetPreview(kind="table", table=preview)
-        return AssetPreview(
-            kind="binary",
-            message=f"Unable to parse {extension or 'artifact'} as a table.",
-        )
-
-    if namespace == "fig":
-        return _fig_preview(
-            path=path,
-            extension=extension,
-            artifact_id=artifact_id,
-            artifact_copies=artifact_copies,
-        )
-
-    if namespace == "text":
-        text_format = str(metadata.get("format") or "plain")
-        preview = build_text_preview(path=path, policy=policy)
-        if preview is not None:
-            return AssetPreview(kind="text", text=preview, text_format=text_format)
-        return AssetPreview(kind="binary", message="Unable to read text asset.")
-
-    if namespace == "array":
-        return AssetPreview(
-            kind="stats",
-            stats=_array_stats(metadata=metadata),
-            message="Array payload not inlined.",
-        )
-
-    if namespace == "model":
-        return AssetPreview(
-            kind="stats",
-            stats=_model_stats(metadata=metadata),
-            message="Model weights not inlined.",
-        )
-
-    # Fall-through: file assets get a lightweight preview based on extension.
-    return _file_preview(
-        path=path,
-        extension=extension,
-        artifact_id=artifact_id,
-        artifact_copies=artifact_copies,
-        policy=policy,
-    )
-
-
-_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
-
-
-def _image_preview(
-    *,
-    path: Path,
-    extension: str,
-    artifact_id: str,
-    artifact_copies: list[ArtifactCopy],
-    alt: str,
-) -> AssetPreview:
-    """Copy an image artifact into ``figures/`` and return an image preview."""
-    dest = f"figures/{artifact_id}{extension}"
-    artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
-    return AssetPreview(kind="image", image_relpath=dest, image_alt=alt)
-
-
-def _fig_preview(
-    *,
-    path: Path,
-    extension: str,
-    artifact_id: str,
-    artifact_copies: list[ArtifactCopy],
-) -> AssetPreview:
-    """Build a figure preview (image or embedded HTML)."""
-    if extension in _IMAGE_EXTENSIONS:
-        return _image_preview(
-            path=path,
-            extension=extension,
-            artifact_id=artifact_id,
-            artifact_copies=artifact_copies,
-            alt="figure",
-        )
-    if extension == ".html":
-        dest = f"figures/{artifact_id}.html"
-        artifact_copies.append(ArtifactCopy(source=path, dest_relpath=dest))
-        return AssetPreview(kind="iframe", iframe_relpath=dest)
-    return AssetPreview(kind="binary", message=f"Unsupported figure format: {extension}")
-
-
-def _file_preview(
-    *,
-    path: Path,
-    extension: str,
-    artifact_id: str,
-    artifact_copies: list[ArtifactCopy],
-    policy: SizingPolicy,
-) -> AssetPreview:
-    """Preview a generic file asset by extension."""
-    if extension in _IMAGE_EXTENSIONS:
-        return _image_preview(
-            path=path,
-            extension=extension,
-            artifact_id=artifact_id,
-            artifact_copies=artifact_copies,
-            alt="image",
-        )
-    if extension in {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".ndjson"}:
-        preview = build_table_preview(path=path, extension=extension, policy=policy)
-        if preview is not None:
-            return AssetPreview(kind="table", table=preview)
-    if extension in {".txt", ".log", ".md", ".yaml", ".yml", ".toml"}:
-        preview = build_text_preview(path=path, policy=policy)
-        if preview is not None:
-            return AssetPreview(kind="text", text=preview, text_format="plain")
-    return AssetPreview(kind="binary", message="Preview unavailable for this file type.")
-
-
-def _asset_meta_line(
-    *,
-    namespace: str,
-    record: ArtifactRecord | None,
-    metadata: Mapping[str, Any],
-) -> str:
-    """Build the right-hand meta line shown in the asset header."""
-    parts: list[str] = []
-    if namespace == "table":
-        sub_kind = metadata.get("sub_kind")
-        if isinstance(sub_kind, str):
-            parts.append(sub_kind)
-        rows = metadata.get("row_count")
-        cols = _column_count(metadata)
-        if rows is not None and cols is not None:
-            parts.append(f"{format_int(int(rows))} × {cols}")
-        byte_size = metadata.get("byte_size")
-        if isinstance(byte_size, int):
-            parts.append(format_bytes(byte_size))
-    elif namespace == "array":
-        sub_kind = metadata.get("sub_kind")
-        if isinstance(sub_kind, str):
-            parts.append(sub_kind)
-        shape = metadata.get("shape")
-        if shape is not None:
-            parts.append(f"shape {tuple(shape)}")
-        dtype = metadata.get("dtype")
-        if isinstance(dtype, str):
-            parts.append(dtype)
-        byte_size = metadata.get("byte_size")
-        if isinstance(byte_size, int):
-            parts.append(format_bytes(byte_size))
-    elif namespace == "fig":
-        source_format = metadata.get("source_format")
-        if isinstance(source_format, str):
-            parts.append(source_format)
-        dimensions = metadata.get("dimensions")
-        if isinstance(dimensions, (list, tuple)) and len(dimensions) == 2:
-            parts.append(f"{int(dimensions[0])} × {int(dimensions[1])}")
-        byte_size = metadata.get("byte_size")
-        if isinstance(byte_size, int):
-            parts.append(format_bytes(byte_size))
-    elif namespace == "text":
-        fmt = metadata.get("format")
-        if isinstance(fmt, str):
-            parts.append(fmt)
-        byte_size = metadata.get("byte_size")
-        if isinstance(byte_size, int):
-            parts.append(format_bytes(byte_size))
-        lines = metadata.get("line_count")
-        if isinstance(lines, int):
-            parts.append(f"{format_int(lines)} lines")
-    elif namespace == "model":
-        framework = metadata.get("framework")
-        if isinstance(framework, str):
-            parts.append(framework)
-        byte_size = metadata.get("byte_size")
-        if isinstance(byte_size, int):
-            parts.append(format_bytes(byte_size))
-    else:
-        if record is not None:
-            parts.append(format_bytes(record.size))
-
-    prefix = f"artifact_id: {record.artifact_id[:8] if record is not None else '—'}"
-    return " · ".join([prefix, *parts]) if parts else prefix
-
-
-def _column_count(metadata: Mapping[str, Any]) -> int | None:
-    """Extract a column count from table metadata when possible."""
-    schema = metadata.get("schema")
-    if isinstance(schema, list):
-        return len(schema)
-    if isinstance(schema, dict):
-        fields = schema.get("fields")
-        if isinstance(fields, list):
-            return len(fields)
-    return None
-
-
-def _metadata_stats(*, metadata: Mapping[str, Any], keys: tuple[str, ...]) -> list[AssetStat]:
-    """Return stat rows for the given metadata keys, in order.
-
-    Missing or ``None`` values are skipped; ``byte_size`` is rendered via
-    :func:`format_bytes`, everything else via ``str``.
-    """
-    stats: list[AssetStat] = []
-    for key in keys:
-        value = metadata.get(key)
-        if value is None:
-            continue
-        if key == "byte_size" and isinstance(value, int):
-            stats.append(AssetStat(key=key, value=format_bytes(value)))
-        else:
-            stats.append(AssetStat(key=key, value=str(value)))
-    return stats
-
-
-def _array_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
-    """Return a small stats grid for an array asset."""
-    keys = ("sub_kind", "shape", "dtype", "chunks", "coordinates", "byte_size")
-    return tuple(_metadata_stats(metadata=metadata, keys=keys))
-
-
-def _model_stats(*, metadata: Mapping[str, Any]) -> tuple[AssetStat, ...]:
-    """Return a small stats grid for a model asset, including any metrics."""
-    stats = _metadata_stats(metadata=metadata, keys=("sub_kind", "framework", "byte_size"))
-    metrics = metadata.get("metrics")
-    if isinstance(metrics, dict):
-        for name, value in metrics.items():
-            if isinstance(value, (int, float)):
-                stats.append(AssetStat(key=str(name), value=f"{float(value):.4g}"))
-    return tuple(stats)
-
-
-def _asset_group_title(*, metadata: Mapping[str, Any]) -> str:
-    """Return the report section title for one asset version."""
-    group = metadata.get(ASSET_GROUP_METADATA_KEY)
-    if isinstance(group, str) and group.strip():
-        return group.strip()
-    return _DEFAULT_ASSET_SECTION_TITLE
-
-
-def _asset_caption(*, metadata: Mapping[str, Any]) -> str | None:
-    """Return the report caption for one asset version."""
-    caption = metadata.get(ASSET_CAPTION_METADATA_KEY)
-    if isinstance(caption, str) and caption.strip():
-        return caption.strip()
-    return None
-
-
-def _asset_checks(*, metadata: Mapping[str, Any]) -> tuple[CheckOutcome, ...]:
-    """Extract well-formed asset check outcomes from version metadata."""
-    raw_checks = metadata.get(ASSET_CHECKS_METADATA_KEY)
-    if not isinstance(raw_checks, (list, tuple)):
-        return ()
-
-    outcomes: list[CheckOutcome] = []
-    for raw_outcome in raw_checks:
-        if not isinstance(raw_outcome, Mapping):
-            continue
-        name = raw_outcome.get("name")
-        passed = raw_outcome.get("passed")
-        if isinstance(name, str) and name and isinstance(passed, bool):
-            outcomes.append(CheckOutcome(name=name, passed=passed))
-    return tuple(outcomes)
-
-
-def _artifact_path(*, artifact_store: LocalArtifactStore, artifact_id: str) -> Path | None:
-    """Return the local artifact path when it exists."""
-    if not artifact_store.exists(artifact_id=artifact_id):
-        return None
-    return artifact_store.artifact_path(artifact_id=artifact_id)
-
-
 # ----- Notebooks ----------------------------------------------------------
 
 
@@ -1360,9 +777,7 @@ def _build_notebooks(
 # ----- Masthead / summary / environment ----------------------------------
 
 
-def _build_summary_cards(
-    *, summary: RunSummary, assets: tuple[AssetSection, ...]
-) -> tuple[StatCard, ...]:
+def _build_summary_cards(*, summary: RunSummary) -> tuple[StatCard, ...]:
     """Headline stats shown above the fold."""
     total_tasks = summary.task_count
     succeeded = summary.succeeded_count + summary.cached_count
@@ -1376,20 +791,6 @@ def _build_summary_cards(
     if failed:
         tasks_sub_parts.append(f"{failed} fail")
     tasks_sub = " · ".join(tasks_sub_parts) or "no tasks"
-
-    asset_namespaces: dict[str, int] = defaultdict(int)
-    asset_count = 0
-    for section in assets:
-        for card in section.cards:
-            asset_count += 1
-            asset_namespaces[card.namespace] += 1
-    assets_sub = (
-        " · ".join(
-            f"{count} {name}"
-            for name, count in sorted(asset_namespaces.items(), key=lambda item: -item[1])
-        )
-        or "—"
-    )
 
     failure_categories = [
         task.failure_kind for task in summary.failed_tasks if task.failure_kind is not None
@@ -1408,12 +809,6 @@ def _build_summary_cards(
             value=format_int(failed),
             sub=failure_sub,
             tone="fail" if failed else "neutral",
-        ),
-        StatCard(
-            label="Assets",
-            value=format_int(asset_count),
-            sub=assets_sub,
-            tone="neutral",
         ),
         StatCard(
             label="Cache hits",

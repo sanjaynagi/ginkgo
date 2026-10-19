@@ -8,7 +8,6 @@ pair, without duplicating its hashing logic.
 
 from __future__ import annotations
 
-from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.core.remote import RemoteFileRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.types import file, folder, tmp_dir, untracked
@@ -16,14 +15,9 @@ from ginkgo.remote.access.protocol import encode_fuse_ref
 from ginkgo.runtime.task_validation import label_input_value
 
 
-def _asset_ref() -> AssetRef:
-    return AssetRef(
-        key=AssetKey(namespace="table", name="producer.summary"),
-        version_id="v1",
-        kind="table",
-        artifact_id="abc123",
-        content_hash="def456",
-        artifact_path="/tmp/blobs/abc123",
+def _remote_ref() -> RemoteFileRef:
+    return RemoteFileRef(
+        uri="s3://bucket/key", scheme="s3", bucket="bucket", key="key", version_id="v1"
     )
 
 
@@ -64,22 +58,13 @@ class TestContentLabel:
         assert label_input_value(annotation=Any, value=str(path)) == "content"
 
 
-class TestAssetLabel:
-    def test_asset_ref_is_asset(self) -> None:
-        assert label_input_value(annotation=str, value=_asset_ref()) == "asset"
+class TestVersionLabel:
+    def test_remote_ref_is_version(self) -> None:
+        assert label_input_value(annotation=str, value=_remote_ref()) == "version"
 
-    def test_remote_ref_is_asset(self) -> None:
-        ref = RemoteFileRef(
-            uri="s3://bucket/key", scheme="s3", bucket="bucket", key="key", version_id="v1"
-        )
-        assert label_input_value(annotation=str, value=ref) == "asset"
-
-    def test_fuse_marker_is_asset(self) -> None:
-        ref = RemoteFileRef(
-            uri="s3://bucket/key", scheme="s3", bucket="bucket", key="key", version_id="v1"
-        )
-        marker = encode_fuse_ref(ref=ref, policy="fuse")
-        assert label_input_value(annotation=str, value=marker) == "asset"
+    def test_fuse_marker_is_version(self) -> None:
+        marker = encode_fuse_ref(ref=_remote_ref(), policy="fuse")
+        assert label_input_value(annotation=str, value=marker) == "version"
 
 
 class TestPathLabel:
@@ -154,9 +139,9 @@ class TestOutputLabel:
         path = tmp_path / "a.txt"
         assert label_input_value(annotation=file, value=str(path), is_output=True) == "output"
 
-    def test_output_wins_over_asset_ref_shape(self) -> None:
-        # is_output is checked before the AssetRef branch, mirroring _hash_value.
-        assert label_input_value(annotation=str, value=_asset_ref(), is_output=True) == "output"
+    def test_output_wins_over_remote_ref_shape(self) -> None:
+        # is_output is checked before the RemoteRef branch, mirroring _hash_value.
+        assert label_input_value(annotation=str, value=_remote_ref(), is_output=True) == "output"
 
 
 class TestUntrackedLabel:
@@ -197,10 +182,10 @@ class TestContainerCombination:
         b.write_text("y", encoding="utf-8")
         assert label_input_value(annotation=list[file], value=[str(a), str(b)]) == "content"
 
-    def test_value_beats_asset_in_a_mixed_list(self) -> None:
+    def test_value_beats_version_in_a_mixed_list(self) -> None:
         # Precedence surfaces the weaker-tracked element: "value" (a repr
-        # digest) is treated as less specific than "asset" (a version id).
-        assert label_input_value(annotation=list, value=[_asset_ref(), 5]) == "value"
+        # digest) is treated as less specific than "version" (a version id).
+        assert label_input_value(annotation=list, value=[_remote_ref(), 5]) == "value"
 
     def test_empty_container_is_value(self) -> None:
         assert label_input_value(annotation=list[str], value=[]) == "value"

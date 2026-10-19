@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from ginkgo import Out, file, folder, task, tmp_dir
-from ginkgo.core.asset import AssetKey, AssetRef
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 
@@ -24,11 +23,6 @@ def analyze(coords: str, threads: int, scratch: tmp_dir) -> str:
 @task()
 def read_file(data: file) -> str:
     return str(data)
-
-
-@task()
-def consume_asset(dataset: str) -> str:
-    return dataset
 
 
 @task()
@@ -130,19 +124,6 @@ class TestLabelCategories:
         target.write_bytes(b"payload")
         labels = store.label_inputs(task_def=read_file, resolved_args={"data": str(target)})
         assert labels == {"data": "content"}
-
-    def test_asset_ref_is_asset(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-        ref = AssetRef(
-            key=AssetKey(namespace="table", name="producer.dataset"),
-            version_id="v1",
-            kind="table",
-            artifact_id="abc123",
-            content_hash="def456",
-            artifact_path=str(tmp_path / "abc123"),
-        )
-        labels = store.label_inputs(task_def=consume_asset, resolved_args={"dataset": ref})
-        assert labels == {"dataset": "asset"}
 
     def test_out_parameter_is_output(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

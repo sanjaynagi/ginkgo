@@ -180,14 +180,17 @@ class TaskRetrying(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class TaskCompleted(TaskEvent):
-    """Task completion event."""
+    """Task completion event.
+
+    A ``file``/``folder`` entry in ``outputs`` names the ``artifact_id`` its
+    bytes were stored as.
+    """
 
     event: str = "task_completed"
-    v: int = 2
+    v: int = 3
     status: Literal["success", "cached"] = "success"
     cache_key: str | None = None
     outputs: list[dict[str, Any]] = field(default_factory=list)
-    assets: list[dict[str, Any]] = field(default_factory=list)
     output_summary: dict[str, Any] = field(default_factory=dict)
     resource_usage: dict[str, Any] = field(default_factory=dict)
     remote_job_id: str | None = None
@@ -199,35 +202,17 @@ class TaskPlanned(TaskEvent):
 
     Everything the cache key was computed from is on this event, so the ledger
     can answer "why did this re-run" without the cache index being intact.
-
-    ``asset_inputs`` carries the identity of every asset a parameter was
-    handed, in the order they were bound, captured where the argument was
-    resolved. The cache key hashes the asset's *content*, and by the time a
-    semantically typed parameter reaches the task the ref has already become a
-    DataFrame — so identity has to travel beside the hashes rather than be
-    recovered from them.
-
-    A parameter maps to a *list* of identities, because a fan-in consumer binds
-    N assets to one parameter and every one of them is a lineage parent (issue
-    #264). ``task_inputs`` is keyed ``(run_id, task_id, param, position)``, so
-    the projector writes one row per position.
-
-    Events recorded before ``v=2`` map each parameter to a single identity
-    mapping instead. The ledger keeps events forever, so both shapes stay
-    readable: the projector normalises them on the way in
-    (``store/projector.py``), which is the one place the difference is known.
     """
 
     event: str = "task_planned"
-    v: int = 2
+    v: int = 3
     inputs: dict[str, Any] = field(default_factory=dict)
     input_hashes: list[dict[str, Any]] = field(default_factory=list)
     input_labels: dict[str, str] = field(default_factory=dict)
-    """Per-parameter cache-tracking label (``content``, ``asset``, ``path``,
+    """Per-parameter cache-tracking label (``content``, ``version``, ``path``,
     ``value``, ``output``, ``untracked``) — see
     ``ginkgo.runtime.task_validation.label_input_value``. Metadata only: it
     never contributed to ``cache_key`` and cannot change it."""
-    asset_inputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     cache_key: str | None = None
     source_hash: str | None = None
     version: int | None = None
@@ -235,26 +220,6 @@ class TaskPlanned(TaskEvent):
     extra_source_hash: str | None = None
     dependency_ids: list[str] = field(default_factory=list)
     dynamic_dependency_ids: list[str] = field(default_factory=list)
-
-
-@dataclass(kw_only=True, frozen=True)
-class AssetMaterialized(TaskEvent):
-    """One asset version was written to the catalog by this task.
-
-    A version's metrics and its check outcomes travel in ``metadata``, where
-    the asset itself carries them; the sub-kind travels there too. Fields of
-    their own would have been a second place to look for the same facts.
-    """
-
-    event: str = "asset_materialized"
-    asset_key: str = ""
-    version_id: str = ""
-    kind: str = ""
-    artifact_id: str = ""
-    content_hash: str = ""
-    cache_key: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    parents: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(kw_only=True, frozen=True)

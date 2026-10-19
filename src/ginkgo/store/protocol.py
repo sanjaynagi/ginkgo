@@ -42,7 +42,7 @@ class StoredEvent:
         The event's discriminator, e.g. ``"task_completed"``.
     v : int
         The event class's schema version.
-    task_id, attempt, cache_key, asset_key
+    task_id, attempt, cache_key
         Set when the event carries them; ``None`` for run-level events.
     payload : str
         JSON text of the whole event payload.
@@ -55,7 +55,6 @@ class StoredEvent:
     task_id: str | None = None
     attempt: int | None = None
     cache_key: str | None = None
-    asset_key: str | None = None
     payload: str
 
 

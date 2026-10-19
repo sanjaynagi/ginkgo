@@ -22,7 +22,6 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Literal
 
-from ginkgo.core.asset import AssetRef, AssetVersion, collect_asset_refs
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
 from ginkgo.core.subworkflow import SubWorkflowResult
@@ -34,12 +33,7 @@ from ginkgo.params import ParamContext
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
-from ginkgo.core.types import (
-    is_path_shaped_annotation,
-    pair_elements_with_annotations,
-    tmp_dir,
-    unwrap_optional_annotation,
-)
+from ginkgo.core.types import tmp_dir
 from ginkgo.envs.container import is_container_env
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.edge_inference import (
@@ -52,12 +46,7 @@ from ginkgo.runtime.edge_inference import (
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
-from ginkgo.runtime.artifacts.asset_registration import AssetRegistrar, asset_index_for
-from ginkgo.runtime.artifacts.asset_store import AssetStore
-from ginkgo.runtime.artifacts.live_payloads import LivePayloadRegistry
 from ginkgo.runtime.artifacts.output_index import output_summary
-from ginkgo.runtime.artifacts.asset_kinds import REHYDRATABLE_KINDS
-from ginkgo.runtime.artifacts.asset_loaders import load_from_ref as load_wrapped_ref
 from ginkgo.runtime.caching.cache import MISSING, CacheStore
 from ginkgo.runtime.caching.node_cache import NodeCache
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
@@ -358,8 +347,6 @@ class NodeRun:
     secret_values: tuple[str, ...] = ()
     driver_directive: Any = None
     extra_source_hash: str | None = None
-    asset_versions: list[AssetVersion] = field(default_factory=list)
-    asset_inputs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     notebook_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
@@ -422,7 +409,6 @@ class ConcurrentEvaluator:
     profiler: ProfileRecorder | None = None
     constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
-    _asset_store: AssetStore = field(init=False, repr=False)
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
     _expr_nodes: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     _running_futures: dict[Future[Any], tuple[int, str]] = field(
@@ -510,9 +496,6 @@ class ConcurrentEvaluator:
             hash_memo=self._hash_memo,
             trust_mtimes=self.trust_mtimes,
         )
-        # The catalog shares the cache index's connection and lock: two sets of
-        # tables in one database, not two databases.
-        self._asset_store = AssetStore.attached_to(self._cache_index)
         self._staging_jobs = resolve_staging_jobs(jobs=self.jobs)
         self._digests = DigestRegistry()
         self._remote_dispatch = RemoteDispatchManager(
@@ -565,14 +548,6 @@ class ConcurrentEvaluator:
             db_path=WorkspaceLayout.for_cwd().db,
         )
         self._stager = RemoteStager(timing_recorder=self._record_task_timing)
-        self._live_payloads = LivePayloadRegistry()
-        self._asset_registrar = AssetRegistrar(
-            cache_store=self._cache_store,
-            asset_store=self._asset_store,
-            run_id_provider=lambda: self._run_id,
-            live_payloads=self._live_payloads,
-            emit_event=self._emit_event,
-        )
 
     @property
     def validator(self) -> TaskValidator:
@@ -1041,7 +1016,6 @@ class ConcurrentEvaluator:
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
-            asset_inputs=node.asset_inputs,
         )
         self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
@@ -1052,18 +1026,9 @@ class ConcurrentEvaluator:
 
         # For notebook/script tasks, eagerly evaluate the body to capture the
         # source hash of the underlying file and fold it into the cache key.
-        # The body runs before the node's cache identity is known, so it is
-        # handed the same rehydrated view of assets a cache miss would give
-        # it — ``resolved_args`` itself keeps the ``AssetRef`` the cache key
-        # is built from.
         extra_source_hash: str | None = None
         if node.task_def.kind in {"notebook", "script"}:
-            directive = node.task_def.fn(
-                **self._rehydrate_execution_args(
-                    task_def=node.task_def,
-                    resolved_args=resolved_args,
-                )
-            )
+            directive = node.task_def.fn(**resolved_args)
             node.driver_directive = directive
             extra_source_hash = directive.source_hash
 
@@ -1443,8 +1408,6 @@ class ConcurrentEvaluator:
         node.dynamic_dependency_ids.clear()
         node.secret_values = ()
         node.extra_source_hash = None
-        node.asset_versions = []
-        node.asset_inputs = {}
         # measured_resources is deliberately NOT reset: a retried attempt's
         # peak (an OOM kill under memory_retry_multiplier, say) is exactly
         # the number needed to right-size the task, so measurements span
@@ -1511,8 +1474,9 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="success",
                 cache_key=node.cache_key,
-                outputs=self._output_summary_for(node=node, value=value),
-                assets=self._asset_index_for(value=value),
+                outputs=self._output_summary_for(
+                    node=node, value=value, artifact_ids=artifact_ids
+                ),
                 resource_usage=self._resource_usage_for(node=node),
                 remote_job_id=node.remote_job_id,
             )
@@ -1532,16 +1496,8 @@ class ConcurrentEvaluator:
         stage_remote_refs: bool = True,
         existing_args: dict[str, Any] | None = None,
         tmp_paths: list[Path] | None = None,
-        asset_inputs: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        """Resolve concrete arguments for a task call.
-
-        *asset_inputs* is filled in as arguments resolve, with the identity of
-        every asset each parameter was handed. The resolved value keeps that
-        same ``AssetRef`` identity rather than the live payload it names —
-        see :meth:`_resolve_execution_args`, which rehydrates refs into the
-        payload a task body actually receives.
-        """
+        """Resolve concrete arguments for a task call."""
         resolved_args: dict[str, Any] = {} if existing_args is None else dict(existing_args)
         tmp_paths = [] if tmp_paths is None else tmp_paths
 
@@ -1560,28 +1516,6 @@ class ConcurrentEvaluator:
 
             if name in expr.args:
                 materialised = self._materialize(expr.args[name])
-                if asset_inputs is not None:
-                    refs = collect_asset_refs(materialised)
-                    if refs:
-                        # Every ref, not just the first: a fan-in consumer
-                        # binds N assets to one parameter and each is a
-                        # lineage parent — see TaskPlanned.asset_inputs.
-                        asset_inputs[name] = [
-                            {
-                                "asset_key": str(ref.key),
-                                "version_id": ref.version_id,
-                                "artifact_id": ref.artifact_id,
-                            }
-                            for ref in refs
-                        ]
-                # ``resolved_args`` keeps every ``AssetRef`` as-is, whatever
-                # the annotation: it is what the cache key is computed from
-                # (see ``node_cache.content_lookup``), and an ``AssetRef``
-                # hashes by its stable identity (asset key + version id)
-                # rather than by its live payload's pickled bytes, which can
-                # be non-deterministic (e.g. an sklearn model). Live objects
-                # are materialised later, only on a cache miss, in
-                # ``_resolve_execution_args``.
                 resolved_args[name] = materialised
                 continue
 
@@ -1607,79 +1541,18 @@ class ConcurrentEvaluator:
         return resolved_args
 
     def _resolve_execution_args(self, *, node: NodeRun) -> dict[str, Any]:
-        """Resolve runtime-only inputs: rehydrated assets and secret references.
+        """Resolve runtime-only inputs: secret references.
 
         Called only once a cache miss is confirmed (see ``_start_task_execution``),
-        so a cache hit never pays to rehydrate a live asset payload.
+        so a cache hit never resolves a secret it does not need.
         """
         assert node.resolved_args is not None
-        rehydrated = self._rehydrate_execution_args(
-            task_def=node.task_def,
-            resolved_args=node.resolved_args,
-        )
         if self.secret_resolver is None:
-            return rehydrated
+            return dict(node.resolved_args)
         return {
             name: resolve_secret_refs(value=value, resolver=self.secret_resolver)
-            for name, value in rehydrated.items()
+            for name, value in node.resolved_args.items()
         }
-
-    def _rehydrate_execution_args(
-        self,
-        *,
-        task_def: TaskDef,
-        resolved_args: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Replace wrapped ``AssetRef`` values with live payloads for execution.
-
-        Mirrors the path-shaped check in ``_resolve_task_args``: a
-        path-shaped annotation binds a filesystem path, so its ``AssetRef``
-        entries are converted to the ``file``/``folder`` value the path
-        implies (see ``_convert_path_shaped_refs``) rather than rehydrated
-        into a live object; every other parameter is rehydrated into the
-        live object the task body asked for.
-        """
-        rehydrated: dict[str, Any] = {}
-        for name, value in resolved_args.items():
-            parameter = task_def.signature.parameters.get(name)
-            annotation = task_def.type_hints.get(
-                name,
-                parameter.annotation if parameter is not None else Any,
-            )
-            rehydrated[name] = (
-                self._convert_path_shaped_refs(annotation=annotation, value=value)
-                if is_path_shaped_annotation(annotation)
-                else self._rehydrate_wrapped_refs(value=value)
-            )
-        return rehydrated
-
-    def _convert_path_shaped_refs(self, *, annotation: Any, value: Any) -> Any:
-        """Convert ``AssetRef`` values bound to a ``file``/``folder`` annotation.
-
-        Walks the same container shapes ``validate_annotated_value`` walks —
-        ``| None``, then ``list[...]``/``tuple[...]`` element-wise via
-        ``pair_elements_with_annotations`` — so every ``AssetRef`` that passed
-        validation there reaches :meth:`AssetRef.as_execution_value` here with
-        the same per-element annotation. A value that is not an ``AssetRef``
-        (a literal path, ``None``, a ``file``/``folder`` marker already) is
-        returned unchanged.
-        """
-        annotation, _ = unwrap_optional_annotation(annotation)
-        if value is None:
-            return None
-
-        if isinstance(value, AssetRef):
-            return value.as_execution_value(annotation=annotation)
-
-        if isinstance(value, (list, tuple)):
-            paired = pair_elements_with_annotations(annotation=annotation, value=value)
-            converted = [
-                self._convert_path_shaped_refs(annotation=item_annotation, value=item)
-                for item_annotation, item in paired
-            ]
-            return tuple(converted) if isinstance(value, tuple) else converted
-
-        return value
 
     def _materialize(self, value: Any) -> Any:
         """Materialize a nested value using completed task-node results."""
@@ -1711,44 +1584,6 @@ class ConcurrentEvaluator:
         if isinstance(value, dict):
             return {self._materialize(key): self._materialize(item) for key, item in value.items()}
 
-        return value
-
-    def _rehydrate_wrapped_refs(self, *, value: Any) -> Any:
-        """Replace wrapped ``AssetRef`` values with live Python payloads.
-
-        Recurses into lists, tuples, and dicts. ``AssetRef`` entries with a
-        wrapper kind (``table`` / ``array`` / ``text`` / ``model``) are
-        rehydrated either from the in-process live-payload cache
-        (zero-copy handoff) or from the on-disk loader as a fallback.
-        ``file`` and ``fig`` refs are left as-is: the former flow through
-        the existing file coercion path, and the latter carry binary
-        payloads that users rarely consume as live Python objects.
-
-        Callers decide whether to rehydrate at all:
-        ``_rehydrate_execution_args`` skips this entirely for a path-shaped
-        annotation, which binds a filesystem path rather than a live object.
-
-        Parameters
-        ----------
-        value : Any
-            The materialised argument value, possibly nesting ``AssetRef``.
-        """
-        if isinstance(value, AssetRef):
-            if value.kind in REHYDRATABLE_KINDS:
-                cached = self._live_payloads.get(artifact_id=value.artifact_id)
-                if cached is not None:
-                    return cached
-                return load_wrapped_ref(
-                    artifact_store=self._cache_store._artifact_store,
-                    asset_ref=value,
-                )
-            return value
-        if isinstance(value, list):
-            return [self._rehydrate_wrapped_refs(value=item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(self._rehydrate_wrapped_refs(value=item) for item in value)
-        if isinstance(value, dict):
-            return {key: self._rehydrate_wrapped_refs(value=item) for key, item in value.items()}
         return value
 
     def _dependencies_complete(self, dependency_ids: AbstractSet[int]) -> bool:
@@ -2367,14 +2202,13 @@ class ConcurrentEvaluator:
                 )
             value = self._inferred_return_value(node=node)
         coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
-        finalized = self._asset_registrar.materialize_results(node=node, value=coerced)
-        self._validator.validate_return_value(task_def=task_def, value=finalized)
+        self._validator.validate_return_value(task_def=task_def, value=coerced)
         if task_def.output_params:
             self._validator.validate_declared_outputs_written(
                 task_def=task_def,
                 resolved_args=node.execution_args or {},
             )
-        return finalized
+        return coerced
 
     def _inferred_return_value(self, *, node: NodeRun) -> Any:
         """Build a task's inferred return from its ``Out[...]`` parameters.
@@ -2617,13 +2451,6 @@ class ConcurrentEvaluator:
         # another process held the write lock for a save.
         self._cache_index.record_hit(cache_key)
         self._node_cache.propagate_known_digests(cache_key=cache_key)
-        # A hit publishes the same asset versions an execution would, so the
-        # catalog has to know them either way: their rows are what lineage
-        # resolves a consumed version through, and what keeps the artifact
-        # collector from treating an asset's bytes as orphaned (issue #263).
-        # Best-effort by contract — the registrar contains and logs its own
-        # failures, so a repair cannot cost the task its cache hit.
-        self._asset_registrar.reassert_cached_versions(value=value, cache_key=cache_key)
         node.result = value
         node.state = "completed"
         for path in node.tmp_paths:
@@ -2650,8 +2477,11 @@ class ConcurrentEvaluator:
                 display_label=node.display_label,
                 status="cached",
                 cache_key=cache_key,
-                outputs=self._output_summary_for(node=node, value=value),
-                assets=self._asset_index_for(value=value),
+                outputs=self._output_summary_for(
+                    node=node,
+                    value=value,
+                    artifact_ids=self._cache_store.load_artifact_ids(cache_key=cache_key),
+                ),
             )
         )
 
@@ -2678,9 +2508,6 @@ class ConcurrentEvaluator:
                 inputs=render_value(node.resolved_args or {}),
                 input_hashes=_input_hash_entries(node.input_hashes),
                 input_labels=dict(node.input_labels or {}),
-                asset_inputs={
-                    param: list(declared) for param, declared in node.asset_inputs.items()
-                },
                 cache_key=node.cache_key,
                 source_hash=node.task_def.cache_source_hash,
                 version=node.task_def.version,
@@ -2802,14 +2629,20 @@ class ConcurrentEvaluator:
         base_name = node.task_def.name.rsplit(".", 1)[-1]
         return f"{base_name}[{rendered}]"
 
-    def _output_summary_for(self, *, node: NodeRun, value: Any) -> list[dict[str, Any]]:
-        """Return a compact typed output summary for one task result."""
-        annotation = node.task_def.effective_return_annotation
-        return output_summary(annotation, value)
+    def _output_summary_for(
+        self,
+        *,
+        node: NodeRun,
+        value: Any,
+        artifact_ids: dict[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        """Return a compact typed output summary for one task result.
 
-    def _asset_index_for(self, *, value: Any) -> list[dict[str, Any]]:
-        """Return recorded asset summaries for one task result."""
-        return asset_index_for(value=value)
+        ``artifact_ids`` is the cache entry's output path to artifact id
+        mapping, so each stored ``file``/``folder`` output names its artifact.
+        """
+        annotation = node.task_def.effective_return_annotation
+        return output_summary(annotation, value, artifact_ids=artifact_ids)
 
     @property
     def _run_id(self) -> str:

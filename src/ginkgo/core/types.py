@@ -10,10 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import UnionType
-from typing import TYPE_CHECKING, Annotated, Any, TypeVar, Union, get_args, get_origin
-
-if TYPE_CHECKING:
-    from ginkgo.core.asset import AssetRef
+from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
 
 class file(str):
@@ -22,15 +19,7 @@ class file(str):
     Validated to exist on disk before task execution.  Return values declared
     as ``file`` are validated to exist after execution.  Cache key contribution
     is the BLAKE3 digest of file contents.
-
-    A ``file``-annotated parameter that receives an asset produced upstream
-    gets this marker pointing at the artifact's bytes rather than the
-    ``AssetRef`` itself — see ``AssetRef.as_execution_value``. ``asset``
-    carries that reference for callers that still want its metadata; it is
-    ``None`` for a plain path that names no asset.
     """
-
-    asset: "AssetRef | None" = None
 
 
 class folder(str):
@@ -38,12 +27,7 @@ class folder(str):
 
     Validated to exist and be a directory before execution.  Cache key
     contribution is the BLAKE3 digest of sorted recursive contents.
-
-    See ``file.asset``: a ``folder``-annotated parameter bound to an asset
-    carries the same ``.asset`` reference.
     """
-
-    asset: "AssetRef | None" = None
 
 
 class tmp_dir(str):
@@ -468,15 +452,15 @@ def is_path_like(value: Any) -> bool:
 #: improvisation is worse than the refusal. Shared by every message that sends
 #: a user to that pattern, so they say the same thing.
 STAGING_TASK_GUIDANCE = (
-    'A worked example is in the guide under Notebook Tasks, "Staging A `table`, '
-    '`array`, Or `model` Asset For A Notebook". Passing the path as a plain `str` '
-    "is not a safe substitute: a literal path creates no dependency edge, so the "
-    "task can run before the file is written and stays cached after it changes."
+    'A worked example is in the guide under Notebook Tasks, "Staging A Python '
+    'Value For A Notebook". Passing the path as a plain `str` is not a safe '
+    "substitute: a literal path creates no dependency edge, so the task can run "
+    "before the file is written and stays cached after it changes."
 )
 
 
-def path_binding_remedy(*, annotation_label: str, execution_mode: str | None) -> str:
-    """Return the way out of a kind/path mismatch, for this kind of consumer.
+def path_binding_remedy(*, execution_mode: str | None) -> str:
+    """Return the way out of a payload bound to a path, for this kind of consumer.
 
     A ``driver`` task forwards its arguments to an external command, which
     cannot take a Python payload however the parameter is annotated. Telling
@@ -486,8 +470,6 @@ def path_binding_remedy(*, annotation_label: str, execution_mode: str | None) ->
 
     Parameters
     ----------
-    annotation_label : str
-        ``"file"`` or ``"folder"`` — the annotation the value is bound to.
     execution_mode : str | None
         ``TaskDef.execution_mode`` of the consuming task, or ``None`` when
         the consumer is not known.
@@ -499,14 +481,10 @@ def path_binding_remedy(*, annotation_label: str, execution_mode: str | None) ->
     """
     if execution_mode == "driver":
         return (
-            f"Produce a `{annotation_label}` asset upstream with `asset(path)`, or write "
-            "the payload to the format the command expects in a separate `python` task "
-            f"and pass that path. {STAGING_TASK_GUIDANCE}"
+            "Write the payload to the format the command expects in a separate "
+            f"`python` task and pass that path. {STAGING_TASK_GUIDANCE}"
         )
-    return (
-        "Annotate it `object` (or the payload type) to receive the asset payload in a "
-        f"Python task, or produce a `{annotation_label}` asset upstream with `asset(path)`."
-    )
+    return "Annotate it `object` (or the payload type), or use a path."
 
 
 def require_path_value(
@@ -522,15 +500,6 @@ def require_path_value(
     and by cache-key hashing — both of which would otherwise stringify the
     value and report a path-syntax complaint about an object that was never
     meant to be a path.
-
-    An ``AssetRef`` passes when its artifact holds the payload's own bytes —
-    a ``file`` copied verbatim, a ``fig``'s native PNG/SVG/HTML, a ``text``
-    asset's raw UTF-8 — since such a path reads as the file it appears to be.
-    A kind whose serialiser writes Ginkgo's own encoding (``table`` as
-    Parquet, ``array`` as zarr/npy, ``model`` as a framework dump) is
-    refused: binding it to a path hands the task a serialized payload rather
-    than the bytes the path's name implies. Which side a kind falls on is
-    declared once, on its ``AssetKindSpec``.
 
     Parameters
     ----------
@@ -548,37 +517,11 @@ def require_path_value(
     Raises
     ------
     TypeError
-        When the value is an asset reference whose artifact is not readable
-        as the annotated path type, or any other non-path value.
+        When the value is not path-like.
     """
-    # Imported here because ``ginkgo.core.asset`` imports this module, and
-    # because the kind registry lives with the serialisers whose output it
-    # describes.
-    from ginkgo.core.asset import AssetRef
-    from ginkgo.runtime.artifacts.asset_kinds import artifact_encoding_for
-
-    if isinstance(value, AssetRef):
-        encoding = artifact_encoding_for(value.kind)
-        remedy = path_binding_remedy(
-            annotation_label=annotation_label, execution_mode=execution_mode
-        )
-        if encoding is None:
-            if annotation_label == "file" or value.kind == annotation_label:
-                return
-            # Native bytes, but a single file where a directory was asked for.
-            raise TypeError(
-                f"{label} is annotated `{annotation_label}` but is a `{value.kind}` asset "
-                f"({value.key}), whose artifact is a file rather than a directory. {remedy}"
-            )
-        raise TypeError(
-            f"{label} is annotated `{annotation_label}` but is a `{value.kind}` asset "
-            f"({value.key}). Its artifact holds {encoding}, not readable "
-            f"`{annotation_label}` bytes, so the task would read a serialized blob. "
-            f"{remedy}"
-        )
     if not is_path_like(value):
         received = f"{type(value).__module__}.{type(value).__name__}"
         raise TypeError(
             f"{label} is annotated `{annotation_label}` but received a {received}. "
-            f"Annotate it `object` (or the payload type), or use a path."
+            f"{path_binding_remedy(execution_mode=execution_mode)}"
         )

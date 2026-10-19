@@ -83,7 +83,7 @@ class TestOptionalConstruction:
 
     @pytest.mark.parametrize("payload", [None, 42, ["results/x.txt"]])
     def test_rejects_non_path_payload(self, payload: Any) -> None:
-        with pytest.raises(TypeError, match="takes a path string or an asset"):
+        with pytest.raises(TypeError, match="takes a path string"):
             optional(payload)
 
 

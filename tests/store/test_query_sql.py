@@ -156,7 +156,7 @@ def test_schema_names_every_table_and_its_columns(reader) -> None:
 
     assert schema["runs"][:3] == ("run_id", "workflow", "status")
     assert "name" in schema["tasks"]
-    assert {"events", "cache_entries", "asset_versions", "edges"} <= set(schema)
+    assert {"events", "cache_entries", "artifacts", "edges"} <= set(schema)
     assert not [table for table in schema if table.startswith("sqlite_")]
 
 

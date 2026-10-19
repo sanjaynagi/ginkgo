@@ -10,16 +10,11 @@ from pathlib import Path
 
 import ginkgo
 import pandas as pd
-from ginkgo import asset, file, flow, shell, table, task
+from ginkgo import file, flow, shell, task
 
 
 cfg = ginkgo.config("ginkgo.toml")
 samples = pd.read_csv(cfg["paths"]["samples_csv"])
-
-
-def _summary_has_records(payload: object) -> bool:
-    """Return whether a QC summary contains at least one sample record."""
-    return isinstance(payload, pd.DataFrame) and not payload.empty
 
 
 @task(env="bioinfo_tools", kind="shell")
@@ -32,49 +27,17 @@ def filter_fastq(sample_id: str, fastq_1: file, fastq_2: file, min_length: int) 
             f"seqkit seq -m {min_length} {fastq_1} -o {out_1} && "
             f"seqkit seq -m {min_length} {fastq_2} -o {out_2}"
         ),
-        output=[
-            asset(
-                out_1,
-                name=f"bioinfo/filtered_fastq/{sample_id}_r1",
-                metadata={"sample_id": sample_id, "read": "R1", "stage": "filter"},
-            ),
-            asset(
-                out_2,
-                name=f"bioinfo/filtered_fastq/{sample_id}_r2",
-                metadata={"sample_id": sample_id, "read": "R2", "stage": "filter"},
-            ),
-        ],
+        output=[out_1, out_2],
         log=f"logs/filter_{sample_id}.log",
     )
 
 
-def _display_name(path: file) -> str:
-    """Return the name a reader should see for an input path.
-
-    An input produced as an asset upstream points at its content-addressed
-    artifact; ``.asset.filename`` is the name its producer wrote it under.
-    """
-    if path.asset is not None and path.asset.filename is not None:
-        return path.asset.filename
-    return Path(path).name
-
-
 @task(env="bioinfo_tools", kind="shell")
 def fastq_stats(sample_id: str, fastq_1: file, fastq_2: file) -> file:
-    """Compute per-sample paired-end FASTQ QC metrics with seqkit.
-
-    seqkit reports each input's path in its ``file`` column. Those paths are
-    artifact-store blobs, so the column is rewritten to the logical filenames.
-    """
+    """Compute per-sample paired-end FASTQ QC metrics with seqkit."""
     output = f"results/qc/{sample_id}.stats.tsv"
-    rename = (
-        "awk -F '\\t' -v OFS='\\t' "
-        f"-v p1={shlex.quote(str(fastq_1))} -v n1={shlex.quote(_display_name(fastq_1))} "
-        f"-v p2={shlex.quote(str(fastq_2))} -v n2={shlex.quote(_display_name(fastq_2))} "
-        "'$1 == p1 {$1 = n1} $1 == p2 {$1 = n2} {print}'"
-    )
     return shell(
-        cmd=f"seqkit stats -T {fastq_1} {fastq_2} | {rename} > {output}",
+        cmd=f"seqkit stats -T {fastq_1} {fastq_2} > {output}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )
@@ -129,9 +92,7 @@ def build_summary(
     Returns
     -------
     pandas.DataFrame
-        QC summary table. Wrapping with ``table(..., name=...)`` registers
-        it as an asset so the UI and `ginkgo asset show` render rich
-        previews; downstream tasks still receive the plain DataFrame.
+        QC summary table.
     """
     # Merge QC stats.
     frames: list[pd.DataFrame] = []
@@ -147,13 +108,12 @@ def build_summary(
     counts = pd.concat(count_frames, ignore_index=True)
     summary = summary.merge(counts, on="sample_id", how="left")
 
-    # Keep the CSV on disk for external consumers that still read files
-    # directly; the wrapped asset below is the canonical catalog entry.
+    # Keep the CSV on disk for external consumers that read files directly.
     output = Path("results/summary.csv")
     output.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output, index=False)
 
-    return table(summary, name="qc_summary", checks=[_summary_has_records])
+    return summary
 
 
 @flow
