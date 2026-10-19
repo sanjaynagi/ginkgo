@@ -10,6 +10,7 @@ from ginkgo.remote.access.drivers.base import (
     DriverUnavailableError,
     MountFailedError,
     MountSpec,
+    unmount_fuse,
 )
 
 
@@ -74,9 +75,7 @@ class MountpointS3Driver:
 
     def unmount(self, *, mount_point: Path) -> None:
         """Unmount via ``fusermount -u`` (Linux) or ``umount`` (fallback)."""
-        from ginkgo.remote.access.drivers.gcsfuse import _generic_unmount
-
-        _generic_unmount(mount_point=mount_point)
+        unmount_fuse(mount_point=mount_point)
 
 
 def _find_binary() -> str | None:

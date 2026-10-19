@@ -16,16 +16,10 @@ from ginkgo.envs.container import build_container_environment
 from ginkgo.envs.pixi import build_pixi_environment
 from ginkgo.plugins.api import (
     EnvironmentType,
-    MountDriverType,
-    ObjectStoreType,
     Plugin,
     SecretBackendType,
     TaskKind,
 )
-from ginkgo.remote.access.drivers.gcsfuse import GcsFuseDriver
-from ginkgo.remote.access.drivers.rclone import RcloneDriver
-from ginkgo.remote.access.drivers.s3 import MountpointS3Driver
-from ginkgo.remote.resolve import build_gcs_store, build_oci_store, build_s3_store
 from ginkgo.runtime.environment.secrets import build_env_backends
 from ginkgo.runtime.task_runners.notebook import build_notebook_runner
 from ginkgo.runtime.task_runners.script import build_script_runner
@@ -37,12 +31,6 @@ __all__ = ["BUILTIN"]
 BUILTIN = Plugin(
     name="ginkgo",
     contributions=(
-        ObjectStoreType(scheme="s3", build=build_s3_store),
-        ObjectStoreType(scheme="oci", build=build_oci_store),
-        ObjectStoreType(scheme="gs", build=build_gcs_store),
-        MountDriverType(scheme="gs", build=GcsFuseDriver),
-        MountDriverType(scheme="s3", build=MountpointS3Driver),
-        MountDriverType(scheme="oci", build=RcloneDriver),
         SecretBackendType(name="env", build=build_env_backends),
         EnvironmentType(name="pixi", schemes=("",), label="pixi", build=build_pixi_environment),
         EnvironmentType(

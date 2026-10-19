@@ -1,9 +1,13 @@
-"""Remote storage backends built on filesystem adapters."""
+"""The shared base for object stores built on fsspec filesystems.
+
+Store plugins (ginkgo-aws, ginkgo-gcp, ginkgo-oci) subclass
+:class:`FsspecBackend` and supply only the filesystem; the base provides
+metadata, downloads, uploads, listing, timeouts and the auth-error retry.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -43,8 +47,8 @@ def _run_with_timeout(fn: Any, *, timeout: float = _OPERATION_TIMEOUT_SECONDS) -
 class FsspecBackend:
     """Base class for fsspec-based remote storage backends.
 
-    Subclasses must implement ``_get_filesystem()`` and set ``self._scheme``
-    to the URI scheme they handle (e.g. ``"s3"``, ``"oci"``, ``"gs"``).
+    Subclasses implement ``_get_filesystem()`` and pass the URI scheme they
+    handle to ``__init__``.
 
     Auth errors (expired tokens, revoked credentials) trigger a single
     filesystem rebuild and retry, mirroring the ``_RefreshingApi`` pattern
@@ -146,124 +150,6 @@ class FsspecBackend:
             return _list_results_to_meta(scheme=self._scheme, results=found)
 
         return self._call_with_retry(_do)
-
-
-class S3FileSystemBackend(FsspecBackend):
-    """S3 backend implemented with ``s3fs``.
-
-    Parameters
-    ----------
-    region : str | None
-        AWS region override.
-    """
-
-    def __init__(self, *, region: str | None = None) -> None:
-        super().__init__(scheme="s3")
-        self._region = region
-
-    def _get_filesystem(self) -> Any:
-        if self._filesystem is not None:
-            return self._filesystem
-
-        try:
-            import s3fs
-        except ImportError as exc:
-            raise ImportError(
-                "s3fs is required for S3 remote storage support. Install it with: pip install s3fs"
-            ) from exc
-
-        client_kwargs: dict[str, Any] = {}
-        if self._region is not None:
-            client_kwargs["region_name"] = self._region
-
-        kwargs: dict[str, Any] = {}
-        if client_kwargs:
-            kwargs["client_kwargs"] = client_kwargs
-
-        self._filesystem = s3fs.S3FileSystem(**kwargs)
-        return self._filesystem
-
-
-class OCIFileSystemBackend(FsspecBackend):
-    """OCI Object Storage backend implemented with ``ocifs``.
-
-    Parameters
-    ----------
-    config_path : str | None
-        Path to the OCI config file.
-    profile : str | None
-        OCI config profile name.
-    region : str | None
-        OCI region override.
-    """
-
-    def __init__(
-        self,
-        *,
-        config_path: str | None = None,
-        profile: str | None = None,
-        region: str | None = None,
-    ) -> None:
-        super().__init__(scheme="oci")
-        self._config_path = config_path
-        self._profile = profile
-        self._region = region
-
-    def _get_filesystem(self) -> Any:
-        if self._filesystem is not None:
-            return self._filesystem
-
-        try:
-            import ocifs
-        except ImportError as exc:
-            raise ImportError(
-                "ocifs is required for OCI remote storage support. "
-                "Install it with: pip install ocifs"
-            ) from exc
-
-        kwargs: dict[str, Any] = {}
-        if self._config_path is not None:
-            kwargs["config"] = os.path.expanduser(self._config_path)
-        if self._profile is not None:
-            kwargs["profile"] = self._profile
-        if self._region is not None:
-            kwargs["region"] = self._region
-
-        self._filesystem = ocifs.OCIFileSystem(**kwargs)
-        return self._filesystem
-
-
-class GCSFileSystemBackend(FsspecBackend):
-    """Google Cloud Storage backend implemented with ``gcsfs``.
-
-    Parameters
-    ----------
-    project : str | None
-        GCP project ID override.
-    """
-
-    def __init__(self, *, project: str | None = None) -> None:
-        super().__init__(scheme="gs")
-        self._project = project
-
-    def _get_filesystem(self) -> Any:
-        if self._filesystem is not None:
-            return self._filesystem
-
-        try:
-            import gcsfs
-        except ImportError as exc:
-            raise ImportError(
-                "gcsfs is required for GCS remote storage support. "
-                "Install it with: pip install gcsfs or pip install ginkgo[cloud]"
-            ) from exc
-
-        kwargs: dict[str, Any] = {}
-        if self._project is not None:
-            kwargs["project"] = self._project
-
-        self._filesystem = gcsfs.GCSFileSystem(**kwargs)
-        return self._filesystem
 
 
 def _join_remote_path(*, bucket: str, key: str) -> str:

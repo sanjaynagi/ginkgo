@@ -15,6 +15,7 @@ from ginkgo.remote.access.drivers.base import (
     DriverUnavailableError,
     MountFailedError,
     MountSpec,
+    unmount_fuse,
 )
 
 
@@ -100,24 +101,4 @@ class GcsFuseDriver:
 
     def unmount(self, *, mount_point: Path) -> None:
         """Unmount via ``fusermount -u`` (Linux) or ``umount`` (fallback)."""
-        _generic_unmount(mount_point=mount_point)
-
-
-def _generic_unmount(*, mount_point: Path) -> None:
-    """Best-effort unmount compatible with gcsfuse / mountpoint-s3 / rclone.
-
-    Tries ``fusermount -u`` first (Linux, preferred), then falls back to
-    ``umount``. Any failure is re-raised as :class:`MountFailedError`.
-    """
-    last_err = "no unmount command available on PATH"
-    for cmd in (
-        ["fusermount", "-u", str(mount_point)],
-        ["umount", str(mount_point)],
-    ):
-        if shutil.which(cmd[0]) is None:
-            continue
-        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode == 0:
-            return
-        last_err = result.stderr.decode(errors="replace").strip() or f"rc={result.returncode}"
-    raise MountFailedError(f"Failed to unmount {mount_point}: {last_err}")
+        unmount_fuse(mount_point=mount_point)

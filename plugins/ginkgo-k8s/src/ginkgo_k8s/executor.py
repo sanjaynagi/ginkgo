@@ -137,13 +137,8 @@ class KubernetesExecutor:
         # Suppress noisy gRPC fork-safety warnings on macOS.
         os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
-        try:
-            from kubernetes import client, config as k8s_config
-        except ImportError as exc:
-            raise ImportError(
-                "kubernetes is required for the K8s executor. "
-                "Install it with: pip install ginkgo[cloud]"
-            ) from exc
+        # Imported on first use: the plugin module loads on every CLI run.
+        from kubernetes import client, config as k8s_config
 
         def build() -> tuple[Any, Any]:
             k8s_config.load_config()

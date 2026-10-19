@@ -1,15 +1,9 @@
 """FUSE-style mount drivers for streaming remote inputs.
 
 Each driver exposes a uniform :class:`MountDriver` protocol: ``mount``,
-``unmount``, and ``health_check``. Driver selection is dispatched off
-the remote URI scheme, mirroring
-:func:`ginkgo.remote.resolve.resolve_backend`.
-
-Current drivers:
-
-- ``gs`` → :mod:`ginkgo.remote.access.drivers.gcsfuse`
-- ``s3`` → :mod:`ginkgo.remote.access.drivers.s3` (``mountpoint-s3``)
-- ``oci`` → :mod:`ginkgo.remote.access.drivers.rclone`
+``unmount``, and ``health_check``. Drivers are contributed by plugins as
+:class:`~ginkgo.plugins.api.MountDriverType`, one per URI scheme: gcsfuse
+(ginkgo-gcp), mountpoint-s3 (ginkgo-aws) and rclone (ginkgo-oci).
 """
 
 from __future__ import annotations

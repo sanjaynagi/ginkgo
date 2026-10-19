@@ -16,6 +16,7 @@ from ginkgo.remote.access.drivers.base import (
     DriverUnavailableError,
     MountFailedError,
     MountSpec,
+    unmount_fuse,
 )
 
 
@@ -103,6 +104,4 @@ class RcloneDriver:
 
     def unmount(self, *, mount_point: Path) -> None:
         """Unmount via the generic helper."""
-        from ginkgo.remote.access.drivers.gcsfuse import _generic_unmount
-
-        _generic_unmount(mount_point=mount_point)
+        unmount_fuse(mount_point=mount_point)

@@ -13,6 +13,7 @@ import pytest
 from ginkgo.cli.app import main
 from ginkgo.cli.commands.run import _warn_unserved_notifications
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.remote import parse_bucket_key_uri
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.task import task
@@ -95,8 +96,8 @@ class TestBuiltin:
         registry = PluginRegistry(plugins=(BUILTIN,))
 
         assert registry.keys(ExecutorType) == []
-        assert registry.keys(ObjectStoreType) == ["gs", "oci", "s3"]
-        assert registry.keys(MountDriverType) == ["gs", "oci", "s3"]
+        assert registry.keys(ObjectStoreType) == []
+        assert registry.keys(MountDriverType) == []
         assert registry.keys(SecretBackendType) == ["env"]
         assert registry.keys(EventSubscriberType) == []
         assert registry.keys(CliCommand) == []
@@ -104,10 +105,10 @@ class TestBuiltin:
 
 class TestLookup:
     def test_an_unknown_key_names_what_is_available(self) -> None:
-        registry = PluginRegistry(plugins=(BUILTIN,))
+        registry = PluginRegistry(plugins=(BUILTIN, _FAKE))
 
-        with pytest.raises(PluginNotFoundError, match="object store for scheme 'az'.*'gs', 'oci'"):
-            registry.get(ObjectStoreType, "az")
+        with pytest.raises(PluginNotFoundError, match="executor type 'slurm'. Available: 'fake'"):
+            registry.get(ExecutorType, "slurm")
 
     def test_a_first_party_key_names_the_package_that_provides_it(self) -> None:
         registry = PluginRegistry(plugins=(BUILTIN,))
@@ -117,11 +118,11 @@ class TestLookup:
 
     def test_two_plugins_claiming_one_key_is_an_error_naming_both(self) -> None:
         clash = Plugin(
-            name="ginkgo-other-s3",
-            contributions=(ObjectStoreType(scheme="s3", build=lambda **_: None),),
+            name="ginkgo-other-env",
+            contributions=(SecretBackendType(name="env", build=_vault_backends),),
         )
 
-        with pytest.raises(PluginConflictError, match="'ginkgo' and 'ginkgo-other-s3'"):
+        with pytest.raises(PluginConflictError, match="'ginkgo' and 'ginkgo-other-env'"):
             PluginRegistry(plugins=(BUILTIN, clash))
 
     def test_two_task_kinds_returning_one_directive_is_an_error(self) -> None:
@@ -164,7 +165,14 @@ class TestLookup:
         ]
 
     def test_the_same_key_on_different_points_does_not_clash(self) -> None:
-        registry = PluginRegistry(plugins=(BUILTIN,))
+        gcs = Plugin(
+            name="gcs",
+            contributions=(
+                ObjectStoreType(scheme="gs", parse_uri=parse_bucket_key_uri, build=lambda _: None),
+                MountDriverType(scheme="gs", build=lambda: None),
+            ),
+        )
+        registry = PluginRegistry(plugins=(BUILTIN, gcs))
 
         assert registry.get(ObjectStoreType, "gs").scheme == "gs"
         assert registry.get(MountDriverType, "gs").scheme == "gs"
@@ -193,7 +201,7 @@ class TestDiscovery:
         registry = _discover_with(monkeypatch, failing, _EntryPoint("fake", "fake:PLUGIN", _FAKE))
 
         assert registry.get(ExecutorType, "fake").label == "Fake"
-        assert registry.get(ObjectStoreType, "s3").scheme == "s3"
+        assert registry.get(SecretBackendType, "env").name == "env"
         with pytest.raises(PluginNotFoundError, match="failed to load: missing .*no module"):
             registry.get(ExecutorType, "k8s")
 

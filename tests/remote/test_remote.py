@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.core.remote import (
     RemoteFileRef,
     RemoteFolderRef,
@@ -27,29 +28,17 @@ class TestRemoteFile:
         ref = remote_file("s3://bucket/key.csv", version_id="abc123")
         assert ref.version_id == "abc123"
 
-    def test_oci_uri(self) -> None:
-        ref = remote_file("oci://mynamespace/mybucket/path/to/object.csv")
-        assert isinstance(ref, RemoteFileRef)
-        assert ref.scheme == "oci"
-        assert ref.bucket == "mybucket@mynamespace"
-        assert ref.namespace == "mynamespace"
-        assert ref.key == "path/to/object.csv"
-
-    def test_oci_uri_nested_key(self) -> None:
-        ref = remote_file("oci://ns/bkt/a/b/c.txt")
-        assert ref.bucket == "bkt@ns"
-        assert ref.namespace == "ns"
-        assert ref.key == "a/b/c.txt"
-
-    def test_oci_bucket_at_namespace_uri(self) -> None:
-        ref = remote_file("oci://mybucket@mynamespace/path/to/object.csv")
-        assert ref.bucket == "mybucket@mynamespace"
-        assert ref.namespace == "mynamespace"
-        assert ref.key == "path/to/object.csv"
-
     def test_unsupported_scheme_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unsupported remote URI scheme"):
+        with pytest.raises(PluginNotFoundError, match="object store for scheme 'ftp'"):
             remote_file("ftp://host/file.txt")
+
+    def test_a_first_party_scheme_names_the_plugin_to_install(self) -> None:
+        with pytest.raises(PluginNotFoundError, match="Install ginkgo-oci to add it"):
+            remote_file("oci://ns/bkt/key")
+
+    def test_a_uri_without_a_scheme_raises(self) -> None:
+        with pytest.raises(ValueError, match="scheme://"):
+            remote_file("bucket/key")
 
     def test_s3_missing_bucket_raises(self) -> None:
         with pytest.raises(ValueError, match="missing bucket"):
@@ -58,14 +47,6 @@ class TestRemoteFile:
     def test_s3_missing_key_raises(self) -> None:
         with pytest.raises(ValueError, match="missing key"):
             remote_file("s3://bucket")
-
-    def test_oci_missing_namespace_raises(self) -> None:
-        with pytest.raises(ValueError, match="missing namespace"):
-            remote_file("oci:///bucket/key")
-
-    def test_oci_missing_key_raises(self) -> None:
-        with pytest.raises(ValueError, match="oci://namespace/bucket/key"):
-            remote_file("oci://namespace/bucket")
 
     def test_immutable(self) -> None:
         ref = remote_file("s3://b/k.txt")
@@ -81,18 +62,14 @@ class TestRemoteFolder:
         assert ref.bucket == "bucket"
         assert ref.key == "prefix/subdir/"
 
-    def test_oci_prefix(self) -> None:
-        ref = remote_folder("oci://ns/bkt/prefix/")
-        assert isinstance(ref, RemoteFolderRef)
-        assert ref.bucket == "bkt@ns"
-        assert ref.key == "prefix/"
-
 
 class TestIsRemoteUri:
     def test_s3(self) -> None:
         assert is_remote_uri("s3://bucket/key") is True
 
-    def test_oci(self) -> None:
+    def test_a_first_party_scheme_without_its_plugin(self) -> None:
+        # Still a remote URI, so using it fails naming ginkgo-oci rather than
+        # being mistaken for a local path.
         assert is_remote_uri("oci://ns/bkt/key") is True
 
     def test_local_path(self) -> None:

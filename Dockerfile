@@ -17,10 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-# Install ginkgo with cloud object-store dependencies (gcsfs, google-auth). A
-# worker runs tasks, so it needs no executor plugin.
+# Install ginkgo and the object-store plugins (s3://, gs://, oci://). A worker
+# runs tasks, so it needs no executor plugin; ginkgo-gcp brings the Batch
+# client libraries along with the gs:// store.
 COPY pyproject.toml .
 COPY src/ginkgo/ src/ginkgo/
-RUN pip install --no-cache-dir ".[cloud]"
+COPY plugins/ginkgo-aws/ plugins/ginkgo-aws/
+COPY plugins/ginkgo-gcp/ plugins/ginkgo-gcp/
+COPY plugins/ginkgo-oci/ plugins/ginkgo-oci/
+RUN pip install --no-cache-dir . ./plugins/ginkgo-aws ./plugins/ginkgo-gcp ./plugins/ginkgo-oci
 
 ENTRYPOINT ["python", "-m", "ginkgo.remote.worker"]
