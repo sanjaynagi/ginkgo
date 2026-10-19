@@ -21,7 +21,14 @@ from typing import TypeVar
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.errors import GinkgoError
-from ginkgo.plugins.api import Contribution, ExecutorType, Plugin, TaskKind
+from ginkgo.plugins.api import (
+    CliCommand,
+    Contribution,
+    EventSubscriberType,
+    ExecutorType,
+    Plugin,
+    TaskKind,
+)
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -29,6 +36,7 @@ __all__ = [
     "PluginLoadFailure",
     "PluginNotFoundError",
     "PluginRegistry",
+    "first_party_provider",
     "plugin_registry",
     "use_plugin_registry",
 ]
@@ -38,8 +46,16 @@ ENTRY_POINT_GROUP = "ginkgo.plugins"
 _FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
     (ExecutorType, "k8s"): "ginkgo-k8s",
     (ExecutorType, "batch"): "ginkgo-gcp",
+    (EventSubscriberType, "slack"): "ginkgo-slack",
+    (CliCommand, "report"): "ginkgo-report",
 }
 """Which first-party distribution provides a key core does not ship, for hints."""
+
+
+def first_party_provider(point: type[Contribution], key: str) -> str | None:
+    """Return the first-party distribution that contributes *key* to *point*, if any."""
+    return _FIRST_PARTY_PROVIDERS.get((point, key))
+
 
 C = TypeVar("C", bound=Contribution)
 
@@ -130,10 +146,9 @@ class PluginRegistry:
     def discover(cls) -> PluginRegistry:
         """Load core's plugin and every loadable plugin in the entry-point group.
 
-        Raises
-        ------
-        PluginConflictError
-            If two loaded plugins claim the same key.
+        Entry points load in name order. One that fails to import, is not a
+        ``Plugin``, or claims a key an earlier plugin already holds is skipped
+        and recorded in ``failures``.
         """
         from ginkgo.plugins.builtin import BUILTIN
 
@@ -157,6 +172,19 @@ class PluginRegistry:
                         entry_point=entry_point.name,
                         target=entry_point.value,
                         reason=f"is a {type(plugin).__name__}, not a ginkgo Plugin",
+                    )
+                )
+                continue
+            # A plugin that clashes with one already loaded is skipped like one
+            # that fails to import, so it cannot take core or the others down.
+            try:
+                cls(plugins=(*loaded, plugin))
+            except PluginConflictError as exc:
+                failures.append(
+                    PluginLoadFailure(
+                        entry_point=entry_point.name,
+                        target=entry_point.value,
+                        reason=str(exc),
                     )
                 )
                 continue
@@ -201,7 +229,7 @@ class PluginRegistry:
         message = (
             f"No installed plugin provides {point.point_name} {key!r}. Available: {available}."
         )
-        provider = _FIRST_PARTY_PROVIDERS.get((point, key))
+        provider = first_party_provider(point, key)
         if provider is not None:
             message += f" Install {provider} to add it."
         if self.failures:

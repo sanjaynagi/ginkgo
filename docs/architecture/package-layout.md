@@ -78,9 +78,6 @@ ginkgo/
 │   │   ├── fs_share.py         # filesystem-shared copies into the CAS
 │   │   ├── output_index.py     # compact typed index of task outputs
 │   │   └── value_codec.py      # cross-process value serialization
-│   ├── notifications/
-│   │   ├── notifications.py
-│   │   └── slack.py
 │   └── environment/
 │       ├── secrets.py          # SecretResolver and redaction
 │       └── resources.py
@@ -113,10 +110,6 @@ ginkgo/
 │   ├── projector.py         # stored row -> projection rows, one function per type
 │   ├── fs.py                # network-filesystem detection for the SQLite warning
 │   └── errors.py            # StoreError, SchemaVersionError, StoreLockedError
-├── reporting/
-│   ├── model.py             # ReportData built from provenance and the catalog
-│   ├── render.py            # Jinja renderer producing an HTML bundle
-│   └── sizing.py            # per-kind preview caps and size formatting
 ├── envs/
 │   ├── container.py         # ContainerBackend (Docker/Podman)
 │   ├── interpreter.py       # what the running interpreter cannot import
@@ -149,10 +142,28 @@ plugins/
 │   │   ├── __init__.py      # PLUGIN: the k8s executor type
 │   │   └── executor.py      # KubernetesExecutor
 │   └── tests/
-└── ginkgo-gcp/
-    ├── pyproject.toml       # entry point gcp = "ginkgo_gcp:PLUGIN"
-    ├── src/ginkgo_gcp/
-    │   ├── __init__.py      # PLUGIN: the batch executor type
-    │   └── batch.py         # GCPBatchExecutor
+├── ginkgo-gcp/
+│   ├── pyproject.toml       # entry point gcp = "ginkgo_gcp:PLUGIN"
+│   ├── src/ginkgo_gcp/
+│   │   ├── __init__.py      # PLUGIN: the batch executor type
+│   │   └── batch.py         # GCPBatchExecutor
+│   └── tests/
+├── ginkgo-report/
+│   ├── pyproject.toml       # entry point report = "ginkgo_report:PLUGIN"
+│   ├── src/ginkgo_report/
+│   │   ├── __init__.py      # PLUGIN: the `report` CLI command
+│   │   ├── command.py       # arguments and command_report
+│   │   ├── model.py         # ReportData built from the run summary
+│   │   ├── render.py        # Jinja renderer producing an HTML bundle
+│   │   ├── sizing.py        # log-tail caps
+│   │   ├── templates/
+│   │   └── static/
+│   └── tests/
+└── ginkgo-slack/
+    ├── pyproject.toml       # entry point slack = "ginkgo_slack:PLUGIN"
+    ├── src/ginkgo_slack/
+    │   ├── __init__.py      # PLUGIN: the slack event subscriber
+    │   ├── subscriber.py    # config parsing and SlackSubscriber
+    │   └── webhook.py       # webhook payloads and delivery
     └── tests/
 ```

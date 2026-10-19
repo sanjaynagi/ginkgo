@@ -7,7 +7,6 @@ license = "Apache-2.0"
 dependencies = [
     "blake3>=1.0.0",
     "fsspec>=2024.10.0",
-    "jinja2>=3.1",
     "numpy>=2.0",
     "ocifs>=1.3.2",
     "ortools>=9.11",
@@ -34,6 +33,8 @@ cloud = [
 all = [
     "ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s",
     "ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp",
+    "ginkgo-report @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-report",
+    "ginkgo-slack @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-slack",
 ]
 
 [project.scripts]
@@ -52,8 +53,6 @@ allow-direct-references = true
 [tool.hatch.build]
 include = [
     "src/ginkgo/templates/**",
-    "src/ginkgo/reporting/templates/**",
-    "src/ginkgo/reporting/static/**",
 ]
 
 [tool.pixi.workspace]
@@ -63,7 +62,6 @@ platforms = ["osx-arm64", "linux-64"]
 [tool.pixi.pypi-dependencies]
 ginkgo = { path = ".", editable = true, extras = ["notebooks", "cloud"] }
 fsspec = ">=2024.10.0"
-jinja2 = ">=3.1"
 numpy = ">=2.0"
 ocifs = ">=1.3.2"
 ortools = ">=9.11"
@@ -84,6 +82,8 @@ yaml = ">=0.2.5,<0.3"
 [tool.pixi.feature.plugins.pypi-dependencies]
 ginkgo-k8s = { path = "plugins/ginkgo-k8s", editable = true }
 ginkgo-gcp = { path = "plugins/ginkgo-gcp", editable = true }
+ginkgo-report = { path = "plugins/ginkgo-report", editable = true }
+ginkgo-slack = { path = "plugins/ginkgo-slack", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 pytest = ">=8.0"
@@ -109,7 +109,7 @@ benchmark = ".pixi/envs/default/bin/python -m benchmarks.run"
 lint = "ruff check src/ginkgo/ tests/ benchmarks/ plugins/"
 format = "ruff format src/ginkgo/ tests/ benchmarks/ plugins/"
 format-check = "ruff format --check src/ginkgo/ tests/ benchmarks/ plugins/"
-typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check --python .pixi/envs/default src/ginkgo/config.py src/ginkgo/resource_history.py src/ginkgo/cli/app.py src/ginkgo/cli/commands/cache.py src/ginkgo/cli/commands/db.py src/ginkgo/query.py src/ginkgo/cli/commands/why.py src/ginkgo/cli/commands/runs.py src/ginkgo/cli/commands/history.py src/ginkgo/cli/commands/query.py src/ginkgo/cli/commands/export.py src/ginkgo/cli/renderers/jsonl.py src/ginkgo/store src/ginkgo/plugins src/ginkgo/cli/commands/plugins.py src/ginkgo/runtime/executor_registry.py src/ginkgo/remote/resolve.py src/ginkgo/runtime/caching src/ginkgo/runtime/artifacts/artifact_store.py src/ginkgo/runtime/rundir.py src/ginkgo/remote/staging.py src/ginkgo/runtime/artifacts/remote_artifact_store.py src/ginkgo/runtime/artifacts/remote_arg_transfer.py src/ginkgo/runtime/run_summary.py tests/store plugins/ginkgo-k8s/src plugins/ginkgo-gcp/src"
+typecheck = "env -u VIRTUAL_ENV .pixi/envs/default/bin/ty check --python .pixi/envs/default src/ginkgo/config.py src/ginkgo/resource_history.py src/ginkgo/cli/app.py src/ginkgo/cli/commands/cache.py src/ginkgo/cli/commands/db.py src/ginkgo/query.py src/ginkgo/cli/commands/why.py src/ginkgo/cli/commands/runs.py src/ginkgo/cli/commands/history.py src/ginkgo/cli/commands/query.py src/ginkgo/cli/commands/export.py src/ginkgo/cli/renderers/jsonl.py src/ginkgo/store src/ginkgo/plugins src/ginkgo/cli/commands/plugins.py src/ginkgo/runtime/executor_registry.py src/ginkgo/remote/resolve.py src/ginkgo/runtime/caching src/ginkgo/runtime/artifacts/artifact_store.py src/ginkgo/runtime/rundir.py src/ginkgo/remote/staging.py src/ginkgo/runtime/artifacts/remote_artifact_store.py src/ginkgo/runtime/artifacts/remote_arg_transfer.py src/ginkgo/runtime/run_summary.py tests/store plugins/ginkgo-k8s/src plugins/ginkgo-gcp/src plugins/ginkgo-report/src/ginkgo_report/__init__.py plugins/ginkgo-report/src/ginkgo_report/command.py plugins/ginkgo-slack/src"
 precommit = "pre-commit run --all-files"
 docs-build = "sphinx-build -b dirhtml docs/site docs/_build/dirhtml"
 docs-clean = "rm -rf docs/_build"

@@ -42,7 +42,7 @@ at the nearest `ginkgo.toml`.
   unresolved secrets, malformed config.
 
 `ginkgo report`
-: Render a finished run as an HTML report. By default this produces a
+: Provided by the `ginkgo-report` plugin. Render a finished run as an HTML report. By default this produces a
   directory bundle (`index.html` plus an `assets/` folder); pass
   `--single-file` for a single self-contained HTML file. See
   [Reports](reports.md).
@@ -58,10 +58,10 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo plugins`
 : List the installed plugins and what each contributes: executor types,
-  object stores, FUSE drivers, secret backends, run notifications, task kinds
-  and environments (the bare-name environment shows as `(bare name)`). The
-  Kubernetes and GCP Batch executors appear only once the `ginkgo-k8s` /
-  `ginkgo-gcp` plugins are installed. Add `--json` for a structured payload.
+  object stores, FUSE drivers, secret backends, run notifications, task kinds,
+  environments and CLI commands (the bare-name environment shows as
+  `(bare name)`). The Kubernetes and GCP Batch executors, Slack notifications
+  and `ginkgo report` appear only once their plugins are installed. Add `--json` for a structured payload.
 
 `ginkgo notebooks`
 : List the rendered notebook HTML artifacts produced by runs.

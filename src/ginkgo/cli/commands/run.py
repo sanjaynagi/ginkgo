@@ -9,6 +9,7 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
 import sys
 import time
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Sequence
@@ -17,7 +18,7 @@ from rich.markup import escape
 
 from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
-from ginkgo.plugins.registry import plugin_registry
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
@@ -479,6 +480,7 @@ def run_workflow(
                 workflow_path=workflow_path,
                 warn=lambda message: warning_console.print(f"[yellow]⚠[/] {message}"),
             )
+            _warn_unserved_notifications(config=runtime_params, warn=subscriber_context.warn)
             for subscriber_type in plugin_registry().all(EventSubscriberType):
                 subscriber = subscriber_type.build(subscriber_context)
                 if subscriber is None:
@@ -921,3 +923,19 @@ def _count_path_tracked_inputs(*, run_summary: RunSummary) -> int:
         for label in task.input_trackings.values()
         if label == "path"
     )
+
+
+def _warn_unserved_notifications(*, config: Any, warn: Callable[[str], None]) -> None:
+    """Warn about each ``[notifications.<name>]`` table no installed subscriber reads.
+
+    Without this, notifications configured for a plugin that is not installed
+    (``[notifications.slack]`` without ginkgo-slack) would silently never send.
+    """
+    notifications = config.get("notifications") if isinstance(config, Mapping) else None
+    if not isinstance(notifications, Mapping):
+        return
+    for name in sorted(notifications):
+        try:
+            plugin_registry().get(EventSubscriberType, name)
+        except PluginNotFoundError as exc:
+            warn(f"[notifications.{name}] is configured but nothing will send it. {exc}")

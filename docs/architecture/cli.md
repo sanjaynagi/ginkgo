@@ -28,7 +28,7 @@ The current CLI supports:
 - `ginkgo db prune`
 - `ginkgo db vacuum`
 - `ginkgo db path`
-- `ginkgo report`
+- `ginkgo report` (from the `ginkgo-report` plugin)
 - `ginkgo notebooks`
 
 Implemented CLI features include the dry-run execution-plan preview, merged

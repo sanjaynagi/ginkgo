@@ -112,14 +112,6 @@ class TestCancelledRunSummary:
         assert summary.status == "cancelled"
         assert not summary.succeeded
 
-    def test_a_cancelled_run_can_be_reported_on(self, ledger) -> None:
-        from ginkgo.reporting.model import build_report_data
-
-        report = build_report_data(summary=ledger.finish(status="cancelled"))
-
-        assert report.status_raw == "cancelled"
-        assert report.status_label == "cancelled"
-
 
 class TestCloseUnfinishedRun:
     """The exit-stack safety net tells an interrupt apart from a failure."""

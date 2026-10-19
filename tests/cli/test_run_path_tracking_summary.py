@@ -1,7 +1,7 @@
 """Tests for the run-summary "tracked by path only" count (issue #307 phase 1).
 
 Builds a run's ledger directly through the same events the evaluator emits
-(as ``tests/reporting/test_reporting.py`` does), rather than running a real
+(as ``plugins/ginkgo-report/tests/test_reporting.py`` does), rather than running a real
 workflow, so the case is about the read side: which tasks and labels the
 count includes.
 """

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ginkgo.cli.commands.report import _resolve_output_dir
 from ginkgo.runtime.artifacts.remote_arg_transfer import _is_managed_cas_blob
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
@@ -140,13 +139,6 @@ class TestCallSitesUnchanged:
         store = CacheStore(index=CacheIndex.in_memory())
 
         assert store._root.resolve() == (tmp_path / DIRECTORY_NAME / "cache").resolve()
-
-    def test_report_output_dir_lands_in_the_reports_directory(self, tmp_path):
-        run_dir = tmp_path / DIRECTORY_NAME / "runs" / "run-abc"
-
-        resolved = _resolve_output_dir(run_dir=run_dir, out=None, single_file=False)
-
-        assert resolved == (tmp_path / DIRECTORY_NAME / "reports" / "run-abc").resolve()
 
     def test_managed_blob_detection_still_matches_both_trees(self):
         for tree in ("staging", "artifacts"):

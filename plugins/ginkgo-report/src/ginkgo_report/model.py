@@ -18,7 +18,7 @@ from typing import Any
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
-from .sizing import LogTail, SizingPolicy, build_log_tail
+from ginkgo_report.sizing import LogTail, SizingPolicy, build_log_tail
 
 
 # ----- Masthead and summary ---------------------------------------------

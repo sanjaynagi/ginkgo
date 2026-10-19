@@ -100,8 +100,9 @@ a compact typed output index against each task.
 
 ## Runtime Notifications
 
-Ginkgo includes a Slack notification path built on the same runtime event
-stream used by CLI and agent renderers.
+The `ginkgo-slack` plugin (`plugins/ginkgo-slack`) contributes a Slack
+notification path as an `EventSubscriberType`, fed the same committed events
+the CLI and agent renderers read.
 
 - Notification config is loaded from `ginkgo.toml` or explicit CLI config
   overlays, independent of whether the workflow module calls `ginkgo.config(...)`.

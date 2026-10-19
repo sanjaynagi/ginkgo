@@ -1,4 +1,4 @@
-"""Runtime Slack notification configuration and delivery service."""
+"""Slack run notifications: configuration and the delivery subscriber."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 from ginkgo.core.secret import SecretRef
 from ginkgo.plugins.api import EventSubscriberContext
 from ginkgo.runtime.events import GinkgoEvent, RunCompleted, RunStarted, TaskFailed
-from ginkgo.runtime.notifications.slack import (
+from ginkgo_slack.webhook import (
     SlackTaskFailure,
     build_retry_exhausted_payload,
     build_run_failed_payload,
@@ -50,7 +50,7 @@ class NotificationConfig:
 
 
 @dataclass(kw_only=True)
-class NotificationService:
+class SlackSubscriber:
     """Subscribe to runtime events and deliver Slack notifications."""
 
     config: NotificationConfig
@@ -198,7 +198,7 @@ class NotificationService:
             return str(self.workflow_path)
 
 
-def build_notification_service(context: EventSubscriberContext) -> NotificationService | None:
+def build_slack_subscriber(context: EventSubscriberContext) -> SlackSubscriber | None:
     """Return a ready-to-use notification service when Slack is configured.
 
     Parameters
@@ -208,7 +208,7 @@ def build_notification_service(context: EventSubscriberContext) -> NotificationS
 
     Returns
     -------
-    NotificationService | None
+    SlackSubscriber | None
         ``None`` when ``[notifications.slack]`` is disabled or unusable; the
         reason is reported through ``context.warn``.
     """
@@ -233,7 +233,7 @@ def build_notification_service(context: EventSubscriberContext) -> NotificationS
         )
         return None
 
-    return NotificationService(
+    return SlackSubscriber(
         config=notification_config,
         webhook_url=webhook_url,
         store=context.store,

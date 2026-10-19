@@ -2,18 +2,50 @@
 
 from __future__ import annotations
 
-
+import argparse
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
 
 from ginkgo.cli.common import console, open_run
-from ginkgo.reporting import SizingPolicy, export_report
 from ginkgo.workspace_layout import WorkspaceLayout
+from ginkgo_report.render import export_report
+from ginkgo_report.sizing import SizingPolicy
 
 
-def command_report(args) -> int:
+def add_report_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declare ``ginkgo report``'s arguments."""
+    parser.add_argument("run_id", nargs="?")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace the contents of an --out directory that holds files ginkgo "
+            "did not write. Without this, such a directory is left untouched."
+        ),
+    )
+    parser.add_argument(
+        "--single-file",
+        action="store_true",
+        help="Emit one HTML file with CSS, fonts, and script inlined.",
+    )
+    parser.add_argument(
+        "--max-log-lines",
+        type=int,
+        default=80,
+        help="Trailing log lines to retain for failed tasks (default: 80).",
+    )
+    parser.add_argument("--open", dest="open", action="store_true", default=False)
+    parser.add_argument("--no-open", dest="open", action="store_false")
+
+
+def command_report(args: argparse.Namespace) -> int:
     """Handle ``ginkgo report``."""
     rich_console = console(sys.stdout)
 

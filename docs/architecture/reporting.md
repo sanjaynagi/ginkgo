@@ -5,8 +5,9 @@ a self-contained document — no server, no framework runtime, no network at
 view time — that a user can share, archive, or print alongside a finished
 run directory.
 
-The implementation lives in `ginkgo/reporting/` and is wired into the CLI as
-`ginkgo report <run-id>`.
+The implementation is the `ginkgo-report` plugin (`plugins/ginkgo-report`,
+package `ginkgo_report`), which contributes `ginkgo report <run-id>` as a
+`CliCommand` and depends on `jinja2`; core has neither.
 
 ## Goals
 
@@ -35,8 +36,9 @@ out of scope.
 ## Package layout
 
 ```
-ginkgo/reporting/
-├── __init__.py          # build_report_data, export_report, SizingPolicy
+ginkgo_report/
+├── __init__.py          # PLUGIN: the `report` CliCommand
+├── command.py           # argument parsing and command_report
 ├── model.py             # ReportData dataclass + builder
 ├── sizing.py            # log-tail cap and builder
 ├── render.py            # Jinja env, bundle writer, single-file writer
@@ -265,7 +267,7 @@ ginkgo report <run-id>
 
 ## Testing
 
-`tests/reporting/test_reporting.py` covers:
+`plugins/ginkgo-report/tests/test_reporting.py` covers:
 
 - Formatters (`format_duration`, `format_bytes`) across s/m/h ranges.
 - `build_log_tail` on synthetic inputs with explicit truncation assertions.

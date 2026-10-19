@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,12 +10,15 @@ from typing import Any
 
 import pytest
 
+from ginkgo.cli.app import main
+from ginkgo.cli.commands.run import _warn_unserved_notifications
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.task import task
 from ginkgo.plugins import registry as registry_module
 from ginkgo.plugins.api import (
+    CliCommand,
     EnvironmentType,
     EventSubscriberType,
     ExecutorType,
@@ -94,7 +98,8 @@ class TestBuiltin:
         assert registry.keys(ObjectStoreType) == ["gs", "oci", "s3"]
         assert registry.keys(MountDriverType) == ["gs", "oci", "s3"]
         assert registry.keys(SecretBackendType) == ["env"]
-        assert registry.keys(EventSubscriberType) == ["slack"]
+        assert registry.keys(EventSubscriberType) == []
+        assert registry.keys(CliCommand) == []
 
 
 class TestLookup:
@@ -192,6 +197,20 @@ class TestDiscovery:
         with pytest.raises(PluginNotFoundError, match="failed to load: missing .*no module"):
             registry.get(ExecutorType, "k8s")
 
+    def test_a_plugin_claiming_a_loaded_key_is_skipped_and_recorded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rival = Plugin(name="ginkgo-rival", contributions=(_FAKE.contributions[0],))
+        registry = _discover_with(
+            monkeypatch,
+            _EntryPoint("fake", "fake:PLUGIN", _FAKE),
+            _EntryPoint("rival", "rival:PLUGIN", rival),
+        )
+
+        assert [plugin.name for plugin in registry.plugins] == ["ginkgo", "ginkgo-fake"]
+        (failure,) = registry.failures
+        assert "'ginkgo-fake' and 'ginkgo-rival' both contribute" in failure.reason
+
 
 class TestPluginContributionsReachCore:
     def test_a_plugin_executor_type_is_configurable_and_built(
@@ -251,7 +270,6 @@ class TestEventSubscribers:
     def test_a_plugin_subscriber_sees_a_runs_committed_events(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from ginkgo.cli.app import main
 
         recorder = _Recorder(seen=[], closed=[])
         observer = Plugin(
@@ -324,3 +342,75 @@ class TestTaskKinds:
             assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
             assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
         assert len(runner.replayed) == 1
+
+
+def _command_plugin(name: str, ran: list[str]) -> Plugin:
+    def add_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--greeting", default="hello")
+
+    def run(args: argparse.Namespace) -> int:
+        ran.append(args.greeting)
+        return 0
+
+    return Plugin(
+        name="greeter",
+        contributions=(CliCommand(name=name, help="Greet", add_arguments=add_arguments, run=run),),
+    )
+
+
+class TestCliCommands:
+    def test_a_plugin_command_parses_its_arguments_and_runs(self) -> None:
+        ran: list[str] = []
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, _command_plugin("greet", ran)))):
+            assert main(["greet", "--greeting", "hi"]) == 0
+
+        assert ran == ["hi"]
+
+    def test_a_plugin_command_reusing_a_core_command_is_ignored(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ran: list[str] = []
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, _command_plugin("why", ran)))):
+            main(["why", "missing.txt"])
+
+        assert ran == []
+        assert "'why' clashes with a core ginkgo command" in capsys.readouterr().err
+
+    def test_a_failing_add_arguments_is_reported_not_raised(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def broken(parser: argparse.ArgumentParser) -> None:
+            raise RuntimeError("bad arguments")
+
+        plugin = Plugin(
+            name="broken",
+            contributions=(CliCommand(name="x", help="", add_arguments=broken, run=lambda _: 0),),
+        )
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, plugin))):
+            assert main(["x"]) == 1
+
+        assert "bad arguments" in capsys.readouterr().err
+
+    def test_an_uninstalled_first_party_command_names_its_plugin(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN,))):
+            with pytest.raises(SystemExit):
+                main(["report"])
+
+        assert "Install ginkgo-report to add it" in capsys.readouterr().err
+
+
+class TestUnservedNotifications:
+    def test_configured_notifications_without_a_subscriber_warn_with_the_plugin_to_install(
+        self,
+    ) -> None:
+        warnings: list[str] = []
+        with use_plugin_registry(PluginRegistry(plugins=(BUILTIN,))):
+            _warn_unserved_notifications(
+                config={"notifications": {"slack": {"enabled": True}}}, warn=warnings.append
+            )
+
+        (warning,) = warnings
+        assert warning.startswith("[notifications.slack] is configured but nothing will send it.")
+        assert "Install ginkgo-slack to add it." in warning

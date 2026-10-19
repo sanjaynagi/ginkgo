@@ -590,6 +590,8 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/fe/3b/8ec5074bcfc450fe84273713b4b0a0dd47c0249358f5d82eb8104ffe2520/multidict-6.7.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: plugins/ginkgo-gcp
       - pypi: plugins/ginkgo-k8s
+      - pypi: plugins/ginkgo-report
+      - pypi: plugins/ginkgo-slack
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.2.25-hbd8a1cb_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/colorama-0.4.6-pyhd8ed1ab_1.conda
@@ -785,6 +787,8 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/fb/d5/91035dd77e0033dfb00d52b2bcad1e4f7408eb931981f86a1584301670a8/google_cloud_logging-3.16.0-py3-none-any.whl
       - pypi: plugins/ginkgo-gcp
       - pypi: plugins/ginkgo-k8s
+      - pypi: plugins/ginkgo-report
+      - pypi: plugins/ginkgo-slack
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -1464,7 +1468,6 @@ packages:
   requires_dist:
   - blake3>=1.0.0
   - fsspec>=2024.10.0
-  - jinja2>=3.1
   - numpy>=2.0
   - ocifs>=1.3.2
   - ortools>=9.11
@@ -1481,6 +1484,8 @@ packages:
   - google-auth>=2.25 ; extra == 'cloud'
   - ginkgo-k8s @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-k8s ; extra == 'all'
   - ginkgo-gcp @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-gcp ; extra == 'all'
+  - ginkgo-report @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-report ; extra == 'all'
+  - ginkgo-slack @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-slack ; extra == 'all'
   requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/00/93/5164e93a77e365a92def77c1258386daef233516a29fb674a3b9d973b8b8/loro-1.10.3-cp314-cp314-macosx_11_0_arm64.whl
   name: loro
@@ -4144,4 +4149,15 @@ packages:
   requires_dist:
   - ginkgo==0.1.0
   - kubernetes>=28.1
+  requires_python: '>=3.11'
+- pypi: plugins/ginkgo-report
+  name: ginkgo-report
+  requires_dist:
+  - ginkgo==0.1.0
+  - jinja2>=3.1
+  requires_python: '>=3.11'
+- pypi: plugins/ginkgo-slack
+  name: ginkgo-slack
+  requires_dist:
+  - ginkgo==0.1.0
   requires_python: '>=3.11'

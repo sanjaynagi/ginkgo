@@ -20,8 +20,8 @@ import jinja2
 
 from ginkgo.runtime.run_summary import RunSummary
 
-from .model import ReportData, build_report_data
-from .sizing import SizingPolicy
+from ginkgo_report.model import ReportData, build_report_data
+from ginkgo_report.sizing import SizingPolicy
 
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
