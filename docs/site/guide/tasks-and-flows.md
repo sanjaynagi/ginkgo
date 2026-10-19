@@ -535,8 +535,9 @@ inner loop.
 ### How Branches Are Labelled
 
 Each branch is shown under a label built from its varying values. The same
-label appears in the live table, `--dry-run`, `runs show`, `debug`, the HTML
-report and `cache ls`, and `ginkgo history "de[batch]"` finds that branch.
+label appears in the live table, `--dry-run`, `runs show`, `debug` and the HTML
+report, and `ginkgo history "de[batch]"` finds that branch. `cache ls` shows the
+label from the most recent run that recorded each cache entry.
 
 - `.product_map()` labels every varying argument as `name=value`:
   `train[sample=sample_a,lr=0.01]`.

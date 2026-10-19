@@ -93,6 +93,7 @@ def test_graph_node_registered_inserts_a_pending_task(started: SqliteStore) -> N
     assert task["status"] == "pending"
     assert task["max_attempts"] == 3
     assert task["stdout_log"] == "logs/task_0007_analysis_fit.stdout.log"
+    assert task["display_label"] == "fit[north]"
     edge = _row(started, "SELECT * FROM edges WHERE edge = 'depends_on'")
     assert (edge["src_id"], edge["dst_id"]) == ("task_0001", TASK_ID)
 
@@ -114,6 +115,12 @@ def test_task_planned_records_the_cache_identity_and_inputs(started: SqliteStore
     row = _row(started, "SELECT * FROM task_inputs")
     assert row["param"] == "rows"
     assert json.loads(row["value_summary"]) == 10
+
+
+def test_task_planned_without_a_label_keeps_the_registered_one(started: SqliteStore) -> None:
+    _apply(started, _fixture("task_planned", display_label=None))
+
+    assert _row(started, "SELECT * FROM tasks")["display_label"] == "fit[north]"
 
 
 def test_scalar_columns_are_stored_as_the_scalars_they_are(started: SqliteStore) -> None:
