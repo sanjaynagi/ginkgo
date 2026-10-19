@@ -24,7 +24,9 @@ at the nearest `ginkgo.toml`.
   See [Querying Provenance](querying-provenance.md).
 
 `ginkgo history`
-: Show every run of one task, with its status, duration, and cache key.
+: Show every run of one task, with its status, duration, and cache key. Runs in
+  which the task never started, such as one blocked by an upstream failure, are
+  left out; `--include-pending` lists them too.
 
 `ginkgo query`
 : Run one read-only SQL statement against the provenance database.
@@ -249,9 +251,9 @@ navigating `.ginkgo/runs/`.
 
 ```bash
 ginkgo cache ls                          # list cached task results
-ginkgo cache stats                       # size, hit counts, biggest tasks
-ginkgo cache explain <run_id>            # explain cache decisions for a run
-ginkgo cache explain <run_id> --json     # same, as JSON
+ginkgo cache stats                       # size, artifact-store bytes, hit counts, biggest tasks
+ginkgo cache explain [run_id]            # explain cache decisions for a run (default: latest)
+ginkgo cache explain [run_id] --json     # same, as JSON
 ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
@@ -262,7 +264,9 @@ ginkgo cache clear --orphans             # remove entries the database has lost
 `cache prune` requires at least one of `--older-than`, `--max-size`, or
 `--max-entries`. Add `--least-recently-hit` to give up unused entries before old
 ones, and `--dry-run` to preview what would be removed. `cache stats` takes
-`--json`.
+`--json`. Its artifact-store figure (`artifact_bytes` in JSON) is separate from
+the entries' total size: the store also holds bytes no entry names, so pruning
+entries does not bound it.
 
 ### Why Did This Task Run Again?
 

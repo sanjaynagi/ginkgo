@@ -32,13 +32,18 @@ def command_history(args) -> int:
     limit = getattr(args, "limit", 20)
     resources = getattr(args, "resources", False)
     by_label = getattr(args, "by_label", False)
+    include_pending = getattr(args, "include_pending", False)
 
     with query.open(missing_ok=True) as reader:
-        rows = reader.task_history(args.task, limit=limit)
+        rows = reader.task_history(args.task, limit=limit, include_pending=include_pending)
         # The distribution covers all of the task's history; --limit bounds the
         # table under it, and a percentile that moved with a display setting
         # would be a percentile of nothing in particular.
-        history = reader.task_resource_history(args.task) if resources else []
+        history = (
+            reader.task_resource_history(args.task, include_pending=include_pending)
+            if resources
+            else []
+        )
 
     summaries = _summaries(history, by_label=by_label) if resources else []
 

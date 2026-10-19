@@ -67,7 +67,10 @@ implicitly. Back the database up as you would `.git`.
 
 `ginkgo cache stats` reports what the index holds: entry count, total bytes, the
 hit-count histogram, how much is taken by entries nobody has ever used, and the
-ten functions holding the most bytes. Hit counting happens in the projector, on
+ten functions holding the most bytes. It also reports the local artifact
+store's bytes (`artifact_bytes`, summed from the `artifacts` table), apart from
+the total: the entries point into the store, but it holds bytes no entry names
+too, so pruning entries does not bound it. Hit counting happens in the projector, on
 `TaskCacheHit`, because the cache itself never learns that a value it handed out
 was used.
 

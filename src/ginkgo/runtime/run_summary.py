@@ -151,11 +151,14 @@ class TaskSummary:
     @property
     def attempts_label(self) -> str:
         """Return ``"N"``, ``"N / M"``, or ``"—"`` when nothing was attempted."""
-        if self.status == "cached" or (self.status == "skipped" and not self.started):
+        if self.attempts == 0 or self.status == "cached":
             return "—"
+        if self.status == "skipped" and not self.started:
+            return "—"
+        # ``attempts`` is the ledger's 1-based count of attempts made.
         if self.max_attempts is not None and self.max_attempts > 1:
-            return f"{self.attempts + 1} / {self.max_attempts}"
-        return f"{self.attempts + 1}"
+            return f"{self.attempts} / {self.max_attempts}"
+        return f"{self.attempts}"
 
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
         """Resolve ``rendered_html`` against the run directory.
