@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ginkgo.envs.pixi import _env_manifest
+from ginkgo.envs.manifest import find_pixi_manifest
 
 _MISSING_MODULE_PATTERN = re.compile(r"No module named '([\w.]+)'")
 
@@ -190,7 +190,7 @@ def find_project_manifest(*, project_root: Path) -> Path | None:
         *project_root*. ``None`` means this is not a project with a declared
         environment, and every check here stays quiet.
     """
-    return _env_manifest(project_root)
+    return find_pixi_manifest(project_root)
 
 
 def source_import_roots(*, text: str) -> frozenset[str]:

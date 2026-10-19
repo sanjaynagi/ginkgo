@@ -1,7 +1,8 @@
-"""Environment command handlers."""
+"""``ginkgo env``: list and clear the Pixi environments behind tasks' ``env=``."""
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
 from dataclasses import dataclass
@@ -11,7 +12,8 @@ from rich.text import Text
 
 from ginkgo.cli.common import console, new_table
 from ginkgo.cli.workspace import resolve_workflow_path
-from ginkgo.envs.pixi import PixiEnvNotFoundError, PixiRegistry, _env_manifest, _list_envs
+from ginkgo.envs.manifest import find_pixi_manifest
+from ginkgo_pixi.environment import PixiEnvNotFoundError, PixiRegistry, list_envs
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,17 @@ class EnvEntryRow:
     installed: bool
 
 
-def command_env(args) -> int:
+def add_env_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declare ``ginkgo env``'s subcommands."""
+    env_subparsers = parser.add_subparsers(dest="env_command", required=True)
+    env_subparsers.add_parser("ls", help="List environments")
+    clear_parser = env_subparsers.add_parser("clear", help="Clear environment caches")
+    clear_parser.add_argument("env", nargs="?")
+    clear_parser.add_argument("--all", action="store_true")
+    clear_parser.add_argument("--dry-run", action="store_true")
+
+
+def command_env(args: argparse.Namespace) -> int:
     """Handle ``ginkgo env`` subcommands."""
     rich_console = console(sys.stdout)
     registry = _build_project_registry(project_root=Path.cwd())
@@ -119,7 +131,7 @@ def _build_project_registry(*, project_root: Path) -> PixiRegistry:
 def _searched_roots(*, registry: PixiRegistry) -> str:
     """Describe the discovery roots searched, with the environments each holds."""
     return ", ".join(
-        f"{envs_dir} (envs: {_list_envs(envs_dir)})" for envs_dir in registry.env_directories
+        f"{envs_dir} (envs: {list_envs(envs_dir)})" for envs_dir in registry.env_directories
     )
 
 
@@ -133,7 +145,7 @@ def list_project_envs(*, registry: PixiRegistry) -> list[EnvEntryRow]:
         for child in sorted(envs_dir.iterdir(), key=lambda path: path.name):
             if not child.is_dir():
                 continue
-            manifest = _env_manifest(child)
+            manifest = find_pixi_manifest(child)
             if manifest is None:
                 continue
             resolved_manifest = manifest.resolve()

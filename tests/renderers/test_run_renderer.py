@@ -22,7 +22,6 @@ from ginkgo.cli.renderers.models import (
     FailureDetails,
     SkipDetails,
 )
-from ginkgo.envs.pixi import PixiEnvPrepareError, PixiRegistry
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import (
     _ENV_PREPARE_REPORT_THRESHOLD_SECONDS,
@@ -32,6 +31,7 @@ from ginkgo.cli.renderers.run import (
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from tests.conftest import ShellEnvironment
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
     EnvPrepareFailed,
@@ -56,11 +56,11 @@ def needs_env() -> str:
     return shell(cmd="echo hello")
 
 
-class _FailingPixiRegistry(PixiRegistry):
-    """A registry whose environment installs always fail."""
+class _FailingEnvironment(ShellEnvironment):
+    """An environment whose preparation always fails."""
 
-    def prepare(self, *, env: str) -> Path:
-        raise PixiEnvPrepareError(manifest=Path(env) / "pixi.toml", output="install failed")
+    def prepare(self, *, env: str) -> None:
+        raise RuntimeError("install failed")
 
 
 class _RecordingRenderer:
@@ -442,8 +442,6 @@ def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:
 
 def test_evaluator_reports_a_failed_environment_preparation() -> None:
     """A prepare failure must close the window it opened on the event stream."""
-    from ginkgo.envs.pixi import PixiEnvPrepareError
-    from ginkgo.envs.pixi import PixiEnvironment
     from ginkgo.runtime.evaluator import ConcurrentEvaluator
     from ginkgo.runtime.events import EventBus
 
@@ -452,10 +450,10 @@ def test_evaluator_reports_a_failed_environment_preparation() -> None:
     bus.subscribe(events.append)
 
     evaluator = ConcurrentEvaluator(
-        backend=PixiEnvironment(pixi_registry=_FailingPixiRegistry(project_root=_TESTS_DIR)),
+        backend=_FailingEnvironment(),
         event_bus=bus,
     )
-    with pytest.raises(PixiEnvPrepareError):
+    with pytest.raises(RuntimeError, match="install failed"):
         evaluator.evaluate(needs_env())
 
     started = [event for event in events if isinstance(event, EnvPrepareStarted)]

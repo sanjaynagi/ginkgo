@@ -159,10 +159,17 @@ class TestLookup:
         registry = PluginRegistry(plugins=(BUILTIN,))
 
         assert registry.get(EnvironmentType, "docker") is registry.get(EnvironmentType, "oci")
-        assert registry.all(EnvironmentType) == [
-            registry.get(EnvironmentType, ""),
-            registry.get(EnvironmentType, "docker"),
-        ]
+        assert registry.all(EnvironmentType) == [registry.get(EnvironmentType, "docker")]
+
+    def test_a_bare_env_name_without_ginkgo_pixi_names_the_plugin(self) -> None:
+        registry = PluginRegistry(plugins=(BUILTIN,))
+
+        with pytest.raises(
+            PluginNotFoundError,
+            match=r"environment for scheme \(bare name\)\. Available: 'docker', 'oci'\. "
+            r"Install ginkgo-pixi",
+        ):
+            registry.get(EnvironmentType, "")
 
     def test_the_same_key_on_different_points_does_not_clash(self) -> None:
         gcs = Plugin(

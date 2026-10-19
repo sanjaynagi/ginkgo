@@ -24,6 +24,7 @@ from ginkgo.errors import GinkgoError
 from ginkgo.plugins.api import (
     CliCommand,
     Contribution,
+    EnvironmentType,
     EventSubscriberType,
     ExecutorType,
     MountDriverType,
@@ -38,6 +39,7 @@ __all__ = [
     "PluginLoadFailure",
     "PluginNotFoundError",
     "PluginRegistry",
+    "describe_key",
     "first_party_provider",
     "plugin_registry",
     "use_plugin_registry",
@@ -56,8 +58,19 @@ _FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
     (MountDriverType, "gs"): "ginkgo-gcp",
     (MountDriverType, "oci"): "ginkgo-oci",
     (CliCommand, "report"): "ginkgo-report",
+    (CliCommand, "env"): "ginkgo-pixi",
+    (EnvironmentType, ""): "ginkgo-pixi",
 }
 """Which first-party distribution provides a key core does not ship, for hints."""
+
+
+def describe_key(key: str) -> str:
+    """Return *key* for messages: quoted, or ``(bare name)`` for the empty key.
+
+    The empty key is how an environment type claims ``env=`` values with no
+    scheme, such as ``env="analysis"``.
+    """
+    return repr(key) if key else "(bare name)"
 
 
 def first_party_provider(point: type[Contribution], key: str) -> str | None:
@@ -237,9 +250,10 @@ class PluginRegistry:
         return self._directive_kinds.get(directive_type)
 
     def _not_found_message(self, *, point: type[Contribution], key: str) -> str:
-        available = ", ".join(repr(name) for name in self.keys(point)) or "none"
+        available = ", ".join(describe_key(name) for name in self.keys(point)) or "none"
         message = (
-            f"No installed plugin provides {point.point_name} {key!r}. Available: {available}."
+            f"No installed plugin provides {point.point_name} {describe_key(key)}. "
+            f"Available: {available}."
         )
         provider = first_party_provider(point, key)
         if provider is not None:

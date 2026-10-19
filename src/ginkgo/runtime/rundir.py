@@ -12,7 +12,7 @@ The layout after a run is::
     runs/<run_id>/
       manifest.yaml   what the run recorded, exported once when it finished
       logs/           per-task stdout and stderr
-      envs/           a copy of each Pixi lockfile the run resolved
+      envs/           a copy of each environment lockfile the run resolved
 """
 
 from __future__ import annotations
@@ -255,7 +255,9 @@ class RunDir:
             if env_name in self._copied_envs or not lock_path.is_file():
                 return None
             self._copied_envs.add(env_name)
-        destination = self.envs_dir / f"{_slugify(env_name)}.pixi.lock"
+        # Named after the environment, keeping the lockfile's own name so its
+        # format stays recognisable: envs/analysis.pixi.lock.
+        destination = self.envs_dir / f"{_slugify(env_name)}.{lock_path.name}"
         shutil.copy2(lock_path, destination)
         return self.relative(destination)
 

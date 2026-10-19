@@ -64,8 +64,10 @@ The other errors are explicit:
   first-party plugin provides the key (`_FIRST_PARTY_PROVIDERS` in
   `registry.py`: executor types `k8s` → ginkgo-k8s and `batch` → ginkgo-gcp,
   object stores and FUSE drivers `s3` → ginkgo-aws, `gs` → ginkgo-gcp and
-  `oci` → ginkgo-oci, event subscriber `slack` → ginkgo-slack, CLI command
-  `report` → ginkgo-report), and lists any plugin that failed to load.
+  `oci` → ginkgo-oci, the bare-name environment and CLI command `env` →
+  ginkgo-pixi, event subscriber `slack` → ginkgo-slack, CLI command `report` →
+  ginkgo-report), and lists any plugin that failed to load. The empty
+  bare-name key reads as `(bare name)` in messages (`describe_key`).
 
 `use_plugin_registry(registry)` swaps the process's registry for a block, for
 tests and embedders that need a known set of plugins.
@@ -102,7 +104,14 @@ tests and embedders that need a known set of plugins.
   `env=` value by scheme and builds each environment type on first use, one
   instance per type `name` shared by all its schemes. The run table labels a
   bare name with the bare-name environment's `label` (`pixi:analysis`), and
-  provenance records the same label as `backend`.
+  provenance records the same label as `backend`. Core contributes only the
+  container environment (`docker://`, `oci://`); bare names come from
+  ginkgo-pixi, so without it a bare `env=` fails at validation naming the
+  plugin. A lock file an environment reports is copied into the run directory
+  as `envs/<env>.<lockfile name>`. Core keeps `envs/manifest.py`
+  (`find_pixi_manifest`) for the project's *own* environment: the interpreter
+  check compares the running interpreter with the project's Pixi manifest, and
+  `ginkgo init` scaffolds a Pixi project.
 - **Task kinds.** `@task` only checks that `kind` is a non-empty string, so
   decorating a task never loads plugins; the evaluator looks the kind up when
   it registers the task's node, before anything runs, and refuses an unknown
@@ -148,8 +157,8 @@ load, exiting 1 if one did.
 
 ## First-party plugins
 
-Remote executors, object stores, FUSE drivers, Slack notifications and HTML
-reports are not in core. They live in separate distributions in this repository, under
+Remote executors, object stores, FUSE drivers, Pixi environments, Slack
+notifications and HTML reports are not in core. They live in separate distributions in this repository, under
 `plugins/`:
 
 | Distribution | Package | Entry point | Contributes | Depends on |
@@ -158,6 +167,7 @@ reports are not in core. They live in separate distributions in this repository,
 | `plugins/ginkgo-k8s` | `ginkgo_k8s` | `k8s = "ginkgo_k8s:PLUGIN"` | `ExecutorType` `k8s` (label `Kubernetes`, requires `image`) | `kubernetes` |
 | `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ObjectStoreType` `gs`, `MountDriverType` `gs` (gcsfuse), `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `gcsfs`, `google-auth`, `google-cloud-batch`, `google-cloud-logging` |
 | `plugins/ginkgo-oci` | `ginkgo_oci` | `oci = "ginkgo_oci:PLUGIN"` | `ObjectStoreType` `oci` (with its `oci://namespace/bucket/key` parser), `MountDriverType` `oci` (rclone) | `ocifs` |
+| `plugins/ginkgo-pixi` | `ginkgo_pixi` | `pixi = "ginkgo_pixi:PLUGIN"` | `EnvironmentType` `pixi` (bare names, label `pixi`), `CliCommand` `env` | none (needs the `pixi` binary) |
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 

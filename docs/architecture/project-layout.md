@@ -238,7 +238,7 @@ correctly.
 
 ## Environment discovery
 
-`PixiRegistry` searches `<project_root>/envs/` and one package-local
+`PixiRegistry` (ginkgo-pixi) searches `<project_root>/envs/` and one package-local
 `<workflow_root>/envs/`. Both `ginkgo run` and `ginkgo doctor` derive that
 package-local root from `resolve_envs_workflow_root`, which anchors on the
 **discovered canonical package**, not on the directory of the file being run.

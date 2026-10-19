@@ -3,7 +3,6 @@
 import pytest
 
 from ginkgo.envs.container import ContainerPrepareError
-from ginkgo.envs.pixi import PixiEnvNotFoundError
 from ginkgo.runtime.task_runners import classify_failure
 from ginkgo.runtime.task_runners.shell import ShellTaskError
 from ginkgo.runtime.task_validation import DeclaredOutputNotWrittenError
@@ -36,7 +35,6 @@ class TestFrameworkClassification:
     @pytest.mark.parametrize(
         ("exc", "kind"),
         [
-            (PixiEnvNotFoundError(env="analysis", searched=None), "env_mismatch"),
             (ContainerPrepareError(image="img:1", output="bad image"), "env_mismatch"),
             (ModuleNotFoundError("no module named x"), "import_error"),
             (ImportError("cannot import name"), "import_error"),

@@ -13,7 +13,6 @@ from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.subworkflow import SubWorkflowDirective
 from ginkgo.envs.container import build_container_environment
-from ginkgo.envs.pixi import build_pixi_environment
 from ginkgo.plugins.api import (
     EnvironmentType,
     Plugin,
@@ -32,7 +31,6 @@ BUILTIN = Plugin(
     name="ginkgo",
     contributions=(
         SecretBackendType(name="env", build=build_env_backends),
-        EnvironmentType(name="pixi", schemes=("",), label="pixi", build=build_pixi_environment),
         EnvironmentType(
             name="container",
             schemes=("docker", "oci"),

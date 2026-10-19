@@ -8,7 +8,7 @@ These tests cover:
 - Tasks with ``env=None`` still run correctly alongside env-isolated tasks.
 
 Integration tests require pixi on PATH and the test environment installed at
-``tests/envs/test_env/``.  They are skipped automatically when pixi is
+``plugins/ginkgo-pixi/tests/envs/test_env/``.  They are skipped automatically when pixi is
 unavailable.
 """
 
@@ -22,14 +22,13 @@ import pytest
 
 from ginkgo import Out, file, flow, shell, task
 from ginkgo.runtime.module_loader import load_module_from_path
-from ginkgo.envs.pixi import (
+from ginkgo.envs.manifest import find_pixi_manifest, is_pixi_pyproject
+from ginkgo_pixi.environment import (
     PixiEnvImportError,
     PixiEnvNotFoundError,
     PixiEnvPrepareError,
     PixiRegistry,
-    _env_manifest,
-    _is_pixi_pyproject,
-    _list_envs,
+    list_envs,
 )
 
 
@@ -37,7 +36,7 @@ from ginkgo.envs.pixi import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TESTS_DIR = Path(__file__).resolve().parents[1]
+_TESTS_DIR = Path(__file__).resolve().parent
 _TEST_ENV_NAME = "test_env"
 
 
@@ -49,7 +48,7 @@ def _make_registry() -> PixiRegistry:
 def _evaluate(expr, *, registry: PixiRegistry):
     """Evaluate an expression without importing the evaluator at module import time."""
     from ginkgo import evaluate
-    from ginkgo.envs.pixi import PixiEnvironment
+    from ginkgo_pixi.environment import PixiEnvironment
 
     return evaluate(expr, backend=PixiEnvironment(pixi_registry=registry))
 
@@ -117,8 +116,8 @@ class TestPixiRegistry:
             generated_manifest.write_text("[workspace]\nname = 'demo'\n", encoding="utf-8")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fake_run)
 
         registry = PixiRegistry(project_root=_TESTS_DIR)
         manifest = registry.resolve(env=str(env_file))
@@ -137,12 +136,12 @@ class TestPixiRegistry:
         generated_manifest.write_text("[workspace]\nname = 'demo'\n", encoding="utf-8")
         generated_manifest.touch()
 
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
 
         def fail_run(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
             raise AssertionError("pixi import should not run for a fresh generated manifest")
 
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fail_run)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fail_run)
         registry = PixiRegistry(project_root=_TESTS_DIR)
 
         manifest = registry.resolve(env=str(env_file))
@@ -159,8 +158,8 @@ class TestPixiRegistry:
         def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="import failed")
 
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fake_run)
 
         registry = PixiRegistry(project_root=_TESTS_DIR)
         with pytest.raises(PixiEnvImportError, match="import failed"):
@@ -247,8 +246,8 @@ class TestPixiRegistry:
             install_calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fake_run)
 
         assert registry.prepare(env=_TEST_ENV_NAME) == manifest
         assert registry.prepare(env=_TEST_ENV_NAME) == manifest
@@ -263,8 +262,8 @@ class TestPixiRegistry:
         def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="install failed")
 
-        monkeypatch.setattr("ginkgo.envs.pixi._require_pixi", lambda: None)
-        monkeypatch.setattr("ginkgo.envs.pixi.subprocess.run", fake_run)
+        monkeypatch.setattr("ginkgo_pixi.environment._require_pixi", lambda: None)
+        monkeypatch.setattr("ginkgo_pixi.environment.subprocess.run", fake_run)
 
         with pytest.raises(PixiEnvPrepareError, match="install failed"):
             registry.prepare(env=_TEST_ENV_NAME)
@@ -325,22 +324,22 @@ class TestPixiPyprojectManifest:
     def test_is_pixi_pyproject_detects_tool_pixi_section(self, tmp_path: Path) -> None:
         manifest = tmp_path / "pyproject.toml"
         manifest.write_text(_PYPROJECT_WITH_PIXI, encoding="utf-8")
-        assert _is_pixi_pyproject(manifest) is True
+        assert is_pixi_pyproject(manifest) is True
 
     def test_is_pixi_pyproject_rejects_pyproject_without_tool_pixi(self, tmp_path: Path) -> None:
         manifest = tmp_path / "pyproject.toml"
         manifest.write_text(_PYPROJECT_WITHOUT_PIXI, encoding="utf-8")
-        assert _is_pixi_pyproject(manifest) is False
+        assert is_pixi_pyproject(manifest) is False
 
     def test_is_pixi_pyproject_rejects_non_pyproject_filename(self, tmp_path: Path) -> None:
         manifest = tmp_path / "pixi.toml"
         manifest.write_text("[tool.pixi.workspace]\n", encoding="utf-8")
-        assert _is_pixi_pyproject(manifest) is False
+        assert is_pixi_pyproject(manifest) is False
 
     def test_is_pixi_pyproject_rejects_malformed_toml(self, tmp_path: Path) -> None:
         manifest = tmp_path / "pyproject.toml"
         manifest.write_text("[tool.pixi\nbroken = ", encoding="utf-8")
-        assert _is_pixi_pyproject(manifest) is False
+        assert is_pixi_pyproject(manifest) is False
 
     def test_resolve_named_env_with_pyproject_manifest(self, tmp_path: Path) -> None:
         manifest = _write_env(
@@ -390,12 +389,12 @@ class TestPixiPyprojectManifest:
         )
         _write_env(envs_root, "beta", filename="pyproject.toml", content=_PYPROJECT_WITH_PIXI)
         _write_env(envs_root, "gamma", filename="pyproject.toml", content=_PYPROJECT_WITHOUT_PIXI)
-        assert _list_envs(envs_root) == ["alpha", "beta"]
+        assert list_envs(envs_root) == ["alpha", "beta"]
 
     def test_env_manifest_returns_none_for_empty_directory(self, tmp_path: Path) -> None:
         env_dir = tmp_path / "envs" / "empty"
         env_dir.mkdir(parents=True)
-        assert _env_manifest(env_dir) is None
+        assert find_pixi_manifest(env_dir) is None
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +430,7 @@ class TestPixiShellTask:
     def test_shell_task_cached_on_rerun(self, tmp_path: Path) -> None:
         """Second evaluate() with unchanged inputs returns from cache (no pixi invocation)."""
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
-        from ginkgo.envs.pixi import PixiEnvironment
+        from ginkgo_pixi.environment import PixiEnvironment
         from ginkgo.runtime.events import EventBus, TaskCacheHit
 
         output = str(tmp_path / "sentinel.txt")

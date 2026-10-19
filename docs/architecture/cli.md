@@ -21,8 +21,7 @@ The current CLI supports:
 - `ginkgo cache explain`
 - `ginkgo cache clear`
 - `ginkgo cache prune`
-- `ginkgo env ls`
-- `ginkgo env clear`
+- `ginkgo env ls` / `ginkgo env clear` (from the `ginkgo-pixi` plugin)
 - `ginkgo db migrate`
 - `ginkgo db check`
 - `ginkgo db prune`

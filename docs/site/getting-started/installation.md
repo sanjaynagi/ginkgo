@@ -25,6 +25,7 @@ plugins in this repository:
 - `ginkgo-gcp`: the `gs://` object store, the gcsfuse FUSE driver and the GCP
   Batch executor
 - `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
+- `ginkgo-pixi`: Pixi environments for tasks' `env="name"`, and `ginkgo env`
 - `ginkgo-k8s`: the Kubernetes executor
 - `ginkgo-report`: the `ginkgo report` command, for HTML run reports
 - `ginkgo-slack`: Slack run notifications
