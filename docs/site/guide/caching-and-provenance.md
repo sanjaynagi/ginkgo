@@ -174,7 +174,14 @@ string (or a path inside a produced `Out[folder]`, or a `folder`-annotated
 argument containing a produced path), Ginkgo infers that it must run after
 the task that writes it — no `.output[...]` reference or return value needed.
 Two tasks declaring the same (or an overlapping) `Out[...]` path is a clear
-error before anything runs. A path only *computed* at runtime, from an
+error before anything runs. So is one task whose `Out[...]` path overlaps one
+of its own `file`/`folder` inputs: the same path, an input inside an output
+folder (`Out[folder]` at `results/` with an input `results/samples.tsv`), or
+an output inside an input folder. Running it would overwrite the input and
+cache the damaged file as the input of a successful run. Write the output to
+a path outside every input instead. A plain `str` input is not checked, since
+it may be a label that happens to match a path. A path only *computed* at
+runtime, from an
 upstream value rather than written down as a literal string, still needs to
 be passed through the graph (the producer's return value or an
 `.output[...]` reference) — that is not inferable from a static argument.
