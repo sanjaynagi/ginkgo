@@ -2,7 +2,7 @@
 
 The default output is a directory bundle containing ``index.html``, the
 stylesheet, bundled fonts, a small islands JS module, and copied artifacts
-(notebook HTML, log files). ``single_file=True`` produces one HTML document
+(rendered pages, log files). ``single_file=True`` produces one HTML document
 with the stylesheet, fonts and script inlined.
 """
 
@@ -159,7 +159,7 @@ def _copy_static(*, out_dir: Path) -> None:
 
 
 def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
-    """Copy the notebook and log artifacts declared by the report."""
+    """Copy the rendered pages and log files the report links."""
     for copy in report.artifact_copies:
         dest = out_dir / copy.dest_relpath
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -11,7 +11,7 @@ platforms = ["osx-arm64", "linux-64"]
 python = ">=3.11"
 numpy = ">=2.0"
 pandas = ">=2.0"
-marimo = ">=0.11"
+marimo = ">=0.23"
 
 # This project tracks ginkgo's `main` branch. `pixi install` resolves that
 # branch to one commit and records it in `pixi.lock`, so the lock — not this

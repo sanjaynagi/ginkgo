@@ -6,6 +6,7 @@ Called from inside a ``@task("notebook")`` body, ``notebook()`` returns a
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 from typing import final
@@ -75,6 +76,9 @@ def notebook(
         If the notebook does not exist.
     ValueError
         If it is not a ``.py`` file.
+    SyntaxError
+        If it is not valid Python. marimo would export such a notebook as an
+        empty page and exit successfully, so it is refused here.
     """
     resolved = Path(path).resolve()
     if not resolved.is_file():
@@ -83,6 +87,7 @@ def notebook(
         raise ValueError(
             f"notebook() runs marimo notebooks, which are .py files; got {str(resolved)!r}."
         )
+    ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved))
     return NotebookDirective(
         path=resolved,
         output=output,

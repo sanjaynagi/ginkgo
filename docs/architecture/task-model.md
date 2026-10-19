@@ -89,13 +89,16 @@ def analyze_data(input_file: file) -> file:
 Only marimo notebooks are supported: `notebook()` refuses a path that is not a
 `.py` file. Implemented notebook behavior includes:
 
-- one subprocess per task, `python -m marimo export html <copy> -o
-  <run_dir>/notebooks/task_NNNN.html --force -- --arg-name value ...`, which
+- one subprocess per task, `python -m marimo export html <notebook> -o
+  <run_dir>/notebooks/task_NNNN.html -- --arg-name value ...`, which
   runs the notebook with the task's arguments and renders it in the same pass;
   the notebook reads them with `mo.cli_args()`
-- the export runs on a hidden temporary copy beside the notebook, since marimo
-  rewrites the file it exports (stamping `__generated_with`); relative paths
-  still resolve and the user's file is never written
+- marimo rewrites the file it exports (stamping `__generated_with`), which
+  would read as the task writing its own input, so the runner restores the
+  notebook's original bytes afterwards; marimo's own `__marimo__/session/`
+  file beside the notebook is left as marimo writes it
+- `notebook()` parses the file first: marimo exports a notebook that is not
+  valid Python as an empty page and exits successfully, so it is refused
 - with `env=`, `python` resolves inside that environment, which must provide
   marimo; without it, the notebook runs under Ginkgo's own interpreter
 - run-scoped rendered pages under `.ginkgo/runs/<run_id>/notebooks/`, or
@@ -112,9 +115,8 @@ that page, so the task fails and nothing is cached.
 The runner records the page against the task as the generic `rendered_html`
 annotation (relative to the run directory) with `rendered_html_run_id`, and
 stores an absolute pointer plus the run id in `node.runner_extras`, which the
-evaluator saves with the cache entry. On a cache hit,
-`NotebookRunner.replay_cached` re-applies that pointer if the page still
-exists, so the run lists the page the producing run rendered and names that
+evaluator saves with the cache entry and records against the task again on a
+cache hit, so the run lists the page the producing run rendered and names that
 run. Core treats `rendered_html` as a convention any task kind may use; it
 knows nothing about notebooks.
 

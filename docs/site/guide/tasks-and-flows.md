@@ -353,9 +353,11 @@ A `bool` parameter arrives as `--flag true` or `--flag false`, which
 - `log` — a path to capture stdout/stderr during execution.
 
 Each notebook task is one `marimo export html` subprocess, which runs the
-notebook with the task's arguments and renders it in the same pass. Ginkgo
-exports a hidden temporary copy that sits beside the notebook, so paths
-relative to the notebook still resolve and your file is left untouched. A
+notebook with the task's arguments and renders it in the same pass. marimo
+rewrites the file it exports (stamping `__generated_with`), so Ginkgo puts the
+notebook's original bytes back afterwards; and, as for any marimo export, it
+writes a session file under `__marimo__/` beside the notebook, which you can
+ignore in version control. A
 notebook task can declare an `env`, and then runs `python -m marimo` inside
 that environment, which must therefore provide marimo. Without `env=`, the
 notebook runs under Ginkgo's own interpreter.
@@ -369,7 +371,7 @@ Inside the run directory the rendered page is stored under
 `.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
 export it under the task's name, build the report bundle with the
 `ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
-`deliver/notebooks/<task>.html` next to `deliver/index.html`. See
+`deliver/pages/<task_key>_<task>.html` next to `deliver/index.html`. See
 [Reports](reports.md). A cache hit does not re-render: the task points at the
 page the producing run rendered.
 

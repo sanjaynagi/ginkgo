@@ -3262,7 +3262,7 @@ packages:
   name: ginkgo-notebook
   requires_dist:
   - ginkgo==0.1.0
-  - marimo>=0.11
+  - marimo>=0.23
   requires_python: '>=3.11'
 - pypi: plugins/ginkgo-oci
   name: ginkgo-oci

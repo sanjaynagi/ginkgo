@@ -160,3 +160,24 @@ def test_notebook_runs_marimo_notebooks_only(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="marimo notebooks, which are .py files"):
         notebook(ipynb)
+
+
+def test_the_users_notebook_is_left_byte_identical(tmp_path: Path, notebook_path: Path) -> None:
+    before = notebook_path.read_bytes()
+
+    _evaluate(render(notebook_path=str(notebook_path), sample_id="s1"), root=tmp_path)
+
+    assert notebook_path.read_bytes() == before
+
+
+def test_a_notebook_with_a_syntax_error_is_refused(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.py"
+    broken.write_text("import marimo\napp = marimo.App(\n", encoding="utf-8")
+
+    with pytest.raises(SyntaxError):
+        notebook(broken)
+
+
+def test_a_missing_notebook_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Notebook source not found"):
+        notebook(tmp_path / "missing.py")

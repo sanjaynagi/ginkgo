@@ -120,10 +120,11 @@ tests and embedders that need a known set of plugins.
   must return its own kind's directive, which runs on its own kind's runner, so
   capabilities are always checked against what actually runs; returning another
   kind's directive is an error naming the kind to use. Runners are built on first use from
-  a `RunnerContext` of evaluator services (backend, validator, the shared
-  `ShellRunner`, cache store, run directory, `annotate`, `notice`). A runner's
-  `replay_cached` re-applies anything it stored on `node.runner_extras`, which
-  the evaluator saves in the cache entry's `extra` as `runner_extras`.
+  a `RunnerContext` of evaluator services (the validator, the shared
+  `ShellRunner`, the run directory, `annotate`, and for sub-workflows the run
+  id and database). A runner handles no cache hits: anything it puts in
+  `node.runner_extras` while running, the evaluator saves in the cache entry's
+  `extra` as `runner_extras` and records against the task again on a hit.
   `runtime/task_kinds.task_kind(task_def)` is the one lookup every caller uses
   (dispatch, validation, dry run, remote-input staging, `inspect`). Without
   ginkgo-notebook, a `@task("notebook")` fails at graph build naming the plugin
@@ -133,7 +134,7 @@ tests and embedders that need a known set of plugins.
   read — with `rendered_html_run_id`, the run that rendered it. Core knows
   nothing more about such pages: the run summary exposes both on
   `TaskSummary`, the end-of-run CLI lists them as "Rendered pages", and
-  ginkgo-report links them. On a cache hit the runner's `replay_cached` points
+  ginkgo-report links them. On a cache hit the replayed `runner_extras` point
   the annotation at the producing run's page, so `rendered_html_run_id` names
   that earlier run.
 - **Event subscribers.** `ginkgo run` builds each registered subscriber and

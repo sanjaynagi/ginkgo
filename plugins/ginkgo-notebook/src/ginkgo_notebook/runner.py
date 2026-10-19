@@ -7,16 +7,16 @@ task is one subprocess, and either succeeds with its rendered page or fails
 pointing at it.
 
 The page's path is recorded against the task as ``rendered_html``, the
-annotation core lists in run summaries and the report, and saved with the cache
-entry so a cache hit can point at the page the producing run rendered.
+annotation core lists in run summaries and the report. It is also left in
+``node.runner_extras``, which the evaluator saves with the cache entry and
+records again on a cache hit, so a hit points at the page the producing run
+rendered.
 """
 
 from __future__ import annotations
 
-import os
 import shlex
 import sys
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,7 +25,6 @@ from typing import Any, Callable, ClassVar
 
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.plugins.api import RunnerContext
-from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.task_runners.driver import DriverTaskRunner
 from ginkgo.runtime.task_runners.shell import (
@@ -62,16 +61,14 @@ class NotebookRunner(DriverTaskRunner):
 
     Parameters
     ----------
-    cache_store : CacheStore
-        The run's cache, read on a cache hit for the rendered page's pointer.
     run_dir : RunDir | None
         The run directory, which holds rendered pages under ``notebooks/``.
-        ``None`` for dry runs and validation, which record nothing.
+        ``None`` when evaluating without one; pages then go to
+        ``.ginkgo/notebooks/`` and nothing is recorded.
     annotate : Callable
         Records ``rendered_html`` against the task.
     """
 
-    cache_store: CacheStore
     run_dir: RunDir | None
     annotate: Callable[..., None]
 
@@ -91,12 +88,8 @@ class NotebookRunner(DriverTaskRunner):
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.unlink(missing_ok=True)
 
-        # marimo rewrites the notebook it exports (it stamps
-        # ``__generated_with``), which would read as the task writing its own
-        # input. Export a copy beside the original instead, so paths relative to
-        # the notebook still resolve, and leave the user's file untouched.
-        with _sibling_copy(directive.path) as notebook_copy:
-            cmd = self._export_command(node=node, notebook_path=notebook_copy, html_path=html_path)
+        cmd = self._export_command(node=node, notebook_path=directive.path, html_path=html_path)
+        with _unchanged(directive.path):
             completed = self.shell_runner.run_logged_command(
                 node=node,
                 cmd=cmd,
@@ -108,17 +101,14 @@ class NotebookRunner(DriverTaskRunner):
 
         if completed.returncode != 0:
             combined = (completed.stdout or "") + (completed.stderr or "")
-            hint = self.shell_runner.failure_hint(
-                node=node, exit_code=completed.returncode, output=combined
-            )
-            if hint is None and html_path.is_file():
-                hint = f"The rendered notebook at {html_path} shows the failing cell."
             raise NotebookTaskError(
                 task_name=node.task_def.name,
                 cmd=cmd,
                 exit_code=completed.returncode,
                 output=combined,
-                hint=hint,
+                hint=self._failure_hint(
+                    node=node, html_path=html_path, exit_code=completed.returncode, output=combined
+                ),
             )
 
         if output is None:
@@ -126,18 +116,6 @@ class NotebookRunner(DriverTaskRunner):
         return self._validate_and_return_output(
             task_name=node.task_def.name, task_def=node.task_def, output=output
         )
-
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        """Point a cache hit at the page the producing run rendered, if it still exists."""
-        if self.run_dir is None:
-            return
-        cached = self.cache_store.load_extra_meta(cache_key=cache_key) or {}
-        extras = cached.get("runner_extras")
-        if not isinstance(extras, dict):
-            return
-        rendered = extras.get("rendered_html")
-        if isinstance(rendered, str) and Path(rendered).is_file():
-            self.annotate(node=node, fields=extras)
 
     def _html_path(self, *, node: Any) -> Path:
         """Return where this task's rendered page goes."""
@@ -165,7 +143,6 @@ class NotebookRunner(DriverTaskRunner):
             shlex.quote(str(notebook_path)),
             "-o",
             shlex.quote(str(html_path)),
-            "--force",
             "--",
         ]
         for name, value in node.execution_args.items():
@@ -179,12 +156,23 @@ class NotebookRunner(DriverTaskRunner):
             )
         return " ".join(parts)
 
+    def _failure_hint(
+        self, *, node: Any, html_path: Path, exit_code: int, output: str
+    ) -> str | None:
+        """Name the likeliest fix for a failed export, if there is one to name."""
+        if "No module named marimo" in output and node.task_def.env is not None:
+            return f"The environment {node.task_def.env!r} must install marimo to run notebooks."
+        hint = self.shell_runner.failure_hint(node=node, exit_code=exit_code, output=output)
+        if hint is None and html_path.is_file():
+            hint = f"The rendered notebook at {html_path} shows the failing cell."
+        return hint
+
     def _record_rendered_html(self, *, node: Any, html_path: Path) -> None:
-        """Record the rendered page against the task, and stash it for the cache entry.
+        """Record the rendered page against the task, and leave it for the cache entry.
 
         The run's own record holds the page relative to its run directory. The
         cache entry holds it absolute, with the producing run's id, so a later
-        cache hit can link the page this run rendered.
+        cache hit links the page this run rendered.
         """
         if self.run_dir is None:
             return
@@ -203,18 +191,19 @@ class NotebookRunner(DriverTaskRunner):
 
 
 @contextmanager
-def _sibling_copy(path: Path) -> Iterator[Path]:
-    """Yield a hidden copy of *path* in the same directory, removed afterwards."""
-    fd, name = tempfile.mkstemp(
-        prefix=f".{path.stem}-ginkgo-", suffix=path.suffix, dir=path.parent
-    )
-    copy = Path(name)
+def _unchanged(path: Path) -> Iterator[None]:
+    """Put *path*'s bytes back afterwards if they changed meanwhile.
+
+    marimo rewrites the notebook it exports, stamping ``__generated_with``,
+    which would read as the task writing its own input and re-run it every
+    time. Restoring the original leaves the user's file as it was.
+    """
+    original = path.read_bytes()
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(path.read_bytes())
-        yield copy
+        yield
     finally:
-        copy.unlink(missing_ok=True)
+        if path.read_bytes() != original:
+            path.write_bytes(original)
 
 
 def build_notebook_runner(context: RunnerContext) -> NotebookRunner:
@@ -222,7 +211,6 @@ def build_notebook_runner(context: RunnerContext) -> NotebookRunner:
     return NotebookRunner(
         shell_runner=context.shell_runner,
         validator=context.validator,
-        cache_store=context.cache_store,
         run_dir=context.run_dir,
         annotate=context.annotate,
     )

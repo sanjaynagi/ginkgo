@@ -1,8 +1,8 @@
 """Argument serialization for task kinds that call an external process.
 
 Script and notebook tasks forward their resolved arguments to a separate
-process as CLI options and parameter files, which carry text rather than
-Python objects. These tests pin what a live Python payload becomes at that
+process as command-line options, which carry text rather than Python
+objects. These tests pin what a live Python payload becomes at that
 boundary — a refusal naming the parameter and the task kind, instead of
 falling through to ``json.dumps`` — and how lists and flags render as CLI
 tokens.

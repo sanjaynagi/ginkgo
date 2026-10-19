@@ -105,7 +105,7 @@ uses Rich styles and icons, the report uses tone tokens (`ok` / `fail` /
 │       ├── fraunces-roman.woff2
 │       ├── fraunces-italic.woff2
 │       └── jetbrains-mono.woff2
-├── notebooks/<task_key>_<task>.html            # copied rendered_html pages
+├── pages/<task_key>_<task>.html                # copied rendered_html pages
 └── logs/<log_filename>                         # failed-task logs
 ```
 

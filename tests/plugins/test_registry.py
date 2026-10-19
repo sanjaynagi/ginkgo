@@ -315,13 +315,12 @@ class _Greeting(ExecutionDirective):
 
 @dataclass
 class _GreetingRunner:
-    replayed: list[str]
+    runs: int = 0
 
     def run(self, *, node: Any, directive: _Greeting) -> str:
+        self.runs += 1
+        node.runner_extras = {"greeted": directive.name}
         return f"hello {directive.name}"
-
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        self.replayed.append(cache_key)
 
 
 @task(kind="greeting")
@@ -331,12 +330,14 @@ def greet(name: str) -> Any:
 
 
 class TestTaskKinds:
-    def test_a_plugin_task_kind_runs_its_directive_and_replays_on_a_hit(
+    def test_a_plugin_task_kind_runs_its_directive_and_its_extras_replay_on_a_hit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from ginkgo import evaluate
+        from ginkgo.runtime.evaluator import ConcurrentEvaluator
+        from ginkgo.runtime.events import EventBus, TaskAnnotated
+        from ginkgo.runtime.rundir import RunDir, make_run_id
 
-        runner = _GreetingRunner(replayed=[])
+        runner = _GreetingRunner()
         greeting_kind = Plugin(
             name="ginkgo-greeting",
             contributions=(
@@ -353,10 +354,24 @@ class TestTaskKinds:
         )
         monkeypatch.chdir(tmp_path)
 
+        annotated: list[TaskAnnotated] = []
+
+        def evaluate_once() -> object:
+            run_dir = RunDir.create(
+                run_id=make_run_id(workflow_path=tmp_path / "wf.py"), root=tmp_path / "runs"
+            )
+            bus = EventBus()
+            bus.subscribe(lambda e: annotated.append(e) if isinstance(e, TaskAnnotated) else None)
+            return ConcurrentEvaluator(run_dir=run_dir, event_bus=bus).evaluate(
+                greet(name="ginkgo")
+            )
+
         with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, greeting_kind))):
-            assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
-            assert evaluate(greet(name="ginkgo")) == "hello ginkgo"
-        assert len(runner.replayed) == 1
+            assert evaluate_once() == "hello ginkgo"
+            assert evaluate_once() == "hello ginkgo"
+
+        assert runner.runs == 1
+        assert [event.fields for event in annotated] == [{"greeted": "ginkgo"}]
 
 
 def _command_plugin(name: str, ran: list[str]) -> Plugin:

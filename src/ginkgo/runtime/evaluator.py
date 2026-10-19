@@ -552,14 +552,10 @@ class ConcurrentEvaluator:
         # Runners for the other task kinds are built on first use, from the
         # kind's plugin spec, so a run builds only the runners it needs.
         self._runner_context = RunnerContext(
-            backend=self.backend,
             validator=self._validator,
             shell_runner=self._shell_runner,
-            cache_store=self._cache_store,
             run_dir=self.run_dir,
-            runtime_root=self._runtime_root,
             annotate=self._annotate_task,
-            notice=self._emit_task_notice,
             run_id=lambda: self._run_id or "",
             db_path=WorkspaceLayout.for_cwd().db,
         )
@@ -2359,11 +2355,19 @@ class ConcurrentEvaluator:
             annotation=annotation, value=node.resolved_args.get(name)
         )
 
-    def _runtime_root(self) -> Path:
-        """Return the workspace directory for shared runner support files."""
-        if self.run_dir is not None:
-            return self.run_dir.root.parent
-        return WorkspaceLayout.for_cwd().root
+    def _replay_runner_extras(self, *, node: NodeRun, cache_key: str) -> None:
+        """Record against a cache hit what its runner recorded when it ran.
+
+        A runner keeps such facts in ``node.runner_extras`` (a notebook's
+        rendered page, say), which go into the cache entry; a hit records them
+        again, so this run's record points at what the producing run made.
+        """
+        if self.run_dir is None:
+            return
+        cached = self._cache_store.load_extra_meta(cache_key=cache_key) or {}
+        extras = cached.get("runner_extras")
+        if isinstance(extras, dict) and extras:
+            self._annotate_task(node=node, fields=extras)
 
     def _warn_on_untracked_path_inputs(
         self,
@@ -2466,19 +2470,6 @@ class ConcurrentEvaluator:
                     f"task. Annotate {producer_base}'s return '-> folder' and "
                     f"'{parameter}: folder'."
                 ),
-            )
-        )
-
-    def _emit_task_notice(self, node: NodeRun, message: str) -> None:
-        """Surface a runner notice as an event."""
-        self._emit_event(
-            TaskNotice(
-                run_id=self._run_id,
-                task_id=task_id_for_node(node.node_id),
-                task_name=node.task_def.name,
-                attempt=node.attempt,
-                display_label=node.display_label,
-                message=message,
             )
         )
 
@@ -2600,9 +2591,7 @@ class ConcurrentEvaluator:
         for path in node.tmp_paths:
             shutil.rmtree(path)
         node.tmp_paths = []
-        kind = task_kind(node.task_def)
-        if kind.runner is not None:
-            self._runner_for(kind).replay_cached(node=node, cache_key=cache_key)
+        self._replay_runner_extras(node=node, cache_key=cache_key)
         self._emit_event(
             TaskCacheHit(
                 run_id=self._run_id,
@@ -2680,9 +2669,8 @@ class ConcurrentEvaluator:
     def _record_measured_usage(self, *, node: NodeRun, measured: dict[str, Any]) -> None:
         """Fold one usage measurement into the node's running totals.
 
-        A task may run several subprocesses (a notebook executes, then
-        renders) and several attempts, so peaks take the max and CPU
-        seconds accumulate.
+        A task may run several subprocesses and several attempts, so peaks
+        take the max and CPU seconds accumulate.
         """
         current = node.measured_resources
         if current is None:

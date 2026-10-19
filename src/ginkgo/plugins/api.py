@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
-    from ginkgo.runtime.caching.cache import CacheStore
     from ginkgo.runtime.environment.secrets import SecretBackend, SecretResolver
     from ginkgo.runtime.events import GinkgoEvent
     from ginkgo.runtime.remote_executor import RemoteExecutor
@@ -51,7 +50,6 @@ __all__ = [
     "EventSubscriberType",
     "ExecutorType",
     "MountDriverType",
-    "Notice",
     "ObjectStoreContext",
     "ObjectStoreType",
     "Plugin",
@@ -351,67 +349,46 @@ class Annotate(Protocol):
     def __call__(self, *, node: Any, fields: dict[str, Any]) -> None: ...
 
 
-class Notice(Protocol):
-    """Surface a notice about a task as a ``TaskNotice`` event."""
-
-    def __call__(self, node: Any, message: str) -> None: ...
-
-
 @dataclass(frozen=True, kw_only=True)
 class RunnerContext:
     """The evaluator services a task runner may use.
 
     Parameters
     ----------
-    backend : ExecutionEnvironment | None
-        The run's execution environment router.
     validator : TaskValidator
         Input and contract validation.
     shell_runner : ShellRunner
         Logged subprocess execution, shared by every runner so an interrupt
         terminates all of their children.
-    cache_store : CacheStore
-        The run's cache, for runners that persist or replay extras.
     run_dir : RunDir | None
         The run directory; ``None`` for dry runs and validation.
-    runtime_root : Callable[[], Path]
-        Resolves the workspace directory for shared runner support files.
     annotate : Annotate
         Records facts against a task.
-    notice : Notice
-        Surfaces a notice as a run event.
     run_id : Callable[[], str]
         Returns the current run id.
     db_path : Path
         The provenance database.
     """
 
-    backend: ExecutionEnvironment | None
     validator: TaskValidator
     shell_runner: ShellRunner
-    cache_store: CacheStore
     run_dir: RunDir | None
-    runtime_root: Callable[[], Path]
     annotate: Annotate
-    notice: Notice
     run_id: Callable[[], str]
     db_path: Path
 
 
 class TaskRunner(Protocol):
-    """Executes the directive a task body returned."""
+    """Executes the directive a task body returned.
+
+    Anything a runner wants back on a cache hit, it puts in
+    ``node.runner_extras`` while running: the evaluator saves that with the
+    cache entry and records it against the task again when a later run hits
+    the cache, so a runner never handles cache hits itself.
+    """
 
     def run(self, *, node: Any, directive: Any) -> Any:
         """Execute *directive* for *node* and return the task's result."""
-        ...
-
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        """Re-apply anything the runner recorded when *node* hits the cache.
-
-        A runner that records extras on ``node.runner_extras`` while running
-        gets them back from the cache entry here; one that records nothing
-        does nothing.
-        """
         ...
 
 
