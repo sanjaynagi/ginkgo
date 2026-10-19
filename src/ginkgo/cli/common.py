@@ -33,12 +33,13 @@ def console(output_stream, *, width: int | None = None) -> Console:
 
 
 def stdout_console(*, piped_width: int = 160) -> Console:
-    """Return the console a read-only command prints to.
+    """Return the console a command prints its stdout report to.
 
     A terminal sets its own width; anything else — a pipe, a file, a test —
-    gets a fixed one, so a table's columns do not depend on where the output
-    went. Every command that prints a table asks for its console here, which
-    is why they all wrap the same way.
+    gets a fixed one, so a table's columns, and the paths in a failure panel,
+    do not depend on where the output went. The read-only commands, ``run``
+    and ``debug`` all ask for their console here, which is why they wrap the
+    same way.
 
     Parameters
     ----------

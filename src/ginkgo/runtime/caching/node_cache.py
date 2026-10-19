@@ -94,8 +94,8 @@ class NodeCache:
             return None
         return CacheHit(value=cached_result, cache_key=node.cache_key)
 
-    def written_str_inputs(self, *, node: NodeRun) -> list[str]:
-        """Return plain-``str`` path inputs the just-run task created or changed.
+    def written_str_inputs(self, *, node: NodeRun) -> list[tuple[str, str]]:
+        """Return ``(parameter, path)`` for plain-``str`` inputs the just-run task wrote.
 
         Such a path is content-hashed as an input, so a task that writes it
         (a log it appends to, a legacy ``output_path: str``) changes its own

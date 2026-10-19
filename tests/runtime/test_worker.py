@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ginkgo.runtime.worker import _RedactingWriter, _task_log_context
+from ginkgo.runtime.worker import _RedactingWriter, _task_log_context, _traceback_from_task
 
 
 def test_redacting_writer_write_after_close_is_a_noop(tmp_path: Path) -> None:
@@ -65,3 +65,35 @@ def test_redacting_writer_write_racing_concurrent_close_is_a_noop(tmp_path: Path
 
     assert writer.write("late write\n") == 0
     writer.flush()
+
+
+def _user_task() -> None:
+    raise ValueError("from the task")
+
+
+def _caught_in_worker(call) -> BaseException:
+    """Raise *call*'s exception and catch it here, as ``run_task`` does."""
+    try:
+        call()
+    except BaseException as exc:
+        return exc
+    raise AssertionError("expected an exception")
+
+
+def test_a_task_traceback_starts_at_the_tasks_frame() -> None:
+    exc = _caught_in_worker(_user_task)
+
+    tb = _traceback_from_task(exc=exc, fn=_user_task)
+
+    assert tb is not None
+    assert tb.tb_frame.f_code is _user_task.__code__
+
+
+def test_a_traceback_not_from_the_task_keeps_every_frame() -> None:
+    def _load_fails() -> None:
+        raise ImportError("cannot load the task")
+
+    exc = _caught_in_worker(_load_fails)
+
+    assert _traceback_from_task(exc=exc, fn=None) is exc.__traceback__
+    assert _traceback_from_task(exc=exc, fn=_user_task) is exc.__traceback__

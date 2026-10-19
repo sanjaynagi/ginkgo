@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 import json
 from pathlib import Path
 
-from ginkgo.cli.common import console, open_run
+from ginkgo.cli.common import open_run, stdout_console
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.renderers.debug import (
     render_debug_failure_panel,
@@ -20,7 +19,7 @@ from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 def command_debug(args) -> int:
     """Handle ``ginkgo debug``."""
-    rich_console = console(sys.stdout)
+    rich_console = stdout_console()
     with open_run(args.run_id) as (reader, run_id):
         summary = reader.run(run_id)
 
@@ -41,7 +40,11 @@ def command_debug(args) -> int:
         rich_console.print(f"[green]✓[/] No failed tasks found in [bold]{summary.run_id}[/]")
         return 0
 
-    rich_console.print(render_debug_header(summary=summary, failures=len(failed_tasks)))
+    # A failed run with no failed task failed at run level, and that is one
+    # failure. Otherwise the run failed because its tasks did, so counting
+    # the run as well would count the same failure twice.
+    failures = len(failed_tasks) or 1
+    rich_console.print(render_debug_header(summary=summary, failures=failures))
     for item in _debug_failure_details(summary=summary, failed_tasks=failed_tasks):
         rich_console.print(render_debug_failure_panel(item))
 

@@ -7,6 +7,7 @@ import io
 import sys
 from pathlib import Path
 import traceback
+from types import TracebackType
 from typing import Any
 
 from ginkgo.runtime.module_loader import load_module
@@ -63,6 +64,22 @@ def _attach_measured_resources(*, response: dict[str, Any], usage_start: Any | N
     }
 
 
+def _traceback_from_task(*, exc: BaseException, fn: Any) -> TracebackType | None:
+    """Return *exc*'s traceback, starting at the task's frame if it raised there.
+
+    The first frame of a traceback caught in :func:`run_task` is
+    ``run_task`` itself. When the next frame is the task function's own, the
+    log starts there, at the user's code; an exception raised by
+    ``run_task``'s own work (loading the task, hydrating arguments) keeps
+    every frame.
+    """
+    tb = exc.__traceback__
+    task_code = getattr(fn, "__code__", None)
+    if tb is not None and tb.tb_next is not None and tb.tb_next.tb_frame.f_code is task_code:
+        return tb.tb_next
+    return tb
+
+
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
     usage_start = _rusage_snapshot()
@@ -88,6 +105,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         "attempt": payload.get("attempt"),
         "display_label": payload.get("display_label"),
     }
+    fn = None
     try:
         with (
             _task_log_context(
@@ -119,8 +137,11 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     except BaseException as exc:  # pragma: no cover - exercised via parent tests
         if stderr_path is not None:
             with Path(stderr_path).open("a", encoding="utf-8") as handle:
-                traceback.print_exc(
-                    file=_RedactingWriter(handle=handle, secret_values=secret_values)
+                traceback.print_exception(
+                    type(exc),
+                    exc,
+                    _traceback_from_task(exc=exc, fn=fn),
+                    file=_RedactingWriter(handle=handle, secret_values=secret_values),
                 )
         exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
         response = error_response(exc)

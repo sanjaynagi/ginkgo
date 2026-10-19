@@ -17,12 +17,13 @@ def render_debug_header(*, summary: RunSummary, failures: int) -> Panel:
     """Render the top-level ``ginkgo debug`` report header."""
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="bold #134e4a", no_wrap=True)
-    grid.add_column()
+    grid.add_column(overflow="fold")
     grid.add_row("Run ID", summary.run_id)
-    grid.add_row("Workflow", summary.workflow or "unknown")
+    # Paths, labels and messages are user data: as Text, brackets stay literal.
+    grid.add_row("Workflow", Text(summary.workflow or "unknown"))
     grid.add_row("Status", summary.status)
     grid.add_row("Failures", str(failures))
-    grid.add_row("Run directory", str(summary.run_dir))
+    grid.add_row("Run directory", Text(str(summary.run_dir)))
     return Panel(
         grid,
         title="[bold #0f766e]Debug Report[/]",
@@ -36,17 +37,19 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
     """Render a failed task report for ``ginkgo debug``."""
     summary = Table.grid(padding=(0, 1))
     summary.add_column(style="bold #7f1d1d", no_wrap=True)
-    summary.add_column()
-    summary.add_row("Task", details.task_label)
+    # Folded rather than cut with an ellipsis, so a long path stays copyable.
+    summary.add_column(overflow="fold")
+    summary.add_row("Task", Text(details.task_label))
     if details.ignored:
         # Both kinds of failure are worth debugging, but only one of them
         # ended the run, and the reader is owed which one this was.
         summary.add_row("Policy", "ignored - the run continued past this failure")
-    summary.add_row("Exit code", str(details.exit_code) if details.exit_code is not None else "?")
+    if details.exit_code is not None:
+        summary.add_row("Exit code", str(details.exit_code))
     if details.error:
-        summary.add_row("Error", details.reason_headline)
+        summary.add_row("Error", Text(details.reason_headline))
     if details.log_path is not None:
-        summary.add_row("Log", str(details.log_path))
+        summary.add_row("Log", Text(str(details.log_path)))
 
     sections: list[object] = [summary]
     if details.inputs:
@@ -62,7 +65,7 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
 
     return Panel(
         Group(*sections),
-        title=f"[bold red]Failed Task: {details.task_label}[/]",
+        title=Text(f"Failed Task: {details.task_label}", style="bold red"),
         border_style="red",
         box=box.SQUARE,
         expand=False,
