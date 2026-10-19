@@ -29,7 +29,7 @@ def write_nested(payload: str, dest: Out[file]):
 
 @task(kind="shell")
 def shell_write_nested(payload: str, dest: Out[file]):
-    return shell(cmd=f"echo -n '{payload}' > {dest}")
+    return shell(cmd=f"printf '%s' '{payload}' > {dest}")
 
 
 @task()
@@ -82,27 +82,27 @@ def consume_file(f: file) -> str:
 
 @task(kind="shell")
 def shell_inferred_single(payload: str, dest: Out[file]):
-    return shell(cmd=f"echo -n '{payload}' > {dest}")
+    return shell(cmd=f"printf '%s' '{payload}' > {dest}")
 
 
 @task(kind="shell")
 def shell_inferred_multi(payload: str, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"echo -n '{payload}' > {dest} && echo -n 'checked' > {check}")
+    return shell(cmd=f"printf '%s' '{payload}' > {dest} && printf '%s' 'checked' > {check}")
 
 
 @task(kind="shell")
 def shell_explicit_output_matching(payload: str, dest: Out[file]):
-    return shell(cmd=f"echo -n '{payload}' > {dest}", output=dest)
+    return shell(cmd=f"printf '%s' '{payload}' > {dest}", output=dest)
 
 
 @task(kind="shell")
 def shell_explicit_output_mismatch(payload: str, dest: Out[file], other: str):
-    return shell(cmd=f"echo -n '{payload}' > {dest}", output=other)
+    return shell(cmd=f"printf '%s' '{payload}' > {dest}", output=other)
 
 
 @task(kind="shell")
 def shell_no_out_no_output(payload: str):
-    return shell(cmd=f"echo -n '{payload}'")
+    return shell(cmd=f"printf '%s' '{payload}'")
 
 
 @task()

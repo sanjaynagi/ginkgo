@@ -2,7 +2,7 @@
 
 This project uses Ginkgo to define reproducible workflows, run them
 locally or in task-scoped environments, and inspect their results through the
-CLI and HTML reports.
+CLI (or as HTML reports, with the `ginkgo-report` plugin).
 
 This directory is concise operational guidance for contributors and coding
 agents working in this repository.

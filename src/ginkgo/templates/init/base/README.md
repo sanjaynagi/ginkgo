@@ -44,7 +44,8 @@ Ginkgo is a Python workflow orchestrator for building reproducible, analytical
 pipelines. You define work as typed tasks and connect those tasks inside a flow.
 Ginkgo then evaluates the dependency graph, executes tasks concurrently,
 reuses cached results when inputs have not changed, and records provenance that
-you can inspect from the CLI and HTML reports.
+you can inspect from the CLI, or as an HTML report with the `ginkgo-report`
+plugin.
 
 ## Core Concepts
 
