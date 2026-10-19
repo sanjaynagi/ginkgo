@@ -30,7 +30,7 @@ from ginkgo.params import ParamContext
 from ginkgo.plugins.api import RunnerContext, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
 from ginkgo.core.resources import ResourceOverrides, Resources
-from ginkgo.core.task import TaskDef
+from ginkgo.core.task import PartialCall, TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.edge_inference import (
@@ -39,6 +39,7 @@ from ginkgo.runtime.edge_inference import (
     PathIndex,
     collect_consumed_paths,
     collect_produced_paths,
+    reject_self_overwrite,
 )
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
@@ -117,6 +118,39 @@ class CycleError(GinkgoError, RuntimeError):
         self.cycle = cycle
         rendered = " -> ".join(cycle)
         super().__init__(f"Detected cycle in workflow graph: {rendered}")
+
+
+class IncompleteCallError(GinkgoError, TypeError):
+    """Raised when a task call missing required arguments reaches the graph.
+
+    Such a call is a :class:`~ginkgo.core.task.PartialCall`, which only
+    ``.map()`` or ``.product_map()`` can complete. Returned from the flow or
+    passed to another task, it would otherwise run nothing or reach a worker
+    as an ordinary value.
+
+    Parameters
+    ----------
+    partial_call : PartialCall
+        The incomplete call.
+    consumer : str | None
+        Short name of the task it was passed to, or ``None`` when the flow
+        returned it.
+    """
+
+    diagnostic_code: ClassVar[str] = "INCOMPLETE_CALL"
+    diagnostic_suggestion: ClassVar[str] = (
+        "Pass every required argument, or complete the call with .map() or .product_map()."
+    )
+
+    def __init__(self, *, partial_call: PartialCall, consumer: str | None) -> None:
+        name = partial_call.task_def.fn.__name__
+        missing = ", ".join(partial_call.missing_params)
+        where = "returned from the flow" if consumer is None else f"passed to {consumer}()"
+        super().__init__(
+            f"{name}() is missing required argument(s): {missing}, but was {where}. "
+            "Pass every required argument, or complete the call with .map() or "
+            ".product_map()."
+        )
 
 
 class RootSkippedError(GinkgoError, RuntimeError):
@@ -445,7 +479,8 @@ class ConcurrentEvaluator:
 
         Empty unless the caller passed ``constructed_calls`` recorded around the
         flow body. Only meaningful after ``validate`` or ``evaluate`` has
-        registered the graph.
+        registered the graph. A discarded partial call has no expressions,
+        so it is always among them.
         """
         return [
             call
@@ -550,7 +585,7 @@ class ConcurrentEvaluator:
     def task_nodes(self) -> Mapping[int, NodeRun]:
         """Read-only view of the task graph, keyed by scheduler node id.
 
-        Populated once the graph has been built (after :meth:`build_and_validate` or
+        Populated once the graph has been built (after :meth:`build_graph` or
         during :meth:`evaluate`). Intended for read-only consumers such as
         the dry-run planner.
         """
@@ -710,6 +745,12 @@ class ConcurrentEvaluator:
                 )
             }
 
+        # Only a fan-out may complete a partial call; one reached here would
+        # otherwise run nothing (as the root) or reach a worker as a value.
+        if isinstance(value, PartialCall):
+            consumer = task_path[-1].rsplit(".", 1)[-1] if task_path else None
+            raise IncompleteCallError(partial_call=value, consumer=consumer)
+
         if isinstance(value, ExprList):
             dependencies: set[int] = set()
             for item in value:
@@ -834,13 +875,14 @@ class ConcurrentEvaluator:
         """Infer ``Out[...]`` path dependency edges and emit deferred events.
 
         Called once after every top-level registration batch — the initial
-        graph build (``evaluate``/``build_and_validate``) and each dynamic
+        graph build (``evaluate``/``build_graph``) and each dynamic
         expansion (``GraphExpanded``). Implements issue #280/#307's phase 2:
 
         1. Collect the literal produced (``Out[...]``) and consumed path
            values for the nodes registered in this batch.
         2. Reject two nodes declaring the same, or an overlapping, ``Out``
-           path before any work starts.
+           path before any work starts, and one node declaring an ``Out``
+           path that overlaps its own ``file``/``folder`` input.
         3. Match new consumers against every producer known so far (this
            batch and every earlier one) and add the producer as a dependency.
         4. Match new producers against consumers from *earlier* batches —
@@ -882,22 +924,21 @@ class ConcurrentEvaluator:
         new_consumed: list[ConsumedPath] = []
         for node_id in new_node_ids:
             node = self._nodes[node_id]
-            new_produced.extend(
-                collect_produced_paths(
-                    node_id=node_id,
-                    task_name=node.task_def.name,
-                    task_def=node.task_def,
-                    args=node.expr.args,
-                )
+            node_produced = collect_produced_paths(
+                node_id=node_id,
+                task_name=node.task_def.name,
+                task_def=node.task_def,
+                args=node.expr.args,
             )
-            new_consumed.extend(
-                collect_consumed_paths(
-                    node_id=node_id,
-                    task_name=node.task_def.name,
-                    task_def=node.task_def,
-                    args=node.expr.args,
-                )
+            node_consumed = collect_consumed_paths(
+                node_id=node_id,
+                task_name=node.task_def.name,
+                task_def=node.task_def,
+                args=node.expr.args,
             )
+            reject_self_overwrite(produced=node_produced, consumed=node_consumed)
+            new_produced.extend(node_produced)
+            new_consumed.extend(node_consumed)
 
         index = self._path_index
         index.add_produced(new_produced)
@@ -2142,7 +2183,7 @@ class ConcurrentEvaluator:
         cannot satisfy falls back to that same default. Any route without a
         usable executor is an error rather than a silent local run.
         Placement depends only on the task definition, so it is validated
-        for every node up front in ``build_and_validate``.
+        for every node up front in ``validate_graph``.
         """
         registry = self.executor_registry
         if task_def.executor is not None:
@@ -2279,13 +2320,16 @@ class ConcurrentEvaluator:
                     "else."
                 )
             value = self._inferred_return_value(node=node)
-        coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
-        self._validator.validate_return_value(task_def=task_def, value=coerced)
+        # An unwritten Out[...] path is checked first: a task returning that
+        # path would otherwise fail the generic return check, which names
+        # `.return` rather than the parameter.
         if task_def.output_params:
             self._validator.validate_declared_outputs_written(
                 task_def=task_def,
                 resolved_args=node.execution_args or {},
             )
+        coerced = self._validator.coerce_return_value(task_def=task_def, value=value)
+        self._validator.validate_return_value(task_def=task_def, value=coerced)
         return coerced
 
     def _inferred_return_value(self, *, node: NodeRun) -> Any:
@@ -2440,9 +2484,28 @@ class ConcurrentEvaluator:
 
     def build_and_validate(self, expr: Any) -> None:
         """Build the static task graph and validate import/env/input constraints."""
+        self.build_graph(expr)
+        self.validate_graph()
+
+    def build_graph(self, expr: Any) -> None:
+        """Register the static task graph reachable from *expr*, with inferred edges.
+
+        After this, :attr:`unreachable_calls` is known, so a caller can report
+        dropped calls before :meth:`validate_graph` fails on a consequence of
+        one, such as a consumer of a dropped producer's ``Out[...]`` path.
+
+        Parameters
+        ----------
+        expr : Any
+            The flow's return value: an expression or a nested container of
+            them.
+        """
         self._root_template = expr
         self._root_dependency_ids = self._register_value(expr)
         self._infer_and_apply_edges()
+
+    def validate_graph(self) -> None:
+        """Validate the built graph's import/env/input constraints."""
         self._validator.validate_declared_envs(nodes=self._nodes.values())
         self._validator.validate_declared_secrets(nodes=self._nodes.values())
 

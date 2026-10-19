@@ -6,16 +6,38 @@ than executing. The evaluator recursively resolves these nodes.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
-    from ginkgo.core.task import TaskDef
+    from ginkgo.core.task import PartialCall, TaskDef
 
 T = TypeVar("T")
+
+
+def _refused_value_operation(action: str) -> Callable[..., Any]:
+    """Build an ``Expr`` operator that refuses *action* with a task-named error.
+
+    Parameters
+    ----------
+    action : str
+        What the operator does, completing "cannot be ...".
+
+    Returns
+    -------
+    Callable[..., Any]
+        A method that raises :meth:`Expr._deferred_value_error` whatever its
+        operands.
+    """
+
+    def refuse(self: Expr, *operands: object) -> Any:
+        raise self._deferred_value_error(action)
+
+    refuse.__doc__ = f"Refuse being {action}: the value does not exist until the task runs."
+    return refuse
 
 
 @dataclass(frozen=True)
@@ -82,7 +104,25 @@ class Expr(Generic[T]):
         """
         return True
 
-    def _deferred_result_error(self, action: str) -> TypeError:
+    def __eq__(self, other: object) -> bool:
+        """Compare two calls by identity; refuse comparing a call with a value.
+
+        A call compared with a value would otherwise be silently unequal, so
+        ``if expr == 5:`` would always take its ``else`` branch. Two calls are
+        equal only when they are the same object: comparing their arguments
+        would compare any nested call with a plain value, and so raise.
+        """
+        if not isinstance(other, Expr):
+            raise self._deferred_value_error("compared")
+        return self is other
+
+    def __format__(self, format_spec: str) -> str:
+        """Render as ``str()`` does; refuse a format spec, which needs the value."""
+        if format_spec:
+            raise self._deferred_value_error("formatted")
+        return str(self)
+
+    def _deferred_result_error(self, action: str, *, remedy: str | None = None) -> TypeError:
         """Build the error explaining why *action* cannot work on a deferred call.
 
         Parameters
@@ -90,22 +130,55 @@ class Expr(Generic[T]):
         action : str
             What the user tried to do, as a past participle that completes
             "cannot be ...".
+        remedy : str | None
+            The sentence telling the user what to do instead. Defaults to
+            selecting the call's outputs by position.
 
         Returns
         -------
         TypeError
             The error to raise. A ``TypeError`` because that is what Python's
-            unpacking, subscripting, and ``len()`` protocols promise, and
-            because the CLI reports the user's own line for it.
+            unpacking, subscripting, ``len()``, comparison, and arithmetic
+            protocols promise, and because the CLI reports the user's own line
+            for it.
         """
         # The task's own function name, not TaskDef.name, which carries the
         # hashed synthetic module prefix of the loaded workflow.
         name = self.task_def.fn.__name__
+        if remedy is None:
+            remedy = (
+                "Select its outputs by position instead: "
+                f"r = {name}(...); a, b = r.output[0], r.output[1]"
+            )
         return TypeError(
             f"{name}() returns one deferred result, which cannot be {action} while the "
-            f"flow is being built. Select its outputs by position instead: "
-            f"r = {name}(...); a, b = r.output[0], r.output[1]"
+            f"flow is being built. {remedy}"
         )
+
+    def _deferred_value_error(self, action: str) -> TypeError:
+        """Build the error for an operation that needs the call's actual value."""
+        return self._deferred_result_error(
+            action,
+            remedy=(
+                "Its value exists only once the task has run: pass the call to another "
+                "task and do the work there."
+            ),
+        )
+
+    # Operators that need the value itself. Without these a comparison or
+    # conversion would raise Python's bare "not supported for 'Expr'" error.
+    __lt__ = __le__ = __gt__ = __ge__ = _refused_value_operation("compared")
+    __int__ = __float__ = __complex__ = __index__ = __round__ = _refused_value_operation(
+        "converted to a number"
+    )
+    _refuse_arithmetic = _refused_value_operation("used in arithmetic")
+    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _refuse_arithmetic
+    __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = _refuse_arithmetic
+    __mod__ = __rmod__ = __divmod__ = __rdivmod__ = __pow__ = __rpow__ = _refuse_arithmetic
+    __matmul__ = __rmatmul__ = __neg__ = __pos__ = __abs__ = _refuse_arithmetic
+    __and__ = __rand__ = __or__ = __ror__ = __xor__ = __rxor__ = _refuse_arithmetic
+    __lshift__ = __rlshift__ = __rshift__ = __rrshift__ = __invert__ = _refuse_arithmetic
+    del _refuse_arithmetic
 
     def __repr__(self) -> str:
         arg_strs = []
@@ -312,19 +385,31 @@ class ConstructedCall:
 
     Parameters
     ----------
-    value : Expr | ExprList
+    value : Expr | ExprList | PartialCall
         The object the call handed back to the flow body.
     exprs : tuple[Expr, ...]
         The expressions the call produced — one for a plain call, one per
-        branch for a fan-out. Never empty.
+        branch for a fan-out. Empty only for a partial call, which produces
+        none until ``.map()`` or ``.product_map()`` completes it.
+    missing_params : tuple[str, ...]
+        Required parameters a partial call left unsupplied; empty for a
+        complete call.
     """
 
-    value: Expr | ExprList
+    value: Expr | ExprList | PartialCall
     exprs: tuple[Expr, ...]
+    missing_params: tuple[str, ...] = ()
+
+    @property
+    def is_partial(self) -> bool:
+        """Whether the call omitted required arguments."""
+        return bool(self.missing_params)
 
     @property
     def task_name(self) -> str:
         """Fully qualified name of the called task."""
+        if self.is_partial:
+            return self.value.task_def.name
         return self.exprs[0].task_def.name
 
     @property
@@ -373,11 +458,32 @@ def record_call(value: Expr | ExprList) -> None:
     log.append(ConstructedCall(value=value, exprs=exprs))
 
 
-def supersede_call(value: Expr | ExprList) -> None:
-    """Drop a logged call that a chained fan-out has replaced.
+def record_partial_call(partial_call: PartialCall) -> None:
+    """Append a call that omitted required arguments to the active log, if any.
+
+    It enters the graph only through the fan-out that completes it, which
+    supersedes this entry, so one still logged once the flow body has run was
+    discarded.
+    """
+    log = _active_call_log.get()
+    if log is None:
+        return
+    log.append(
+        ConstructedCall(
+            value=partial_call,
+            exprs=(),
+            missing_params=partial_call.missing_params,
+        )
+    )
+
+
+def supersede_call(value: Expr | ExprList | PartialCall) -> None:
+    """Drop a logged call that a fan-out has replaced.
 
     ``ExprList.map`` rebuilds every branch, so the expressions of the list it
-    was called on are legitimately unreachable and must not be reported.
+    was called on are legitimately unreachable and must not be reported. A
+    partial call completed by ``.map()`` or ``.product_map()`` is likewise
+    replaced by the branches it produced.
     """
     log = _active_call_log.get()
     if log is None:

@@ -37,7 +37,7 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 from ginkgo.runtime.task_kinds import task_kind
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.plugins.api import TaskKind
 from ginkgo.plugins.registry import plugin_registry
 
@@ -527,6 +527,17 @@ def contains_dynamic_expression(value: Any) -> bool:
     return False
 
 
+class DeclaredOutputNotWrittenError(GinkgoError, FileNotFoundError):
+    """Raised when a task finished without writing one of its ``Out[...]`` paths.
+
+    A ``FileNotFoundError`` for callers that already catch one, but its own
+    type so failure classification reports it as an output failure rather
+    than a missing input.
+    """
+
+    failure_kind: ClassVar[FailureKind] = "output_validation_error"
+
+
 @dataclass(kw_only=True)
 class TaskValidator:
     """Validate task definitions, inputs, and return values.
@@ -804,7 +815,7 @@ class TaskValidator:
             task_def=task_def, resolved_args=resolved_args
         ):
             if not output_path_matches_kind(path=path, kind=kind):
-                raise FileNotFoundError(
+                raise DeclaredOutputNotWrittenError(
                     f"{task_def.name}.{name} is declared `Out[{kind}]` but "
                     f"{path!r} was not written."
                 )

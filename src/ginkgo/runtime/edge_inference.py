@@ -97,6 +97,56 @@ class DuplicateOutputPathError(GinkgoError, ValueError):
         )
 
 
+class OutputOverwritesInputError(GinkgoError, ValueError):
+    """Raised when a node declares an ``Out[...]`` path over one of its own inputs.
+
+    Running it would overwrite the input, and the cache would then record the
+    damaged file as the input of a successful run.
+    """
+
+    def __init__(self, *, produced: ProducedPath, consumed: ConsumedPath) -> None:
+        self.produced = produced
+        self.consumed = consumed
+        if produced.path == consumed.path:
+            detail = f"both name {produced.path!r}"
+        elif os.path.commonpath([produced.path, consumed.path]) == produced.path:
+            detail = f"input {consumed.path!r} is inside `Out[...]` path {produced.path!r}"
+        else:
+            detail = f"`Out[...]` path {produced.path!r} is inside input {consumed.path!r}"
+        super().__init__(
+            f"{produced.task_name!r} (parameter {produced.param!r}) would write over its "
+            f"own input (parameter {consumed.param!r}): {detail}. A task cannot declare "
+            "an output path that overlaps a path it reads; write to a new path instead."
+        )
+
+
+def reject_self_overwrite(*, produced: list[ProducedPath], consumed: list[ConsumedPath]) -> None:
+    """Refuse one node whose ``Out[...]`` paths overlap its own ``file``/``folder`` inputs.
+
+    Overlap is the same path, or one path inside the other. Untyped consumed
+    values are skipped: a plain ``str`` may be a label that happens to match a
+    path, such as a sample name equal to that sample's output folder.
+
+    Parameters
+    ----------
+    produced : list[ProducedPath]
+        The node's literal ``Out[...]`` paths.
+    consumed : list[ConsumedPath]
+        The node's literal input paths.
+
+    Raises
+    ------
+    OutputOverwritesInputError
+        On the first overlapping pair.
+    """
+    for entry in consumed:
+        if entry.kind is None:
+            continue
+        for output in produced:
+            if os.path.commonpath([output.path, entry.path]) in {output.path, entry.path}:
+                raise OutputOverwritesInputError(produced=output, consumed=entry)
+
+
 def _ancestors(path: str):
     """Yield every proper ancestor directory of a normalised absolute *path*."""
     current = path
