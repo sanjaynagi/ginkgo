@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.config import load_runtime_config
-from ginkgo.plugins.api import ObjectStoreType
+from ginkgo.plugins.api import ObjectStoreContext, ObjectStoreType
 from ginkgo.plugins.registry import plugin_registry
 from ginkgo.remote.backend import ObjectStore
 from ginkgo.remote.fsspec_backends import (
@@ -49,14 +49,14 @@ def resolve_backend(
     """
     store_type = plugin_registry().get(ObjectStoreType, scheme)
     config = load_runtime_config(project_root=Path.cwd())
-    return store_type.build(config=config, region=region)
+    return store_type.build(ObjectStoreContext(config=config, region=region))
 
 
-def build_s3_store(*, config: Mapping[str, Any], region: str | None) -> ObjectStore:
+def build_s3_store(context: ObjectStoreContext) -> ObjectStore:
     """Build the S3 store from ``AWS_REGION`` or ``[remote] region``."""
-    remote = _table(config, "remote")
+    remote = _table(context.config, "remote")
     return S3FileSystemBackend(
-        region=region
+        region=context.region
         or _first_defined(
             os.environ.get("AWS_REGION"),
             os.environ.get("AWS_DEFAULT_REGION"),
@@ -65,9 +65,9 @@ def build_s3_store(*, config: Mapping[str, Any], region: str | None) -> ObjectSt
     )
 
 
-def build_oci_store(*, config: Mapping[str, Any], region: str | None) -> ObjectStore:
+def build_oci_store(context: ObjectStoreContext) -> ObjectStore:
     """Build the OCI store from ``GINKGO_REMOTE_OCI_*``/``OCI_*`` or ``[remote.oci]``."""
-    remote = _table(config, "remote")
+    remote = _table(context.config, "remote")
     oci = _table(remote, "oci")
     return OCIFileSystemBackend(
         config_path=_first_defined(
@@ -81,7 +81,7 @@ def build_oci_store(*, config: Mapping[str, Any], region: str | None) -> ObjectS
             os.environ.get("OCI_CONFIG_PROFILE"),
             _config_string(oci, "profile"),
         ),
-        region=region
+        region=context.region
         or _first_defined(
             os.environ.get("GINKGO_REMOTE_OCI_REGION"),
             os.environ.get("OCI_REGION"),
@@ -91,12 +91,12 @@ def build_oci_store(*, config: Mapping[str, Any], region: str | None) -> ObjectS
     )
 
 
-def build_gcs_store(*, config: Mapping[str, Any], region: str | None) -> ObjectStore:
+def build_gcs_store(context: ObjectStoreContext) -> ObjectStore:
     """Build the GCS store from ``GINKGO_REMOTE_GCS_PROJECT`` or ``[remote.gcs]``.
 
-    GCS buckets are not regional, so *region* is accepted and unused.
+    GCS buckets are not regional, so the context's region is unused.
     """
-    gcs = _table(_table(config, "remote"), "gcs")
+    gcs = _table(_table(context.config, "remote"), "gcs")
     return GCSFileSystemBackend(
         project=_first_defined(
             os.environ.get("GINKGO_REMOTE_GCS_PROJECT"),

@@ -54,7 +54,7 @@ from ginkgo.core.resources import (
 )
 from ginkgo.core.flow import discover_flow
 from ginkgo.params import ParamContext, format_param_help
-from ginkgo.runtime.backend import CompositeEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
@@ -262,7 +262,7 @@ def run_workflow(
         config=runtime_params,
         environ=os.environ,
     )
-    backend = CompositeEnvironment(
+    backend = EnvironmentRouter(
         context=EnvironmentContext(
             project_root=Path.cwd(),
             workflow_root=resolve_envs_workflow_root(

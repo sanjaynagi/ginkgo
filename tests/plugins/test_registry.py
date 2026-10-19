@@ -11,21 +11,23 @@ import pytest
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.secret import SecretRef
+from ginkgo.core.shell import ShellDirective
 from ginkgo.core.task import task
 from ginkgo.plugins import registry as registry_module
 from ginkgo.plugins.api import (
+    EnvironmentType,
     EventSubscriberType,
     ExecutorType,
     MountDriverType,
     ObjectStoreType,
     Plugin,
+    SecretBackendContext,
     SecretBackendType,
     TaskKind,
 )
 from ginkgo.plugins.builtin import BUILTIN
 from ginkgo.plugins.registry import (
     PluginConflictError,
-    PluginLoadError,
     PluginNotFoundError,
     PluginRegistry,
     use_plugin_registry,
@@ -48,7 +50,7 @@ class _VaultBackend:
         return f"vault:{ref.name}"
 
 
-def _vault_backends(**_: Any) -> tuple[_VaultBackend, ...]:
+def _vault_backends(context: SecretBackendContext) -> tuple[_VaultBackend, ...]:
     return (_VaultBackend(),)
 
 
@@ -117,6 +119,45 @@ class TestLookup:
         with pytest.raises(PluginConflictError, match="'ginkgo' and 'ginkgo-other-s3'"):
             PluginRegistry(plugins=(BUILTIN, clash))
 
+    def test_two_task_kinds_returning_one_directive_is_an_error(self) -> None:
+        shadow = Plugin(
+            name="ginkgo-shadow-shell",
+            contributions=(
+                TaskKind(
+                    name="slurm",
+                    directive=ShellDirective,
+                    call_form="shell(...)",
+                    execution_mode="driver",
+                    allows_env=True,
+                    remote_capable=False,
+                    runner=lambda _: None,
+                ),
+            ),
+        )
+
+        with pytest.raises(PluginConflictError, match="'shell' and 'slurm' both return"):
+            PluginRegistry(plugins=(BUILTIN, shadow))
+
+    def test_a_task_kind_must_set_directive_and_runner_together(self) -> None:
+        with pytest.raises(ValueError, match="directive, runner and call_form together"):
+            TaskKind(
+                name="half",
+                directive=ShellDirective,
+                call_form="",
+                execution_mode="driver",
+                allows_env=False,
+                remote_capable=False,
+            )
+
+    def test_an_environment_claims_every_scheme_it_lists(self) -> None:
+        registry = PluginRegistry(plugins=(BUILTIN,))
+
+        assert registry.get(EnvironmentType, "docker") is registry.get(EnvironmentType, "oci")
+        assert registry.all(EnvironmentType) == [
+            registry.get(EnvironmentType, ""),
+            registry.get(EnvironmentType, "docker"),
+        ]
+
     def test_the_same_key_on_different_points_does_not_clash(self) -> None:
         registry = PluginRegistry(plugins=(BUILTIN,))
 
@@ -131,19 +172,25 @@ class TestDiscovery:
         assert [plugin.name for plugin in registry.plugins] == ["ginkgo", "ginkgo-fake"]
         assert registry.get(ExecutorType, "fake").label == "Fake"
 
-    def test_an_entry_point_that_is_not_a_plugin_is_refused(
+    def test_an_entry_point_that_is_not_a_plugin_is_skipped_and_recorded(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with pytest.raises(PluginLoadError, match="'broken'.*is a dict, not a ginkgo Plugin"):
-            _discover_with(monkeypatch, _EntryPoint("broken", "broken:PLUGIN", {}))
+        registry = _discover_with(monkeypatch, _EntryPoint("broken", "broken:PLUGIN", {}))
 
-    def test_an_entry_point_that_fails_to_import_is_reported(
+        assert [plugin.name for plugin in registry.plugins] == ["ginkgo"]
+        (failure,) = registry.failures
+        assert failure.describe() == "broken (broken:PLUGIN): is a dict, not a ginkgo Plugin"
+
+    def test_a_plugin_that_fails_to_import_does_not_break_the_others(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         failing = _EntryPoint("missing", "missing:PLUGIN", ImportError("no module 'missing'"))
+        registry = _discover_with(monkeypatch, failing, _EntryPoint("fake", "fake:PLUGIN", _FAKE))
 
-        with pytest.raises(PluginLoadError, match="'missing'.*failed to load: no module"):
-            _discover_with(monkeypatch, failing)
+        assert registry.get(ExecutorType, "fake").label == "Fake"
+        assert registry.get(ObjectStoreType, "s3").scheme == "s3"
+        with pytest.raises(PluginNotFoundError, match="failed to load: missing .*no module"):
+            registry.get(ExecutorType, "k8s")
 
 
 class TestPluginContributionsReachCore:
@@ -178,6 +225,14 @@ class TestPluginContributionsReachCore:
 
         assert resolver.resolve(ref=SecretRef(name="token", backend="vault")) == "vault:token"
         assert resolver.resolve(ref=SecretRef(name="A", backend="env")) == "1"
+
+    def test_a_secret_naming_an_uninstalled_backend_says_so(
+        self, with_fake_plugin: PluginRegistry, tmp_path: Path
+    ) -> None:
+        resolver = build_secret_resolver(project_root=tmp_path, config={}, environ={})
+
+        with pytest.raises(PluginNotFoundError, match="secret backend 'gcp'"):
+            resolver.resolve(ref=SecretRef(name="token", backend="gcp"))
 
 
 @dataclass

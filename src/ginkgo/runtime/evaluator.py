@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Literal
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.plugins.api import RunnerContext, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
@@ -110,7 +110,7 @@ from ginkgo.workspace_layout import WorkspaceLayout
 class CycleError(GinkgoError, RuntimeError):
     """Raised when the expression graph contains a dependency cycle."""
 
-    failure_kind: ClassVar[str] = "cycle_detected"
+    failure_kind: ClassVar[FailureKind] = "cycle_detected"
 
     def __init__(self, cycle: list[str]) -> None:
         self.cycle = cycle
@@ -2649,16 +2649,10 @@ class ConcurrentEvaluator:
         if kind.directive is None:
             if isinstance(completed_value, ExecutionDirective):
                 directive_name = type(completed_value).__name__
-                directive_kind = self._kind_for_directive(type(completed_value))
                 self._cleanup_transport(node)
-                suggestion = (
-                    f"Use @task(kind={directive_kind.name!r})"
-                    if directive_kind is not None
-                    else "Use the task kind that runs it"
-                )
                 raise TypeError(
                     f"{node.task_def.name} returned {directive_name}, but the task is declared "
-                    f"with kind={kind.name!r}. {suggestion}."
+                    f"with kind={kind.name!r}. {self._kind_suggestion(type(completed_value))}"
                 )
 
             self._validator.validate_process_safe_value(
@@ -2689,16 +2683,18 @@ class ConcurrentEvaluator:
             self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
             return
 
-        # A directive runs on the runner of the kind that returns it, which is
-        # usually but not necessarily the task's own kind.
+        # A task runs its own kind's directive on its own kind's runner, so the
+        # capabilities checked against the kind are those of what runs.
         assert self._executors is not None
-        directive_kind = (
-            self._kind_for_directive(type(completed_value))
-            if isinstance(completed_value, ExecutionDirective)
-            else None
-        )
-        if directive_kind is not None:
-            runner = self._runner_for(directive_kind)
+        if isinstance(completed_value, ExecutionDirective):
+            if not isinstance(completed_value, kind.directive):
+                self._cleanup_transport(node)
+                raise TypeError(
+                    f"{node.task_def.name} is declared with kind={kind.name!r} and must "
+                    f"return {kind.call_form}, not {type(completed_value).__name__}. "
+                    f"{self._kind_suggestion(type(completed_value))}"
+                )
+            runner = self._runner_for(kind)
             self._cleanup_transport(node)
             node.state = "running_shell"
             future = self._executors.shell.submit(runner.run, node=node, directive=completed_value)
@@ -2758,12 +2754,12 @@ class ConcurrentEvaluator:
         return runner
 
     @staticmethod
-    def _kind_for_directive(directive_type: type) -> TaskKind | None:
-        """Return the task kind whose runner executes *directive_type*."""
-        for kind in plugin_registry().all(TaskKind):
-            if kind.directive is directive_type:
-                return kind
-        return None
+    def _kind_suggestion(directive_type: type[ExecutionDirective]) -> str:
+        """Name the kind that returns *directive_type*, for a mismatch error."""
+        kind = plugin_registry().kind_for_directive(directive_type)
+        if kind is None:
+            return "No installed task kind returns it."
+        return f"Use @task(kind={kind.name!r})."
 
 
 def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:

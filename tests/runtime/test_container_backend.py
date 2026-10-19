@@ -23,7 +23,7 @@ from ginkgo.envs.container import (
 from ginkgo.envs.mounts import mount
 from ginkgo.plugins.api import EnvironmentContext
 from ginkgo.plugins.registry import PluginNotFoundError
-from ginkgo.runtime.backend import CompositeEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter
 
 
 # ------------------------------------------------------------------
@@ -500,7 +500,7 @@ class TestContainerBackendEnvLockPath:
 
 
 # ------------------------------------------------------------------
-# CompositeEnvironment
+# EnvironmentRouter
 # ------------------------------------------------------------------
 
 
@@ -517,7 +517,7 @@ class TestContainerKindRestriction:
         def python_in_container(x: int) -> int:
             return x + 1
 
-        with pytest.raises(TypeError, match="only support driver tasks"):
+        with pytest.raises(TypeError, match="cannot run in a foreign environment"):
             evaluate(python_in_container(x=1))
 
     def test_shell_task_with_container_env_passes_validation(self, tmp_path: Path) -> None:
@@ -544,20 +544,20 @@ class TestContainerKindRestriction:
 
 
 # ------------------------------------------------------------------
-# CompositeEnvironment
+# EnvironmentRouter
 # ------------------------------------------------------------------
 
 
-def _composite(tmp_path: Path, *, pull_policy: str | None = None) -> CompositeEnvironment:
+def _composite(tmp_path: Path, *, pull_policy: str | None = None) -> EnvironmentRouter:
     """Route envs for a project at *tmp_path* through the built-in backends."""
     config = {"container": {"pull_policy": pull_policy}} if pull_policy else {}
-    return CompositeEnvironment(
+    return EnvironmentRouter(
         context=EnvironmentContext(project_root=tmp_path, workflow_root=None, config=config)
     )
 
 
-class TestCompositeEnvironment:
-    def _make_composite(self, tmp_path: Path) -> CompositeEnvironment:
+class TestEnvironmentRouter:
+    def _make_composite(self, tmp_path: Path) -> EnvironmentRouter:
         return _composite(tmp_path)
 
     def test_routes_container_env_to_container_backend(self, tmp_path: Path):
@@ -627,7 +627,7 @@ def _container_shell_task(output_path: str) -> str:
 
 
 class TestContainerShellE2E:
-    """Verify the full evaluator → CompositeEnvironment → subprocess path."""
+    """Verify the full evaluator → EnvironmentRouter → subprocess path."""
 
     def test_shell_task_executes_through_container_backend(self, tmp_path: Path):
         """A shell task with a container env runs via ``docker run``."""

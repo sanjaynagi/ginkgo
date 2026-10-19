@@ -47,9 +47,13 @@ BUILTIN = Plugin(
         MountDriverType(scheme="oci", build=RcloneDriver),
         SecretBackendType(name="env", build=build_env_backends),
         EventSubscriberType(name="slack", build=build_notification_service),
-        EnvironmentType(scheme="", label="pixi", build=build_pixi_environment),
-        EnvironmentType(scheme="docker", label="container", build=build_container_environment),
-        EnvironmentType(scheme="oci", label="container", build=build_container_environment),
+        EnvironmentType(name="pixi", schemes=("",), label="pixi", build=build_pixi_environment),
+        EnvironmentType(
+            name="container",
+            schemes=("docker", "oci"),
+            label="container",
+            build=build_container_environment,
+        ),
         TaskKind(
             name="python",
             directive=None,

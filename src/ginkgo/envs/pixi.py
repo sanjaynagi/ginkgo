@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 from ginkgo.core.hashing import hash_file
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 
 if TYPE_CHECKING:
     from ginkgo.envs.mounts import Mount
@@ -39,7 +39,7 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
         compatibility and treated as a single-directory search.
     """
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
     diagnostic_code: ClassVar[str] = "MISSING_ENV"
     diagnostic_suggestion: ClassVar[str] = (
         "Create the environment manifest, or correct the env= name on the task."
@@ -61,7 +61,7 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
 class PixiEnvImportError(GinkgoError, RuntimeError):
     """Raised when a conda environment spec cannot be imported into Pixi."""
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
 
     def __init__(self, *, source: Path, output: str) -> None:
         details = output.strip() or "pixi did not provide any error output"
@@ -71,7 +71,7 @@ class PixiEnvImportError(GinkgoError, RuntimeError):
 class PixiEnvPrepareError(GinkgoError, RuntimeError):
     """Raised when a Pixi environment cannot be materialized."""
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
 
     def __init__(self, *, manifest: Path, output: str) -> None:
         details = output.strip() or "pixi did not provide any error output"
@@ -543,7 +543,7 @@ class PixiEnvironment:
 
     def provenance_fields(self, *, env: str) -> dict[str, Any]:
         """Record the backend; the lock file is copied separately."""
-        return {"backend": "local"}
+        return {"backend": "pixi"}
 
 
 def build_pixi_environment(context: EnvironmentContext) -> PixiEnvironment:

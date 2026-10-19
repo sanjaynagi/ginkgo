@@ -72,9 +72,8 @@ class ScriptRunner(DriverTaskRunner):
                     option=option,
                     value=value,
                     label=f"{node.task_def.name}.{name}",
-                    # This runner *is* the script boundary: a task declared
-                    # ``kind="shell"`` whose body returns ``script(...)`` lands
-                    # here too, and its arguments cross the same way.
+                    # This runner *is* the script boundary: every argument
+                    # crosses into the script process here.
                     task_kind="script",
                 )
             )

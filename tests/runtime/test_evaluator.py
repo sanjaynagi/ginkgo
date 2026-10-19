@@ -360,6 +360,11 @@ def flaky_shell_task(marker_path: untracked, output_path: str, log_path: untrack
     )
 
 
+@task(kind="shell")
+def shell_returns_script_directive_task(output_path: str) -> file:
+    return script("copy.py", output=output_path)
+
+
 @task()
 def python_returns_shell_directive_task(output_path: str) -> file:
     return shell(cmd=f"printf 'payload' > {output_path}", output=output_path)
@@ -1132,6 +1137,16 @@ class TestEvaluate:
 
         with pytest.raises(TypeError, match="top-level function"):
             evaluate(local_task(x=1))
+
+    def test_a_task_must_return_its_own_kinds_directive(self, tmp_path: Path) -> None:
+        Path("copy.py").write_text("", encoding="utf-8")
+
+        with pytest.raises(
+            TypeError,
+            match=r"kind='shell' and must return shell\(\.\.\.\), not ScriptDirective\. "
+            r"Use @task\(kind='script'\)",
+        ):
+            evaluate(shell_returns_script_directive_task(output_path=str(tmp_path / "out")))
 
     def test_python_tasks_must_not_return_shell_directives(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"

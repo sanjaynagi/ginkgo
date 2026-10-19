@@ -2,6 +2,7 @@
 
 import pytest
 
+from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.core.remote import is_remote_uri, remote_file, remote_folder
 
 
@@ -57,17 +58,20 @@ class TestResolveBackendGCS:
         assert backend._project == "test-project"
 
     def test_gcs_project_comes_from_the_remote_gcs_table(self, monkeypatch) -> None:
+        from ginkgo.plugins.api import ObjectStoreContext
         from ginkgo.remote.resolve import build_gcs_store
 
         monkeypatch.delenv("GINKGO_REMOTE_GCS_PROJECT", raising=False)
         monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
 
-        backend = build_gcs_store(config={"remote": {"gcs": {"project": "p1"}}}, region=None)
+        backend = build_gcs_store(
+            ObjectStoreContext(config={"remote": {"gcs": {"project": "p1"}}})
+        )
 
         assert backend._project == "p1"
 
     def test_resolve_unsupported_raises(self) -> None:
         from ginkgo.remote.resolve import resolve_backend
 
-        with pytest.raises(ValueError, match="No installed plugin provides object store"):
+        with pytest.raises(PluginNotFoundError, match="No installed plugin provides object store"):
             resolve_backend("ftp")

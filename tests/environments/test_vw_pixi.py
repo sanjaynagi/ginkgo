@@ -291,7 +291,7 @@ class TestPixiRegistry:
             return my_task(x=1)
 
         registry = PixiRegistry(project_root=_TESTS_DIR)
-        with pytest.raises(TypeError, match="Foreign environments only support driver tasks"):
+        with pytest.raises(TypeError, match="cannot run in a foreign environment"):
             _evaluate(my_flow(), registry=registry)
 
 
@@ -505,5 +505,5 @@ def needs_foreign_env(x: int) -> int:
         module = load_module_from_path(workflow_path)
         registry = _make_registry()
 
-        with pytest.raises(TypeError, match="Foreign environments only support driver tasks"):
+        with pytest.raises(TypeError, match="cannot run in a foreign environment"):
             _evaluate(module.needs_foreign_env(x=1), registry=registry)

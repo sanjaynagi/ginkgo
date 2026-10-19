@@ -15,7 +15,7 @@ from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_pa
 from ginkgo.config import load_runtime_config
 from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
-from ginkgo.runtime.backend import CompositeEnvironment
+from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import build_secret_resolver
 from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
@@ -54,8 +54,8 @@ def command_doctor(args) -> int:
     # probes PATH; nothing is built or installed. Built inside
     # collect_workflow_diagnostics's try/except so construction failures
     # surface as a diagnostic, not a crash.
-    def build_backend() -> CompositeEnvironment:
-        return CompositeEnvironment(
+    def build_backend() -> EnvironmentRouter:
+        return EnvironmentRouter(
             context=EnvironmentContext(
                 project_root=Path.cwd(),
                 workflow_root=resolve_envs_workflow_root(

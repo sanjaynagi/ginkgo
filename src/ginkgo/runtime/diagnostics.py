@@ -277,11 +277,6 @@ def _diagnostic_code_and_suggestion(*, exc: BaseException, message: str) -> tupl
         return "MISSING_SECRET", "Provide the referenced secret through the configured resolver."
     if isinstance(exc, TypeError) and "top-level function" in message:
         return "NON_IMPORTABLE_TASK", "Define tasks at module scope as plain importable functions."
-    if isinstance(exc, TypeError) and "kind='python'" in message:
-        return (
-            "INVALID_ENV_KIND",
-            "Use shell, notebook, or script task kinds for foreign environments.",
-        )
     if isinstance(exc, RuntimeError) and "Expected exactly one @flow" in message:
         return "FLOW_DISCOVERY_ERROR", "Keep one unambiguous @flow entrypoint per workflow module."
     if isinstance(exc, ValueError):

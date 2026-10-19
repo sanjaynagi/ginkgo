@@ -933,8 +933,12 @@ class Query:
         """Return what produced an artifact, named by path or by id.
 
         A path is resolved through ``materializations`` — the stat log of every
-        artifact ginkgo has written to a working directory — and then answered
-        exactly as an artifact id is.
+        artifact ginkgo has written to a working directory — to its artifact,
+        and then to the task whose output row names that artifact. Artifact ids
+        are content digests, so two outputs with identical bytes share one; a
+        path narrows the match to the output written there. Among matching
+        rows an execution beats a cache-hit replay, and a later run an earlier
+        one.
 
         Parameters
         ----------
@@ -951,18 +955,25 @@ class Query:
             If nothing in the ledger matches.
         """
         artifact_id, path = self._resolve_artifact(path_or_artifact_id)
-        output = self._store.query(
-            "SELECT run_id, task_id FROM task_outputs "
-            "WHERE artifact_id = ? ORDER BY run_id DESC LIMIT 1",
-            (artifact_id,),
-        )
-        cached = self._store.query(
-            "SELECT cache_key FROM cache_artifacts WHERE artifact_id = ? LIMIT 1",
-            (artifact_id,),
-        )
-        run_id = _first(output, "run_id")
-        task_id = _first(output, "task_id")
-        cache_key = _first(cached, "cache_key")
+        producers = [
+            row
+            for row in self._store.query(
+                "SELECT o.run_id, o.task_id, o.path, t.cache_key FROM task_outputs o "
+                "JOIN tasks t ON t.run_id = o.run_id AND t.task_id = o.task_id "
+                "WHERE o.artifact_id = ? ORDER BY t.cached ASC, o.run_id DESC",
+                (artifact_id,),
+            )
+            if path is None or str(Path(row["path"]).expanduser().resolve()) == path
+        ]
+        run_id = _first(producers, "run_id")
+        task_id = _first(producers, "task_id")
+        cache_key = _first(producers, "cache_key")
+        if run_id is None:
+            cached = self._store.query(
+                "SELECT cache_key FROM cache_artifacts WHERE artifact_id = ? LIMIT 1",
+                (artifact_id,),
+            )
+            cache_key = _first(cached, "cache_key")
         if run_id is None and cache_key is not None:
             produced_by = self._store.query(
                 "SELECT run_id, task_id FROM tasks WHERE cache_key = ? "

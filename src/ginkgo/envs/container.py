@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 from ginkgo.envs.mounts import Mount, parse_extra_mount, resolve_mounts
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 
 if TYPE_CHECKING:
     from ginkgo.plugins.api import EnvironmentContext
@@ -90,7 +90,7 @@ def parse_container_uri(env: str) -> ContainerRef:
 class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
     """Raised when the container runtime binary is not on PATH."""
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
 
     def __init__(self, *, runtime: str) -> None:
         super().__init__(
@@ -102,7 +102,7 @@ class ContainerRuntimeNotFoundError(GinkgoError, RuntimeError):
 class ContainerPrepareError(GinkgoError, RuntimeError):
     """Raised when an image cannot be pulled."""
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
 
     def __init__(self, *, image: str, output: str) -> None:
         details = output.strip() or "no output from container runtime"
@@ -121,7 +121,7 @@ class ContainerImageNotFoundError(GinkgoError, RuntimeError):
     that would otherwise have succeeded.
     """
 
-    failure_kind: ClassVar[str] = "env_mismatch"
+    failure_kind: ClassVar[FailureKind] = "env_mismatch"
     diagnostic_code: ClassVar[str] = "MISSING_IMAGE"
     diagnostic_suggestion: ClassVar[str] = (
         "Pull the image, correct its name/tag, or adjust [container] pull_policy."

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo import Out, evaluate, file, folder, shell, task, untracked
 from ginkgo.cli.commands.cache import _safe_rmtree
 from ginkgo.core import source_hash
@@ -981,6 +983,14 @@ class TestUnreadableCacheEntry:
         # Simulate an entry written by a codec this version no longer has.
         (entry,) = (tmp_path / ".ginkgo" / "cache").glob("*/output.json")
         entry.write_text('{"__ginkgo_type__": "retired", "value": {}}', encoding="utf-8")
+
+        # Loading it, as a dry run does, leaves it for the next real run to replace.
+        cache_key = entry.parent.name
+        loaded = ConcurrentEvaluator().cache_store.load(
+            cache_key=cache_key, task_def=counted_square_task
+        )
+        assert loaded is MISSING
+        assert entry.is_file()
 
         rerun = evaluate(counted_square_task(log_path=log_path, value=3))
         collector = EventCollector()

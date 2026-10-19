@@ -8,17 +8,20 @@ key config or user code selects it with, and never names a concrete class.
 ## Contract
 
 `ginkgo/plugins/api.py` defines a `Plugin` — a name and a tuple of
-contributions — and one frozen spec dataclass per extension point:
+contributions — and one frozen spec dataclass per extension point. Each spec is
+registered under its `keys`, and its `build` takes a single argument: a frozen
+context object wherever a point needs several inputs, so a field can be added
+without breaking plugins.
 
-| Spec | Key | `build` |
+| Spec | Keys | `build` |
 |---|---|---|
 | `ExecutorType` | the `type` of a `[remote.executors.<name>]` table | `build(settings) -> RemoteExecutor`; also carries `label` and `required_settings` |
-| `ObjectStoreType` | URI scheme | `build(*, config, region) -> ObjectStore` |
+| `ObjectStoreType` | URI scheme | `build(ObjectStoreContext) -> ObjectStore` |
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
-| `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(*, project_root, config, environ) -> tuple[SecretBackend, ...]`, tried in order |
+| `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(SecretBackendContext) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
-| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries` |
-| `EnvironmentType` | the scheme of an `env=` value (`docker`, `oci`), or `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `label` for run tables |
+| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`. `directive`, `runner` and `call_form` are set together or not at all |
+| `EnvironmentType` | every scheme in `schemes` (`docker`, `oci`), with `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `name` and a `label` for run tables and provenance |
 
 The set of extension points is fixed: adding one is a change to core, so each
 dispatch site stays typed and greppable. There is no generic hook mechanism.
@@ -42,16 +45,26 @@ A plugin is registered in its distribution's `pyproject.toml`:
 k8s = "ginkgo_k8s:PLUGIN"
 ```
 
-Errors are explicit and raised at discovery or lookup:
+An entry point that fails to import, or is not a `Plugin`, is skipped and
+recorded as a `PluginLoadFailure` rather than raised: one broken third-party
+plugin must not stop core or the other plugins from working, on a laptop or in
+a worker pod. The failure is reported where it matters — `ginkgo plugins`
+lists it and exits 1, and a lookup that finds nothing names it.
 
-- `PluginLoadError` — an entry point failed to import, or is not a `Plugin`.
+The other errors are explicit:
+
 - `PluginConflictError` — two plugins contribute the same key to one extension
-  point; the message names both.
-- `PluginNotFoundError` (a `ValueError`) — nothing provides the key asked for;
-  the message lists what is available. When the key is one a first-party
-  plugin provides, the message also names the distribution to install
-  (`_FIRST_PARTY_PROVIDERS` in `registry.py`: `k8s` → ginkgo-k8s, `batch` →
-  ginkgo-gcp).
+  point, or two task kinds return the same directive type; the message names
+  both.
+- `PluginNotFoundError` (a `LookupError`, not a `ValueError`, so code catching
+  bad values never swallows it) — nothing provides the key asked for. The
+  message lists what is available, names the distribution to install when a
+  first-party plugin provides the key (`_FIRST_PARTY_PROVIDERS` in
+  `registry.py`: `k8s` → ginkgo-k8s, `batch` → ginkgo-gcp), and lists any
+  plugin that failed to load.
+
+`use_plugin_registry(registry)` swaps the process's registry for a block, for
+tests and embedders that need a known set of plugins.
 
 ## Dispatch sites
 
@@ -63,23 +76,27 @@ Errors are explicit and raised at discovery or lookup:
   run headers with `label`, and builds lazily through `build`. `ginkgo doctor`
   probes the same tables. Core contributes no executor type.
 - **Object stores.** `remote.resolve.resolve_backend(scheme)` looks the scheme
-  up and passes the merged runtime config; each store reads its own provider
-  settings.
+  up and passes an `ObjectStoreContext` of the merged runtime config and any
+  region override; each store reads its own provider settings.
 - **FUSE drivers.** `remote.access.drivers.base.resolve_driver(scheme)`. A
   missing driver raises `DriverUnavailableError`, which callers already treat
   as a reason to fall back to staging.
-- **Secrets.** `build_secret_resolver` builds every registered backend chain,
-  keyed by backend name.
-- **Environments.** `CompositeEnvironment` (`runtime/backend.py`) routes an
-  `env=` value by scheme and builds each environment on first use. Schemes
-  contributed with the same `build` share one instance. The run table labels a
-  bare name with the bare-name environment's `label` (`pixi:analysis`).
+- **Secrets.** `SecretResolver` builds a backend's chain from its plugin the
+  first time a ref names it, so a run resolving only `env` secrets never builds
+  (or authenticates) another backend, and a ref naming an uninstalled backend
+  raises `PluginNotFoundError` rather than reading as a missing secret.
+- **Environments.** `EnvironmentRouter` (`runtime/backend.py`) routes an
+  `env=` value by scheme and builds each environment type on first use, one
+  instance per type `name` shared by all its schemes. The run table labels a
+  bare name with the bare-name environment's `label` (`pixi:analysis`), and
+  provenance records the same label as `backend`.
 - **Task kinds.** `@task` only checks that `kind` is a non-empty string, so
   decorating a task never loads plugins; the evaluator looks the kind up when
   it registers the task's node, before anything runs, and refuses an unknown
-  kind or `retry_on_exit_codes` on a kind without `exit_code_retries`. A
-  directive runs on the runner of the kind whose `directive` it is — usually,
-  but not necessarily, the task's own kind. Runners are built on first use from
+  kind or `retry_on_exit_codes` on a kind without `exit_code_retries`. A task
+  must return its own kind's directive, which runs on its own kind's runner, so
+  capabilities are always checked against what actually runs; returning another
+  kind's directive is an error naming the kind to use. Runners are built on first use from
   a `RunnerContext` of evaluator services (backend, validator, the shared
   `ShellRunner`, cache store, run directory, `annotate`, `notice`). A runner's
   `replay_cached` re-applies anything it stored on `node.runner_extras`, which
@@ -90,9 +107,9 @@ Errors are explicit and raised at discovery or lookup:
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
   only sees events already in the ledger.
 
-`ginkgo plugins [--json]` lists the loaded plugins and their contributions; a
-contribution with an empty key (the bare-name environment) shows as
-`(bare name)`.
+`ginkgo plugins [--json]` lists the loaded plugins, each contribution's keys
+(the empty bare-name key shows as `(bare name)`), and any plugin that failed to
+load, exiting 1 if one did.
 
 ## First-party plugins
 
@@ -163,11 +180,17 @@ CLI commands and value codecs are still wired directly. URI parsing for `remote_
 `remote_folder` (`core/remote.py`) still knows the `s3`, `oci` and `gs`
 schemes by name.
 
+Two parts of the task-kind contract are still loose, and are to be tightened
+before a task kind moves out of core: a runner receives the evaluator's own
+`NodeRun` (typed `Any`), and `ShellRunner` is both the shared subprocess
+service in `RunnerContext` and the `shell` kind's runner.
+
 ## Failure classification
 
 Failure categories and doctor diagnostics are declared on the exception
-classes that need them, not by core naming those classes: `failure_kind`
-(`env_mismatch`, `shell_command_error`, `cycle_detected`,
-`serialization_error`) is read by `classify_failure`, and `diagnostic_code` /
-`diagnostic_suggestion` by `ginkgo doctor`. An exception a plugin raises
-classifies itself the same way.
+classes that need them, not by core naming those classes: `failure_kind:
+ClassVar[FailureKind]` is read by `classify_failure`, and `diagnostic_code` /
+`diagnostic_suggestion` by `ginkgo doctor` (for example `EnvNotAllowedError`
+declares `INVALID_ENV_KIND`). `FailureKind` (`errors.py`) is a `Literal` of
+the categories reports know; a declared value outside it is ignored. An
+exception a plugin raises classifies itself the same way.

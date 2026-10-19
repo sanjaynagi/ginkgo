@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, get_args, get_origin
+from typing import Any, ClassVar, Iterable, get_args, get_origin
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
@@ -37,6 +37,28 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.secrets import SecretResolver, collect_secret_refs
 from ginkgo.runtime.artifacts.value_codec import CodecError, ensure_serializable
 from ginkgo.runtime.task_kinds import task_kind
+from ginkgo.errors import GinkgoError
+from ginkgo.plugins.api import TaskKind
+from ginkgo.plugins.registry import plugin_registry
+
+
+class EnvNotAllowedError(GinkgoError, TypeError):
+    """Raised when a task declares ``env=`` on a kind that cannot take one."""
+
+    diagnostic_code: ClassVar[str] = "INVALID_ENV_KIND"
+    diagnostic_suggestion: ClassVar[str] = (
+        "Declare the task with a kind that runs in a foreign environment."
+    )
+
+    def __init__(self, *, task_def: TaskDef) -> None:
+        allowed = ", ".join(
+            f"@task({kind.name!r})" for kind in plugin_registry().all(TaskKind) if kind.allows_env
+        )
+        super().__init__(
+            f"{task_def.name} uses env {task_def.env!r} but is declared with "
+            f"kind={task_def.kind!r}, which cannot run in a foreign environment. "
+            f"Use one that can: {allowed or 'none is installed'}."
+        )
 
 
 def _normalized(path: Any) -> str:
@@ -530,12 +552,7 @@ class TaskValidator:
         node_list = list(nodes)
         for node in node_list:
             if node.task_def.env is not None and not task_kind(node.task_def).allows_env:
-                raise TypeError(
-                    f"{node.task_def.name} uses env {node.task_def.env!r} "
-                    f"but is declared with kind={node.task_def.kind!r}. Foreign environments "
-                    "only support driver tasks — use @task('shell'), "
-                    "@task('notebook'), or @task('script')."
-                )
+                raise EnvNotAllowedError(task_def=node.task_def)
 
         if self.backend is None:
             return

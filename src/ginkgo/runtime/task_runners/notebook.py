@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar
 import yaml
 
 from ginkgo.core.notebook import NotebookDirective
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.rundir import RunDir
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 class NotebookTaskError(GinkgoError, RuntimeError):
     """Notebook task execution failure."""
 
-    failure_kind: ClassVar[str] = "shell_command_error"
+    failure_kind: ClassVar[FailureKind] = "shell_command_error"
 
     def __init__(
         self,

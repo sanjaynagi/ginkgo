@@ -231,6 +231,21 @@ class TestDoctorEnvValidation:
         assert payload["ok"] is False
         assert payload["diagnostics"][0]["code"] == "MISSING_ENV"
 
+    def test_env_on_a_kind_without_env_support_is_invalid_env_kind(self) -> None:
+        Path("workflow.py").write_text(
+            "from ginkgo import flow, task\n\n"
+            '@task(kind="subworkflow", env="analysis")\n'
+            "def child() -> str:\n    return 'x'\n\n"
+            "@flow\ndef main():\n    return child()\n",
+            encoding="utf-8",
+        )
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        payload = json.loads(result.stdout)
+        assert [item["code"] for item in payload["diagnostics"]] == ["INVALID_ENV_KIND"]
+        assert "kind='subworkflow'" in payload["diagnostics"][0]["message"]
+
     def test_existing_env_passes(self) -> None:
         _write_env(name="probe_env")
         _write_workflow(env="probe_env")

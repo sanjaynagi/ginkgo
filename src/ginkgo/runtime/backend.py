@@ -3,13 +3,12 @@
 The ``ExecutionEnvironment`` protocol decouples the evaluator from a specific
 execution environment. Implementations are contributed by plugins as
 :class:`~ginkgo.plugins.api.EnvironmentType`, keyed by the scheme of the
-``env=`` value; ``CompositeEnvironment`` builds each one on first use and
-routes every call to it.
+``env=`` value; ``EnvironmentRouter`` builds each one on first use and routes
+every call to it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, Sequence, runtime_checkable
@@ -147,11 +146,12 @@ def env_scheme(env: str) -> str:
 
 
 @dataclass(kw_only=True)
-class CompositeEnvironment:
+class EnvironmentRouter:
     """Routes each ``env=`` value to the environment its scheme belongs to.
 
-    Environments are built from the plugin registry on first use, so a run
-    never constructs a backend none of its tasks declares.
+    Environments are built from the plugin registry on first use, one instance
+    per environment type, so a run never constructs a backend none of its
+    tasks declares and schemes one backend serves share its state.
 
     Parameters
     ----------
@@ -160,9 +160,7 @@ class CompositeEnvironment:
     """
 
     context: EnvironmentContext
-    _built: dict[Callable[..., Any], ExecutionEnvironment] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _built: dict[str, ExecutionEnvironment] = field(default_factory=dict, init=False, repr=False)
 
     def _route(self, *, env: str) -> ExecutionEnvironment:
         """Return the environment responsible for *env*, building it if needed.
@@ -173,12 +171,10 @@ class CompositeEnvironment:
             If no installed plugin provides an environment for the scheme.
         """
         environment_type = plugin_registry().get(EnvironmentType, env_scheme(env))
-        # Keyed by the build function, so schemes one backend serves (docker://
-        # and oci:// for containers) share an instance and its state.
-        built = self._built.get(environment_type.build)
+        built = self._built.get(environment_type.name)
         if built is None:
             built = environment_type.build(self.context)
-            self._built[environment_type.build] = built
+            self._built[environment_type.name] = built
         return built
 
     def validate_envs(self, *, env_names: set[str]) -> None:

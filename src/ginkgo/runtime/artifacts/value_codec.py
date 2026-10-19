@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from ginkgo.core.types import file, folder, tmp_dir
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FailureKind, GinkgoError
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -26,7 +26,7 @@ INLINE_BYTES_LIMIT = 256 * 1024
 class CodecError(GinkgoError, TypeError):
     """Raised when a value cannot be encoded by Ginkgo."""
 
-    failure_kind: ClassVar[str] = "serialization_error"
+    failure_kind: ClassVar[FailureKind] = "serialization_error"
 
 
 def encode_value(

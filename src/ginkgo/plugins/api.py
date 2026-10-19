@@ -1,10 +1,13 @@
 """The plugin contract: a ``Plugin`` and the extension points it contributes to.
 
 A plugin is a named bundle of contributions. Each contribution is a frozen
-spec for exactly one extension point, keyed by the name config or user code
-uses to select it — an executor ``type``, a URI scheme, a secret backend name.
-Core looks a contribution up by its key and calls the spec's ``build``; it
+spec for exactly one extension point, registered under the keys config or user
+code uses to select it — an executor ``type``, a URI scheme, a secret backend
+name. Core looks a contribution up by key and calls the spec's ``build``; it
 never names a concrete implementation.
+
+Every ``build`` takes one argument: a frozen context object for the points that
+need several inputs, so a field can be added without breaking plugins.
 
 The set of extension points is fixed. Adding one is a deliberate change to
 core, not something a plugin can do, so every dispatch site stays typed and
@@ -23,19 +26,20 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 if TYPE_CHECKING:
     from ginkgo.core.directive import ExecutionDirective
-    from ginkgo.runtime.caching.cache import CacheStore
-    from ginkgo.runtime.rundir import RunDir
-    from ginkgo.runtime.task_runners.shell import ShellRunner
-    from ginkgo.runtime.task_validation import TaskValidator
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
+    from ginkgo.runtime.caching.cache import CacheStore
     from ginkgo.runtime.environment.secrets import SecretBackend, SecretResolver
     from ginkgo.runtime.events import GinkgoEvent
     from ginkgo.runtime.remote_executor import RemoteExecutor
+    from ginkgo.runtime.rundir import RunDir
+    from ginkgo.runtime.task_runners.shell import ShellRunner
+    from ginkgo.runtime.task_validation import TaskValidator
     from ginkgo.store.protocol import ProvenanceStore
 
 __all__ = [
+    "Annotate",
     "Contribution",
     "EnvironmentContext",
     "EnvironmentType",
@@ -44,13 +48,19 @@ __all__ = [
     "EventSubscriberType",
     "ExecutorType",
     "MountDriverType",
+    "Notice",
+    "ObjectStoreContext",
     "ObjectStoreType",
     "Plugin",
     "RunnerContext",
+    "SecretBackendContext",
     "SecretBackendType",
     "TaskKind",
     "TaskRunner",
 ]
+
+
+# ----- Executors -------------------------------------------------------------
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -78,9 +88,28 @@ class ExecutorType:
     build: Callable[[Mapping[str, Any]], RemoteExecutor]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the executor ``type``."""
-        return self.name
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the executor ``type``."""
+        return (self.name,)
+
+
+# ----- Object stores and FUSE drivers ----------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class ObjectStoreContext:
+    """What an object store is built from.
+
+    Parameters
+    ----------
+    config : Mapping[str, Any]
+        Merged runtime config; each store reads its own table.
+    region : str | None
+        A region override from the caller, if any.
+    """
+
+    config: Mapping[str, Any]
+    region: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -91,20 +120,19 @@ class ObjectStoreType:
     ----------
     scheme : str
         URI scheme, e.g. ``"s3"``.
-    build : Callable[..., ObjectStore]
-        ``build(*, config, region)`` constructs the store from the merged
-        runtime config and an optional region override.
+    build : Callable[[ObjectStoreContext], ObjectStore]
+        Construct the store.
     """
 
     point_name: ClassVar[str] = "object store for scheme"
 
     scheme: str
-    build: Callable[..., ObjectStore]
+    build: Callable[[ObjectStoreContext], ObjectStore]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the URI scheme."""
-        return self.scheme
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the URI scheme."""
+        return (self.scheme,)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -125,33 +153,59 @@ class MountDriverType:
     build: Callable[[], MountDriver]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the URI scheme."""
-        return self.scheme
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the URI scheme."""
+        return (self.scheme,)
+
+
+# ----- Secrets ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class SecretBackendContext:
+    """What a secret backend chain is built from.
+
+    Parameters
+    ----------
+    project_root : Path
+        The workflow project's root directory.
+    config : Mapping[str, Any]
+        Merged runtime config; each backend reads its own table.
+    environ : Mapping[str, str]
+        The process environment.
+    """
+
+    project_root: Path
+    config: Mapping[str, Any]
+    environ: Mapping[str, str]
 
 
 @dataclass(frozen=True, kw_only=True)
 class SecretBackendType:
     """A secret backend, selected by ``secret(name, backend=...)``.
 
+    Built only when a run first resolves a secret naming it.
+
     Parameters
     ----------
     name : str
         The backend name a ``SecretRef`` carries.
-    build : Callable[..., tuple[SecretBackend, ...]]
-        ``build(*, project_root, config, environ)`` returns the chain of
-        backends tried in order for this name.
+    build : Callable[[SecretBackendContext], tuple[SecretBackend, ...]]
+        Return the chain of backends tried in order for this name.
     """
 
     point_name: ClassVar[str] = "secret backend"
 
     name: str
-    build: Callable[..., tuple[SecretBackend, ...]]
+    build: Callable[[SecretBackendContext], tuple[SecretBackend, ...]]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the backend name."""
-        return self.name
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the backend name."""
+        return (self.name,)
+
+
+# ----- Run observers ---------------------------------------------------------
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -216,9 +270,12 @@ class EventSubscriberType:
     build: Callable[[EventSubscriberContext], EventSubscriber | None]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the subscriber name."""
-        return self.name
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the subscriber name."""
+        return (self.name,)
+
+
+# ----- Execution environments ------------------------------------------------
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -246,31 +303,49 @@ class EnvironmentContext:
 
 @dataclass(frozen=True, kw_only=True)
 class EnvironmentType:
-    """An execution environment for ``env=`` values of one URI scheme.
+    """An execution environment for ``env=`` values of some URI schemes.
 
     Parameters
     ----------
-    scheme : str
-        The scheme of the ``env=`` value, e.g. ``"docker"`` for
-        ``"docker://image:tag"``. The empty string claims bare names with no
-        scheme, such as a Pixi environment name.
+    name : str
+        Identifies the backend, e.g. ``"container"``. One instance per name is
+        built per run, shared by all of its schemes.
+    schemes : tuple[str, ...]
+        The schemes of the ``env=`` values it serves, e.g. ``("docker",
+        "oci")`` for ``"docker://image:tag"``. The empty string claims bare
+        names with no scheme, such as a Pixi environment name.
     label : str
-        Short name for the backend in run tables, e.g. ``"pixi"``.
+        Short name for the backend in run tables and provenance.
     build : Callable[[EnvironmentContext], ExecutionEnvironment]
-        Construct the backend for a run. Schemes contributed with the same
-        ``build`` share one backend instance per run.
+        Construct the backend for a run.
     """
 
     point_name: ClassVar[str] = "environment for scheme"
 
-    scheme: str
+    name: str
+    schemes: tuple[str, ...]
     label: str
     build: Callable[[EnvironmentContext], ExecutionEnvironment]
 
     @property
-    def key(self) -> str:
-        """The lookup key: the ``env=`` scheme."""
-        return self.scheme
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: every scheme the environment serves."""
+        return self.schemes
+
+
+# ----- Task kinds ------------------------------------------------------------
+
+
+class Annotate(Protocol):
+    """Record open-ended facts against a task, as a ``TaskAnnotated`` event."""
+
+    def __call__(self, *, node: Any, fields: dict[str, Any]) -> None: ...
+
+
+class Notice(Protocol):
+    """Surface a notice about a task as a ``TaskNotice`` event."""
+
+    def __call__(self, node: Any, message: str) -> None: ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -292,10 +367,10 @@ class RunnerContext:
         The run directory; ``None`` for dry runs and validation.
     runtime_root : Callable[[], Path]
         Resolves the workspace directory for shared runner support files.
-    annotate : Callable[..., None]
-        ``annotate(node=..., fields=...)`` records facts against a task.
-    notice : Callable[[Any, str], None]
-        ``notice(node, message)`` surfaces a notice as a run event.
+    annotate : Annotate
+        Records facts against a task.
+    notice : Notice
+        Surfaces a notice as a run event.
     run_id : Callable[[], str]
         Returns the current run id.
     db_path : Path
@@ -308,8 +383,8 @@ class RunnerContext:
     cache_store: CacheStore
     run_dir: RunDir | None
     runtime_root: Callable[[], Path]
-    annotate: Callable[..., None]
-    notice: Callable[[Any, str], None]
+    annotate: Annotate
+    notice: Notice
     run_id: Callable[[], str]
     db_path: Path
 
@@ -340,10 +415,13 @@ class TaskKind:
     name : str
         The ``kind`` value.
     directive : type[ExecutionDirective] | None
-        The directive the task body returns, which the runner executes.
-        ``None`` for a kind whose body's return value is the result.
+        The directive the task body returns, which the runner executes. A task
+        of this kind must return this directive and no other, and no two kinds
+        may share one. ``None`` for a kind whose body's return value is the
+        result.
     call_form : str
         How the body builds its directive, for messages, e.g. ``"shell(...)"``.
+        Empty exactly when ``directive`` is ``None``.
     execution_mode : {"driver", "worker"}
         Whether the body runs on the scheduler or in a worker process.
     allows_env : bool
@@ -357,7 +435,13 @@ class TaskKind:
     exit_code_retries : bool
         Whether ``retry_on_exit_codes`` applies.
     runner : Callable[[RunnerContext], TaskRunner] | None
-        Build the runner for a run. ``None`` when ``directive`` is ``None``.
+        Build the runner for a run. ``None`` exactly when ``directive`` is.
+
+    Raises
+    ------
+    ValueError
+        If ``directive``, ``runner`` and ``call_form`` disagree about whether
+        the kind returns a directive.
     """
 
     point_name: ClassVar[str] = "task kind"
@@ -372,10 +456,20 @@ class TaskKind:
     exit_code_retries: bool = False
     runner: Callable[[RunnerContext], TaskRunner] | None = None
 
+    def __post_init__(self) -> None:
+        returns_directive = self.directive is not None
+        if (self.runner is not None) != returns_directive or bool(
+            self.call_form
+        ) != returns_directive:
+            raise ValueError(
+                f"Task kind {self.name!r} must set directive, runner and call_form "
+                "together, or none of them."
+            )
+
     @property
-    def key(self) -> str:
-        """The lookup key: the kind name."""
-        return self.name
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the kind name."""
+        return (self.name,)
 
 
 Contribution = (

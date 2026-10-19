@@ -33,7 +33,7 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.envs.mounts import Mount, MountMode, mount
-from ginkgo.errors import GinkgoError
+from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 class ShellTaskError(GinkgoError, RuntimeError):
     """Shell task execution failure."""
 
-    failure_kind: ClassVar[str] = "shell_command_error"
+    failure_kind: ClassVar[FailureKind] = "shell_command_error"
 
     def __init__(
         self,
@@ -540,7 +540,7 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     """
     message = str(exc)
     declared = getattr(exc, "failure_kind", None)
-    if isinstance(declared, str):
+    if declared in FAILURE_KINDS:
         kind = declared
     elif isinstance(exc, ImportError):
         kind = "import_error"
