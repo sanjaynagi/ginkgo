@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
@@ -38,11 +38,6 @@ def _refused_value_operation(action: str) -> Callable[..., Any]:
 
     refuse.__doc__ = f"Refuse being {action}: the value does not exist until the task runs."
     return refuse
-
-
-def _field_values(expr: Expr) -> tuple[Any, ...]:
-    """Return *expr*'s dataclass field values, in declaration order."""
-    return tuple(getattr(expr, item.name) for item in fields(expr))
 
 
 @dataclass(frozen=True)
@@ -110,14 +105,16 @@ class Expr(Generic[T]):
         return True
 
     def __eq__(self, other: object) -> bool:
-        """Compare two calls field by field; refuse comparing a call with a value.
+        """Compare two calls by identity; refuse comparing a call with a value.
 
         A call compared with a value would otherwise be silently unequal, so
-        ``if expr == 5:`` would always take its ``else`` branch.
+        ``if expr == 5:`` would always take its ``else`` branch. Two calls are
+        equal only when they are the same object: comparing their arguments
+        would compare any nested call with a plain value, and so raise.
         """
         if not isinstance(other, Expr):
             raise self._deferred_value_error("compared")
-        return _field_values(self) == _field_values(other)
+        return self is other
 
     def __format__(self, format_spec: str) -> str:
         """Render as ``str()`` does; refuse a format spec, which needs the value."""
@@ -171,12 +168,16 @@ class Expr(Generic[T]):
     # Operators that need the value itself. Without these a comparison or
     # conversion would raise Python's bare "not supported for 'Expr'" error.
     __lt__ = __le__ = __gt__ = __ge__ = _refused_value_operation("compared")
-    __int__ = __float__ = __index__ = _refused_value_operation("converted to a number")
+    __int__ = __float__ = __complex__ = __index__ = __round__ = _refused_value_operation(
+        "converted to a number"
+    )
     _refuse_arithmetic = _refused_value_operation("used in arithmetic")
     __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = _refuse_arithmetic
     __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = _refuse_arithmetic
     __mod__ = __rmod__ = __divmod__ = __rdivmod__ = __pow__ = __rpow__ = _refuse_arithmetic
     __matmul__ = __rmatmul__ = __neg__ = __pos__ = __abs__ = _refuse_arithmetic
+    __and__ = __rand__ = __or__ = __ror__ = __xor__ = __rxor__ = _refuse_arithmetic
+    __lshift__ = __rlshift__ = __rshift__ = __rrshift__ = __invert__ = _refuse_arithmetic
     del _refuse_arithmetic
 
     def __repr__(self) -> str:
