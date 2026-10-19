@@ -39,6 +39,6 @@ def _render_why(rich_console, *, provenance: Provenance, as_json: bool) -> int:
         return 0
     rich_console.print("\n[bold]Inputs[/]")
     for entry in provenance.inputs:
-        detail = entry.get("digest") or entry.get("value_summary") or "-"
+        detail = entry.get("value_summary") or entry.get("digest") or "-"
         rich_console.print(f"  {entry.get('param')} = {detail}")
     return 0

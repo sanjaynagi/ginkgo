@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from ginkgo import Out, file, query, task
+from ginkgo.cli.commands.why import _render_why
+from ginkgo.query import Provenance
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -125,3 +129,25 @@ class TestWhy:
     def test_an_unknown_target_is_not_found(self, chained_run: Path) -> None:
         with _reader(chained_run) as reader, pytest.raises(FileNotFoundError, match="Nothing"):
             reader.why("not-an-artifact")
+
+
+class TestWhyRendering:
+    def test_a_parameter_prefers_its_value_to_its_digest(self) -> None:
+        provenance = Provenance(
+            artifact_id="artifact-1",
+            inputs=(
+                {"param": "baseline_weeks", "value_summary": "52", "digest": "baseline-digest"},
+                {"param": "label", "digest": "9f9f9f9f"},
+            ),
+        )
+        buffer = io.StringIO()
+
+        _render_why(
+            Console(file=buffer, width=200, force_terminal=False),
+            provenance=provenance,
+            as_json=False,
+        )
+
+        output = buffer.getvalue()
+        assert "baseline_weeks = 52" in output
+        assert "label = 9f9f9f9f" in output
