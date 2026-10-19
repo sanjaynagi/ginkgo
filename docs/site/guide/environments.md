@@ -248,7 +248,8 @@ How you add a package to it depends on how you installed Ginkgo:
 - Installed as a uv tool (the [curl installer](../getting-started/installation.md#quick-install-curl)):
   reinstall with the extras listed, since `uv tool` keeps the tool's environment
   isolated by design —
-  `uv tool install --force --with pandas "git+https://github.com/sanjaynagi/ginkgo.git@main"`.
+  `uv tool install --force --with pandas --with "ginkgo-pixi @ git+https://github.com/sanjaynagi/ginkgo.git@main#subdirectory=plugins/ginkgo-pixi" "git+https://github.com/sanjaynagi/ginkgo.git@main"`.
+  `--force` replaces the tool's `--with` set, so keep ginkgo-pixi in it.
 - Running from a Pixi workspace: add the package to that workspace's manifest
   and `pixi install`.
 - A plain `pip install -e .` environment: `pip install pandas` into the same

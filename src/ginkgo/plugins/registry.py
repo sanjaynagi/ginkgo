@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import entry_points
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.errors import GinkgoError
@@ -87,6 +87,11 @@ class PluginConflictError(GinkgoError, RuntimeError):
 
 class PluginNotFoundError(GinkgoError, LookupError):
     """Raised when no loaded plugin contributes the key asked for."""
+
+    diagnostic_code: ClassVar[str] = "PLUGIN_NOT_FOUND"
+    diagnostic_suggestion: ClassVar[str] = (
+        "Install the plugin the message names, or run `ginkgo plugins` to see what is installed."
+    )
 
 
 @dataclass(frozen=True, kw_only=True)

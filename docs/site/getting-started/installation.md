@@ -12,13 +12,15 @@ curl -LsSf https://raw.githubusercontent.com/sanjaynagi/ginkgo/main/install.sh |
 ```
 
 This installs `ginkgo` from `main` into an isolated environment via
-`uv tool install`. Re-run the same command to upgrade. It installs just the CLI:
+`uv tool install`, with the `ginkgo-pixi` plugin. Re-run the same command to
+upgrade. It installs just the CLI:
 the example workflows under `examples/` and the Pixi workspace below come from
 a clone of the repository (`git clone https://github.com/sanjaynagi/ginkgo.git`).
 
 ## Plugins
 
-The installer gives you core only. Optional integrations ship as separate
+The installer gives you core plus `ginkgo-pixi`, which runs tasks' bare
+`env="name"` Pixi environments. Other optional integrations ship as separate
 plugins in this repository:
 
 - `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver

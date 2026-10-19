@@ -429,3 +429,14 @@ class TestUnservedNotifications:
         (warning,) = warnings
         assert warning.startswith("[notifications.slack] is configured but nothing will send it.")
         assert "Install ginkgo-slack to add it." in warning
+
+
+def test_doctor_reports_a_missing_plugin_with_its_own_code() -> None:
+    from ginkgo.runtime.diagnostics import _diagnostic_code_and_suggestion
+
+    exc = PluginNotFoundError("No installed plugin provides environment for scheme (bare name).")
+
+    code, suggestion = _diagnostic_code_and_suggestion(exc=exc, message=str(exc))
+
+    assert code == "PLUGIN_NOT_FOUND"
+    assert suggestion is not None and "ginkgo plugins" in suggestion

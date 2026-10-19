@@ -36,7 +36,8 @@ install`. Re-run the same command to upgrade.
 
 ### Plugins
 
-The installer gives you core only. Optional integrations ship as separate
+The installer gives you core plus `ginkgo-pixi`, which runs tasks' bare
+`env="name"` Pixi environments. Other optional integrations ship as separate
 plugins in this repository:
 
 - `ginkgo-aws`: the `s3://` object store and the mountpoint-s3 FUSE driver

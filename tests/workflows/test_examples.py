@@ -245,10 +245,16 @@ class TestExamples:
         assert third_manifest["status"] == "succeeded"
         assert all(task["status"] == "cached" for task in third_manifest["tasks"].values())
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ginkgo_pixi") is None
+        or importlib.util.find_spec("ginkgo_oci") is None,
+        reason="the bioinfo example needs the ginkgo-pixi and ginkgo-oci plugins",
+    )
     def test_bioinfo_example_runs_and_caches(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        installed_plugins: PluginRegistry,
     ) -> None:
         profile = os.environ.get("GINKGO_REMOTE_OCI_PROFILE")
         if not profile:

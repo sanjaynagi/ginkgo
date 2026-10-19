@@ -698,12 +698,6 @@ class TestEvaluate:
         nb_path.write_text(
             '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}', encoding="utf-8"
         )
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
         expr = notebook_ipynb_env_task(notebook_path=str(nb_path), value=7)
 
         recorder = Ledger.start(
@@ -800,12 +794,6 @@ class TestEvaluate:
     def test_concurrent_ipynb_notebooks_install_kernel_once_per_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
         notebooks = []
         for index in range(2):
             nb_path = tmp_path / f"report_{index}.ipynb"
@@ -1029,13 +1017,6 @@ class TestEvaluate:
         script_path.write_text("# placeholder script\n", encoding="utf-8")
         output_path = tmp_path / "out.txt"
         expr = python_script_env_task(script_path=str(script_path), output_path=str(output_path))
-
-        env_dir = tmp_path / "envs" / "test_env"
-        env_dir.mkdir(parents=True)
-        (env_dir / "pixi.toml").write_text(
-            "[workspace]\nname = 'test-env'\nchannels = []\nplatforms = []\n",
-            encoding="utf-8",
-        )
 
         calls: list[str] = []
 

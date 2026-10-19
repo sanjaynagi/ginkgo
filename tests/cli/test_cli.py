@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import ast
 from collections import Counter
 import re
@@ -1304,6 +1305,8 @@ class TestCliInit:
 
     @pytest.mark.integration
     def test_init_scaffold_runs_without_papermill_parameter_warnings(self) -> None:
+        if importlib.util.find_spec("ginkgo_pixi") is None:
+            pytest.skip("the scaffold's script task needs the ginkgo-pixi plugin")
         if shutil.which("docker") is None or shutil.which("pixi") is None:
             pytest.skip("running the scaffold end to end needs docker and pixi")
         # The client binary existing does not mean the daemon is reachable.

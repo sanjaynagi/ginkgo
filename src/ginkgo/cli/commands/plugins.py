@@ -45,7 +45,7 @@ def command_plugins(args) -> int:
     for plugin in registry.plugins:
         rich_console.print(f"[bold]{plugin.name}[/]")
         for contribution in plugin.contributions:
-            keys = ", ".join(describe_key(key) if not key else key for key in contribution.keys)
+            keys = ", ".join(key or describe_key(key) for key in contribution.keys)
             rich_console.print(f"  {contribution.point_name} [cyan]{keys}[/]")
     for failure in registry.failures:
         rich_console.print(f"[red]✖[/] {failure.describe()}")

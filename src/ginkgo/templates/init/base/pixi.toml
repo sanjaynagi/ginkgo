@@ -15,8 +15,9 @@ pandas = ">=2.0"
 # This project tracks ginkgo's `main` branch. `pixi install` resolves that
 # branch to one commit and records it in `pixi.lock`, so the lock — not this
 # manifest — is what says which ginkgo the project runs. Commit `pixi.lock`.
-# `pixi update ginkgo` moves to the current `main`; swap `branch` for `rev` or
-# `tag` to hold this project on a specific ginkgo instead.
+# `pixi update ginkgo ginkgo-pixi` moves to the current `main`; swap `branch`
+# for `rev` or `tag` on both entries to hold this project on a specific ginkgo
+# instead, since ginkgo-pixi pins the exact ginkgo version it ships with.
 # ginkgo-pixi runs the tasks that name a Pixi environment with `env=`.
 [pypi-dependencies]
 ginkgo = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}", extras = ["notebooks"] }
