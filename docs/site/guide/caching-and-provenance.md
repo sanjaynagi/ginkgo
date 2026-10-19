@@ -47,6 +47,17 @@ the module, so the whole fan-out re-runs rather than the affected branch. Pass
 such parameters as task arguments instead; arguments are hashed per call, so
 only the branches whose values changed are invalidated.
 
+### Early Cutoff
+
+A downstream task's key is built from the *values* its upstream tasks produced,
+not from the upstream tasks' own cache keys. So when an upstream task re-runs
+(an input changed, or its `version=` was bumped) and produces the same bytes
+for a `file` output, or an equal plain value such as an `int` or `str`, every
+task below it still hits the cache. The change stops spreading at the first task
+whose output did not change, so only the tasks whose inputs actually differ
+re-run. (Tasks defined in the same module share a source hash, so editing that
+module's source still invalidates all of them; see [Cache Identity](#cache-identity).)
+
 (cache-correctness)=
 ## Cache Correctness
 
@@ -135,9 +146,15 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - **Cache key:** contributes its path string only, never content — the same
   as leaving the parameter `str`, but declared rather than implied.
 - **After execution:** the path must exist, with the right kind, or the task
-  fails naming the parameter and the path. A cache hit whose declared output
-  is missing on disk (or the wrong kind) is treated as a miss and the task
-  re-runs.
+  fails naming the parameter and the path. On a cache hit, a tracked output
+  file or folder that is missing or modified on disk is restored from the
+  artifact store without re-running the task and without a log line. This
+  covers `file(...)` returns and inferred returns (below). The restore
+  overwrites hand edits: an edited output is reset to the cached bytes. An
+  `Out[...]` path that is not part of the return value, as with an explicit
+  `-> None` return, has no stored artifact: on a cache hit it is only checked
+  for existence. A missing one is a miss and the task re-runs; an edited one
+  is neither restored nor re-run, so the edit stays.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned

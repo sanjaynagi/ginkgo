@@ -23,21 +23,34 @@ def normalize(input_path: file, output_path: Out[file]):
 Use script tasks when a standalone script should run in a task-local Pixi env:
 
 ```python
+from pathlib import Path
+
 from ginkgo import Out, file, script, task
+
+# This file lives in workflow/modules/, so scripts/ is one level up.
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 @task("script", env="analysis_tools")
 def build_report(output_path: Out[file]):
-    return script(path="scripts/build_report.py")
+    return script(path=_SCRIPTS_DIR / "build_report.py")
 ```
+
+A relative path given to `script()` or `notebook()` resolves against the
+project root (the directory holding `ginkgo.toml`), not against the file that
+contains the call, so anchor it with `Path(__file__)` as above.
 
 Use notebook tasks when the notebook is part of the workflow output:
 
 ```python
+from pathlib import Path
+
 from ginkgo import Out, file, notebook, task
+
+_NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 
 @task("notebook")
 def render_report(sample_id: str, output_path: Out[file]):
-    return notebook(path=f"notebooks/report_{sample_id}.ipynb")
+    return notebook(path=_NOTEBOOKS_DIR / f"report_{sample_id}.ipynb")
 ```
 
 ## Ginkgo types and cache correctness
@@ -74,11 +87,15 @@ def analyse(manifest: file, output_dir: Out[folder]) -> file:
     ...
 ```
 
-Prefer `Out[...]` over a bare `str` for every write — `str` carries no
-dependency edge, so `ginkgo doctor` and `--dry-run` warn on a `str`
-parameter whose name looks path-like (`path`, `output_dir`, `report_files`,
-...), suggesting `file`/`folder` for a read or `Out[file]`/`Out[folder]` for
-a write.
+Prefer `Out[...]` over a bare `str` for every write — a file written
+through a `str` path is content-hashed as an input on the next run, so the
+task invalidates its own cache entry. `ginkgo doctor` and `--dry-run` warn on
+a `str` parameter whose name looks path-like (`path`, `output_dir`,
+`report_files`, ...), suggesting `file`/`folder` for a read or
+`Out[file]`/`Out[folder]` for a write.
+
+A data file opened by a literal path inside a task body is invisible to the
+cache. Pass it in as a `file` argument instead.
 
 A task with `Out[...]` parameters and no return annotation has its return
 value inferred from them — one `Out[...]` parameter becomes the return
@@ -125,9 +142,27 @@ ref = remote_file("gs://bucket/ref.fa", access="stage")
 ```
 
 Fuse mode requires a worker image with FUSE drivers and `fuse_image` /
-`fuse_privileged` set in `[remote.k8s]` or `[remote.batch]`. If a mount
+`fuse_privileged` set on the executor's `[remote.executors.<name>]` table
+(a `k8s` or `batch` executor, from the `ginkgo-k8s` / `ginkgo-gcp` plugins).
+If a mount
 fails the worker falls back to staging and the CLI surfaces a warning;
 cache keys are stable across modes so switching is free.
+
+## Workflow parameters
+
+Workflow inputs that should be settable from the command line are declared with
+`ginkgo.param(...)`, and each becomes a `--flag`:
+
+```python
+import ginkgo
+
+n_replicates = ginkgo.param("n_replicates", type=int, default=12)
+```
+
+Pass a parameter into a task as an argument; one read from a module global
+inside a task body is not part of the cache key.
+
+## Fan-out
 
 Use `.map()` for zip-style fan-out across aligned inputs:
 
@@ -153,4 +188,15 @@ comparisons = compare_thresholds(metrics=['accuracy', 'f1']).product_map(
 ```
 
 Choose `.map()` when lists are meant to line up positionally. Choose
-`.product_map()` when you want all combinations.
+`.product_map()` when you want all combinations. For combinations that are not
+a grid, build one row per combination in a DataFrame and map over its columns:
+`.map(**rows.to_dict("list"), out=per_branch("results/{a}_{b}.txt"))`.
+
+## Shell commands are not strict
+
+Local shell tasks run under `/bin/sh -c`, Pixi and Conda environments under
+`bash -c`, and container environments under the shell named by `[container]
+shell` in `ginkgo.toml` (`bash` by default). None sets `errexit` or
+`pipefail`, so a failing line or a failing stage of a pipeline does not fail
+the task. Start strict commands with
+`set -eo pipefail;`.

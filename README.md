@@ -110,11 +110,14 @@ A population-genetics workflow that filters a VCF, computes per-population
 allele frequencies, and renders a summary notebook.
 
 ```python
+from pathlib import Path
+
 import numpy as np
 
 from ginkgo import file, flow, notebook, shell, task
 
 POPULATIONS = ["YRI", "CEU", "CHB"]
+NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
 
 
 # shell task — runs bcftools in a subprocess
@@ -150,7 +153,7 @@ def allele_frequencies(vcf_path: file, population: str) -> file:
 @task("notebook")
 def population_structure(af_files: list[file], populations: list[str]) -> file:
     """Render an HTML population-genetics summary notebook."""
-    return notebook("notebooks/population_structure.ipynb")
+    return notebook(NOTEBOOKS_DIR / "population_structure.ipynb")
 
 
 # flow
@@ -217,6 +220,7 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo cache prune`
 - `ginkgo cache explain`
 - `ginkgo env ls`
+- `ginkgo db` (`db path`, `db migrate`, `db check`, `db prune`, `db vacuum`)
 
 For full details on every command, see the [CLI reference](docs/site/guide/cli.md).
 
