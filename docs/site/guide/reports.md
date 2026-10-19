@@ -6,6 +6,9 @@
 `--single-file` to emit a single self-contained HTML file instead. Running or
 pending runs are rejected with an error.
 
+`ginkgo report` comes from the `ginkgo-report` plugin; see
+[Plugins](../getting-started/installation.md#plugins) to install it.
+
 ```bash
 ginkgo report                   # the most recent run
 ginkgo report <run_id> --open   # a specific run, opened in the browser

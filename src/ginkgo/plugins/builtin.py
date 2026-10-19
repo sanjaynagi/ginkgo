@@ -16,7 +16,6 @@ from ginkgo.envs.container import build_container_environment
 from ginkgo.envs.pixi import build_pixi_environment
 from ginkgo.plugins.api import (
     EnvironmentType,
-    EventSubscriberType,
     MountDriverType,
     ObjectStoreType,
     Plugin,
@@ -28,7 +27,6 @@ from ginkgo.remote.access.drivers.rclone import RcloneDriver
 from ginkgo.remote.access.drivers.s3 import MountpointS3Driver
 from ginkgo.remote.resolve import build_gcs_store, build_oci_store, build_s3_store
 from ginkgo.runtime.environment.secrets import build_env_backends
-from ginkgo.runtime.notifications.notifications import build_notification_service
 from ginkgo.runtime.task_runners.notebook import build_notebook_runner
 from ginkgo.runtime.task_runners.script import build_script_runner
 from ginkgo.runtime.task_runners.shell import build_shell_runner
@@ -46,7 +44,6 @@ BUILTIN = Plugin(
         MountDriverType(scheme="s3", build=MountpointS3Driver),
         MountDriverType(scheme="oci", build=RcloneDriver),
         SecretBackendType(name="env", build=build_env_backends),
-        EventSubscriberType(name="slack", build=build_notification_service),
         EnvironmentType(name="pixi", schemes=("",), label="pixi", build=build_pixi_environment),
         EnvironmentType(
             name="container",

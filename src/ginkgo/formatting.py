@@ -1,9 +1,9 @@
 """Canonical value formatters shared by every read-only presenter.
 
-The CLI run-finish output and the static HTML report both turn the same
+The CLI's presenters, and plugins such as ginkgo-report, turn the same
 provenance values — durations, byte sizes, timestamps, counts — into
 strings. Keeping those transforms here means a formatting change happens in
-one place and cannot silently drift between the two surfaces.
+one place and cannot silently drift between surfaces.
 
 Presentation *vocabulary* (Rich styles and icons for the terminal, tone
 tokens for HTML) legitimately differs between presenters and stays with each

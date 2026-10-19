@@ -16,8 +16,14 @@ This installs `ginkgo` from `main` into an isolated environment via
 
 ## Plugins
 
-The installer gives you core only. Remote executors ship as separate plugins
-in this repository: `ginkgo-k8s` (Kubernetes) and `ginkgo-gcp` (GCP Batch).
+The installer gives you core only. Optional integrations ship as separate
+plugins in this repository:
+
+- `ginkgo-k8s`: the Kubernetes executor
+- `ginkgo-gcp`: the GCP Batch executor
+- `ginkgo-report`: the `ginkgo report` command, for HTML run reports
+- `ginkgo-slack`: Slack run notifications
+
 To install ginkgo with every first-party plugin:
 
 ```bash
@@ -49,7 +55,7 @@ pixi run test
 pixi run docs-build
 ```
 
-The default environment installs both first-party plugins editable, so
+The default environment installs every first-party plugin editable, so
 `pixi run test` covers core and the plugins. The `core` environment has no
 plugins: `pixi run -e core test-core` runs core's tests there.
 

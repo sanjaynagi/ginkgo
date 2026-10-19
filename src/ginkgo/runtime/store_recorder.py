@@ -36,8 +36,8 @@ _IGNORED = frozenset({"task_log"})
 
 # After these, the recorder commits and hands the events to its committed
 # handlers. The terminal events are where a reader has something new to read;
-# ``run_started`` is here so a "run began" notification goes out at the start
-# of the run rather than at the first task to finish.
+# ``run_started`` is here so a committed-event subscriber hears that the run
+# began at its start rather than at the first task to finish.
 _DELIVER_AFTER = TERMINAL_EVENTS | {"run_started"}
 
 

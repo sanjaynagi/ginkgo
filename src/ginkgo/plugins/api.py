@@ -19,6 +19,7 @@ version, and the specs here may change in step with them.
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Annotate",
+    "CliCommand",
     "Contribution",
     "EnvironmentContext",
     "EnvironmentType",
@@ -472,6 +474,48 @@ class TaskKind:
         return (self.name,)
 
 
+# ----- CLI commands ----------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class CliCommand:
+    """A ``ginkgo <name>`` subcommand.
+
+    Core's own commands are wired directly in the CLI; a plugin command is
+    added after them, and one that reuses a core command's name is ignored with
+    a warning.
+
+    The CLI builds its parser, and so imports every plugin module, on every
+    invocation: a plugin module should import cheaply. ``run`` executes with
+    the working directory at the project root; the CLI resolves only the
+    ``workflow``, ``out`` and ``config`` arguments against the directory the
+    user ran it from, so any other path argument is relative to the root.
+
+    Parameters
+    ----------
+    name : str
+        The subcommand, e.g. ``"report"``.
+    help : str
+        One line for ``ginkgo --help``.
+    add_arguments : Callable[[argparse.ArgumentParser], None]
+        Declare the command's arguments on its subparser.
+    run : Callable[[argparse.Namespace], int]
+        Execute the command and return its exit status.
+    """
+
+    point_name: ClassVar[str] = "CLI command"
+
+    name: str
+    help: str
+    add_arguments: Callable[[argparse.ArgumentParser], None]
+    run: Callable[[argparse.Namespace], int]
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """The lookup keys: the subcommand name."""
+        return (self.name,)
+
+
 Contribution = (
     ExecutorType
     | ObjectStoreType
@@ -480,6 +524,7 @@ Contribution = (
     | EventSubscriberType
     | EnvironmentType
     | TaskKind
+    | CliCommand
 )
 """Every extension point a plugin can contribute to."""
 

@@ -12,18 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo.runtime.notifications.notifications import parse_notification_config
-from ginkgo.runtime.notifications.slack import build_run_failed_payload
-
-
-PYTHON = Path(sys.executable)
+from ginkgo_slack.subscriber import parse_notification_config
+from ginkgo_slack.webhook import build_run_failed_payload
 
 
 def _run_cli(
     *args: str, cwd: Path, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(PYTHON), "-m", "ginkgo.cli", *args],
+        [sys.executable, "-m", "ginkgo.cli", *args],
         cwd=cwd,
         check=False,
         text=True,
@@ -135,6 +132,11 @@ class TestFailedRunCard:
 
 
 class TestSlackNotifications:
+    @pytest.fixture(autouse=True)
+    def _run_in_tmp_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Each test writes a workflow and config into the working directory.
+        monkeypatch.chdir(tmp_path)
+
     def test_cli_run_sends_start_and_success_notifications(self, monkeypatch) -> None:
         with _WebhookServer() as server:
             monkeypatch.setenv("GINKGO_SLACK_WEBHOOK", server.url)

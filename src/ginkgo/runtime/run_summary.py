@@ -1,7 +1,8 @@
 """The one read model for a run, built from the store's projections.
 
-Every presenter — ``runs show``, ``debug``, ``report``, notifications, the
-end-of-run console summary — formats this and nothing else (issue #79). It is
+Every presenter — ``runs show``, ``debug``, the end-of-run console summary,
+and plugin presenters such as ``ginkgo report`` and Slack notifications —
+formats this and nothing else (issue #79). It is
 loaded from the ledger's projection tables, so a run is visible the moment it
 has rows, and the run directory is needed only for the bytes it holds: logs and
 notebook artifacts.

@@ -1,7 +1,9 @@
 # Notifications
 
 Ginkgo can send Slack notifications for workflow lifecycle events during
-`ginkgo run`.
+`ginkgo run`. Notifications come from the `ginkgo-slack` plugin; see
+[Plugins](../getting-started/installation.md#plugins) to install it. Without it,
+`ginkgo run` warns that the `[notifications.slack]` table will not be sent.
 
 ## Supported Channel
 

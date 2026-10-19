@@ -21,7 +21,6 @@ from ginkgo.cli.commands.inspect import command_inspect
 from ginkgo.cli.commands.notebooks import command_notebooks
 from ginkgo.cli.commands.plugins import command_plugins
 from ginkgo.cli.commands.query import command_query
-from ginkgo.cli.commands.report import command_report
 from ginkgo.cli.commands.run import command_run, command_run_help
 from ginkgo.cli.commands.runs import command_runs
 from ginkgo.cli.commands.secrets import command_secrets
@@ -29,6 +28,8 @@ from ginkgo.cli.commands.why import command_why
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
 from ginkgo.params import looks_like_flag
+from ginkgo.plugins.api import CliCommand
+from ginkgo.plugins.registry import PluginNotFoundError, first_party_provider, plugin_registry
 from ginkgo.query import SQL_ROW_LIMIT
 from ginkgo.project import project_root
 from ginkgo.core.resources import parse_memory
@@ -122,7 +123,12 @@ def _normalize_working_directory(args: argparse.Namespace) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ``ginkgo`` CLI."""
-    parser, run_parser = _build_parser()
+    # Building the parser runs every plugin command's add_arguments, so a
+    # broken plugin is reported like any other failure, not as a traceback.
+    try:
+        parser, run_parser = _build_parser()
+    except Exception as exc:
+        return report_failure(exc=exc, stream=sys.stderr, show_traceback=traceback_requested())
 
     # Unknown flags and their values are removed before argparse runs. Left in,
     # a parameter's value would be captured by an optional positional: in
@@ -132,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv=list(sys.argv[1:] if argv is None else argv),
         known_options=_all_option_strings(parser),
     )
+    _refuse_uninstalled_command(parser=parser, argv=known_argv)
     args = parser.parse_args(known_argv)
 
     # Commands that import a workflow accept its declared parameters as flags.
@@ -142,10 +149,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(extras)}")
     else:
         args.param_extras = ()
-
-    if args.command is None:
-        parser.print_help(sys.stderr)
-        return 2
 
     try:
         _normalize_working_directory(args)
@@ -184,8 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_export(args)
         if args.command == "secrets":
             return command_secrets(args)
-        if args.command == "report":
-            return command_report(args)
+        return plugin_registry().get(CliCommand, args.command).run(args)
     # SystemExit is deliberately not caught: argparse and ``--version`` use it
     # to exit with a status they have already chosen.
     except KeyboardInterrupt:
@@ -196,9 +198,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=sys.stderr,
             show_traceback=traceback_requested(args),
         )
-
-    parser.error("missing command")
-    return 2
 
 
 def _ginkgo_version() -> str:
@@ -297,6 +296,23 @@ def _accepts_workflow_params(args: argparse.Namespace) -> bool:
     if args.command in {"run", "doctor", "secrets"}:
         return True
     return args.command == "inspect" and getattr(args, "inspect_command", None) == "workflow"
+
+
+def _refuse_uninstalled_command(*, parser: argparse.ArgumentParser, argv: Sequence[str]) -> None:
+    """Answer a first-party plugin's command with the registry's not-found message.
+
+    Argparse alone would answer ``ginkgo report`` without ginkgo-report with a
+    bare "invalid choice". The registry's message names the plugin to install,
+    or the plugin that failed to load when it is installed but broken. Any other
+    unknown command is left to argparse, which lists the valid choices.
+    """
+    command = next((token for token in argv if not token.startswith("-")), None)
+    if command is None or first_party_provider(CliCommand, command) is None:
+        return
+    try:
+        plugin_registry().get(CliCommand, command)
+    except PluginNotFoundError as exc:
+        parser.error(str(exc))
 
 
 def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
@@ -576,35 +592,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     subparsers.add_parser("notebooks", help="Manage notebook workflows")
 
-    report_parser = subparsers.add_parser("report", help="Generate HTML run reports")
-    report_parser.add_argument("run_id", nargs="?")
-    report_parser.add_argument(
-        "--out",
-        default=None,
-        help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
-    )
-    report_parser.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Replace the contents of an --out directory that holds files ginkgo "
-            "did not write. Without this, such a directory is left untouched."
-        ),
-    )
-    report_parser.add_argument(
-        "--single-file",
-        action="store_true",
-        help="Emit one HTML file with CSS, fonts, and script inlined.",
-    )
-    report_parser.add_argument(
-        "--max-log-lines",
-        type=int,
-        default=80,
-        help="Trailing log lines to retain for failed tasks (default: 80).",
-    )
-    report_parser.add_argument("--open", dest="open", action="store_true", default=False)
-    report_parser.add_argument("--no-open", dest="open", action="store_false")
-
     secrets_parser = subparsers.add_parser("secrets", help="Manage and validate workflow secrets")
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)
     list_parser = secrets_subparsers.add_parser("list", help="List declared secrets")
@@ -615,6 +602,18 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     validate_parser.add_argument("workflow", nargs="?")
     validate_parser.add_argument("--config", action="append", default=[])
+
+    for command in plugin_registry().all(CliCommand):
+        # Core's commands are not registry contributions, so the registry
+        # cannot refuse this clash; the plugin's command is unreachable.
+        if command.name in subparsers.choices:
+            print(
+                f"warning: a plugin's CLI command {command.name!r} clashes with a core "
+                "ginkgo command and is ignored. Run `ginkgo plugins` to find it.",
+                file=sys.stderr,
+            )
+            continue
+        command.add_arguments(subparsers.add_parser(command.name, help=command.help))
 
     # Prefix abbreviation is off throughout: an abbreviated ginkgo flag is absent
     # from _all_option_strings, so ``--job 4`` would be partitioned off as a

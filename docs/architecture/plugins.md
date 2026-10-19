@@ -1,7 +1,7 @@
 # Plugins
 
 Ginkgo's optional integrations — remote executors, object stores, FUSE
-drivers, secret backends, run notifications — are contributed through one
+drivers, secret backends, run notifications, extra CLI commands — are contributed through one
 plugin registry, `ginkgo/plugins/`. Core looks an implementation up by the
 key config or user code selects it with, and never names a concrete class.
 
@@ -21,6 +21,7 @@ without breaking plugins.
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(SecretBackendContext) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
 | `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`. `directive`, `runner` and `call_form` are set together or not at all |
+| `CliCommand` | a `ginkgo <name>` subcommand | no `build`: `add_arguments(parser)` declares the command's arguments when the CLI builds its parser, and `run(args) -> int` executes it; also carries `help` |
 | `EnvironmentType` | every scheme in `schemes` (`docker`, `oci`), with `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `name` and a `label` for run tables and provenance |
 
 The set of extension points is fixed: adding one is a change to core, so each
@@ -45,8 +46,8 @@ A plugin is registered in its distribution's `pyproject.toml`:
 k8s = "ginkgo_k8s:PLUGIN"
 ```
 
-An entry point that fails to import, or is not a `Plugin`, is skipped and
-recorded as a `PluginLoadFailure` rather than raised: one broken third-party
+An entry point that fails to import, is not a `Plugin`, or claims a key a
+plugin loaded before it already holds, is skipped and recorded as a `PluginLoadFailure` rather than raised: one broken third-party
 plugin must not stop core or the other plugins from working, on a laptop or in
 a worker pod. The failure is reported where it matters — `ginkgo plugins`
 lists it and exits 1, and a lookup that finds nothing names it.
@@ -55,13 +56,15 @@ The other errors are explicit:
 
 - `PluginConflictError` — two plugins contribute the same key to one extension
   point, or two task kinds return the same directive type; the message names
-  both.
+  both. Discovery records it as the later plugin's load failure; constructing a
+  `PluginRegistry` directly raises it.
 - `PluginNotFoundError` (a `LookupError`, not a `ValueError`, so code catching
   bad values never swallows it) — nothing provides the key asked for. The
   message lists what is available, names the distribution to install when a
   first-party plugin provides the key (`_FIRST_PARTY_PROVIDERS` in
-  `registry.py`: `k8s` → ginkgo-k8s, `batch` → ginkgo-gcp), and lists any
-  plugin that failed to load.
+  `registry.py`: executor types `k8s` → ginkgo-k8s and `batch` → ginkgo-gcp,
+  event subscriber `slack` → ginkgo-slack, CLI command `report` →
+  ginkgo-report), and lists any plugin that failed to load.
 
 `use_plugin_registry(registry)` swaps the process's registry for a block, for
 tests and embedders that need a known set of plugins.
@@ -105,7 +108,29 @@ tests and embedders that need a known set of plugins.
   (dispatch, validation, dry run, remote-input staging, `inspect`).
 - **Event subscribers.** `ginkgo run` builds each registered subscriber and
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
-  only sees events already in the ledger.
+  only sees events already in the ledger. A `[notifications.<name>]` table
+  that no installed subscriber is named for draws a warning built from the
+  registry's not-found message, so `[notifications.slack]` without
+  ginkgo-slack names the plugin to install instead of silently sending
+  nothing.
+- **CLI commands.** Core's own commands are wired directly in `cli/app.py`;
+  they are the CLI, not optional integrations. `_build_parser` then adds a
+  subparser for every `CliCommand`, ignoring with a warning one whose name a
+  core command already has, and `main` dispatches any command core does not
+  handle to its plugin's `run`. Building the parser therefore imports every
+  plugin module on every invocation, so a plugin module should import
+  cheaply; a failure building the parser is reported like any other command
+  failure. A first-party command that is not installed (`ginkgo report`
+  without ginkgo-report) is answered with the registry's not-found message —
+  the plugin to install, or the plugin that failed to load — rather than
+  argparse's "invalid choice". `run` executes at the project root: only the
+  `workflow`, `out` and `config` arguments are resolved against the directory
+  the user ran `ginkgo` from.
+
+  Core's commands are not `CliCommand` contributions, so a clash with one is
+  caught in `app.py` rather than by the registry, and `ginkgo plugins` does not
+  show it. Moving core's commands onto `CliCommand` would put every clash on
+  the registry's path and replace `main`'s if-chain; it is deferred.
 
 `ginkgo plugins [--json]` lists the loaded plugins, each contribution's keys
 (the empty bare-name key shows as `(bare name)`), and any plugin that failed to
@@ -113,16 +138,19 @@ load, exiting 1 if one did.
 
 ## First-party plugins
 
-The Kubernetes and GCP Batch executors are not in core. They live in separate
-distributions in this repository, under `plugins/`:
+The Kubernetes and GCP Batch executors, Slack notifications and HTML reports
+are not in core. They live in separate distributions in this repository, under
+`plugins/`:
 
 | Distribution | Package | Entry point | Contributes | Depends on |
 |---|---|---|---|---|
 | `plugins/ginkgo-k8s` | `ginkgo_k8s` | `k8s = "ginkgo_k8s:PLUGIN"` | `ExecutorType` `k8s` (label `Kubernetes`, requires `image`) | `kubernetes` |
 | `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `google-cloud-batch`, `google-cloud-logging` |
+| `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
+| `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
 
 Each pins the exact core version (`ginkgo==0.1.0`). They are not on PyPI: core's
-`all` extra installs both through git direct references at the same ref as
+`all` extra installs every one through git direct references at the same ref as
 core.
 
 An executor plugin implements `RemoteExecutor` / `RemoteJobHandle`
@@ -163,7 +191,7 @@ is called only on first dispatch, so importing the plugin stays cheap.
 
 ### Testing
 
-The pixi `default` environment installs both plugins editable (feature
+The pixi `default` environment installs every first-party plugin editable (feature
 `plugins`); `pixi run test` runs `pytest tests/ plugins/`. Plugin tests live in
 `plugins/<name>/tests`.
 
@@ -176,7 +204,7 @@ the real labels and required settings and refuse to build.
 
 ## Not yet extension points
 
-CLI commands and value codecs are still wired directly. URI parsing for `remote_file` /
+Value codecs are still wired directly. URI parsing for `remote_file` /
 `remote_folder` (`core/remote.py`) still knows the `s3`, `oci` and `gs`
 schemes by name.
 

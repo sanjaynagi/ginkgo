@@ -1,4 +1,4 @@
-"""Tests for ``ginkgo.reporting`` — the static HTML report exporter."""
+"""Tests for ``ginkgo_report`` — the static HTML report exporter."""
 
 from __future__ import annotations
 
@@ -9,15 +9,16 @@ from dataclasses import dataclass
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ginkgo.cli import main
-from ginkgo.cli.commands.report import _resolve_output_dir
+from ginkgo_report.command import _resolve_output_dir
 from ginkgo.formatting import format_bytes, format_duration
-from ginkgo.reporting import SizingPolicy, build_report_data, export_report
-from ginkgo.reporting.render import _MARKER_NAME
-from ginkgo.reporting.sizing import build_log_tail
+from ginkgo_report.model import build_report_data
+from ginkgo_report.render import _MARKER_NAME, export_report
+from ginkgo_report.sizing import SizingPolicy, build_log_tail
 from ginkgo.runtime.events import (
     GraphNodeRegistered,
     RunResourcesSampled,
@@ -27,19 +28,58 @@ from ginkgo.runtime.events import (
     TaskPlanned,
 )
 
+from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted
+from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
-
-from tests.conftest import Ledger
+from ginkgo.runtime.store_recorder import StoreRecorder
+from ginkgo.store.sqlite import open_store
+from ginkgo.workspace_layout import WorkspaceLayout
 
 
 # ----- Fixtures ----------------------------------------------------------
 
 
 @dataclass
+class _Ledger:
+    """A recorded run: events emitted on ``bus`` land in the run's ledger."""
+
+    run_id: str
+    run_dir: RunDir
+    bus: EventBus
+    recorder: StoreRecorder
+    db: Path
+
+    @classmethod
+    def start(cls, *, root: Path, run_id: str, workflow: str = "workflow.py", **run_started: Any):
+        layout = WorkspaceLayout(root=root / ".ginkgo")
+        run_dir = RunDir.create(run_id=run_id, root=layout.runs)
+        bus = EventBus()
+        recorder = StoreRecorder(path=layout.db, run_dir=run_dir).start()
+        bus.subscribe(recorder)
+        bus.emit(RunStarted(run_id=run_id, workflow=workflow, **run_started))
+        return cls(run_id=run_id, run_dir=run_dir, bus=bus, recorder=recorder, db=layout.db)
+
+    @property
+    def path(self) -> Path:
+        return self.run_dir.path
+
+    def finish(self, *, status: str, error: str | None = None) -> None:
+        self.bus.emit(RunCompleted(run_id=self.run_id, status=status, error=error))
+
+    def summary(self) -> RunSummary:
+        self.recorder.flush()
+        with open_store(self.db, readonly=True) as store:
+            return RunSummary.load(store, self.run_id, runs_root=self.run_dir.root)
+
+    def close(self) -> None:
+        self.recorder.close()
+
+
+@dataclass
 class _Run:
     """A run under construction, finished the first time it is reported on."""
 
-    ledger: Ledger
+    ledger: _Ledger
     tmp_path: Path
     status: str = "success"
     error: str | None = None
@@ -75,7 +115,7 @@ def _make_run(
     tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo workflow\n@flow\ndef main():\n    pass\n", encoding="utf-8")
-    ledger = Ledger.start(
+    ledger = _Ledger.start(
         root=tmp_path,
         run_id=run_id,
         workflow=str(workflow_path),
@@ -194,7 +234,7 @@ def _make_notebook_run(
     tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo\n", encoding="utf-8")
-    ledger = Ledger.start(
+    ledger = _Ledger.start(
         root=tmp_path, run_id=run_id, workflow=str(workflow_path), jobs=1, cores=1
     )
     ledger.bus.emit(
@@ -292,7 +332,7 @@ class TestSizing:
 
 class TestReportData:
     def test_rejects_running_run(self, tmp_path: Path) -> None:
-        ledger = Ledger.start(root=tmp_path, run_id="run-live")
+        ledger = _Ledger.start(root=tmp_path, run_id="run-live")
         ledger.bus.emit(
             GraphNodeRegistered(
                 run_id="run-live", task_id="task_0000", node_id=0, task_name="demo.t"
@@ -323,6 +363,15 @@ class TestReportData:
         # Masthead KV includes the status pill row.
         status_entries = [kv for kv in report.masthead_kv if kv.key == "status"]
         assert len(status_entries) == 1
+
+    def test_a_cancelled_run_can_be_reported_on(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-cancelled", fail=False)
+        run.status = "cancelled"
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.status_raw == "cancelled"
+        assert report.status_label == "cancelled"
 
     def test_cached_run_reports_the_same_sections(self, tmp_path: Path) -> None:
         # A re-run that hits cache for every task must present exactly what the
@@ -548,7 +597,7 @@ class TestExport:
         # Freeze the only non-deterministic input — the generated-at timestamp
         # that build_report_data stamps via ``datetime.now`` — so two runs of
         # the real export_report pipeline must produce byte-identical HTML.
-        import ginkgo.reporting.model as model_module
+        import ginkgo_report.model as model_module
 
         frozen_ts = datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
 
@@ -645,8 +694,22 @@ class TestExport:
         assert result.index_path.is_file()
 
 
+class TestOutputDir:
+    def test_the_default_lands_in_the_workspace_reports_directory(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
+
+        resolved = _resolve_output_dir(run_dir=run_dir, out=None, single_file=False)
+
+        assert resolved == (tmp_path / ".ginkgo" / "reports" / "run-abc").resolve()
+
+
 class TestReportCli:
     """``ginkgo report`` must never delete files it did not write."""
+
+    @pytest.fixture(autouse=True)
+    def _run_in_tmp_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The command finds runs in the working directory's .ginkgo/.
+        monkeypatch.chdir(tmp_path)
 
     def test_out_dir_with_unrelated_files_is_left_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

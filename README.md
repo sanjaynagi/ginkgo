@@ -65,7 +65,7 @@ pixi run test
 pixi run typecheck
 ```
 
-The default environment installs both first-party plugins editable, and
+The default environment installs every first-party plugin editable, and
 `pixi run test` runs core's tests and the plugins' (`tests/` and `plugins/`).
 To check that core works with no plugin installed, as CI does:
 
@@ -208,7 +208,7 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo history`
 - `ginkgo query`
 - `ginkgo export` (`export events`, `export manifest`)
-- `ginkgo report`
+- `ginkgo report` (from the `ginkgo-report` plugin)
 - `ginkgo why`
 - `ginkgo notebooks`
 - `ginkgo secrets` (`secrets list`, `secrets validate`)
