@@ -364,8 +364,13 @@ class CacheStore:
 
                 try:
                     os.replace(temp_dir, entry_dir)
-                except FileExistsError:
-                    pass
+                except OSError:
+                    # A concurrent run published this entry first. Renaming a
+                    # directory onto a non-empty one fails with ENOTEMPTY or
+                    # EEXIST depending on the platform; either way its entry
+                    # holds the same result, so keep it.
+                    if not entry_dir.exists():
+                        raise
             finally:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)

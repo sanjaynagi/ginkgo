@@ -22,8 +22,7 @@ import pytest
 
 from ginkgo.runtime.events import RunCompleted
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
+PYTHON = Path(sys.executable)
 
 _WORKFLOW = """
 import time

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,7 @@ import pytest
 from ginkgo.cli.commands.doctor import _extract_executor_configs
 from ginkgo.remote.access import doctor as access_doctor
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PYTHON = REPO_ROOT / ".pixi" / "envs" / "default" / "bin" / "python"
+PYTHON = Path(sys.executable)
 
 
 def _run_doctor(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
