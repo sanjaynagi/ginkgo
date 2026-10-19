@@ -50,6 +50,7 @@ def command_cache(args) -> int:
         table = new_table()
         table.add_column("Cache Key", style="bold", overflow="fold")
         table.add_column("Task", no_wrap=True)
+        table.add_column("Label", no_wrap=True)
         table.add_column("Size", justify="right")
         table.add_column("Age", justify="right")
         table.add_column("Created", no_wrap=True)
@@ -57,6 +58,8 @@ def command_cache(args) -> int:
             table.add_row(
                 row.cache_key,
                 row.task,
+                # A label's brackets are text, not Rich markup.
+                Text(row.label),
                 row.size,
                 row.age,
                 row.created,
@@ -292,6 +295,8 @@ class CacheEntryDisplay:
     path: Path
     cache_key: str
     task: str
+    label: str
+    """The fan-out branch that last recorded the key, or ``-``."""
     size: str
     size_bytes: int
     age: str
@@ -326,6 +331,7 @@ def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:
         path=CACHE_ROOT / row.cache_key,
         cache_key=row.cache_key,
         task=task_base_name(row.function),
+        label=row.display_label or "-",
         size=format_bytes(row.size_bytes),
         size_bytes=row.size_bytes,
         age=_format_age(created_at),

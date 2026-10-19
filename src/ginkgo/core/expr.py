@@ -6,8 +6,7 @@ than executing. The evaluator recursively resolves these nodes.
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -117,34 +116,6 @@ class Expr(Generic[T]):
                 arg_strs.append(f"{k}={v!r}")
         joined = ", ".join(arg_strs)
         return f"Expr({self.task_def.name}({joined}))"
-
-
-def display_labels(exprs: Mapping[int, Expr]) -> dict[int, str]:
-    """Return one display label per graph node, disambiguating repeats.
-
-    Two calls of the same task with no fan-out values to tell them apart
-    share a label, so the second and later occurrences take an ordinal.
-    Ordinals follow ascending node id, so every view of one graph agrees
-    on which node is which.
-
-    Parameters
-    ----------
-    exprs : Mapping[int, Expr]
-        The graph's expressions, keyed by node id.
-
-    Returns
-    -------
-    dict[int, str]
-        Display label per node id.
-    """
-    occurrences: Counter[str] = Counter()
-    labels: dict[int, str] = {}
-    for node_id in sorted(exprs):
-        label = exprs[node_id].display_label
-        occurrences[label] += 1
-        count = occurrences[label]
-        labels[node_id] = label if count == 1 else f"{label}[{count}]"
-    return labels
 
 
 @dataclass(frozen=True)

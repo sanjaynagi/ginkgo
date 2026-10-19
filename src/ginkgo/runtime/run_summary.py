@@ -111,6 +111,11 @@ class TaskSummary:
         return None
 
     @property
+    def label(self) -> str:
+        """Return the name the task is shown under: its fan-out label or base name."""
+        return self.display_label or self.base_name
+
+    @property
     def kind_label(self) -> str:
         """Return a display label for the task kind (``"task"`` fallback)."""
         if self.kind:

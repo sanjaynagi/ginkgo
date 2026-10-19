@@ -141,17 +141,20 @@ user testing found the two read as interchangeable. A validation workflow is a
 workflow, so it is run by path, and `ginkgo run --dry-run` is the one wiring
 check — it previews the plan for the entrypoint that will actually run.
 
-Task labels have one source, `Expr.display_label` (`core/expr.py`): the task's
-base name, with its fan-out values in brackets when the graph fixed them —
-which `.map()` and `.product_map()` do at graph-build time, `per_branch()`
-arguments excluded as values derived from a branch rather than naming it.
-`display_labels()` assigns those labels across a graph, giving an ordinal to
-repeats that nothing else tells apart. Both the dry-run plan and the live run
-table label from it (`cli/commands/run.py:planned_task_rows`), so a branch
-still waiting to be dispatched reads the same in both. A mapped task whose
-fan-out left no label parts is the one case the graph cannot label; the
-evaluator supplies a label from its resolved arguments when it prepares the
-node, and the renderer adopts it on the node's first event.
+Each task node is labelled once, when the evaluator registers it
+(`ConcurrentEvaluator._next_display_label`). The label starts from
+`Expr.display_label` (`core/expr.py`): the task's base name, with its fan-out
+values in brackets when the graph fixed them — which `.map()` and
+`.product_map()` do at graph-build time, `per_branch()` arguments excluded as
+values derived from a branch rather than naming it. A repeat that nothing else
+tells apart takes an ordinal, counted across the static graph and every dynamic
+expansion. The label is recorded on `GraphNodeRegistered` and projected onto the
+task's row, and every surface — the dry-run plan, the live run table,
+`runs show`, `debug`, `history`, `cache ls` and the HTML report — reads that one
+label, so a branch still waiting to be dispatched reads the same everywhere. A
+mapped task whose fan-out left no label parts is the one case registration
+cannot label; the evaluator supplies a label from its resolved arguments when it
+prepares the node and records it on `TaskPlanned`.
 
 Commands that import a workflow — `run`, `doctor`, `secrets`, and
 `inspect workflow` — accept flags for the parameters that workflow declares with
