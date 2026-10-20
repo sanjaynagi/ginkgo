@@ -220,6 +220,20 @@ def write_starter_project(*, root: Path) -> Path:
     return root
 
 
+def _write_agents_pointer(*, root: Path, context: TemplateContext) -> list[Path]:
+    """Write an ``AGENTS.md`` that points coding agents at ``skills/``, unless one exists.
+
+    Agents look for ``AGENTS.md`` at the project root, and would otherwise
+    never learn the skills directory is there. A project's own ``AGENTS.md``
+    is its own, so it is left alone rather than refused or replaced.
+    """
+    destination = root / "AGENTS.md"
+    if destination.exists():
+        return []
+    files = _template_files(template_root=_template_root(group="agents"))
+    return _write_template_files(root=root, files=files, context=context)
+
+
 def command_init(args) -> int:
     """Handle ``ginkgo init``."""
     root = Path(args.directory).resolve()
@@ -238,6 +252,8 @@ def command_init(args) -> int:
         )
 
     written_paths = _write_template_files(root=root, files=files, context=context)
+    if not args.no_skills:
+        written_paths.extend(_write_agents_pointer(root=root, context=context))
 
     rich_console.print(f"[bold green]🌿 ginkgo init[/] [bold]{root.name}[/]\n")
     # Unwrapped: a project path folded across lines cannot be copied whole.

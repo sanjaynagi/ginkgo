@@ -27,11 +27,15 @@ coding agents working in the repository:
 
 Point an agent at `skills/index.md` and it has enough context to author and run
 workflows correctly without rediscovering the project's conventions each time.
+`init` also writes a short `AGENTS.md` at the project root that does this,
+since many agents read that file first; a project that already has an
+`AGENTS.md` keeps its own. Claude Code reads `CLAUDE.md` instead: add a line
+`@AGENTS.md` to it to pull the pointer in.
 
 Two flags control what `init` writes:
 
 ```bash
-ginkgo init my-project --no-skills   # project scaffold only, no skills/
+ginkgo init my-project --no-skills   # project scaffold only, no skills/ or AGENTS.md
 ginkgo init --skills-only            # add skills/ to an existing project
 ```
 

@@ -1217,6 +1217,23 @@ class TestCliInit:
 
         project_dir = Path("demo-project")
         assert not (project_dir / "skills").exists()
+        assert not (project_dir / "AGENTS.md").exists()
+
+    def test_init_points_agents_at_the_skills(self) -> None:
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert "skills/index.md" in Path("demo-project", "AGENTS.md").read_text(encoding="utf-8")
+
+    def test_init_leaves_an_existing_agents_file_alone(self) -> None:
+        project_dir = Path("demo-project")
+        project_dir.mkdir()
+        (project_dir / "AGENTS.md").write_text("ours\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert (project_dir / "AGENTS.md").read_text(encoding="utf-8") == "ours\n"
 
     def test_init_can_create_skills_only_for_existing_project(self) -> None:
         project_dir = Path("demo-project")
