@@ -129,11 +129,11 @@ class TestOutRemoteDispatchAllowed:
 
     def test_remote_true_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        assert evaluator._resolve_placement(task_def=remote_with_output) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=remote_with_output) == "gpu-k8s"
 
     def test_named_executor_with_output_param_is_placed(self):
         evaluator = self._evaluator()
-        assert evaluator._resolve_placement(task_def=executor_with_output) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=executor_with_output) == "gpu-k8s"
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ per branch. String and bytes fan-out arguments are also rejected there, since
 ### Reachability and dropped calls
 
 The graph is exactly what is reachable from the flow's return value:
-`ConcurrentEvaluator._register_value` walks the returned expression, and a task
+`TaskGraph` (`runtime/graph.py`) walks the returned expression, and a task
 call the flow constructs but never returns is not part of the run. That rule
 stands, but it used to be silent — a bare side-effecting statement, or a literal
 path written where an upstream expression belonged, produced a smaller graph
@@ -66,9 +66,9 @@ while a `record_constructed_calls()` context manager is open. A chained
 `supersede_call` to drop the superseded entry rather than report it.
 
 Callers that build a flow (`cli/commands/run.py`, `runtime/diagnostics.py`) open
-the recorder around the flow body and pass the log to the evaluator as
-`constructed_calls`. `ConcurrentEvaluator.unreachable_calls` then diffs it
-against `_expr_nodes`, keyed by object identity. Nothing is recorded outside
+the recorder around the flow body and pass the log to
+`TaskGraph.unreachable_calls`, which diffs it against the registered
+expressions, keyed by object identity. Nothing is recorded outside
 that context manager, so expressions built by library users or minted inside
 running tasks are unaffected.
 

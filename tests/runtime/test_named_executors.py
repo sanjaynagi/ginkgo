@@ -211,13 +211,13 @@ class TestExecutorRouting:
 
     def test_task_routes_to_the_executor_it_names(self) -> None:
         evaluator = self._evaluator(default=None)
-        assert evaluator._resolve_placement(task_def=trains) == "gpu-k8s"
-        assert evaluator._resolve_placement(task_def=crunches) == "cheap-batch"
+        assert evaluator.placement.resolve(task_def=trains) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=crunches) == "cheap-batch"
 
     def test_pinned_executor_beats_the_run_default(self) -> None:
         evaluator = self._evaluator(default="cheap-batch")
-        assert evaluator._resolve_placement(task_def=trains) == "gpu-k8s"
-        assert evaluator._resolve_placement(task_def=follows_default) == "cheap-batch"
+        assert evaluator.placement.resolve(task_def=trains) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=follows_default) == "cheap-batch"
 
     def test_unknown_executor_name_fails_at_build(self) -> None:
         evaluator = self._evaluator(default="gpu-k8s")
@@ -232,7 +232,7 @@ class TestExecutorRouting:
 
         evaluator = self._evaluator(default=None)
         with pytest.raises(ValueError, match="cannot be dispatched remotely"):
-            evaluator._resolve_placement(task_def=shelled)
+            evaluator.placement.resolve(task_def=shelled)
 
 
 class TestTaskDeclaration:
@@ -335,7 +335,8 @@ class TestDispatchManagerRouting:
 
     def _node(self, *, node_id: int, task_def):
         from ginkgo.core.expr import Expr
-        from ginkgo.runtime.evaluator import NodeRun, TaskNode
+        from ginkgo.runtime.evaluator import NodeRun
+        from ginkgo.runtime.graph import TaskNode
 
         expr = Expr(task_def=task_def, args={"x": 1})
         return NodeRun(node=TaskNode(node_id=node_id, expr=expr, dependency_ids=frozenset()))

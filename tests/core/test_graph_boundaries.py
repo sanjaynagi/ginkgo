@@ -18,11 +18,12 @@ from typing import Any
 import pytest
 
 from ginkgo import Out, evaluate, file, flow, folder, task, tmp_dir, untracked
-from ginkgo.core.expr import record_constructed_calls
+from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_diagnostics
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.edge_inference import DuplicateOutputPathError, OutputOverwritesInputError
-from ginkgo.runtime.evaluator import ConcurrentEvaluator, CycleError, IncompleteCallError
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.graph import CycleError, IncompleteCallError
 from ginkgo.runtime.events import GraphNodeRegistered, TaskNotice
 from ginkgo.runtime.task_validation import (
     is_content_trackable_path_value,
@@ -530,14 +531,17 @@ class TestIsUntrackedDirectoryValue:
         assert is_untracked_directory_value(annotation=folder, value="present_dir") is False
 
 
-def _validated_evaluator(build: Any) -> ConcurrentEvaluator:
-    """Run a flow body under a construction recorder and validate the graph."""
+def _validated_evaluator(build: Any) -> tuple[ConcurrentEvaluator, list[ConstructedCall]]:
+    """Run a flow body under a construction recorder and validate the graph.
+
+    Returns the evaluator and the constructed calls its graph never reached.
+    """
     with record_constructed_calls() as constructed_calls:
         expr = build()
-    evaluator = ConcurrentEvaluator(constructed_calls=tuple(constructed_calls))
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
-    return evaluator
+    return evaluator, evaluator.graph.unreachable_calls(constructed_calls)
 
 
 class TestUnreachableCalls:
@@ -550,10 +554,10 @@ class TestUnreachableCalls:
             make_label(text="dropped")
             return kept
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 1
-        assert [call.label for call in evaluator.unreachable_calls] == ["make_label()"]
+        assert [call.label for call in unreachable] == ["make_label()"]
 
     def test_returned_calls_are_all_reachable(self) -> None:
         @flow
@@ -563,17 +567,17 @@ class TestUnreachableCalls:
                 right=make_label(text="b"),
             )
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 3
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
     def test_calls_returned_inside_a_tuple_are_reachable(self) -> None:
         @flow
         def main():
             return make_label(text="a"), make_label(text="b")
 
-        assert _validated_evaluator(main).unreachable_calls == []
+        assert _validated_evaluator(main)[1] == []
 
     def test_dropped_producer_is_reported_when_a_literal_replaces_it(self) -> None:
         """Case 2 of #122: a literal path in place of the upstream expression."""
@@ -584,9 +588,9 @@ class TestUnreachableCalls:
             write_rows_str(rows=3, output_path="rows.csv")
             return summarise_str(coords="rows.csv", output_path="summary.csv")
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
-        assert [call.label for call in evaluator.unreachable_calls] == ["write_rows_str()"]
+        assert [call.label for call in unreachable] == ["write_rows_str()"]
 
     def test_fan_out_branches_are_reported_as_one_call(self) -> None:
         @flow
@@ -594,19 +598,19 @@ class TestUnreachableCalls:
             make_label().map(text=["a", "b", "c"])
             return make_label(text="kept")
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
-        assert [call.label for call in evaluator.unreachable_calls] == ["make_label() × 3"]
+        assert [call.label for call in unreachable] == ["make_label() × 3"]
 
     def test_chained_map_does_not_report_superseded_branches(self) -> None:
         @flow
         def main():
             return join_labels().map(left=["a", "b"]).map(right=["x", "y"])
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 4
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
     def test_an_empty_fan_out_is_not_reported(self) -> None:
         """No branches were built, so no call was dropped."""
@@ -616,24 +620,16 @@ class TestUnreachableCalls:
             make_label().map(text=[])
             return join_labels(left="a", right="b")
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
     def test_an_empty_fan_out_returned_by_the_flow_is_not_reported(self) -> None:
         @flow
         def main():
             return make_label().map(text=[])
 
-        assert _validated_evaluator(main).unreachable_calls == []
-
-    def test_no_recorder_means_no_reporting(self) -> None:
-        """Expressions built outside a recorder never look unreachable."""
-        evaluator = ConcurrentEvaluator()
-        evaluator.build_graph(make_label(text="a"))
-        evaluator.validate_graph()
-
-        assert evaluator.unreachable_calls == []
+        assert _validated_evaluator(main)[1] == []
 
     def test_diagnostics_are_warnings_that_name_the_call(self) -> None:
         @flow
@@ -641,8 +637,8 @@ class TestUnreachableCalls:
             make_label(text="dropped")
             return join_labels(left="a", right="b")
 
-        evaluator = _validated_evaluator(main)
-        diagnostics = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+        evaluator, unreachable = _validated_evaluator(main)
+        diagnostics = unreachable_call_diagnostics(calls=unreachable)
 
         assert len(diagnostics) == 1
         assert diagnostics[0].severity == "warning"
@@ -656,8 +652,10 @@ class TestUnreachableCalls:
             make_label(text="dropped")
             return make_label(text="kept")
 
-        evaluator = _validated_evaluator(main)
-        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+        evaluator, unreachable = _validated_evaluator(main)
+        plan = build_dry_run_plan(
+            evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
+        )
 
         assert plan.task_count == 1
         assert plan.dropped_labels == ("make_label()",)
@@ -668,8 +666,10 @@ class TestUnreachableCalls:
             join_labels(left="a")
             return make_label(text="kept")
 
-        evaluator = _validated_evaluator(main)
-        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+        evaluator, unreachable = _validated_evaluator(main)
+        plan = build_dry_run_plan(
+            evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
+        )
 
         assert plan.dropped_labels == ("join_labels() (missing required argument(s): right)",)
 
@@ -716,11 +716,11 @@ class TestPartialCalls:
             make_label()
             return make_label(text="kept")
 
-        evaluator = _validated_evaluator(main)
-        diagnostics = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+        evaluator, unreachable = _validated_evaluator(main)
+        diagnostics = unreachable_call_diagnostics(calls=unreachable)
 
         assert len(evaluator.task_nodes) == 1
-        assert [call.label for call in evaluator.unreachable_calls] == ["make_label()"]
+        assert [call.label for call in unreachable] == ["make_label()"]
         assert len(diagnostics) == 1
         assert diagnostics[0].severity == "warning"
         assert diagnostics[0].code == UNREACHABLE_CALL_CODE
@@ -732,20 +732,20 @@ class TestPartialCalls:
         def main():
             return join_labels(left="a").map(right=["x", "y"])
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 2
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
     def test_product_map_completes_a_partial_call(self) -> None:
         @flow
         def main():
             return join_labels().product_map(left=["a", "b"], right=["x", "y"])
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 4
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
     def test_partial_call_mapped_twice_is_not_reported(self) -> None:
         @flow
@@ -753,10 +753,10 @@ class TestPartialCalls:
             partial = join_labels(left="a")
             return partial.map(right=["x"]), partial.map(right=["y"])
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
 
         assert len(evaluator.task_nodes) == 2
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
 
 
 # --------------------------------------------------------------------------
@@ -898,21 +898,23 @@ class TestOutPathEdgeInference:
             rep = report(csv_path="agg.csv")
             return agg, rep
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         agg_node = _node_for(evaluator, param="output_path", value="agg.csv")
         rep_node = _node_for(evaluator, param="csv_path", value="agg.csv")
 
         assert agg_node.node_id in rep_node.dependency_ids
-        assert agg_node.node_id in rep_node.inferred_dependency_ids
-        assert evaluator.unreachable_calls == []
+        assert agg_node.node_id in rep_node.node.inferred_dependency_ids
+        assert unreachable == []
 
     def test_dry_run_shows_two_waves(self) -> None:
         @flow
         def main():
             return aggregate(rows=3, output_path="agg.csv"), report(csv_path="agg.csv")
 
-        evaluator = _validated_evaluator(main)
-        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+        evaluator, unreachable = _validated_evaluator(main)
+        plan = build_dry_run_plan(
+            evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
+        )
 
         assert plan.wave_count == 2
 
@@ -937,11 +939,11 @@ class TestOutPathEdgeInference:
             kept = side_use(value=agg)
             return kept, report(csv_path="agg.csv")
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         agg_node = _node_for(evaluator, param="output_path", value="agg.csv")
         rep_node = _node_for(evaluator, param="csv_path", value="agg.csv")
 
-        assert evaluator.unreachable_calls == []
+        assert unreachable == []
         assert agg_node.node_id in rep_node.dependency_ids
 
     def test_map_fan_out_gets_per_branch_edges(self) -> None:
@@ -951,7 +953,7 @@ class TestOutPathEdgeInference:
             reps = report().map(csv_path=["a.csv", "b.csv"])
             return aggs, reps
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         agg_a = _node_for(evaluator, param="output_path", value="a.csv")
         agg_b = _node_for(evaluator, param="output_path", value="b.csv")
         rep_a = _node_for(evaluator, param="csv_path", value="a.csv")
@@ -967,7 +969,7 @@ class TestOutPathEdgeInference:
             rep = read_file_in_dir(report_path="qc/report.txt")
             return qc, rep
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         qc_node = _node_for(evaluator, param="qc_dir", value="qc")
         rep_node = _node_for(evaluator, param="report_path", value="qc/report.txt")
 
@@ -980,7 +982,7 @@ class TestOutPathEdgeInference:
             rep = read_whole_dir(input_dir="stage")
             return prod, rep
 
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         prod_node = _node_for(evaluator, param="out_dir", value="stage")
         rep_node = _node_for(evaluator, param="input_dir", value="stage")
 
@@ -1003,8 +1005,10 @@ class TestOutPathEdgeInference:
         def main():
             return [relay(src=f"chain/{i}.txt", dest=f"chain/{i + 1}.txt") for i in range(3000)]
 
-        evaluator = _validated_evaluator(main)
-        plan = build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+        evaluator, unreachable = _validated_evaluator(main)
+        plan = build_dry_run_plan(
+            evaluator=evaluator, workflow_label="workflow.py", unreachable_calls=unreachable
+        )
 
         assert plan.wave_count == 3000
 
@@ -1055,8 +1059,8 @@ class TestOutPathEdgeInference:
         def main():
             return read_own_output(output_path="self.txt", also_read="self.txt")
 
-        evaluator = _validated_evaluator(main)
-        node = next(iter(evaluator.task_nodes.values()))
+        evaluator, unreachable = _validated_evaluator(main)
+        node = next(iter(evaluator.graph.nodes.values()))
 
         assert node.dependency_ids == frozenset()
         assert node.inferred_dependency_ids == frozenset()
@@ -1088,8 +1092,8 @@ class TestOutPathEdgeInference:
         def main():
             return join_labels(left=make_label(text="a"), right=make_label(text="b"))
 
-        evaluator = _validated_evaluator(main)
-        for node in evaluator.task_nodes.values():
+        evaluator, unreachable = _validated_evaluator(main)
+        for node in evaluator.graph.nodes.values():
             assert node.inferred_dependency_ids == frozenset()
 
     def test_file_annotated_consumer_waits_for_the_out_file_producer(self) -> None:
@@ -1123,7 +1127,7 @@ class TestOutPathEdgeInference:
 
         # Would raise FileNotFoundError before #307 phase 2's dry-run skip,
         # since "agg.csv" does not exist on disk yet at validation time.
-        evaluator = _validated_evaluator(main)
+        evaluator, unreachable = _validated_evaluator(main)
         assert len(evaluator.task_nodes) == 2
 
     def test_dynamic_expansion_infers_edges_among_newly_registered_nodes(self) -> None:

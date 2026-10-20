@@ -706,7 +706,7 @@ def audit_site(*, site: str, trend: str) -> str:
 
 def _validated_evaluator(expr: object, calls: tuple[object, ...]) -> ConcurrentEvaluator:
     """Return an evaluator with the graph behind ``expr`` built and validated."""
-    evaluator = ConcurrentEvaluator(constructed_calls=calls)
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
     return evaluator

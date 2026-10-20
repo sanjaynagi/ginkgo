@@ -30,7 +30,7 @@ executors the run will reach (each `ExecutorType.required_settings` is the one
 home for which keys a backend cannot be built without); a table no task reaches
 stays unvalidated, so a stale `[remote.executors.k8s]` never fails a local run.
 
-`_resolve_placement` returns the executor's name or `None` for local
+`Placement.resolve` (`runtime/placement.py`) returns the executor's name or `None` for local
 placement; `NodeRun.executor_name` carries it, and `NodeRun.remote` is the
 derived predicate. That name is what events and provenance record as
 `execution_backend` (`local` for local placement), and what

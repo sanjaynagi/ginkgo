@@ -298,10 +298,7 @@ def run_workflow(
         "param_context": param_context,
         "keep_going": keep_going,
     }
-    evaluator = ConcurrentEvaluator(
-        constructed_calls=tuple(constructed_calls),
-        **evaluator_kwargs,
-    )
+    evaluator = ConcurrentEvaluator(**evaluator_kwargs)
     # A call the flow never returns is not in the graph, so its side effects
     # never happen: the run otherwise looks like a smaller but healthy one.
     # Warned about before validation, which a consumer of a dropped producer's
@@ -313,7 +310,8 @@ def run_workflow(
     )
     validate_started = time.perf_counter()
     evaluator.build_graph(expr)
-    dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+    unreachable_calls = evaluator.graph.unreachable_calls(constructed_calls)
+    dropped_calls = unreachable_call_diagnostics(calls=unreachable_calls)
     if not plan_reports_dropped:
         _print_dropped_calls(diagnostics=dropped_calls)
     try:
@@ -329,7 +327,7 @@ def run_workflow(
     # reuse the previous result. Detection is best-effort, hence a warning.
     for finding in global_param_reads(
         declaration_globals=declaration_globals,
-        evaluator=evaluator,
+        nodes=evaluator.graph.nodes.values(),
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {finding.message()}")
 
@@ -401,7 +399,11 @@ def run_workflow(
             )
             # The same warm-cache probe the plan preview runs: a provable
             # input-contract violation must fail the scripted preflight too.
-            plan = build_dry_run_plan(evaluator=evaluator, workflow_label=workflow_path.name)
+            plan = build_dry_run_plan(
+                evaluator=evaluator,
+                workflow_label=workflow_path.name,
+                unreachable_calls=unreachable_calls,
+            )
             for diagnostic in plan.diagnostics:
                 bus.emit(
                     TaskNotice(
@@ -422,6 +424,7 @@ def run_workflow(
             plan = build_dry_run_plan(
                 evaluator=evaluator,
                 workflow_label=workflow_path.name,
+                unreachable_calls=unreachable_calls,
             )
             render_dry_run_plan(
                 plan=plan,

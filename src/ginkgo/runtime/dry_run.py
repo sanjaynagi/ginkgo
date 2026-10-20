@@ -9,7 +9,7 @@ environment prepared, and no cached output materialised into the workspace.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -218,7 +218,12 @@ class DryRunPlan:
     probe_failures: tuple[ProbeFailure, ...] = ()
 
 
-def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -> DryRunPlan:
+def build_dry_run_plan(
+    *,
+    evaluator: ConcurrentEvaluator,
+    workflow_label: str,
+    unreachable_calls: Sequence[ConstructedCall] = (),
+) -> DryRunPlan:
     """Build a static execution plan from a validated evaluator.
 
     Must be called after ``evaluator.build_graph(...)`` and
@@ -232,6 +237,8 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         An evaluator whose static graph has already been built by ``validate``.
     workflow_label : str
         Human-readable workflow name for the plan header.
+    unreachable_calls : Sequence[ConstructedCall]
+        Task calls the graph never reached, listed as dropped.
 
     Returns
     -------
@@ -250,7 +257,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
     for node_id in topo_order:
         node = nodes[node_id]
         task_def = node.task_def
-        resources = evaluator.effective_resources(task_def=task_def)
+        resources = evaluator.placement.effective_resources(task_def=task_def)
         planned[node_id] = PlannedTask(
             node_id=node_id,
             base_name=task_def.name.rsplit(".", 1)[-1],
@@ -284,7 +291,7 @@ def build_dry_run_plan(*, evaluator: ConcurrentEvaluator, workflow_label: str) -
         cached_count=statuses.count("cached"),
         will_run_count=statuses.count("will_run"),
         unknown_count=statuses.count("unknown"),
-        dropped_labels=tuple(_dropped_label(call) for call in evaluator.unreachable_calls),
+        dropped_labels=tuple(_dropped_label(call) for call in unreachable_calls),
         diagnostics=tuple(diagnostics),
         probe_failures=tuple(probe_failures),
     )

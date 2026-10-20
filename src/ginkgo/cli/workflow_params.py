@@ -10,6 +10,7 @@ command that imports a workflow.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ginkgo.cli.renderers.common import task_base_name
@@ -25,6 +26,7 @@ from ginkgo.params import (
 from ginkgo.runtime.module_loader import load_module_from_path
 
 if TYPE_CHECKING:
+    from ginkgo.runtime.graph import TaskNode
     from ginkgo.config import _ConfigSession
 
 
@@ -122,7 +124,7 @@ def validate_param_extras(session: _ConfigSession) -> None:
 def global_param_reads(
     *,
     declaration_globals: dict[str, dict[str, Any]],
-    evaluator: Any,
+    nodes: Iterable[TaskNode],
 ) -> list[GlobalParamRead]:
     """Find validated tasks whose bodies read a declared parameter as a global.
 
@@ -131,8 +133,8 @@ def global_param_reads(
     declaration_globals : dict[str, dict[str, Any]]
         Parameter name to the globals of its declaring module, from the session
         the workflow was imported under.
-    evaluator : Any
-        An evaluator whose graph has been validated, supplying the task nodes.
+    nodes : Iterable[TaskNode]
+        The validated graph's task nodes.
 
     Returns
     -------
@@ -141,7 +143,7 @@ def global_param_reads(
     """
     tasks = [
         (task_base_name(node.task_def.name), node.task_def.fn)
-        for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id)
+        for node in sorted(nodes, key=lambda item: item.node_id)
         if node.task_def.kind == "python"
     ]
     return find_global_param_reads(declaration_globals=declaration_globals, tasks=tasks)

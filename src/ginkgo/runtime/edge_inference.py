@@ -12,7 +12,7 @@ anything, never touches the filesystem beyond normalising a path string), and
 returns the edges to add. Deciding what to do with those edges — merging them
 into a node's dependency ids, detecting cycles, handling nodes already in
 flight during dynamic graph expansion — is the caller's job (see
-``ConcurrentEvaluator._infer_and_apply_edges`` in ``evaluator.py``).
+``TaskGraph`` in ``graph.py``).
 
 Only *literal* path values are considered. A path computed at runtime from an
 upstream value already carries an edge through the normal ``Expr`` graph; a

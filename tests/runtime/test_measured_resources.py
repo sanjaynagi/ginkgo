@@ -159,7 +159,7 @@ class TestManifestRecording:
 class TestRetryCarry:
     def test_schedule_retry_keeps_measurements(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
-        node_id = evaluator._register_expr(_retried_work())
+        (node_id,) = evaluator._register(_retried_work())
         node = evaluator.task_nodes[node_id]
         node.measured_resources = {"peak_rss_bytes": 42, "cpu_seconds": 0.1, "source": "rusage"}
 

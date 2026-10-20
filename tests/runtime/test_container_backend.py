@@ -700,8 +700,7 @@ class TestContainerKindRestriction:
 
         backend = ContainerBackend(project_root=tmp_path)
         evaluator = ConcurrentEvaluator(backend=backend)
-        evaluator._root_template = shell_in_container(output_path=output)
-        evaluator._root_dependency_ids = evaluator._register_value(evaluator._root_template)
+        evaluator.build_graph(shell_in_container(output_path=output))
 
         # A shell task with a container env is valid: it must pass the kind
         # restriction (no TypeError) and env validation once a runtime is found.
