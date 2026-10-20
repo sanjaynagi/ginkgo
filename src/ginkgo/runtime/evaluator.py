@@ -1282,8 +1282,7 @@ class ConcurrentEvaluator:
                     continue
 
                 value = self._materialize(node.dynamic_template)
-                final_value = self._finalize_result_value(node=node, value=value)
-                self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
+                self._complete_node(node=node, value=value)
                 progressed = True
 
             if not progressed:
@@ -1316,8 +1315,7 @@ class ConcurrentEvaluator:
 
     def _on_runner_done(self, *, node: NodeRun, completed_value: Any) -> None:
         """Handle the result of a directive a task runner executed."""
-        final_value = self._finalize_result_value(node=node, value=completed_value)
-        self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
+        self._complete_node(node=node, value=completed_value)
 
     def _handle_task_exception(
         self,
@@ -1414,10 +1412,7 @@ class ConcurrentEvaluator:
 
     def _schedule_retry(self, *, node: NodeRun, exc: BaseException) -> None:
         """Reset node state so the scheduler can rerun the task from scratch."""
-        # Remove any attempt-local scratch directories before rerunning.
-        for path in node.tmp_paths:
-            if path.exists():
-                shutil.rmtree(path)
+        self._remove_tmp_paths(node)
 
         # Attempt is incremented on dispatch, so the next attempt is node.attempt + 1.
         delay = node.task_def.retry_delay_seconds(attempt=node.attempt)
@@ -1439,7 +1434,6 @@ class ConcurrentEvaluator:
         node.gpu = 0
         node.custom_resources = {}
         node.executor_name = None
-        node.tmp_paths = []
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
         node.secret_values = ()
@@ -1458,8 +1452,9 @@ class ConcurrentEvaluator:
             delay_seconds=delay,
         )
 
-    def _complete_node(self, *, node: NodeRun, value: Any, tmp_paths: list[Path]) -> None:
-        """Persist and mark a task node as fully completed."""
+    def _complete_node(self, *, node: NodeRun, value: Any) -> None:
+        """Validate a task's result, then persist it and mark the node completed."""
+        value = self._finalize_result_value(node=node, value=value)
         finalize_started = time.perf_counter()
         extra_meta: dict[str, Any] | None = None
         if node.runner_extras is not None:
@@ -1482,12 +1477,10 @@ class ConcurrentEvaluator:
         # Record stat-index for future --trust-mtimes runs.
         self._node_cache.record_stat_index_entry(node=node, cache_key=node.cache_key)
 
-        for path in tmp_paths:
-            shutil.rmtree(path)
+        self._remove_tmp_paths(node)
 
         node.result = value
         node.state = "completed"
-        node.tmp_paths = []
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
         node.execution_args = None
@@ -2128,6 +2121,13 @@ class ConcurrentEvaluator:
         assert node.transport_path is not None
         return decode_value(payload["result"], base_dir=node.transport_path)
 
+    def _remove_tmp_paths(self, node: NodeRun) -> None:
+        """Remove the attempt's ``tmp_dir`` scratch directories."""
+        for path in node.tmp_paths:
+            if path.exists():
+                shutil.rmtree(path)
+        node.tmp_paths = []
+
     def _cleanup_transport(self, node: NodeRun) -> None:
         """Remove temporary transport artifacts for a task node."""
         if node.transport_path is None:
@@ -2398,9 +2398,7 @@ class ConcurrentEvaluator:
         self._node_cache.propagate_known_digests(cache_key=cache_key)
         node.result = value
         node.state = "completed"
-        for path in node.tmp_paths:
-            shutil.rmtree(path)
-        node.tmp_paths = []
+        self._remove_tmp_paths(node)
         self._replay_runner_extras(node=node, cache_key=cache_key)
         self._emit_task_event(
             TaskCacheHit,
@@ -2614,9 +2612,7 @@ class ConcurrentEvaluator:
             isinstance(completed_value, ExecutionDirective)
             or contains_dynamic_expression(completed_value)
         ):
-            for path in node.tmp_paths:
-                shutil.rmtree(path)
-            node.tmp_paths = []
+            self._remove_tmp_paths(node)
             node.state = "failed"
             return
 
@@ -2656,8 +2652,7 @@ class ConcurrentEvaluator:
                 f"{kind.call_form or 'an execution directive'} or dynamic task expressions."
             )
 
-        final_value = self._finalize_result_value(node=node, value=completed_value)
-        self._complete_node(node=node, value=final_value, tmp_paths=node.tmp_paths)
+        self._complete_node(node=node, value=completed_value)
 
     def _expand_dynamic(self, *, node: NodeRun, value: Any) -> bool:
         """Register the task expressions *value* holds, and wait on any it adds.

@@ -206,7 +206,6 @@ def run_workflow(
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
 ) -> int:
-
     run_id = make_run_id(workflow_path=workflow_path)
     # Piped output gets the read-only commands' fixed width rather than 80
     # columns, so the paths in a failure panel are not broken mid-token.
