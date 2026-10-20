@@ -570,8 +570,8 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
     if isinstance(compared_with, dict):
         # A sibling's entry is context for a new branch, not its history.
         against = (
-            "the newest other entry of the same task"
-            if compared_with.get("strategy") == "newest_by_function"
+            "the most similar other entry of the same task"
+            if compared_with.get("strategy") == "most_similar_by_function"
             else "its previous entry"
         )
         rich_console.print(

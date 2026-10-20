@@ -236,10 +236,13 @@ What to compare against is the whole of the question. `explain_rerun` (through
 its private `_previous_cache_key`) looks for the *same node* — the same `display_label`, or the task name where a
 node has none — in the most recent earlier run of the same workflow, and that
 entry is what this run superseded. Only when no such node exists (the node is
-new, or its label changed) does it fall back to the newest earlier entry for the
-same function. `compared_with` names both the key and which of the two
-strategies found it, so a `strategy` of `newest_by_function` is the signal to
-read the components sceptically.
+new, or its label changed) does it fall back to an earlier entry for the same
+function: of the newest `PRIOR_ENTRY_WINDOW` (50), the one whose components
+differ from this node's least, newest first among equals. `compared_with` names
+both the key and which of the two strategies found it, so a `strategy` of
+`most_similar_by_function` is the signal to read the components sceptically.
+`CacheStore.miss_reasons`, behind the dry-run's miss reasons, has no node to
+match, so it always makes this closest-entry choice.
 
 That join is what fixed the fan-out mis-pairing: matching on function alone,
 the nearest earlier entry for a task fanned out over many inputs was usually a
