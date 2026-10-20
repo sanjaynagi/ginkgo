@@ -56,7 +56,9 @@ my-project/
 no explicit path, autodiscovery looks for a file named `flow.py` at the project
 root or in one of its immediate subdirectories. The directory name does not
 matter, and `__init__.py` is not required. Exactly one candidate is used
-automatically; several candidates raise an error asking you to pass an explicit
+automatically. With several, `workflow/flow.py` wins over a `flow.py` in any
+other subdirectory, so a child workflow in its own folder does not get in the
+way; otherwise several candidates raise an error asking you to pass an explicit
 path. An explicit path accepts any file name, anywhere.
 
 ### What's the smallest possible workflow?
@@ -942,7 +944,12 @@ string form is a placeholder like `<secret:env:NAME>`, never the value. Task
 stdout/stderr pass through a redacting writer that replaces any resolved secret
 value with `[REDACTED]`, and exceptions are sanitised the same way before being
 recorded or displayed, so the plaintext secret does not reach logs, the manifest,
-or the report.
+or the report. That holds for every task kind: a shell, script or notebook
+command's output is redacted line by line before it is logged.
+
+Redaction covers what ginkgo records about a task, not what the task writes. A
+secret a task writes into an output file is stored in that file, and in its
+cached copy under `.ginkgo/`, like any other content.
 
 ## Sub-Workflows And Composition
 

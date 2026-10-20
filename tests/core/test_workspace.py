@@ -74,11 +74,20 @@ class TestCanonicalWorkflowCandidates:
 
 class TestDiscoverDefaultWorkflow:
     def test_rejects_multiple_candidate_packages(self, tmp_path: Path) -> None:
-        _package(tmp_path, name="workflow", entry="flow.py")
+        _package(tmp_path, name="pipeline", entry="flow.py")
         _package(tmp_path, name="other", entry="flow.py")
 
         with pytest.raises(RuntimeError, match="multiple workflow entrypoints"):
             discover_default_workflow(project_root=tmp_path)
+
+    def test_workflow_entry_wins_over_a_child_workflow(self, tmp_path: Path) -> None:
+        _package(tmp_path, name="workflow", entry="flow.py")
+        _package(tmp_path, name="child", entry="flow.py")
+
+        assert (
+            discover_default_workflow(project_root=tmp_path)
+            == (tmp_path / "workflow" / "flow.py").resolve()
+        )
 
     def test_reports_expected_paths_when_nothing_is_found(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match=r"no flow\.py was found"):
@@ -120,7 +129,7 @@ class TestResolveEnvsWorkflowRoot:
         assert root == nested
 
     def test_falls_back_when_the_canonical_entry_is_ambiguous(self, tmp_path: Path) -> None:
-        _package(tmp_path, name="workflow", entry="flow.py")
+        _package(tmp_path, name="pipeline", entry="flow.py")
         other_entry = _package(tmp_path, name="other", entry="flow.py")
 
         root = resolve_envs_workflow_root(project_root=tmp_path, fallback=other_entry.parent)

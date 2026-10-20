@@ -224,6 +224,14 @@ class TestTaskDefCall:
 
 
 class TestPartialCallMap:
+    def test_an_argument_cannot_be_both_fixed_and_mapped(self):
+        @task()
+        def process(item: str, scale: int) -> str:
+            return item * scale
+
+        with pytest.raises(TypeError, match=r"'item' given both on the call and to \.map\(\)"):
+            process(item="x").map(item=["a", "b"], scale=[1, 2])
+
     def test_map_produces_exprlist(self):
         @task()
         def process(item: str, scale: int) -> str:

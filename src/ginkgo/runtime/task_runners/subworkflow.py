@@ -130,7 +130,9 @@ class SubworkflowRunner:
         tmp_dir = Path(tempfile.mkdtemp(prefix="ginkgo-subworkflow-"))
         tmp_params_path: Path | None = None
         try:
-            config_paths: list[str] = []
+            # Later files layer over earlier ones, so the parent's params go
+            # last and win over anything the forwarded config files set.
+            config_paths: list[str] = list(directive.config)
             if directive.params:
                 tmp_params_path = tmp_dir / "child-parameters.yaml"
                 # Written as a [params] table so the child resolves them through
@@ -145,7 +147,6 @@ class SubworkflowRunner:
                     encoding="utf-8",
                 )
                 config_paths.append(str(tmp_params_path))
-            config_paths.extend(directive.config)
 
             parts = [
                 shlex.quote(self.python_executable),

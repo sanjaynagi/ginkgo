@@ -53,8 +53,18 @@ def resolve_workflow_path(*, project_root: Path, workflow: str | None) -> Workfl
 
 
 def discover_default_workflow(*, project_root: Path) -> Path:
-    """Return the workflow to run when no explicit path was given."""
+    """Return the workflow to run when no explicit path was given.
+
+    ``workflow/flow.py``, the layout ``ginkgo init`` writes, is chosen over a
+    ``flow.py`` in any other subdirectory, so a child workflow in its own
+    folder (the documented subworkflow layout) does not make the choice
+    ambiguous. A ``flow.py`` at the project root beside another entry still is.
+    """
     candidates = canonical_workflow_candidates(project_root=project_root)
+    root_entry = (project_root / _ENTRY_NAME).resolve()
+    workflow_entry = (project_root / "workflow" / _ENTRY_NAME).resolve()
+    if workflow_entry in candidates and root_entry not in candidates:
+        return workflow_entry
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:

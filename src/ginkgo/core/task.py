@@ -522,6 +522,14 @@ def _fan_out_partial_call(
     """Build an ``ExprList`` from one partially-applied task."""
     function_name = _fan_out_function_name(mode=mode)
     _validate_max_concurrent(max_concurrent=max_concurrent, function_name=function_name)
+    both = sorted(set(varying) & set(partial_call.fixed_args))
+    if both:
+        names = ", ".join(repr(name) for name in both)
+        raise TypeError(
+            f"{partial_call.task_def.fn.__name__}(): {names} given both on the call and to "
+            f".{function_name}(). Pass each argument in one place: fixed on the call, "
+            f"or varying in .{function_name}()."
+        )
     varying_args = _materialize_varying_columns(
         task_def=partial_call.task_def,
         varying=varying,

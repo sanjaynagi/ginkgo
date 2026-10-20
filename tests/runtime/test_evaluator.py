@@ -383,6 +383,11 @@ def reveal_secret_task(secret_value: str, output_path: Out[file]) -> file:
     return file(output_path)
 
 
+@task("shell")
+def echo_secret_task(secret_value: str, output_path: Out[file]):
+    return shell(cmd=f"echo shell-secret:{secret_value}; echo {secret_value} >&2; exit 3")
+
+
 @task()
 def fail_with_secret_task(secret_value: str) -> str:
     print(f"task-secret:{secret_value}")
@@ -1418,6 +1423,36 @@ class TestSecrets:
         assert "super-secret" not in stderr_log.read_text(encoding="utf-8")
         recorder.finish()
         assert "super-secret" not in recorder.run_dir.manifest_path.read_text(encoding="utf-8")
+
+    def test_a_shell_task_never_writes_a_secret_to_its_logs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        recorder = Ledger.start(root=tmp_path, run_id="secret_run")
+        evaluator = ConcurrentEvaluator(
+            jobs=1,
+            cores=1,
+            run_dir=recorder.run_dir,
+            event_bus=recorder.bus,
+            secret_resolver=build_secret_resolver(
+                project_root=tmp_path,
+                config={},
+                environ={"API_TOKEN": "super-secret"},
+            ),
+        )
+
+        with pytest.raises(ShellTaskError):
+            evaluator.evaluate(
+                echo_secret_task(secret_value=secret("API_TOKEN"), output_path="out.txt")
+            )
+
+        task = next(iter(recorder.tasks().values()))
+        stdout_log = (recorder.path / task["stdout_log"]).read_text(encoding="utf-8")
+        stderr_log = (recorder.path / task["stderr_log"]).read_text(encoding="utf-8")
+        assert "shell-secret:[REDACTED]" in stdout_log
+        assert "super-secret" not in stdout_log + stderr_log
 
 
 class TestValidation:
