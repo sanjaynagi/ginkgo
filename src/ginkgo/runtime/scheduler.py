@@ -2,58 +2,12 @@
 
 from __future__ import annotations
 
-import signal
 from collections import Counter
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from threading import current_thread, main_thread
 from typing import Iterable
 
 from ortools.sat.python import cp_model
-
-_GUARDED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
-
-
-@contextmanager
-def _signal_handlers_preserved() -> Iterator[None]:
-    """Restore this process's signal handlers after CP-SAT has solved.
-
-    CP-SAT installs its own interrupt handler for the duration of a solve and
-    puts back ``SIG_DFL`` rather than what it found. Every solve therefore
-    disarms whatever handler the caller installed, and the scheduler solves on
-    every dispatch — so an interrupt arriving after the first wave killed the
-    process outright, before the run could record that it was cancelled.
-
-    The signals are also blocked for the solve. CP-SAT's own handler would
-    otherwise take an interrupt that lands mid-solve: it stops the solve and
-    the run never hears of it, so a Ctrl-C was sometimes lost and the run
-    carried on. Blocked, the signal stays pending until the caller's handler
-    is back, and reaches that instead.
-
-    Only meaningful on the main thread: :func:`signal.signal` refuses to run
-    anywhere else, and there is nothing to restore there anyway.
-    """
-    if current_thread() is not main_thread():
-        yield
-        return
-
-    previous = {signum: signal.getsignal(signum) for signum in _GUARDED_SIGNALS}
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _GUARDED_SIGNALS)
-    try:
-        yield
-    finally:
-        # Re-installed unconditionally. CP-SAT reaches past the ``signal``
-        # module to change the disposition, so Python's own record of the
-        # handler still names it and comparing the two would see no change
-        # to undo. ``getsignal`` returns None only for a handler installed
-        # from C, which there is no way to put back.
-        for signum, handler in previous.items():
-            if handler is not None:
-                signal.signal(signum, handler)
-        # Unblocked only once the handlers are back, so a pending signal is
-        # delivered to the caller's.
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 @dataclass(frozen=True)
@@ -302,8 +256,12 @@ def _select_with_cp_sat(
     )
 
     solver = cp_model.CpSolver()
-    with _signal_handlers_preserved():
-        status = solver.Solve(model)
+    # CP-SAT otherwise installs its own SIGINT handler for each solve and
+    # leaves SIG_DFL behind. The scheduler solves on every dispatch, so that
+    # disarmed the run's interrupt handler, and a Ctrl-C landing mid-solve
+    # only stopped the solve. Left alone, the interrupt reaches the run.
+    solver.parameters.catch_sigint_signal = False
+    status = solver.Solve(model)
     if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
         return []
 
