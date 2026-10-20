@@ -535,7 +535,10 @@ length. `.map()` returns an `ExprList` — one task expression per row.
 
 Supplying only some of a task's arguments is what makes this work: the call
 returns a `PartialCall` instead of running, and `.map()` then fills in the rest,
-one set of values per fanned-out call.
+one set of values per fanned-out call. So `.map()` is refused, with a pointer to
+this pattern, on a call that already has every required argument and on the
+bare task (`filter_fastq.map(...)`). A single value such as `.map(min_length=8)`
+is refused too, naming the argument: it belongs on the call, not in `.map()`.
 
 ### `.product_map()` — Every Combination
 
@@ -585,7 +588,9 @@ contradict its contents.
 
 `per_branch()` works with `.map()` too, and its placeholders can also name
 arguments fixed on the task call. A template with no placeholders is an error:
-every branch would receive the same value.
+every branch would receive the same value. So is a placeholder naming an
+argument that holds another task's result, including a selected output such as
+`t.output[1]`: it has no value until that task runs.
 
 Do **not** pass an `expand()` list to `.product_map()`. `expand()` already
 returns one string per combination, so `.product_map()` would treat it as a
@@ -814,7 +819,8 @@ task's return is explicit or inferred from its `Out[...]` parameters — and
 creates a dependency edge on the producing node exactly like `.output[i]`
 does, including on an `ExprList`. A name that is not one of the task's
 `Out[...]` parameters is a `KeyError` at flow-construction time, naming the
-task's actual `Out[...]` parameters.
+task's actual `Out[...]` parameters. Reading one as an attribute, as in
+`norm.dest` on a single call, is refused with a pointer to `.output["dest"]`.
 
 ## See Also
 

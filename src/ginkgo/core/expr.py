@@ -123,6 +123,34 @@ class Expr(Generic[T]):
             raise self._deferred_value_error("formatted")
         return str(self)
 
+    def __getattr__(self, name: str) -> Any:
+        """Refuse a missing attribute, explaining the ones users reach for.
+
+        Only reached when normal lookup fails. ``.map()`` belongs to a call
+        that leaves its varying arguments unset, and an ``Out[...]``
+        parameter's value is selected through :attr:`output`. Underscore names
+        are refused plainly: copy, pickle and dataclass internals probe them,
+        sometimes on an instance whose fields are not yet set.
+        """
+        task_def = self.__dict__.get("task_def")
+        if name.startswith("_") or task_def is None:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+        fn_name = task_def.fn.__name__
+        if name in ("map", "product_map"):
+            raise AttributeError(
+                f"{fn_name}(...) was given every required argument, so it is one call rather "
+                f"than a fan-out, and has no .{name}(). To fan out, leave the varying "
+                f"parameters unset on the call and pass them to .{name}(): "
+                f"{fn_name}(fixed=...).{name}(varying=[...])"
+            )
+        if name in task_def.output_params:
+            raise AttributeError(
+                f"{fn_name}() returns one deferred result, which has no attribute {name!r}. "
+                f"{name!r} is one of its Out[...] parameters: select it with "
+                f"r.output[{name!r}]"
+            )
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
     def _deferred_result_error(self, action: str, *, remedy: str | None = None) -> TypeError:
         """Build the error explaining why *action* cannot work on a deferred call.
 

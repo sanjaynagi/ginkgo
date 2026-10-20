@@ -1,10 +1,11 @@
 """Unit tests for Expr, ExprList, and related expression tree primitives."""
 
+import copy
 import dataclasses
 
 import pytest
 
-from ginkgo import Expr, ExprList, file, task
+from ginkgo import Expr, ExprList, Out, file, task
 from ginkgo.core.expr import OutputIndex, _OutputProxy
 
 
@@ -15,6 +16,11 @@ def dummy(x: int) -> int:
 
 @task()
 def path_task(x: int) -> file | None:
+    return None
+
+
+@task()
+def write_report(report: Out[file]) -> None:
     return None
 
 
@@ -134,6 +140,17 @@ class TestExpr:
         assert expr == expr
         assert dummy(x=1) != dummy(x=1)
         assert expr in [dummy(x=2), expr]
+
+    def test_out_parameter_attribute_points_at_output(self):
+        with pytest.raises(AttributeError, match=r"""r\.output\['report'\]"""):
+            write_report(report="r.txt").report
+
+    def test_missing_attributes_still_raise_attribute_error(self):
+        """copy and pickle probe dunders, and hasattr() must still answer False."""
+        expr = dummy(x=1)
+        assert not hasattr(expr, "anything")
+        assert not hasattr(expr, "__setstate__")
+        assert copy.copy(expr).args == {"x": 1}
 
     def test_comparing_calls_with_mixed_nested_arguments_does_not_raise(self):
         """A nested call in one and a plain value in the other must not reach the refusal."""
