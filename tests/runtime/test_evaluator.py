@@ -34,6 +34,7 @@ from ginkgo.store.sqlite import open_store
 from ginkgo.runtime.events import (
     TaskCompleted,
     TaskFailed,
+    TaskNotice,
     TaskSkipped,
 )
 from ginkgo.runtime.caching.index import CacheIndex
@@ -142,6 +143,20 @@ def ignored_failure_after_marker_task(marker_path: untracked, log_path: untracke
         if Path(marker_path).exists():
             break
         _time.sleep(0.01)
+    append_line(log_path, "late")
+    raise RuntimeError("late boom")
+
+
+@task(retries=2)
+def retrying_failure_after_marker_task(marker_path: untracked, log_path: untracked) -> int:
+    import time as _time
+
+    for _ in range(1000):
+        if Path(marker_path).exists():
+            break
+        _time.sleep(0.01)
+    # Let the fatal failure land first, so this one arrives at a stopping run.
+    _time.sleep(0.3)
     append_line(log_path, "late")
     raise RuntimeError("late boom")
 
@@ -980,6 +995,31 @@ class TestFailurePolicy:
         failed = [event for event in event_collector.events if isinstance(event, TaskFailed)]
         assert len(failed) == 2
         assert not any(event.ignored for event in failed)
+
+    def test_a_retry_abandoned_by_a_stopping_run_is_noted(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "abandoned-retry.log"
+        marker_path = "fatal.marker"
+        evaluator = ConcurrentEvaluator(jobs=2, cores=2, event_bus=event_collector.bus)
+
+        with pytest.raises(RuntimeError, match="fatal boom"):
+            evaluator.evaluate(
+                [
+                    fatal_failure_marker_task(marker_path=marker_path, log_path=log_path),
+                    retrying_failure_after_marker_task(marker_path=marker_path, log_path=log_path),
+                ]
+            )
+
+        assert sorted(self._lines(log_path)) == ["fatal", "late"]
+        notices = [
+            event.message
+            for event in event_collector.events
+            if isinstance(event, TaskNotice)
+            and event.task_name == retrying_failure_after_marker_task.name
+        ]
+        assert notices == ["retry 1/2 not attempted: the run is stopping after an earlier failure"]
 
     def test_keep_going_ignores_a_fail_fast_task(self) -> None:
         log_path = "keep-going.log"

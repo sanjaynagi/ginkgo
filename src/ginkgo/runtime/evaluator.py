@@ -945,13 +945,20 @@ class ConcurrentEvaluator:
         """
         self._cleanup_transport(node)
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
-        if (
-            retryable
-            and self._failure is None
-            and self._should_retry(node=node, exc=sanitized_exc)
-        ):
-            self._schedule_retry(node=node, exc=sanitized_exc)
-            return
+        if retryable and self._should_retry(node=node, exc=sanitized_exc):
+            if self._failure is None:
+                self._schedule_retry(node=node, exc=sanitized_exc)
+                return
+            # The run is already stopping, so the retry this attempt earned is
+            # abandoned. Say so, or the failure reads as the task's last word.
+            self._emit_task_event(
+                TaskNotice,
+                node=node,
+                message=(
+                    f"retry {node.attempt}/{node.task_def.retries} not attempted: "
+                    "the run is stopping after an earlier failure"
+                ),
+            )
 
         # "ignore" is about scheduling only: the task is recorded as failed
         # either way, and the run still ends up failed. Once the run is
