@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import time
 import builtins
-from collections import Counter
 from collections.abc import Callable, Mapping, Set as AbstractSet
 from contextlib import ExitStack
 from concurrent.futures import (
@@ -19,27 +18,21 @@ from concurrent.futures import (
 from dataclasses import dataclass, field
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 from ginkgo.core.directive import ExecutionDirective
-from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
-from ginkgo.errors import FailureKind, GinkgoError
+from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
+from ginkgo.errors import GinkgoError
 from ginkgo.params import ParamContext
 from ginkgo.plugins.api import RunnerContext, TaskInvocation, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
 from ginkgo.core.resources import ResourceOverrides, Resources
-from ginkgo.core.task import PartialCall, TaskDef
+from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.edge_inference import (
-    ConsumedPath,
-    ProducedPath,
-    PathIndex,
-    collect_consumed_paths,
-    collect_produced_paths,
-    reject_self_overwrite,
-)
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
+from ginkgo.runtime.graph import TaskGraph, TaskNode
+from ginkgo.runtime.placement import Placement
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.output_index import output_summary
@@ -105,50 +98,6 @@ from ginkgo.runtime.task_validation import (
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
 from ginkgo.workspace_layout import WorkspaceLayout
-
-
-class CycleError(GinkgoError, RuntimeError):
-    """Raised when the expression graph contains a dependency cycle."""
-
-    failure_kind: ClassVar[FailureKind] = "cycle_detected"
-
-    def __init__(self, cycle: list[str]) -> None:
-        self.cycle = cycle
-        rendered = " -> ".join(cycle)
-        super().__init__(f"Detected cycle in workflow graph: {rendered}")
-
-
-class IncompleteCallError(GinkgoError, TypeError):
-    """Raised when a task call missing required arguments reaches the graph.
-
-    Such a call is a :class:`~ginkgo.core.task.PartialCall`, which only
-    ``.map()`` or ``.product_map()`` can complete. Returned from the flow or
-    passed to another task, it would otherwise run nothing or reach a worker
-    as an ordinary value.
-
-    Parameters
-    ----------
-    partial_call : PartialCall
-        The incomplete call.
-    consumer : str | None
-        Short name of the task it was passed to, or ``None`` when the flow
-        returned it.
-    """
-
-    diagnostic_code: ClassVar[str] = "INCOMPLETE_CALL"
-    diagnostic_suggestion: ClassVar[str] = (
-        "Pass every required argument, or complete the call with .map() or .product_map()."
-    )
-
-    def __init__(self, *, partial_call: PartialCall, consumer: str | None) -> None:
-        name = partial_call.task_def.fn.__name__
-        missing = ", ".join(partial_call.missing_params)
-        where = "returned from the flow" if consumer is None else f"passed to {consumer}()"
-        super().__init__(
-            f"{name}() is missing required argument(s): {missing}, but was {where}. "
-            "Pass every required argument, or complete the call with .map() or "
-            ".product_map()."
-        )
 
 
 class RootSkippedError(GinkgoError, RuntimeError):
@@ -280,46 +229,6 @@ _IN_FLIGHT_NODE_STATES = frozenset({"staging", "running", "running_shell"})
 """Node states held by work the scheduler has already handed to an executor."""
 
 
-@dataclass(frozen=True, eq=False, kw_only=True)
-class TaskNode:
-    """Immutable identity of one task in the evaluator's dependency graph.
-
-    A node's identity is fixed when the graph is registered; everything
-    that changes as the scheduler drives the task through its lifecycle
-    lives on :class:`NodeRun`. Instances hash and compare by object
-    identity, so pure scheduling code can hold them safely.
-    """
-
-    node_id: int
-    expr: Expr
-    dependency_ids: frozenset[int]
-    inferred_dependency_ids: frozenset[int] = frozenset()
-    """The subset of :attr:`dependency_ids` inferred from ``Out[...]`` paths
-    (issue #307/#280) rather than declared through the ``Expr`` graph.
-
-    Mutated in place after registration via ``object.__setattr__`` — see
-    ``ConcurrentEvaluator._infer_and_apply_edges``. Kept separate from
-    :attr:`dependency_ids` only so an inferred edge stays cheaply
-    distinguishable; scheduling, dry-run waves and completion checks all
-    still read the combined :attr:`dependency_ids`.
-    """
-
-    @property
-    def task_def(self) -> TaskDef:
-        """Return the task definition for the node."""
-        return self.expr.task_def
-
-    @property
-    def concurrency_group(self) -> str | None:
-        """Return the node's declared concurrency group, if any."""
-        return self.expr.concurrency_group
-
-    @property
-    def concurrency_group_limit(self) -> int | None:
-        """Return the concurrency limit for the node's group, if any."""
-        return self.expr.concurrency_group_limit
-
-
 @dataclass(kw_only=True)
 class NodeRun:
     """Mutable run state of one task node.
@@ -394,16 +303,12 @@ class NodeRun:
         return self.node.dependency_ids
 
     @property
-    def inferred_dependency_ids(self) -> frozenset[int]:
-        return self.node.inferred_dependency_ids
-
-    @property
     def concurrency_group(self) -> str | None:
-        return self.node.concurrency_group
+        return self.node.expr.concurrency_group
 
     @property
     def concurrency_group_limit(self) -> int | None:
-        return self.node.concurrency_group_limit
+        return self.node.expr.concurrency_group_limit
 
 
 @dataclass(kw_only=True)
@@ -423,17 +328,16 @@ class ConcurrentEvaluator:
     event_bus: EventBus | None = None
     trust_mtimes: bool = False
     keep_going: bool = False
-    constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
-    _expr_nodes: dict[int, int] = field(default_factory=dict, init=False, repr=False)
+    graph: TaskGraph = field(default_factory=TaskGraph, init=False)
+    placement: Placement = field(init=False)
     # Each in-flight future maps to its node and the handler for its result.
     _running_futures: dict[Future[Any], tuple[int, Callable[..., None]]] = field(
         default_factory=dict,
         init=False,
         repr=False,
     )
-    _next_node_id: int = field(default=0, init=False, repr=False)
     _root_template: Any = field(default=None, init=False, repr=False)
     _root_dependency_ids: set[int] = field(default_factory=set, init=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, repr=False)
@@ -450,42 +354,6 @@ class ConcurrentEvaluator:
     _untracked_path_warnings: set[tuple[str, str, str]] = field(
         default_factory=set, init=False, repr=False
     )
-    _effective_resources_cache: dict[str, Resources] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    # Edge inference (#280/#307) -----------------------------------------
-    _pending_node_ids: list[int] = field(default_factory=list, init=False, repr=False)
-    """Node ids created since the last call to ``_infer_and_apply_edges``,
-    whose ``GraphNodeRegistered`` event has not been emitted yet — emission is
-    deferred so the event can carry inferred edges (see that method)."""
-    _pending_registration_logs: dict[int, tuple[str | None, str | None]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _path_index: PathIndex = field(default_factory=PathIndex, init=False, repr=False)
-    """Cumulative literal produced/consumed paths across every registration
-    batch, so a later batch (dynamic expansion) is matched against everything
-    seen so far, and vice versa."""
-    _edges_inferred_this_batch: bool = field(default=False, init=False, repr=False)
-    """Whether the current batch added an edge, gating the cycle check."""
-    _dynamic_parent_ids: dict[int, int] = field(default_factory=dict, init=False, repr=False)
-    """Node id -> id of the task whose dynamic expansion registered it."""
-    _display_label_counts: Counter[str] = field(default_factory=Counter, init=False, repr=False)
-    """How many registered nodes each expression label has been given to."""
-
-    @property
-    def unreachable_calls(self) -> list[ConstructedCall]:
-        """Task calls that were constructed but never reached by the graph walk.
-
-        Empty unless the caller passed ``constructed_calls`` recorded around the
-        flow body. Only meaningful after ``validate`` or ``evaluate`` has
-        registered the graph. A discarded partial call has no expressions,
-        so it is always among them.
-        """
-        return [
-            call
-            for call in self.constructed_calls
-            if not any(id(expr) in self._expr_nodes for expr in call.exprs)
-        ]
 
     def __post_init__(self) -> None:
         default_jobs = os.cpu_count() or 1
@@ -501,6 +369,11 @@ class ConcurrentEvaluator:
         self.gpus = 0 if self.gpus is None else self.gpus
         if self.gpus < 0:
             raise ValueError("gpus must be at least 0")
+        self.placement = Placement(
+            executor_registry=self.executor_registry,
+            resource_overrides=self.resource_overrides,
+            gpus=self.gpus,
+        )
 
         # The cache index writes on the scheduler's threads, so it holds its
         # own connection rather than the recorder's, which belongs to the
@@ -628,8 +501,7 @@ class ConcurrentEvaluator:
             result unproducible.
         """
         self._root_template = expr
-        self._root_dependency_ids = self._register_value(expr)
-        self._infer_and_apply_edges()
+        self._root_dependency_ids = self._register(expr)
         if not self._root_dependency_ids:
             return self._materialize(expr)
 
@@ -707,333 +579,60 @@ class ConcurrentEvaluator:
                 self._executors = None
                 self._cache_index.close()
 
-    def _register_value(
-        self,
-        value: Any,
-        *,
-        expr_stack: tuple[int, ...] = (),
-        task_path: tuple[str, ...] = (),
-    ) -> set[int]:
-        """Register all task nodes reachable from a nested value."""
-        if isinstance(value, (OutputIndex, OutputName)):
-            return self._register_value(
-                value.expr,
-                expr_stack=expr_stack,
-                task_path=task_path,
-            )
-
-        if isinstance(value, Expr):
-            return {
-                self._register_expr(
-                    value,
-                    expr_stack=expr_stack,
-                    task_path=task_path,
-                )
-            }
-
-        # Only a fan-out may complete a partial call; one reached here would
-        # otherwise run nothing (as the root) or reach a worker as a value.
-        if isinstance(value, PartialCall):
-            consumer = task_path[-1].rsplit(".", 1)[-1] if task_path else None
-            raise IncompleteCallError(partial_call=value, consumer=consumer)
-
-        if isinstance(value, ExprList):
-            dependencies: set[int] = set()
-            for item in value:
-                dependencies |= self._register_value(
-                    item,
-                    expr_stack=expr_stack,
-                    task_path=task_path,
-                )
-            return dependencies
-
-        if isinstance(value, list | tuple):
-            dependencies: set[int] = set()
-            for item in value:
-                dependencies |= self._register_value(
-                    item,
-                    expr_stack=expr_stack,
-                    task_path=task_path,
-                )
-            return dependencies
-
-        if isinstance(value, dict):
-            dependencies: set[int] = set()
-            for key, item in value.items():
-                dependencies |= self._register_value(
-                    key,
-                    expr_stack=expr_stack,
-                    task_path=task_path,
-                )
-                dependencies |= self._register_value(
-                    item,
-                    expr_stack=expr_stack,
-                    task_path=task_path,
-                )
-            return dependencies
-
-        return set()
-
-    def _register_expr(
-        self,
-        expr: Expr,
-        *,
-        expr_stack: tuple[int, ...] = (),
-        task_path: tuple[str, ...] = (),
-    ) -> int:
-        """Register a task expression node once per object identity."""
-        expr_id = id(expr)
-        if expr_id in expr_stack:
-            cycle_start = expr_stack.index(expr_id)
-            cycle = list(task_path[cycle_start:]) + [expr.task_def.name]
-            raise CycleError(cycle)
-
-        if expr_id in self._expr_nodes:
-            return self._expr_nodes[expr_id]
-        self._validate_task_kind(task_def=expr.task_def)
-
-        node_id = self._next_node_id
-        self._next_node_id += 1
-        # Labelled with its id, before its arguments are walked, so ordinals
-        # follow ascending node id.
-        display_label = self._next_display_label(expr=expr)
-
-        next_expr_stack = (*expr_stack, expr_id)
-        next_task_path = (*task_path, expr.task_def.name)
-        dependency_ids: set[int] = set()
-        for value in expr.args.values():
-            dependency_ids |= self._register_value(
-                value,
-                expr_stack=next_expr_stack,
-                task_path=next_task_path,
-            )
-
-        self._nodes[node_id] = NodeRun(
-            node=TaskNode(
-                node_id=node_id,
-                expr=expr,
-                dependency_ids=frozenset(dependency_ids),
-            ),
-            display_label=display_label,
-        )
-        self._expr_nodes[expr_id] = node_id
-        stdout_log = stderr_log = None
-        if self.run_dir is not None:
-            stdout_path, stderr_path = self.run_dir.log_paths_for(
-                node_id=node_id,
-                task_name=expr.task_def.name,
-            )
-            self._nodes[node_id].stdout_path = stdout_path
-            self._nodes[node_id].stderr_path = stderr_path
-            stdout_log = self.run_dir.relative(stdout_path)
-            stderr_log = self.run_dir.relative(stderr_path)
-        self._pending_registration_logs[node_id] = (stdout_log, stderr_log)
-        # Emission is deferred to ``_infer_and_apply_edges``: a node's final
-        # dependency ids are not known until every node reachable from this
-        # registration batch has been walked and Out[...] edges inferred
-        # across all of them (#280/#307) — a literal path can name a node
-        # registered later in the same batch.
-        self._pending_node_ids.append(node_id)
-        return node_id
-
-    def _next_display_label(self, *, expr: Expr) -> str | None:
-        """Return the display label for the node being registered for *expr*.
-
-        The expression's own label (its task name plus any fan-out values)
-        takes an ordinal when earlier nodes already hold it, counted across
-        the static graph and every dynamic expansion. The second plain
-        ``child(...)`` call is ``child[2]`` in the live table, the dry run,
-        the ledger and ``history`` alike.
+    def _register(self, value: Any, *, expanding_node_id: int | None = None) -> set[int]:
+        """Register the task nodes *value* reaches, giving each new one its run state.
 
         Returns
         -------
-        str | None
-            The label, or ``None`` when it is the bare task name.
+        set[int]
+            The nodes *value* refers to directly.
         """
-        label = expr.display_label
-        self._display_label_counts[label] += 1
-        count = self._display_label_counts[label]
-        if count > 1:
-            return f"{label}[{count}]"
-        return label if expr.display_label_parts else None
-
-    def _infer_and_apply_edges(self, *, expanding_node_id: int | None = None) -> None:
-        """Infer ``Out[...]`` path dependency edges and emit deferred events.
-
-        Called once after every top-level registration batch — the initial
-        graph build (``evaluate``/``build_graph``) and each dynamic
-        expansion (``GraphExpanded``). Implements issue #280/#307's phase 2:
-
-        1. Collect the literal produced (``Out[...]``) and consumed path
-           values for the nodes registered in this batch.
-        2. Reject two nodes declaring the same, or an overlapping, ``Out``
-           path before any work starts, and one node declaring an ``Out``
-           path that overlaps its own ``file``/``folder`` input.
-        3. Match new consumers against every producer known so far (this
-           batch and every earlier one) and add the producer as a dependency.
-        4. Match new producers against consumers from *earlier* batches —
-           the only way a dynamically registered node can retroactively
-           matter. A still-pending old consumer gets the edge added; one
-           already dispatched or completed can no longer be made to wait, so
-           this raises rather than let the race happen silently. The
-           expanding task and its own dynamic ancestors are exempt: a task
-           that receives a folder and returns children writing inside it
-           is the normal fan-out shape, and it already waits on those
-           children through its dynamic template.
-        5. Detect any cycle the new edges created.
-        6. Emit each new node's ``GraphNodeRegistered`` event, now carrying
-           its final (declared + inferred) dependency ids.
-
-        A retroactively added edge on an *already emitted* node is applied
-        to its live :class:`TaskNode` (so the scheduler honours it) but does
-        not re-emit that node's registration event — by the time a node can
-        acquire a retroactive dependency, it has not yet been dispatched, so
-        its later ``TaskPlanned`` event (emitted right before dispatch, from
-        the live ``dependency_ids``) already carries the edge into the
-        ledger.
-        """
-        new_node_ids = self._pending_node_ids
-        self._pending_node_ids = []
-        if not new_node_ids:
-            return
-
-        expanding_lineage: set[int] = set()
-        if expanding_node_id is not None:
-            for node_id in new_node_ids:
-                self._dynamic_parent_ids[node_id] = expanding_node_id
-            ancestor: int | None = expanding_node_id
-            while ancestor is not None:
-                expanding_lineage.add(ancestor)
-                ancestor = self._dynamic_parent_ids.get(ancestor)
-
-        new_produced: list[ProducedPath] = []
-        new_consumed: list[ConsumedPath] = []
-        for node_id in new_node_ids:
-            node = self._nodes[node_id]
-            node_produced = collect_produced_paths(
-                node_id=node_id,
-                task_name=node.task_def.name,
-                task_def=node.task_def,
-                args=node.expr.args,
-            )
-            node_consumed = collect_consumed_paths(
-                node_id=node_id,
-                task_name=node.task_def.name,
-                task_def=node.task_def,
-                args=node.expr.args,
-            )
-            reject_self_overwrite(produced=node_produced, consumed=node_consumed)
-            new_produced.extend(node_produced)
-            new_consumed.extend(node_consumed)
-
-        index = self._path_index
-        index.add_produced(new_produced)
-        self._edges_inferred_this_batch = False
-
-        # New consumers against every producer indexed so far (new included).
-        for consumer in new_consumed:
-            producer_ids = {entry.node_id for entry in index.producers_for(consumer)}
-            if producer_ids:
-                self._add_inferred_dependencies(
-                    node_id=consumer.node_id, producer_ids=producer_ids
-                )
-
-        # New producers against consumers registered in earlier batches — the
-        # dynamic-expansion case, where the reader may already be in flight.
-        for producer in new_produced:
-            for consumer in index.consumers_for(producer):
-                if consumer.node_id in expanding_lineage:
-                    continue
-                consumer_run = self._nodes[consumer.node_id]
-                producer_run = self._nodes[producer.node_id]
-                if consumer_run.state != "pending":
-                    raise RuntimeError(
-                        f"{producer_run.task_def.name!r} was just registered declaring "
-                        f"`Out[...]` path {producer.path!r}, but {consumer_run.task_def.name!r} "
-                        f"already read that path (state={consumer_run.state!r}) before the "
-                        "edge could be inferred. Pass the path through the task graph "
-                        "(the producer's return value or an `.output[...]` reference) "
-                        "instead of a literal string so the dependency is explicit."
-                    )
-                self._add_inferred_dependencies(
-                    node_id=consumer.node_id, producer_ids={producer.node_id}
-                )
-
-        index.add_consumed(new_consumed)
-
-        # Registration already rejects cycles in the expression graph, so only
-        # an inferred edge can close one; skip the walk when none was added.
-        if self._edges_inferred_this_batch:
-            cycle = self._find_dependency_cycle()
-            if cycle is not None:
-                raise CycleError([self._nodes[nid].task_def.name for nid in cycle])
-
-        for node_id in new_node_ids:
-            node = self._nodes[node_id]
-            stdout_log, stderr_log = self._pending_registration_logs.pop(node_id, (None, None))
-            self._emit_event(
-                GraphNodeRegistered(
-                    run_id=self._run_id,
-                    task_id=task_id_for_node(node_id),
-                    node_id=node_id,
-                    task_name=node.task_def.name,
-                    display_label=node.display_label,
-                    kind=node.task_def.kind,
-                    execution_mode=task_kind(node.task_def).execution_mode,
-                    env=node.task_def.env,
-                    retries=node.task_def.retries,
-                    dependency_ids=[
-                        task_id_for_node(dep_id) for dep_id in sorted(node.dependency_ids)
-                    ],
-                    inferred_dependency_ids=[
-                        task_id_for_node(dep_id)
-                        for dep_id in sorted(node.node.inferred_dependency_ids)
-                    ],
-                    stdout_log=stdout_log,
-                    stderr_log=stderr_log,
-                )
-            )
-
-    def _add_inferred_dependencies(self, *, node_id: int, producer_ids: set[int]) -> None:
-        """Merge inferred producer ids into a node's dependency ids in place."""
-        node = self._nodes[node_id].node
-        producer_ids = producer_ids - {node_id}
-        if not producer_ids:
-            return
-        object.__setattr__(node, "dependency_ids", node.dependency_ids | producer_ids)
-        object.__setattr__(
-            node, "inferred_dependency_ids", node.inferred_dependency_ids | producer_ids
+        registration = self.graph.register(
+            value,
+            expanding_node_id=expanding_node_id,
+            # A node an earlier failed registration left without run state
+            # never runs, so a new producer may still feed it.
+            is_pending=lambda node_id: (
+                node_id not in self._nodes or self._nodes[node_id].state == "pending"
+            ),
         )
-        self._edges_inferred_this_batch = True
+        for node_id in registration.new_node_ids:
+            self._add_node_run(self.graph.nodes[node_id])
+        return registration.dependency_ids
 
-    def _find_dependency_cycle(self) -> list[int] | None:
-        """Return a cycle among the registered nodes' ``dependency_ids``, if any.
-
-        Iterative depth-first search, so a long linear chain of tasks cannot
-        exhaust the interpreter's recursion limit.
-        """
-        WHITE, GRAY, BLACK = 0, 1, 2
-        color: dict[int, int] = dict.fromkeys(self._nodes, WHITE)
-        for root in sorted(self._nodes):
-            if color[root] != WHITE:
-                continue
-            path: list[int] = [root]
-            stack = [iter(sorted(self._nodes[root].dependency_ids))]
-            color[root] = GRAY
-            while stack:
-                dep_id = next(stack[-1], None)
-                if dep_id is None:
-                    color[path.pop()] = BLACK
-                    stack.pop()
-                    continue
-                state = color.get(dep_id, BLACK)
-                if state == GRAY:
-                    return [*path[path.index(dep_id) :], dep_id]
-                if state == WHITE:
-                    color[dep_id] = GRAY
-                    path.append(dep_id)
-                    stack.append(iter(sorted(self._nodes[dep_id].dependency_ids)))
-        return None
+    def _add_node_run(self, node: TaskNode) -> None:
+        """Give a newly registered node its run state, and announce it."""
+        run = NodeRun(node=node, display_label=node.display_label)
+        self._nodes[node.node_id] = run
+        stdout_log = stderr_log = None
+        if self.run_dir is not None:
+            run.stdout_path, run.stderr_path = self.run_dir.log_paths_for(
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+            )
+            stdout_log = self.run_dir.relative(run.stdout_path)
+            stderr_log = self.run_dir.relative(run.stderr_path)
+        self._emit_event(
+            GraphNodeRegistered(
+                run_id=self._run_id,
+                task_id=task_id_for_node(node.node_id),
+                node_id=node.node_id,
+                task_name=node.task_def.name,
+                display_label=node.display_label,
+                kind=node.task_def.kind,
+                execution_mode=task_kind(node.task_def).execution_mode,
+                env=node.task_def.env,
+                retries=node.task_def.retries,
+                dependency_ids=[
+                    task_id_for_node(dep_id) for dep_id in sorted(node.dependency_ids)
+                ],
+                inferred_dependency_ids=[
+                    task_id_for_node(dep_id) for dep_id in sorted(node.inferred_dependency_ids)
+                ],
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+            )
+        )
 
     def _prepare_pending_nodes(self) -> None:
         """Resolve cache-ready nodes whose dependencies have completed.
@@ -1101,7 +700,7 @@ class ConcurrentEvaluator:
         self._prepare_task_environment(node=node)
         self._record_task_metadata(node=node)
 
-        resources = self.effective_resources(task_def=node.task_def)
+        resources = self.placement.effective_resources(task_def=node.task_def)
         node.threads = resources.threads
         node.memory_gb = resources.memory_gb
         # Kept across escalation: node.memory_gb becomes the retry's budget,
@@ -1109,7 +708,7 @@ class ConcurrentEvaluator:
         node.declared_memory_gb = resources.memory_gb
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
-        node.executor_name = self._resolve_placement(task_def=node.task_def)
+        node.executor_name = self.placement.resolve(task_def=node.task_def)
         self._apply_memory_escalation(node=node, resources=resources)
         # Custom budgets are run-level, so the demand check applies wherever
         # the task is placed.
@@ -1536,7 +1135,7 @@ class ConcurrentEvaluator:
                 # Inject the effective thread count (declaration plus any site
                 # override) so user code can use it for shell command
                 # interpolation or in-process work.
-                resolved_args[name] = self.effective_resources(task_def=task_def).threads
+                resolved_args[name] = self.placement.effective_resources(task_def=task_def).threads
                 continue
 
             if parameter.default is not parameter.empty:
@@ -1574,13 +1173,13 @@ class ConcurrentEvaluator:
             return result[value.index]
 
         if isinstance(value, OutputName):
-            node = self._nodes[self._expr_nodes[id(value.expr)]]
+            node = self._nodes[self.graph.node_id_for(value.expr)]
             if node.state != "completed":
                 raise RuntimeError(f"Task {node.task_def.name} is not yet complete")
             return self._resolve_output_param_value(node=node, name=value.name)
 
         if isinstance(value, Expr):
-            node = self._nodes[self._expr_nodes[id(value)]]
+            node = self._nodes[self.graph.node_id_for(value)]
             if node.state != "completed":
                 raise RuntimeError(f"Task {node.task_def.name} is not yet complete")
             return node.result
@@ -1890,7 +1489,7 @@ class ConcurrentEvaluator:
                 node=node,
                 executor_name=node.executor_name,
                 payload=payload,
-                gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
+                gpu_type=self.placement.effective_resources(task_def=node.task_def).gpu_type,
                 watcher=self._executors.get_or_create_remote_watcher(),
             )
         else:
@@ -1973,22 +1572,6 @@ class ConcurrentEvaluator:
             ),
         )
 
-    def effective_resources(self, *, task_def: TaskDef) -> Resources:
-        """Return the task's declared resources with site overrides applied.
-
-        Site overrides come from the ``[resources.overrides]`` runtime-config
-        table and are merged over the decorator declaration. Memoized per
-        task name — the inputs are static for the lifetime of a run.
-        """
-        name = task_def.name
-        cached = self._effective_resources_cache.get(name)
-        if cached is None:
-            cached = task_def.resources
-            if self.resource_overrides is not None:
-                cached = self.resource_overrides.apply(task_name=name, base=cached)
-            self._effective_resources_cache[name] = cached
-        return cached
-
     def _apply_memory_escalation(self, *, node: NodeRun, resources: Resources) -> None:
         """Raise a retrying node's memory footprint per its retry multiplier.
 
@@ -2010,71 +1593,6 @@ class ConcurrentEvaluator:
             node=node,
             message=f"memory escalated to {escalated} GiB for attempt {node.attempt + 1}",
         )
-
-    def _resolve_placement(self, *, task_def: TaskDef) -> str | None:
-        """Return the executor a task is placed on, or ``None`` for local.
-
-        Placement is derived from the declared requirement and the available
-        capability. A task naming an ``executor`` routes there whatever the
-        run default is; ``remote=True`` routes to the run's default executor
-        (``--executor``); and a GPU requirement the local ``--gpus`` budget
-        cannot satisfy falls back to that same default. Any route without a
-        usable executor is an error rather than a silent local run.
-        Placement depends only on the task definition, so it is validated
-        for every node up front in ``validate_graph``.
-        """
-        registry = self.executor_registry
-        if task_def.executor is not None:
-            self._require_remote_capable_kind(task_def=task_def, reason="executor")
-            return registry.resolve(task_def.executor, task_name=task_def.name)
-        if task_def.remote:
-            self._require_remote_capable_kind(task_def=task_def, reason="remote")
-            if not registry.has_default:
-                raise ValueError(
-                    f"{task_def.name} declares remote=True but this run has no default "
-                    f"executor (pass --executor <name>). {registry.available_hint()}"
-                )
-            assert registry.default_name is not None
-            return registry.default_name
-        gpu = self.effective_resources(task_def=task_def).gpu
-        if gpu > (self.gpus or 0):
-            if not task_kind(task_def).remote_capable:
-                raise ValueError(
-                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus), and kind="
-                    f"{task_def.kind!r} cannot be dispatched remotely"
-                )
-            self._require_remote_capable_kind(task_def=task_def, reason="a GPU requirement")
-            if not registry.has_default:
-                raise ValueError(
-                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
-                    "are available locally (--gpus) and this run has no default "
-                    f"executor (--executor). {registry.available_hint()}"
-                )
-            return registry.default_name
-        return None
-
-    def _require_remote_capable_kind(self, *, task_def: TaskDef, reason: str) -> None:
-        """Reject remote placement for task kinds the workers cannot run.
-
-        ``Out[...]`` parameters are supported on remote tasks: when a remote
-        artifact store is configured (``[remote.artifacts] store``), declared
-        output paths are rewritten to worker-local scratch paths, staged back
-        through the same channel returned files use, and restored at their
-        declared driver path once the job completes — see
-        ``RemoteDispatchManager.dispatch`` and
-        ``ginkgo.runtime.artifacts.remote_arg_transfer``. Without a configured
-        store, ``Out[...]`` paths are sent to the worker unchanged, which only
-        works when the worker shares the driver's filesystem.
-        """
-        if not task_kind(task_def).remote_capable:
-            declaration = (
-                "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
-            )
-            raise ValueError(
-                f"{task_def.name} declares {declaration} but kind={task_def.kind!r} "
-                "cannot be dispatched remotely"
-            )
 
     def _build_worker_payload(self, *, node: NodeRun) -> dict[str, Any]:
         """Encode task inputs into a transport payload for the process pool."""
@@ -2319,7 +1837,7 @@ class ConcurrentEvaluator:
     def build_graph(self, expr: Any) -> None:
         """Register the static task graph reachable from *expr*, with inferred edges.
 
-        After this, :attr:`unreachable_calls` is known, so a caller can report
+        After this, the graph's unreachable calls are known, so a caller can report
         dropped calls before :meth:`validate_graph` fails on a consequence of
         one, such as a consumer of a dropped producer's ``Out[...]`` path.
 
@@ -2330,27 +1848,11 @@ class ConcurrentEvaluator:
             them.
         """
         self._root_template = expr
-        self._root_dependency_ids = self._register_value(expr)
-        self._infer_and_apply_edges()
+        self._root_dependency_ids = self._register(expr)
 
     def validate_graph(self) -> None:
         """Validate the built graph's import/env/input constraints."""
-        self._validator.validate_declared_envs(nodes=self._nodes.values())
-        self._validator.validate_declared_secrets(nodes=self._nodes.values())
-
-        # A `file`/`folder` input that does not exist yet is normally a static
-        # error, but it is not when the path is one of this graph's own
-        # Out[...] outputs (#280): a real run would produce it before this
-        # node runs, since an edge was just inferred for it. Dry-run static
-        # validation must not reject what the run would actually satisfy.
-        produced_paths = set(self._path_index.produced_exact)
-        for node in self._nodes.values():
-            self._validator.validate_task_importable(task_def=node.task_def)
-            self._validator.validate_static_inputs(node=node, produced_paths=produced_paths)
-            # Placement is static per task definition; resolving it here
-            # surfaces misconfiguration (remote=True or an unsatisfiable GPU
-            # requirement without a usable executor) before anything runs.
-            self._resolve_placement(task_def=node.task_def)
+        self.graph.validate(validator=self._validator, placement=self.placement)
 
     def _try_prepare_cache_hit(self, *, node: NodeRun) -> bool:
         """Attempt to complete a node from cache during preparation.
@@ -2663,8 +2165,7 @@ class ConcurrentEvaluator:
             ``True`` when *node* now waits on new tasks, ``False`` when *value*
             added none.
         """
-        dynamic_dependencies = self._register_value(value)
-        self._infer_and_apply_edges(expanding_node_id=node.node_id)
+        dynamic_dependencies = self._register(value, expanding_node_id=node.node_id)
         if not dynamic_dependencies:
             return False
         node.state = "waiting_dynamic"
@@ -2679,24 +2180,6 @@ class ConcurrentEvaluator:
             )
         )
         return True
-
-    def _validate_task_kind(self, *, task_def: TaskDef) -> None:
-        """Raise at graph build if *task_def*'s kind is not usable as declared.
-
-        Raises
-        ------
-        PluginNotFoundError
-            If no installed plugin provides the kind.
-        ValueError
-            If the task declares ``retry_on_exit_codes`` for a kind without
-            exit codes to retry on.
-        """
-        kind = task_kind(task_def)
-        if task_def.retry_on_exit_codes is not None and not kind.exit_code_retries:
-            raise ValueError(
-                f"{task_def.name} declares retry_on_exit_codes, which kind={kind.name!r} "
-                "does not support"
-            )
 
     def _runner_for(self, kind: TaskKind) -> TaskRunner:
         """Return the runner for *kind*, building it on first use."""

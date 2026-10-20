@@ -103,13 +103,13 @@ class TestEffectiveResources:
             {"overrides": {"sized_step": {"threads": 8, "memory": "16Gi"}}}
         )
         evaluator = ConcurrentEvaluator(jobs=1, resource_overrides=overrides)
-        effective = evaluator.effective_resources(task_def=sized_step)
+        effective = evaluator.placement.effective_resources(task_def=sized_step)
         assert effective.threads == 8
         assert effective.memory_gb == 16
 
     def test_no_overrides_returns_declaration(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
-        assert evaluator.effective_resources(task_def=sized_step) is sized_step.resources
+        assert evaluator.placement.effective_resources(task_def=sized_step) is sized_step.resources
 
 
 class TestRunWorkflowOverrides:

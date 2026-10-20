@@ -138,14 +138,12 @@ class TestOutParentDirCreation:
         assert Path(str(result)).read_text(encoding="utf-8") == "ho"
 
     def test_dry_run_does_not_create_directories(self, tmp_path: Path):
-        from ginkgo.core.expr import record_constructed_calls
         from ginkgo.runtime.dry_run import build_dry_run_plan
         from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
         dest = tmp_path / "should" / "not" / "exist.txt"
-        with record_constructed_calls() as calls:
-            expr = write_nested(payload="hi", dest=str(dest))
-        evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
+        expr = write_nested(payload="hi", dest=str(dest))
+        evaluator = ConcurrentEvaluator()
         evaluator.build_graph(expr)
         evaluator.validate_graph()
         build_dry_run_plan(evaluator=evaluator, workflow_label="test")

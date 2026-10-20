@@ -14,7 +14,9 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_str_path_annotation, looks_path_like_param_name
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.graph import TaskGraph
+from ginkgo.runtime.placement import Placement
+from ginkgo.runtime.task_validation import TaskValidator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import USER_MODULE_PREFIX, load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
@@ -95,20 +97,21 @@ def collect_workflow_diagnostics(
                 expr = flow()
             validate_param_extras(session)
         backend = backend_factory() if backend_factory is not None else None
-        evaluator = ConcurrentEvaluator(
-            secret_resolver=secret_resolver,
-            backend=backend,
-            constructed_calls=tuple(constructed_calls),
-            executor_registry=ExecutorRegistry.for_validation(
-                project_root=Path.cwd(),
-                config_paths=config_paths,
-            ),
-        )
-        evaluator.build_graph(expr)
+        graph = TaskGraph.build(expr)
         # Collected before validation and kept if it fails: a consumer of a
         # dropped producer's Out[...] path fails it, and the warning names why.
-        dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
-        evaluator.validate_graph()
+        dropped_calls = unreachable_call_diagnostics(
+            calls=graph.unreachable_calls(constructed_calls)
+        )
+        graph.validate(
+            validator=TaskValidator(backend=backend, secret_resolver=secret_resolver),
+            placement=Placement(
+                executor_registry=ExecutorRegistry.for_validation(
+                    project_root=Path.cwd(),
+                    config_paths=config_paths,
+                )
+            ),
+        )
 
         # A parameter read from a module global inside a task body is invisible
         # to that task's cache key, so a changed value silently reuses the
@@ -124,13 +127,13 @@ def collect_workflow_diagnostics(
             )
             for finding in global_param_reads(
                 declaration_globals=session.declaration_globals,
-                evaluator=evaluator,
+                nodes=graph.nodes.values(),
             )
         ]
         diagnostics.extend(dropped_calls)
         diagnostics.extend(
             path_like_str_param_diagnostics(
-                task_defs=(node.task_def for node in evaluator.task_nodes.values())
+                task_defs=(node.task_def for node in graph.nodes.values())
             )
         )
         return diagnostics
@@ -147,7 +150,7 @@ def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[Wo
     ----------
     calls : Sequence[ConstructedCall]
         Constructed-but-unregistered calls, from
-        ``ConcurrentEvaluator.unreachable_calls``.
+        ``TaskGraph.unreachable_calls``.
 
     Returns
     -------
@@ -207,7 +210,7 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
     ----------
     task_defs : Iterable[TaskDef]
         Task definitions to check, typically one per node in the built graph
-        (``evaluator.task_nodes.values()``'s ``task_def``s). Deduplicated
+        (``graph.nodes.values()``'s ``task_def``s). Deduplicated
         internally by :attr:`TaskDef.name`, since the same task definition can
         back many call sites.
 

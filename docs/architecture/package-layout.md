@@ -36,7 +36,9 @@ ginkgo/
 │   └── types.py          # file / folder / tmp_dir path-oriented types
 ├── runtime/
 │   ├── backend.py        # ExecutionEnvironment protocol and EnvironmentRouter
-│   ├── evaluator.py      # _ConcurrentEvaluator scheduler/lifecycle loop
+│   ├── evaluator.py      # ConcurrentEvaluator scheduler/lifecycle loop
+│   ├── graph.py          # TaskGraph: registration, labels, inferred edges, validation
+│   ├── placement.py      # Placement: effective resources and executor placement
 │   ├── executors.py      # the evaluator's heterogeneous executor pool
 │   ├── scheduler.py
 │   ├── worker.py

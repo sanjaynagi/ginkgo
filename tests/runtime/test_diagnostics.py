@@ -7,12 +7,13 @@ is not content-tracked by the cache and creates no dependency edge.
 from __future__ import annotations
 
 from ginkgo import task, untracked
-from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.diagnostics import (
     PATH_LIKE_STR_PARAM_CODE,
     path_like_str_param_diagnostics,
 )
-from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.graph import TaskGraph
+from ginkgo.runtime.placement import Placement
+from ginkgo.runtime.task_validation import TaskValidator
 
 
 @task()
@@ -32,12 +33,10 @@ def deliberate(output_path: untracked) -> str:
 
 def _task_defs_for(build):
     """Build a graph and return the task defs of every node it registers."""
-    with record_constructed_calls() as calls:
-        expr = build()
-    evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
-    evaluator.build_graph(expr)
-    evaluator.validate_graph()
-    return [node.task_def for node in evaluator.task_nodes.values()]
+    expr = build()
+    graph = TaskGraph.build(expr)
+    graph.validate(validator=TaskValidator(), placement=Placement())
+    return [node.task_def for node in graph.nodes.values()]
 
 
 class TestPathLikeStrParamDiagnostics:

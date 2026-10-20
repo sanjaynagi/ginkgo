@@ -87,19 +87,19 @@ class TestGpuPlacement:
 
     def test_gpu_over_budget_with_executor_places_remotely(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=_registry())
-        assert evaluator._resolve_placement(task_def=needs_gpu) == "remote"
+        assert evaluator.placement.resolve(task_def=needs_gpu) == "remote"
 
     def test_gpu_within_budget_with_executor_places_locally(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, gpus=1, executor_registry=_registry())
-        assert evaluator._resolve_placement(task_def=needs_gpu) is None
+        assert evaluator.placement.resolve(task_def=needs_gpu) is None
 
     def test_explicit_remote_wins_over_local_capacity(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=_registry())
-        assert evaluator._resolve_placement(task_def=explicitly_remote) == "remote"
+        assert evaluator.placement.resolve(task_def=explicitly_remote) == "remote"
 
     def test_remote_true_follows_the_run_default(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=_registry(name="gpu-k8s"))
-        assert evaluator._resolve_placement(task_def=explicitly_remote) == "gpu-k8s"
+        assert evaluator.placement.resolve(task_def=explicitly_remote) == "gpu-k8s"
 
     def test_gpu_on_non_python_kind_with_executor_names_the_kind(self) -> None:
         @task(kind="shell", gpu=1)
@@ -108,7 +108,7 @@ class TestGpuPlacement:
 
         evaluator = ConcurrentEvaluator(jobs=1, executor_registry=_registry())
         with pytest.raises(ValueError, match="kind='shell' cannot be dispatched remotely"):
-            evaluator._resolve_placement(task_def=gpu_shell)
+            evaluator.placement.resolve(task_def=gpu_shell)
 
     def test_placement_misconfiguration_fails_at_build(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)

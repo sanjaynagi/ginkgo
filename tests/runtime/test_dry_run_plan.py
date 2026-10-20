@@ -66,10 +66,14 @@ def _plan_for(build):
     """Build the dry-run plan for a flow body's expression."""
     with record_constructed_calls() as calls:
         expr = build()
-    evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
+    evaluator = ConcurrentEvaluator()
     evaluator.build_graph(expr)
     evaluator.validate_graph()
-    return build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+    return build_dry_run_plan(
+        evaluator=evaluator,
+        workflow_label="workflow.py",
+        unreachable_calls=evaluator.graph.unreachable_calls(calls),
+    )
 
 
 def _statuses(plan) -> dict[str, str]:

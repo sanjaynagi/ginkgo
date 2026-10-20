@@ -25,7 +25,8 @@ from ginkgo import (
     tmp_dir,
     untracked,
 )
-from ginkgo.runtime.evaluator import CycleError, ConcurrentEvaluator, RootSkippedError
+from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
+from ginkgo.runtime.graph import CycleError
 from ginkgo.runtime.executors import Executors
 from tests.conftest import EventCollector, ShellEnvironment
 from ginkgo.store.sqlite import open_store
@@ -1212,7 +1213,7 @@ class TestWorkerPayload:
     def test_build_worker_payload_does_not_contain_import_roots(self, tmp_path: Path) -> None:
         evaluator = ConcurrentEvaluator()
         expr = add_one_task(x=1)
-        node_id = evaluator._register_expr(expr)
+        (node_id,) = evaluator._register(expr)
         node = evaluator._nodes[node_id]
         node.transport_path = tmp_path / "transport"
         node.transport_path.mkdir()
