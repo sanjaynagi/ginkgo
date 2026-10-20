@@ -35,6 +35,15 @@ class TestPathMarkers:
         assert str(decoded) == "/some/dir"
 
 
+class TestScalarSubclasses:
+    @pytest.mark.parametrize("value", [np.float64(2.5), np.int64(3), np.bool_(True)])
+    def test_a_numpy_scalar_round_trips_as_itself(self, tmp_path, value) -> None:
+        decoded = decode_value(encode_value(value, base_dir=tmp_path), base_dir=tmp_path)
+
+        assert type(decoded) is type(value)
+        assert decoded == value
+
+
 class TestDecodeTags:
     def test_an_unknown_tag_raises(self, tmp_path) -> None:
         with pytest.raises(CodecError, match="Unknown encoded value type: 'retired'"):

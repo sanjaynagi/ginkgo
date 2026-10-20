@@ -390,6 +390,16 @@ def label_input_value(
     return "value"
 
 
+def _reject_list_for_scalar(*, annotation: type, label: str) -> None:
+    """Raise ``TypeError`` for a list or fan-out passed where one value is declared."""
+    raise TypeError(
+        f"{label} is annotated {annotation.__name__!r} but was given a list. "
+        "To run the task once per element, fan out with "
+        "`task(...).map(name=[...])`; to pass the whole list, annotate it "
+        f"`list[{annotation.__name__}]`."
+    )
+
+
 def _validate_scalar(*, annotation: type, value: Any, label: str) -> None:
     """Raise ``TypeError`` when *value* does not match a scalar annotation.
 
@@ -672,6 +682,11 @@ class TaskValidator:
             if annotation is tmp_dir or name not in node.expr.args:
                 continue
             value = node.expr.args[name]
+            # A fan-out result is dynamic, so it is checked here, before the
+            # skip below, when it lands on a parameter declared to hold one value.
+            scalar = unwrap_optional_annotation(annotation)[0]
+            if scalar in _SCALAR_TYPES and isinstance(value, ExprList | list | tuple):
+                _reject_list_for_scalar(annotation=scalar, label=f"{node.task_def.name}.{name}")
             if contains_dynamic_expression(value):
                 continue
             if collect_secret_refs(value):
@@ -908,6 +923,9 @@ class TaskValidator:
                     produced_paths=produced_paths,
                 )
             return
+
+        if annotation in _SCALAR_TYPES and isinstance(value, list | tuple):
+            _reject_list_for_scalar(annotation=annotation, label=label)
 
         if isinstance(value, list | tuple):
             for index, item in enumerate(value):

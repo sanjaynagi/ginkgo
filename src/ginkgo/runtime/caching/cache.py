@@ -1018,7 +1018,10 @@ class CacheStore:
                     return {"sha256": known, "type": "file"}
             return {"sha256": self._hash_file_contents(Path(str(value))), "type": "file"}
 
-        if value is None or isinstance(value, (bool, int, float, str)):
+        # Exact types only, as ``encode_value`` stores them: a subclass such as
+        # ``np.float64`` is hashed by its bytes, so the fresh value and the one
+        # restored from the cache hash the same.
+        if value is None or type(value) in (bool, int, float, str):
             return {
                 "sha256": hash_str(repr(value)),
                 "type": type(value).__name__,

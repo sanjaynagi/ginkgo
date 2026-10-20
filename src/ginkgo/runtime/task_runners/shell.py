@@ -119,6 +119,18 @@ def computed_env_var_names(*, task_def: Any) -> tuple[str, ...]:
     return ("GINKGO_THREADS",)
 
 
+def remove_failed_outputs(output: Any) -> None:
+    """Remove what a failed command left at its declared output paths.
+
+    A partial or empty file there would read as a result, so a failed task
+    leaves none behind. The cached copy of an earlier success is untouched.
+    """
+    if output is None:
+        return
+    for output_path in iter_output_values(output):
+        remove_declared_output(output_path)
+
+
 def remove_declared_output(path: Path) -> None:
     """Remove one pre-existing declared output before task execution."""
     if path.is_symlink() or path.is_file():
@@ -896,6 +908,7 @@ class ShellRunner:
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
+            remove_failed_outputs(output)
             raise ShellTaskError(
                 task_name=task_def.name,
                 cmd=redact_text(text=directive.cmd, secret_values=node.secret_values),

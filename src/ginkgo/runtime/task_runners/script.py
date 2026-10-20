@@ -21,6 +21,7 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
+    remove_failed_outputs,
     render_cli_tokens,
     resolve_declared_output,
 )
@@ -85,6 +86,7 @@ class ScriptRunner(DriverTaskRunner):
         )
         combined_output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
+            remove_failed_outputs(output)
             raise ShellTaskError(
                 task_name=node.task_def.name,
                 cmd=redact_text(text=cmd, secret_values=node.secret_values),

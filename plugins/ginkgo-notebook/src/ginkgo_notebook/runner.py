@@ -31,6 +31,7 @@ from ginkgo.runtime.task_runners.shell import (
     declared_output_mounts,
     iter_output_values,
     remove_declared_output,
+    remove_failed_outputs,
     render_repeated_cli_tokens,
     resolve_declared_output,
 )
@@ -103,6 +104,7 @@ class NotebookRunner(DriverTaskRunner):
             self._record_rendered_html(node=node, html_path=html_path)
 
         if completed.returncode != 0:
+            remove_failed_outputs(output)
             combined = (completed.stdout or "") + (completed.stderr or "")
             raise NotebookTaskError(
                 task_name=node.task_def.name,
