@@ -1427,6 +1427,32 @@ class TestValidation:
         with pytest.raises(FileNotFoundError, match="must exist and be a file"):
             evaluate(read_text_task(path=str(missing)))
 
+    @pytest.mark.parametrize(
+        ("make", "kind"), [(read_text_task, "file"), (list_dir_task, "folder")]
+    )
+    def test_a_missing_input_suggests_out_for_a_path_the_task_writes(
+        self, tmp_path: Path, make, kind: str
+    ) -> None:
+        """N2: ``file``/``folder`` declare reads; a written path wants ``Out[...]``."""
+        with pytest.raises(FileNotFoundError, match=rf"annotate the parameter `Out\[{kind}\]`"):
+            evaluate(make(path=str(tmp_path / "missing")))
+
+    @pytest.mark.parametrize(
+        ("make", "kind"), [(read_text_task, "file"), (list_dir_task, "folder")]
+    )
+    def test_a_list_for_one_path_is_rejected_before_the_run(
+        self, tmp_path: Path, make, kind: str
+    ) -> None:
+        """N3: each element existing does not make a list one path."""
+        paths = [tmp_path / "a", tmp_path / "b"]
+        for path in paths:
+            path.write_text("") if kind == "file" else path.mkdir()
+        evaluator = ConcurrentEvaluator()
+        evaluator.build_graph(make(path=[str(path) for path in paths]))
+
+        with pytest.raises(TypeError, match=f"annotated '{kind}' but was given a list"):
+            evaluator.validate_graph()
+
     def test_folder_inputs_must_not_contain_spaces(self, tmp_path: Path):
         spaced_dir = tmp_path / "has space"
         spaced_dir.mkdir()
