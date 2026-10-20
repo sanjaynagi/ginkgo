@@ -69,11 +69,29 @@ def big() -> int:
     return 1
 
 
+@task()
+def read_parts(n: int) -> list:
+    return [read_tag(src=f"part{i}.txt") for i in range(n)]
+
+
+@task()
+def total_length(parts: list) -> int:
+    return sum(len(part) for part in parts)
+
+
 def _plan(expr, **evaluator_options) -> DryRunPlan:
     evaluator = ConcurrentEvaluator(**evaluator_options)
     evaluator.build_graph(expr)
     evaluator.validate_graph()
     return build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
+
+
+def _by_label(plan: DryRunPlan) -> dict[str, tuple[str, tuple[str, ...]]]:
+    return {
+        task.label: (task.cache_status, task.run_reasons)
+        for wave in plan.waves
+        for task in wave.tasks
+    }
 
 
 def _tasks(plan: DryRunPlan) -> dict[str, tuple[str, tuple[str, ...]]]:
@@ -176,3 +194,50 @@ class TestResourceBudgets:
 
     def test_a_task_within_budget_is_clean(self, project: Path) -> None:
         assert _plan(big(), cores=8, memory=64).diagnostics == ()
+
+
+class TestDynamicTasks:
+    """G1: a cached dynamic task's children are probed, each on its own."""
+
+    @pytest.fixture
+    def parts(self, project: Path) -> Path:
+        (project / "part0.txt").write_text("a")
+        (project / "part1.txt").write_text("bb")
+        ginkgo.evaluate(total_length(parts=read_parts(n=2)))
+        return project
+
+    def test_a_warm_dynamic_task_and_its_children_are_cached(self, parts: Path) -> None:
+        plan = _plan(total_length(parts=read_parts(n=2)))
+
+        assert _by_label(plan) == {
+            "read_parts": ("cached", ()),
+            "read_tag": ("cached", ()),
+            "read_tag[2]": ("cached", ()),
+            "total_length": ("cached", ()),
+        }
+        assert plan.task_count == 4
+
+    def test_a_stale_child_will_run_under_its_cached_parent(self, parts: Path) -> None:
+        (parts / "part1.txt").write_text("changed")
+
+        plan = _plan(total_length(parts=read_parts(n=2)))
+
+        assert _by_label(plan) == {
+            "read_parts": ("cached", ()),
+            "read_tag": ("cached", ()),
+            "read_tag[2]": ("will_run", ("input_changed",)),
+            "total_length": ("unknown", ()),
+        }
+        # Children come after the task that returns them, and its dependents
+        # after the children.
+        assert [[task.label for task in wave.tasks] for wave in plan.waves] == [
+            ["read_parts"],
+            ["read_tag", "read_tag[2]"],
+            ["total_length"],
+        ]
+
+    def test_rerun_marks_the_named_task_will_run(self, parts: Path) -> None:
+        plan = _plan(total_length(parts=read_parts(n=2)), rerun=frozenset({"read_tag[2]"}))
+
+        assert _by_label(plan)["read_tag[2]"] == ("will_run", ("rerun_requested",))
+        assert _by_label(plan)["read_tag"] == ("cached", ())

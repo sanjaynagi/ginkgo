@@ -45,8 +45,12 @@ every task the module defines.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.
-Dynamic imports and other runtime dependencies cannot be tracked this way; set
-or increment `version=` on the task when those dependencies change.
+An `import` statement inside a function body counts too, whether or not it has
+run yet. Dynamic imports (`importlib.import_module`) and other runtime
+dependencies cannot be tracked this way; set or increment `version=` on the
+task when those dependencies change. A task that returns other tasks needs no
+bump for its children: on a cache hit each returned task is looked up on its
+own, so a child whose module, script or inputs changed runs again.
 
 The conservative closure has a practical consequence for fan-out. If tasks read
 their parameters from a shared module-level structure, every consumer's cache

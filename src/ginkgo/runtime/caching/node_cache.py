@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ginkgo.core.task import TaskDef
-from ginkgo.runtime.caching.cache import MISSING, CacheStore
+from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.task_validation import (
@@ -36,7 +36,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True)
 class CacheHit:
-    """A validated cached result for one node."""
+    """A validated cached result for one node.
+
+    ``value`` is the stored result, or the :class:`DynamicTemplate` of a task
+    that returned task expressions.
+    """
 
     value: Any
     cache_key: str
@@ -62,8 +66,34 @@ class NodeCache:
     def content_lookup(self, *, node: NodeRun) -> CacheHit | None:
         """Return a valid content-addressed cached result for a prepared node.
 
-        Computes and stores the node's cache key and input hashes on first
-        use, folding in digests already known for upstream outputs.
+        The cache key is computed first, as :meth:`ensure_cache_key` does. A
+        dynamic task's entry holds a :class:`DynamicTemplate`, which is
+        returned without validating any output: the children it replays
+        validate and restore their own.
+        """
+        self.ensure_cache_key(node=node)
+        assert node.cache_key is not None
+        cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
+        if cached_result is MISSING:
+            return None
+        if isinstance(cached_result, DynamicTemplate):
+            valid = self._declared_outputs_present(
+                task_def=node.task_def, resolved_args=node.resolved_args
+            )
+        else:
+            valid = self._is_valid_cached_result(
+                cache_key=node.cache_key,
+                task_def=node.task_def,
+                value=cached_result,
+                resolved_args=node.resolved_args,
+            )
+        return CacheHit(value=cached_result, cache_key=node.cache_key) if valid else None
+
+    def ensure_cache_key(self, *, node: NodeRun) -> None:
+        """Compute and store a prepared node's cache key and input hashes, once.
+
+        Digests already known for upstream outputs are folded in rather than
+        re-hashed.
         """
         assert node.resolved_args is not None
         if node.cache_key is None or node.input_hashes is None:
@@ -83,16 +113,6 @@ class NodeCache:
                 task_def=node.task_def,
                 resolved_args=node.resolved_args,
             )
-
-        cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
-        if cached_result is MISSING or not self._is_valid_cached_result(
-            cache_key=node.cache_key,
-            task_def=node.task_def,
-            value=cached_result,
-            resolved_args=node.resolved_args,
-        ):
-            return None
-        return CacheHit(value=cached_result, cache_key=node.cache_key)
 
     def written_str_inputs(self, *, node: NodeRun) -> list[tuple[str, str]]:
         """Return ``(parameter, path)`` for plain-``str`` inputs the just-run task wrote.

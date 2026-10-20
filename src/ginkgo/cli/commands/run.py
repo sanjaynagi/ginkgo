@@ -148,6 +148,7 @@ def _run_resolved_workflow(args, *, output_mode: RunMode, run_id: str) -> int:
         output_mode=output_mode,
         trust_mtimes=getattr(args, "trust_mtimes", False),
         keep_going=getattr(args, "keep_going", False),
+        rerun=tuple(getattr(args, "rerun", ()) or ()),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
         command_flags=getattr(args, "command_flags", ()),
@@ -267,6 +268,7 @@ def run_workflow(
     output_mode: RunMode = "default",
     trust_mtimes: bool = False,
     keep_going: bool = False,
+    rerun: Sequence[str] = (),
     executor: str = "local",
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
@@ -363,6 +365,7 @@ def run_workflow(
         "secret_resolver": secret_resolver,
         "param_context": param_context,
         "keep_going": keep_going,
+        "rerun": frozenset(rerun),
     }
     evaluator = ConcurrentEvaluator(**evaluator_kwargs)
     # A call the flow never returns is not in the graph, so its side effects
@@ -407,6 +410,20 @@ def run_workflow(
         nodes=evaluator.graph.nodes.values(),
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(finding.message())}")
+
+    # A misspelt --rerun name would otherwise quietly serve every result from
+    # the cache. Only warned: a task a dynamic expansion returns is not known
+    # until the run gets there.
+    static_names = {
+        name
+        for node in evaluator.task_nodes.values()
+        for name in (node.task_def.name, node.task_def.base_name, node.label)
+    }
+    for name in sorted(set(rerun) - static_names):
+        console(sys.stderr).print(
+            f"[yellow]⚠[/] --rerun {escape(name)} names no task in the static graph; it "
+            "applies only if a dynamic task returns one by that name."
+        )
 
     # A parameter named like a path but annotated a bare `str` is content-tracked
     # only when its value names an existing regular file and reads as a path (a

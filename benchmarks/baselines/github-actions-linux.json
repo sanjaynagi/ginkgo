@@ -63,9 +63,9 @@
       "baseline_seconds": 0.696,
       "max_regression_pct": 25.0,
       "expected_counters": {
-        "task_count": 7,
+        "task_count": 11,
         "executed_task_count": 0,
-        "cached_task_count": 7
+        "cached_task_count": 11
       }
     },
     {
@@ -107,9 +107,9 @@
       "baseline_seconds": 0.714,
       "max_regression_pct": 20.0,
       "expected_counters": {
-        "task_count": 8,
+        "task_count": 13,
         "executed_task_count": 0,
-        "cached_task_count": 8
+        "cached_task_count": 13
       }
     },
     {

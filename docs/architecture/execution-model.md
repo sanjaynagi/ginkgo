@@ -89,6 +89,13 @@ Tasks receive resolved concrete argument values at execution time. A task can in
 - a nested container containing `Expr` / `ExprList`
 
 The evaluator registers those returned expressions dynamically and extends the graph during execution.
+The expanding task waits on the tasks it returned, and they do not wait on it:
+a returned task reading a file inside the expanding task's own `Out[folder]`
+gets no inferred edge back to it (the checkpoint idiom). Cycle detection counts
+the expanding task's wait on its children, so a returned task that reads a path
+produced downstream of its parent fails the expansion with a `CycleError`. A
+cached dynamic task replays the expressions its entry holds (see
+[Caching](caching.md#dynamic-task-entries)).
 
 ## Scheduling and Execution
 

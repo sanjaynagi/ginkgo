@@ -1768,3 +1768,20 @@ class TestFailedRegistration:
             )
 
         assert set(evaluator.task_nodes) == set(evaluator.graph.nodes)
+
+
+class TestDeadlockReport:
+    def test_a_deadlock_names_each_unresolved_task_and_its_waits(self) -> None:
+        evaluator = ConcurrentEvaluator()
+        evaluator.build_graph(
+            sum_keyword_pair_task(left=add_one_task(x=1), right=add_one_task(x=2))
+        )
+        evaluator.task_nodes[1].state = "completed"
+
+        message = str(evaluator._deadlock_error())
+
+        assert message.splitlines() == [
+            "Scheduler reached a deadlock with unresolved tasks:",
+            "  add_one_task[2] (pending) waits on: nothing",
+            "  sum_keyword_pair_task (pending) waits on: add_one_task[2]",
+        ]

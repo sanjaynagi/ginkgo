@@ -94,6 +94,20 @@ this run computed, so a downstream task skips re-hashing what an upstream task
 just produced. Those paths are being written as the run goes, so nothing about
 them is true past the end of it.
 
+## Dynamic task entries
+
+A task that returns task expressions saves a `DynamicTemplate` holding those
+expressions, pickled whole, instead of the value they resolved to. Its key
+covers only its own code and inputs, so the value would go stale when a child
+changed (an edited script, a module reached through `importlib`, a data file a
+literal path names). A hit replays the template through the same expansion a
+fresh run uses: each child is registered, prepared and looked up on its own,
+and the parent completes as cached once they finish. A template that no longer
+loads, because a task it names was renamed or removed, is a miss. A dry run
+expands a cached template the same way, without running anything.
+`_KEY_FORMAT` in the key payload was bumped for this, so entries written
+before it miss once.
+
 ## Task source hash
 
 The task source hash covers the task body and the local helper modules it
@@ -300,8 +314,10 @@ not the shape of the string. Detection is inherently runtime: it needs a
 resolved value, so `ginkgo doctor` does not report it.
 
 The runtime hashes the top-level task function source and the statically
-imported closure of already-loaded local Python modules during task
-registration. The resulting `source_hash` is stored in both the cache key
+imported closure of local Python modules during task registration. The closure
+follows every import statement in a module's source, a function-local one
+included, and finds each module's file on `sys.path` without importing it, so
+an import that has not executed yet still counts. The resulting `source_hash` is stored in both the cache key
 payload and on the entry's row, so task-body and local-helper changes invalidate prior
 cache entries without requiring a manual `version=` bump. This is deliberately
 conservative: an edit anywhere in a reachable local module invalidates tasks

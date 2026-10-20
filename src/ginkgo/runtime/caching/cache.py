@@ -41,7 +41,6 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.store.jsonio import dumps_or_none
 from ginkgo.runtime.environment.secrets import redact_value, secret_identity
 from ginkgo.runtime.artifacts.value_codec import (
-    CodecError,
     check_encoded,
     decode_value,
     encode_value,
@@ -53,10 +52,44 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 logger = logging.getLogger(__name__)
 
-_UNREADABLE_ENTRY_ERRORS = (OSError, ValueError, KeyError, CodecError)
-"""What reading a cache entry raises when the entry cannot be used."""
+_UNREADABLE_ENTRY_ERRORS = (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError)
+"""What reading a cache entry raises when the entry cannot be used.
+
+``TypeError`` covers the codec's own refusal; the import and attribute errors
+come from unpickling a value whose task or class has been renamed or removed
+since it was stored.
+"""
+
+_KEY_FORMAT = 2
+"""Version of what a cache entry holds, folded into every key.
+
+Bumped when an entry written by an older version can no longer be trusted, so
+those entries miss once instead. Format 2 stores a dynamic task's returned
+expressions rather than the value they resolved to.
+"""
 
 MISSING = object()
+
+
+@dataclass(frozen=True)
+class DynamicTemplate:
+    """The task expressions a dynamic task returned, as its cache entry holds them.
+
+    A task that returns task expressions is complete only once they have run.
+    Its entry keeps the expressions rather than the value they resolved to, so
+    a hit replays them and each child is looked up in the cache on its own:
+    a child whose code or inputs changed re-runs, even though the parent's
+    key did not move. The template is pickled whole, so an expression shared
+    between two places in it stays one task.
+
+    Parameters
+    ----------
+    template : Any
+        The returned value: an expression, or a nested container holding
+        them.
+    """
+
+    template: Any
 
 
 def key_components(meta: dict[str, Any]) -> dict[str, Any]:
@@ -245,6 +278,7 @@ class CacheStore:
         payload = {
             "env": task_def.env,
             "env_hash": env_hash,
+            "format": _KEY_FORMAT,
             "inputs": input_hashes,
             "source_hash": source_hash,
             "task": task_def.name,
@@ -415,6 +449,9 @@ class CacheStore:
 
         Parameters
         ----------
+        result : Any
+            The task's result, or the :class:`DynamicTemplate` of a task that
+            returned task expressions.
         extra_source_hash : str | None
             The notebook or script source hash folded into the cache key for
             driver tasks, recorded so `ginkgo cache explain` can name it as
@@ -432,7 +469,12 @@ class CacheStore:
             Mapping from output path strings to artifact IDs.
         """
         # Always store output artifacts, even if the cache entry already exists.
-        records = self._store_output_artifacts(result=result, task_def=task_def)
+        # A dynamic task's outputs are its children's, which stored their own.
+        records = (
+            {}
+            if isinstance(result, DynamicTemplate)
+            else self._store_output_artifacts(result=result, task_def=task_def)
+        )
 
         # Publish artifacts to remote store if a publisher is configured.
         if self.publisher is not None:
