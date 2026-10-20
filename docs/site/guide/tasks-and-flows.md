@@ -48,7 +48,7 @@ task body does:
 | Python | `@task()` | a Python value | in a spawned subprocess worker (`ProcessPoolExecutor`) |
 | Shell | `@task("shell")` | `shell(cmd=..., output=...)` | a shell command, optionally inside a declared environment |
 | Script | `@task("script")` | `script(path, output=...)` | a `.py` or `.R` script file, with inputs passed as `--flags` |
-| Notebook | `@task("notebook")` | `notebook(path, output=...)` | a Jupyter or marimo notebook, rendered to HTML |
+| Notebook | `@task("notebook")` | `notebook(path, output=...)` | a marimo notebook, rendered to HTML (needs the `ginkgo-notebook` plugin) |
 | Subworkflow | `@task("subworkflow")` | `subworkflow(path, params=...)` | a nested workflow, as a self-contained `ginkgo run` |
 
 The kind can be passed positionally (`@task("shell")`) or by keyword
@@ -65,12 +65,12 @@ from ginkgo import (
     Out,
     SubWorkflowResult,
     file,
-    notebook,
     script,
     shell,
     subworkflow,
     task,
 )
+from ginkgo_notebook import notebook
 
 _WORKFLOW_DIR = Path(__file__).resolve().parent  # the directory holding flow.py
 
@@ -89,7 +89,7 @@ def build_brief(normalized_card: file, output_path: Out[file]) -> file:
 
 @task("notebook", env="analysis_tools")     # notebook
 def render_overview(summary_path: file) -> file:
-    return notebook(_WORKFLOW_DIR / "notebooks" / "overview.ipynb")
+    return notebook(_WORKFLOW_DIR / "notebooks" / "overview.py")
 
 @task("subworkflow")                        # subworkflow
 def run_child(dataset: file) -> SubWorkflowResult:
@@ -215,10 +215,8 @@ are forwarded to the script as `--param-name value` command-line arguments.
 Underscores in a parameter name become hyphens on the command line: a task
 parameter `normalized_card` arrives as `--normalized-card`, so the script's
 argument parser must declare the hyphenated form. The same conversion applies to
-marimo notebook tasks, which are also executed as scripts with `--flags` (see
-[Notebook Tasks](#notebook-tasks) for how they receive lists and booleans);
-Jupyter notebooks receive parameters through Papermill under their original
-names.
+notebook tasks, which also receive their inputs as `--flags` (see
+[Notebook Tasks](#notebook-tasks) for how they receive lists and booleans).
 
 A `list`/`tuple` parameter whose items are scalars or paths (a fan-in from
 `.map()`, say) is forwarded as the option followed by each item as its own
@@ -272,14 +270,18 @@ task.
 
 ## Notebook Tasks
 
-Use `@task("notebook")` to run a Jupyter or marimo notebook as a workflow step.
-The body returns a `notebook(...)` expression, and the rendered HTML becomes a
-tracked run artifact.
+Use `@task("notebook")` to run a [marimo](https://marimo.io) notebook as a
+workflow step. Notebook tasks come from the `ginkgo-notebook` plugin (see
+[Plugins](../getting-started/installation.md#plugins)); without it, a
+`@task("notebook")` fails when the workflow graph is built, naming the plugin
+to install. The body returns a `notebook(...)` expression, and the rendered
+HTML becomes a tracked run artifact.
 
 ```python
 from pathlib import Path
 
-from ginkgo import file, notebook, task
+from ginkgo import file, task
+from ginkgo_notebook import notebook
 
 _NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
 
@@ -287,48 +289,55 @@ _NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
 @task("notebook")
 def render_overview(summary_path: file, run_label: str) -> file:
     """Render an HTML overview notebook for the run."""
-    return notebook(_NOTEBOOKS_DIR / "overview.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "overview.py")
 ```
 
-The decorated function defines the typed parameter schema; its resolved inputs
-are passed into the notebook as parameters. The notebook file is source material
-for both execution and cache identity — when the notebook changes, the task's
-cache key changes.
+`notebook()` takes a marimo notebook, which is a `.py` file; any other file is
+refused. The decorated function defines the typed parameter schema; its
+resolved inputs are passed to the notebook as command-line arguments, which the
+notebook reads with `mo.cli_args()`. As with script tasks, underscores become
+hyphens, so `summary_path` is read as `summary-path`:
 
-Give a `.ipynb` notebook a cell tagged `parameters` that assigns a default to
-each name in the task signature. Papermill replaces that cell's contents with
-the resolved arguments, so the defaults are what you get when you open the
-notebook by hand, and the task signature wins during a run. Without such a cell
-Papermill still injects the values — it prepends an `injected-parameters` cell —
-but it prints one `Passed unknown parameter: <name>` line per argument plus
-`Input notebook does not contain a cell with tag 'parameters'`. Those lines are
-benign, and the run succeeds, but they read like errors. Tagging the cell
-removes them.
+```python
+import marimo
 
-`notebook()` takes two optional arguments beyond the path:
+app = marimo.App()
 
-- `output` — a declared output path, or list of paths, validated after the
-  notebook runs. When omitted, the task result is the managed rendered-HTML
-  artifact.
-- `log` — a path to capture stdout/stderr during execution.
 
-Notebook tasks support `.ipynb` execution through Papermill as well as marimo
-notebooks. The HTML export is recorded in provenance and appears in the
-[run report](reports.md). A notebook task can declare an `env` so the notebook
-runs against that environment's kernel.
+@app.cell
+def _():
+    import marimo as mo
 
-Inside the run directory the rendered page is stored under
-`.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
-export it under the task's name, build the report bundle with the
-`ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
-`deliver/notebooks/<task>.html` next to `deliver/index.html`. See
-[Reports](reports.md).
+    args = mo.cli_args()
+    summary_path = args.get("summary-path") or "results/summary.json"
+    run_label = args.get("run-label") or "Draft"
+    return run_label, summary_path
 
-A marimo notebook reads its parameters with `mo.cli_args()`, which collects a
-repeated option into a list but joins space-separated values into one string.
-So a `list`/`tuple` parameter of scalars or paths arrives as the option repeated
-once per item (`--clusters a.tsv --clusters b.tsv`), and an empty list omits the
-option. Read it with `get_all`, which returns a list whatever the length:
+
+@app.cell
+def _(run_label, summary_path):
+    import json
+    from pathlib import Path
+
+    summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+    print(run_label, summary["row_count"])
+    return
+
+
+if __name__ == "__main__":
+    app.run()
+```
+
+The fallbacks are what you get when you open the notebook by hand with
+`marimo edit`; during a run the task's arguments win. The notebook file is
+source material for both execution and cache identity — when the notebook
+changes, the task's cache key changes.
+
+`mo.cli_args()` collects a repeated option into a list but joins
+space-separated values into one string. So a `list`/`tuple` parameter of
+scalars or paths arrives as the option repeated once per item
+(`--clusters a.tsv --clusters b.tsv`), and an empty list omits the option. Read
+it with `get_all`, which returns a list whatever the length:
 
 ```python
 clusters = mo.cli_args().get_all("clusters")  # [] when the fan-in is empty
@@ -337,18 +346,34 @@ clusters = mo.cli_args().get_all("clusters")  # [] when the fan-in is empty
 A `bool` parameter arrives as `--flag true` or `--flag false`, which
 `mo.cli_args()` converts back to a boolean.
 
-If the notebook executes but the HTML export fails, Ginkgo writes a placeholder
-page carrying the export error, records `render_status: failed` in the manifest,
-and emits a `task_notice` event that `--agent-output` and the run summary carry.
-What happens to the task depends on whether that page would be its result:
+`notebook()` takes two optional arguments beyond the path:
 
-- No `output` (or an `output` naming the rendered HTML) — the export *is* the
-  deliverable, so the task fails. The placeholder page never becomes the value
-  a downstream task consumes, and nothing is cached, so a rerun retries.
-- Some other declared `output` — the HTML is a side artifact. The task keeps its
-  declared output and succeeds, with the notice carrying the export failure. The
-  task caches as usual, so a later run that hits the cache reuses that
-  placeholder page — and emits the notice again to say so.
+- `output` — a declared output path, or list of paths, validated after the
+  notebook runs. When omitted, the task result is the rendered HTML.
+- `log` — a path to capture stdout/stderr during execution.
+
+Each notebook task is one `marimo export html` subprocess, which runs the
+notebook with the task's arguments and renders it in the same pass. marimo
+rewrites the file it exports (stamping `__generated_with`), so Ginkgo puts the
+notebook's original bytes back afterwards; and, as for any marimo export, it
+writes a session file under `__marimo__/` beside the notebook, which you can
+ignore in version control. A
+notebook task can declare an `env`, and then runs `python -m marimo` inside
+that environment, which must therefore provide marimo. Without `env=`, the
+notebook runs under Ginkgo's own interpreter.
+
+If a cell fails, the task fails, but marimo still writes the page, showing the
+failing cell; the error message points at it. The rendered page is recorded
+against the task, listed under "Rendered pages" at the end of the run, and
+linked from the [run report](reports.md).
+
+Inside the run directory the rendered page is stored under
+`.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To
+export it under the task's name, build the report bundle with the
+`ginkgo-report` plugin installed: `ginkgo report --out deliver` writes
+`deliver/pages/<task_key>_<task>.html` next to `deliver/index.html`. See
+[Reports](reports.md). A cache hit does not re-render: the task points at the
+page the producing run rendered.
 
 ### Staging A Python Value For A Notebook
 
@@ -372,7 +397,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from ginkgo import Out, file, flow, notebook, task
+from ginkgo import Out, file, flow, task
+from ginkgo_notebook import notebook
 
 _NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
 
@@ -394,7 +420,7 @@ def stage_de_csv(de_table: pd.DataFrame, output_path: Out[file]) -> file:
 @task("notebook")
 def render_rnaseq_report(de_csv_path: file, lfc_threshold: float) -> file:
     """Render the report notebook against the staged CSV."""
-    return notebook(_NOTEBOOKS_DIR / "rnaseq_report.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "rnaseq_report.py")
 
 
 @flow

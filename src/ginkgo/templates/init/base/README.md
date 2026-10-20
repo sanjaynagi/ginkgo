@@ -55,7 +55,7 @@ plugin.
 - `.product_map()` provides Cartesian fan-out across parameter combinations.
 - Python tasks are useful for orchestration, data transformation, and analytics.
 - Shell tasks let you call CLI tools with explicit declared outputs.
-- Notebook tasks let you execute notebooks as part of the workflow and render them to html.
+- Notebook tasks (from the `ginkgo-notebook` plugin) run marimo notebooks as part of the workflow and render them to HTML.
 - Script tasks let you execute standalone scripts with task-managed inputs and outputs.
 - `expand(...)` builds a deterministic list of paths to `.map()` over, one per row.
 - `per_branch(...)` derives one output path per fan-out branch from that branch's

@@ -5,7 +5,7 @@ and plugin presenters such as ``ginkgo report`` and Slack notifications —
 formats this and nothing else (issue #79). It is
 loaded from the ledger's projection tables, so a run is visible the moment it
 has rows, and the run directory is needed only for the bytes it holds: logs and
-notebook artifacts.
+rendered pages.
 """
 
 from __future__ import annotations
@@ -74,14 +74,12 @@ class TaskSummary:
     remote_job_id: str | None
     sub_run_id: str | None
     rendered_html: str | None
-    executed_notebook: str | None
-    notebook_kind: str | None
-    notebook_description: str | None
-    notebook_path: str | None
-    render_status: str | None
-    render_error: str | None
-    notebook_artifact_run_id: str | None
-    task_type: str
+    """A page the task rendered for people to read, such as a notebook's HTML.
+
+    Any task kind may record one; relative to the run directory, or absolute
+    when a cache hit points at the page an earlier run rendered."""
+    rendered_html_run_id: str | None
+    """The run that rendered ``rendered_html``: not this run on a cache hit."""
     dependency_ids: tuple[int, ...]
     dynamic_dependency_ids: tuple[int, ...]
     inputs: dict[str, Any] | None
@@ -118,11 +116,7 @@ class TaskSummary:
     @property
     def kind_label(self) -> str:
         """Return a display label for the task kind (``"task"`` fallback)."""
-        if self.kind:
-            return self.kind
-        if self.task_type == "notebook":
-            return "notebook"
-        return "task"
+        return self.kind or "task"
 
     @property
     def started(self) -> bool:
@@ -163,31 +157,12 @@ class TaskSummary:
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
         """Resolve ``rendered_html`` against the run directory.
 
-        Cache hits replay an absolute path; freshly rendered notebooks store
-        a path relative to ``run_dir``. ``Path /`` handles both.
+        Cache hits replay an absolute path; a freshly rendered page is stored
+        relative to ``run_dir``. ``Path /`` handles both.
         """
         if self.rendered_html is None:
             return None
         return (run_dir / self.rendered_html).resolve()
-
-
-@dataclass(frozen=True, kw_only=True)
-class NotebookSummary:
-    """One materialised notebook from a finished run."""
-
-    task_key: str
-    task_name: str
-    base_name: str
-    description: str | None
-    status: str
-    render_status: str | None
-    render_error: str | None
-    notebook_kind: str | None
-    notebook_path: str | None
-    rendered_html: str | None
-    rendered_html_path: Path | None
-    notebook_artifact_run_id: str | None = None
-    """Run that produced the artifacts, which is not this run on a cache hit."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -213,7 +188,7 @@ class RunSummary:
     duration_s : float | None
         Wall-clock duration in seconds when both timestamps exist.
     run_dir : Path
-        The run's directory, which holds its logs, notebooks and snapshot.
+        The run's directory, which holds its logs, rendered pages and snapshot.
     error : str | None
         The failure that ended the run, when one did.
     jobs, cores, memory : int | None
@@ -232,8 +207,6 @@ class RunSummary:
         Run-level phase timings, in seconds.
     tasks : tuple[TaskSummary, ...]
         Tasks ordered by ``node_id`` ascending.
-    notebooks : tuple[NotebookSummary, ...]
-        Notebook tasks materialised in this run.
     """
 
     run_id: str
@@ -256,7 +229,6 @@ class RunSummary:
     param_sources: dict[str, str]
     timings: dict[str, float]
     tasks: tuple[TaskSummary, ...]
-    notebooks: tuple[NotebookSummary, ...]
 
     @classmethod
     def load(
@@ -318,7 +290,6 @@ class RunSummary:
             param_sources=_mapping(run.get("param_sources")),
             timings=_mapping(run.get("timings")),
             tasks=tasks,
-            notebooks=_load_notebooks(tasks=tasks),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -375,6 +346,8 @@ class RunSummary:
                 ("execution_backend", task.execution_backend),
                 ("resource_usage", task.resource_usage),
                 ("sub_run_id", task.sub_run_id),
+                ("rendered_html", task.rendered_html),
+                ("rendered_html_run_id", task.rendered_html_run_id),
                 ("skipped_because", task.skipped_because),
                 ("ignored", True if task.ignored else None),
             ):
@@ -549,14 +522,7 @@ def _build_task_summary(
         remote_job_id=_text(row.get("remote_job_id")),
         sub_run_id=_text(extra.get("sub_run_id")),
         rendered_html=_text(extra.get("rendered_html")),
-        executed_notebook=_text(extra.get("executed_notebook")),
-        notebook_kind=_text(extra.get("notebook_kind")),
-        notebook_description=_text(extra.get("notebook_description")),
-        notebook_path=_text(extra.get("notebook_path")),
-        render_status=_text(extra.get("render_status")),
-        render_error=_text(extra.get("render_error")),
-        notebook_artifact_run_id=_text(extra.get("notebook_artifact_run_id")),
-        task_type=str(extra.get("task_type") or "task"),
+        rendered_html_run_id=_text(extra.get("rendered_html_run_id")),
         dependency_ids=tuple(sorted(dependency_ids)),
         dynamic_dependency_ids=tuple(sorted(dynamic_dependency_ids)),
         inputs=inputs,
@@ -567,31 +533,6 @@ def _build_task_summary(
         ignored=bool(extra.get("ignored")),
         timings=_mapping(row.get("timings")),
     )
-
-
-def _load_notebooks(*, tasks: tuple[TaskSummary, ...]) -> tuple[NotebookSummary, ...]:
-    """Extract notebook artifacts from the per-task summaries."""
-    notebooks: list[NotebookSummary] = []
-    for task in tasks:
-        if task.task_type != "notebook" and task.rendered_html is None:
-            continue
-        notebooks.append(
-            NotebookSummary(
-                task_key=task.task_key,
-                task_name=task.name,
-                base_name=task.base_name,
-                description=task.notebook_description,
-                status=task.status,
-                render_status=task.render_status,
-                render_error=task.render_error,
-                notebook_kind=task.notebook_kind,
-                notebook_path=task.notebook_path,
-                rendered_html=task.rendered_html,
-                rendered_html_path=None,
-                notebook_artifact_run_id=task.notebook_artifact_run_id,
-            )
-        )
-    return tuple(notebooks)
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -16,7 +16,7 @@ These are exercised through the test suite and, from the CLI layer onward, throu
 The repository-level validation corpus includes:
 
 - `retail` for static fan-out, fan-in, and shell-generated delivery
-  bundles, now including a notebook-backed reporting step
+  bundles, now including a marimo notebook reporting step
 - `news` for runtime-determined `ExprList` expansion and dynamic dependency
   recording
 - `supplychain` for multi-scenario analysis with richer artifact fan-in

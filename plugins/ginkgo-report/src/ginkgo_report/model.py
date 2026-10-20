@@ -139,12 +139,12 @@ class FailureCard:
     log_relpath: str | None
 
 
-# ----- Notebook ----------------------------------------------------------
+# ----- Rendered pages ----------------------------------------------------
 
 
 @dataclass(frozen=True, kw_only=True)
-class NotebookCard:
-    """One rendered notebook accompanying the report."""
+class PageCard:
+    """One page a task rendered, such as a notebook's HTML, copied with the report."""
 
     task_key: str
     title: str
@@ -238,7 +238,7 @@ class ReportData:
     graph: Graph
     tasks: tuple[TaskRow, ...]
     failures: tuple[FailureCard, ...]
-    notebooks: tuple[NotebookCard, ...]
+    pages: tuple[PageCard, ...]
     environment: tuple[KVEntry, ...]
 
     # Footer / determinism
@@ -320,7 +320,7 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "Results",
-        (("notebooks", "Notebooks"),),
+        (("pages", "Rendered pages"),),
     ),
     (
         "Appendix",
@@ -385,7 +385,7 @@ def build_report_data(
         artifact_copies=artifact_copies,
     )
     graph = _build_graph(summary=summary, failures=failures)
-    notebooks = _build_notebooks(summary=summary, run_dir=run_dir, artifact_copies=artifact_copies)
+    pages = _build_pages(summary=summary, run_dir=run_dir, artifact_copies=artifact_copies)
     summary_cards = _build_summary_cards(summary=summary)
 
     status_raw = summary.status
@@ -432,14 +432,14 @@ def build_report_data(
         sidebar_status_tone=sidebar_status_tone,
         section_groups=_build_section_groups(
             has_failures=len(failures) > 0,
-            has_notebooks=len(notebooks) > 0,
+            has_pages=len(pages) > 0,
         ),
         summary_cards=summary_cards,
         params=summary.params,
         graph=graph,
         tasks=tasks,
         failures=failures,
-        notebooks=notebooks,
+        pages=pages,
         environment=environment,
         ginkgo_version=ginkgo_version,
         generated_at_label=format_timestamp(generated_at or datetime.now(UTC)),
@@ -453,14 +453,14 @@ def build_report_data(
 def _build_section_groups(
     *,
     has_failures: bool,
-    has_notebooks: bool,
+    has_pages: bool,
 ) -> tuple[ReportSectionGroup, ...]:
     """Number the sections this run renders, in document order.
 
     Optional sections drop out of the sequence entirely rather than reserving
     a numeral, so the rendered numbers are always contiguous.
     """
-    renders = {"failure": has_failures, "notebooks": has_notebooks}
+    renders = {"failure": has_failures, "pages": has_pages}
     groups: list[ReportSectionGroup] = []
     number = 0
     for label, entries in _SECTION_LAYOUT:
@@ -657,7 +657,7 @@ def _graph_tone(*, task: TaskSummary, failure_keys: set[str]) -> str:
     """Return the graph tone for one task node."""
     if task.task_key in failure_keys or task.status == "failed":
         return "fail"
-    if task.task_type == "notebook":
+    if task.rendered_html is not None:
         return "terminal"
     if task.status in {"succeeded", "cached"}:
         return "ok"
@@ -724,17 +724,17 @@ def _first_log_path(*, task: TaskSummary, run_dir: Path) -> Path | None:
     return None
 
 
-# ----- Notebooks ----------------------------------------------------------
+# ----- Rendered pages -----------------------------------------------------
 
 
-def _build_notebooks(
+def _build_pages(
     *,
     summary: RunSummary,
     run_dir: Path,
     artifact_copies: list[ArtifactCopy],
-) -> tuple[NotebookCard, ...]:
-    """Build notebook cards from notebook tasks that produced HTML."""
-    cards: list[NotebookCard] = []
+) -> tuple[PageCard, ...]:
+    """Build a card for each page a task rendered, such as a notebook's HTML."""
+    cards: list[PageCard] = []
     for task in summary.tasks:
         if task.rendered_html is None:
             continue
@@ -742,36 +742,20 @@ def _build_notebooks(
         if source is None or not source.is_file():
             continue
         # Keyed by task, not name: the branches of a fan-out share a name.
-        dest = f"notebooks/{task.task_key}_{task.base_name}.html"
+        dest = f"pages/{task.task_key}_{task.base_name}.html"
         artifact_copies.append(ArtifactCopy(source=source, dest_relpath=dest))
 
         size_bytes = source.stat().st_size
-        sub_parts: list[str] = []
-        if task.notebook_kind:
-            sub_parts.append(task.notebook_kind)
-        sub_parts.append(format_duration(task.duration_s))
-        sub_parts.append(format_bytes(size_bytes))
-        if task.notebook_description:
-            sub_parts.append(task.notebook_description)
-        if task.notebook_artifact_run_id not in (None, summary.run_id):
-            sub_parts.append(f"from run {task.notebook_artifact_run_id}")
-        if task.render_status == "failed":
-            sub_parts.append("HTML export failed")
-
-        title = task.notebook_path or task.base_name
-        if isinstance(title, str):
-            title = Path(title).name
-        status_tone = (
-            "warn" if task.render_status == "failed" else _STATUS_TONE.get(task.status, "warn")
-        )
-
+        sub_parts = [format_duration(task.duration_s), format_bytes(size_bytes)]
+        if task.rendered_html_run_id not in (None, summary.run_id):
+            sub_parts.append(f"from run {task.rendered_html_run_id}")
         cards.append(
-            NotebookCard(
+            PageCard(
                 task_key=task.task_key,
-                title=title or task.base_name,
+                title=task.label,
                 sub_line=" · ".join(sub_parts),
                 link_relpath=dest,
-                status_tone=status_tone,
+                status_tone=_STATUS_TONE.get(task.status, "warn"),
             )
         )
     return tuple(cards)

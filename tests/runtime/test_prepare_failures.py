@@ -1,7 +1,7 @@
 """A failure while a task is prepared is recorded as that task's failure.
 
-Preparation resolves a task's arguments, validates its inputs, runs a notebook
-or script body to hash its source, and materialises its environment. A failure
+Preparation resolves a task's arguments, validates its inputs, runs a script
+body to hash its source, and materialises its environment. A failure
 in any of those used to escape the scheduler without a ``TaskFailed``: the run
 summary said "0 failed", the task stayed ``pending`` in the record, and work
 already in flight was left ``running`` forever.
@@ -20,22 +20,6 @@ from ginkgo.runtime.task_validation import TaskValidator
 
 from tests.conftest import latest_run_view
 
-
-_MISSING_NOTEBOOK_WORKFLOW = """
-from ginkgo import flow, notebook, task
-
-@task()
-def prep() -> str:
-    return "x"
-
-@task(kind="notebook")
-def report(x: str):
-    return notebook("notebooks/missing.ipynb")
-
-@flow
-def main():
-    return report(x=prep())
-"""
 
 _NOT_A_FILE_WORKFLOW = """
 from ginkgo import file, flow, task
@@ -92,21 +76,6 @@ def _run(*, workflow: str, args: tuple[str, ...] = ()) -> tuple[int, dict, dict[
 def _combined(capsys: pytest.CaptureFixture[str]) -> str:
     captured = capsys.readouterr()
     return " ".join((captured.out + captured.err).split())
-
-
-def test_a_missing_notebook_source_fails_the_notebook_task(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    status, view, tasks = _run(workflow=_MISSING_NOTEBOOK_WORKFLOW)
-
-    assert status == 1
-    assert view["status"] == "failed"
-    assert tasks["report"]["status"] == "failed"
-    assert tasks["report"]["failure"]["kind"] == "missing_input"
-    assert "missing.ipynb" in tasks["report"]["failure"]["message"]
-    output = _combined(capsys)
-    assert "1 failed" in output
-    assert "Failure Details: report" in output
 
 
 def test_a_file_parameter_fed_a_non_file_fails_the_consuming_task(

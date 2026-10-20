@@ -1,7 +1,8 @@
 # Plugins
 
 Ginkgo's optional integrations — remote executors, object stores, FUSE
-drivers, secret backends, run notifications, extra CLI commands — are contributed through one
+drivers, secret backends, environments, task kinds, run notifications, extra
+CLI commands — are contributed through one
 plugin registry, `ginkgo/plugins/`. Core looks an implementation up by the
 key config or user code selects it with, and never names a concrete class.
 
@@ -66,7 +67,7 @@ The other errors are explicit:
   object stores and FUSE drivers `s3` → ginkgo-aws, `gs` → ginkgo-gcp and
   `oci` → ginkgo-oci, the bare-name environment and CLI command `env` →
   ginkgo-pixi, event subscriber `slack` → ginkgo-slack, CLI command `report` →
-  ginkgo-report), and lists any plugin that failed to load. The empty
+  ginkgo-report, task kind `notebook` → ginkgo-notebook), and lists any plugin that failed to load. The empty
   bare-name key reads as `(bare name)` in messages (`describe_key`).
 
 `use_plugin_registry(registry)` swaps the process's registry for a block, for
@@ -119,12 +120,23 @@ tests and embedders that need a known set of plugins.
   must return its own kind's directive, which runs on its own kind's runner, so
   capabilities are always checked against what actually runs; returning another
   kind's directive is an error naming the kind to use. Runners are built on first use from
-  a `RunnerContext` of evaluator services (backend, validator, the shared
-  `ShellRunner`, cache store, run directory, `annotate`, `notice`). A runner's
-  `replay_cached` re-applies anything it stored on `node.runner_extras`, which
-  the evaluator saves in the cache entry's `extra` as `runner_extras`.
+  a `RunnerContext` of evaluator services (the validator, the shared
+  `ShellRunner`, the run directory, `annotate`, and for sub-workflows the run
+  id and database). A runner handles no cache hits: anything it puts in
+  `node.runner_extras` while running, the evaluator saves in the cache entry's
+  `extra` as `runner_extras` and records against the task again on a hit.
   `runtime/task_kinds.task_kind(task_def)` is the one lookup every caller uses
-  (dispatch, validation, dry run, remote-input staging, `inspect`).
+  (dispatch, validation, dry run, remote-input staging, `inspect`). Without
+  ginkgo-notebook, a `@task("notebook")` fails at graph build naming the plugin
+  to install.
+
+  A runner may record a `rendered_html` annotation — a page for people to
+  read — with `rendered_html_run_id`, the run that rendered it. Core knows
+  nothing more about such pages: the run summary exposes both on
+  `TaskSummary`, the end-of-run CLI lists them as "Rendered pages", and
+  ginkgo-report links them. On a cache hit the replayed `runner_extras` point
+  the annotation at the producing run's page, so `rendered_html_run_id` names
+  that earlier run.
 - **Event subscribers.** `ginkgo run` builds each registered subscriber and
   attaches it to the store recorder's `on_committed` hook, not the bus, so it
   only sees events already in the ledger. A `[notifications.<name>]` table
@@ -157,8 +169,8 @@ load, exiting 1 if one did.
 
 ## First-party plugins
 
-Remote executors, object stores, FUSE drivers, Pixi environments, Slack
-notifications and HTML reports are not in core. They live in separate distributions in this repository, under
+Remote executors, object stores, FUSE drivers, Pixi environments, notebook
+tasks, Slack notifications and HTML reports are not in core. They live in separate distributions in this repository, under
 `plugins/`:
 
 | Distribution | Package | Entry point | Contributes | Depends on |
@@ -167,6 +179,7 @@ notifications and HTML reports are not in core. They live in separate distributi
 | `plugins/ginkgo-k8s` | `ginkgo_k8s` | `k8s = "ginkgo_k8s:PLUGIN"` | `ExecutorType` `k8s` (label `Kubernetes`, requires `image`) | `kubernetes` |
 | `plugins/ginkgo-gcp` | `ginkgo_gcp` | `gcp = "ginkgo_gcp:PLUGIN"` | `ObjectStoreType` `gs`, `MountDriverType` `gs` (gcsfuse), `ExecutorType` `batch` (label `GCP Batch`, requires `project`, `image`) | `gcsfs`, `google-auth`, `google-cloud-batch`, `google-cloud-logging` |
 | `plugins/ginkgo-oci` | `ginkgo_oci` | `oci = "ginkgo_oci:PLUGIN"` | `ObjectStoreType` `oci` (with its `oci://namespace/bucket/key` parser), `MountDriverType` `oci` (rclone) | `ocifs` |
+| `plugins/ginkgo-notebook` | `ginkgo_notebook` | `notebook = "ginkgo_notebook:PLUGIN"` | `TaskKind` `notebook` (marimo notebooks; driver mode, allows `env=`, not remote-capable, eager source hash) | `marimo` |
 | `plugins/ginkgo-pixi` | `ginkgo_pixi` | `pixi = "ginkgo_pixi:PLUGIN"` | `EnvironmentType` `pixi` (bare names, label `pixi`), `CliCommand` `env` | none (needs the `pixi` binary) |
 | `plugins/ginkgo-report` | `ginkgo_report` | `report = "ginkgo_report:PLUGIN"` | `CliCommand` `report` | `jinja2` |
 | `plugins/ginkgo-slack` | `ginkgo_slack` | `slack = "ginkgo_slack:PLUGIN"` | `EventSubscriberType` `slack` | none |
@@ -234,10 +247,12 @@ plugins.
 
 Value codecs are still wired directly.
 
-Two parts of the task-kind contract are still loose, and are to be tightened
-before a task kind moves out of core: a runner receives the evaluator's own
-`NodeRun` (typed `Any`), and `ShellRunner` is both the shared subprocess
-service in `RunnerContext` and the `shell` kind's runner.
+Two parts of the task-kind contract are still loose: a runner receives the
+evaluator's own `NodeRun` (typed `Any`), and `ShellRunner` is both the shared
+subprocess service in `RunnerContext` and the `shell` kind's runner.
+ginkgo-notebook is the first task kind outside core, and it relies on these
+`NodeRun` attributes: `task_def`, `node_id`, `resolved_args`,
+`execution_args` and `runner_extras`. Changing them breaks it.
 
 ## Failure classification
 

@@ -59,6 +59,7 @@ _FIRST_PARTY_PROVIDERS: dict[tuple[type, str], str] = {
     (MountDriverType, "oci"): "ginkgo-oci",
     (CliCommand, "report"): "ginkgo-report",
     (CliCommand, "env"): "ginkgo-pixi",
+    (TaskKind, "notebook"): "ginkgo-notebook",
     (EnvironmentType, ""): "ginkgo-pixi",
 }
 """Which first-party distribution provides a key core does not ship, for hints."""

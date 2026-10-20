@@ -33,9 +33,6 @@ if TYPE_CHECKING:
 class ScriptRunner(DriverTaskRunner):
     """Execute script driver tasks."""
 
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        """A script task records nothing beyond its result."""
-
     def run(self, *, node: Any, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None

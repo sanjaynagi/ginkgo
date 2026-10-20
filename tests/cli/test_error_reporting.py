@@ -173,9 +173,9 @@ class TestInterruptAndExit:
         def interrupt(*args, **kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr("ginkgo.cli.app.command_notebooks", interrupt)
+        monkeypatch.setattr("ginkgo.cli.app.command_plugins", interrupt)
 
-        status = main(["notebooks"])
+        status = main(["plugins"])
 
         captured = capsys.readouterr().err
         assert status == 130
@@ -187,10 +187,10 @@ class TestInterruptAndExit:
         def exit_now(*args, **kwargs):
             raise SystemExit(3)
 
-        monkeypatch.setattr("ginkgo.cli.app.command_notebooks", exit_now)
+        monkeypatch.setattr("ginkgo.cli.app.command_plugins", exit_now)
 
         with pytest.raises(SystemExit) as excinfo:
-            main(["notebooks"])
+            main(["plugins"])
 
         assert excinfo.value.code == 3
 

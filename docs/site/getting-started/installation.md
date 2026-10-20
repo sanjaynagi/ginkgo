@@ -29,6 +29,8 @@ plugins in this repository:
 - `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
 - `ginkgo-pixi`: Pixi environments for tasks' `env="name"`, and `ginkgo env`
 - `ginkgo-k8s`: the Kubernetes executor
+- `ginkgo-notebook`: `@task("notebook")`, which runs marimo notebooks (installs
+  `marimo`)
 - `ginkgo-report`: the `ginkgo report` command, for HTML run reports
 - `ginkgo-slack`: Slack run notifications
 
@@ -99,14 +101,11 @@ That installs the `ginkgo` console script defined in the project metadata.
 
 ## Optional Notebook Support
 
-Notebook tasks rely on optional dependencies:
-
-- `papermill` for `.ipynb` execution
-- `marimo` for marimo notebooks
-- `nbconvert` for HTML export
-
-If you are not using notebooks, you do not need those packages for basic
-workflow authoring or execution.
+Notebook tasks run marimo notebooks and come from the `ginkgo-notebook` plugin,
+which depends on `marimo`. The curl installer does not include it; install it
+alongside core as shown under [Plugins](#plugins), or use `ginkgo[all]`.
+Projects scaffolded by `ginkgo init` declare it in their `pixi.toml`. If you
+are not using notebooks, you do not need it.
 
 ## Verify The CLI
 

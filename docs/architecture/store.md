@@ -3,7 +3,7 @@
 Ginkgo keeps one SQLite database per workspace, at `.ginkgo/ginkgo.db`
 (`WorkspaceLayout.db`, relocated by `GINKGO_DB=<path>`). It holds the index:
 what ran, what it consumed and produced, which cache entries exist. Bytes — CAS
-blobs, cached `output.json`, logs, lockfiles, rendered notebooks — stay on disk.
+blobs, cached `output.json`, logs, lockfiles, rendered pages — stay on disk.
 
 The package is `ginkgo/store/`. `core/` must not import it; `runtime/` and
 `cli/` may.
@@ -139,7 +139,7 @@ provenance never degrades silently.
   run directories under `.ginkgo/runs/` is not that workspace, and gets a
   warning naming how many instead of the green line — the ledger was deleted,
   filtered out of a backup, or copied without `ginkgo.db`, while the logs and
-  notebooks of those runs are still on disk. It stays exit 0: nothing is
+  rendered pages of those runs are still on disk. It stays exit 0: nothing is
   corrupt, and no `db` subcommand can bring the ledger back. Each owner answers
   for its own half, in both directions:
   - the cache — an entry row whose `output.json` is gone, an entry whose
@@ -226,7 +226,7 @@ produce a row that disagrees with itself.
 
 A workspace with no database is opened with `query.open(missing_ok=True)` and
 reads an empty in-memory ledger rather than creating a file, so `why`,
-`notebooks` and a report all answer an empty workspace with their own empty
+`runs` and a report all answer an empty workspace with their own empty
 result (or, for `why`, its own not-found error) instead of a missing-file
 error.
 
@@ -272,10 +272,8 @@ something a third-party tool opens for itself:
 | `artifacts/blobs/*`, `artifacts/trees/<digest>.json` | The content-addressed store and its tree manifests. Bytes, named by their own digest — a recorded blob keeps its file extension after the digest. |
 | `staging/blobs/*`, `staging/folders/*` | Downloaded remote inputs. Bytes; `staging_entries` is their index. |
 | `runs/<id>/logs/*` | Task stdout and stderr, appended while a task runs and read as text. A log. |
-| `runs/<id>/notebooks/*.ipynb`, `*.html` | The executed notebook and its rendered page — the task's output, opened by a browser or Jupyter. Bytes. |
+| `runs/<id>/notebooks/*.html` | A notebook task's rendered page — often the task's output, opened by a browser. Bytes. |
 | `runs/<id>/envs/*.lock` | A copy of the lockfile a run resolved, kept so the environment can be rebuilt from the run directory alone. Bytes. |
 | `runs/<id>/manifest.yaml` | The `RunSummary` the ledger already holds, exported once at finalize for a person to read. Derived, and stated as such. |
-| `<task>.params.yaml` beside an executed notebook | Papermill's parameter file. Written for a third-party tool to read. |
-| `jupyter/` under the notebook runtime root | A Jupyter data directory: `share/jupyter/kernels/ginkgo-<digest>/kernel.json` and what belongs beside it. Every Jupyter subprocess discovers kernels by walking `jupyter_path()` on disk, so the directory layout *is* the interface; there is no way to hand a kernelspec over in memory. |
 | `refs/<artifact_id>.json` in a remote object store | The cross-machine wire format. A worker with no access to this workspace's database learns an artifact's shape from it. |
 | `.ginkgo-report.json` at the root of an exported report | The marker that says a directory is a ginkgo report, and so may have its contents replaced. It guards *deleting the user's files*, and an exported bundle is portable — copied to a webserver, moved, shared — so the evidence has to travel with the bytes it guards rather than living in a workspace database the bundle may no longer be anywhere near. A row keyed by path would go stale in the dangerous direction. |

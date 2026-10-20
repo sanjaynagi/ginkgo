@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ginkgo import expand, file, notebook, task
+from ginkgo import expand, file, task
+from ginkgo_notebook import notebook
 
 
 _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
@@ -13,7 +14,7 @@ _NOTEBOOKS_DIR = Path(__file__).resolve().parent.parent / "notebooks"
 
 @task("notebook")
 def render_overview_notebook(summary_path: file, run_label: str) -> file:
-    """Render an HTML overview notebook for the starter run.
+    """Render the starter run's overview marimo notebook to HTML.
 
     Parameters
     ----------
@@ -27,7 +28,7 @@ def render_overview_notebook(summary_path: file, run_label: str) -> file:
     file
         Rendered HTML notebook path.
     """
-    return notebook(_NOTEBOOKS_DIR / "overview.ipynb")
+    return notebook(_NOTEBOOKS_DIR / "overview.py")
 
 
 @task()

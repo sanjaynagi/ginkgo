@@ -9,7 +9,6 @@ from typing import Callable
 
 from ginkgo.cli.common import RunMode
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
-from ginkgo.runtime.task_runners.notebook import notebook_failure_headline
 
 
 @dataclass(kw_only=True)
@@ -64,8 +63,8 @@ class FailureDetails:
     def ran_in_cli_interpreter(self) -> bool:
         """Whether this task's body executed in the interpreter the CLI runs from.
 
-        Only a ``python`` task in the local environment does. A shell, script
-        or notebook body runs in a subprocess or a kernel of its own, so
+        Only a ``python`` task in the local environment does. Any other kind's
+        body runs in a subprocess of its own, so
         advice about *this* interpreter would not touch what failed there.
         """
         return self.task_kind == "python" and self.env_label == "local"
@@ -77,18 +76,13 @@ class FailureDetails:
         ``error`` is often the same multi-line traceback the log tail
         already renders in full — repeating it in the Reason row buries the
         one line that actually names the failure and doubles up on a long
-        traceback. This picks a concise headline instead: a notebook-aware
-        one when the error looks like a failed papermill execution, or,
-        more generally, the error's own final line whenever the rest of it
-        duplicates what the log tail already shows. A single-line error, or
-        one the log tail does not repeat, is returned unchanged.
+        traceback. This picks a concise headline instead: the error's own
+        final line whenever the rest of it duplicates what the log tail
+        already shows. A single-line error, or one the log tail does not
+        repeat, is returned unchanged.
         """
         if self.error is None:
             return None
-        if self.task_kind == "notebook":
-            headline = notebook_failure_headline(self.error)
-            if headline is not None:
-                return headline
         lines = [line.strip() for line in self.error.splitlines() if line.strip()]
         if len(lines) <= 1:
             return self.error
@@ -164,22 +158,10 @@ class ResourceRenderState:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CliNotebookSummary:
-    """Rendered notebook artifact produced in a run."""
+class CliRenderedPage:
+    """A page a task rendered in this run, such as a notebook's HTML."""
 
     task_label: str
     html_path: Path
-    render_status: str | None = None
-    render_error: str | None = None
     replayed_from_run_id: str | None = None
-    """Set when a cache hit reused an artifact an earlier run produced."""
-
-    @property
-    def render_failed(self) -> bool:
-        """Return True when the HTML export step failed for this notebook."""
-        return self.render_status == "failed"
-
-    @property
-    def replayed(self) -> bool:
-        """Return True when this run reused an earlier run's artifact."""
-        return self.replayed_from_run_id is not None
+    """Set when a cache hit points at a page an earlier run rendered."""

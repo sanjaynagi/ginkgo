@@ -10,7 +10,6 @@ good paths that stay quiet, and the two ways a missing import can be reported
 
 from __future__ import annotations
 
-import json
 from io import StringIO
 from pathlib import Path
 
@@ -61,27 +60,6 @@ def _workflow(*, imports: str = "") -> Path:
     return path
 
 
-def _notebook(*, code: str, markdown: str = "") -> Path:
-    """Write a notebook with one markdown cell and one code cell."""
-    path = Path("notebooks") / "overview.ipynb"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "cells": [
-                    {"cell_type": "markdown", "source": [markdown]},
-                    {"cell_type": "code", "source": [code]},
-                ],
-                "metadata": {},
-                "nbformat": 4,
-                "nbformat_minor": 5,
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 def _inside_project_env(monkeypatch: pytest.MonkeyPatch, *, manifest: Path) -> None:
     """Make the running interpreter look like *manifest*'s own Pixi environment."""
     monkeypatch.setenv("PIXI_PROJECT_MANIFEST", str(manifest.resolve()))
@@ -105,12 +83,6 @@ class TestImportScan:
         _workflow(imports="import json\nfrom modules import prep\nimport rich\n")
 
         assert workflow_import_roots(workflow_path=Path("workflow.py")) == ("ginkgo", "rich")
-
-    def test_notebook_code_cells_count_but_prose_does_not(self) -> None:
-        _workflow()
-        _notebook(code=f"import {ABSENT}\n", markdown=f"# an example\nimport {ABSENT}_prose\n")
-
-        assert workflow_import_roots(workflow_path=Path("workflow.py")) == ("ginkgo", ABSENT)
 
     def test_env_and_script_directories_are_left_out(self) -> None:
         """Those bodies run under a declared env, not in the CLI's interpreter."""
@@ -213,16 +185,6 @@ class TestImportsThatDoNotRun:
             f"from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import {ABSENT}\n",
             encoding="utf-8",
         )
-
-        assert (
-            detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())
-            is None
-        )
-
-    def test_a_markdown_notebook_cell_does_not_trip_the_scan(self) -> None:
-        _manifest()
-        _workflow()
-        _notebook(code="import json\n", markdown=f"Install it first:\n\nimport {ABSENT}\n")
 
         assert (
             detect_import_problem(workflow_path=Path("workflow.py"), project_root=Path.cwd())

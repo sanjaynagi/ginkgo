@@ -129,7 +129,7 @@ class TestTaskDecorator:
 
         assert consistent.kind == "shell"
 
-    @pytest.mark.parametrize("kind", ["notebook", "script"])
+    @pytest.mark.parametrize("kind", ["shell", "script"])
     def test_driver_kind_execution_mode_is_driver(self, kind: str) -> None:
         @task(kind)
         def run(x: str) -> str:

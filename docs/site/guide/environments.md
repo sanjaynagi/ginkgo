@@ -73,7 +73,8 @@ def fastq_stats(sample_id: str, fastq: file) -> file:
 
 Ginkgo resolves the environment, installs it if it is not installed yet, executes
 the shell payload inside it, and folds the environment lock identity into the
-cache key.
+cache key. A notebook task runs `python -m marimo` inside its environment, so
+that environment must provide `marimo`.
 
 ### How A Named Environment Is Resolved
 

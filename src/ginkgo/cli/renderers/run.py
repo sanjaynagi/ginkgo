@@ -37,7 +37,7 @@ from ginkgo.formatting import format_bytes, format_duration
 from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
     FailureDetails,
-    CliNotebookSummary,
+    CliRenderedPage,
     ResourceRenderState,
     CliRunSummary,
     SkipDetails,
@@ -506,35 +506,26 @@ class _RunLayoutRenderer:
             f"Procs {_format_count(current.get('process_count'))}"
         )
 
-    def render_notebooks(self, notebooks: list[CliNotebookSummary]) -> Text:
-        """Render this run's notebooks, separating fresh from replayed.
+    def render_pages(self, pages: list[CliRenderedPage]) -> Text:
+        """Render the pages this run's tasks rendered, noting any a cache hit reused.
 
-        A cache hit does not re-render, so its artifact and recorded render
-        status both belong to an earlier run. Those rows are still listed —
-        the artifact is what a reader will open — but they are counted apart
-        from the notebooks this run materialised, so a replayed export
-        failure does not read as a new one.
+        A cache hit does not re-render, so its page belongs to an earlier run.
+        It is still listed, since it is what a reader will open, but marked as
+        reused so it does not read as this run's work.
         """
         text = Text()
-        replayed = [nb for nb in notebooks if nb.replayed]
-        materialised = len(notebooks) - len(replayed)
-        failed_count = sum(1 for nb in notebooks if nb.render_failed and not nb.replayed)
-        text.append(f"\n📓 Notebooks materialised ({materialised})", style="bold")
+        replayed = [page for page in pages if page.replayed_from_run_id is not None]
+        text.append(f"\n📄 Rendered pages ({len(pages) - len(replayed)})", style="bold")
         if replayed:
-            source_count = len({nb.replayed_from_run_id for nb in replayed})
+            source_count = len({page.replayed_from_run_id for page in replayed})
             source = "an earlier run" if source_count == 1 else "earlier runs"
             text.append(f"  ↺ {len(replayed)} from {source}", style="bold #0f766e")
-        if failed_count:
-            text.append(f"  ⚠ {failed_count} HTML export failed", style="bold yellow")
         text.append("\n")
-        for nb in notebooks:
-            url = nb.html_path.as_uri()
-            text.append(f"  {nb.task_label}  ", style="bold #134e4a")
-            text.append(str(nb.html_path), style=f"link {url} #0f766e")
-            if nb.replayed_from_run_id is not None:
-                text.append(f"  ↺ from run {nb.replayed_from_run_id}", style="#0f766e")
-            if nb.render_failed:
-                text.append("  ⚠ HTML export failed", style="bold yellow")
+        for page in pages:
+            text.append(f"  {page.task_label}  ", style="bold #134e4a")
+            text.append(str(page.html_path), style=f"link {page.html_path.as_uri()} #0f766e")
+            if page.replayed_from_run_id is not None:
+                text.append(f"  ↺ from run {page.replayed_from_run_id}", style="#0f766e")
             text.append("\n")
         return text
 
@@ -888,7 +879,7 @@ class CliRunRenderer:
         resources: dict[str, object] | None = None,
         failure_details: list[FailureDetails] | None = None,
         skipped: list[SkipDetails] | None = None,
-        notebooks: list[CliNotebookSummary] | None = None,
+        pages: list[CliRenderedPage] | None = None,
         remote_summary: str | None = None,
         path_tracked_inputs: int = 0,
     ) -> None:
@@ -954,9 +945,9 @@ class CliRunRenderer:
         # its surviving branches produced, and its reader still wants the run
         # directory. A run a failure ended passes neither, and reports its
         # directory on stderr beside the traceback instead.
-        if success or notebooks is not None:
-            if notebooks:
-                self._console.print(self._layout.render_notebooks(notebooks))
+        if success or pages is not None:
+            if pages:
+                self._console.print(self._layout.render_pages(pages))
             self._console.print(f"Run directory: {self._summary.run_dir}", markup=False)
 
     def label_for_node(self, node_id: int) -> str | None:

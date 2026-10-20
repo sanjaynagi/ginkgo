@@ -8,7 +8,6 @@ metadata being installed.
 
 from __future__ import annotations
 
-from ginkgo.core.notebook import NotebookDirective
 from ginkgo.core.script import ScriptDirective
 from ginkgo.core.shell import ShellDirective
 from ginkgo.core.subworkflow import SubWorkflowDirective
@@ -20,7 +19,6 @@ from ginkgo.plugins.api import (
     TaskKind,
 )
 from ginkgo.runtime.environment.secrets import build_env_backends
-from ginkgo.runtime.task_runners.notebook import build_notebook_runner
 from ginkgo.runtime.task_runners.script import build_script_runner
 from ginkgo.runtime.task_runners.shell import build_shell_runner
 from ginkgo.runtime.task_runners.subworkflow import build_subworkflow_runner
@@ -64,16 +62,6 @@ BUILTIN = Plugin(
             remote_capable=False,
             eager_source_hash=True,
             runner=build_script_runner,
-        ),
-        TaskKind(
-            name="notebook",
-            directive=NotebookDirective,
-            call_form="notebook(...)",
-            execution_mode="driver",
-            allows_env=True,
-            remote_capable=False,
-            eager_source_hash=True,
-            runner=build_notebook_runner,
         ),
         TaskKind(
             name="subworkflow",

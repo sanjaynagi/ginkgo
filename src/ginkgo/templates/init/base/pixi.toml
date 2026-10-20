@@ -11,17 +11,20 @@ platforms = ["osx-arm64", "linux-64"]
 python = ">=3.11"
 numpy = ">=2.0"
 pandas = ">=2.0"
+marimo = ">=0.23"
 
 # This project tracks ginkgo's `main` branch. `pixi install` resolves that
 # branch to one commit and records it in `pixi.lock`, so the lock — not this
 # manifest — is what says which ginkgo the project runs. Commit `pixi.lock`.
-# `pixi update ginkgo ginkgo-pixi` moves to the current `main`; swap `branch`
-# for `rev` or `tag` on both entries to hold this project on a specific ginkgo
-# instead, since ginkgo-pixi pins the exact ginkgo version it ships with.
-# ginkgo-pixi runs the tasks that name a Pixi environment with `env=`.
+# `pixi update ginkgo ginkgo-pixi ginkgo-notebook` moves to the current `main`;
+# swap `branch` for `rev` or `tag` on every entry to hold this project on a
+# specific ginkgo instead, since the plugins pin the exact ginkgo version they
+# ship with. ginkgo-pixi runs the tasks that name a Pixi environment with
+# `env=`; ginkgo-notebook runs the marimo notebook task.
 [pypi-dependencies]
-ginkgo = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}", extras = ["notebooks"] }
+ginkgo = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}" }
 ginkgo-pixi = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}", subdirectory = "plugins/ginkgo-pixi" }
+ginkgo-notebook = { git = "{{ ginkgo_repo_url }}", branch = "{{ ginkgo_branch }}", subdirectory = "plugins/ginkgo-notebook" }
 
 [tasks]
 run = "ginkgo run"

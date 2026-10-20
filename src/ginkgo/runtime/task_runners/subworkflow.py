@@ -105,9 +105,6 @@ class SubworkflowRunner:
     python_executable: str = field(default_factory=lambda: sys.executable)
     max_depth: int = DEFAULT_MAX_CALL_DEPTH
 
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        """A cached sub-workflow ran no child, so there is no run id to record."""
-
     def run(
         self,
         *,

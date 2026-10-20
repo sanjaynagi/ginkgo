@@ -46,6 +46,7 @@ plugins in this repository:
 - `ginkgo-oci`: the `oci://` object store and the rclone FUSE driver
 - `ginkgo-pixi`: Pixi environments for tasks' `env="name"`, and `ginkgo env`
 - `ginkgo-k8s`: the Kubernetes executor
+- `ginkgo-notebook`: `@task("notebook")`, which runs marimo notebooks
 - `ginkgo-report`: the `ginkgo report` command, for HTML run reports
 - `ginkgo-slack`: Slack run notifications
 
@@ -118,14 +119,16 @@ pip install -e .
 ## Minimal Example
 
 A population-genetics workflow that filters a VCF, computes per-population
-allele frequencies, and renders a summary notebook.
+allele frequencies, and renders a summary marimo notebook (the notebook task
+needs the `ginkgo-notebook` plugin).
 
 ```python
 from pathlib import Path
 
 import numpy as np
 
-from ginkgo import file, flow, notebook, shell, task
+from ginkgo import file, flow, shell, task
+from ginkgo_notebook import notebook
 
 POPULATIONS = ["YRI", "CEU", "CHB"]
 NOTEBOOKS_DIR = Path(__file__).resolve().parent / "notebooks"
@@ -160,11 +163,11 @@ def allele_frequencies(vcf_path: file, population: str) -> file:
     return file(output)
 
 
-# notebook task — renders an HTML report from a Jupyter notebook
+# notebook task — runs a marimo notebook and renders it to HTML
 @task("notebook")
 def population_structure(af_files: list[file], populations: list[str]) -> file:
     """Render an HTML population-genetics summary notebook."""
-    return notebook(NOTEBOOKS_DIR / "population_structure.ipynb")
+    return notebook(NOTEBOOKS_DIR / "population_structure.py")
 
 
 # flow
@@ -224,7 +227,6 @@ so they run by path: `ginkgo run tests/workflows/smoke.py`. See the
 - `ginkgo export` (`export events`, `export manifest`)
 - `ginkgo report` (from the `ginkgo-report` plugin)
 - `ginkgo why`
-- `ginkgo notebooks`
 - `ginkgo secrets` (`secrets list`, `secrets validate`)
 - `ginkgo cache ls`
 - `ginkgo cache clear`

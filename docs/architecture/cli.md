@@ -28,7 +28,6 @@ The current CLI supports:
 - `ginkgo db vacuum`
 - `ginkgo db path`
 - `ginkgo report` (from the `ginkgo-report` plugin)
-- `ginkgo notebooks`
 
 Implemented CLI features include the dry-run execution-plan preview, merged
 config overrides, human-readable run summaries, structured inspection and
@@ -289,8 +288,8 @@ of lines. Failures the policy let pass are diagnosed under their own heading,
 apart from the one that would otherwise have stopped the run, and are panelled
 up to a cap of ten with the rest counted — except the failure carrying the
 environment hint, which keeps its panel wherever it falls in that list. A run
-that ends this way still lists the notebooks its surviving branches
-produced: only the summary line differs from a success.
+that ends this way still lists the pages its surviving branches
+rendered: only the summary line differs from a success.
 `ginkgo doctor` reports the same user-code location under each diagnostic.
 
 Run-time failure diagnostics classify each task failure into one of a small

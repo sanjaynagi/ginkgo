@@ -133,19 +133,18 @@ def serialize_cli_argument_value(
     label: str = "A task argument",
     task_kind: str | None = None,
 ) -> Any:
-    """Convert one resolved task argument into a YAML/JSON-safe value.
+    """Convert one resolved task argument into a JSON-safe value.
 
-    Shared by the two driver task kinds that forward resolved arguments to an
-    external process: a script task renders each one as a CLI option, a
-    notebook task writes them to a parameter file. A shell task never reaches
+    Shared by the task kinds that forward resolved arguments to an external
+    process as command-line options, such as script and notebook tasks. A
+    shell task never reaches
     here — its body is Python and runs before the command is built, so it can
     legitimately take a live payload and write the format its command expects.
 
-    A CLI argument and a parameter file carry text rather than Python objects.
-    A live Python payload — a DataFrame handed to a parameter annotated
-    ``object``, say — has no text form, so it is refused by name rather than
-    falling through to ``json.dumps`` or ``yaml.safe_dump``
-    and naming only its type. ``label`` names the parameter in that refusal,
+    A command-line argument carries text rather than a Python object. A live
+    Python payload — a DataFrame handed to a parameter annotated ``object``,
+    say — has no text form, so it is refused by name rather than falling
+    through to ``json.dumps`` and naming only its type. ``label`` names the parameter in that refusal,
     e.g. ``"summarise.scores"``; nested values extend it with their index or
     key, so a payload inside a list reports ``summarise.scores[1]``.
     """
@@ -163,7 +162,7 @@ def serialize_cli_argument_value(
             for index, item in enumerate(value)
         ]
     if isinstance(value, dict):
-        # A JSON object or YAML mapping keys by text, so keys stringify rather
+        # A JSON object keys by text, so keys stringify rather
         # than serialize: only the values can carry a payload worth refusing.
         return {
             str(key): serialize_cli_argument_value(
@@ -176,8 +175,8 @@ def serialize_cli_argument_value(
     carrier = f"a `{task_kind}` task" if task_kind is not None else "a script or notebook task"
     raise TypeError(
         f"{label} is a {received}. The arguments of {carrier} cross to another "
-        "process as CLI options and parameter-file entries, which carry text rather "
-        "than Python objects. Write the payload to a file in a separate `python` task "
+        "process as command-line options, which carry text rather than Python "
+        "objects. Write the payload to a file in a separate `python` task "
         "and pass that path, or keep the payload out "
         f"of another process by making this task a `python` one. {STAGING_TASK_GUIDANCE}"
     )
@@ -219,9 +218,7 @@ def render_cli_tokens(
     """Render one resolved task argument as shell-quoted ``--option`` tokens.
 
     Used by the script runner, where each resolved argument becomes one or
-    more literal command-line tokens (unlike a notebook's parameter file,
-    which keeps real JSON/YAML values via :func:`serialize_cli_argument_value`
-    directly). The rendering follows the conventional argparse idioms so a
+    more literal command-line tokens. The rendering follows the conventional argparse idioms so a
     script's own parser can declare the matching option:
 
     - A ``list``/``tuple`` whose items are all scalars or paths (str, int,
@@ -266,22 +263,18 @@ def render_repeated_cli_tokens(
     label: str = "A task argument",
     task_kind: str | None = None,
 ) -> list[str]:
-    """Render one resolved task argument for a marimo notebook's command line.
+    """Render one resolved task argument as a repeated command-line option.
 
-    A marimo notebook runs as ``python notebook.py --name value ...`` and reads
-    its arguments with ``mo.cli_args()``, which joins the space-separated
-    tokens after an option into one string but collects a *repeated* option
-    into a list. So a ``list``/``tuple`` whose items are all scalars or paths
-    renders as the option repeated once per item (``--clusters a.tsv
-    --clusters b.tsv``), which ``mo.cli_args().get_all("clusters")`` reads
-    back as a list — and argparse as ``action="append"``. An empty list omits
-    the option, which ``get_all`` reads back as ``[]``. A list holding
-    anything else keeps the single-token JSON rendering.
+    For readers that collect a *repeated* option into a list, such as
+    argparse's ``action="append"`` or marimo's ``mo.cli_args().get_all``: a
+    ``list``/``tuple`` whose items are all scalars or paths renders as the
+    option repeated once per item (``--clusters a.tsv --clusters b.tsv``), and
+    an empty list omits the option. A list holding anything else keeps the
+    single-token JSON rendering.
 
     Every other value, ``bool`` included, keeps the single-token rendering
-    :func:`stringify_cli_argument` gives it: ``mo.cli_args()`` converts
-    ``--flag true``/``--flag false`` into a real boolean, while a bare
-    ``--flag`` would come back as an empty string.
+    :func:`stringify_cli_argument` gives it: ``--flag true``/``--flag false``,
+    which such readers convert to a boolean, rather than a bare ``--flag``.
 
     Returns
     -------
@@ -879,9 +872,6 @@ class ShellRunner:
         return self.backend.exec_failure_hint(
             env=node.task_def.env, exit_code=exit_code, output=output
         )
-
-    def replay_cached(self, *, node: Any, cache_key: str) -> None:
-        """A shell task records nothing beyond its result."""
 
     def run(self, *, node: Any, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""

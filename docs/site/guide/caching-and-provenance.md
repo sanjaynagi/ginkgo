@@ -301,7 +301,7 @@ run`, `ginkgo debug` and `ginkgo report` read. All three work on a run that is
 still going.
 
 Each run also gets a directory under `.ginkgo/runs/<run_id>/` holding the bytes
-— per-task logs, notebook artifacts, copies of the environment lock files, and
+— per-task logs, rendered notebook pages, copies of the environment lock files, and
 a `manifest.yaml` snapshot of everything the database recorded for the run.
 
 Together, the cache and the ledger answer different questions:

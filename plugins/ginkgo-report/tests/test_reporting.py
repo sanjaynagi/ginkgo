@@ -225,14 +225,8 @@ def _make_run(
     return run
 
 
-def _make_notebook_run(
-    *,
-    tmp_path: Path,
-    run_id: str,
-    render_status: str = "ok",
-    render_error: str | None = None,
-) -> _Run:
-    """Build a terminal run whose single task rendered a notebook."""
+def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
+    """Build a terminal run whose single task rendered a page."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo\n", encoding="utf-8")
@@ -255,20 +249,13 @@ def _make_notebook_run(
     )
     html_path = ledger.path / "notebooks" / "report.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text("<html>HTML export failed</html>", encoding="utf-8")
+    html_path.write_text("<html>rendered</html>", encoding="utf-8")
     ledger.bus.emit(
         TaskAnnotated(
             run_id=run_id,
             task_id="task_0000",
             task_name="demo.report",
-            fields={
-                "task_type": "notebook",
-                "notebook_kind": "marimo",
-                "notebook_path": str(tmp_path / "report.py"),
-                "render_status": render_status,
-                "render_error": render_error,
-                "rendered_html": "notebooks/report.html",
-            },
+            fields={"rendered_html": "notebooks/report.html", "rendered_html_run_id": run_id},
         )
     )
     ledger.bus.emit(
@@ -484,7 +471,7 @@ class TestReportData:
             ("05", "failure"),
             ("06", "env"),
         ]
-        # Results holds only notebooks, so a run without one drops the group.
+        # Results holds only rendered pages, so a run without one drops the group.
         assert [group.label for group in clean.section_groups] == ["Execution", "Appendix"]
 
     def test_section_lookup_rejects_an_unrendered_anchor(self, tmp_path: Path) -> None:
@@ -492,8 +479,8 @@ class TestReportData:
             summary=_make_run(tmp_path=tmp_path, run_id="run-ok", fail=False).summary()
         )
         assert report.section("tasks").title == "Tasks"
-        with pytest.raises(KeyError, match="notebooks"):
-            report.section("notebooks")
+        with pytest.raises(KeyError, match="pages"):
+            report.section("pages")
 
     def test_failed_run_produces_failure_card(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
@@ -508,20 +495,15 @@ class TestReportData:
         assert card.log_tail is not None
         assert card.log_tail.total_lines > 0
 
-    def test_notebook_render_failure_card_is_flagged(self, tmp_path: Path) -> None:
-        run = _make_notebook_run(
-            tmp_path=tmp_path,
-            run_id="run-notebook-failed",
-            render_status="failed",
-            render_error="render blew up",
-        )
+    def test_a_rendered_page_gets_a_card_titled_by_its_task(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-page")
 
         report = build_report_data(summary=run.summary())
 
-        assert len(report.notebooks) == 1
-        card = report.notebooks[0]
-        assert card.status_tone == "warn"
-        assert "HTML export failed" in card.sub_line
+        (card,) = report.pages
+        assert card.title == "report"
+        assert card.status_tone == "ok"
+        assert "from run" not in card.sub_line
 
     def test_graph_layout_places_all_tasks(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-graph", fail=False)
@@ -606,7 +588,7 @@ class TestExport:
                     run_id=ledger.run_id,
                     task_id=task_id,
                     task_name="demo.report",
-                    fields={"task_type": "notebook", "rendered_html": f"notebooks/{task_id}.html"},
+                    fields={"rendered_html": f"notebooks/{task_id}.html"},
                 )
             )
             ledger.bus.emit(
@@ -620,7 +602,7 @@ class TestExport:
         export_report(summary=run.summary(), out_dir=out_dir)
         report = build_report_data(summary=run.summary())
 
-        copies = [out_dir / card.link_relpath for card in report.notebooks]
+        copies = [out_dir / card.link_relpath for card in report.pages]
         assert [path.read_text(encoding="utf-8") for path in copies] == [
             "<html>north</html>",
             "<html>south</html>",
@@ -681,7 +663,7 @@ class TestExport:
         assert "data:font/woff2;base64," in html
 
     def test_rendered_section_numerals_are_contiguous(self, tmp_path: Path) -> None:
-        # A run with no failures and no notebooks renders five sections; the
+        # A run with no failures and no rendered pages renders five sections; the
         # numerals must run 01..05 with no hole where an omitted section sat.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
@@ -709,12 +691,12 @@ class TestExport:
         ]
         assert '<span class="num">05</span>Failure' in html
 
-    def test_notebook_section_renders_when_the_run_produced_one(self, tmp_path: Path) -> None:
-        run = _make_notebook_run(tmp_path=tmp_path, run_id="run-nb")
+    def test_the_pages_section_renders_when_the_run_produced_one(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
         result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
-        assert '<span class="num">05</span>Notebooks' in html
+        assert '<span class="num">05</span>Rendered pages' in html
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
             "01",
             "02",

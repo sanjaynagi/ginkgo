@@ -301,8 +301,9 @@ class TaskDef:
     def cache_source_hash(self) -> str:
         """Digest used for cache invalidation.
 
-        For notebook and script tasks, the source file hash is incorporated
-        at execution time via the ``NotebookDirective``/``ScriptDirective``.
+        For a kind with ``eager_source_hash`` (script tasks, and notebook
+        tasks from ginkgo-notebook), the source file's hash is incorporated at
+        execution time through the directive's ``source_hash``.
         """
         return self._source_hash
 
