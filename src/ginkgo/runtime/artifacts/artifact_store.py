@@ -789,39 +789,72 @@ class LocalArtifactStore:
             One line per problem; empty when the store is intact.
         """
         problems: list[str] = []
-        known: set[Path] = set()
         for artifact_id in self.list_artifact_ids():
             record = self._index.artifact(artifact_id)
             path = self.artifact_path(artifact_id=artifact_id)
-            known.add(path)
             if not path.exists():
                 problems.append(f"artifact {artifact_id} has a row but no bytes")
                 continue
-            if record is None:
+            if record is None or not verify:
                 continue
             if record.kind == "blob":
-                if verify and hash_file(path) != record.digest_hex:
+                if hash_file(path) != record.digest_hex:
                     problems.append(f"artifact {artifact_id}: bytes do not match its digest")
                 continue
-            tree = self._load_tree_ref(record=record)
-            for entry in tree.entries:
+            for entry in self._load_tree_ref(record=record).entries:
                 member = self._blobs_dir / entry.blob_digest
-                known.add(member)
-                if verify and member.exists() and hash_file(member) != entry.blob_digest:
+                if member.exists() and hash_file(member) != entry.blob_digest:
                     problems.append(
                         f"artifact {artifact_id}: member {entry.relative_path} "
                         "does not match its digest"
                     )
 
-        for directory in (self._blobs_dir, self._trees_dir):
-            if not directory.is_dir():
-                continue
-            problems += [
-                f"artifact file {directory.name}/{entry.name} has no row (orphan)"
-                for entry in sorted(directory.iterdir())
-                if entry.is_file() and entry not in known
-            ]
+        problems += [
+            f"artifact file {path.parent.name}/{path.name} has no row (orphan)"
+            for path in self._orphan_files()
+        ]
         return problems
+
+    def remove_orphan_files(self) -> int:
+        """Delete the stored files no row reaches, returning the bytes freed.
+
+        Deleting a tree's row and manifest leaves its member blobs behind,
+        since another tree may share them; this is what collects the ones
+        nothing reaches any more.
+
+        Returns
+        -------
+        int
+            Bytes the deleted files occupied.
+        """
+        freed = 0
+        for path in self._orphan_files():
+            freed += path.stat().st_size
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            path.unlink()
+        return freed
+
+    def _orphan_files(self) -> list[Path]:
+        """Return the files in ``blobs/`` and ``trees/`` that no row reaches.
+
+        A tree's member blobs are reachable through its manifest rather than
+        through a row of their own, so they count as reached.
+        """
+        known: set[Path] = set()
+        for artifact_id in self.list_artifact_ids():
+            record = self._index.artifact(artifact_id)
+            path = self.artifact_path(artifact_id=artifact_id)
+            known.add(path)
+            if record is not None and record.kind == "tree" and path.exists():
+                tree = self._load_tree_ref(record=record)
+                known.update(self._blobs_dir / entry.blob_digest for entry in tree.entries)
+        return [
+            entry
+            for directory in (self._blobs_dir, self._trees_dir)
+            if directory.is_dir()
+            for entry in sorted(directory.iterdir())
+            if entry.is_file() and entry not in known
+        ]
 
     def materialized_artifact_id(self, *, path: Path) -> str | None:
         """Return the artifact *path* holds, if it still has the recorded stat.

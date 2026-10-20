@@ -428,6 +428,12 @@ entries there are, how much they take, how often they are hit, and how much is
 held by entries nothing has ever reused. They read the database read-only, so
 they answer while a run is in progress.
 
+An entry's size is its stored return value plus the files and folders it
+restores, which live in the artifact store. An artifact two entries share
+counts toward both, so the per-entry sizes can add up to more than the store
+holds; `cache stats` also reports the artifact store's own size, each byte
+counted once.
+
 ## Bounding Cache Size
 
 `ginkgo cache prune` supports three eviction policies, which can be combined
@@ -452,9 +458,11 @@ ginkgo cache prune --max-size 5GB --least-recently-hit
 
 Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
 the entries with the oldest last hit first — an old entry that hits on every run
-is worth more than a young one nothing has touched. Orphaned artifacts are
-garbage-collected at the end of the operation. Use `--dry-run` to preview what
-would be removed.
+is worth more than a young one nothing has touched. `--max-size` counts each
+entry's artifacts as well as its return value. Artifacts no remaining entry
+names are garbage-collected at the end of the operation, and the bytes
+reported as freed are the ones actually deleted: an artifact a surviving entry
+still names stays. Use `--dry-run` to preview what would be removed.
 
 ## Partial Resume
 

@@ -231,6 +231,20 @@ class SqlResult:
         }
 
 
+_ENTRY_ARTIFACT_BYTES = (
+    "coalesce((SELECT sum(a.size) FROM artifacts a WHERE a.artifact_id IN ("
+    "  SELECT ca.artifact_id FROM cache_artifacts ca WHERE ca.cache_key = c.cache_key)"
+    "  AND coalesce(a.storage_backend, 'local') = 'local'), 0)"
+)
+"""SQL for the local artifact bytes one cache entry ``c`` names, each counted once."""
+
+_SIZED_ENTRIES = (
+    "WITH sized AS (SELECT c.function, c.hit_count, "
+    f"coalesce(c.size_bytes, 0) + {_ENTRY_ARTIFACT_BYTES} AS bytes FROM cache_entries c)"
+)
+"""A ``sized`` CTE: every cache entry with the bytes it accounts for."""
+
+
 @dataclass(frozen=True, kw_only=True)
 class CacheEntryRow:
     """One cache entry, as the cache commands display it.
@@ -241,8 +255,11 @@ class CacheEntryRow:
         The entry's content-addressed key.
     function : str
         Qualified name of the task that wrote it, as the ledger records it.
-    size_bytes : int
-        Bytes the entry's stored output occupies.
+    output_bytes : int
+        Bytes the entry's own stored output occupies.
+    artifact_bytes : int
+        Bytes of the local artifacts the entry names: the files and folders
+        it restores. An artifact two entries share counts toward both.
     created_at, last_hit_at : str | None
         ISO-8601 UTC timestamps; ``last_hit_at`` is ``None`` until a run hits it.
     hit_count : int
@@ -254,11 +271,17 @@ class CacheEntryRow:
 
     cache_key: str
     function: str
-    size_bytes: int
+    output_bytes: int
+    artifact_bytes: int
     created_at: str | None
     hit_count: int
     last_hit_at: str | None
     display_label: str | None
+
+    @property
+    def size_bytes(self) -> int:
+        """Bytes the entry accounts for: its output and the artifacts it names."""
+        return self.output_bytes + self.artifact_bytes
 
     def to_payload(self) -> dict[str, Any]:
         """Return the entry as ``ginkgo cache ls --json`` prints it."""
@@ -268,6 +291,8 @@ class CacheEntryRow:
             "qualified_name": self.function,
             "display_label": self.display_label,
             "size_bytes": self.size_bytes,
+            "output_bytes": self.output_bytes,
+            "artifact_bytes": self.artifact_bytes,
             "created_at": self.created_at,
             "hit_count": self.hit_count,
             "last_hit_at": self.last_hit_at,
@@ -283,12 +308,11 @@ class CacheStats:
     entries : int
         Entries in the index.
     total_bytes : int
-        Bytes across all of them.
+        Bytes across all of them, each entry counting its output and the
+        artifacts it names (see :attr:`CacheEntryRow.size_bytes`).
     artifact_bytes : int
-        Bytes in the local artifact store, which the entries point into and
-        which holds more than they do: bytes no entry names count here too.
-        Reported apart from ``total_bytes`` because pruning entries does not
-        bound it.
+        Bytes in the local artifact store, counted once each, including
+        bytes no entry names.
     never_hit : int
         Entries no run has ever served from.
     never_hit_bytes : int
@@ -662,7 +686,7 @@ class Query:
         # from the newest task the ledger recorded with the same key.
         rows = self._store.query(
             "SELECT c.cache_key, c.function, c.size_bytes, c.created_at, c.hit_count, "
-            "c.last_hit_at, ("
+            f"c.last_hit_at, {_ENTRY_ARTIFACT_BYTES} AS artifact_bytes, ("
             "  SELECT t.display_label FROM tasks t JOIN runs r ON r.run_id = t.run_id "
             "  WHERE t.cache_key = c.cache_key ORDER BY r.started_at DESC LIMIT 1"
             ") AS display_label "
@@ -673,7 +697,8 @@ class Query:
             CacheEntryRow(
                 cache_key=str(row["cache_key"]),
                 function=str(row["function"]),
-                size_bytes=int(row["size_bytes"] or 0),
+                output_bytes=int(row["size_bytes"] or 0),
+                artifact_bytes=int(row["artifact_bytes"]),
                 created_at=row["created_at"],
                 hit_count=int(row["hit_count"] or 0),
                 last_hit_at=row["last_hit_at"],
@@ -700,18 +725,20 @@ class Query:
     def cache_stats(self) -> CacheStats:
         """Return entry counts, bytes and hit statistics for the whole cache."""
         totals = self._store.query(
-            "SELECT count(*) AS entries, coalesce(sum(size_bytes), 0) AS total_bytes, "
+            f"{_SIZED_ENTRIES} SELECT count(*) AS entries, "  # noqa: S608
+            "coalesce(sum(bytes), 0) AS total_bytes, "
             "coalesce(sum(hit_count = 0), 0) AS never_hit, "
-            "coalesce(sum(CASE WHEN hit_count = 0 THEN size_bytes ELSE 0 END), 0) "
-            "AS never_hit_bytes FROM cache_entries"
+            "coalesce(sum(CASE WHEN hit_count = 0 THEN bytes ELSE 0 END), 0) "
+            "AS never_hit_bytes FROM sized"
         )[0]
         histogram = self._store.query(
             "SELECT hit_count, count(*) AS n FROM cache_entries GROUP BY hit_count "
             "ORDER BY hit_count"
         )
         functions = self._store.query(
-            "SELECT function, count(*) AS n, coalesce(sum(size_bytes), 0) AS bytes "
-            "FROM cache_entries GROUP BY function ORDER BY bytes DESC, function LIMIT 10"
+            f"{_SIZED_ENTRIES} SELECT function, count(*) AS n, "  # noqa: S608
+            "coalesce(sum(bytes), 0) AS bytes "
+            "FROM sized GROUP BY function ORDER BY bytes DESC, function LIMIT 10"
         )
         artifacts = self._store.query(
             "SELECT coalesce(sum(size), 0) AS artifact_bytes FROM artifacts "
