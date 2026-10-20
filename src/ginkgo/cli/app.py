@@ -434,6 +434,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Skip content hashing; use stat-based checks only (faster warm runs)",
     )
     run_parser.add_argument(
+        "--rerun",
+        action="append",
+        default=[],
+        metavar="TASK",
+        help=(
+            "Run this task again rather than use its cached result (repeatable): its "
+            "name, or a fan-out display label. Tasks downstream re-run only if its "
+            "result changes."
+        ),
+    )
+    run_parser.add_argument(
         "--keep-going",
         action="store_true",
         help="Continue dispatching after task failures; every task is treated as on_failure='ignore'",
@@ -467,6 +478,18 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     stats_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     clear_parser = cache_subparsers.add_parser("clear", help="Clear cache entries")
     clear_parser.add_argument("cache_key", nargs="?")
+    clear_parser.add_argument(
+        "--task",
+        default=None,
+        metavar="NAME",
+        help="Remove every entry written by this task: its name, or a fan-out display label.",
+    )
+    clear_parser.add_argument(
+        "--all",
+        dest="clear_all",
+        action="store_true",
+        help="Remove every cache entry, and any cache directory the database has no entry for.",
+    )
     clear_parser.add_argument(
         "--orphans",
         action="store_true",
