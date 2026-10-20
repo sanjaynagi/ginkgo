@@ -39,6 +39,7 @@ ginkgo/
 │   ├── evaluator.py      # ConcurrentEvaluator scheduler/lifecycle loop
 │   ├── graph.py          # TaskGraph: registration, labels, inferred edges, validation
 │   ├── placement.py      # Placement: effective resources and executor placement
+│   ├── advisories.py     # advisory TaskNotice text: untracked dirs, str writes, FUSE fallback
 │   ├── executors.py      # the evaluator's heterogeneous executor pool
 │   ├── scheduler.py
 │   ├── worker.py

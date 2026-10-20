@@ -266,9 +266,10 @@ cache hit — the stale-result failure in issue #121.
 Ginkgo cannot silently promote those boundaries to content hashing: `str` is
 also the legitimate way to pass a path deliberately left untracked (a log, a
 scratch location, an append-only sink). Instead the evaluator warns.
-`ConcurrentEvaluator._warn_on_untracked_path_inputs` runs in `_prepare_node`,
-before the cache-hit branch, and emits a `TaskNotice` when all of the following
-hold:
+`untracked_directory_notices` (`runtime/advisories.py`) runs when the evaluator
+prepares a node, before the cache-hit branch, and the evaluator emits a
+`TaskNotice` for each notice it returns. It returns one when all of the
+following hold:
 
 - the argument was resolved from an upstream `Expr` / `OutputIndex` / `ExprList`
   in this graph, so a producer in the same run can rewrite it;
