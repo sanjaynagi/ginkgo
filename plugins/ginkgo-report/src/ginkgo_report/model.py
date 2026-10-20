@@ -235,6 +235,8 @@ class ReportData:
     # Sections
     section_groups: tuple[ReportSectionGroup, ...]
     summary_cards: tuple[StatCard, ...]
+    notices: tuple[str, ...]
+    """Run-level problems the run recorded, such as an undelivered notification."""
     params: Mapping[str, Any]
     graph: Graph
     tasks: tuple[TaskRow, ...]
@@ -427,6 +429,7 @@ def build_report_data(
             has_pages=len(pages) > 0,
         ),
         summary_cards=summary_cards,
+        notices=summary.notices,
         params=summary.params,
         graph=graph,
         tasks=tasks,

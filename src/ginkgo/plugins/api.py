@@ -235,7 +235,9 @@ class EventSubscriberContext:
     workflow_path : Path
         The workflow file being run.
     warn : Callable[[str], None]
-        Report a non-fatal problem to the user.
+        Report a non-fatal problem to the user. The message is also recorded
+        with the run as a notice, which ``ginkgo runs show`` and reports
+        display, so it may be called from ``close`` after the run has ended.
     """
 
     config: Mapping[str, Any] | None

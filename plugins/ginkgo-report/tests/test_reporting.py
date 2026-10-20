@@ -30,7 +30,7 @@ from ginkgo.runtime.events import (
     TaskStarted,
 )
 
-from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted
+from ginkgo.runtime.events import EventBus, RunCompleted, RunNotice, RunStarted
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -412,6 +412,16 @@ class TestReportData:
 
         assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
         assert [card.attempts_label for card in report.failures] == ["3 / 3"]
+
+    def test_a_run_notice_is_shown_in_the_summary(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.ledger.bus.emit(RunNotice(run_id="run-ok", message="Slack notification failed"))
+
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
+
+        assert "<li>Slack notification failed</li>" in result.index_path.read_text(
+            encoding="utf-8"
+        )
 
     def test_the_run_status_uses_the_cli_vocabulary(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)

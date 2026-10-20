@@ -97,6 +97,8 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
             rich_console.print(f"Ended by: [yellow]{summary.error}[/]")
         else:
             rich_console.print(f"Error: [red]{summary.error}[/]")
+    for notice in summary.notices:
+        rich_console.print(Text(f"Notice: {notice}", style="yellow"))
 
     if not summary.tasks:
         rich_console.print("\n[dim]This run recorded no tasks.[/]")

@@ -26,6 +26,7 @@ from ginkgo.runtime.events import (
     GraphNodeRegistered,
     PhaseTimed,
     RunCompleted,
+    RunNotice,
     RunResourcesSampled,
     RunStarted,
     RunValidated,
@@ -169,6 +170,7 @@ def _events() -> list[GinkgoEvent]:
         RunValidated(**RUN, task_count=4, edge_count=3, env_count=1),
         PhaseTimed(**RUN, task_id="task_0007", phase="cache_lookup", seconds=0.125),
         RunResourcesSampled(**RUN, resources={"cpu_percent": 42.0, "rss_bytes": 1048576}),
+        RunNotice(**RUN, message="Slack notification failed: connection refused"),
         RunCompleted(
             **RUN,
             status="success",

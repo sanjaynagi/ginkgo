@@ -9,3 +9,10 @@
   </div>
   {% endfor %}
 </div>
+{% if report.notices %}
+<ul class="notices">
+  {% for notice in report.notices %}
+  <li>{{ notice }}</li>
+  {% endfor %}
+</ul>
+{% endif %}

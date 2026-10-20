@@ -247,3 +247,7 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd(), env=dict(os.environ))
         assert result.returncode == 0, result.stderr
         assert "Slack notification failed:" in result.stderr
+
+        # The failure is kept with the run, not only printed while it ran.
+        shown = _run_cli("runs", "show", cwd=Path.cwd(), env=dict(os.environ))
+        assert "Notice: Slack notification failed:" in shown.stdout

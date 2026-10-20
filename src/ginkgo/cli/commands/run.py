@@ -75,6 +75,7 @@ from ginkgo.runtime.events import (
     EventBus,
     PhaseTimed,
     RunCompleted,
+    RunNotice,
     RunResourcesSampled,
     RunStarted,
     RunValidated,
@@ -560,6 +561,13 @@ def run_workflow(
         sink=lambda resources: bus.emit(RunResourcesSampled(run_id=run_id, resources=resources)),
     )
     warning_console = console(sys.stderr)
+
+    def warn(message: str) -> None:
+        # Kept with the run as well as printed: a notification that was not
+        # sent is otherwise invisible to anyone reading the run back later.
+        warning_console.print(f"[yellow]⚠[/] {escape(message)}")
+        bus.emit(RunNotice(run_id=run_id, message=message))
+
     with ExitStack() as stack:
         stack.callback(recorder.close)
         # Stopped before the recorder closes: stopping emits a final sample.
@@ -572,7 +580,7 @@ def run_workflow(
             run_id=run_id,
             run_dir=run_dir.path,
             workflow_path=workflow_path,
-            warn=lambda message: warning_console.print(f"[yellow]⚠[/] {escape(message)}"),
+            warn=warn,
         )
         _warn_unserved_notifications(config=runtime_params, warn=subscriber_context.warn)
         for subscriber_type in plugin_registry().all(EventSubscriberType):
