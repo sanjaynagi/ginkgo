@@ -482,6 +482,10 @@ class TaskKind:
         key.
     exit_code_retries : bool
         Whether ``retry_on_exit_codes`` applies.
+    user_built_command : bool
+        Whether the body formats its own command line (``shell(cmd=...)``),
+        which ginkgo cannot quote. The kind's ``file``, ``folder`` and
+        ``Out[...]`` paths must then not contain spaces.
     runner : Callable[[RunnerContext], TaskRunner] | None
         Build the runner for a run. ``None`` exactly when ``directive`` is.
 
@@ -502,6 +506,7 @@ class TaskKind:
     remote_capable: bool
     eager_source_hash: bool = False
     exit_code_retries: bool = False
+    user_built_command: bool = False
     runner: Callable[[RunnerContext], TaskRunner] | None = None
 
     def __post_init__(self) -> None:

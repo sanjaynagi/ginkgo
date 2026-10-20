@@ -13,12 +13,17 @@ def summarize(input_path: file, output_path: Out[file]) -> file:
 Use shell tasks when the real unit of work is a command with declared outputs:
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 @task(kind="shell")
 def normalize(input_path: file, output_path: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {input_path} > {output_path}")
+    return shell(cmd=f"tr a-z A-Z < {quote(input_path)} > {quote(output_path)}")
 ```
+
+Quote every value formatted into `cmd=` with `shlex.quote`; a shell task's
+paths must not contain spaces.
 
 Use script tasks when a standalone script should run in a task-local Pixi env:
 

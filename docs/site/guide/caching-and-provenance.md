@@ -229,7 +229,9 @@ name, in addition to the existing positional `.output[i]`:
 ```python
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {shlex.quote(src)} > {shlex.quote(dest)} && shasum {shlex.quote(dest)} > {shlex.quote(check)}"
+    )
 
 norm = normalize(src="in.txt", dest="out.txt", check="out.sha")
 normalized = norm.output["dest"]

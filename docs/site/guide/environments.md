@@ -162,7 +162,7 @@ fail and tell you. Declare the index as an output and it becomes writable:
 @task(kind="shell", env="docker://quay.io/biocontainers/samtools:1.20--h50ea8bc_0")
 def index_reference(reference: file) -> file:
     index = f"{reference}.fai"
-    return shell(cmd=f"samtools faidx {reference}", output=index)
+    return shell(cmd=f"samtools faidx {shlex.quote(reference)}", output=index)
 ```
 
 Declaring it is also what keeps it. Anything a container writes to a path that
