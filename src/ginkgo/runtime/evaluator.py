@@ -1003,7 +1003,6 @@ class ConcurrentEvaluator:
             failure={
                 "kind": "cancelled",
                 "message": f"The run stopped before this task finished: {reason}",
-                "retryable": False,
                 "code": "cancelled",
             },
             remote_job_id=node.remote_job_id,
