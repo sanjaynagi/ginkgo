@@ -560,7 +560,6 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     return {
         "kind": kind,
         "message": message,
-        "retryable": False,
         "code": exc.__class__.__name__,
     }
 

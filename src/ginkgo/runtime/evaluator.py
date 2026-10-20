@@ -954,13 +954,20 @@ class ConcurrentEvaluator:
         """
         self._cleanup_transport(node)
         sanitized_exc = sanitize_exception(exc=exc, secret_values=node.secret_values)
-        if (
-            retryable
-            and self._failure is None
-            and self._should_retry(node=node, exc=sanitized_exc)
-        ):
-            self._schedule_retry(node=node, exc=sanitized_exc)
-            return
+        if retryable and self._should_retry(node=node, exc=sanitized_exc):
+            if self._failure is None:
+                self._schedule_retry(node=node, exc=sanitized_exc)
+                return
+            # The run is already stopping, so the retry this attempt earned is
+            # abandoned. Say so, or the failure reads as the task's last word.
+            self._emit_task_event(
+                TaskNotice,
+                node=node,
+                message=(
+                    f"retry {node.attempt}/{node.task_def.retries} not attempted: "
+                    "the run is stopping after an earlier failure"
+                ),
+            )
 
         # "ignore" is about scheduling only: the task is recorded as failed
         # either way, and the run still ends up failed. Once the run is
@@ -1012,7 +1019,6 @@ class ConcurrentEvaluator:
             failure={
                 "kind": "cancelled",
                 "message": f"The run stopped before this task finished: {reason}",
-                "retryable": False,
                 "code": "cancelled",
             },
             remote_job_id=node.remote_job_id,
@@ -1418,6 +1424,8 @@ class ConcurrentEvaluator:
             },
             execution_backend=execution_backend,
         )
+        if node.attempt > 1:
+            self._mark_attempt_in_logs(node=node)
         if task_kind(node.task_def).execution_mode == "driver":
             future = self._executors.shell.submit(self._run_driver_task, node=node)
             self._track(future, node=node, on_done=self._handle_task_body_result)
@@ -1439,6 +1447,19 @@ class ConcurrentEvaluator:
         else:
             future = self._executors.python.submit(run_task, payload)
         self._track(future, node=node, on_done=self._on_worker_done)
+
+    def _mark_attempt_in_logs(self, *, node: NodeRun) -> None:
+        """Write a header into the task's logs at the start of a retry.
+
+        Every attempt appends to the same log files, so without a marker a
+        log tail cannot say which attempt a line came from.
+        """
+        header = f"--- attempt {node.attempt}/{node.task_def.retries + 1} ---\n"
+        for path in (node.stdout_path, node.stderr_path):
+            if path is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(header)
 
     def _create_output_parent_dirs(self, *, node: NodeRun) -> None:
         """Create the parent directory of every declared ``Out[...]`` path.

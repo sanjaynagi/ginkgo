@@ -172,7 +172,6 @@ def _events() -> list[GinkgoEvent]:
             **RUN,
             status="success",
             task_counts={"succeeded": 4},
-            finished_at=TS,
             resources={"peak_rss_bytes": 1048576},
             error=None,
         ),

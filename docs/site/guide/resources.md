@@ -227,7 +227,9 @@ Retries cannot help with a malformed input: it fails identically every time.
 By default the first failure a task's retries cannot absorb stops the run —
 in-flight tasks finish, nothing new is dispatched. Tasks that never started,
 including everything downstream of the failure, are left `pending` in
-`ginkgo runs show`; they are not run. In a wide fan-out that
+`ginkgo runs show`; they are not run. An in-flight task that then fails is not
+retried, even with retries left; a notice such as `retry 1/2 not attempted:
+the run is stopping after an earlier failure` says so. In a wide fan-out that
 throws away the work of every healthy branch.
 
 ```python

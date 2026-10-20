@@ -88,8 +88,14 @@ def _iter_template_files_from_dir(
     current_dir: Traversable,
     relative_dir: PurePosixPath,
 ) -> Iterable[tuple[Traversable, PurePosixPath]]:
-    """Yield packaged template files from one directory subtree."""
+    """Yield packaged template files from one directory subtree.
+
+    Bytecode caches are skipped: Python writes them into the template tree
+    of an editable install, and they are not part of the template.
+    """
     for child in sorted(current_dir.iterdir(), key=lambda path: path.name):
+        if child.name == "__pycache__" or child.name.endswith(".pyc"):
+            continue
         child_relative = relative_dir / child.name
         if child.is_file():
             yield child, child_relative
