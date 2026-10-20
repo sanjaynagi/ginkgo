@@ -41,7 +41,7 @@ ginkgo/
 │   ├── placement.py      # Placement: effective resources and executor placement
 │   ├── advisories.py     # advisory TaskNotice text: untracked dirs, str writes, FUSE fallback
 │   ├── executors.py      # the evaluator's heterogeneous executor pool
-│   ├── scheduler.py
+│   ├── scheduler.py      # ResourceLedger and the CP-SAT dispatch selection
 │   ├── worker.py
 │   ├── module_loader.py
 │   ├── events.py
