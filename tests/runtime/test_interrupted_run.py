@@ -69,24 +69,6 @@ print("handled" if seen else "swallowed")
 """
 
 
-#: Interrupts itself mid-"solve", while a stand-in for CP-SAT's handler is
-#: installed, as a Ctrl-C landing during a dispatch solve would. Prints
-#: "handled" only if the interrupt reached the scheduler's handler after the
-#: solve, rather than the solver's during it.
-_MID_SOLVE_SIGNAL_SCRIPT = """
-import signal
-
-from ginkgo.runtime.scheduler import _signal_handlers_preserved
-
-seen = []
-signal.signal(signal.SIGINT, lambda *_: seen.append("scheduler"))
-with _signal_handlers_preserved():
-    signal.signal(signal.SIGINT, lambda *_: seen.append("solver"))
-    signal.raise_signal(signal.SIGINT)
-print("handled" if seen == ["scheduler"] else f"lost: {seen}")
-"""
-
-
 def _write_project(root: Path, *, sleep_seconds: int = 3) -> None:
     """Write a workspace whose one workflow runs six tasks of *sleep_seconds* each."""
     (root / "ginkgo.toml").write_text('[project]\nname = "interrupt"\n', encoding="utf-8")
@@ -136,15 +118,31 @@ class TestCpSatSignalHandling:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "handled"
 
-    def test_an_interrupt_during_a_solve_reaches_the_scheduler(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(_MID_SOLVE_SIGNAL_SCRIPT)],
-            check=False,
-            text=True,
-            capture_output=True,
+    def test_the_solver_never_takes_an_interrupt(self, monkeypatch) -> None:
+        # A solver catching SIGINT would swallow a Ctrl-C that lands mid-solve.
+        from ortools.sat.python import cp_model
+
+        from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
+
+        seen: list[bool] = []
+        solve = cp_model.CpSolver.Solve
+
+        def recording_solve(self, *args, **kwargs):
+            seen.append(self.parameters.catch_sigint_signal)
+            return solve(self, *args, **kwargs)
+
+        monkeypatch.setattr(cp_model.CpSolver, "Solve", recording_solve)
+        select_dispatch_subset(
+            ready_tasks=[SchedulableTask(node_id=0, threads=1, memory_gb=0)],
+            jobs=1,
+            cores=1,
+            memory=1,
+            gpus=0,
+            available_group_slots=None,
+            custom_budgets=None,
         )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "handled"
+
+        assert seen == [False]
 
 
 class TestCancelledRunSummary:
