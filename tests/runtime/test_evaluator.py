@@ -679,8 +679,8 @@ class TestEvaluate:
         evaluator = ConcurrentEvaluator()
         with pytest.raises(
             CycleError,
-            match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
-            "test_evaluator.passthrough_task -> test_evaluator.passthrough_task",
+            match="Detected cycle in workflow graph: passthrough_task -> "
+            "passthrough_task -> passthrough_task",
         ):
             evaluator.build_graph(first)
             evaluator.validate_graph()

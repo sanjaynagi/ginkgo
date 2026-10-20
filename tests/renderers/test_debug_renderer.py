@@ -29,7 +29,8 @@ def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line
     text = _rendered(details)
 
     assert "ValueError: bad value" in text
-    assert text.count("Traceback (most recent call last):") == 1
+    # The traceback is the log tail, printed below the panel, not repeated in it.
+    assert "Traceback (most recent call last):" not in text
 
 
 def test_a_single_line_error_is_shown_as_is() -> None:

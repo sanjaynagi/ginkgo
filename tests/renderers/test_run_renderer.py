@@ -846,7 +846,8 @@ def test_a_multiline_error_that_repeats_the_log_tail_is_reduced_to_its_last_line
     text = console.file.getvalue()
 
     assert "ValueError: bad value" in text
-    assert text.count("Traceback (most recent call last):") == 1
+    # The traceback is the log tail, printed below the panel, not repeated in it.
+    assert "Traceback (most recent call last):" not in text
 
 
 def test_path_tracked_inputs_print_one_dim_summary_line(tmp_path: Path) -> None:
