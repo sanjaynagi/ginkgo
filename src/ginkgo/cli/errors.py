@@ -12,7 +12,7 @@ from rich.traceback import Traceback
 
 from ginkgo.cli.common import console
 from ginkgo.envs.interpreter import explain_import_failure
-from ginkgo.errors import GinkgoError, describe_exception, failure_location
+from ginkgo.errors import GinkgoError, failure_location
 
 __all__ = [
     "IGNORED_FAILURES_EXIT_CODE",
@@ -57,10 +57,9 @@ def report_failure(
 
     A :class:`~ginkgo.errors.GinkgoError` — or any failure raised with no user
     code on the stack, which means one of ginkgo's own checks tripped — prints
-    as a single ``✖ <message>`` line, any exception but a ``GinkgoError``
-    leading with its type (:func:`~ginkgo.errors.describe_exception`).
-    Anything else is a bug in the workflow or in ginkgo, so the file and line
-    of the innermost user frame follow the message.
+    as a single ``✖ <message>`` line. Anything else is a bug in the workflow or
+    in ginkgo, so the file and line of the innermost user frame follow the
+    message.
 
     *show_traceback* is the user overriding that judgement, so it always wins:
     a traceback that was asked for is printed for every failure, including the
@@ -74,7 +73,7 @@ def report_failure(
     already right.
     """
     rich_console = console(stream)
-    rich_console.print(Text("✖ ", style="bold red"), Text(describe_exception(exc)), sep="")
+    rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
 
     # A workflow module imports in the CLI's own interpreter, so a missing
     # module here is as likely to mean the wrong interpreter as a missing

@@ -68,7 +68,7 @@ class TestUnexpectedFailures:
 
         captured = capsys.readouterr().err
         assert status == 1
-        assert "✖ NameError: name 'undefined_symbol' is not defined" in captured
+        assert "✖ name 'undefined_symbol' is not defined" in captured
         assert "NameError at " in captured
         assert f"{path.name}:{_line_of(path, 'undefined_symbol')} in main" in captured
 
