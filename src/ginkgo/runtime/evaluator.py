@@ -30,6 +30,11 @@ from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import tmp_dir
 from ginkgo.runtime.backend import ExecutionEnvironment
+from ginkgo.runtime.advisories import (
+    access_fallback_notice,
+    untracked_directory_notices,
+    written_str_inputs_notice,
+)
 from ginkgo.runtime.executor_registry import LOCAL, ExecutorRegistry
 from ginkgo.runtime.graph import TaskGraph, TaskNode
 from ginkgo.runtime.placement import Placement
@@ -93,7 +98,6 @@ from ginkgo.runtime.task_validation import (
     TaskValidator,
     contains_dynamic_expression,
     declared_output_paths,
-    is_untracked_directory_value,
 )
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 from ginkgo.runtime.worker import _task_log_context, run_task
@@ -674,7 +678,15 @@ class ConcurrentEvaluator:
             include_tmp_dirs=False,
             stage_remote_refs=False,
         )
-        self._warn_on_untracked_path_inputs(node=node, resolved_args=resolved_args)
+        # Before the cache-hit branch, so the warning appears on the run that
+        # serves the stale result.
+        for message in untracked_directory_notices(
+            task_def=node.task_def,
+            args=node.expr.args,
+            resolved_args=resolved_args,
+            warned=self._untracked_path_warnings,
+        ):
+            self._emit_task_event(TaskNotice, node=node, message=message)
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=resolved_args)
         self._validator.validate_task_preconditions(
             task_def=node.task_def,
@@ -1062,7 +1074,9 @@ class ConcurrentEvaluator:
         extra_meta: dict[str, Any] | None = None
         if node.runner_extras is not None:
             extra_meta = {"runner_extras": node.runner_extras}
-        self._warn_on_written_str_inputs(node=node)
+        written_notice = written_str_inputs_notice(self._node_cache.written_str_inputs(node=node))
+        if written_notice is not None:
+            self._emit_task_event(TaskNotice, node=node, message=written_notice)
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
             result=value,
@@ -1527,54 +1541,9 @@ class ConcurrentEvaluator:
         if isinstance(payload, dict) and isinstance(payload.get("remote_input_access"), dict):
             access_stats = payload["remote_input_access"]
             self._annotate_task(node=node, fields={"remote_input_access": access_stats})
-            self._warn_on_access_fallback(node=node, access_stats=access_stats)
-
-    def _warn_on_access_fallback(
-        self,
-        *,
-        node: NodeRun,
-        access_stats: dict[str, Any],
-    ) -> None:
-        """Surface a user-visible notice when fuse mounts fell back to staging.
-
-        ``access_stats["fallback_reason"]`` is populated by
-        :class:`~ginkgo.remote.access.mounted.MountedAccess` and the worker
-        hydration layer when a requested fuse mount could not be
-        established (missing driver, no ``/dev/fuse``, permission denied,
-        etc.). Without this notice, users who declared
-        ``access="fuse"`` would silently pay staging costs and never know
-        their policy was downgraded.
-        """
-        reason = access_stats.get("fallback_reason")
-        if not reason:
-            return
-        self._emit_task_event(
-            TaskNotice,
-            node=node,
-            message=f"FUSE access fell back to staging: {reason}",
-        )
-
-    def _warn_on_written_str_inputs(self, *, node: NodeRun) -> None:
-        """Warn when a task wrote a file it received as a plain ``str`` path.
-
-        That path is content-hashed as an input, so the task invalidates its
-        own cache entry and re-runs on every run until it is re-annotated.
-        """
-        written = self._node_cache.written_str_inputs(node=node)
-        if not written:
-            return
-        paths = ", ".join(f"{path} (parameter '{parameter}')" for parameter, path in written)
-        parameters = ", ".join(sorted({f"'{parameter}'" for parameter, _ in written}))
-        self._emit_task_event(
-            TaskNotice,
-            node=node,
-            message=(
-                f"wrote {paths}, which it received as a plain `str` path, so the "
-                "file is tracked as an input and this task will re-run every time. "
-                f"Annotate {parameters} `Out[file]` if the task writes it, or "
-                "`untracked` to key it by its path only."
-            ),
-        )
+            fallback_notice = access_fallback_notice(access_stats)
+            if fallback_notice is not None:
+                self._emit_task_event(TaskNotice, node=node, message=fallback_notice)
 
     def _apply_memory_escalation(self, *, node: NodeRun, resources: Resources) -> None:
         """Raise a retrying node's memory footprint per its retry multiplier.
@@ -1738,105 +1707,6 @@ class ConcurrentEvaluator:
         extras = cached.get("runner_extras")
         if isinstance(extras, dict) and extras:
             self._annotate_task(node=node, fields=extras)
-
-    def _warn_on_untracked_path_inputs(
-        self,
-        *,
-        node: NodeRun,
-        resolved_args: dict[str, Any],
-    ) -> None:
-        """Warn when a directory crosses a task boundary without content tracking.
-
-        Fires only for arguments resolved from an upstream expression in this
-        graph: those are the ones where the producer can rewrite the
-        directory's contents while the consumer's cache key, built from the
-        path string alone, stays put. Narrowed to directories since #307
-        phase 2: a same-shaped upstream *file* path is now content-hashed by
-        default (``CacheStore._hash_value``'s root-input rule), so warning
-        about it would describe something that no longer happens. Deduplicated
-        per producer/consumer/parameter so fan-out branches report once. Runs
-        before the cache-hit branch so the warning appears on the run that
-        serves the stale result.
-        """
-        for name, unresolved in node.expr.args.items():
-            self._scan_untracked_path_argument(
-                node=node,
-                parameter=name,
-                annotation=node.task_def.type_hints.get(name),
-                unresolved=unresolved,
-                resolved=resolved_args.get(name),
-            )
-
-    def _scan_untracked_path_argument(
-        self,
-        *,
-        node: NodeRun,
-        parameter: str,
-        annotation: Any,
-        unresolved: Any,
-        resolved: Any,
-    ) -> None:
-        """Warn for each upstream path one argument carries, at any depth.
-
-        Containers are walked in step with their resolved counterparts, so a
-        path arriving inside ``inputs=[a, b]`` — the ordinary fan-in shape — is
-        checked exactly as one passed directly. The container annotation is
-        carried down unchanged: ``annotation_includes`` already looks inside
-        ``list[file]``, so the same predicate answers for the elements.
-        """
-        if isinstance(unresolved, ExprList) and isinstance(resolved, list | tuple):
-            unresolved = list(unresolved)
-
-        if isinstance(unresolved, list | tuple) and isinstance(resolved, list | tuple):
-            for item, item_resolved in zip(unresolved, resolved):
-                self._scan_untracked_path_argument(
-                    node=node,
-                    parameter=parameter,
-                    annotation=annotation,
-                    unresolved=item,
-                    resolved=item_resolved,
-                )
-            return
-
-        if isinstance(unresolved, dict) and isinstance(resolved, dict):
-            for key, item in unresolved.items():
-                # A key that is itself an expression resolves to a different
-                # key, so its value cannot be paired up.
-                if key not in resolved:
-                    continue
-                self._scan_untracked_path_argument(
-                    node=node,
-                    parameter=parameter,
-                    annotation=annotation,
-                    unresolved=item,
-                    resolved=resolved[key],
-                )
-            return
-
-        producer = _producer_task_name(unresolved)
-        if producer is None:
-            return
-
-        # Checked before the filesystem probe below, so a fan-out costs one
-        # stat rather than one per branch.
-        warning_key = (producer, node.task_def.name, parameter)
-        if warning_key in self._untracked_path_warnings:
-            return
-        if not is_untracked_directory_value(annotation=annotation, value=resolved):
-            return
-        self._untracked_path_warnings.add(warning_key)
-
-        producer_base = producer.rsplit(".", 1)[-1]
-        self._emit_task_event(
-            TaskNotice,
-            node=node,
-            message=(
-                f"{producer_base} returns a path to a directory as 'str', so '{parameter}' "
-                "is cached on the path only and content changes will not invalidate this "
-                f"task. Annotate {producer_base}'s return '-> folder' and "
-                f"'{parameter}: folder'."
-            ),
-        )
 
     def build_graph(self, expr: Any) -> None:
         """Register the static task graph reachable from *expr*, with inferred edges.
@@ -2221,20 +2091,6 @@ def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, A
             entry["digest"] = value
         entries.append(entry)
     return entries
-
-
-def _producer_task_name(value: Any) -> str | None:
-    """Return the name of the task an unresolved argument came from, if any.
-
-    Only single expressions are named: an ``ExprList`` resolves to a list, which
-    the caller walks element by element, so each branch arrives here as its own
-    ``Expr``.
-    """
-    if isinstance(value, (OutputIndex, OutputName)):
-        return _producer_task_name(value.expr)
-    if isinstance(value, Expr):
-        return value.task_def.name
-    return None
 
 
 def _classify_access_method(*, value: Any) -> str:

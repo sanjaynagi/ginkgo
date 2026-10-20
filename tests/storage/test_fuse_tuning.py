@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from ginkgo.remote.access.mounted import _default_mount_root
-from ginkgo.runtime.events import TaskNotice
+from ginkgo.runtime.advisories import access_fallback_notice
 
 
 class TestDefaultMountRoot:
@@ -68,49 +68,16 @@ class TestDefaultMountRoot:
 
 
 class TestFallbackNotice:
-    """Evaluator should emit a TaskNotice when access stats report a fallback."""
+    """A FUSE mount that fell back to staging is reported."""
 
-    def test_notice_emitted_when_fallback_reason_present(self) -> None:
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
-        evaluator.event_bus = MagicMock()
-        evaluator.provenance = MagicMock()
-        evaluator.provenance.run_id = "r1"
-
-        node = MagicMock()
-        node.node_id = 0
-        node.task_def.name = "task.x"
-        node.attempt = 1
-        node.display_label = None
-
-        evaluator._warn_on_access_fallback(
-            node=node,
-            access_stats={
-                "policy": "fuse",
-                "fallback_reason": "gcsfuse: /dev/fuse not accessible",
-            },
+    def test_notice_names_the_fallback_reason(self) -> None:
+        notice = access_fallback_notice(
+            {"policy": "fuse", "fallback_reason": "gcsfuse: /dev/fuse not accessible"}
         )
 
-        assert evaluator.event_bus.emit.called
-        event = evaluator.event_bus.emit.call_args.args[0]
-        assert isinstance(event, TaskNotice)
-        assert "fell back to staging" in event.message
-        assert "/dev/fuse" in event.message
+        assert notice is not None
+        assert "fell back to staging" in notice
+        assert "/dev/fuse" in notice
 
-    def test_no_notice_when_fallback_reason_absent(self) -> None:
-        from ginkgo.runtime.evaluator import ConcurrentEvaluator
-
-        evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
-        evaluator.event_bus = MagicMock()
-        evaluator.provenance = MagicMock()
-        evaluator.provenance.run_id = "r1"
-
-        node = MagicMock()
-
-        evaluator._warn_on_access_fallback(
-            node=node,
-            access_stats={"policy": "fuse", "fallback_reason": None},
-        )
-
-        assert not evaluator.event_bus.emit.called
+    def test_no_notice_without_a_fallback_reason(self) -> None:
+        assert access_fallback_notice({"policy": "fuse", "fallback_reason": None}) is None
