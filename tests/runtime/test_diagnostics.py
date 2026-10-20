@@ -35,7 +35,8 @@ def _task_defs_for(build):
     with record_constructed_calls() as calls:
         expr = build()
     evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
-    evaluator.build_and_validate(expr)
+    evaluator.build_graph(expr)
+    evaluator.validate_graph()
     return [node.task_def for node in evaluator.task_nodes.values()]
 
 

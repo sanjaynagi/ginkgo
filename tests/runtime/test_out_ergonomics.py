@@ -146,7 +146,8 @@ class TestOutParentDirCreation:
         with record_constructed_calls() as calls:
             expr = write_nested(payload="hi", dest=str(dest))
         evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
-        evaluator.build_and_validate(expr)
+        evaluator.build_graph(expr)
+        evaluator.validate_graph()
         build_dry_run_plan(evaluator=evaluator, workflow_label="test")
         assert not dest.parent.exists()
 

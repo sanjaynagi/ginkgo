@@ -44,7 +44,8 @@ def command_secrets(args) -> int:
             config_paths=config_paths,
         )
     )
-    evaluator.build_and_validate(expr)
+    evaluator.build_graph(expr)
+    evaluator.validate_graph()
 
     refs = sorted(
         {
