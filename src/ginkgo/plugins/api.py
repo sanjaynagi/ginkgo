@@ -20,7 +20,7 @@ version, and the specs here may change in step with them.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
@@ -47,6 +47,7 @@ __all__ = [
     "EnvironmentContext",
     "EnvironmentType",
     "EventSubscriber",
+    "EventSubscriberCheckContext",
     "EventSubscriberContext",
     "EventSubscriberType",
     "ExecutorType",
@@ -262,22 +263,44 @@ class EventSubscriber(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class EventSubscriberCheckContext:
+    """What ``ginkgo doctor`` hands an event subscriber's config check.
+
+    Parameters
+    ----------
+    config : Mapping[str, Any]
+        Merged runtime config; each subscriber reads its own table.
+    secret_resolver : SecretResolver | None
+        The secret resolver a run would use.
+    """
+
+    config: Mapping[str, Any]
+    secret_resolver: SecretResolver | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class EventSubscriberType:
     """A run observer, such as a notification channel.
 
     Parameters
     ----------
     name : str
-        Identifies the subscriber, e.g. ``"slack"``.
+        Identifies the subscriber, e.g. ``"slack"``. Its config is the
+        ``[notifications.<name>]`` table.
     build : Callable[[EventSubscriberContext], EventSubscriber | None]
         Return a subscriber for this run, or ``None`` when its config leaves
         it disabled.
+    check : Callable[[EventSubscriberCheckContext], Sequence[str]] | None
+        Return one message per problem with the subscriber's config, so
+        ``ginkgo doctor`` reports what a run would only warn about. ``None``
+        when there is nothing to check.
     """
 
     point_name: ClassVar[str] = "event subscriber"
 
     name: str
     build: Callable[[EventSubscriberContext], EventSubscriber | None]
+    check: Callable[[EventSubscriberCheckContext], Sequence[str]] | None = None
 
     @property
     def keys(self) -> tuple[str, ...]:

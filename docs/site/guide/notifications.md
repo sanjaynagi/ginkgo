@@ -42,13 +42,20 @@ ginkgo run flow.py
 
 Notes:
 
-- `webhook` must be provided through the secrets layer as a secret reference.
-- `log_tail_lines` controls how many lines of task log tail are included in
-  failure notifications.
-- `max_failed_tasks` controls how many failed tasks are summarized in one
-  failure notification.
-- Notification delivery is best-effort. Slack failures log a warning but do not
-  fail the run.
+- `webhook` must be a secret reference such as `{ env = "GINKGO_SLACK_WEBHOOK" }`,
+  naming where the URL is kept. A literal URL is refused: the URL is a
+  credential and does not belong in config.
+- `log_tail_lines` (1 to 25, default 10) controls how many lines of task log
+  tail are included in failure notifications.
+- `max_failed_tasks` (1 to 10, default 3) controls how many failed tasks are
+  summarized in one failure notification.
+- `events` defaults to `["run_failed"]`.
+- A table with an unknown setting, an unknown event, an out-of-range number, or
+  a webhook secret that is unset or empty sends nothing. `ginkgo run` warns with
+  each problem, and `ginkgo doctor` reports them as errors before you run.
+- Notification delivery is best-effort. A Slack failure warns but does not fail
+  the run, and the warning is kept with the run: `ginkgo runs show` and
+  `ginkgo report` list it as a notice.
 
 ## Set Up The Slack Webhook
 

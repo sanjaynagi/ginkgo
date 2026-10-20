@@ -9,7 +9,12 @@ import sys
 
 from rich.markup import escape
 
-from ginkgo.plugins.api import EnvironmentContext
+from ginkgo.plugins.api import (
+    EnvironmentContext,
+    EventSubscriberCheckContext,
+    EventSubscriberType,
+)
+from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
@@ -17,7 +22,7 @@ from ginkgo.envs.interpreter import EnvironmentFinding, detect_import_problem
 from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnostics
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
-from ginkgo.runtime.environment.secrets import build_secret_resolver
+from ginkgo.runtime.environment.secrets import SecretResolver, build_secret_resolver
 from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -67,18 +72,22 @@ def command_doctor(args) -> int:
             )
         )
 
+    secret_resolver = build_secret_resolver(
+        project_root=Path.cwd(),
+        config=config,
+        environ=os.environ,
+    )
     diagnostics = collect_workflow_diagnostics(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
-        secret_resolver=build_secret_resolver(
-            project_root=Path.cwd(),
-            config=config,
-            environ=os.environ,
-        ),
+        secret_resolver=secret_resolver,
         backend_factory=build_backend,
         param_extras=getattr(args, "param_extras", ()),
         command_flags=getattr(args, "command_flags", ()),
     )
+    # A run only warns about a notification table it cannot use, once the run
+    # is under way; doctor is where to find out beforehand.
+    diagnostics.extend(_notification_diagnostics(config=config, secret_resolver=secret_resolver))
 
     # A warning, not an error: nothing is corrupt, and the workflow is still
     # runnable.
@@ -168,6 +177,42 @@ def command_doctor(args) -> int:
         item.severity == "error" for item in environment_diagnostics
     )
     return 1 if has_errors else 0
+
+
+def _notification_diagnostics(
+    *, config: dict, secret_resolver: SecretResolver
+) -> list[WorkflowDiagnostic]:
+    """Check each ``[notifications.<name>]`` table with the subscriber that reads it.
+
+    A table no installed subscriber reads is a warning, as it is at run time;
+    each problem a subscriber's ``check`` finds is an error, since the run
+    would send nothing through that table.
+    """
+    notifications = config.get("notifications") if isinstance(config, dict) else None
+    if not isinstance(notifications, dict):
+        return []
+    diagnostics: list[WorkflowDiagnostic] = []
+    for name in sorted(notifications):
+        try:
+            subscriber_type = plugin_registry().get(EventSubscriberType, name)
+        except PluginNotFoundError as exc:
+            diagnostics.append(
+                WorkflowDiagnostic(
+                    severity="warning",
+                    code="unserved_notification",
+                    message=f"[notifications.{name}] is configured but nothing will send it.",
+                    suggestion=str(exc),
+                )
+            )
+            continue
+        if subscriber_type.check is None:
+            continue
+        context = EventSubscriberCheckContext(config=config, secret_resolver=secret_resolver)
+        diagnostics.extend(
+            WorkflowDiagnostic(severity="error", code="notification_config", message=message)
+            for message in subscriber_type.check(context)
+        )
+    return diagnostics
 
 
 def _extract_executor_configs(*, config: dict) -> dict[str, dict]:
