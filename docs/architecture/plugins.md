@@ -122,8 +122,10 @@ tests and embedders that need a known set of plugins.
   kind's directive is an error naming the kind to use. Runners are built on first use from
   a `RunnerContext` of evaluator services (the validator, the shared
   `ShellRunner`, the run directory, `annotate`, and for sub-workflows the run
-  id and database). A runner handles no cache hits: anything it puts in
-  `node.runner_extras` while running, the evaluator saves in the cache entry's
+  id and database). A runner receives the task attempt as a `TaskInvocation`
+  (`plugins/api.py`), a protocol naming exactly what a runner may read; the
+  evaluator's own node satisfies it, so nothing is converted. A runner handles
+  no cache hits: anything it puts in `node.runner_extras` while running, the evaluator saves in the cache entry's
   `extra` as `runner_extras` and records against the task again on a hit.
   `runtime/task_kinds.task_kind(task_def)` is the one lookup every caller uses
   (dispatch, validation, dry run, remote-input staging, `inspect`). Without
@@ -247,12 +249,8 @@ plugins.
 
 Value codecs are still wired directly.
 
-Two parts of the task-kind contract are still loose: a runner receives the
-evaluator's own `NodeRun` (typed `Any`), and `ShellRunner` is both the shared
-subprocess service in `RunnerContext` and the `shell` kind's runner.
-ginkgo-notebook is the first task kind outside core, and it relies on these
-`NodeRun` attributes: `task_def`, `node_id`, `resolved_args`,
-`execution_args` and `runner_extras`. Changing them breaks it.
+One part of the task-kind contract is still loose: `ShellRunner` is both the
+shared subprocess service in `RunnerContext` and the `shell` kind's runner.
 
 ## Failure classification
 

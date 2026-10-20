@@ -26,6 +26,7 @@ from ginkgo.runtime.task_runners.shell import (
 )
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
 
 
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 class ScriptRunner(DriverTaskRunner):
     """Execute script driver tasks."""
 
-    def run(self, *, node: Any, directive: ScriptDirective) -> Any:
+    def run(self, *, node: TaskInvocation, directive: ScriptDirective) -> Any:
         """Execute a script task, forwarding task inputs as CLI arguments."""
         assert node.execution_args is not None
         assert node.resolved_args is not None

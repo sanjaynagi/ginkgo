@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.plugins.api import RunnerContext
@@ -36,6 +36,9 @@ from ginkgo.runtime.task_runners.shell import (
 )
 from ginkgo.workspace_layout import WorkspaceLayout
 from ginkgo_notebook.directive import NotebookDirective
+
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
 
 
 class NotebookTaskError(GinkgoError, RuntimeError):
@@ -72,7 +75,7 @@ class NotebookRunner(DriverTaskRunner):
     run_dir: RunDir | None
     annotate: Callable[..., None]
 
-    def run(self, *, node: Any, directive: NotebookDirective) -> Any:
+    def run(self, *, node: TaskInvocation, directive: NotebookDirective) -> Any:
         """Run the notebook and return its declared output, or the rendered page."""
         assert node.execution_args is not None
         assert node.resolved_args is not None
@@ -117,7 +120,7 @@ class NotebookRunner(DriverTaskRunner):
             task_name=node.task_def.name, task_def=node.task_def, output=output
         )
 
-    def _html_path(self, *, node: Any) -> Path:
+    def _html_path(self, *, node: TaskInvocation) -> Path:
         """Return where this task's rendered page goes."""
         root = (
             self.run_dir.path / "notebooks"
@@ -127,12 +130,13 @@ class NotebookRunner(DriverTaskRunner):
         return root / f"task_{node.node_id:04d}.html"
 
     @staticmethod
-    def _export_command(*, node: Any, notebook_path: Path, html_path: Path) -> str:
+    def _export_command(*, node: TaskInvocation, notebook_path: Path, html_path: Path) -> str:
         """Build ``marimo export html`` for the notebook, with the task's arguments.
 
         With no ``env=`` the notebook runs under ginkgo's own interpreter;
         with one, ``python`` resolves inside that environment.
         """
+        assert node.execution_args is not None
         python = "python" if node.task_def.env is not None else shlex.quote(sys.executable)
         parts = [
             python,
@@ -157,7 +161,7 @@ class NotebookRunner(DriverTaskRunner):
         return " ".join(parts)
 
     def _failure_hint(
-        self, *, node: Any, html_path: Path, exit_code: int, output: str
+        self, *, node: TaskInvocation, html_path: Path, exit_code: int, output: str
     ) -> str | None:
         """Name the likeliest fix for a failed export, if there is one to name."""
         if "No module named marimo" in output and node.task_def.env is not None:
@@ -167,7 +171,7 @@ class NotebookRunner(DriverTaskRunner):
             hint = f"The rendered notebook at {html_path} shows the failing cell."
         return hint
 
-    def _record_rendered_html(self, *, node: Any, html_path: Path) -> None:
+    def _record_rendered_html(self, *, node: TaskInvocation, html_path: Path) -> None:
         """Record the rendered page against the task, and leave it for the cache entry.
 
         The run's own record holds the page relative to its run directory. The

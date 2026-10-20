@@ -40,6 +40,7 @@ from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_in_order
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
 
 
@@ -386,7 +387,7 @@ def resolve_declared_output(
     return given
 
 
-def declared_input_mounts(*, node: Any) -> list[Mount]:
+def declared_input_mounts(*, node: TaskInvocation) -> list[Mount]:
     """Return the bind mounts a node's declared path inputs need.
 
     A container sees only what is mounted into it, and the task's command
@@ -779,7 +780,7 @@ class ShellRunner:
     def run_logged_command(
         self,
         *,
-        node: Any,
+        node: TaskInvocation,
         cmd: str,
         user_log_path: Path | None = None,
         extra_env: dict[str, str] | None = None,
@@ -861,7 +862,7 @@ class ShellRunner:
 
     # Shell driver ----------------------------------------------------------
 
-    def failure_hint(self, *, node: Any, exit_code: int, output: str) -> str | None:
+    def failure_hint(self, *, node: TaskInvocation, exit_code: int, output: str) -> str | None:
         """Ask the execution environment to diagnose a failed command.
 
         Every driver task kind raises its own error type, so each one asks here
@@ -873,7 +874,7 @@ class ShellRunner:
             env=node.task_def.env, exit_code=exit_code, output=output
         )
 
-    def run(self, *, node: Any, directive: ShellDirective) -> Any:
+    def run(self, *, node: TaskInvocation, directive: ShellDirective) -> Any:
         """Execute a shell command and return its declared output path or paths."""
         task_def = node.task_def
         user_log_path = Path(directive.log) if directive.log is not None else None
