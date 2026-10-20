@@ -434,6 +434,9 @@ class ConcurrentEvaluator:
             shell_runner=self._shell_runner,
             run_dir=self.run_dir,
             annotate=self._annotate_task,
+            notice=lambda *, node, message: self._emit_task_event(
+                TaskNotice, node=node, message=message
+            ),
             run_id=lambda: self._run_id or "",
             db_path=WorkspaceLayout.for_cwd().db,
         )

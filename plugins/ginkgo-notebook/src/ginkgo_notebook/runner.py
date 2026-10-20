@@ -19,7 +19,7 @@ import shlex
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
@@ -36,6 +36,7 @@ from ginkgo.runtime.task_runners.shell import (
     resolve_declared_output,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
+from ginkgo_notebook.cli_args import unpassed_cli_arg_notices
 from ginkgo_notebook.directive import NotebookDirective
 
 if TYPE_CHECKING:
@@ -71,10 +72,14 @@ class NotebookRunner(DriverTaskRunner):
         ``.ginkgo/notebooks/`` and nothing is recorded.
     annotate : Callable
         Records ``rendered_html`` against the task.
+    notice : Callable
+        Warns about a ``mo.cli_args()`` key the task does not pass.
     """
 
     run_dir: RunDir | None
     annotate: Callable[..., None]
+    notice: Callable[..., None]
+    _checked: set[tuple[str, Path]] = field(default_factory=set, init=False, repr=False)
 
     def run(self, *, node: TaskInvocation, directive: NotebookDirective) -> Any:
         """Run the notebook and return its declared output, or the rendered page."""
@@ -92,6 +97,7 @@ class NotebookRunner(DriverTaskRunner):
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.unlink(missing_ok=True)
 
+        self._check_cli_args(node=node, notebook_path=directive.path)
         cmd = self._export_command(node=node, notebook_path=directive.path, html_path=html_path)
         with _unchanged(directive.path):
             completed = self.shell_runner.run_logged_command(
@@ -121,6 +127,24 @@ class NotebookRunner(DriverTaskRunner):
         return self._validate_and_return_output(
             task_name=node.task_def.base_name, task_def=node.task_def, output=output
         )
+
+    def _check_cli_args(self, *, node: TaskInvocation, notebook_path: Path) -> None:
+        """Warn, once per task and notebook, about keys the notebook reads but is not given.
+
+        Every branch of a fan-out passes the same argument names, so checking
+        the first is checking them all.
+        """
+        assert node.execution_args is not None
+        checked = (node.task_def.name, notebook_path)
+        if checked in self._checked:
+            return
+        self._checked.add(checked)
+        for message in unpassed_cli_arg_notices(
+            source=notebook_path.read_text(encoding="utf-8"),
+            task_name=node.task_def.base_name,
+            passed=node.execution_args,
+        ):
+            self.notice(node=node, message=message)
 
     def _html_path(self, *, node: TaskInvocation) -> Path:
         """Return where this task's rendered page goes."""
@@ -219,4 +243,5 @@ def build_notebook_runner(context: RunnerContext) -> NotebookRunner:
         validator=context.validator,
         run_dir=context.run_dir,
         annotate=context.annotate,
+        notice=context.notice,
     )

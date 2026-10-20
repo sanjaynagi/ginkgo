@@ -52,6 +52,7 @@ __all__ = [
     "EventSubscriberType",
     "ExecutorType",
     "MountDriverType",
+    "Notice",
     "ObjectStoreContext",
     "ObjectStoreType",
     "Plugin",
@@ -436,6 +437,12 @@ class Annotate(Protocol):
     def __call__(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None: ...
 
 
+class Notice(Protocol):
+    """Report a task-scoped problem to the user, as a ``TaskNotice`` event."""
+
+    def __call__(self, *, node: TaskInvocation, message: str) -> None: ...
+
+
 @dataclass(frozen=True, kw_only=True)
 class RunnerContext:
     """The evaluator services a task runner may use.
@@ -451,6 +458,8 @@ class RunnerContext:
         The run directory; ``None`` for dry runs and validation.
     annotate : Annotate
         Records facts against a task.
+    notice : Notice
+        Shows the user a task-scoped warning that does not fail the task.
     run_id : Callable[[], str]
         Returns the current run id.
     db_path : Path
@@ -461,6 +470,7 @@ class RunnerContext:
     shell_runner: ShellRunner
     run_dir: RunDir | None
     annotate: Annotate
+    notice: Notice
     run_id: Callable[[], str]
     db_path: Path
 
