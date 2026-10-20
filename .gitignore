@@ -17,6 +17,8 @@ benchmarks/results/
 
 # Agent / local-instructions files
 AGENTS.md
+# ...but not the one `ginkgo init` scaffolds into new projects.
+!src/ginkgo/templates/init/agents/AGENTS.md
 CLAUDE.md
 .claude/
 .agents/
