@@ -18,6 +18,8 @@ from ginkgo.errors import GinkgoError, failure_location
 __all__ = [
     "IGNORED_FAILURES_EXIT_CODE",
     "INTERRUPT_EXIT_CODE",
+    "USAGE_EXIT_CODE",
+    "UsageError",
     "report_failure",
     "report_interrupt",
     "traceback_requested",
@@ -32,6 +34,19 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 #: 1 so a caller can tell "stopped at the first failure" from "ran everything
 #: it could, and some of it failed".
 IGNORED_FAILURES_EXIT_CODE = 3
+
+#: Exit status for a command line rejected before anything ran: argparse's own
+#: status, shared by a command that rejects its arguments in its own check.
+USAGE_EXIT_CODE = 2
+
+
+class UsageError(GinkgoError):
+    """A command rejected the arguments it was given.
+
+    Raised where argparse alone cannot express the rule, such as "at least one
+    of these options". Reported like any other failure, on stderr, but exits
+    :data:`USAGE_EXIT_CODE` as argparse's own rejections do.
+    """
 
 
 def traceback_requested(args: argparse.Namespace | None = None) -> bool:
@@ -72,7 +87,11 @@ def report_failure(
     already right.
     """
     rich_console = console(stream)
-    rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="")
+    # Unwrapped: a message often names a path, and a wrapped path cannot be
+    # copied whole.
+    rich_console.print(Text("✖ ", style="bold red"), Text(str(exc)), sep="", soft_wrap=True)
+    if isinstance(exc, UsageError):
+        return USAGE_EXIT_CODE
 
     # A workflow module imports in the CLI's own interpreter, so a missing
     # module here is as likely to mean the wrong interpreter as a missing

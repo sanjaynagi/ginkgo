@@ -258,6 +258,6 @@ Failure categories and doctor diagnostics are declared on the exception
 classes that need them, not by core naming those classes: `failure_kind:
 ClassVar[FailureKind]` is read by `classify_failure`, and `diagnostic_code` /
 `diagnostic_suggestion` by `ginkgo doctor` (for example `EnvNotAllowedError`
-declares `INVALID_ENV_KIND`). `FailureKind` (`errors.py`) is a `Literal` of
+declares `invalid_env_kind`). `FailureKind` (`errors.py`) is a `Literal` of
 the categories reports know; a declared value outside it is ignored. An
 exception a plugin raises classifies itself the same way.

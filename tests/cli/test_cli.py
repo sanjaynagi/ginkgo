@@ -455,10 +455,12 @@ def main():
         assert known.exists()
         assert not orphan.exists()
 
-    def test_cache_prune_rejects_invalid_duration(self) -> None:
-        result = _run_cli("cache", "prune", "--older-than", "bad", cwd=Path.cwd())
-        assert result.returncode == 1
-        assert "Invalid duration for --older-than" in result.stderr
+    @pytest.mark.parametrize("value", ["bad", "0d"])
+    def test_cache_prune_rejects_an_invalid_duration_as_usage(self, value: str) -> None:
+        result = _run_cli("cache", "prune", "--older-than", value, cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "argument --older-than: Invalid duration" in result.stderr
+        assert result.stdout == ""
 
     def test_cache_prune_requires_at_least_one_policy(self) -> None:
         result = _run_cli("cache", "prune", cwd=Path.cwd())
@@ -1860,7 +1862,7 @@ def main():
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
+        assert payload["diagnostics"][0]["code"] == "missing_secret"
 
     def test_cache_explain_reports_rerun_reason(self) -> None:
         Path("workflow.py").write_text(
@@ -1940,7 +1942,7 @@ def main():
     def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
         result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
         assert result.returncode == 2
-        assert "conflicting run ids" in result.stdout
+        assert "Conflicting run ids" in result.stderr
 
     def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
         """Both forms naming the same run is not a usage error, only a missing run."""

@@ -195,3 +195,59 @@ def test_json_payload_carries_null_error_when_absent(
 
     assert _debug(json_output=True) == 0
     assert json.loads(capsys.readouterr().out)["error"] is None
+
+
+def test_json_failure_carries_its_status_and_its_error_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
+
+    assert _debug(json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    failure = payload["failures"][0]
+    assert failure["status"] == "failed"
+    assert failure["failure"]["message"] == "boom"
+    assert "error" not in failure
+    # The run's error only restates the task's, which is already reported.
+    assert payload["error"] is None
+
+
+def test_a_run_error_restating_the_task_failure_gets_no_second_panel(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _record_run(cwd=tmp_path, status="failed", error="boom", failed_task=True)
+
+    assert _debug() == 0
+    assert "Run Failure" not in capsys.readouterr().out
+
+
+def test_the_log_tail_prints_below_the_panel_and_unwrapped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A traceback path folded at a panel border cannot be copied whole."""
+    frame = 'File "/' + "nested/" * 40 + 'deep.py", line 3, in explode'
+    ledger = Ledger.start(root=tmp_path, run_id=RUN_ID, workflow="wf.py")
+    ledger.bus.emit(
+        GraphNodeRegistered(
+            run_id=RUN_ID,
+            task_id="task_0000",
+            node_id=0,
+            task_name="explode",
+            stderr_log="logs/explode.stderr.log",
+        )
+    )
+    ledger.bus.emit(
+        TaskFailed(
+            run_id=RUN_ID,
+            task_id="task_0000",
+            task_name="explode",
+            attempt=1,
+            failure={"kind": "user_code_error", "message": "boom"},
+        )
+    )
+    (ledger.run_dir.logs_dir / "explode.stderr.log").write_text(frame + "\n", encoding="utf-8")
+    ledger.finish(status="failed", error="boom")
+    ledger.close()
+
+    assert _debug() == 0
+    assert frame in capsys.readouterr().out.splitlines()

@@ -330,6 +330,7 @@ class RunSummary:
             row: dict[str, Any] = {
                 "task_id": task.task_key,
                 "task_name": task.base_name,
+                "display_label": task.display_label,
                 "status": task.status,
                 "attempts": task.attempts,
                 "max_attempts": task.max_attempts,

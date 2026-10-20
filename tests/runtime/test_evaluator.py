@@ -75,6 +75,16 @@ def fit_site_species_trend_task(site: str, species: str) -> str:
 
 
 @task()
+def label_source_task(x: int) -> int:
+    return x
+
+
+@task()
+def label_branch_task(x: int) -> int:
+    return x * 10
+
+
+@task()
 def sum_keyword_pair_task(*, left: int, right: int) -> int:
     return left + right
 
@@ -528,6 +538,26 @@ class TestEvaluate:
         assert stored_labels == expected
         assert all(label is not None for label in stored_labels)
 
+    def test_branches_labelled_at_prepare_never_repeat_a_label(self, tmp_path: Path) -> None:
+        """A branch over upstream results is named by its resolved value, and
+        that name must not collide with a sibling fan-out's."""
+        recorder = Ledger.start(
+            root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "workflow.py")
+        )
+        expr = [
+            label_branch_task().map(x=[1, 2]),
+            label_branch_task().map(x=[label_source_task(x=1), label_source_task(x=2)]),
+        ]
+        evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=recorder.run_dir, event_bus=recorder.bus
+        )
+
+        assert evaluator.evaluate(expr) == [[10, 20], [10, 20]]
+        summary = recorder.finish()
+
+        labels = [task.label for task in summary.tasks if task.base_name == "label_branch_task"]
+        assert len(labels) == len(set(labels)) == 4
+
     def test_second_run_is_served_from_cache(self) -> None:
         log_path = "work-events.log"
 
@@ -690,8 +720,8 @@ class TestEvaluate:
         evaluator = ConcurrentEvaluator()
         with pytest.raises(
             CycleError,
-            match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
-            "test_evaluator.passthrough_task -> test_evaluator.passthrough_task",
+            match="Detected cycle in workflow graph: passthrough_task -> "
+            "passthrough_task -> passthrough_task",
         ):
             evaluator.build_graph(first)
             evaluator.validate_graph()
@@ -781,7 +811,7 @@ class TestEvaluate:
             (1, "failed"),
             (2, "succeeded"),
         ]
-        assert history[0]["failure"]["message"] == "transient failure"
+        assert history[0]["failure"]["message"] == "RuntimeError: transient failure"
 
     def test_task_retries_fail_after_final_attempt(self):
         log_path = "always-fail.log"
@@ -1184,7 +1214,7 @@ class TestFailurePolicy:
         ledger.close()
         row = summary.tasks[0]
         assert row.status == "failed"
-        assert row.failure["message"] == "flaky boom"
+        assert row.failure["message"] == "RuntimeError: flaky boom"
         assert row.attempts == 1
 
     def test_an_interrupt_skips_every_task_that_never_started(
@@ -1244,6 +1274,21 @@ class TestShellTask:
 
         with pytest.raises(ShellTaskError):
             evaluate(shell_command_task(command=command, output_path=str(output)))
+
+    def test_a_failed_shell_task_is_named_by_its_function(self, tmp_path: Path):
+        with pytest.raises(ShellTaskError, match=r"^Shell task shell_command_task failed"):
+            evaluate(shell_command_task(command="exit 3", output_path=str(tmp_path / "out.txt")))
+
+    def test_a_failed_script_task_says_script(self, tmp_path: Path):
+        script_path = tmp_path / "fail.py"
+        script_path.write_text("raise SystemExit(4)\n", encoding="utf-8")
+
+        with pytest.raises(ShellTaskError, match=r"^Script task python_script_task failed"):
+            evaluate(
+                python_script_task(
+                    script_path=str(script_path), output_path=str(tmp_path / "out.txt")
+                )
+            )
 
     def test_a_failed_shell_task_leaves_no_partial_output(self, tmp_path: Path):
         output = tmp_path / "out.txt"

@@ -134,7 +134,9 @@ class TestRunsAndHistory:
         assert [row["status"] for row in payload] == ["cached", "succeeded"]
         # The second run hit the entry the first one wrote.
         assert payload[0]["cache_key"] == payload[1]["cache_key"]
-        assert all(row["name"].endswith(".greet") for row in payload)
+        assert {(row["task_name"], row["qualified_name"]) for row in payload} == {
+            ("greet", "<workflow>.greet")
+        }
         assert all(row["attempts"] == 1 for row in payload)
         assert payload[1]["duration_s"] >= 0
 

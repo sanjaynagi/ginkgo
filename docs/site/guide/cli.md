@@ -27,7 +27,8 @@ at the nearest `ginkgo.toml`.
 `ginkgo history`
 : Show every run of one task, with its status, duration, and cache key. Runs in
   which the task never started, such as one that skipped it after an upstream
-  failure, are left out; `--include-unstarted` lists them too.
+  failure, are left out; `--include-unstarted` lists them too. `--limit` counts
+  runs, so every branch of a fan-out in a listed run is shown.
 
 `ginkgo query`
 : Run one read-only SQL statement against the provenance database.
@@ -140,15 +141,36 @@ is still recorded as failed &mdash; see
 events, for programmatic use by AI coding agents &mdash; see
 [Working with Coding Agents](coding-agents.md).
 
+The run header names the workflow by its path from where you stand, and
+carries the run id only once the run is about to be created: a run rejected
+while loading or validating (a missing file, `--cores 0`) never had an id, so
+none is printed.
+
 ### Exit Statuses
 
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key, `cache prune` with no limit, `query` with no statement. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key, `cache prune` or `db prune` with no limit, `query` with no statement. The message goes to stderr. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
 | 130 | Interrupted with Ctrl-C. |
+
+### Task Names
+
+Output names a task the way its code does: by its function name, such as
+`align`, or by the display label of one branch of a fan-out, such as
+`align[sample_a]` or `align[2]`. Failure messages, `runs show`, `debug`,
+`history`, `why` and the `cache` commands all use these names, and `history`
+and `cache ls --task` accept them.
+
+JSON output carries the function name as `task_name` and the branch label as
+`display_label`. Where two modules could define a same-named task, it also
+carries the qualified name as `qualified_name` (`history --json`, `cache ls
+--json`, `cache stats --json`): the module path for a task in a package, such
+as `workflow.modules.align.align`, and `<workflow>.align` for a task defined
+in a single-file workflow, whatever that file is called or wherever it lives.
+Events and the ledger's `tasks.name` column record that same qualified name.
 
 ## Workflow Parameters
 
@@ -266,7 +288,13 @@ parameter is content-tracked only when its value names an existing regular
 file and reads as a path (it contains a separator or has a file extension); a
 directory, a bare word, or any other non-file path is tracked by its string
 alone, and nothing checks that it exists. A path the task writes belongs in
-`Out[...]` (see the FAQ entry on `file`/`folder`).
+`Out[...]` (see the FAQ entry on `file`/`folder`). A parameter that every call
+fills from another task's result is not flagged: the producing task's return
+annotation decides how that value is tracked.
+
+Every diagnostic code is lower snake_case, such as `missing_secret` or
+`invalid_env_kind`. An error doctor does not recognise is reported under its
+exception's name, as in `file_not_found_error`.
 
 They also warn (`missing_directive_return`) about a driver task, such as
 `@task("shell")`, whose body can never return its directive: every `return` in
@@ -314,6 +342,7 @@ each retry starts with a `--- attempt N/M ---` line.
 
 ```bash
 ginkgo cache ls                          # list cached task results
+ginkgo cache ls --task align --json      # one task's entries, as JSON
 ginkgo cache stats                       # size, artifact-store bytes, hit counts, biggest tasks
 ginkgo cache explain [run_id]            # explain cache decisions for a run (default: latest)
 ginkgo cache explain [run_id] --json     # same, as JSON
@@ -324,8 +353,12 @@ ginkgo cache clear <cache_key>           # remove a specific cache entry
 ginkgo cache clear --orphans             # remove entries the database has lost
 ```
 
-`cache prune` requires at least one of `--older-than`, `--max-size`, or
-`--max-entries`. Add `--least-recently-hit` to give up unused entries before old
+`cache ls` prints each full cache key on one line, so it can be copied into
+`cache clear`; `--task` narrows the list to one task's entries, named the way
+`history` takes it, and `--json` prints the entries as JSON. `cache prune`
+requires at least one of `--older-than`, `--max-size`, or `--max-entries`. A
+duration is a positive whole number of minutes, hours or days (`45m`, `12h`,
+`30d`). Add `--least-recently-hit` to give up unused entries before old
 ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 `--json`. Its artifact-store figure (`artifact_bytes` in JSON) is separate from
 the entries' total size: the store also holds bytes no entry names, so pruning
@@ -376,15 +409,21 @@ differs. Component names follow the cache key: `task`, `version`, `source_hash`,
 earlier run of the workflow — the entry this run superseded, which is the
 comparison you want. `"strategy": "newest_by_function"` is the fallback used
 when the node is new or its label changed: the newest earlier entry written by
-the same task, which may be a different branch of a fan-out. Read those
-components more sceptically.
+the same task, which may be a different branch of a fan-out. Nothing of the
+node's own changed then, so its `reason` is `no_prior_entry`; `details` and
+`components` describe how it differs from that sibling, as context.
+
+When more than one thing moved, `details` lists every reason in a fixed order —
+`source_hash_changed`, `version_bump`, `env_changed`, `input_changed` — and
+`reason` is the first of them. A moved component none of those covers reports
+`cache_key_changed`.
 
 A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
-did not re-run reports `all_inputs_match`, one with no earlier entry to compare
-against reports `no_prior_entry`, and one whose key has no cache entry at all —
+did not re-run reports `all_inputs_match`, one with no earlier entry of any kind
+to compare against reports `no_prior_entry`, and one whose key has no cache entry at all —
 because it failed, or because the entry was pruned — reports `no_entry_for_key`.
 
 ## A Typical Loop

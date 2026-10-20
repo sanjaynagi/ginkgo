@@ -277,6 +277,9 @@ class TestCacheExplainComponents:
             "strategy": "newest_by_function",
         }
         assert _component(explanation, "source_hash")["prior"] == "src-1"
+        # A sibling is context, not history: nothing of this node's own changed.
+        assert explanation["reason"] == "no_prior_entry"
+        assert explanation["details"] == ["source_hash_changed"]
 
     def test_a_differing_task_identity_is_named(self, tmp_path: Path) -> None:
         """Same base name, different module: the moved component is ``task``."""

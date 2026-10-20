@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ginkgo.cli.app import main
-from ginkgo.cli.errors import report_failure
+from ginkgo.cli.errors import UsageError, report_failure
 from ginkgo.errors import GinkgoError, failure_location
 
 
@@ -166,6 +166,22 @@ class TestRequestedTracebackAlwaysWins:
             report_failure(exc=exc, stream=stream, show_traceback=False)
 
         assert stream.getvalue().splitlines() == ["✖ deliberate"]
+
+    def test_a_long_message_is_printed_on_one_line(self) -> None:
+        """A path in the message must stay whole, so it can be copied."""
+        message = "No such workflow: " + "/deep" * 60 + "/flow.py"
+        stream = io.StringIO()
+        report_failure(exc=GinkgoError(message), stream=stream, show_traceback=False)
+
+        assert stream.getvalue().splitlines() == [f"✖ {message}"]
+
+    def test_a_usage_error_exits_2(self) -> None:
+        stream = io.StringIO()
+
+        assert (
+            report_failure(exc=UsageError("say which"), stream=stream, show_traceback=False) == 2
+        )
+        assert stream.getvalue().splitlines() == ["✖ say which"]
 
 
 class TestInterruptAndExit:

@@ -41,7 +41,7 @@ class PixiEnvNotFoundError(GinkgoError, RuntimeError):
     """
 
     failure_kind: ClassVar[FailureKind] = "env_mismatch"
-    diagnostic_code: ClassVar[str] = "MISSING_ENV"
+    diagnostic_code: ClassVar[str] = "missing_env"
     diagnostic_suggestion: ClassVar[str] = (
         "Create the environment manifest, or correct the env= name on the task."
     )

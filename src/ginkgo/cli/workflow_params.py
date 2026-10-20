@@ -13,7 +13,6 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.config import (
     PARAMS_CONFIG_KEY,
     config_session,
@@ -152,7 +151,7 @@ def global_param_reads(
         One finding per task and parameter.
     """
     tasks = [
-        (task_base_name(node.task_def.name), node.task_def.fn)
+        (node.task_def.base_name, node.task_def.fn)
         for node in sorted(nodes, key=lambda item: item.node_id)
         if node.task_def.kind == "python"
     ]

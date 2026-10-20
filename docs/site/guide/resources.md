@@ -161,7 +161,8 @@ memory = "32Gi"
 ```
 
 A selector matches a task's short name (`align_reads`) or fully qualified
-name (`workflow.modules.align.align_reads`), and may be an `fnmatch` glob
+name (`workflow.modules.align.align_reads`, or `<workflow>.align_reads` for a task
+in a single-file workflow), and may be an `fnmatch` glob
 over either. Exact matches beat globs; among globs, the first selector in
 config order wins. Keys an override omits keep their declared values. An
 override's `custom` table replaces the declared `custom` dict wholesale

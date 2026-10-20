@@ -65,12 +65,12 @@ class Placement:
         registry = self.executor_registry
         if task_def.executor is not None:
             _require_remote_capable_kind(task_def=task_def, reason="executor")
-            return registry.resolve(task_def.executor, task_name=task_def.name)
+            return registry.resolve(task_def.executor, task_name=task_def.base_name)
         if task_def.remote:
             _require_remote_capable_kind(task_def=task_def, reason="remote")
             if not registry.has_default:
                 raise ValueError(
-                    f"{task_def.name} declares remote=True but this run has no default "
+                    f"{task_def.base_name} declares remote=True but this run has no default "
                     f"executor (pass --executor <name>). {registry.available_hint()}"
                 )
             assert registry.default_name is not None
@@ -79,14 +79,14 @@ class Placement:
         if gpu > self.gpus:
             if not task_kind(task_def).remote_capable:
                 raise ValueError(
-                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
+                    f"{task_def.base_name} requires {gpu} GPU(s) but only {self.gpus} "
                     "are available locally (--gpus), and kind="
                     f"{task_def.kind!r} cannot be dispatched remotely"
                 )
             _require_remote_capable_kind(task_def=task_def, reason="a GPU requirement")
             if not registry.has_default:
                 raise ValueError(
-                    f"{task_def.name} requires {gpu} GPU(s) but only {self.gpus} "
+                    f"{task_def.base_name} requires {gpu} GPU(s) but only {self.gpus} "
                     "are available locally (--gpus) and this run has no default "
                     f"executor (--executor). {registry.available_hint()}"
                 )
@@ -110,6 +110,6 @@ def _require_remote_capable_kind(*, task_def: TaskDef, reason: str) -> None:
     if not task_kind(task_def).remote_capable:
         declaration = "remote=True" if reason == "remote" else f"executor={task_def.executor!r}"
         raise ValueError(
-            f"{task_def.name} declares {declaration} but kind={task_def.kind!r} "
+            f"{task_def.base_name} declares {declaration} but kind={task_def.kind!r} "
             "cannot be dispatched remotely"
         )

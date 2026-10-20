@@ -25,8 +25,9 @@ from rich.text import Text
 
 from ginkgo import query
 from ginkgo.cli.common import CACHE_ROOT, console, new_table
-from ginkgo.cli.renderers.common import task_base_name
+from ginkgo.cli.errors import UsageError
 from ginkgo.formatting import cutoff_before, format_bytes, format_int, parse_timestamp
+from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 from ginkgo.runtime.caching.cache import CacheStore
@@ -38,17 +39,29 @@ def command_cache(args) -> int:
     """Handle ``ginkgo cache`` subcommands."""
     rich_console = console(sys.stdout)
     if args.cache_command == "ls":
-        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
-        entries: list[CacheEntryDisplay] = []
+        rows: list[CacheEntryRow] = []
         if _database_exists():
             with _reader() as reader:
-                entries = list_cache_entries(reader)
+                rows = reader.cache_entries(task=args.task)
+        if args.json:
+            print(json.dumps([row.to_payload() for row in rows], indent=2, sort_keys=True))
+            return 0
+
+        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
+        entries = sorted((_cache_entry_row(row) for row in rows), key=lambda e: e.cache_key)
         if not entries:
             rich_console.print("[dim]No cache entries found.[/]")
             return 0
 
         table = new_table()
-        table.add_column("Cache Key", style="bold", overflow="fold")
+        # Never wrapped: a key is copied whole into `cache clear`, and a key
+        # folded over two lines does not paste as one.
+        table.add_column(
+            "Cache Key",
+            style="bold",
+            no_wrap=True,
+            min_width=max(len(row.cache_key) for row in entries),
+        )
         table.add_column("Task", no_wrap=True)
         table.add_column("Label", no_wrap=True)
         table.add_column("Size", justify="right")
@@ -71,18 +84,10 @@ def command_cache(args) -> int:
         return _render_stats(rich_console, as_json=args.json)
 
     if args.cache_command == "prune":
-        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]prune[/]\n")
         if args.older_than is None and args.max_size is None and args.max_entries is None:
-            rich_console.print(
-                "[red]Error:[/] provide at least one of --older-than, --max-size, "
-                "or --max-entries."
-            )
-            return 2
-
-        max_size_bytes = _parse_size_bytes(args.max_size) if args.max_size else None
-        if args.max_entries is not None and args.max_entries < 0:
-            rich_console.print("[red]Error:[/] --max-entries must be at least 0.")
-            return 2
+            raise UsageError("Provide at least one of --older-than, --max-size, or --max-entries.")
+        rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]prune[/]\n")
+        max_size_bytes = parse_size_bytes(args.max_size) if args.max_size else None
 
         all_entries: list[CacheEntryDisplay] = []
         if _database_exists():
@@ -132,11 +137,10 @@ def command_cache(args) -> int:
         from ginkgo.cli.common import open_run
 
         if args.run_id is not None and args.run_flag is not None and args.run_id != args.run_flag:
-            rich_console.print(
-                "[red]Error:[/] conflicting run ids "
-                f"({args.run_id!r} and --run {args.run_flag!r}). Pass the run id once."
+            raise UsageError(
+                f"Conflicting run ids ({args.run_id!r} and --run {args.run_flag!r}). "
+                "Pass the run id once."
             )
-            return 2
 
         run_id = args.run_id or args.run_flag
         with open_run(run_id) as (reader, resolved):
@@ -152,6 +156,11 @@ def command_cache(args) -> int:
 
 def _clear(args, rich_console) -> int:
     """Remove one cache entry, or every entry directory with no row."""
+    if args.cache_key is None and not args.orphans:
+        raise UsageError(
+            "Provide a cache key, or --orphans to remove entry directories the database "
+            "has no row for."
+        )
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
     if args.orphans:
         if not _database_exists():
@@ -169,13 +178,6 @@ def _clear(args, rich_console) -> int:
             f"{'directory' if len(orphans) == 1 else 'directories'}."
         )
         return 0
-
-    if args.cache_key is None:
-        rich_console.print(
-            "[red]Error:[/] provide a cache key, or --orphans to remove entry "
-            "directories the database has no row for."
-        )
-        return 2
 
     if not (CACHE_ROOT / args.cache_key).is_dir():
         raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
@@ -209,7 +211,12 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
                     "never_hit_bytes": stats.never_hit_bytes,
                     "hit_histogram": {str(k): v for k, v in stats.hit_histogram.items()},
                     "top_functions": [
-                        {"function": name, "entries": count, "bytes": size}
+                        {
+                            "task_name": task_base_name(name),
+                            "qualified_name": name,
+                            "entries": count,
+                            "bytes": size,
+                        }
                         for name, count, size in stats.top_functions
                     ],
                 },
@@ -396,7 +403,7 @@ def select_prune_entries(
     selected: set[str] = set()
 
     if older_than is not None:
-        cutoff = cutoff_before(older_than, option="--older-than")
+        cutoff = cutoff_before(older_than)
         for entry in give_up_first:
             if entry.created_at is not None and entry.created_at < cutoff:
                 selected.add(entry.cache_key)
@@ -440,11 +447,17 @@ def _describe_prune_policy(
 _SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|K|M|G|T)?\s*$", re.IGNORECASE)
 
 
-def _parse_size_bytes(value: str) -> int:
-    """Parse a compact size string (e.g. ``2GB``) to an integer byte count."""
+def parse_size_bytes(value: str) -> int:
+    """Parse a compact size string (e.g. ``2GB``) to an integer byte count.
+
+    Raises
+    ------
+    ValueError
+        If *value* is not a number with an optional B/KB/MB/GB/TB unit.
+    """
     match = _SIZE_PATTERN.fullmatch(value)
     if match is None:
-        raise ValueError(f"Invalid --max-size {value!r}. Use e.g. 500MB, 2GB, 10GB.")
+        raise ValueError(f"Invalid size {value!r}. Use e.g. 500MB, 2GB, 10GB.")
     count = float(match.group(1))
     unit = (match.group(2) or "B").upper().rstrip("B") or "B"
     multipliers = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
@@ -497,7 +510,7 @@ _TRACKING_HINTS = {
 _REASON_TEXT = {
     "all_inputs_match": "cache hit — every input matched the stored entry",
     "no_entry_for_key": "no cache entry exists for this key",
-    "no_prior_entry": "no earlier entry to compare against",
+    "no_prior_entry": "no earlier run of this call to compare against",
     "source_hash_changed": "the task's source changed",
     "version_bump": "the task's declared version changed",
     "env_changed": "the declared environment changed",
@@ -555,9 +568,14 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
     compared_with = task.get("compared_with")
     components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
     if isinstance(compared_with, dict):
+        # A sibling's entry is context for a new branch, not its history.
+        against = (
+            "the newest other entry of the same task"
+            if compared_with.get("strategy") == "newest_by_function"
+            else "its previous entry"
+        )
         rich_console.print(
-            f"  compared with [bold]{escape(str(compared_with.get('cache_key')))}[/] "
-            f"[dim]({escape(str(compared_with.get('strategy')))})[/]"
+            f"  compared with {against}, [bold]{escape(str(compared_with.get('cache_key')))}[/]"
         )
         for component in components:
             rich_console.print(

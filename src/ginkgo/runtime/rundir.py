@@ -36,6 +36,7 @@ __all__ = [
     "orphaned_run_directories",
     "run_directory_problems",
     "runs_without_ledger_warning",
+    "attempt_log_header",
     "combined_log_tail",
     "make_run_id",
     "manifest_text",
@@ -151,12 +152,24 @@ def make_run_id(*, workflow_path: str | Path | None = None) -> str:
     return f"{timestamp}_{suffix:08x}"
 
 
-def tail_text(path: Path, *, lines: int = 50) -> list[str]:
-    """Return the last *lines* lines from a text file."""
+def tail_text(path: Path, *, lines: int | None = 50) -> list[str]:
+    """Return the last *lines* lines from a text file, or all of them for ``None``."""
     if not path.is_file():
         return []
     content = path.read_text(encoding="utf-8").splitlines()
-    return content[-lines:]
+    return content if lines is None else content[-lines:]
+
+
+_ATTEMPT_HEADER_PREFIX = "--- attempt "
+
+
+def attempt_log_header(*, attempt: int, attempts: int) -> str:
+    """Return the line a retry writes into a task's logs before it starts.
+
+    Every attempt appends to the same log files, so without a marker a log
+    tail cannot say which attempt a line came from.
+    """
+    return f"{_ATTEMPT_HEADER_PREFIX}{attempt}/{attempts} ---\n"
 
 
 def combined_log_tail(
@@ -166,7 +179,11 @@ def combined_log_tail(
     stderr_log: object,
     lines: int,
 ) -> list[str]:
-    """Combine stdout and stderr tails for failure display.
+    """Combine the last attempt's stdout and stderr for failure display.
+
+    Only the output after each log's last attempt header is shown: a failure
+    is the last attempt's, and earlier attempts' stderr would otherwise crowd
+    out the last attempt's stdout. The header itself leads the tail, once.
 
     Each log argument is the relative path stored on a task record; it
     may be a string path, ``None``, or any other value depending on the
@@ -174,12 +191,25 @@ def combined_log_tail(
     callers can pass either mapping ``.get(...)`` results or dataclass
     attributes without an extra ``isinstance`` check.
     """
+    header: str | None = None
     combined: list[str] = []
-    if isinstance(stdout_log, str):
-        combined.extend(tail_text(run_dir / stdout_log, lines=lines))
-    if isinstance(stderr_log, str):
-        combined.extend(tail_text(run_dir / stderr_log, lines=lines))
-    return combined[-lines:]
+    for log in (stdout_log, stderr_log):
+        if not isinstance(log, str):
+            continue
+        log_header, segment = _last_attempt(tail_text(run_dir / log, lines=None))
+        header = header or log_header
+        combined.extend(segment)
+    if header is None:
+        return combined[-lines:]
+    return [header, *combined[max(0, len(combined) - lines + 1) :]]
+
+
+def _last_attempt(content: list[str]) -> tuple[str | None, list[str]]:
+    """Split a log into its last attempt header, if any, and what follows it."""
+    for index in range(len(content) - 1, -1, -1):
+        if content[index].startswith(_ATTEMPT_HEADER_PREFIX):
+            return content[index], content[index + 1 :]
+    return None, content
 
 
 @dataclass(kw_only=True)

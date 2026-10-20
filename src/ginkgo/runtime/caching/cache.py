@@ -231,7 +231,7 @@ class CacheStore:
                 annotation=annotation,
                 value=resolved_args[name],
                 known_digests=known_digests,
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 is_output=name in task_def.output_params,
             )
 
@@ -247,7 +247,7 @@ class CacheStore:
             "env_hash": env_hash,
             "inputs": input_hashes,
             "source_hash": source_hash,
-            "task": task_def.cache_name,
+            "task": task_def.name,
             "version": task_def.version,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -284,12 +284,12 @@ class CacheStore:
             has no entry to compare with, otherwise those
             :func:`coarse_reasons` gives.
         """
-        prior = self.index.newest_entry(function=task_def.cache_name, excluding=cache_key)
+        prior = self.index.newest_entry(function=task_def.name, excluding=cache_key)
         if prior is None:
             return ["no_prior_entry"]
         current = key_components(
             {
-                "function": task_def.cache_name,
+                "function": task_def.name,
                 "version": task_def.version,
                 "source_hash": task_def.cache_source_hash,
                 "extra_source_hash": extra_source_hash,
@@ -479,7 +479,7 @@ class CacheStore:
             "env_materialized_digest": materialized_digest,
             "extra": extra_meta,
             "extra_source_hash": extra_source_hash,
-            "function": task_def.cache_name,
+            "function": task_def.name,
             "inputs": self._serialise_inputs(task_def=task_def, resolved_args=resolved_args),
             "input_hashes": input_hashes,
             "source_hash": task_def.cache_source_hash,
@@ -1210,7 +1210,7 @@ class CacheStore:
             stat_parts[name] = self._stat_value(
                 annotation=annotation,
                 value=resolved_args[name],
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 is_output=name in task_def.output_params,
             )
 
@@ -1221,7 +1221,7 @@ class CacheStore:
         payload = {
             "inputs": stat_parts,
             "source_hash": source_hash,
-            "task": task_def.cache_name,
+            "task": task_def.name,
             "version": task_def.version,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

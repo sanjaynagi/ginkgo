@@ -10,6 +10,8 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
+from rich.markup import escape
+
 from ginkgo.cli.common import console
 
 
@@ -238,7 +240,11 @@ def command_init(args) -> int:
     written_paths = _write_template_files(root=root, files=files, context=context)
 
     rich_console.print(f"[bold green]🌿 ginkgo init[/] [bold]{root.name}[/]\n")
-    rich_console.print(f"[green]✓[/] Initialized project scaffold at [bold]{root}[/]")
+    # Unwrapped: a project path folded across lines cannot be copied whole.
+    rich_console.print(
+        f"[green]✓[/] Initialized project scaffold at [bold]{escape(str(root))}[/]",
+        soft_wrap=True,
+    )
     rich_console.print("[cyan]Created:[/]")
     for path in written_paths:
         rich_console.print(f"  [green]•[/] {path.relative_to(root).as_posix()}")

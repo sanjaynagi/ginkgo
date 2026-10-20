@@ -51,6 +51,11 @@ completed, run completed, and so on. An agent can parse the stream to follow run
 progress, detect failures, and read task results without scraping a rendered
 terminal UI.
 
+A run rejected before it starts — a missing workflow file, an unknown parameter,
+a graph that does not validate — prints a single `run_rejected` event, with the
+`error` message and its `error_type`, and no `run_id`: there is no run. The
+command exits non-zero, and the same message is on stderr.
+
 Add `--verbose` (`ginkgo run --agent-output --verbose`) to also include task log output
 in the event stream.
 

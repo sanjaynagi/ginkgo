@@ -29,6 +29,7 @@ from typing import Any, Sequence
 from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
+from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.store.errors import StoreError
 from ginkgo.store.protocol import ProvenanceStore
@@ -41,6 +42,7 @@ __all__ = [
     "EventRow",
     "Provenance",
     "Query",
+    "RUN_STATUSES",
     "RerunExplanation",
     "RunRow",
     "SqlResult",
@@ -50,6 +52,9 @@ __all__ = [
 
 SQL_ROW_LIMIT = 1000
 """Rows :meth:`Query.sql` returns when the caller names no limit of its own."""
+
+RUN_STATUSES = ("running", "succeeded", "failed", "cancelled")
+"""Every status the ledger records for a run, for filters to validate against."""
 
 _READ_VERBS = frozenset({"SELECT", "WITH", "VALUES", "EXPLAIN"})
 """The statements :meth:`Query.sql` will run. Everything else is refused."""
@@ -115,7 +120,7 @@ class TaskRow:
     run_id, task_id : str
         Where this execution happened.
     name : str
-        The task's fully qualified name.
+        The task's qualified name, as the ledger records it.
     display_label : str | None
         The label the run rendered, when fan-out gave it one.
     status : str
@@ -169,7 +174,8 @@ class TaskRow:
         return {
             "run_id": self.run_id,
             "task_id": self.task_id,
-            "name": self.name,
+            "task_name": task_base_name(self.name),
+            "qualified_name": self.name,
             "display_label": self.display_label,
             "status": self.status,
             "cached": self.cached,
@@ -234,7 +240,7 @@ class CacheEntryRow:
     cache_key : str
         The entry's content-addressed key.
     function : str
-        Fully qualified name of the task that wrote it.
+        Qualified name of the task that wrote it, as the ledger records it.
     size_bytes : int
         Bytes the entry's stored output occupies.
     created_at, last_hit_at : str | None
@@ -253,6 +259,19 @@ class CacheEntryRow:
     hit_count: int
     last_hit_at: str | None
     display_label: str | None
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the entry as ``ginkgo cache ls --json`` prints it."""
+        return {
+            "cache_key": self.cache_key,
+            "task_name": task_base_name(self.function),
+            "qualified_name": self.function,
+            "display_label": self.display_label,
+            "size_bytes": self.size_bytes,
+            "created_at": self.created_at,
+            "hit_count": self.hit_count,
+            "last_hit_at": self.last_hit_at,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -308,15 +327,22 @@ class RerunExplanation:
 
     Attributes
     ----------
+    task_name : str
+        The task's base name; *display_label* names the branch.
     reason : str
         The summary code: ``all_inputs_match``, ``no_entry_for_key``,
-        ``no_prior_entry``, or the first of *details*.
+        ``no_prior_entry``, or the first of *details*. A node with no earlier
+        entry of its own is ``no_prior_entry`` even when a sibling's entry
+        was compared against.
     details : list[str]
-        Every summary code the component diff implies.
+        Every summary code the component diff implies, in the order source,
+        version, environment, inputs.
     compared_with : dict[str, str] | None
         The entry compared against and how it was found — ``cache_key`` and a
-        ``strategy`` of ``same_node`` or ``newest_by_function`` — or ``None``
-        when there was nothing to compare with.
+        ``strategy`` of ``same_node`` (this node's previous entry) or
+        ``newest_by_function`` (the newest earlier entry of the same task, for
+        a node that has none) — or ``None`` when there was nothing to compare
+        with.
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
     input_labels : dict[str, str]
@@ -536,20 +562,24 @@ class Query:
         return {row["status"]: int(row["n"]) for row in rows}
 
     def task_history(
-        self, name: str, *, limit: int = 20, include_unstarted: bool = False
+        self, name: str, *, limit: int | None = 20, include_unstarted: bool = False
     ) -> list[TaskRow]:
-        """Return every run of one task, newest first.
+        """Return every execution of one task in its most recent runs, newest first.
 
-        The task is matched on its display label as well as its name, so the
-        label ``ginkgo run`` printed for a fanned-out branch is what a user can
-        ask about afterwards.
+        The task is matched on its base name, its qualified name, or the
+        display label of one branch, so the label ``ginkgo run`` printed for
+        a fanned-out branch is what a user can ask about afterwards. A
+        fan-out puts several rows in one run; *limit* counts runs, so a run's
+        branches are never split across the cut.
 
         Parameters
         ----------
         name : str
-            The task's name, its base name, or the display label of one branch.
-        limit : int, optional
-            Most rows to return.
+            The task's base name, its qualified name, or the display label of
+            one branch.
+        limit : int | None, optional
+            Most runs to return rows from; ``None`` for the task's whole
+            history, which is what a distribution over it needs.
         include_unstarted : bool, optional
             Also return runs in which the task never started, such as one
             skipped after an upstream failure. Left out by default: they hold
@@ -567,43 +597,14 @@ class Query:
             f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
             f"WHERE ({_TASK_MATCH}){'' if include_unstarted else _STARTED_ONLY} "
-            "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id LIMIT ?",
-            (name, name, _like_suffix(f".{name}"), limit),
-        )
-        return [_task_row(row) for row in rows]
-
-    def task_resource_history(
-        self, name: str, *, include_unstarted: bool = False
-    ) -> list[TaskRow]:
-        """Return every run of one task, newest first and unlimited.
-
-        The distribution ``ginkgo history --resources`` reports is computed
-        over all of a task's history, not over the window the table happens to
-        print: a p95 that quietly depended on ``--limit`` would move whenever
-        someone changed how many rows they wanted to look at.
-
-        Parameters
-        ----------
-        name : str
-            The task's name, its base name, or the display label of one branch.
-        include_unstarted : bool, optional
-            Also count runs in which the task never started; see
-            :meth:`task_history`.
-
-        Returns
-        -------
-        list[TaskRow]
-            Every recorded run, measured or not. Cache hits are included so a
-            caller can report how much of the history measured nothing.
-        """
-        rows = self._store.query(
-            f"SELECT {_TASK_COLUMNS} "
-            "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE ({_TASK_MATCH}){'' if include_unstarted else _STARTED_ONLY} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id",
             (name, name, _like_suffix(f".{name}")),
         )
-        return [_task_row(row) for row in rows]
+        history = [_task_row(row) for row in rows]
+        if limit is None:
+            return history
+        kept = set(list(dict.fromkeys(row.run_id for row in history))[:limit])
+        return [row for row in history if row.run_id in kept]
 
     def events(
         self,
@@ -635,20 +636,28 @@ class Query:
 
     # -- cache ---------------------------------------------------------------
 
-    def cache_entries(self, *, function: str | None = None) -> list[CacheEntryRow]:
+    def cache_entries(self, *, task: str | None = None) -> list[CacheEntryRow]:
         """Return cache entries, newest first.
 
         Parameters
         ----------
-        function : str | None, optional
-            Only entries written by this task.
+        task : str | None, optional
+            Only entries written by this task, named as ``history`` takes it:
+            its base name, its qualified name, or the display label of the
+            branch that recorded the entry.
 
         Returns
         -------
         list[CacheEntryRow]
         """
-        where = "WHERE c.function = ?" if function is not None else ""
-        params = (function,) if function is not None else ()
+        where = ""
+        params: tuple[str, ...] = ()
+        if task is not None:
+            where = (
+                "WHERE c.function = ? OR c.function LIKE ? ESCAPE '\\' OR c.cache_key IN ("
+                "  SELECT cache_key FROM tasks WHERE display_label = ?)"
+            )
+            params = (task, _like_suffix(f".{task}"), task)
         # The entry does not record which branch wrote it, so the label comes
         # from the newest task the ledger recorded with the same key.
         rows = self._store.query(
@@ -810,7 +819,7 @@ class Query:
         cache_key = task["cache_key"]
         identity: dict[str, Any] = {
             "task_id": task_id,
-            "task_name": str(task["name"]),
+            "task_name": task_base_name(str(task["name"])),
             "display_label": task["display_label"],
             "cache_key": cache_key,
         }
@@ -839,7 +848,10 @@ class Query:
         details = coarse_reasons(components)
         return RerunExplanation(
             **identity,
-            reason=details[0],
+            # A sibling's entry is the nearest thing to compare with, not a
+            # predecessor: this node has no earlier entry, so nothing of its
+            # own changed. The sibling diff stays as detail.
+            reason=details[0] if strategy == "same_node" else "no_prior_entry",
             details=details,
             compared_with={"cache_key": prior_key, "strategy": strategy},
             components=components,
@@ -1041,19 +1053,22 @@ class Query:
             return path_or_artifact_id, None
         raise FileNotFoundError(
             f"Nothing in the ledger produced {path_or_artifact_id!r}: it is neither an "
-            "artifact id nor a path ginkgo has materialized."
+            "artifact id nor a path ginkgo has materialized. A path a task returns as a "
+            "plain `str` is not tracked; annotate the return `-> file` (or `-> folder`), "
+            "or write it through an `Out[file]` parameter, and ginkgo records it."
         )
 
     def _task_name(self, *, run_id: str | None, task_id: str | None) -> str | None:
-        """Return the display label or name of one task."""
+        """Return the name one task is shown under: its display label or base name."""
         if run_id is None or task_id is None:
             return None
         rows = self._store.query(
-            "SELECT coalesce(display_label, name) AS label FROM tasks "
-            "WHERE run_id = ? AND task_id = ?",
+            "SELECT display_label, name FROM tasks WHERE run_id = ? AND task_id = ?",
             (run_id, task_id),
         )
-        return str(rows[0]["label"]) if rows else None
+        if not rows:
+            return None
+        return rows[0]["display_label"] or task_base_name(str(rows[0]["name"]))
 
     def _task_inputs(
         self, *, run_id: str | None, task_id: str | None

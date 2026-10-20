@@ -176,7 +176,7 @@ class SlackSubscriber:
 
     def _failure(self, *, task: TaskSummary) -> SlackTaskFailure:
         return SlackTaskFailure(
-            task_name=task.name,
+            task_name=task.label,
             exit_code=task.exit_code,
             attempt=task.attempts,
             max_attempts=task.max_attempts,

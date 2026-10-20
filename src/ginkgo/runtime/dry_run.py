@@ -293,7 +293,7 @@ def build_dry_run_plan(
         status, run_reasons = probes[node_id]
         planned[node_id] = PlannedTask(
             node_id=node_id,
-            base_name=task_def.name.rsplit(".", 1)[-1],
+            base_name=task_def.base_name,
             label=labels[node_id],
             kind=task_def.kind,
             env=task_def.env,
@@ -572,7 +572,7 @@ def _diagnostic(*, node: NodeRun, label: str, exc: Exception) -> PlanDiagnostic:
     """Record a failure the run is certain to hit against *node*."""
     return PlanDiagnostic(
         task_id=task_id_for_node(node.node_id),
-        task_name=node.task_def.name,
+        task_name=node.task_def.base_name,
         label=label,
         message=str(exc),
     )
@@ -582,7 +582,7 @@ def _probe_failure(*, node: NodeRun, label: str, stage: str, exc: Exception) -> 
     """Record one unexpected probe error against the node it was probing."""
     return ProbeFailure(
         task_id=task_id_for_node(node.node_id),
-        task_name=node.task_def.name,
+        task_name=node.task_def.base_name,
         label=label,
         stage=stage,
         exception_type=type(exc).__name__,

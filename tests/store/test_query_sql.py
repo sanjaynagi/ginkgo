@@ -241,3 +241,36 @@ def test_an_empty_workspace_answers_rather_than_failing(tmp_path: Path) -> None:
     assert result.rows == []
     assert result.columns == ("run_id",)
     assert not Path(layout.db).exists()
+
+
+def test_task_history_limits_runs_not_rows(tmp_path: Path) -> None:
+    """A fan-out puts several rows in one run; ``limit`` never splits a run."""
+    from ginkgo.store.protocol import ProjectionOp
+    from ginkgo.store.sqlite import open_store
+
+    layout = WorkspaceLayout(root=tmp_path / ".ginkgo")
+    with open_store(layout.db) as store, store.transaction():
+        for run_id, started_at in (("run-1", "2026-08-01"), ("run-2", "2026-08-02")):
+            store.apply(
+                [
+                    ProjectionOp(
+                        sql="INSERT INTO runs (run_id, workflow, status, started_at) "
+                        "VALUES (?, 'flow.py', 'succeeded', ?)",
+                        params=(run_id, started_at),
+                    ),
+                    *(
+                        ProjectionOp(
+                            sql="INSERT INTO tasks (run_id, task_id, node_id, name, "
+                            "display_label, kind, execution_mode, status, attempts) "
+                            "VALUES (?, ?, ?, '<workflow>.fit', ?, 'task', 'worker', "
+                            "'succeeded', 1)",
+                            params=(run_id, f"task_000{n}", n, f"fit[{n}]"),
+                        )
+                        for n in range(3)
+                    ),
+                ]
+            )
+
+    with query.open(layout) as reader:
+        assert [row.run_id for row in reader.task_history("fit", limit=1)] == ["run-2"] * 3
+        assert len(reader.task_history("fit", limit=None)) == 6
