@@ -22,7 +22,7 @@ import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 import yaml
 
@@ -35,6 +35,7 @@ from ginkgo.runtime.task_runners.shell import ShellRunner
 from ginkgo.store.sqlite import open_store
 
 if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
 
 
@@ -108,7 +109,7 @@ class SubworkflowRunner:
     def run(
         self,
         *,
-        node: Any,
+        node: TaskInvocation,
         directive: SubWorkflowDirective,
     ) -> SubWorkflowResult:
         """Dispatch a child ``ginkgo run`` subprocess for one sub-workflow."""

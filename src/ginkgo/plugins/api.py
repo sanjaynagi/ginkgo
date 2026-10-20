@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 if TYPE_CHECKING:
     from ginkgo.core.directive import ExecutionDirective
     from ginkgo.core.remote import RemoteLocation
+    from ginkgo.core.task import TaskDef
     from ginkgo.remote.access.drivers.base import MountDriver
     from ginkgo.remote.backend import ObjectStore
     from ginkgo.runtime.backend import ExecutionEnvironment
@@ -56,6 +57,7 @@ __all__ = [
     "RunnerContext",
     "SecretBackendContext",
     "SecretBackendType",
+    "TaskInvocation",
     "TaskKind",
     "TaskRunner",
 ]
@@ -343,10 +345,70 @@ class EnvironmentType:
 # ----- Task kinds ------------------------------------------------------------
 
 
+class TaskInvocation(Protocol):
+    """One attempt of a task, as a runner sees it.
+
+    Everything but ``runner_extras`` is read-only. A runner records in
+    ``runner_extras`` what it wants back on a cache hit.
+    """
+
+    @property
+    def node_id(self) -> int:
+        """The task's node id in the run's graph."""
+        ...
+
+    @property
+    def task_def(self) -> TaskDef:
+        """The task's definition."""
+        ...
+
+    @property
+    def attempt(self) -> int:
+        """The attempt number, from 1."""
+        ...
+
+    @property
+    def display_label(self) -> str | None:
+        """The task's display label, if it has one."""
+        ...
+
+    @property
+    def resolved_args(self) -> dict[str, Any] | None:
+        """The task's arguments, with secrets still as references."""
+        ...
+
+    @property
+    def execution_args(self) -> dict[str, Any] | None:
+        """The task's arguments, with secrets resolved."""
+        ...
+
+    @property
+    def stdout_path(self) -> Path | None:
+        """Where the task's stdout is logged."""
+        ...
+
+    @property
+    def stderr_path(self) -> Path | None:
+        """Where the task's stderr is logged."""
+        ...
+
+    @property
+    def threads(self) -> int:
+        """The threads the task was granted."""
+        ...
+
+    @property
+    def secret_values(self) -> tuple[str, ...]:
+        """Resolved secret values, to redact from logs and errors."""
+        ...
+
+    runner_extras: dict[str, Any] | None
+
+
 class Annotate(Protocol):
     """Record open-ended facts against a task, as a ``TaskAnnotated`` event."""
 
-    def __call__(self, *, node: Any, fields: dict[str, Any]) -> None: ...
+    def __call__(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None: ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -387,7 +449,7 @@ class TaskRunner(Protocol):
     the cache, so a runner never handles cache hits itself.
     """
 
-    def run(self, *, node: Any, directive: Any) -> Any:
+    def run(self, *, node: TaskInvocation, directive: Any) -> Any:
         """Execute *directive* for *node* and return the task's result."""
         ...
 

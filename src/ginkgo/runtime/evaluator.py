@@ -25,7 +25,7 @@ from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.params import ParamContext
-from ginkgo.plugins.api import RunnerContext, TaskKind, TaskRunner
+from ginkgo.plugins.api import RunnerContext, TaskInvocation, TaskKind, TaskRunner
 from ginkgo.plugins.registry import plugin_registry
 from ginkgo.core.resources import ResourceOverrides, Resources
 from ginkgo.core.task import PartialCall, TaskDef
@@ -2513,7 +2513,7 @@ class ConcurrentEvaluator:
             return None
         return self.backend.env_identity(env=env) or None
 
-    def _annotate_task(self, *, node: NodeRun, fields: dict[str, Any]) -> None:
+    def _annotate_task(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None:
         """Attach open-ended facts to a task node."""
         if not fields:
             return
@@ -2566,7 +2566,7 @@ class ConcurrentEvaluator:
         return self.run_dir.run_id if self.run_dir is not None else "validation"
 
     def _emit_task_event(
-        self, event_type: type[TaskEvent], *, node: NodeRun, **fields: Any
+        self, event_type: type[TaskEvent], *, node: TaskInvocation, **fields: Any
     ) -> None:
         """Emit a per-task event, filling in the fields every task event carries."""
         self._emit_event(

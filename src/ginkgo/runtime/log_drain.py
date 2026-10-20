@@ -18,9 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from queue import Empty
 from threading import Event, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ginkgo.runtime.events import EventBus, TaskLog, task_id_for_node
+
+if TYPE_CHECKING:
+    from ginkgo.plugins.api import TaskInvocation
 
 
 @dataclass(kw_only=True)
@@ -60,7 +63,7 @@ class LogDrain:
         self._stop = None
         self._thread = None
 
-    def make_emitter(self, *, node: Any, stream: str) -> Callable[[str], None]:
+    def make_emitter(self, *, node: TaskInvocation, stream: str) -> Callable[[str], None]:
         """Return a per-(node, stream) callback that emits one ``TaskLog`` event."""
 
         def emit(chunk: str) -> None:
