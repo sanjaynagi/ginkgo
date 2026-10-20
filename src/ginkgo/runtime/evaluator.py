@@ -1997,7 +1997,7 @@ class ConcurrentEvaluator:
         kind = plugin_registry().kind_for_directive(directive_type)
         if kind is None:
             return "No installed task kind returns it."
-        return f"Use @task(kind={kind.name!r})."
+        return f'Use @task("{kind.name}").'
 
 
 def _input_hash_entries(input_hashes: dict[str, Any] | None) -> list[dict[str, Any]]:

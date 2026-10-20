@@ -557,24 +557,22 @@ class TestEvaluate:
         with pytest.raises(
             TypeError,
             match=r"kind='shell' and must return shell\(\.\.\.\), not ScriptDirective\. "
-            r"Use @task\(kind='script'\)",
+            r'Use @task\("script"\)',
         ):
             evaluate(shell_returns_script_directive_task(output_path=str(tmp_path / "out")))
 
     def test_python_tasks_must_not_return_shell_directives(self, tmp_path: Path) -> None:
         output = tmp_path / "payload.txt"
 
-        with pytest.raises(TypeError, match=r"ShellDirective.*Use @task\(kind='shell'\)"):
+        with pytest.raises(TypeError, match=r'ShellDirective.*Use @task\("shell"\)'):
             evaluate(python_returns_shell_directive_task(output_path=str(output)))
 
     def test_python_tasks_must_not_return_script_directives(self) -> None:
-        with pytest.raises(TypeError, match=r"ScriptDirective.*Use @task\(kind='script'\)"):
+        with pytest.raises(TypeError, match=r'ScriptDirective.*Use @task\("script"\)'):
             evaluate(python_returns_script_directive_task())
 
     def test_python_tasks_must_not_return_subworkflow_directives(self) -> None:
-        with pytest.raises(
-            TypeError, match=r"SubWorkflowDirective.*Use @task\(kind='subworkflow'\)"
-        ):
+        with pytest.raises(TypeError, match=r'SubWorkflowDirective.*Use @task\("subworkflow"\)'):
             evaluate(python_returns_subworkflow_directive_task())
 
     def test_shell_tasks_must_return_shell_payloads_or_dynamic_exprs(self) -> None:

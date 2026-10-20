@@ -232,6 +232,16 @@ directory, a bare word, or any other non-file path is tracked by its string
 alone, and nothing checks that it exists. A path the task writes belongs in
 `Out[...]` (see the FAQ entry on `file`/`folder`).
 
+They also warn (`missing_directive_return`) about a driver task, such as
+`@task("shell")`, whose body can never return its directive: every `return` in
+it yields a literal, an f-string, or arithmetic over names, as in
+`return f"wc -l {path}"` where `return shell(cmd=f"wc -l {path}")` was meant.
+Without the warning the task fails only when the run reaches it. The check is
+best-effort: a `return` of a call or a variable is never flagged.
+
+A mistyped flag is refused with the closest flag the command or the workflow's
+declared parameters accept, as in `--jbos: did you mean --jobs?`.
+
 ### Validation workflows
 
 A project may keep workflow files under `tests/workflows/` that exercise its own

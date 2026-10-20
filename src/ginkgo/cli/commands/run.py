@@ -63,6 +63,7 @@ from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
+    missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     unreachable_call_diagnostics,
 )
@@ -340,10 +341,15 @@ def run_workflow(
     # only printed on --dry-run: unlike the two warnings above it fires once
     # per task definition regardless of how the graph is shaped, so a real
     # run would otherwise repeat it on every invocation.
+    # A driver task whose body can never return its directive (a shell task
+    # returning a plain string) is flagged the same way, so a dry run catches
+    # it before a real run fails there after its upstream tasks have run.
     if dry_run:
-        for diagnostic in path_like_str_param_diagnostics(
-            task_defs=(node.task_def for node in evaluator.task_nodes.values())
-        ):
+        task_defs = [node.task_def for node in evaluator.task_nodes.values()]
+        for diagnostic in [
+            *path_like_str_param_diagnostics(task_defs=task_defs),
+            *missing_directive_diagnostics(task_defs=task_defs),
+        ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.
             console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
