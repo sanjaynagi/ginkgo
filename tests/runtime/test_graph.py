@@ -35,15 +35,17 @@ def read_then_write(*, path: file, output_path: Out[file]) -> file:
 
 
 class TestRegistration:
-    def test_nodes_take_ids_in_walk_order_with_declared_edges(self) -> None:
+    def test_a_caller_takes_a_lower_id_than_its_arguments(self) -> None:
         graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
 
-        assert [node.task_def.name.rsplit(".", 1)[-1] for node in graph.nodes.values()] == [
-            "join",
-            "label",
-            "label",
-        ]
+        assert graph.nodes[0].label == "join"
         assert graph.nodes[0].dependency_ids == {1, 2}
+
+    def test_nodes_are_held_after_their_dependencies(self) -> None:
+        # A scheduler pass over the nodes then resolves a cached chain at once.
+        graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
+
+        assert list(graph.nodes) == [1, 2, 0]
 
     def test_a_repeated_call_label_takes_an_ordinal(self) -> None:
         graph = TaskGraph.build([label(text="a"), label(text="b")])
@@ -84,8 +86,10 @@ class TestInferredEdges:
         path = str(tmp_path / "out.txt")
         graph = TaskGraph.build(read(path=path))
 
-        with pytest.raises(RuntimeError, match="already read that path"):
-            graph.register(write(output_path=path), is_pending=lambda node_id: False)
+        with pytest.raises(RuntimeError, match="state='running'"):
+            graph.register(write(output_path=path), node_state=lambda node_id: "running")
+        # The writer stays registered, so a caller can still give it run state.
+        assert graph.new_node_ids == [1]
 
     def test_a_new_writer_feeds_a_pending_reader(self, tmp_path) -> None:
         path = str(tmp_path / "out.txt")

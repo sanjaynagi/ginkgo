@@ -128,6 +128,13 @@ class TaskGraph:
     """The task nodes reachable from a workflow's value, with their edges."""
 
     nodes: dict[int, TaskNode] = field(default_factory=dict)
+    """Every registered node, in registration order: a node after the nodes
+    of its arguments, so dependencies come first."""
+    next_node_id: int = 0
+    """The id the next registered node takes."""
+    new_node_ids: list[int] = field(default_factory=list)
+    """The nodes the latest :meth:`register` call added, in registration
+    order, kept when it raised."""
     _expr_nodes: dict[int, int] = field(default_factory=dict, repr=False)
     _path_index: PathIndex = field(default_factory=PathIndex, repr=False)
     """Literal produced and consumed paths across every registration, so a
@@ -149,7 +156,7 @@ class TaskGraph:
         value: Any,
         *,
         expanding_node_id: int | None = None,
-        is_pending: Callable[[int], bool] = lambda node_id: True,
+        node_state: Callable[[int], str] = lambda node_id: "pending",
     ) -> Registration:
         """Register the task nodes reachable from *value* and infer their edges.
 
@@ -159,15 +166,17 @@ class TaskGraph:
             An expression, or a nested container of them.
         expanding_node_id : int | None
             The task whose result *value* is, for a dynamic expansion.
-        is_pending : Callable[[int], bool]
-            Whether a node registered earlier has yet to be dispatched. A new
+        node_state : Callable[[int], str]
+            The scheduling state of a node registered earlier. A new
             ``Out[...]`` producer cannot be made a dependency of a reader that
-            has already started.
+            is no longer ``"pending"``.
 
         Returns
         -------
         Registration
             The nodes *value* refers to, and the nodes this call created.
+            When this raises, the nodes it created stay registered, and
+            :attr:`new_node_ids` lists them.
 
         Raises
         ------
@@ -176,13 +185,13 @@ class TaskGraph:
         IncompleteCallError
             If a partial call reaches the graph.
         """
-        first_new_id = len(self.nodes)
+        self.new_node_ids = []
         dependency_ids = self._register_value(value)
-        new_node_ids = list(range(first_new_id, len(self.nodes)))
+        new_node_ids = list(self.new_node_ids)
         self._infer_edges(
             new_node_ids=new_node_ids,
             expanding_node_id=expanding_node_id,
-            is_pending=is_pending,
+            node_state=node_state,
         )
         return Registration(dependency_ids=dependency_ids, new_node_ids=new_node_ids)
 
@@ -278,18 +287,11 @@ class TaskGraph:
             return self._expr_nodes[expr_id]
         _validate_task_kind(task_def=expr.task_def)
 
-        node_id = len(self.nodes)
-        # Labelled with its id, before its arguments are walked, so ordinals
-        # follow ascending node id.
+        # The id and label are taken before the arguments are walked, so a
+        # node's arguments take later ids and ordinals follow ascending id.
+        node_id = self.next_node_id
+        self.next_node_id += 1
         display_label = self._next_display_label(expr=expr)
-        # Reserved before the walk, so the nodes of its arguments take later ids.
-        self._expr_nodes[expr_id] = node_id
-        self.nodes[node_id] = node = TaskNode(
-            node_id=node_id,
-            expr=expr,
-            dependency_ids=frozenset(),
-            display_label=display_label,
-        )
 
         next_expr_stack = (*expr_stack, expr_id)
         next_task_path = (*task_path, expr.task_def.name)
@@ -298,7 +300,16 @@ class TaskGraph:
             dependency_ids |= self._register_value(
                 value, expr_stack=next_expr_stack, task_path=next_task_path
             )
-        node.dependency_ids = frozenset(dependency_ids)
+        # Added after its arguments, so nodes stay in dependency order and a
+        # scheduler pass over them resolves a whole cached chain at once.
+        self.nodes[node_id] = TaskNode(
+            node_id=node_id,
+            expr=expr,
+            dependency_ids=frozenset(dependency_ids),
+            display_label=display_label,
+        )
+        self._expr_nodes[expr_id] = node_id
+        self.new_node_ids.append(node_id)
         return node_id
 
     def _next_display_label(self, *, expr: Expr) -> str | None:
@@ -329,7 +340,7 @@ class TaskGraph:
         *,
         new_node_ids: list[int],
         expanding_node_id: int | None,
-        is_pending: Callable[[int], bool],
+        node_state: Callable[[int], str],
     ) -> None:
         """Infer ``Out[...]`` path dependency edges for newly registered nodes.
 
@@ -400,14 +411,16 @@ class TaskGraph:
             for consumer in index.consumers_for(producer):
                 if consumer.node_id in expanding_lineage:
                     continue
-                if not is_pending(consumer.node_id):
+                consumer_state = node_state(consumer.node_id)
+                if consumer_state != "pending":
                     producer_name = self.nodes[producer.node_id].task_def.name
                     consumer_name = self.nodes[consumer.node_id].task_def.name
                     raise RuntimeError(
-                        f"{producer_name!r} was just registered declaring `Out[...]` path "
-                        f"{producer.path!r}, but {consumer_name!r} already read that path "
-                        "before the edge could be inferred. Pass the path through the task "
-                        "graph (the producer's return value or an `.output[...]` reference) "
+                        f"{producer_name!r} was just registered declaring "
+                        f"`Out[...]` path {producer.path!r}, but {consumer_name!r} "
+                        f"already read that path (state={consumer_state!r}) before the "
+                        "edge could be inferred. Pass the path through the task graph "
+                        "(the producer's return value or an `.output[...]` reference) "
                         "instead of a literal string so the dependency is explicit."
                     )
                 edges_added |= self._add_inferred_dependencies(

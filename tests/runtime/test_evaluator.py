@@ -1361,3 +1361,29 @@ class TestTmpDirLifecycle:
         scratch_path = Path(report_path.read_text(encoding="utf-8"))
         assert scratch_path.exists()
         shutil.rmtree(scratch_path)
+
+
+@task()
+def _read_path(*, path: file) -> str:
+    return str(path)
+
+
+@task()
+def _write_path(*, output_path: Out[file]) -> file:
+    return file(output_path)
+
+
+class TestFailedRegistration:
+    def test_nodes_a_failed_expansion_added_still_get_run_state(self, tmp_path: Path) -> None:
+        """An inferred edge may already point at them, so none is left without state."""
+        pending, started = str(tmp_path / "a.txt"), str(tmp_path / "b.txt")
+        evaluator = ConcurrentEvaluator()
+        evaluator.build_graph([_read_path(path=pending), _read_path(path=started)])
+        evaluator.task_nodes[1].state = "running"
+
+        with pytest.raises(RuntimeError, match="already read that path"):
+            evaluator._register(
+                [_write_path(output_path=pending), _write_path(output_path=started)]
+            )
+
+        assert set(evaluator.task_nodes) == set(evaluator.graph.nodes)

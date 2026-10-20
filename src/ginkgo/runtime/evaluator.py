@@ -234,7 +234,7 @@ class NodeRun:
     """Mutable run state of one task node.
 
     Runs are created and mutated by :class:`ConcurrentEvaluator` as it
-    schedules work; the immutable graph vertex lives at :attr:`node`.
+    schedules work; the graph vertex lives at :attr:`node`.
     Read-only consumers (such as the dry-run planner) access runs
     through :attr:`ConcurrentEvaluator.task_nodes`.
     """
@@ -330,7 +330,7 @@ class ConcurrentEvaluator:
     keep_going: bool = False
     _cache_store: CacheStore = field(init=False, repr=False)
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
-    graph: TaskGraph = field(default_factory=TaskGraph, init=False)
+    graph: TaskGraph = field(default_factory=TaskGraph, init=False, repr=False)
     placement: Placement = field(init=False)
     # Each in-flight future maps to its node and the handler for its result.
     _running_futures: dict[Future[Any], tuple[int, Callable[..., None]]] = field(
@@ -587,15 +587,19 @@ class ConcurrentEvaluator:
         set[int]
             The nodes *value* refers to directly.
         """
-        registration = self.graph.register(
-            value,
-            expanding_node_id=expanding_node_id,
-            # A node an earlier failed registration left without run state
-            # never runs, so a new producer may still feed it.
-            is_pending=lambda node_id: (
-                node_id not in self._nodes or self._nodes[node_id].state == "pending"
-            ),
-        )
+        try:
+            registration = self.graph.register(
+                value,
+                expanding_node_id=expanding_node_id,
+                node_state=lambda node_id: self._nodes[node_id].state,
+            )
+        except BaseException:
+            # The nodes a failed registration added stay in the graph, and an
+            # inferred edge may already point at one, so each still gets run
+            # state rather than leave a dependency on nothing.
+            for node_id in self.graph.new_node_ids:
+                self._add_node_run(self.graph.nodes[node_id])
+            raise
         for node_id in registration.new_node_ids:
             self._add_node_run(self.graph.nodes[node_id])
         return registration.dependency_ids
