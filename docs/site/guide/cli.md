@@ -207,7 +207,9 @@ before anything runs, and the error names the parameters it does declare. A
 required parameter that is not supplied fails the same way.
 
 `type` follows `argparse`'s convention, so `type=int`, `type=float`, and
-`type=Path` all work. Booleans accept a bare `--flag` or an explicit
+`type=Path` all work. Without `type`, a `bool`, `int` or `float` default sets
+it, so `ginkgo.param("threshold", default=40.0)` reads `--threshold 2.5` as a
+float; any other default leaves values as strings. Booleans accept a bare `--flag` or an explicit
 `--flag false`, and `multiple=True` makes a flag repeatable:
 
 ```bash
