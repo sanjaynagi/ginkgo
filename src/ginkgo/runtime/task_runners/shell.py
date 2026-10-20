@@ -830,6 +830,9 @@ class ShellRunner:
         user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
 
         def emit_chunk(*, stream: str, chunk: str) -> None:
+            # Output is read a line at a time, so a secret the command prints
+            # arrives whole and is redacted before it reaches any log.
+            chunk = redact_text(text=chunk, secret_values=node.secret_values)
             if stream == "stdout" and stdout_handle is not None:
                 stdout_handle.write(chunk)
                 stdout_handle.flush()
