@@ -168,7 +168,9 @@ class TestInterruptedRunEndToEnd:
     def test_ctrl_c_records_the_run_cancelled_and_exits_130(self, tmp_path: Path) -> None:
         if not PYTHON.exists():  # pragma: no cover - depends on a prepared env
             pytest.skip("pixi environment not installed")
-        _write_project(tmp_path)
+        # Long enough that a slow runner still has tasks left to interrupt
+        # once it notices the first one has succeeded.
+        _write_project(tmp_path, sleep_seconds=10)
 
         process = subprocess.Popen(
             [str(PYTHON), "-m", "ginkgo.cli", "run", "--jobs", "2"],
