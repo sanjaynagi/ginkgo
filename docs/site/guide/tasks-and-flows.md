@@ -124,8 +124,9 @@ Key points:
 - inputs and outputs should be explicit and typed
 - a plain `int`, `float`, `str` or `bool` annotation is checked, on every task
   kind's arguments and on the return value: `n: int` given `"30"` or `3.0`
-  fails before the task runs. `float` accepts an `int`, `str` a `Path`, and
-  NumPy scalars pass as their Python type; `None` is not checked
+  fails before the task runs. `float` accepts an `int`, `str` a `Path`, and a
+  NumPy scalar satisfies the matching Python annotation (it is passed on
+  unchanged, still a NumPy scalar); `None` is not checked
 - top-level source and statically imported local-helper changes participate in
   cache invalidation
 - return ordinary Python values or supported Ginkgo marker types
