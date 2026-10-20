@@ -76,7 +76,6 @@ from ginkgo.runtime.events import (
 from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.event_values import render_value
-from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
 from ginkgo.runtime.environment.secrets import (
@@ -424,7 +423,6 @@ class ConcurrentEvaluator:
     event_bus: EventBus | None = None
     trust_mtimes: bool = False
     keep_going: bool = False
-    profiler: ProfileRecorder | None = None
     constructed_calls: tuple[ConstructedCall, ...] = ()
     _cache_store: CacheStore = field(init=False, repr=False)
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
@@ -489,8 +487,6 @@ class ConcurrentEvaluator:
         ]
 
     def __post_init__(self) -> None:
-        if self.profiler is None:
-            self.profiler = ProfileRecorder(enabled=False)
         default_jobs = os.cpu_count() or 1
         self.jobs = default_jobs if self.jobs is None else self.jobs
         self.cores = self.jobs if self.cores is None else self.cores
@@ -657,33 +653,29 @@ class ConcurrentEvaluator:
                     if self._failure is None:
                         self._promote_due_retries()
                         self._skip_blocked_nodes()
-                        with self.profiler.timed("scheduler_prepare"):
-                            self._prepare_pending_nodes()
-                            if self._failure is None:
-                                self._finalize_dynamic_nodes()
+                        self._prepare_pending_nodes()
+                        if self._failure is None:
+                            self._finalize_dynamic_nodes()
 
                     # A preparation failure stops the run here: nothing it
                     # readied in the same pass is dispatched.
                     if self._failure is None:
-                        with self.profiler.timed("scheduler_dispatch"):
-                            self._dispatch_ready_nodes(
-                                python_executor=executors.python,
-                                shell_executor=executors.shell,
-                            )
+                        self._dispatch_ready_nodes(
+                            python_executor=executors.python,
+                            shell_executor=executors.shell,
+                        )
 
                         if self._is_root_resolved() and not self._running_futures:
                             return self._materialize(self._root_template)
 
                     if self._running_futures:
                         retry_wait = self._earliest_retry_wait() if self._failure is None else None
-                        with self.profiler.timed("scheduler_wait"):
-                            done, _ = wait(
-                                tuple(self._running_futures.keys()),
-                                return_when=FIRST_COMPLETED,
-                                timeout=retry_wait,
-                            )
-                        with self.profiler.timed("scheduler_consume_completed"):
-                            self._consume_completed_futures(done)
+                        done, _ = wait(
+                            tuple(self._running_futures.keys()),
+                            return_when=FIRST_COMPLETED,
+                            timeout=retry_wait,
+                        )
+                        self._consume_completed_futures(done)
                         continue
 
                     if self._failure is not None:
@@ -2780,8 +2772,7 @@ class ConcurrentEvaluator:
     def _emit_event(self, event: object) -> None:
         """Emit a runtime event to the attached event bus, if any."""
         if self.event_bus is not None:
-            with self.profiler.timed("event_emit"):
-                self.event_bus.emit(event)
+            self.event_bus.emit(event)
 
     def _run_driver_task(self, *, node: NodeRun) -> Any:
         """Run a driver-task wrapper on the scheduler process.

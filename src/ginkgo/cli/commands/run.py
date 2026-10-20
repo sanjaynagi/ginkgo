@@ -19,7 +19,7 @@ from rich.markup import escape
 from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console, new_table, stdout_console
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console, stdout_console
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -78,7 +78,6 @@ from ginkgo.runtime.events import (
     RunValidated,
     TaskNotice,
 )
-from ginkgo.runtime.profiling import ProfileRecorder
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
@@ -113,7 +112,6 @@ def command_run(args, *, output_mode: RunMode) -> int:
         output_mode=output_mode,
         trust_mtimes=getattr(args, "trust_mtimes", False),
         keep_going=getattr(args, "keep_going", False),
-        profile=getattr(args, "profile", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
     )
@@ -204,13 +202,10 @@ def run_workflow(
     output_mode: RunMode = "default",
     trust_mtimes: bool = False,
     keep_going: bool = False,
-    profile: bool = False,
     executor: str = "local",
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
 ) -> int:
-    profiler = ProfileRecorder(enabled=profile)
-    cli_startup_started = time.perf_counter()
 
     run_id = make_run_id(workflow_path=workflow_path)
     # Piped output gets the read-only commands' fixed width rather than 80
@@ -225,32 +220,27 @@ def run_workflow(
             f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [dim]({run_id})[/]\n"
         )
 
-    profiler.record(phase="cli_startup", seconds=time.perf_counter() - cli_startup_started)
-
     load_started = time.perf_counter()
     # The runtime config is loaded before the workflow is imported so that
     # declared parameters resolve against it regardless of whether the workflow
     # calls config() before or after param().
-    with profiler.timed("runtime_config_load"):
-        # Loaded as layers so top-level keys and the [params] table can combine
-        # by their own rules, without reading the files twice.
-        config_layers = load_runtime_config_layers(
-            project_root=Path.cwd(),
-            override_paths=config_paths,
-        )
-        runtime_config = merge_config_layers(config_layers)
-        param_config = params_table(config_layers)
+    # Loaded as layers so top-level keys and the [params] table can combine
+    # by their own rules, without reading the files twice.
+    config_layers = load_runtime_config_layers(
+        project_root=Path.cwd(),
+        override_paths=config_paths,
+    )
+    runtime_config = merge_config_layers(config_layers)
+    param_config = params_table(config_layers)
     with config_session(
         override_paths=config_paths,
         param_config=param_config,
         cli_extras=param_extras,
     ) as session:
-        with profiler.timed("workflow_module_import"):
-            module = load_module_from_path(workflow_path)
-        with profiler.timed("flow_construction"):
-            flow = discover_flow(module)
-            with record_constructed_calls() as constructed_calls:
-                expr = flow()
+        module = load_module_from_path(workflow_path)
+        flow = discover_flow(module)
+        with record_constructed_calls() as constructed_calls:
+            expr = flow()
         # Validated after the flow body has run, so parameters declared inside
         # it have had their chance to claim a flag. Deliberately outside the
         # construction recorder: parameter resolution mints no task calls.
@@ -306,7 +296,6 @@ def run_workflow(
         "backend": backend,
         "executor_registry": executor_registry,
         "secret_resolver": secret_resolver,
-        "profiler": profiler,
         "param_context": param_context,
         "keep_going": keep_going,
     }
@@ -324,17 +313,16 @@ def run_workflow(
         dry_run and plan_preview and output_mode not in {"agent", "agent_verbose"}
     )
     validate_started = time.perf_counter()
-    with profiler.timed("evaluator_validate"):
-        evaluator.build_graph(expr)
-        dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
-        if not plan_reports_dropped:
+    evaluator.build_graph(expr)
+    dropped_calls = unreachable_call_diagnostics(calls=evaluator.unreachable_calls)
+    if not plan_reports_dropped:
+        _print_dropped_calls(diagnostics=dropped_calls)
+    try:
+        evaluator.validate_graph()
+    except Exception:
+        if plan_reports_dropped:
             _print_dropped_calls(diagnostics=dropped_calls)
-        try:
-            evaluator.validate_graph()
-        except Exception:
-            if plan_reports_dropped:
-                _print_dropped_calls(diagnostics=dropped_calls)
-            raise
+        raise
     validate_elapsed = time.perf_counter() - validate_started
 
     # A parameter must reach a task as an argument. One read from a module global
@@ -593,8 +581,7 @@ def run_workflow(
                     env_count=env_count,
                 )
             )
-            with profiler.timed("resource_monitor_startup"):
-                resource_monitor.start()
+            resource_monitor.start()
             run_started = time.perf_counter()
             failure: BaseException | None = None
             root_skipped: RootSkippedError | None = None
@@ -607,8 +594,7 @@ def run_workflow(
             except BaseException as exc:
                 failure = exc
 
-            with profiler.timed("resource_monitor_shutdown"):
-                resource_summary = resource_monitor.stop()
+            resource_summary = resource_monitor.stop()
             bus.emit(
                 PhaseTimed(
                     run_id=run_id,
@@ -645,28 +631,22 @@ def run_workflow(
                     ),
                 )
             )
-            with profiler.timed("run_summary_load"):
-                run_summary = reader.run(run_id)
+            run_summary = reader.run(run_id)
 
             if interrupt is not None:
                 # No failure panel: nothing went wrong, the run was stopped.
                 # The tally still prints, because what did finish before the
                 # interrupt is the one thing worth knowing here.
                 if renderer is not None:
-                    with profiler.timed("renderer_finish"):
-                        renderer.finish(
-                            elapsed=time.perf_counter() - run_started,
-                            success=False,
-                            cancelled=True,
-                            resources=resource_summary,
-                            remote_summary=evaluator.remote_stats.summary(),
-                            path_tracked_inputs=_count_path_tracked_inputs(
-                                run_summary=run_summary
-                            ),
-                        )
+                    renderer.finish(
+                        elapsed=time.perf_counter() - run_started,
+                        success=False,
+                        cancelled=True,
+                        resources=resource_summary,
+                        remote_summary=evaluator.remote_stats.summary(),
+                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+                    )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)
-                if profiler.enabled:
-                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
                 # Re-raised so the top level prints its interrupt line and
                 # exits 130, as it does for an interrupt anywhere else.
                 raise interrupt
@@ -678,24 +658,19 @@ def run_workflow(
                         renderer=renderer,
                         verbose=output_mode == "verbose",
                     )
-                    with profiler.timed("renderer_finish"):
-                        renderer.finish(
-                            elapsed=time.perf_counter() - run_started,
-                            success=False,
-                            resources=resource_summary,
-                            failure_details=failure_details,
-                            skipped=_load_skip_details(
-                                run_summary=run_summary,
-                                renderer=renderer,
-                            ),
-                            remote_summary=evaluator.remote_stats.summary(),
-                            path_tracked_inputs=_count_path_tracked_inputs(
-                                run_summary=run_summary
-                            ),
-                        )
+                    renderer.finish(
+                        elapsed=time.perf_counter() - run_started,
+                        success=False,
+                        resources=resource_summary,
+                        failure_details=failure_details,
+                        skipped=_load_skip_details(
+                            run_summary=run_summary,
+                            renderer=renderer,
+                        ),
+                        remote_summary=evaluator.remote_stats.summary(),
+                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+                    )
                     print(f"Run directory: {run_dir.path}", file=sys.stderr)
-                if profiler.enabled:
-                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
                 raise failure
 
             if run_failed:
@@ -704,39 +679,19 @@ def run_workflow(
                 # notebooks the surviving branches really did
                 # produce. Only the summary line differs from a success.
                 if renderer is not None:
-                    with profiler.timed("renderer_finish"):
-                        renderer.finish(
-                            elapsed=time.perf_counter() - run_started,
-                            success=False,
-                            resources=resource_summary,
-                            failure_details=_load_failure_details(
-                                run_summary=run_summary,
-                                renderer=renderer,
-                                verbose=output_mode == "verbose",
-                            ),
-                            skipped=_load_skip_details(
-                                run_summary=run_summary,
-                                renderer=renderer,
-                            ),
-                            pages=_rendered_pages(
-                                run_summary=run_summary,
-                                renderer=renderer,
-                            ),
-                            remote_summary=evaluator.remote_stats.summary(),
-                            path_tracked_inputs=_count_path_tracked_inputs(
-                                run_summary=run_summary
-                            ),
-                        )
-                if profiler.enabled:
-                    _print_profile_table(console=rich_console, profile=profiler.snapshot())
-                return IGNORED_FAILURES_EXIT_CODE
-
-            if renderer is not None:
-                with profiler.timed("renderer_finish"):
                     renderer.finish(
                         elapsed=time.perf_counter() - run_started,
-                        success=True,
+                        success=False,
                         resources=resource_summary,
+                        failure_details=_load_failure_details(
+                            run_summary=run_summary,
+                            renderer=renderer,
+                            verbose=output_mode == "verbose",
+                        ),
+                        skipped=_load_skip_details(
+                            run_summary=run_summary,
+                            renderer=renderer,
+                        ),
                         pages=_rendered_pages(
                             run_summary=run_summary,
                             renderer=renderer,
@@ -744,8 +699,20 @@ def run_workflow(
                         remote_summary=evaluator.remote_stats.summary(),
                         path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
                     )
-            if profiler.enabled:
-                _print_profile_table(console=rich_console, profile=profiler.snapshot())
+                return IGNORED_FAILURES_EXIT_CODE
+
+            if renderer is not None:
+                renderer.finish(
+                    elapsed=time.perf_counter() - run_started,
+                    success=True,
+                    resources=resource_summary,
+                    pages=_rendered_pages(
+                        run_summary=run_summary,
+                        renderer=renderer,
+                    ),
+                    remote_summary=evaluator.remote_stats.summary(),
+                    path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+                )
     finally:
         resource_monitor.stop()
     return 0
@@ -862,32 +829,6 @@ def _load_failure_details(
         )
         for task in run_summary.failed_tasks
     ]
-
-
-def _print_profile_table(
-    *,
-    console,
-    profile: dict[str, dict[str, float | int]],
-) -> None:
-    """Print a Rich profile table summarising recorded phase timings."""
-    table = new_table("phase")
-    table.title = "Runtime Profile"
-    table.add_column("seconds", justify="right")
-    table.add_column("count", justify="right")
-
-    rows = sorted(
-        profile.items(),
-        key=lambda item: float(item[1].get("seconds", 0.0)),
-        reverse=True,
-    )
-    for phase, values in rows:
-        table.add_row(
-            phase,
-            f"{float(values.get('seconds', 0.0)):.4f}",
-            str(int(values.get("count", 0))),
-        )
-    console.print("")
-    console.print(table)
 
 
 def _rendered_pages(

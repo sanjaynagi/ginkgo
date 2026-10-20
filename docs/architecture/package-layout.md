@@ -44,7 +44,6 @@ ginkgo/
 │   ├── events.py
 │   ├── log_drain.py      # worker log chunks to TaskLog events
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
-│   ├── profiling.py      # phase-timer aggregation for --profile
 │   ├── run_summary.py    # RunSummary, the one read model, loaded from the ledger
 │   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk;
 │   │                     # also run ids and log tails

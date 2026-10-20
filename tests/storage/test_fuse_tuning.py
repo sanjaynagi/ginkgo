@@ -75,9 +75,6 @@ class TestFallbackNotice:
 
         evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
         evaluator.event_bus = MagicMock()
-        evaluator.profiler = MagicMock()
-        evaluator.profiler.timed.return_value.__enter__ = lambda self: None
-        evaluator.profiler.timed.return_value.__exit__ = lambda self, *a: None
         evaluator.provenance = MagicMock()
         evaluator.provenance.run_id = "r1"
 
@@ -106,9 +103,6 @@ class TestFallbackNotice:
 
         evaluator = ConcurrentEvaluator.__new__(ConcurrentEvaluator)
         evaluator.event_bus = MagicMock()
-        evaluator.profiler = MagicMock()
-        evaluator.profiler.timed.return_value.__enter__ = lambda self: None
-        evaluator.profiler.timed.return_value.__exit__ = lambda self, *a: None
         evaluator.provenance = MagicMock()
         evaluator.provenance.run_id = "r1"
 
