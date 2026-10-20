@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import open_run, stdout_console, new_table
+from ginkgo.cli.common import console, new_table, open_run
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
 from ginkgo.runtime.run_summary import RunSummary
@@ -20,7 +21,7 @@ __all__ = ["command_runs"]
 
 def command_runs(args) -> int:
     """Handle ``ginkgo runs`` — ``ls`` for the index, ``show`` for one run."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     as_json = bool(getattr(args, "json", False))
 
     if args.runs_command == "ls":

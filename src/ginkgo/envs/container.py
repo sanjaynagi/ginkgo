@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
+from ginkgo.core.shell import shell_argv
 from ginkgo.envs.mounts import Mount, parse_extra_mount, resolve_mounts
 from ginkgo.errors import FailureKind, GinkgoError
 
@@ -247,7 +248,8 @@ class ContainerBackend:
         own root to the invoking user and needs nothing. ``"root"`` lets the
         image decide, and an explicit ``"uid:gid"`` pair overrides both.
     shell : str
-        Shell used to run the task command inside the image.
+        Shell used to run the task command inside the image. It is started
+        with ``-eo pipefail``, so it must accept them (bash, zsh, ash).
     auto_mount : bool
         Whether to bind-mount declared path inputs and outputs that fall
         outside the project root.
@@ -487,7 +489,7 @@ class ContainerBackend:
         argv += self._user_argv()
         for name in env_vars:
             argv += ["-e", name]
-        argv += ["-w", project, ref.image, self.shell, "-c", cmd]
+        argv += ["-w", project, ref.image, *shell_argv(shell=self.shell, cmd=cmd)]
         return argv
 
     def exec_failure_hint(self, *, env: str, exit_code: int, output: str) -> str | None:

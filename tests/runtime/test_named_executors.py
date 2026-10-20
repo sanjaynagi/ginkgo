@@ -49,8 +49,8 @@ NO_CODE_CONFIG = {
 
 
 @task(executor="gpu-k8s")
-def trains(x: int) -> int:
-    return x
+def trains(x: int) -> str:
+    return str(x)
 
 
 @task(executor="cheap-batch")

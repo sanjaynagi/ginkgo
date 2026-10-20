@@ -96,6 +96,8 @@ class TestContainerBackendExecArgv:
             str(tmp_path),
             "myorg/image:3.11",
             "bash",
+            "-eo",
+            "pipefail",
             "-c",
             "echo hello > output.txt",
         ]
@@ -124,7 +126,7 @@ class TestContainerBackendExecArgv:
     def test_configurable_shell(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path, shell="sh")
         argv = backend.exec_argv(env="docker://img:1", cmd="ls")
-        assert argv[-3:] == ["sh", "-c", "ls"]
+        assert argv[-5:] == ["sh", "-eo", "pipefail", "-c", "ls"]
 
     def test_mounts_declared_input_outside_project(self, tmp_path: Path):
         project = tmp_path / "project"
@@ -745,7 +747,7 @@ class TestEnvironmentRouter:
         )
         with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, bare))):
             argv = self._make_composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
-        assert argv == ["bash", "-c", "echo hi"]
+        assert argv == ["bash", "-eo", "pipefail", "-c", "echo hi"]
 
     def test_a_bare_name_without_ginkgo_pixi_names_the_plugin(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
@@ -813,9 +815,7 @@ class TestContainerShellE2E:
         output_file = tmp_path / "result.txt"
         captured_argv: list[Any] = []
 
-        def mock_run_subprocess(
-            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
-        ):
+        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
             captured_argv.append(argv)
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
@@ -847,9 +847,7 @@ class TestContainerShellE2E:
 
         from ginkgo.runtime.task_runners.shell import ShellRunner
 
-        def mock_run_subprocess(
-            self_runner, *, argv, use_shell, on_stdout=None, on_stderr=None, **kwargs
-        ):
+        def mock_run_subprocess(self_runner, *, argv, on_stdout=None, on_stderr=None, **kwargs):
             output_file.write_text("ok\n")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 

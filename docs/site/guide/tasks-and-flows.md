@@ -122,6 +122,11 @@ Key points:
 
 - task functions must live at module scope
 - inputs and outputs should be explicit and typed
+- a plain `int`, `float`, `str` or `bool` annotation is checked, on every task
+  kind's arguments and on the return value: `n: int` given `"30"` or `3.0`
+  fails before the task runs. `float` accepts an `int`, `str` a `Path`, and a
+  NumPy scalar satisfies the matching Python annotation (it is passed on
+  unchanged, still a NumPy scalar); `None` is not checked
 - top-level source and statically imported local-helper changes participate in
   cache invalidation
 - return ordinary Python values or supported Ginkgo marker types
@@ -151,36 +156,26 @@ tasks cannot.
 
 ### Which shell runs the command
 
-Which shell runs `cmd=` depends on where the task runs, and none of them is
-strict by default:
+Every shell task runs its `cmd=` under strict mode, `-eo pipefail`: the
+command stops at the first line that fails, and a pipeline fails when any
+stage fails, so `nosuchtool | cat > out` fails the task rather than caching an
+empty file. The shell itself depends on where the task runs:
 
-- **No `env` (local).** The command runs under `/bin/sh -c`, with no options.
-  That is whatever `/bin/sh` is on your machine (`dash` on Debian and Ubuntu,
-  `bash` in POSIX mode on macOS), so bash-only syntax such as `<(...)` is not
-  available.
-- **A Pixi or Conda `env`.** The command runs under `bash -c`.
-- **A container `env`.** The command runs under the shell named by
-  `[container] shell` in `ginkgo.toml`, `bash` by default (see
-  [Environments](environments.md)).
+- **No `env` (local), or a Pixi or Conda `env`.** `bash`, so bash syntax such
+  as `<(...)` works.
+- **A container `env`.** The shell named by `[container] shell` in
+  `ginkgo.toml`, `bash` by default (see [Environments](environments.md)). It
+  must accept `-o pipefail`; bash, zsh and Alpine's `sh` do, Debian's `dash`
+  does not.
 
-In every case the shell is started without `errexit` or `pipefail`. In a
-multi-line command a failing line does not stop the ones after it, and in a
-pipeline only the last command's exit status counts, so
-`nosuchtool | cat > out` exits 0, the task is recorded as succeeded, and the
-result is cached. Turn strict mode on at the top of the command:
+A command that expects a failing step has to say so. `grep` finding no match
+exits 1, and a stage that `head` stops reading early is killed by `SIGPIPE`
+(exit 141), which `pipefail` reports as a failure:
 
-```python
-from ginkgo import Out, file, shell, task
-
-
-@task(kind="shell")
-def align(reads: file, bam: Out[file]):
-    return shell(cmd=f"set -eo pipefail; bwa mem ref.fa {reads} | samtools sort -o {bam}")
+```bash
+grep pattern in.txt > out.txt || true
+(gzip -cd reads.fq.gz || true) | head -n 4000 > sample.fq
 ```
-
-`set -e` is portable. `pipefail` is not part of POSIX `sh`, so a local `/bin/sh`
-that is `dash` may reject `set -o pipefail`; give the task a Pixi or container
-`env`, which run bash, when you need it.
 
 ### Declaring outputs with `Out[...]` instead of `output=`
 

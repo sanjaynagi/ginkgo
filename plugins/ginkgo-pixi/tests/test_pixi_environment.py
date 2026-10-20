@@ -274,9 +274,7 @@ class TestPixiRegistry:
         assert argv[0] == "pixi"
         assert argv[1] == "run"
         assert "--manifest-path" in argv
-        assert "bash" in argv
-        assert "-c" in argv
-        assert "echo hello" in argv
+        assert argv[-5:] == ["bash", "-eo", "pipefail", "-c", "echo hello"]
 
     def test_python_task_with_env_is_rejected_before_env_resolution(self, tmp_path: Path) -> None:
         """evaluate() rejects Python tasks with env= before any env lookup occurs."""

@@ -189,7 +189,7 @@ class NodeCache:
 
         try:
             self.validator.validate_return_value(task_def=task_def, value=value)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, TypeError, ValueError):
             return False
 
         return self._declared_outputs_present(task_def=task_def, resolved_args=resolved_args)

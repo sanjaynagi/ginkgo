@@ -19,7 +19,7 @@ from rich.markup import escape
 from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
-from ginkgo.cli.common import RUNS_ROOT, RunMode, console, stdout_console
+from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label, task_base_name
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
@@ -207,9 +207,7 @@ def run_workflow(
     param_extras: Sequence[str] = (),
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
-    # Piped output gets the read-only commands' fixed width rather than 80
-    # columns, so the paths in a failure panel are not broken mid-token.
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [bold]--dry-run[/]\n"
@@ -329,7 +327,7 @@ def run_workflow(
         declaration_globals=declaration_globals,
         nodes=evaluator.graph.nodes.values(),
     ):
-        console(sys.stderr).print(f"[yellow]⚠[/] {finding.message()}")
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(finding.message())}")
 
     # A parameter named like a path but annotated a bare `str` is content-tracked
     # only when its value names an existing regular file and reads as a path (a
@@ -723,7 +721,7 @@ def run_workflow(
 def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
     """Warn on stderr about each task call dropped from the graph."""
     for diagnostic in diagnostics:
-        console(sys.stderr).print(f"[yellow]⚠[/] {diagnostic.message}")
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:
