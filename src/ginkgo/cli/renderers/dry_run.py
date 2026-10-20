@@ -26,8 +26,20 @@ _TAG: dict[CacheStatus, str] = {
 
 # Legend for the one status that is not self-explanatory.
 _UNKNOWN_MEANING = (
-    "cache status cannot be known without running, often because an upstream task will run"
+    "cache status cannot be known without running something: an upstream task "
+    "will run, or a script, notebook or subworkflow body does more than "
+    "`return script(...)` with arguments dry-run can evaluate"
 )
+
+# Why a task will run, by ``ginkgo cache explain`` reason code.
+_RUN_REASON: dict[str, str] = {
+    "no_prior_entry": "no prior entry",
+    "source_hash_changed": "source changed",
+    "version_bump": "version changed",
+    "env_changed": "environment changed",
+    "input_changed": "input changed",
+    "cache_key_changed": "cache key changed",
+}
 
 
 def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) -> None:
@@ -168,7 +180,7 @@ def _render_task_line(*, task: PlannedTask, label_width: int) -> Text:
     line.append(f"{_GLYPH[task.cache_status]} ", style=style)
     line.append(label.ljust(label_width))
     line.append("  ")
-    line.append(_TAG[task.cache_status], style=style)
+    line.append(_tag(task), style=style)
     if task.kind != "python":
         line.append(f"  · {task.kind}", style="dim")
     if task.env is not None:
@@ -176,14 +188,35 @@ def _render_task_line(*, task: PlannedTask, label_width: int) -> Text:
     return line
 
 
+def _tag(task: PlannedTask) -> str:
+    """Return a task's status tag, naming why it will run when known."""
+    if not task.run_reasons:
+        return _TAG[task.cache_status]
+    return f"[will run: {_run_reason(task)}]"
+
+
+def _run_reason(task: PlannedTask) -> str:
+    """Return the readable reasons a ``will_run`` task misses the cache."""
+    return ", ".join(_RUN_REASON.get(code, code) for code in task.run_reasons)
+
+
 def _render_collapsed_group(*, base_name: str, group: list[PlannedTask], console: Console) -> None:
-    """Print a single collapsed line for a large fan-out group."""
+    """Print a single collapsed line for a large fan-out group.
+
+    Branches of one task usually miss for one or two reasons, so the
+    ``will run`` count carries those reasons, counted, rather than a list.
+    """
     counts = Counter(task.cache_status for task in group)
-    breakdown = ", ".join(
-        f"{counts[status]} {_TAG[status].strip('[]')}"
-        for status in ("cached", "will_run", "unknown")
-        if counts[status]
-    )
+    reasons = Counter(_run_reason(task) for task in group if task.run_reasons)
+    parts = []
+    for status in ("cached", "will_run", "unknown"):
+        if not counts[status]:
+            continue
+        part = f"{counts[status]} {_TAG[status].strip('[]')}"
+        if status == "will_run" and reasons:
+            part += " (" + ", ".join(f"{n} {reason}" for reason, n in reasons.most_common()) + ")"
+        parts.append(part)
+    breakdown = ", ".join(parts)
     line = Text("  ")
     line.append(f"{base_name} × {len(group)}", style="bold")
     line.append(f"   {breakdown}", style="dim")

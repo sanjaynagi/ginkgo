@@ -47,6 +47,7 @@ ginkgo/
 │   ├── events.py
 │   ├── log_drain.py      # worker log chunks to TaskLog events
 │   ├── dry_run.py        # static execution-plan preview for --dry-run
+│   ├── static_directive.py  # a driver task's directive, predicted without its body
 │   ├── run_summary.py    # RunSummary, the one read model, loaded from the ledger
 │   ├── rundir.py         # RunDir: a run's logs, env locks and manifest on disk;
 │   │                     # also run ids and log tails

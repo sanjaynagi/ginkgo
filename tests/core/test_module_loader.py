@@ -62,10 +62,13 @@ class TestLoadModuleFromPath:
         assert callable(ginkgo.config)
         assert not isinstance(ginkgo.config, ModuleType)
 
-    def test_import_roots_for_path_include_package_root_parent(self, tmp_path: Path) -> None:
+    def test_import_roots_for_path_include_package_root_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         repo_root = tmp_path / "AmpSeeker"
         package_dir = repo_root / "ampseeker_ginkgo"
         package_dir.mkdir(parents=True)
+        monkeypatch.chdir(repo_root)
 
         (package_dir / "__init__.py").write_text("", encoding="utf-8")
         workflow_path = package_dir / "workflow.py"
@@ -74,6 +77,20 @@ class TestLoadModuleFromPath:
         roots = import_roots_for_path(workflow_path)
 
         assert roots == [str(package_dir.resolve()), str(repo_root.resolve())]
+
+    def test_import_roots_fall_back_to_the_working_directory_without_ginkgo_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N7: ``exp/flow.py`` can import ``exp.tasks`` from an unconfigured project."""
+        experiment = tmp_path / "exp"
+        experiment.mkdir()
+        flow_path = experiment / "flow.py"
+        flow_path.write_text("", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        roots = import_roots_for_path(flow_path)
+
+        assert roots == [str(experiment.resolve()), str(tmp_path.resolve())]
 
     def test_load_module_supports_importing_own_package(self, tmp_path: Path) -> None:
         repo_root = tmp_path / "AmpSeeker"

@@ -13,7 +13,7 @@ import numbers
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Iterable, get_args, get_origin
+from typing import Any, ClassVar, Iterable, Literal, get_args, get_origin
 
 import numpy as np
 
@@ -390,8 +390,14 @@ def label_input_value(
     return "value"
 
 
-def _reject_list_for_scalar(*, annotation: type, label: str) -> None:
-    """Raise ``TypeError`` for a list or fan-out passed where one value is declared."""
+def _reject_list_for_single_value(*, annotation: Any, label: str) -> None:
+    """Raise ``TypeError`` if *annotation* declares one scalar or path, given a list.
+
+    The caller has already found the value to be a list, tuple or fan-out.
+    """
+    annotation = unwrap_optional_annotation(annotation)[0]
+    if annotation not in _SCALAR_TYPES and annotation not in (file, folder):
+        return
     raise TypeError(
         f"{label} is annotated {annotation.__name__!r} but was given a list. "
         "To run the task once per element, fan out with "
@@ -684,9 +690,10 @@ class TaskValidator:
             value = node.expr.args[name]
             # A fan-out result is dynamic, so it is checked here, before the
             # skip below, when it lands on a parameter declared to hold one value.
-            scalar = unwrap_optional_annotation(annotation)[0]
-            if scalar in _SCALAR_TYPES and isinstance(value, ExprList | list | tuple):
-                _reject_list_for_scalar(annotation=scalar, label=f"{node.task_def.name}.{name}")
+            if isinstance(value, ExprList | list | tuple):
+                _reject_list_for_single_value(
+                    annotation=annotation, label=f"{node.task_def.name}.{name}"
+                )
             if contains_dynamic_expression(value):
                 continue
             if collect_secret_refs(value):
@@ -704,6 +711,7 @@ class TaskValidator:
                 label=f"{node.task_def.name}.{name}",
                 execution_mode=task_kind(node.task_def).execution_mode,
                 produced_paths=produced_paths,
+                is_input=True,
             )
 
     def validate_task_importable(self, *, task_def: TaskDef) -> None:
@@ -761,11 +769,16 @@ class TaskValidator:
                     label=f"{task_def.name}.{name}",
                 )
                 continue
+            if isinstance(resolved_args[name], list | tuple):
+                _reject_list_for_single_value(
+                    annotation=annotation, label=f"{task_def.name}.{name}"
+                )
             self.validate_annotated_value(
                 annotation=annotation,
                 value=resolved_args[name],
                 label=f"{task_def.name}.{name}",
                 execution_mode=task_kind(task_def).execution_mode,
+                is_input=True,
             )
 
     def validate_output_argument(
@@ -884,6 +897,7 @@ class TaskValidator:
         label: str,
         execution_mode: str | None = None,
         produced_paths: frozenset[str] | set[str] = frozenset(),
+        is_input: bool = False,
     ) -> None:
         """Validate a value for direct and container-wrapped Ginkgo types.
 
@@ -893,6 +907,8 @@ class TaskValidator:
         existence check only (see :meth:`validate_static_inputs`); real
         execution never passes it, since by dispatch time the producer has
         actually run and the path either exists or the task fails honestly.
+        ``is_input`` marks a task argument rather than a return value, so a
+        missing path can suggest ``Out[...]`` for a path the task writes.
         """
         if annotation in {None, Any}:
             return
@@ -921,11 +937,12 @@ class TaskValidator:
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
                     produced_paths=produced_paths,
+                    is_input=is_input,
                 )
             return
 
         if annotation in _SCALAR_TYPES and isinstance(value, list | tuple):
-            _reject_list_for_scalar(annotation=annotation, label=label)
+            _reject_list_for_single_value(annotation=annotation, label=label)
 
         if isinstance(value, list | tuple):
             for index, item in enumerate(value):
@@ -935,6 +952,7 @@ class TaskValidator:
                     label=f"{label}[{index}]",
                     execution_mode=execution_mode,
                     produced_paths=produced_paths,
+                    is_input=is_input,
                 )
             return
 
@@ -948,7 +966,7 @@ class TaskValidator:
                 execution_mode=execution_mode,
             )
             if _normalized(value) not in produced_paths:
-                self._validate_file_path(path=value, label=label)
+                self._validate_path(path=value, label=label, kind="file", is_input=is_input)
             return
 
         if annotation is folder:
@@ -961,7 +979,7 @@ class TaskValidator:
                 execution_mode=execution_mode,
             )
             if _normalized(value) not in produced_paths:
-                self._validate_folder_path(path=value, label=label)
+                self._validate_path(path=value, label=label, kind="folder", is_input=is_input)
             return
 
         if annotation is tmp_dir:
@@ -976,24 +994,29 @@ class TaskValidator:
             if not Path(value).exists():
                 raise FileNotFoundError(f"{label} must exist: {str(value)!r}")
 
-    def _validate_file_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete file path argument or return value."""
-        path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
+    def _validate_path(
+        self, *, path: Any, label: str, kind: Literal["file", "folder"], is_input: bool
+    ) -> None:
+        """Validate a concrete file or folder path argument or return value.
 
-        if not Path(path_str).is_file():
-            raise FileNotFoundError(f"{label} must exist and be a file: {path_str!r}")
-
-    def _validate_folder_path(self, *, path: Any, label: str) -> None:
-        """Validate a concrete folder path argument or return value."""
+        A missing input may be one the task means to write, which ``file``
+        and ``folder`` cannot express, so the error then names ``Out[...]``.
+        """
         path_str = str(path)
         if " " in path_str:
             raise ValueError(f"{label} must not contain spaces: {path_str!r}")
 
         path_obj = Path(path_str)
-        if not path_obj.exists() or not path_obj.is_dir():
-            raise FileNotFoundError(f"{label} must exist and be a directory: {path_str!r}")
+        if path_obj.is_file() if kind == "file" else path_obj.is_dir():
+            return
+        noun = "a file" if kind == "file" else "a directory"
+        message = f"{label} must exist and be {noun}: {path_str!r}"
+        if is_input:
+            message += (
+                f". If the task writes this path, annotate the parameter `Out[{kind}]`; "
+                f"`{kind}` declares a path the task reads."
+            )
+        raise FileNotFoundError(message)
 
     def _validate_tmp_dir_path(self, *, path: Any, label: str) -> None:
         """Validate an auto-created scratch directory."""

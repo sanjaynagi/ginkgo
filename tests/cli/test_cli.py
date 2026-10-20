@@ -708,8 +708,7 @@ def main():
         assert "cannot be known without running" not in result.stdout
         assert "Wave 1" in result.stdout
         # The plan labels a node exactly as the live run table does.
-        assert "• write_marker  [will run]" in result.stdout
-        assert "[will run]" in result.stdout
+        assert "• write_marker  [will run: no prior entry]" in result.stdout
         assert "no tasks executed" in result.stdout
         assert not Path("should-not-exist.txt").exists()
         runs_root = Path(".ginkgo") / "runs"
@@ -887,7 +886,7 @@ def main():
             assert f"analyse[{sample}]" in result.stdout
         # The leaf task's cache state is determinable; fan-out branches
         # downstream of a will-run task are not.
-        assert "[will run]" in result.stdout
+        assert "[will run: no prior entry]" in result.stdout
         assert "[unknown]" in result.stdout
         assert "? [unknown]  cache status cannot be known without running" in result.stdout
         assert "no tasks executed" in result.stdout
