@@ -43,7 +43,7 @@ from ginkgo.cli.workflow_params import (
 )
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import (
-    PARAMS_CONFIG_KEY,
+    RUNTIME_CONFIG_TABLES,
     config_session,
     load_runtime_config_layers,
     merge_config_layers,
@@ -638,11 +638,14 @@ def run_workflow(
                 # record shows the values the run actually used, including
                 # any given on the CLI. The raw [params] table is dropped:
                 # recording it alongside would show a config value next to
-                # the resolved value that superseded it.
+                # the resolved value that superseded it. So are ginkgo's own
+                # tables, which a workflow loading ginkgo.toml also reads.
                 params=render_value(
                     {
                         **{
-                            key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY
+                            key: value
+                            for key, value in params.items()
+                            if key not in RUNTIME_CONFIG_TABLES
                         },
                         **declared_params,
                     }
