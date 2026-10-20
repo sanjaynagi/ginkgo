@@ -10,6 +10,10 @@ def summarize(input_path: file, output_path: Out[file]) -> file:
     ...
 ```
 
+The first positional argument of `@task` is the task kind, so
+`@task("shell")` and `@task(kind="shell")` are the same; with none,
+`@task()` is a Python task.
+
 Use shell tasks when the real unit of work is a command with declared outputs:
 
 ```python
@@ -219,6 +223,56 @@ Choose `.map()` when lists are meant to line up positionally. Choose
 `.product_map()` when you want all combinations. For combinations that are not
 a grid, build one row per combination in a DataFrame and map over its columns:
 `.map(**rows.to_dict("list"), out=per_branch("results/{a}_{b}.txt"))`.
+
+Give each branch its own output path with `per_branch()`, whose placeholders
+name the call's own arguments and are filled from each branch's values. It is
+the way to name outputs of a `.product_map()` grid; an `expand()` list there
+would be crossed with the grid as one more axis, and is refused:
+
+```python
+from ginkgo import per_branch
+
+comparisons = compare_thresholds(metrics=["accuracy", "f1"]).product_map(
+    sample_id=["s1", "s2"],
+    threshold=[0.1, 0.2, 0.3],
+    output_path=per_branch("results/{sample_id}_{threshold}.json"),
+)
+```
+
+To fan in, pass the fan-out's result straight to a parameter typed as a list.
+The consumer waits for every branch and receives their results in branch
+order:
+
+```python
+@task()
+def merge_reports(reports: list[file], output_path: Out[file]) -> file:
+    ...
+
+@flow
+def main():
+    reports = build_report(type="html").map(
+        sample_id=["s1", "s2", "s3"],
+        output_path=per_branch("results/{sample_id}.html"),
+    )
+    return merge_reports(reports=reports, output_path="results/merged.html")
+```
+
+To run a task once per file in a folder, list the folder in the `@flow` body,
+which runs when the graph is built, and map over the paths. This sees only
+files that exist before the run starts; for files an upstream task writes,
+have that task return a `list[file]` instead:
+
+```python
+from pathlib import Path
+
+@flow
+def main():
+    fastqs = sorted(Path("data/raw").glob("*.fastq.gz"))
+    return filter_fastq(min_length=8).map(
+        fastq=[str(path) for path in fastqs],
+        output_path=[f"results/filtered/{path.name}" for path in fastqs],
+    )
+```
 
 ## Shell commands are strict
 
