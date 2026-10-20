@@ -43,6 +43,19 @@ class TestSubprocessUsageSampler:
         assert usage["cpu_seconds"] >= 0.0
         assert usage["source"] == "sampled"
 
+    def test_a_command_shorter_than_the_interval_never_runs_ps(self, monkeypatch) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "ginkgo.runtime.environment.resources._sample_tree_usage",
+            lambda *, root_pid: calls.append(root_pid),
+        )
+        sampler = SubprocessUsageSampler(root_pid=1, interval_seconds=10.0)
+        sampler.start()
+        sampler.stop()
+
+        assert calls == []
+        assert sampler.result() is None
+
     def test_missing_process_yields_none(self) -> None:
         sampler = SubprocessUsageSampler(root_pid=-12345, interval_seconds=0.05)
         sampler.start()
