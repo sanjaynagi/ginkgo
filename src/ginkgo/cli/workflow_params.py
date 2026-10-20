@@ -22,6 +22,7 @@ from ginkgo.params import (
     ParamError,
     find_global_param_reads,
     flag_for,
+    unrecognized_arguments_message,
 )
 from ginkgo.runtime.module_loader import load_module_from_path
 
@@ -93,7 +94,7 @@ def load_param_config(
     )
 
 
-def validate_param_extras(session: _ConfigSession) -> None:
+def validate_param_extras(session: _ConfigSession, *, command_flags: Iterable[str] = ()) -> None:
     """Reject command-line tokens that no parameter declaration claimed.
 
     Call once the flow has been built, so that parameters declared inside the
@@ -103,6 +104,10 @@ def validate_param_extras(session: _ConfigSession) -> None:
     ----------
     session : _ConfigSession
         The session the workflow was imported under.
+    command_flags : Iterable[str], optional
+        The command's own flags. An unclaimed token reaches here whether it
+        mistypes a declared parameter or one of these, so both are offered as
+        suggestions.
 
     Raises
     ------
@@ -113,12 +118,12 @@ def validate_param_extras(session: _ConfigSession) -> None:
     if not unknown:
         return
 
-    declared = sorted(session.declarations)
-    known = ", ".join(flag_for(name) for name in declared) if declared else "none"
-    raise ParamError(
-        f"unrecognized arguments: {' '.join(unknown)}\n"
-        f"Parameters declared by this workflow: {known}"
+    declared = [flag_for(name) for name in sorted(session.declarations)]
+    known = ", ".join(declared) if declared else "none"
+    message = unrecognized_arguments_message(
+        tokens=unknown, known_flags=[*declared, *command_flags]
     )
+    raise ParamError(f"{message}\nParameters declared by this workflow: {known}")
 
 
 def global_param_reads(

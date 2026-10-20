@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from rich.markup import escape
 
@@ -114,6 +114,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         keep_going=getattr(args, "keep_going", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
+        command_flags=getattr(args, "command_flags", ()),
     )
 
 
@@ -205,6 +206,7 @@ def run_workflow(
     executor: str = "local",
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
+    command_flags: Collection[str] = (),
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -241,7 +243,7 @@ def run_workflow(
         # Validated after the flow body has run, so parameters declared inside
         # it have had their chance to claim a flag. Deliberately outside the
         # construction recorder: parameter resolution mints no task calls.
-        validate_param_extras(session)
+        validate_param_extras(session, command_flags=command_flags)
         params = session.merged_loaded_values()
         declared_params = session.resolved_params()
         param_sources = session.param_sources()

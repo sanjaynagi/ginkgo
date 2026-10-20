@@ -77,6 +77,7 @@ def command_doctor(args) -> int:
         ),
         backend_factory=build_backend,
         param_extras=getattr(args, "param_extras", ()),
+        command_flags=getattr(args, "command_flags", ()),
     )
 
     # A warning, not an error: nothing is corrupt, and the workflow is still

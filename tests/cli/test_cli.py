@@ -2188,6 +2188,20 @@ def main():
         assert result.returncode == 2
         assert "unrecognized arguments: --bogus" in result.stderr
 
+    def test_other_commands_suggest_the_flag_a_typo_meant(self) -> None:
+        result = _run_cli("runs", "ls", "--limt", "5", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "--limt: did you mean --limit?" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("typo", "meant"), [("--dryrun", "--dry-run"), ("--n-rep", "--n-reps")]
+    )
+    def test_run_suggests_the_flag_or_parameter_a_typo_meant(self, typo: str, meant: str) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", typo, cwd=Path.cwd())
+        assert result.returncode == 1
+        assert f"{typo}: did you mean {meant}?" in result.stdout + result.stderr
+
     def test_inspect_workflow_exposes_declared_parameters(self) -> None:
         Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
         result = _run_cli("inspect", "workflow", "workflow.py", cwd=Path.cwd())

@@ -25,7 +25,7 @@ from ginkgo.cli.commands.secrets import command_secrets
 from ginkgo.cli.commands.why import command_why
 from ginkgo.cli.common import RunMode
 from ginkgo.cli.errors import report_failure, report_interrupt, traceback_requested
-from ginkgo.params import looks_like_flag
+from ginkgo.params import looks_like_flag, unrecognized_arguments_message
 from ginkgo.plugins.api import CliCommand
 from ginkgo.plugins.registry import PluginNotFoundError, first_party_provider, plugin_registry
 from ginkgo.query import SQL_ROW_LIMIT
@@ -141,10 +141,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Commands that import a workflow accept its declared parameters as flags.
     # Every other command must still reject anything it does not recognise.
+    command_parser = _command_parser(parser=parser, args=args)
+    args.command_flags = frozenset(
+        flag for action in command_parser._actions for flag in action.option_strings
+    )
     if _accepts_workflow_params(args):
         args.param_extras = tuple(extras)
     elif extras:
-        parser.error(f"unrecognized arguments: {' '.join(extras)}")
+        command_parser.error(
+            unrecognized_arguments_message(tokens=extras, known_flags=args.command_flags)
+        )
     else:
         args.param_extras = ()
 
@@ -218,6 +224,29 @@ def _parser_tree(parser: argparse.ArgumentParser) -> list[argparse.ArgumentParse
                     if isinstance(value, argparse.ArgumentParser)
                 )
     return found
+
+
+def _command_parser(
+    *, parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> argparse.ArgumentParser:
+    """Return the parser of the (sub)command *args* was parsed for.
+
+    Descends through each subcommand the parse chose, so ``ginkgo inspect
+    workflow`` answers with the ``workflow`` parser rather than ``inspect``'s.
+    """
+    current = parser
+    while True:
+        chosen = next(
+            (
+                action.choices.get(getattr(args, action.dest, None) or "")
+                for action in current._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if chosen is None:
+            return current
+        current = chosen
 
 
 def _all_option_strings(parser: argparse.ArgumentParser) -> frozenset[str]:

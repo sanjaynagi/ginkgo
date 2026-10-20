@@ -16,6 +16,7 @@ to import a workflow can enumerate its inputs without running the flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import difflib
 import re
 import sys
 from typing import Any, Callable, Iterable, Sequence
@@ -400,6 +401,35 @@ def looks_like_flag(token: str) -> bool:
     except ValueError:
         return True
     return False
+
+
+def unrecognized_arguments_message(*, tokens: Sequence[str], known_flags: Iterable[str]) -> str:
+    """Report unrecognised command-line tokens, suggesting the flag each typo meant.
+
+    Parameters
+    ----------
+    tokens : Sequence[str]
+        The tokens nothing claimed, flags and their values alike.
+    known_flags : Iterable[str]
+        Every flag the command accepts, such as ``--dry-run`` or a declared
+        parameter's ``--n-reps``.
+
+    Returns
+    -------
+    str
+        ``unrecognized arguments: ...``, followed by one "did you mean" line
+        per unrecognised flag that closely matches a known one.
+    """
+    candidates = sorted(set(known_flags))
+    lines = [f"unrecognized arguments: {' '.join(tokens)}"]
+    for token in tokens:
+        if not looks_like_flag(token):
+            continue
+        flag = token.split("=", 1)[0]
+        close = difflib.get_close_matches(flag, candidates, n=1)
+        if close:
+            lines.append(f"{flag}: did you mean {close[0]}?")
+    return "\n".join(lines)
 
 
 def extract_flag_values(
