@@ -31,6 +31,7 @@ from ginkgo.cli.renderers.run import (
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
+from ginkgo.runtime.run_summary import TERMINAL_STATUSES
 from tests.conftest import ShellEnvironment
 from ginkgo.runtime.events import (
     EnvPrepareCompleted,
@@ -355,7 +356,7 @@ def test_a_fanout_of_skips_leaves_the_window_on_the_work_that_ran(tmp_path: Path
     assert "step_41" not in rendered
     assert "above" not in rendered
     assert "below" in rendered
-    assert renderer._state.terminal_count() == 42
+    assert sum(renderer._state.status_counts()[status] for status in TERMINAL_STATUSES) == 42
 
 
 def test_the_table_keeps_its_width_as_the_window_scrolls(tmp_path: Path) -> None:
@@ -500,7 +501,8 @@ def test_a_skipped_task_is_terminal_without_a_duration() -> None:
 
     assert state.rows[0].status == "skipped"
     assert state.rows[0].started_at is None
-    assert state.terminal_count() == 1
+    assert state.rows[0].finished_at is not None
+    assert state.done_count() == 0
     assert _status_icon("skipped") == "⊘"
 
 
@@ -523,7 +525,7 @@ def test_the_summary_counts_skips_and_ignored_failures(tmp_path: Path) -> None:
                 ignored=True,
             )
         ],
-        skipped=[SkipDetails(task_label="task_b", blocker_label="task_a")],
+        skipped=[SkipDetails(task_label="task_b", cause="blocked by task_a")],
     )
 
     text = output.getvalue()
@@ -667,7 +669,7 @@ def test_a_notice_from_an_unplanned_task_uses_its_display_label(tmp_path: Path) 
 def test_a_wide_fanout_of_skips_is_counted_not_listed(tmp_path: Path) -> None:
     renderer, _ = _renderer(tmp_path)
     skipped = [
-        SkipDetails(task_label=f"branch[{index}]", blocker_label="load") for index in range(50)
+        SkipDetails(task_label=f"branch[{index}]", cause="blocked by load") for index in range(50)
     ]
 
     report = renderer._layout.render_skip_report(skipped)
@@ -874,3 +876,18 @@ def test_a_single_path_tracked_input_uses_singular_wording(tmp_path: Path) -> No
     renderer.finish(elapsed=1.0, success=True, path_tracked_inputs=1)
 
     assert "1 input is tracked by path only" in output.getvalue()
+
+
+def test_progress_counts_only_tasks_with_a_result_as_complete(tmp_path: Path) -> None:
+    """R4: a failed or skipped task is terminal but not complete."""
+    renderer, _ = _renderer(tmp_path)
+    for node_id, status in ((0, "succeeded"), (1, "failed"), (2, "skipped")):
+        renderer.write(
+            json.dumps({"task": f"mod.task_{node_id}", "status": status, "node_id": node_id})
+            + "\n"
+        )
+
+    console = Console(width=120, record=True)
+    console.print(renderer._layout.render_progress_section())
+
+    assert "1/3 complete (1 failed, 1 skipped)" in console.export_text()

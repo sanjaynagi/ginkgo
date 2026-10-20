@@ -21,6 +21,7 @@ from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, Event
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label, task_base_name
+from ginkgo.errors import GinkgoError
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
@@ -346,6 +347,17 @@ def run_workflow(
     dropped_calls = unreachable_call_diagnostics(calls=unreachable_calls)
     if not plan_reports_dropped:
         _print_dropped_calls(diagnostics=dropped_calls)
+    # Every call dropped is not a smaller run but no run at all: nothing the
+    # flow asked for would happen, so neither a run nor a dry run may pass.
+    if unreachable_calls and not evaluator.task_nodes:
+        if plan_reports_dropped:
+            _print_dropped_calls(diagnostics=dropped_calls)
+        count = len(unreachable_calls)
+        raise GinkgoError(
+            f"No task would run: every task call in the flow ({count}, named above) was "
+            "dropped from the graph. Return the result of each call the flow needs, for "
+            "example `return my_task(x=1)` or a list of results."
+        )
     try:
         evaluator.validate_graph()
     except Exception:
@@ -512,239 +524,222 @@ def run_workflow(
         sink=lambda resources: bus.emit(RunResourcesSampled(run_id=run_id, resources=resources)),
     )
     warning_console = console(sys.stderr)
-    try:
-        with ExitStack() as stack:
-            stack.callback(recorder.close)
-            reader = stack.enter_context(query.open())
-            subscriber_context = EventSubscriberContext(
-                config=runtime_params,
-                secret_resolver=secret_resolver,
-                store=reader.store,
-                run_id=run_id,
-                run_dir=run_dir.path,
-                workflow_path=workflow_path,
-                warn=lambda message: warning_console.print(f"[yellow]⚠[/] {escape(message)}"),
-            )
-            _warn_unserved_notifications(config=runtime_params, warn=subscriber_context.warn)
-            for subscriber_type in plugin_registry().all(EventSubscriberType):
-                subscriber = subscriber_type.build(subscriber_context)
-                if subscriber is None:
-                    continue
-                stack.callback(subscriber.close)
-                # Registered on the recorder, not the bus: a subscriber may ask
-                # the store about what it is reacting to, so it must not run
-                # until those events are committed.
-                recorder.on_committed(subscriber.handle)
-            renderer = None
-            if output_mode in {"agent", "agent_verbose"}:
-                bus.subscribe(
-                    JsonlEventRenderer(
-                        stream=sys.stdout,
-                        include_task_logs=output_mode == "agent_verbose",
-                    )
+    with ExitStack() as stack:
+        stack.callback(recorder.close)
+        # Stopped before the recorder closes: stopping emits a final sample.
+        stack.callback(resource_monitor.stop)
+        reader = stack.enter_context(query.open())
+        subscriber_context = EventSubscriberContext(
+            config=runtime_params,
+            secret_resolver=secret_resolver,
+            store=reader.store,
+            run_id=run_id,
+            run_dir=run_dir.path,
+            workflow_path=workflow_path,
+            warn=lambda message: warning_console.print(f"[yellow]⚠[/] {escape(message)}"),
+        )
+        _warn_unserved_notifications(config=runtime_params, warn=subscriber_context.warn)
+        for subscriber_type in plugin_registry().all(EventSubscriberType):
+            subscriber = subscriber_type.build(subscriber_context)
+            if subscriber is None:
+                continue
+            stack.callback(subscriber.close)
+            # Registered on the recorder, not the bus: a subscriber may ask
+            # the store about what it is reacting to, so it must not run
+            # until those events are committed.
+            recorder.on_committed(subscriber.handle)
+        renderer = None
+        if output_mode in {"agent", "agent_verbose"}:
+            bus.subscribe(
+                JsonlEventRenderer(
+                    stream=sys.stdout,
+                    include_task_logs=output_mode == "agent_verbose",
                 )
-            else:
-                renderer = CliRunRenderer(
-                    console=rich_console,
-                    summary=CliRunSummary(
-                        run_id=run_id,
-                        mode=output_mode,
-                        run_dir=run_dir.path,
-                        cores=evaluator.cores,
-                        memory=memory,
-                        executor_label=(
-                            executor_registry.label(executor_registry.default_name)
-                            if executor_registry.default_name is not None
-                            else "local"
-                        ),
-                        pinned_executors=pinned_executors,
-                    ),
-                    resources=ResourceRenderState(provider=resource_monitor.current_summary),
-                )
-                bus.subscribe(RichEventRenderer(renderer=renderer))
-            evaluator = ConcurrentEvaluator(
-                run_dir=run_dir,
-                event_bus=bus,
-                trust_mtimes=trust_mtimes,
-                **evaluator_kwargs,
             )
-            if renderer is not None:
-                renderer.start(planned_tasks=planned_tasks)
-            bus.emit(
-                RunStarted(
+        else:
+            renderer = CliRunRenderer(
+                console=rich_console,
+                summary=CliRunSummary(
                     run_id=run_id,
-                    workflow=str(workflow_path),
-                    jobs=jobs,
-                    cores=cores,
+                    mode=output_mode,
+                    run_dir=run_dir.path,
+                    cores=evaluator.cores,
                     memory=memory,
-                    # Declared parameters layer over the loaded config so the
-                    # record shows the values the run actually used, including
-                    # any given on the CLI. The raw [params] table is dropped:
-                    # recording it alongside would show a config value next to
-                    # the resolved value that superseded it.
-                    params=render_value(
-                        {
-                            **{
-                                key: value
-                                for key, value in params.items()
-                                if key != PARAMS_CONFIG_KEY
-                            },
-                            **declared_params,
-                        }
+                    executor_label=(
+                        executor_registry.label(executor_registry.default_name)
+                        if executor_registry.default_name is not None
+                        else "local"
                     ),
-                    param_sources=param_sources,
-                    ginkgo_version=_ginkgo_version(),
-                    parent_run_id=os.environ.get(PARENT_RUN_ID_ENV) or None,
-                    parent_task_id=os.environ.get(PARENT_TASK_ID_ENV) or None,
-                )
+                    pinned_executors=pinned_executors,
+                ),
+                resources=ResourceRenderState(provider=resource_monitor.current_summary),
             )
-            # A run that dies before RunCompleted — a graph that will not
-            # build, an environment that will not prepare — would otherwise sit
-            # in the ledger as 'running' forever, with no manifest.
-            stack.callback(_close_unfinished_run, bus=bus, recorder=recorder, run_id=run_id)
-            bus.emit(
-                PhaseTimed(run_id=run_id, phase="workflow_load_seconds", seconds=load_elapsed)
+            bus.subscribe(RichEventRenderer(renderer=renderer))
+        evaluator = ConcurrentEvaluator(
+            run_dir=run_dir,
+            event_bus=bus,
+            trust_mtimes=trust_mtimes,
+            **evaluator_kwargs,
+        )
+        if renderer is not None:
+            renderer.start(planned_tasks=planned_tasks)
+        bus.emit(
+            RunStarted(
+                run_id=run_id,
+                workflow=str(workflow_path),
+                jobs=jobs,
+                cores=cores,
+                memory=memory,
+                # Declared parameters layer over the loaded config so the
+                # record shows the values the run actually used, including
+                # any given on the CLI. The raw [params] table is dropped:
+                # recording it alongside would show a config value next to
+                # the resolved value that superseded it.
+                params=render_value(
+                    {
+                        **{
+                            key: value for key, value in params.items() if key != PARAMS_CONFIG_KEY
+                        },
+                        **declared_params,
+                    }
+                ),
+                param_sources=param_sources,
+                ginkgo_version=_ginkgo_version(),
+                parent_run_id=os.environ.get(PARENT_RUN_ID_ENV) or None,
+                parent_task_id=os.environ.get(PARENT_TASK_ID_ENV) or None,
             )
-            bus.emit(
-                PhaseTimed(
-                    run_id=run_id,
-                    phase="workflow_validate_seconds",
-                    seconds=validate_elapsed,
-                )
+        )
+        # A run that dies before RunCompleted — a graph that will not
+        # build, an environment that will not prepare — would otherwise sit
+        # in the ledger as 'running' forever, with no manifest.
+        stack.callback(_close_unfinished_run, bus=bus, recorder=recorder, run_id=run_id)
+        bus.emit(PhaseTimed(run_id=run_id, phase="workflow_load_seconds", seconds=load_elapsed))
+        bus.emit(
+            PhaseTimed(
+                run_id=run_id,
+                phase="workflow_validate_seconds",
+                seconds=validate_elapsed,
             )
-            bus.emit(
-                RunValidated(
-                    run_id=run_id,
-                    task_count=task_count,
-                    edge_count=edge_count,
-                    env_count=env_count,
-                )
+        )
+        bus.emit(
+            RunValidated(
+                run_id=run_id,
+                task_count=task_count,
+                edge_count=edge_count,
+                env_count=env_count,
             )
-            resource_monitor.start()
-            run_started = time.perf_counter()
-            failure: BaseException | None = None
-            root_skipped: RootSkippedError | None = None
-            try:
-                evaluator.evaluate(expr)
-            except RootSkippedError as exc:
-                # An expected outcome of a non-fatal failure policy, not a
-                # crash: the run drained, it just has no result to show.
-                root_skipped = exc
-            except BaseException as exc:
-                failure = exc
+        )
+        resource_monitor.start()
+        run_started = time.perf_counter()
+        failure: BaseException | None = None
+        root_skipped: RootSkippedError | None = None
+        try:
+            evaluator.evaluate(expr)
+        except RootSkippedError as exc:
+            # An expected outcome of a non-fatal failure policy, not a
+            # crash: the run drained, it just has no result to show.
+            root_skipped = exc
+        except BaseException as exc:
+            failure = exc
 
-            resource_summary = resource_monitor.stop()
-            bus.emit(
-                PhaseTimed(
-                    run_id=run_id,
-                    phase="workflow_execute_seconds",
-                    seconds=time.perf_counter() - run_started,
-                )
+        resource_summary = resource_monitor.stop()
+        bus.emit(
+            PhaseTimed(
+                run_id=run_id,
+                phase="workflow_execute_seconds",
+                seconds=time.perf_counter() - run_started,
             )
-            # The counts describe the tasks, which are already in the ledger;
-            # flushing is what makes them readable rather than merely queued.
-            recorder.flush()
-            # A failure the policy let pass is still a failure: the run is
-            # recorded failed whether or not it stopped dispatching.
-            ignored_failures = len(evaluator.ignored_failures)
-            run_failed = failure is not None or root_skipped is not None or ignored_failures > 0
-            # An interrupt is not a failure. It gets its own terminal status so
-            # that the ledger can tell "someone pressed Ctrl-C" apart from
-            # "the workflow broke" — and so the row closes at all, which is
-            # what a run left at 'running' forever never did.
-            interrupt = failure if isinstance(failure, KeyboardInterrupt) else None
-            bus.emit(
-                RunCompleted(
-                    run_id=run_id,
-                    status=(
-                        "cancelled"
-                        if interrupt is not None
-                        else ("failed" if run_failed else "success")
-                    ),
-                    task_counts=reader.task_status_counts(run_id),
-                    resources=resource_summary,
-                    error=_run_error_message(
-                        failure=failure,
-                        root_skipped=root_skipped,
-                        ignored_failures=ignored_failures,
-                    ),
-                )
+        )
+        # The counts describe the tasks, which are already in the ledger;
+        # flushing is what makes them readable rather than merely queued.
+        recorder.flush()
+        # A failure the policy let pass is still a failure: the run is
+        # recorded failed whether or not it stopped dispatching.
+        ignored_failures = len(evaluator.ignored_failures)
+        run_failed = failure is not None or root_skipped is not None or ignored_failures > 0
+        # An interrupt is not a failure. It gets its own terminal status so
+        # that the ledger can tell "someone pressed Ctrl-C" apart from
+        # "the workflow broke" — and so the row closes at all, which is
+        # what a run left at 'running' forever never did.
+        interrupt = failure if isinstance(failure, KeyboardInterrupt) else None
+        bus.emit(
+            RunCompleted(
+                run_id=run_id,
+                status=(
+                    "cancelled"
+                    if interrupt is not None
+                    else ("failed" if run_failed else "success")
+                ),
+                task_counts=reader.task_status_counts(run_id),
+                resources=resource_summary,
+                error=_run_error_message(
+                    failure=failure,
+                    root_skipped=root_skipped,
+                    ignored_failures=ignored_failures,
+                ),
             )
-            run_summary = reader.run(run_id)
+        )
+        run_summary = reader.run(run_id)
 
-            if interrupt is not None:
-                # No failure panel: nothing went wrong, the run was stopped.
-                # The tally still prints, because what did finish before the
-                # interrupt is the one thing worth knowing here.
-                if renderer is not None:
-                    renderer.finish(
-                        elapsed=time.perf_counter() - run_started,
-                        success=False,
-                        cancelled=True,
-                        resources=resource_summary,
-                        remote_summary=evaluator.remote_stats.summary(),
-                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
-                    )
-                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
-                # Re-raised so the top level prints its interrupt line and
-                # exits 130, as it does for an interrupt anywhere else.
-                raise interrupt
-
-            if failure is not None:
-                if renderer is not None:
-                    failure_details = _load_failure_details(
-                        run_summary=run_summary,
-                        renderer=renderer,
-                        verbose=output_mode == "verbose",
-                    )
-                    renderer.finish(
-                        elapsed=time.perf_counter() - run_started,
-                        success=False,
-                        resources=resource_summary,
-                        failure_details=failure_details,
-                        skipped=_load_skip_details(
-                            run_summary=run_summary,
-                            renderer=renderer,
-                        ),
-                        remote_summary=evaluator.remote_stats.summary(),
-                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
-                    )
-                    print(f"Run directory: {run_dir.path}", file=sys.stderr)
-                raise failure
-
-            if run_failed:
-                # Nothing stopped the run, so it is reported like any other
-                # finished run: the failures and what they cost, and also the
-                # notebooks the surviving branches really did
-                # produce. Only the summary line differs from a success.
-                if renderer is not None:
-                    renderer.finish(
-                        elapsed=time.perf_counter() - run_started,
-                        success=False,
-                        resources=resource_summary,
-                        failure_details=_load_failure_details(
-                            run_summary=run_summary,
-                            renderer=renderer,
-                            verbose=output_mode == "verbose",
-                        ),
-                        skipped=_load_skip_details(
-                            run_summary=run_summary,
-                            renderer=renderer,
-                        ),
-                        pages=_rendered_pages(
-                            run_summary=run_summary,
-                            renderer=renderer,
-                        ),
-                        remote_summary=evaluator.remote_stats.summary(),
-                        path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
-                    )
-                return IGNORED_FAILURES_EXIT_CODE
-
+        if interrupt is not None:
+            # No failure panel: nothing went wrong, the run was stopped.
+            # The tally still prints, because what did finish before the
+            # interrupt is the one thing worth knowing here.
             if renderer is not None:
                 renderer.finish(
                     elapsed=time.perf_counter() - run_started,
-                    success=True,
+                    success=False,
+                    cancelled=True,
                     resources=resource_summary,
+                    remote_summary=evaluator.remote_stats.summary(),
+                    path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+                )
+                print(f"Run directory: {run_dir.path}", file=sys.stderr)
+            # Re-raised so the top level prints its interrupt line and
+            # exits 130, as it does for an interrupt anywhere else.
+            raise interrupt
+
+        if failure is not None:
+            if renderer is not None:
+                failure_details = _load_failure_details(
+                    run_summary=run_summary,
+                    renderer=renderer,
+                    verbose=output_mode == "verbose",
+                )
+                renderer.finish(
+                    elapsed=time.perf_counter() - run_started,
+                    success=False,
+                    resources=resource_summary,
+                    failure_details=failure_details,
+                    skipped=_load_skip_details(
+                        run_summary=run_summary,
+                        renderer=renderer,
+                    ),
+                    remote_summary=evaluator.remote_stats.summary(),
+                    path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+                )
+                print(f"Run directory: {run_dir.path}", file=sys.stderr)
+            raise failure
+
+        if run_failed:
+            # Nothing stopped the run, so it is reported like any other
+            # finished run: the failures and what they cost, and also the
+            # notebooks the surviving branches really did
+            # produce. Only the summary line differs from a success.
+            if renderer is not None:
+                renderer.finish(
+                    elapsed=time.perf_counter() - run_started,
+                    success=False,
+                    resources=resource_summary,
+                    failure_details=_load_failure_details(
+                        run_summary=run_summary,
+                        renderer=renderer,
+                        verbose=output_mode == "verbose",
+                    ),
+                    skipped=_load_skip_details(
+                        run_summary=run_summary,
+                        renderer=renderer,
+                    ),
                     pages=_rendered_pages(
                         run_summary=run_summary,
                         renderer=renderer,
@@ -752,8 +747,20 @@ def run_workflow(
                     remote_summary=evaluator.remote_stats.summary(),
                     path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
                 )
-    finally:
-        resource_monitor.stop()
+            return IGNORED_FAILURES_EXIT_CODE
+
+        if renderer is not None:
+            renderer.finish(
+                elapsed=time.perf_counter() - run_started,
+                success=True,
+                resources=resource_summary,
+                pages=_rendered_pages(
+                    run_summary=run_summary,
+                    renderer=renderer,
+                ),
+                remote_summary=evaluator.remote_stats.summary(),
+                path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
+            )
     return 0
 
 
@@ -830,7 +837,18 @@ def _load_skip_details(
             if isinstance(blocker_name, str) and blocker_name
             else "a failed task"
         )
-        details.append(SkipDetails(task_label=labels[task.task_key], blocker_label=blocker_label))
+        reason = blocker.get("reason")
+        if reason == "interrupted":
+            cause = "not started: the run was interrupted"
+        elif reason == "run_stopped":
+            cause = (
+                f"not started: the run stopped when {blocker_label} failed"
+                if blocker.get("task_id")
+                else "not started: the run stopped"
+            )
+        else:
+            cause = f"blocked by {blocker_label}"
+        details.append(SkipDetails(task_label=labels[task.task_key], cause=cause))
     return details
 
 

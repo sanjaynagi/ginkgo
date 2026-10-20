@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from ginkgo.cli.common import RunMode
-from ginkgo.runtime.run_summary import TERMINAL_STATUSES
+from ginkgo.runtime.run_summary import DONE_STATUSES, TERMINAL_STATUSES
 
 
 @dataclass(kw_only=True)
@@ -94,15 +94,16 @@ class FailureDetails:
 
 @dataclass(frozen=True, kw_only=True)
 class SkipDetails:
-    """One task a failure left without a result, and the failure itself.
+    """One task a failure left without a result, and why.
 
-    Both labels are read the same way — the run's own label for a task, or
-    its base name — so that two tasks are counted together only when they
-    really are the same task.
+    ``cause`` names the failure the same way ``task_label`` names the task —
+    the run's own label for a task, or its base name — so that two skips are
+    counted together only when they really have the same cause.
     """
 
     task_label: str
-    blocker_label: str
+    cause: str
+    """Why the task has no result, such as ``blocked by load``."""
 
 
 @dataclass
@@ -134,9 +135,9 @@ class _TaskGroup:
         """Return True if every invocation has reached a terminal state."""
         return all(row.status in TERMINAL_STATUSES for row in self.rows)
 
-    def terminal_count(self) -> int:
-        """Return the number of invocations in a terminal state."""
-        return sum(1 for row in self.rows if row.status in TERMINAL_STATUSES)
+    def done_count(self) -> int:
+        """Return the number of invocations that produced a result: succeeded or cached."""
+        return sum(1 for row in self.rows if row.status in DONE_STATUSES)
 
     def elapsed(self, *, now: float) -> float | None:
         """Return wall-clock seconds from earliest start to latest finish or *now*."""

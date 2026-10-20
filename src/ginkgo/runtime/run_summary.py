@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 # renderers).
 TERMINAL_STATUSES = frozenset({"cached", "succeeded", "failed", "skipped"})
 
+DONE_STATUSES = frozenset({"cached", "succeeded"})
+"""The terminal statuses of a task that produced a result."""
+
 
 def _base_name(value: Any) -> str:
     """Return the final dotted segment of a task identifier."""
@@ -90,9 +93,12 @@ class TaskSummary:
     outputs: tuple[dict[str, Any], ...]
     resource_usage: dict[str, Any] | None
     skipped_because: dict[str, Any] | None
-    """The failed task this one was waiting on, when it was skipped."""
+    """Why this task was skipped, and the failure the skip is attributed to."""
     ignored: bool
     """Whether the run's failure policy let this task's failure pass."""
+    attempt_history: tuple[dict[str, Any], ...] = ()
+    """One entry per attempt, oldest first: its ``attempt`` number, ``status``,
+    ``started_at``/``finished_at``, ``exit_code`` and ``failure``."""
     timings: dict[str, float] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
@@ -299,11 +305,15 @@ class RunSummary:
         prints this as JSON and the run directory keeps it as YAML, so the file
         and the command cannot disagree about what a run was.
 
-        A task's ``status`` carries ``"skipped"`` for one left resultless by a
-        failure it was waiting on, and such a task also carries
-        ``skipped_because``, the ``task_id``/``task_name`` of that failure. A
-        failure the run's policy let pass carries ``ignored: true``. All three
-        keys are present only where they mean something.
+        A task's ``status`` carries ``"skipped"`` for one left resultless
+        without failing itself, and such a task also carries
+        ``skipped_because``: the skip's ``reason`` (``upstream_failed``,
+        ``run_stopped`` or ``interrupted``) and the ``task_id``/``task_name``
+        of the failure it is attributed to, null when no task caused it. A
+        failure the run's policy let pass carries ``ignored: true``. A task
+        that made more than one attempt carries ``attempt_history``, one
+        entry per attempt with its status and failure. These keys are
+        present only where they mean something.
 
         Returns
         -------
@@ -350,6 +360,10 @@ class RunSummary:
                 ("rendered_html_run_id", task.rendered_html_run_id),
                 ("skipped_because", task.skipped_because),
                 ("ignored", True if task.ignored else None),
+                (
+                    "attempt_history",
+                    list(task.attempt_history) if len(task.attempt_history) > 1 else None,
+                ),
             ):
                 if value is not None:
                     row[key] = value
@@ -440,6 +454,23 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
         if row["tracking"] is not None:
             trackings.setdefault(row["task_id"], {})[row["param"]] = str(row["tracking"])
 
+    attempts: dict[str, list[dict[str, Any]]] = {}
+    for row in store.query(
+        "SELECT task_id, attempt, status, started_at, finished_at, exit_code, failure "
+        "FROM attempts WHERE run_id = ? ORDER BY task_id, attempt",
+        (run_id,),
+    ):
+        attempts.setdefault(row["task_id"], []).append(
+            {
+                "attempt": row["attempt"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "exit_code": row["exit_code"],
+                "failure": loads(row["failure"]),
+            }
+        )
+
     tasks = store.query("SELECT * FROM tasks WHERE run_id = ? ORDER BY node_id", (run_id,))
     node_ids = {row["task_id"]: row["node_id"] for row in tasks}
 
@@ -471,6 +502,7 @@ def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ..
             row=dict(row),
             inputs=inputs.get(row["task_id"]),
             input_trackings=trackings.get(row["task_id"]),
+            attempt_history=attempts.get(row["task_id"], []),
             dependency_ids=dependencies.get((row["task_id"], "depends_on"), []),
             dynamic_dependency_ids=dependencies.get(
                 (row["task_id"], "dynamic_depends_on"),
@@ -486,6 +518,7 @@ def _build_task_summary(
     row: dict[str, Any],
     inputs: dict[str, Any] | None,
     input_trackings: dict[str, str] | None,
+    attempt_history: list[dict[str, Any]],
     dependency_ids: list[int],
     dynamic_dependency_ids: list[int],
 ) -> TaskSummary:
@@ -531,6 +564,7 @@ def _build_task_summary(
         resource_usage=_mapping(row.get("resource_usage")) or None,
         skipped_because=_mapping(extra.get("skipped_because")) or None,
         ignored=bool(extra.get("ignored")),
+        attempt_history=tuple(attempt_history),
         timings=_mapping(row.get("timings")),
     )
 

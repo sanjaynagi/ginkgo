@@ -10,6 +10,7 @@ from typing import IO
 from rich.text import Text
 from rich.traceback import Traceback
 
+from ginkgo.cli import INTERRUPT_EXIT_CODE
 from ginkgo.cli.common import console
 from ginkgo.envs.interpreter import explain_import_failure
 from ginkgo.errors import GinkgoError, failure_location
@@ -25,8 +26,6 @@ __all__ = [
 _TRACEBACK_ENV_VAR = "GINKGO_TRACEBACK"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
-#: Exit status conventionally used for termination by SIGINT (128 + 2).
-INTERRUPT_EXIT_CODE = 130
 
 #: Exit status for a run that drained under a non-fatal failure policy with
 #: failures in it: ``on_failure="ignore"`` or ``--keep-going``. Distinct from

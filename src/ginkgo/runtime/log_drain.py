@@ -37,11 +37,6 @@ class LogDrain:
     _thread: Thread | None = field(default=None, init=False, repr=False)
     _sequences: dict[tuple[int, str], int] = field(default_factory=dict, init=False, repr=False)
 
-    @property
-    def queue(self) -> Any:
-        """Return the active log event queue, or ``None`` when stopped."""
-        return self._queue
-
     def start(self, *, queue: Any) -> None:
         """Start draining worker log chunks from ``queue``."""
         self._queue = queue

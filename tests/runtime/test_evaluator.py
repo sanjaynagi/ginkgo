@@ -35,6 +35,7 @@ from ginkgo.runtime.events import (
     TaskCompleted,
     TaskFailed,
     TaskNotice,
+    TaskPlanned,
     TaskSkipped,
 )
 from ginkgo.runtime.caching.index import CacheIndex
@@ -159,6 +160,41 @@ def retrying_failure_after_marker_task(marker_path: untracked, log_path: untrack
     _time.sleep(0.3)
     append_line(log_path, "late")
     raise RuntimeError("late boom")
+
+
+@task()
+def work_after_marker_task(marker_path: untracked, log_path: untracked) -> int:
+    import time as _time
+
+    for _ in range(1000):
+        if Path(marker_path).exists():
+            break
+        _time.sleep(0.01)
+    # Finish after the fatal failure, while the stopping run drains.
+    _time.sleep(0.3)
+    append_line(log_path, "late-work")
+    return 1
+
+
+@task(retries=2, retry_backoff=60.0)
+def slow_retry_failure_task(marker_path: untracked, log_path: untracked) -> int:
+    append_line(log_path, "retrier")
+    Path(marker_path).write_text("failed", encoding="utf-8")
+    raise RuntimeError("flaky boom")
+
+
+@task()
+def fatal_failure_after_marker_task(marker_path: untracked, log_path: untracked) -> int:
+    import time as _time
+
+    for _ in range(1000):
+        if Path(marker_path).exists():
+            break
+        _time.sleep(0.01)
+    # Fail once the other task's retry is scheduled.
+    _time.sleep(0.3)
+    append_line(log_path, "fatal")
+    raise RuntimeError("fatal boom")
 
 
 @task()
@@ -714,6 +750,39 @@ class TestEvaluate:
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["attempt", "attempt"]
         assert event_collector.cached()
 
+    def test_task_planned_is_emitted_once_per_attempt(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "planned.log"
+
+        assert (
+            evaluate(
+                flaky_retry_task(marker_path="planned.marker", log_path=log_path),
+                event_bus=event_collector.bus,
+            )
+            == "ok"
+        )
+
+        planned = [event for event in event_collector.events if isinstance(event, TaskPlanned)]
+        assert len(planned) == len(event_collector.started()) == 2
+
+    def test_the_run_record_keeps_each_attempt(self, tmp_path: Path) -> None:
+        """A7: a retried task's failed attempts are not lost behind its success."""
+        ledger = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "w.py"))
+        evaluator = ConcurrentEvaluator(run_dir=ledger.run_dir, event_bus=ledger.bus)
+
+        evaluator.evaluate(flaky_retry_task(marker_path="history.marker", log_path="history.log"))
+
+        summary = ledger.finish(status="success")
+        ledger.close()
+        history = summary.to_payload()["tasks"][0]["attempt_history"]
+        assert [(entry["attempt"], entry["status"]) for entry in history] == [
+            (1, "failed"),
+            (2, "succeeded"),
+        ]
+        assert history[0]["failure"]["message"] == "transient failure"
+
     def test_task_retries_fail_after_final_attempt(self):
         log_path = "always-fail.log"
 
@@ -991,6 +1060,7 @@ class TestFailurePolicy:
         assert row.attempts_label != "—"
         assert row.cache_label == "miss"
         assert row.skipped_because == {
+            "reason": "upstream_failed",
             "task_id": "task_0002",
             "task_name": ignored_failure_task.name,
         }
@@ -1042,6 +1112,95 @@ class TestFailurePolicy:
             and event.task_name == retrying_failure_after_marker_task.name
         ]
         assert notices == ["retry 1/2 not attempted: the run is stopping after an earlier failure"]
+
+    def test_a_fail_fast_stop_leaves_no_task_pending(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "fail-fast-terminal.log"
+        marker_path = "fatal.marker"
+        evaluator = ConcurrentEvaluator(jobs=2, cores=2, event_bus=event_collector.bus)
+
+        with pytest.raises(RuntimeError, match="fatal boom"):
+            evaluator.evaluate(
+                [
+                    double_task(
+                        value=fatal_failure_marker_task(
+                            marker_path=marker_path, log_path=log_path
+                        ),
+                        log_path=log_path,
+                    ),
+                    double_task(
+                        value=work_after_marker_task(marker_path=marker_path, log_path=log_path),
+                        log_path=log_path,
+                    ),
+                ]
+            )
+
+        assert sorted(self._lines(log_path)) == ["fatal", "late-work"]
+        assert sorted(node.state for node in evaluator.task_nodes.values()) == [
+            "completed",
+            "failed",
+            "skipped",
+            "skipped",
+        ]
+        skipped = [event for event in event_collector.events if isinstance(event, TaskSkipped)]
+        assert sorted(event.reason for event in skipped) == ["run_stopped", "upstream_failed"]
+        assert {event.blocked_by_task_name for event in skipped} == {
+            fatal_failure_marker_task.name
+        }
+
+    def test_a_scheduled_retry_abandoned_by_a_stop_is_recorded_failed(
+        self,
+        tmp_path: Path,
+        event_collector: EventCollector,
+    ) -> None:
+        log_path = "abandoned-scheduled-retry.log"
+        marker_path = "retrier.marker"
+        ledger = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "w.py"))
+        ledger.bus.subscribe(event_collector.bus.emit)
+        evaluator = ConcurrentEvaluator(
+            jobs=2, cores=2, run_dir=ledger.run_dir, event_bus=ledger.bus
+        )
+
+        with pytest.raises(RuntimeError, match="fatal boom"):
+            evaluator.evaluate(
+                [
+                    slow_retry_failure_task(marker_path=marker_path, log_path=log_path),
+                    fatal_failure_after_marker_task(marker_path=marker_path, log_path=log_path),
+                ]
+            )
+
+        retrier = evaluator.task_nodes[0]
+        assert retrier.state == "failed"
+        notices = [
+            event.message
+            for event in event_collector.events
+            if isinstance(event, TaskNotice) and event.task_name == slow_retry_failure_task.name
+        ]
+        assert notices == ["retry 1/2 not attempted: the run is stopping after an earlier failure"]
+
+        summary = ledger.finish(status="failed")
+        ledger.close()
+        row = summary.tasks[0]
+        assert row.status == "failed"
+        assert row.failure["message"] == "flaky boom"
+        assert row.attempts == 1
+
+    def test_an_interrupt_skips_every_task_that_never_started(
+        self,
+        event_collector: EventCollector,
+    ) -> None:
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1, event_bus=event_collector.bus)
+        evaluator._register(double_task(value=logged_work_task(x=1, log_path="x"), log_path="x"))
+
+        evaluator._close_unfinished_nodes(reason=KeyboardInterrupt("Interrupted by SIGINT"))
+
+        skipped = [event for event in event_collector.events if isinstance(event, TaskSkipped)]
+        assert [(event.reason, event.blocked_by_task_id) for event in skipped] == [
+            ("interrupted", None),
+            ("interrupted", None),
+        ]
 
     def test_keep_going_ignores_a_fail_fast_task(self) -> None:
         log_path = "keep-going.log"
@@ -1210,17 +1369,23 @@ class TestShellTask:
 class _FakeShellExecutor:
     def __init__(self) -> None:
         self.shutdown_calls: list[tuple[bool, bool]] = []
+        self._processes: dict[int, str] | None = {7: "worker"}
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         self.shutdown_calls.append((wait, cancel_futures))
+        # As the real executor does: shutdown drops the process table.
+        self._processes = None
 
 
 class _FakeProcessPoolExecutor(ProcessPoolExecutor):
     def __init__(self) -> None:
         self.shutdown_calls: list[tuple[bool, bool]] = []
+        self._processes: dict[int, str] | None = {7: "worker"}
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         self.shutdown_calls.append((wait, cancel_futures))
+        # As the real executor does: shutdown drops the process table.
+        self._processes = None
 
 
 class _FakeTrackedProcess:
@@ -1241,7 +1406,7 @@ class TestInterruptHandling:
         shell_executor = _FakeShellExecutor()
         python_executor = _FakeProcessPoolExecutor()
         terminated: list[int] = []
-        pool_shutdowns: list[ProcessPoolExecutor] = []
+        pool_shutdowns: list[dict[int, str]] = []
 
         evaluator._running_futures = {
             future_one: (0, evaluator._on_runner_done),
@@ -1264,7 +1429,7 @@ class TestInterruptHandling:
         monkeypatch.setattr(
             executors,
             "_terminate_process_pool_workers",
-            lambda *, executor: pool_shutdowns.append(executor),
+            lambda *, processes: pool_shutdowns.append(processes),
         )
 
         evaluator._interrupt_running_work()
@@ -1274,7 +1439,7 @@ class TestInterruptHandling:
         assert terminated == [101, 202]
         assert shell_executor.shutdown_calls == [(False, True)]
         assert python_executor.shutdown_calls == [(False, True)]
-        assert pool_shutdowns == [python_executor]
+        assert pool_shutdowns == [{7: "worker"}]
 
     def test_run_subprocess_unregisters_process_after_completion(
         self,

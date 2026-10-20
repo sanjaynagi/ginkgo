@@ -14,6 +14,15 @@ from ginkgo.runtime.module_loader import load_module
 from ginkgo.runtime.environment.secrets import redact_text
 from ginkgo.runtime.artifacts.value_codec import decode_value, encode_value
 
+_log_queue: Any = None
+"""Queue this worker pushes task log chunks onto; ``None`` outside a local pool."""
+
+
+def install_log_queue(log_queue: Any) -> None:
+    """Process-pool initializer: route this worker's task log chunks to *log_queue*."""
+    global _log_queue
+    _log_queue = log_queue
+
 
 def error_response(exc: BaseException) -> dict[str, Any]:
     """Build the standard error response dict for a failed task."""
@@ -97,7 +106,6 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     stdout_path = payload.get("stdout_path")
     stderr_path = payload.get("stderr_path")
     secret_values = tuple(payload.get("secret_values", ()))
-    event_queue = payload.get("log_event_queue")
     log_context = {
         "run_id": payload.get("run_id"),
         "task_id": payload.get("task_id"),
@@ -112,7 +120,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
                 secret_values=secret_values,
-                log_emitter=_queue_log_emitter(event_queue=event_queue, context=log_context),
+                log_emitter=_queue_log_emitter(event_queue=_log_queue, context=log_context),
             ),
             _worker_param_session(payload=payload),
         ):

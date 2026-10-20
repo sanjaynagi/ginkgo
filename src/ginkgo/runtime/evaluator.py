@@ -16,7 +16,6 @@ from concurrent.futures import (
     wait,
 )
 from dataclasses import dataclass, field
-from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -56,6 +55,7 @@ from ginkgo.runtime.events import (
     GraphExpanded,
     GraphNodeRegistered,
     PhaseTimed,
+    SkipReason,
     TaskAnnotated,
     TaskCacheHit,
     TaskCacheMiss,
@@ -212,7 +212,10 @@ def evaluate(
 #   by _cleanup_transport once the worker's result is decoded, or when the
 #   attempt fails or is cancelled.
 # - blocked_by is non-None only in "skipped", naming the failed task the
-#   skip is attributed to.
+#   skip is attributed to; it stays None for a skip no task caused, such as
+#   one by an interrupt.
+# - last_failure is non-None from a scheduled retry onward: the classified
+#   failure of the attempt being retried.
 _NodeState = Literal[
     "pending",
     "ready",
@@ -228,6 +231,9 @@ _NodeState = Literal[
 
 _TERMINAL_NODE_STATES = frozenset({"completed", "failed", "skipped"})
 """Node states no scheduler pass can move a node out of."""
+
+_SIGNAL_POLL_SECONDS = 0.5
+"""Longest the scheduler blocks on running work before checking for an interrupt."""
 
 _IN_FLIGHT_NODE_STATES = frozenset({"staging", "running", "running_shell"})
 """Node states held by work the scheduler has already handed to an executor."""
@@ -277,6 +283,10 @@ class NodeRun:
     measured_resources: dict[str, Any] | None = None
     blocked_by: TaskNode | None = None
     """The failed task a skip is attributed to; set only when "skipped"."""
+    last_failure: dict[str, Any] | None = None
+    """The classified failure of the attempt a scheduled retry follows."""
+    planned: dict[str, Any] | None = None
+    """The ``TaskPlanned`` fields last emitted for this attempt; cleared on retry."""
 
     @property
     def remote(self) -> bool:
@@ -330,6 +340,8 @@ class ConcurrentEvaluator:
     _root_template: Any = field(default=None, init=False, repr=False)
     _root_dependency_ids: set[int] = field(default_factory=set, init=False, repr=False)
     _failure: BaseException | None = field(default=None, init=False, repr=False)
+    _failed_node: NodeRun | None = field(default=None, init=False, repr=False)
+    """The task whose failure is ``_failure``; ``None`` for an interrupt."""
     _ignored_failures: list[tuple[NodeRun, BaseException]] = field(
         default_factory=list, init=False, repr=False
     )
@@ -506,19 +518,20 @@ class ConcurrentEvaluator:
         if not self._root_dependency_ids:
             return self._materialize(expr)
 
-        # Validate all statically declared environments before any work starts.
-        self._validator.validate_declared_envs(nodes=self.graph.nodes.values())
-        self._validator.validate_declared_secrets(nodes=self.graph.nodes.values())
-
         with ExitStack() as stack:
+            # The monitor is installed first so an interrupt during pool
+            # setup or teardown is recorded rather than raised mid-way.
+            signals = stack.enter_context(SignalMonitor())
             executors = stack.enter_context(
                 Executors(jobs=self.jobs, staging_jobs=self._staging_jobs)
             )
-            log_manager = stack.enter_context(Manager())
-            signals = stack.enter_context(SignalMonitor())
             self._executors = executors
-            self._log_drain.start(queue=log_manager.Queue())
+            self._log_drain.start(queue=executors.log_queue)
             try:
+                # Validate all statically declared environments before any work
+                # starts. Inside the try, so a refusal closes the run's tasks too.
+                self._validator.validate_declared_envs(nodes=self.graph.nodes.values())
+                self._validator.validate_declared_secrets(nodes=self.graph.nodes.values())
                 while True:
                     if signals.exception is not None and self._failure is None:
                         self._failure = signals.exception
@@ -540,11 +553,17 @@ class ConcurrentEvaluator:
                             return self._materialize(self._root_template)
 
                     if self._running_futures:
+                        # The signal handler only records an interrupt, so the
+                        # wait is bounded for the loop to notice one while
+                        # long tasks run.
                         retry_wait = self._earliest_retry_wait() if self._failure is None else None
                         done, _ = wait(
                             tuple(self._running_futures.keys()),
                             return_when=FIRST_COMPLETED,
-                            timeout=retry_wait,
+                            timeout=min(
+                                _SIGNAL_POLL_SECONDS if retry_wait is None else retry_wait,
+                                _SIGNAL_POLL_SECONDS,
+                            ),
                         )
                         self._consume_completed_futures(done)
                         continue
@@ -994,14 +1013,7 @@ class ConcurrentEvaluator:
                 return
             # The run is already stopping, so the retry this attempt earned is
             # abandoned. Say so, or the failure reads as the task's last word.
-            self._emit_task_event(
-                TaskNotice,
-                node=node,
-                message=(
-                    f"retry {node.attempt}/{node.task_def.retries} not attempted: "
-                    "the run is stopping after an earlier failure"
-                ),
-            )
+            self._notice_retry_abandoned(node=node, reason=self._failure)
 
         # "ignore" is about scheduling only: the task is recorded as failed
         # either way, and the run still ends up failed. Once the run is
@@ -1016,6 +1028,7 @@ class ConcurrentEvaluator:
             self._ignored_failures.append((node, sanitized_exc))
         elif self._failure is None:
             self._failure = sanitized_exc
+            self._failed_node = node
             self._cancel_pending_futures()
         # Usage measured before the failure helps right-size OOM-prone tasks.
         usage = self._resource_usage_for(node=node)
@@ -1034,14 +1047,72 @@ class ConcurrentEvaluator:
         )
 
     def _close_unfinished_nodes(self, *, reason: BaseException) -> None:
-        """Close every started task the stopping run leaves without an outcome.
+        """Give every task the stopping run leaves without an outcome a terminal one.
 
-        Work still in flight, and a task waiting on its own expansion, has
-        been recorded as running; nothing else would ever end that record.
+        A finished run has no task left ``pending``:
+
+        - Work still in flight, and a task waiting on its own expansion, is
+          recorded as failed, cancelled by the stop.
+        - A task between attempts, its retry scheduled, is recorded as failed
+          with the failure of its last attempt; its remaining retries are
+          abandoned, and a notice says so.
+        - A task that never started is skipped. Under an interrupt that is
+          all there is to say. Otherwise it is blocked by the failure it
+          waits on, if it waits on one, and else by the failure that stopped
+          the run.
         """
         for node in self._nodes.values():
             if node.state in _IN_FLIGHT_NODE_STATES or node.state == "waiting_dynamic":
                 self._close_unfinished_node(node=node, reason=reason)
+            elif node.state not in _TERMINAL_NODE_STATES and node.attempt > 0:
+                self._abandon_retry(node=node, reason=reason)
+
+        if isinstance(reason, KeyboardInterrupt):
+            for node in self._unfinished_nodes():
+                self._mark_node_skipped(node=node, reason="interrupted", blocker=None)
+            return
+
+        while True:
+            blocked = [
+                (node, blocker)
+                for node in self._unfinished_nodes()
+                if (blocker := self._blocking_dependency(node=node)) is not None
+            ]
+            if not blocked:
+                break
+            for node, blocker in blocked:
+                self._mark_node_skipped(node=node, reason="upstream_failed", blocker=blocker)
+        for node in self._unfinished_nodes():
+            self._mark_node_skipped(node=node, reason="run_stopped", blocker=self._failed_node)
+
+    def _unfinished_nodes(self) -> list[NodeRun]:
+        """Return the nodes not yet in a terminal state."""
+        return [node for node in self._nodes.values() if node.state not in _TERMINAL_NODE_STATES]
+
+    def _abandon_retry(self, *, node: NodeRun, reason: BaseException) -> None:
+        """Record a task whose retry the stopping run will not make as failed."""
+        assert node.last_failure is not None
+        node.state = "failed"
+        self._notice_retry_abandoned(node=node, reason=reason)
+        self._emit_task_event(
+            TaskFailed,
+            node=node,
+            failure=node.last_failure,
+            remote_job_id=node.remote_job_id,
+        )
+
+    def _notice_retry_abandoned(self, *, node: NodeRun, reason: BaseException) -> None:
+        """Say that the retry *node*'s last attempt earned will not be made."""
+        cause = (
+            "the run was interrupted"
+            if isinstance(reason, KeyboardInterrupt)
+            else "the run is stopping after an earlier failure"
+        )
+        self._emit_task_event(
+            TaskNotice,
+            node=node,
+            message=f"retry {node.attempt}/{node.task_def.retries} not attempted: {cause}",
+        )
 
     def _close_unfinished_node(self, *, node: NodeRun, reason: BaseException) -> None:
         """Record one started task as cancelled by the run stopping around it."""
@@ -1070,6 +1141,7 @@ class ConcurrentEvaluator:
 
         # Attempt is incremented on dispatch, so the next attempt is node.attempt + 1.
         delay = node.task_def.retry_delay_seconds(attempt=node.attempt)
+        node.last_failure = classify_failure(exc=exc)
         if delay > 0:
             node.state = "waiting_retry"
             node.retry_ready_at = time.monotonic() + delay
@@ -1092,6 +1164,7 @@ class ConcurrentEvaluator:
         node.dynamic_dependency_ids.clear()
         node.secret_values = ()
         node.extra_source_hash = None
+        node.planned = None
         # measured_resources is deliberately NOT reset: a retried attempt's
         # peak (an OOM kill under memory_retry_multiplier, say) is exactly
         # the number needed to right-size the task, so measurements span
@@ -1102,7 +1175,7 @@ class ConcurrentEvaluator:
             TaskRetrying,
             node=node,
             retries_remaining=retries_remaining,
-            failure=classify_failure(exc=exc),
+            failure=node.last_failure,
             delay_seconds=delay,
         )
 
@@ -1309,7 +1382,7 @@ class ConcurrentEvaluator:
                 blocker = self._blocking_dependency(node=node)
                 if blocker is None:
                     continue
-                self._mark_node_skipped(node=node, blocker=blocker)
+                self._mark_node_skipped(node=node, reason="upstream_failed", blocker=blocker)
                 progressed = True
 
             if not progressed:
@@ -1323,22 +1396,36 @@ class ConcurrentEvaluator:
                 return dependency
         return None
 
-    def _mark_node_skipped(self, *, node: NodeRun, blocker: NodeRun) -> None:
+    def _mark_node_skipped(
+        self, *, node: NodeRun, reason: SkipReason, blocker: NodeRun | None
+    ) -> None:
         """Record one node as skipped, attributed to the failure behind it.
 
         Nothing about the attempt the node may already have made is cleared:
         a node waiting on its own dynamic expansion has run its body, and the
         record of that work is true whatever the outcome.
+
+        Parameters
+        ----------
+        node : NodeRun
+            The node to skip.
+        reason : SkipReason
+            Why it produces no result.
+        blocker : NodeRun | None
+            The failed or skipped node it is attributed to, reached through
+            any intervening skips; ``None`` when no task caused the skip.
         """
-        blocked_by = blocker.blocked_by if blocker.state == "skipped" else blocker.node
-        assert blocked_by is not None
+        blocked_by = None
+        if blocker is not None:
+            blocked_by = blocker.blocked_by if blocker.state == "skipped" else blocker.node
         node.state = "skipped"
         node.blocked_by = blocked_by
         self._emit_task_event(
             TaskSkipped,
             node=node,
-            blocked_by_task_id=task_id_for_node(blocked_by.node_id),
-            blocked_by_task_name=blocked_by.task_def.name,
+            reason=reason,
+            blocked_by_task_id=task_id_for_node(blocked_by.node_id) if blocked_by else None,
+            blocked_by_task_name=blocked_by.task_def.name if blocked_by else None,
         )
 
     def _root_skipped_error(self) -> RootSkippedError | None:
@@ -1565,7 +1652,6 @@ class ConcurrentEvaluator:
             "task_name": node.task_def.name,
             "attempt": node.attempt,
             "display_label": node.display_label,
-            "log_event_queue": self._log_drain.queue,
             "env": node.task_def.env,
             "module": node.task_def.fn.__module__,
             "module_file": resolve_module_file(node.task_def.fn.__module__),
@@ -1784,25 +1870,31 @@ class ConcurrentEvaluator:
         node: NodeRun,
         include_env_metadata: bool = True,
     ) -> None:
-        """Announce the task's resolved inputs, cache identity, and environment."""
+        """Announce the task's resolved inputs, cache identity, and environment.
+
+        Called at each point of an attempt where they may have changed —
+        preparation, the cache probe after remote inputs are staged, a
+        dynamic expansion — so ``TaskPlanned`` is emitted only when they did.
+        """
         if self.event_bus is None:
             return
-        self._emit_task_event(
-            TaskPlanned,
-            node=node,
-            inputs=render_value(node.resolved_args or {}),
-            input_hashes=_input_hash_entries(node.input_hashes),
-            input_labels=dict(node.input_labels or {}),
-            cache_key=node.cache_key,
-            source_hash=node.task_def.cache_source_hash,
-            version=node.task_def.version,
-            env_hash=self._env_identity(env=node.task_def.env),
-            extra_source_hash=node.extra_source_hash,
-            dependency_ids=[task_id_for_node(dep) for dep in sorted(node.node.dependency_ids)],
-            dynamic_dependency_ids=[
+        planned = {
+            "inputs": render_value(node.resolved_args or {}),
+            "input_hashes": _input_hash_entries(node.input_hashes),
+            "input_labels": dict(node.input_labels or {}),
+            "cache_key": node.cache_key,
+            "source_hash": node.task_def.cache_source_hash,
+            "version": node.task_def.version,
+            "env_hash": self._env_identity(env=node.task_def.env),
+            "extra_source_hash": node.extra_source_hash,
+            "dependency_ids": [task_id_for_node(dep) for dep in sorted(node.node.dependency_ids)],
+            "dynamic_dependency_ids": [
                 task_id_for_node(dep) for dep in sorted(node.dynamic_dependency_ids)
             ],
-        )
+        }
+        if planned != node.planned:
+            node.planned = planned
+            self._emit_task_event(TaskPlanned, node=node, **planned)
         if not include_env_metadata:
             return
         if node.task_def.env is None or self.backend is None:
