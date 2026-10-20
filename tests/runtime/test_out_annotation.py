@@ -319,3 +319,13 @@ class TestOutEndToEndCaching:
         collector = EventCollector()
         evaluate(maybe_write(payload="hi", out_path=str(out_path)), event_bus=collector.bus)
         assert collector.cached()
+
+
+def test_a_read_only_output_left_by_an_earlier_run_is_replaced(tmp_path: Path) -> None:
+    out_path = tmp_path / "left.txt"
+    out_path.write_text("old", encoding="utf-8")
+    out_path.chmod(0o444)
+
+    evaluate(write_output(payload="new", out_path=str(out_path)))
+
+    assert out_path.read_text(encoding="utf-8") == "new"

@@ -136,6 +136,8 @@ Key points:
 Use `@task(kind="shell")` when the real work is an external command.
 
 ```python
+from shlex import quote
+
 from ginkgo import file, shell, task
 
 
@@ -143,7 +145,7 @@ from ginkgo import file, shell, task
 def fastq_stats(sample_id: str, fastq: file) -> file:
     output = f"results/qc/{sample_id}.stats.tsv"
     return shell(
-        cmd=f"seqkit stats -T {fastq} > {output}",
+        cmd=f"seqkit stats -T {quote(fastq)} > {quote(output)}",
         output=output,
         log=f"logs/stats_{sample_id}.log",
     )
@@ -153,6 +155,30 @@ The wrapper function runs locally on the scheduler. It builds the concrete shell
 payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
+
+### A background process keeps the task running
+
+A shell task finishes when its command has exited *and* everything it
+started has closed the task's output. A process left running in the
+background with `&` inherits stdout and stderr, so the task keeps waiting
+until that process exits too. Redirect a background process's output away
+from the task, or `wait` for it:
+
+```bash
+long_running_server > server.log 2>&1 &
+```
+
+### Quoting values in the command
+
+`cmd=` is one string, and the shell splits it on whitespace and expands `$`,
+`*`, `;` and quotes in it. Ginkgo cannot quote what the body formats into that
+string, so wrap each interpolated value in `shlex.quote`, as above: a sample
+name like `a;b` or `x*` then reaches the command as one literal word.
+
+A shell task's `file`, `folder` and `Out[...]` paths must also not contain
+spaces; the task fails before it runs if one does. Python tasks have no such
+rule, and neither do script and notebook tasks, whose arguments Ginkgo quotes
+itself.
 
 ### Which shell runs the command
 
@@ -188,12 +214,16 @@ declared paths, and the task's return is inferred too (see
 [Reads vs. Writes](caching-and-provenance.md#reads-vs-writes-file-vs-outfile)):
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {quote(src)} > {quote(dest)} && shasum {quote(dest)} > {quote(check)}"
+    )
 
 
 norm = normalize().map(src=[...], dest=[...], check=[...])
@@ -800,12 +830,16 @@ can select one of them by *name* instead of by position — no need to remember
 which index a shell task's `output=[...]` put it at:
 
 ```python
+from shlex import quote
+
 from ginkgo import Out, file, shell, task
 
 
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {quote(src)} > {quote(dest)} && shasum {quote(dest)} > {quote(check)}"
+    )
 
 
 norm = normalize().map(src=seed_cards, dest=normalized_paths, check=check_paths)

@@ -21,7 +21,7 @@ without breaking plugins.
 | `MountDriverType` | URI scheme | `build() -> MountDriver` |
 | `SecretBackendType` | the `backend` of `secret(name, backend=...)` | `build(SecretBackendContext) -> tuple[SecretBackend, ...]`, tried in order |
 | `EventSubscriberType` | a name, e.g. `slack` | `build(EventSubscriberContext) -> EventSubscriber \| None`; `None` means disabled by config |
-| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`. `directive`, `runner` and `call_form` are set together or not at all |
+| `TaskKind` | the `kind` of `@task(kind=...)` | `runner(RunnerContext) -> TaskRunner`; also carries the kind's `directive` type, `call_form`, `execution_mode` (`driver` or `worker`) and capabilities `allows_env`, `remote_capable`, `eager_source_hash`, `exit_code_retries`, `user_built_command` (the body formats its own command line, so its paths must not contain spaces). `directive`, `runner` and `call_form` are set together or not at all |
 | `CliCommand` | a `ginkgo <name>` subcommand | no `build`: `add_arguments(parser)` declares the command's arguments when the CLI builds its parser, and `run(args) -> int` executes it; also carries `help` |
 | `EnvironmentType` | every scheme in `schemes` (`docker`, `oci`), with `""` for a bare name | `build(EnvironmentContext) -> ExecutionEnvironment`; also carries a `name` and a `label` for run tables and provenance |
 

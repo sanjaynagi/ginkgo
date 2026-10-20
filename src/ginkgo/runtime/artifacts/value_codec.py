@@ -254,8 +254,22 @@ def _decode_path_marker(*, marker_cls: type[file] | type[folder], payload: dict[
     return marker_cls(payload["value"])
 
 
+SUMMARY_ITEM_LIMIT = 20
+"""How many items without a path a container summary keeps.
+
+A summary describes a value; it is not a copy of it. Items naming a
+``file`` or ``folder`` are always kept, because they are what provenance
+links to artifacts.
+"""
+
+
 def summarise_value(value: Any) -> Any:
-    """Return a compact metadata view of a value for cache manifests."""
+    """Return a compact metadata view of a value for cache manifests.
+
+    A list, tuple or dict keeps its first :data:`SUMMARY_ITEM_LIMIT` items
+    plus every item naming a file or folder, records how many it left out
+    under ``omitted``, and its full ``length``.
+    """
     # file/folder are str subclasses — check before the generic str branch.
     if isinstance(value, file):
         return {"type": "file", "value": str(value)}
@@ -266,30 +280,16 @@ def summarise_value(value: Any) -> Any:
 
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-    if isinstance(value, list):
-        return {
-            "type": "list",
-            "items": [summarise_value(item) for item in value],
-            "length": len(value),
-        }
-    if isinstance(value, tuple):
-        return {
-            "type": "tuple",
-            "items": [summarise_value(item) for item in value],
-            "length": len(value),
-        }
+    if isinstance(value, (list, tuple)):
+        items = (summarise_value(item) for item in value)
+        kind = "list" if isinstance(value, list) else "tuple"
+        return {"type": kind, **_capped_items(items), "length": len(value)}
     if isinstance(value, dict):
-        return {
-            "type": "dict",
-            "items": [
-                {
-                    "key": summarise_value(key),
-                    "value": summarise_value(item),
-                }
-                for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-            ],
-            "length": len(value),
-        }
+        items = (
+            {"key": summarise_value(key), "value": summarise_value(item)}
+            for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
+        )
+        return {"type": "dict", **_capped_items(items), "length": len(value)}
 
     if isinstance(value, np.ndarray):
         return {
@@ -306,6 +306,29 @@ def summarise_value(value: Any) -> Any:
         }
 
     return {"type": f"{type(value).__module__}.{type(value).__name__}"}
+
+
+def _capped_items(items: Any) -> dict[str, Any]:
+    """Keep the first summaries and every one naming a path; count the rest."""
+    kept: list[Any] = []
+    omitted = 0
+    for summary in items:
+        if len(kept) < SUMMARY_ITEM_LIMIT or _names_a_path(summary):
+            kept.append(summary)
+        else:
+            omitted += 1
+    return {"items": kept, "omitted": omitted} if omitted else {"items": kept}
+
+
+def _names_a_path(summary: Any) -> bool:
+    """Return whether a summary is, or contains, a file or folder."""
+    if isinstance(summary, list):
+        return any(_names_a_path(item) for item in summary)
+    if isinstance(summary, dict):
+        if summary.get("type") in {"file", "folder"}:
+            return True
+        return any(_names_a_path(item) for item in summary.values())
+    return False
 
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:

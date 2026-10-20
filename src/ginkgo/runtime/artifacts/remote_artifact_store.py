@@ -69,10 +69,10 @@ class RemoteArtifactStore:
         self._ensure_local(artifact_id)
         self.local.retrieve(artifact_id=artifact_id, dest_path=dest_path)
 
-    def restore(self, *, artifact_id: str, dest_path: Path) -> None:
+    def restore(self, *, artifact_id: str, dest_path: Path) -> bool:
         """Restore as writable content, downloading from remote on miss."""
         self._ensure_local(artifact_id)
-        self.local.restore(artifact_id=artifact_id, dest_path=dest_path)
+        return self.local.restore(artifact_id=artifact_id, dest_path=dest_path)
 
     def matches(self, *, artifact_id: str, path: Path) -> bool:
         """Check content match (local only, no remote download)."""

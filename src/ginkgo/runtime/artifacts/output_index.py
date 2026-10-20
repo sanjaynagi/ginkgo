@@ -19,7 +19,7 @@ from ginkgo.core.types import (
     pair_elements_with_annotations,
     unwrap_optional_annotation,
 )
-from ginkgo.runtime.artifacts.value_codec import summarise_value
+from ginkgo.runtime.artifacts.value_codec import SUMMARY_ITEM_LIMIT, summarise_value
 
 
 def output_summary(
@@ -48,7 +48,9 @@ def output_summary(
     Returns
     -------
     list[dict[str, Any]]
-        One entry per output leaf.
+        One entry per output leaf, except that a list keeps only its first
+        value leaves and counts the rest in one ``truncated`` entry; every
+        file and folder leaf is kept.
     """
     artifact_ids = artifact_ids or {}
     annotation, admits_none = unwrap_optional_annotation(annotation)
@@ -80,26 +82,19 @@ def _present_output_summary(
 ) -> list[dict[str, Any]]:
     """Return the output index for a value that is known to be present."""
     origin = get_origin(annotation)
-    if origin in {list, tuple} and isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple)):
+        if origin in {list, tuple}:
+            paired = pair_elements_with_annotations(annotation=annotation, value=value)
+        else:
+            paired = ((annotation, item) for item in value)
         outputs: list[dict[str, Any]] = []
-        paired = pair_elements_with_annotations(annotation=annotation, value=value)
         for index, (item_annotation, item) in enumerate(paired):
             outputs.extend(
                 output_summary(
                     item_annotation, item, name=f"{name}[{index}]", artifact_ids=artifact_ids
                 )
             )
-        return outputs
-
-    if isinstance(value, (list, tuple)):
-        outputs: list[dict[str, Any]] = []
-        for index, item in enumerate(value):
-            outputs.extend(
-                output_summary(
-                    annotation, item, name=f"{name}[{index}]", artifact_ids=artifact_ids
-                )
-            )
-        return outputs
+        return _cap_value_entries(outputs, name=name)
 
     if annotation is file or isinstance(value, file):
         return [_path_entry(name=name, kind="file", value=value, artifact_ids=artifact_ids)]
@@ -134,6 +129,32 @@ def _present_output_summary(
         ]
 
     return [{"name": name, "type": "value", "summary": summarise_value(value)}]
+
+
+def _cap_value_entries(entries: list[dict[str, Any]], *, name: str) -> list[dict[str, Any]]:
+    """Keep every file and folder entry but only the first value entries.
+
+    Each entry becomes a ledger row, so a task returning a long list of plain
+    values would otherwise write one row per element. The ones left out are
+    counted in a single ``truncated`` entry, which absorbs any a nested list
+    already made.
+    """
+    kept: list[dict[str, Any]] = []
+    values = 0
+    omitted = 0
+    for entry in entries:
+        if entry["type"] in {"file", "folder"}:
+            kept.append(entry)
+        elif entry["type"] == "truncated":
+            omitted += entry["omitted"]
+        elif values < SUMMARY_ITEM_LIMIT:
+            kept.append(entry)
+            values += 1
+        else:
+            omitted += 1
+    if omitted:
+        kept.append({"name": name, "type": "truncated", "omitted": omitted})
+    return kept
 
 
 def _path_entry(

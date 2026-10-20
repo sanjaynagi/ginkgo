@@ -879,6 +879,23 @@ class TestWritableFileOutputs:
         assert result_path.is_file()
         assert result_path.read_text(encoding="utf-8").strip() == "hello"
 
+    def test_corrupt_stored_bytes_are_a_cache_miss(self, tmp_path):
+        output = tmp_path / "corrupt.txt"
+        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
+        output.unlink()
+        (blob,) = (tmp_path / ".ginkgo" / "artifacts" / "blobs").iterdir()
+        blob.chmod(0o644)
+        blob.write_text("BAD!", encoding="utf-8")
+
+        collector = EventCollector()
+        evaluate(
+            write_python_file_task(output_path=str(output), payload="GOOD"),
+            event_bus=collector.bus,
+        )
+        assert not collector.cached()
+        assert output.read_text(encoding="utf-8") == "GOOD"
+        assert blob.read_text(encoding="utf-8") == "GOOD"
+
     def test_python_file_output_rerun_overwrites_previous_materialization(self, tmp_path):
         output = tmp_path / "python.txt"
         first = evaluate(write_python_file_task(output_path=str(output), payload="first"))

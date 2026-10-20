@@ -1,4 +1,4 @@
-"""The rendered-pages section of the run banner.
+"""The run banner's end-of-run sections: rendered pages and the resource footer.
 
 A cached rerun lists the page an earlier run rendered, marked as reused, and
 does not count it as this run's work (regression cover for issue #202 part 2).
@@ -49,3 +49,15 @@ def test_a_reused_page_is_listed_but_not_counted(tmp_path: Path) -> None:
     assert "Rendered pages (0)" in text
     assert "↺ 1 from an earlier run" in text
     assert "↺ from run run_1" in text
+
+
+def test_the_resource_footer_says_its_rss_is_a_process_tree_total(tmp_path: Path) -> None:
+    footer = _renderer(tmp_path).render_resource_footer(
+        {
+            "average": {"cpu_percent": 50.0, "rss_bytes": 1024},
+            "peak": {"cpu_percent": 90.0, "rss_bytes": 2048, "process_count": 5},
+        }
+    )
+
+    assert footer is not None
+    assert "(process-tree total, up to 5 processes)" in footer.plain

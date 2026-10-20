@@ -410,20 +410,23 @@ def main():
         assert stats["hit_histogram"] == {"0": 1, "1": 1}
         assert stats["top_functions"][0]["entries"] == 2
 
-    def test_cache_stats_reports_artifact_store_bytes_separately(self) -> None:
+    def _run_artifact_workflow(self) -> None:
+        """Run a workflow whose one task writes a 1000-byte file and a folder."""
         Path("workflow.py").write_text(
             """
 from pathlib import Path
-from ginkgo import file, flow, task
+from ginkgo import Out, file, flow, folder, task
 
 @task()
-def make() -> file:
-    Path("out.txt").write_text("x" * 1000, encoding="utf-8")
-    return file("out.txt")
+def make(dest: Out[file], tree: Out[folder]) -> tuple[file, folder]:
+    Path(dest).write_text("x" * 1000, encoding="utf-8")
+    Path(tree).mkdir(exist_ok=True)
+    Path(tree, "member.txt").write_text("y" * 100, encoding="utf-8")
+    return dest, tree
 
 @flow
 def main():
-    return make()
+    return make(dest="out.txt", tree="tree")
 """.strip()
             + "\n",
             encoding="utf-8",
@@ -431,15 +434,32 @@ def main():
         run = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert run.returncode == 0, run.stderr
 
-        as_json = _run_cli("cache", "stats", "--json", cwd=Path.cwd())
+    def test_cache_sizes_count_the_artifacts_an_entry_names(self) -> None:
+        self._run_artifact_workflow()
+
+        stats = json.loads(_run_cli("cache", "stats", "--json", cwd=Path.cwd()).stdout)
+        (entry,) = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
         text = _run_cli("cache", "stats", cwd=Path.cwd())
 
-        assert as_json.returncode == 0, as_json.stderr
-        stats = json.loads(as_json.stdout)
-        assert stats["artifact_bytes"] == 1000
-        # The entry figure stays the cache entries' own bytes.
-        assert stats["total_bytes"] < 1000
-        assert "Artifact store: 1000 B" in text.stdout
+        assert stats["artifact_bytes"] == 1100
+        assert entry["artifact_bytes"] == 1100
+        assert entry["size_bytes"] == entry["output_bytes"] + 1100
+        assert stats["total_bytes"] == entry["size_bytes"]
+        assert stats["top_functions"][0]["bytes"] == entry["size_bytes"]
+        assert "Artifact store: 1.1 KB" in text.stdout
+
+    def test_cache_prune_max_size_counts_and_frees_artifact_bytes(self) -> None:
+        self._run_artifact_workflow()
+
+        preview = _run_cli("cache", "prune", "--max-size", "1KB", "--dry-run", cwd=Path.cwd())
+        assert "1 entries" in preview.stdout
+
+        result = _run_cli("cache", "prune", "--max-size", "1KB", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry" in result.stdout
+        blobs = Path(".ginkgo") / "artifacts" / "blobs"
+        assert list(blobs.iterdir()) == []
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
 
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"

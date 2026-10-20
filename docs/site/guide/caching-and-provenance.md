@@ -22,6 +22,13 @@ Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 annotation — everything else is hashed from its `repr`. See
 [Cache Correctness](#cache-correctness) for the exact rule and why it exists.
 
+Hashing a large file on every run would be slow, so each digest is memoised
+under the file's device, inode, size and modification time, and reused while
+those four agree. A rewrite that keeps the size and the modification time —
+a tool that restores timestamps, `touch -r`, or a filesystem with coarse
+timestamps — is therefore not re-hashed, and the old digest stands. `touch`
+the file to make the next run hash it again.
+
 The import walk starts at the task's own module, so the unit of cache identity
 is one file plus the local modules that file imports — not one function. Two
 `@task` functions in the same `flow.py` are therefore coupled even though
@@ -229,7 +236,9 @@ name, in addition to the existing positional `.output[i]`:
 ```python
 @task(kind="shell")
 def normalize(src: file, dest: Out[file], check: Out[file]):
-    return shell(cmd=f"tr a-z A-Z < {src} > {dest} && shasum {dest} > {check}")
+    return shell(
+        cmd=f"tr a-z A-Z < {shlex.quote(src)} > {shlex.quote(dest)} && shasum {shlex.quote(dest)} > {shlex.quote(check)}"
+    )
 
 norm = normalize(src="in.txt", dest="out.txt", check="out.sha")
 normalized = norm.output["dest"]
@@ -342,6 +351,7 @@ Together, the cache and the ledger answer different questions:
 ```bash
 ginkgo db path                # where the database is
 ginkgo db check               # schema version, integrity, rows against bytes
+ginkgo db check --verify      # also rehash every stored artifact byte
 ginkgo db migrate             # create or upgrade it
 ginkgo db prune --events-older-than 90d --dry-run
 ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
@@ -351,7 +361,15 @@ ginkgo db vacuum              # give the freed space back
 `ginkgo db check` asks every index whether its rows and the files they name
 still agree — the cache, the artifact store, the run directories, the staged
 remote inputs — and reports both directions: a row whose bytes are gone, and
-bytes no row can find. It never repairs anything.
+bytes no row can find. It never repairs anything. Those checks compare rows
+with file names; they cannot see a stored file whose bytes changed in place.
+`--verify` rehashes every stored blob and directory member against its digest
+and reports each mismatch, exiting non-zero. It reads the whole store, so it
+takes as long as the store is large.
+
+A cache hit checks the bytes it restores anyway: they are hashed as they are
+copied, and a copy that does not match its digest is deleted with a warning,
+the corrupt stored bytes are discarded, and the task re-runs as a cache miss.
 
 `ginkgo db prune --events-older-than 90d` deletes the raw event stream of runs
 that finished more than 90 days ago. Everything `ginkgo runs show`, the report
@@ -417,6 +435,12 @@ entries there are, how much they take, how often they are hit, and how much is
 held by entries nothing has ever reused. They read the database read-only, so
 they answer while a run is in progress.
 
+An entry's size is its stored return value plus the files and folders it
+restores, which live in the artifact store. An artifact two entries share
+counts toward both, so the per-entry sizes can add up to more than the store
+holds; `cache stats` also reports the artifact store's own size, each byte
+counted once.
+
 ## Bounding Cache Size
 
 `ginkgo cache prune` supports three eviction policies, which can be combined
@@ -441,9 +465,11 @@ ginkgo cache prune --max-size 5GB --least-recently-hit
 
 Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
 the entries with the oldest last hit first — an old entry that hits on every run
-is worth more than a young one nothing has touched. Orphaned artifacts are
-garbage-collected at the end of the operation. Use `--dry-run` to preview what
-would be removed.
+is worth more than a young one nothing has touched. `--max-size` counts each
+entry's artifacts as well as its return value. Artifacts no remaining entry
+names are garbage-collected at the end of the operation, and the bytes
+reported as freed are the ones actually deleted: an artifact a surviving entry
+still names stays. Use `--dry-run` to preview what would be removed.
 
 ## Partial Resume
 

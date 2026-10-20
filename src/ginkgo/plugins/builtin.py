@@ -51,6 +51,7 @@ BUILTIN = Plugin(
             allows_env=True,
             remote_capable=False,
             exit_code_retries=True,
+            user_built_command=True,
             runner=build_shell_runner,
         ),
         TaskKind(
