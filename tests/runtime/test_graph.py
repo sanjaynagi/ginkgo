@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ginkgo import Out, file, task
+from ginkgo import Out, file, folder, task
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.graph import CycleError, IncompleteCallError, TaskGraph
 
@@ -32,6 +32,16 @@ def read(*, path: file) -> str:
 @task()
 def read_then_write(*, path: file, output_path: Out[file]) -> file:
     return file(output_path)
+
+
+@task()
+def write_after(*, up: str, output_path: Out[file]) -> file:
+    return file(output_path)
+
+
+@task()
+def split(*, split_dir: Out[folder]) -> list:
+    return []
 
 
 class TestRegistration:
@@ -99,6 +109,32 @@ class TestInferredEdges:
 
         assert registration.new_node_ids == [1]
         assert graph.nodes[0].inferred_dependency_ids == {1}
+
+
+class TestDynamicExpansionEdges:
+    """G2: a dynamic expansion's children against the task that returned them."""
+
+    def test_children_reading_inside_the_parents_output_folder_do_not_wait_on_it(
+        self, tmp_path
+    ) -> None:
+        split_dir = str(tmp_path / "chunks")
+        graph = TaskGraph.build(split(split_dir=split_dir))
+
+        registration = graph.register(
+            [read(path=f"{split_dir}/chunk{i}.txt") for i in range(2)], expanding_node_id=0
+        )
+
+        for node_id in registration.new_node_ids:
+            assert graph.nodes[node_id].dependency_ids == frozenset()
+
+    def test_a_cycle_through_a_dynamic_expansion_names_it(self, tmp_path) -> None:
+        path = str(tmp_path / "out.txt")
+        # write_after (node 0) waits on label (node 1), which then returns a
+        # reader of write_after's output: label would wait on its own dependent.
+        graph = TaskGraph.build(write_after(up=label(text="p"), output_path=path))
+
+        with pytest.raises(CycleError, match=r"read \(returned by label\)"):
+            graph.register(read(path=path), expanding_node_id=1)
 
 
 class TestUnreachableCalls:

@@ -22,7 +22,7 @@ def _workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["cache", "clear"], "Provide a cache key"),
+        (["cache", "clear"], "Provide exactly one of: a cache key"),
         (["cache", "prune"], "Provide at least one of --older-than"),
         (["db", "prune"], "Provide --events-older-than"),
     ],

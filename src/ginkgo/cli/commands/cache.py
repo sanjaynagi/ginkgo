@@ -155,43 +155,78 @@ def command_cache(args) -> int:
 
 
 def _clear(args, rich_console) -> int:
-    """Remove one cache entry, or every entry directory with no row."""
-    if args.cache_key is None and not args.orphans:
+    """Remove one cache entry, a task's entries, every entry, or the orphaned directories."""
+    selectors = [args.cache_key is not None, args.task is not None, args.clear_all, args.orphans]
+    if sum(selectors) != 1:
         raise UsageError(
-            "Provide a cache key, or --orphans to remove entry directories the database "
-            "has no row for."
+            "Provide exactly one of: a cache key, --task NAME to remove a task's entries, "
+            "--all to remove every entry, or --orphans to remove entry directories the "
+            "database has no row for."
         )
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]clear[/]\n")
-    if args.orphans:
-        if not _database_exists():
-            # Nothing has been cached here, and removing nothing is not a
-            # reason to create the database that would record it.
-            rich_console.print("[dim]No cache entries found.[/]")
-            return 0
+    if args.cache_key is not None:
+        if not (CACHE_ROOT / args.cache_key).is_dir():
+            raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
         with _cache_store() as cache_store:
-            orphans = cache_store.orphan_entry_dirs()
-            for entry_dir in orphans:
-                _safe_rmtree(entry_dir)
+            _remove_entry(cache_store, args.cache_key)
             _gc_orphan_artifacts(cache_store)
+
+        message = Text()
+        message.append("✓ ", style="green")
+        message.append("Removed cache entry ")
+        message.append(args.cache_key, style="bold")
+        message.no_wrap = True
+        rich_console.print(message)
+        return 0
+
+    if not _database_exists():
+        # Nothing has been cached here, and removing nothing is not a
+        # reason to create the database that would record it.
+        rich_console.print("[dim]No cache entries found.[/]")
+        return 0
+
+    if args.orphans:
+        with _cache_store() as cache_store:
+            orphans = _remove_orphans(cache_store)
         rich_console.print(
-            f"[green]✓[/] Removed [bold]{len(orphans)}[/] orphaned cache "
-            f"{'directory' if len(orphans) == 1 else 'directories'}."
+            f"[green]✓[/] Removed [bold]{orphans}[/] orphaned cache "
+            f"{'directory' if orphans == 1 else 'directories'}."
         )
         return 0
 
-    if not (CACHE_ROOT / args.cache_key).is_dir():
-        raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
+    with _reader() as reader:
+        rows = reader.cache_entries(task=args.task)
+    if args.task is not None and not rows:
+        raise FileNotFoundError(f"No cache entries found for task: {args.task}")
     with _cache_store() as cache_store:
-        _remove_entry(cache_store, args.cache_key)
-        _gc_orphan_artifacts(cache_store)
-
-    message = Text()
-    message.append("✓ ", style="green")
-    message.append("Removed cache entry ")
-    message.append(args.cache_key, style="bold")
-    message.no_wrap = True
-    rich_console.print(message)
+        for row in rows:
+            _remove_entry(cache_store, row.cache_key)
+        if args.clear_all:
+            orphans = _remove_orphans(cache_store)
+        else:
+            orphans = 0
+            _gc_orphan_artifacts(cache_store)
+    total_bytes = sum(row.size_bytes for row in rows)
+    removed = f"{len(rows)} cache {'entry' if len(rows) == 1 else 'entries'}"
+    if orphans:
+        removed += f" and {orphans} orphaned {'directory' if orphans == 1 else 'directories'}"
+    rich_console.print(f"[green]✓[/] Removed [bold]{removed}[/] ({format_bytes(total_bytes)}).")
     return 0
+
+
+def _remove_orphans(cache_store: CacheStore) -> int:
+    """Remove the entry directories with no row, then unreferenced artifacts.
+
+    Returns
+    -------
+    int
+        How many entry directories were removed.
+    """
+    orphans = cache_store.orphan_entry_dirs()
+    for entry_dir in orphans:
+        _safe_rmtree(entry_dir)
+    _gc_orphan_artifacts(cache_store)
+    return len(orphans)
 
 
 def _render_stats(rich_console, *, as_json: bool) -> int:

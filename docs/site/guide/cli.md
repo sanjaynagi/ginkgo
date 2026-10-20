@@ -127,9 +127,22 @@ first, cold dry run cannot resolve those arguments and so makes no claim.
 **Problems** also lists, cold or warm, any task whose `threads` or `memory`
 exceeds the run's `--cores` or `--memory` (or a custom resource its
 `--resource` budget), with the message the run would fail with.
-The plan covers only the graph the flow builds before anything runs: tasks a
-task returns at runtime are not shown, so for a dynamic workflow it is a lower
-bound on what the real run executes.
+A task that returns tasks at runtime is covered as far as the cache reaches:
+when its own entry is a hit, the tasks it returned last time are expanded and
+each is shown with its own status, so a child whose code or inputs changed
+shows `will_run` under a `cached` parent. Nothing runs to find them, so a
+dynamic task that will run itself has its children left out, and for such a
+workflow the plan is a lower bound on what the real run executes.
+
+`--rerun TASK` runs a task again rather than serve it from the cache, without
+touching the cache by hand. It is repeatable, and takes a task the way
+[Task Names](#task-names) describe: a function name reruns every branch of a
+fan-out, a display label such as `align[sample_a]` reruns one. The rerun
+saves its result as usual. Tasks downstream run again only if that result
+changed, and a dynamic task's children are still looked up on their own. A
+name that matches no task in the graph the flow builds is warned about, since
+only a dynamic task can still return one by that name. A dry run shows a
+rerun task as `will_run`.
 
 `--keep-going` stops a task failure from ending the run: every task is treated
 as `on_failure="ignore"`, so each branch that does not depend on the failure
@@ -152,7 +165,7 @@ none is printed.
 | --- | --- |
 | 0 | Success. |
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key, `cache prune` or `db prune` with no limit, `query` with no statement. The message goes to stderr. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement. The message goes to stderr. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
 | 130 | Interrupted with Ctrl-C. |
 
@@ -350,12 +363,19 @@ ginkgo cache prune --older-than 7d       # remove entries older than a duration
 ginkgo cache prune --max-size 10GB       # remove entries to stay under a size limit
 ginkgo cache prune --max-entries 500     # remove entries to stay under an entry count
 ginkgo cache clear <cache_key>           # remove a specific cache entry
+ginkgo cache clear --task align          # remove every entry one task wrote
+ginkgo cache clear --all                 # remove every entry
 ginkgo cache clear --orphans             # remove entries the database has lost
 ```
 
 `cache ls` prints each full cache key on one line, so it can be copied into
 `cache clear`; `--task` narrows the list to one task's entries, named the way
-`history` takes it, and `--json` prints the entries as JSON. `cache prune`
+`history` takes it, and `--json` prints the entries as JSON. `cache clear`
+takes exactly one of a key, `--task`, `--all` or `--orphans`, and removes what
+it names at once, with no prompt, as `cache prune` does without `--dry-run`:
+`--task` removes every entry the task wrote (`cache ls --task` lists them
+first), naming none is an error, and `--all` also removes the directories
+`--orphans` would. Artifacts no remaining entry names are collected each time. `cache prune`
 requires at least one of `--older-than`, `--max-size`, or `--max-entries`. A
 duration is a positive whole number of minutes, hours or days (`45m`, `12h`,
 `30d`). Add `--least-recently-hit` to give up unused entries before old

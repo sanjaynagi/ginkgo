@@ -10,7 +10,7 @@ state beside it, while ``inspect``, ``secrets`` and ``doctor`` use one alone.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -197,6 +197,11 @@ class TaskGraph:
         )
         return Registration(dependency_ids=dependency_ids, new_node_ids=new_node_ids)
 
+    @property
+    def dynamic_parent_ids(self) -> Mapping[int, int]:
+        """Each dynamically registered node's id, mapped to the task that expanded it."""
+        return self._dynamic_parent_ids
+
     def node_id_for(self, expr: Expr) -> int:
         """Return the id of the node registered for *expr*."""
         return self._expr_nodes[id(expr)]
@@ -380,7 +385,11 @@ class TaskGraph:
            path, and one node declaring an ``Out`` path that overlaps its own
            ``file``/``folder`` input.
         3. Match new consumers against every producer known so far, and add
-           the producer as a dependency.
+           the producer as a dependency. The expanding task and its dynamic
+           ancestors are not producers for their own children: a task that
+           writes its ``Out[folder]`` and returns children reading files
+           inside it (the checkpoint idiom) has written them before the
+           children exist, and waits on the children itself.
         4. Match new producers against consumers from *earlier*
            registrations, the only way a dynamically registered node can
            matter retroactively. A still-pending old consumer gets the edge;
@@ -390,7 +399,8 @@ class TaskGraph:
            receives a folder and returns children writing inside it is the
            normal fan-out shape, and it already waits on those children
            through its dynamic template.
-        5. Detect any cycle the new edges created.
+        5. Detect any cycle the new edges created, counting each expanding
+           task's wait on the children it registered.
         """
         if not new_node_ids:
             return
@@ -430,7 +440,11 @@ class TaskGraph:
 
         # New consumers against every producer indexed so far (new included).
         for consumer in new_consumed:
-            producer_ids = {entry.node_id for entry in index.producers_for(consumer)}
+            producer_ids = {
+                entry.node_id
+                for entry in index.producers_for(consumer)
+                if entry.node_id not in expanding_lineage
+            }
             edges_added |= self._add_inferred_dependencies(
                 node_id=consumer.node_id, producer_ids=producer_ids
             )
@@ -464,7 +478,17 @@ class TaskGraph:
         if edges_added:
             cycle = self._find_cycle()
             if cycle is not None:
-                raise CycleError([self.nodes[node_id].task_def.base_name for node_id in cycle])
+                raise CycleError(self._cycle_labels(cycle))
+
+    def _cycle_labels(self, cycle: list[int]) -> list[str]:
+        """Name each node of *cycle*, marking the hops a dynamic expansion made."""
+        labels = [self.nodes[cycle[0]].task_def.base_name]
+        for waiting_id, node_id in zip(cycle, cycle[1:]):
+            name = self.nodes[node_id].task_def.base_name
+            if self._dynamic_parent_ids.get(node_id) == waiting_id:
+                name = f"{name} (returned by {self.nodes[waiting_id].task_def.base_name})"
+            labels.append(name)
+        return labels
 
     def _add_inferred_dependencies(self, *, node_id: int, producer_ids: set[int]) -> bool:
         """Add inferred producer ids to a node's dependencies; return whether any were new."""
@@ -477,18 +501,24 @@ class TaskGraph:
         return True
 
     def _find_cycle(self) -> list[int] | None:
-        """Return a cycle among the nodes' ``dependency_ids``, if any.
+        """Return a cycle among the nodes' waits, if any.
 
-        Iterative depth-first search, so a long linear chain of tasks cannot
-        exhaust the interpreter's recursion limit.
+        A node waits on its ``dependency_ids`` and, once it has expanded, on
+        the children its dynamic expansion registered. Iterative depth-first
+        search, so a long linear chain of tasks cannot exhaust the
+        interpreter's recursion limit.
         """
+        waits = {node_id: set(node.dependency_ids) for node_id, node in self.nodes.items()}
+        for child_id, parent_id in self._dynamic_parent_ids.items():
+            waits[parent_id].add(child_id)
+
         WHITE, GRAY, BLACK = 0, 1, 2
         color: dict[int, int] = dict.fromkeys(self.nodes, WHITE)
         for root in sorted(self.nodes):
             if color[root] != WHITE:
                 continue
             path: list[int] = [root]
-            stack = [iter(sorted(self.nodes[root].dependency_ids))]
+            stack = [iter(sorted(waits[root]))]
             color[root] = GRAY
             while stack:
                 dep_id = next(stack[-1], None)
@@ -502,7 +532,7 @@ class TaskGraph:
                 if state == WHITE:
                     color[dep_id] = GRAY
                     path.append(dep_id)
-                    stack.append(iter(sorted(self.nodes[dep_id].dependency_ids)))
+                    stack.append(iter(sorted(waits[dep_id])))
         return None
 
 

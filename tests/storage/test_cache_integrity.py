@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
+from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo import Out, evaluate, file, folder, shell, task, untracked
 from ginkgo.cli.commands.cache import _safe_rmtree
@@ -281,6 +282,25 @@ banner
             sys.modules.pop("pkg.helpers", None)
             sys.modules.pop("pkg.tasks", None)
             sys.modules.pop("pkg", None)
+
+    def test_function_local_import_not_yet_run_joins_the_closure(self, tmp_path, monkeypatch):
+        """The closure follows import statements, not what ``sys.modules`` holds."""
+        _write_module(
+            tmp_path / "lazy_tasks.py",
+            """\
+            def compute(x: int) -> int:
+                from lazy_helpers import scale
+                return scale(x)
+            """,
+        )
+        _write_module(tmp_path / "lazy_helpers.py", "def scale(x): return x * 2\n")
+        monkeypatch.delitem(sys.modules, "lazy_helpers", raising=False)
+        with _imported_from(tmp_path, "lazy_tasks") as tasks:
+            assert "lazy_helpers" not in sys.modules
+            assert set(source_hash._local_import_closure(tasks)) == {
+                "lazy_tasks",
+                "lazy_helpers",
+            }
 
     def test_environment_inside_project_stays_out_of_the_closure(self, tmp_path, monkeypatch):
         """An env nested in the project root must not pull installed modules in."""
@@ -1014,3 +1034,37 @@ class TestUnreadableCacheEntry:
         assert rerun == cached == 16
         assert Path(log_path).read_text(encoding="utf-8").splitlines() == ["run", "run"]
         assert collector.cached()
+
+
+class TestDynamicTemplateEntries:
+    """A dynamic task's entry holds its returned expressions (G1)."""
+
+    def test_a_template_naming_a_removed_task_is_a_miss(self, tmp_path, monkeypatch):
+        _write_module(
+            tmp_path / "template_tasks.py",
+            """\
+            from ginkgo import task
+
+            @task()
+            def child(x: int) -> int:
+                return x
+
+            @task()
+            def parent() -> int:
+                return child(x=1)
+            """,
+        )
+        with _imported_from(tmp_path, "template_tasks") as tasks:
+            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+            store.save(
+                cache_key="k",
+                result=DynamicTemplate(tasks.child(x=1)),
+                task_def=tasks.parent,
+                resolved_args={},
+                input_hashes={},
+            )
+            assert isinstance(store.load(cache_key="k", task_def=tasks.parent), DynamicTemplate)
+
+            # The child is renamed away: the stored template can no longer load.
+            monkeypatch.delattr(tasks, "child")
+            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING

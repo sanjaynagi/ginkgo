@@ -750,6 +750,56 @@ Tasks can return:
 
 Returning expressions is how a workflow's graph expands at runtime.
 
+A task that returns expressions completes once they have run, with the value
+they resolve to. Its cache entry keeps the expressions themselves, so when the
+task is a cache hit they are replayed: each returned task is looked up in the
+cache on its own, a child whose code, script, module or inputs changed runs
+again, and an unchanged child is served from the cache with its outputs
+restored. The parent's own key covers only its own code and inputs, so a
+change that reaches only a child, such as an edited script, re-runs the child
+and not the parent.
+
+### Fanning Out Over Data A Task Writes (Checkpoints)
+
+When how many tasks to run depends on data, write the data in one task and
+return one task per piece. The writing task declares the folder as its
+`Out[folder]` and returns the readers of the files inside it:
+
+```python
+from pathlib import Path
+
+from ginkgo import Out, file, flow, folder, task
+
+
+@task()
+def count_lines(chunk: file) -> int:
+    return len(Path(chunk).read_text().splitlines())
+
+
+@task()
+def split(table: file, chunks: Out[folder]) -> list:
+    Path(chunks).mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, block in enumerate(Path(table).read_text().split("\n\n")):
+        path = Path(chunks) / f"chunk{i}.txt"
+        path.write_text(block)
+        paths.append(str(path))
+    return [count_lines(chunk=path) for path in paths]
+
+
+@flow
+def main():
+    return split(table="data/table.txt", chunks="results/chunks")
+```
+
+The returned tasks read files the parent has already written, so they do not
+wait on it as a producer of `results/chunks`; the parent waits on them, and
+completes with the list of their results. A later run with an unchanged
+`table.txt` is a cache hit on `split`, whose returned tasks are replayed and
+hit in turn. A returned task that reads a path produced by a task downstream
+of its parent cannot run before that task, which waits on the parent: the
+expansion fails with a cycle error naming the task that returned it.
+
 ### Selecting One Output With `.output[i]`
 
 A task that produces several files returns them together — a shell task

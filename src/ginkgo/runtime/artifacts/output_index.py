@@ -41,9 +41,9 @@ def output_summary(
         Label for the top-level output; nested entries extend it with their
         index.
     artifact_ids : Mapping[str, str] | None
-        The cache entry's output path to artifact id mapping, keyed as
-        ``CacheStore.save`` keys it. A ``file`` or ``folder`` entry whose path
-        is in it carries its ``artifact_id``.
+        Output path to artifact id, keyed as ``CacheStore.save`` keys an
+        entry's outputs or by resolved path. A ``file`` or ``folder`` entry
+        whose path is in it carries its ``artifact_id``.
 
     Returns
     -------
@@ -141,7 +141,10 @@ def _path_entry(
 ) -> dict[str, Any]:
     """Return a ``file``/``folder`` output entry, naming its artifact when stored."""
     entry: dict[str, Any] = {"name": name, "type": kind, "path": str(value)}
-    artifact_id = artifact_ids.get(str(Path(str(value))))
+    path = Path(str(value))
+    # Keyed as the entry stored the path, or resolved, as the run's digest
+    # registry keys the outputs of every task it has seen.
+    artifact_id = artifact_ids.get(str(path)) or artifact_ids.get(str(path.resolve()))
     if artifact_id is not None:
         entry["artifact_id"] = artifact_id
     return entry

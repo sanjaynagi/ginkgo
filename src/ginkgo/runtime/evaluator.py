@@ -40,7 +40,7 @@ from ginkgo.runtime.placement import Placement
 from ginkgo.runtime.remote_dispatch import RemoteDispatchManager
 from ginkgo.runtime.remote_executor import RemoteDispatchStats
 from ginkgo.runtime.artifacts.output_index import output_summary
-from ginkgo.runtime.caching.cache import MISSING, CacheStore
+from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
 from ginkgo.runtime.caching.node_cache import NodeCache
 from ginkgo.runtime.caching.digest_registry import DigestRegistry
 from ginkgo.runtime.caching.hash_memo import HashMemo
@@ -268,6 +268,9 @@ class NodeRun:
     transport_path: Path | None = None
     dynamic_template: Any = None
     dynamic_dependency_ids: set[int] = field(default_factory=set)
+    replaying_cache: bool = False
+    """Whether ``dynamic_template`` came from the node's cache entry rather
+    than from running its body, so the node completes as cached."""
     stdout_path: Path | None = None
     stderr_path: Path | None = None
     display_label: str | None = None
@@ -326,6 +329,9 @@ class ConcurrentEvaluator:
     event_bus: EventBus | None = None
     trust_mtimes: bool = False
     keep_going: bool = False
+    rerun: frozenset[str] = frozenset()
+    """Tasks whose cache lookup is skipped, so they run again: each a task's
+    qualified name, base name, or one branch's display label."""
     _cache_store: CacheStore = field(init=False, repr=False)
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
     graph: TaskGraph = field(default_factory=TaskGraph, init=False, repr=False)
@@ -495,6 +501,42 @@ class ConcurrentEvaluator:
             stage_remote_refs=False,
         )
 
+    def expand_probed_template(self, *, node: NodeRun, template: Any) -> list[int]:
+        """Register a cached dynamic template for a dry-run probe, running nothing.
+
+        The probe's companion to a cache hit's replay: *node* waits on the
+        template's tasks, which the probe then examines like any other.
+
+        Parameters
+        ----------
+        node : NodeRun
+            The probed node whose cache entry holds *template*.
+        template : Any
+            The task expressions the entry holds.
+
+        Returns
+        -------
+        list[int]
+            The nodes the template added, dependencies first.
+        """
+        node.dynamic_dependency_ids = self._register(template, expanding_node_id=node.node_id)
+        node.dynamic_template = template
+        node.state = "waiting_dynamic"
+        return list(self.graph.new_node_ids)
+
+    def complete_probed_template(self, *, node: NodeRun) -> None:
+        """Complete a probed node from its template, if every task it returned is cached.
+
+        Otherwise the node stays waiting, so nothing downstream of it can be
+        resolved.
+        """
+        if not self._dependencies_complete(node.dynamic_dependency_ids):
+            return
+        node.result = self._validator.coerce_return_value(
+            task_def=node.task_def, value=self._materialize(node.dynamic_template)
+        )
+        node.state = "completed"
+
     def evaluate(self, expr: Any) -> Any:
         """Resolve a root expression or nested container concurrently.
 
@@ -588,7 +630,7 @@ class ConcurrentEvaluator:
                         if root_skipped is not None:
                             raise root_skipped
 
-                    raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
+                    raise self._deadlock_error()
             except BaseException as exc:
                 # Whatever stopped the run, a task it started and will not see
                 # finish is closed in the record rather than left running, and
@@ -669,7 +711,9 @@ class ConcurrentEvaluator:
         """
         while True:
             progressed = False
-            for node in self._nodes.values():
+            # A copy: a cache hit that replays a dynamic template registers
+            # nodes, which the next pass prepares.
+            for node in list(self._nodes.values()):
                 if node.state != "pending":
                     continue
                 if not self._dependencies_complete(node.node.dependency_ids):
@@ -949,7 +993,10 @@ class ConcurrentEvaluator:
                     continue
 
                 value = self._materialize(node.dynamic_template)
-                self._complete_node(node=node, value=value)
+                if node.replaying_cache:
+                    self._complete_replayed_node(node=node, value=value)
+                else:
+                    self._complete_node(node=node, value=value)
                 progressed = True
 
             if not progressed:
@@ -1085,6 +1132,22 @@ class ConcurrentEvaluator:
         for node in self._unfinished_nodes():
             self._mark_node_skipped(node=node, reason="run_stopped", blocker=self._failed_node)
 
+    def _deadlock_error(self) -> RuntimeError:
+        """Describe a scheduler that can make no progress: each unresolved task and its waits."""
+        lines = []
+        for node in self._unfinished_nodes():
+            waits = sorted(
+                self._nodes[dep_id].label
+                for dep_id in node.node.dependency_ids | node.dynamic_dependency_ids
+                if self._nodes[dep_id].state != "completed"
+            )
+            lines.append(
+                f"  {node.label} ({node.state}) waits on: {', '.join(waits) or 'nothing'}"
+            )
+        return RuntimeError(
+            "Scheduler reached a deadlock with unresolved tasks:\n" + "\n".join(lines)
+        )
+
     def _unfinished_nodes(self) -> list[NodeRun]:
         """Return the nodes not yet in a terminal state."""
         return [node for node in self._nodes.values() if node.state not in _TERMINAL_NODE_STATES]
@@ -1162,6 +1225,7 @@ class ConcurrentEvaluator:
         node.executor_name = None
         node.dynamic_template = None
         node.dynamic_dependency_ids.clear()
+        node.replaying_cache = False
         node.secret_values = ()
         node.extra_source_hash = None
         node.planned = None
@@ -1189,9 +1253,12 @@ class ConcurrentEvaluator:
         written_notice = written_str_inputs_notice(self._node_cache.written_str_inputs(node=node))
         if written_notice is not None:
             self._emit_task_event(TaskNotice, node=node, message=written_notice)
+        # A dynamic task's entry keeps the expressions it returned, so a hit
+        # replays them and each child is looked up on its own.
+        dynamic = node.dynamic_template is not None
         artifact_ids = self._cache_store.save(
             cache_key=node.cache_key,
-            result=value,
+            result=DynamicTemplate(node.dynamic_template) if dynamic else value,
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             input_hashes=node.input_hashes,
@@ -1219,7 +1286,12 @@ class ConcurrentEvaluator:
             node=node,
             status="success",
             cache_key=node.cache_key,
-            outputs=self._output_summary_for(node=node, value=value, artifact_ids=artifact_ids),
+            outputs=self._output_summary_for(
+                node=node,
+                value=value,
+                # A dynamic task's outputs are its children's, already stored.
+                artifact_ids=self._digests.known if dynamic else artifact_ids,
+            ),
             resource_usage=self._resource_usage_for(node=node),
             remote_job_id=node.remote_job_id,
         )
@@ -1810,13 +1882,22 @@ class ConcurrentEvaluator:
 
         Under ``--trust-mtimes`` the stat index is tried first, before any
         content hashing; otherwise, or when it misses, the lookup is by
-        content.
+        content. A task named by ``--rerun`` is never looked up: its key is
+        computed, for the entry its run will save, and it misses.
+
+        An entry holding a :class:`DynamicTemplate` replays it: the returned
+        expressions are registered again, each child is prepared and looked
+        up on its own, and the node completes as cached once they finish.
         """
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-        hit = self._node_cache.lookup_by_stat(node=node) if self.trust_mtimes else None
-        if hit is None:
-            hit = self._node_cache.content_lookup(node=node)
+        if self.rerun_requested(node=node):
+            self._node_cache.ensure_cache_key(node=node)
+            hit = None
+        else:
+            hit = self._node_cache.lookup_by_stat(node=node) if self.trust_mtimes else None
+            if hit is None:
+                hit = self._node_cache.content_lookup(node=node)
         self._record_task_metadata(node=node, include_env_metadata=False)
         self._record_task_timing(
             node_id=node.node_id,
@@ -1825,11 +1906,38 @@ class ConcurrentEvaluator:
         )
         if hit is None:
             return False
-        self._mark_node_cached(node=node, value=hit.value, cache_key=hit.cache_key)
+        self._record_cache_hit(node=node, cache_key=hit.cache_key)
+        if isinstance(hit.value, DynamicTemplate):
+            node.replaying_cache = True
+            expanded = self._expand_dynamic(node=node, value=hit.value.template)
+            assert expanded, "a dynamic template is only stored when it holds task expressions"
+            return True
+
+        node.result = hit.value
+        node.state = "completed"
+        self._emit_task_event(
+            TaskCompleted,
+            node=node,
+            status="cached",
+            cache_key=hit.cache_key,
+            outputs=self._output_summary_for(
+                node=node,
+                value=hit.value,
+                artifact_ids=self._cache_store.load_artifact_ids(cache_key=hit.cache_key),
+            ),
+        )
         return True
 
-    def _mark_node_cached(self, *, node: NodeRun, value: Any, cache_key: str) -> None:
-        """Mark one node complete from cache and emit cached completion events."""
+    def rerun_requested(self, *, node: NodeRun) -> bool:
+        """Return whether ``--rerun`` names *node*, so its cache is not consulted.
+
+        A name matches a task's qualified name, its base name (every branch
+        of a fan-out), or one branch's display label.
+        """
+        return not self.rerun.isdisjoint({node.task_def.name, node.task_def.base_name, node.label})
+
+    def _record_cache_hit(self, *, node: NodeRun, cache_key: str) -> None:
+        """Record that *node* is served by the entry under *cache_key*."""
         if node.attempt == 0:
             node.attempt = 1
 
@@ -1839,8 +1947,6 @@ class ConcurrentEvaluator:
         # another process held the write lock for a save.
         self._cache_index.record_hit(cache_key)
         self._node_cache.propagate_known_digests(cache_key=cache_key)
-        node.result = value
-        node.state = "completed"
         self._remove_tmp_paths(node)
         self._replay_runner_extras(node=node, cache_key=cache_key)
         self._emit_task_event(
@@ -1848,21 +1954,31 @@ class ConcurrentEvaluator:
             node=node,
             cache_key=cache_key,
         )
-        self._emit_task_event(
-            TaskCompleted,
-            node=node,
-            status="cached",
-            cache_key=cache_key,
-            outputs=self._output_summary_for(
-                node=node,
-                value=value,
-                artifact_ids=self._cache_store.load_artifact_ids(cache_key=cache_key),
-            ),
-        )
 
         # Record stat-index entry so future --trust-mtimes runs can
         # find this cache key without content hashing.
         self._node_cache.record_stat_index_entry(node=node, cache_key=cache_key)
+
+    def _complete_replayed_node(self, *, node: NodeRun, value: Any) -> None:
+        """Complete a cached dynamic task once the children it replayed have finished.
+
+        Its body did not run, so nothing is saved: the entry already holds the
+        template, and each child saved its own result.
+        """
+        value = self._finalize_result_value(node=node, value=value)
+        node.result = value
+        node.state = "completed"
+        node.dynamic_template = None
+        node.dynamic_dependency_ids.clear()
+        self._emit_task_event(
+            TaskCompleted,
+            node=node,
+            status="cached",
+            cache_key=node.cache_key,
+            outputs=self._output_summary_for(
+                node=node, value=value, artifact_ids=self._digests.known
+            ),
+        )
 
     def _record_task_metadata(
         self,

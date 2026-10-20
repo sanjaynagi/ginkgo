@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ginkgo.core.expr import ConstructedCall
-from ginkgo.runtime.caching.cache import MISSING
+from ginkgo.runtime.caching.cache import MISSING, DynamicTemplate
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.runtime.static_directive import static_directive
 from ginkgo.runtime.task_kinds import task_kind
@@ -120,7 +120,8 @@ class PlannedTask:
     run_reasons : tuple[str, ...]
         For a ``will_run`` task, why its key misses, as ``ginkgo cache
         explain`` reason codes (``source_hash_changed``, ``input_changed``,
-        ``no_prior_entry``, ...). Empty otherwise.
+        ``no_prior_entry``, ...), or ``rerun_requested`` for a task named
+        by ``--rerun``. Empty otherwise.
     """
 
     node_id: int
@@ -260,21 +261,23 @@ def build_dry_run_plan(
         The structured plan, grouped into dependency waves.
     """
     nodes = evaluator.task_nodes
-    waves_by_node = _assign_waves(evaluator.graph.nodes)
-    topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
-    labels = {node_id: node.label for node_id, node in nodes.items()}
+    static_waves = _assign_waves(evaluator.graph.nodes, dynamic_parent_ids={})
     diagnostics: list[PlanDiagnostic] = []
     probe_failures: list[ProbeFailure] = []
     with tempfile.TemporaryDirectory(prefix="ginkgo-dry-run-") as scratch:
         probes = _resolve_cache_status(
             evaluator=evaluator,
-            topo_order=topo_order,
-            labels=labels,
+            topo_order=sorted(nodes, key=lambda node_id: (static_waves[node_id], node_id)),
             diagnostics=diagnostics,
             probe_failures=probe_failures,
             scratch=Path(scratch),
         )
 
+    # Probing replays cached dynamic templates, so the graph may have grown.
+    waves_by_node = _assign_waves(
+        evaluator.graph.nodes, dynamic_parent_ids=evaluator.graph.dynamic_parent_ids
+    )
+    topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
     planned: dict[int, PlannedTask] = {}
     for node_id in topo_order:
         node = nodes[node_id]
@@ -289,12 +292,12 @@ def build_dry_run_plan(
                 remote=evaluator.placement.resolve(task_def=task_def) is not None,
             )
         except ValueError as exc:
-            diagnostics.append(_diagnostic(node=node, label=labels[node_id], exc=exc))
+            diagnostics.append(_diagnostic(node=node, exc=exc))
         status, run_reasons = probes[node_id]
         planned[node_id] = PlannedTask(
             node_id=node_id,
             base_name=task_def.base_name,
-            label=labels[node_id],
+            label=node.label,
             kind=task_def.kind,
             env=task_def.env,
             mapped=node.node.expr.mapped,
@@ -338,12 +341,43 @@ def _dropped_label(call: ConstructedCall) -> str:
     return call.label
 
 
-def _assign_waves(nodes: Mapping[int, TaskNode]) -> dict[int, int]:
-    """Assign each node a 0-based wave (longest dependency path to a root)."""
-    indegree = {node_id: len(node.dependency_ids) for node_id, node in nodes.items()}
-    dependents: dict[int, list[int]] = {node_id: [] for node_id in nodes}
+def _assign_waves(
+    nodes: Mapping[int, TaskNode], *, dynamic_parent_ids: Mapping[int, int]
+) -> dict[int, int]:
+    """Assign each node a 0-based wave (longest dependency path to a root).
+
+    A task a dynamic expansion registered runs after the task that returned
+    it, and a dependent of that task runs after everything it returned, so
+    each such node is placed after its parent and before the parent's
+    dependents.
+    """
+    returned: dict[int, set[int]] = {}
+    for child_id, parent_id in dynamic_parent_ids.items():
+        returned.setdefault(parent_id, set()).add(child_id)
+
+    def everything_returned(node_id: int) -> set[int]:
+        found: set[int] = set()
+        pending = list(returned.get(node_id, ()))
+        while pending:
+            child_id = pending.pop()
+            if child_id not in found:
+                found.add(child_id)
+                pending.extend(returned.get(child_id, ()))
+        return found
+
+    waits_on: dict[int, set[int]] = {}
     for node_id, node in nodes.items():
+        waits = set(node.dependency_ids)
         for dep_id in node.dependency_ids:
+            waits |= everything_returned(dep_id)
+        if node_id in dynamic_parent_ids:
+            waits.add(dynamic_parent_ids[node_id])
+        waits_on[node_id] = waits
+
+    indegree = {node_id: len(waits) for node_id, waits in waits_on.items()}
+    dependents: dict[int, list[int]] = {node_id: [] for node_id in nodes}
+    for node_id, waits in waits_on.items():
+        for dep_id in waits:
             dependents[dep_id].append(node_id)
 
     wave = {node_id: 0 for node_id, degree in indegree.items() if degree == 0}
@@ -362,7 +396,6 @@ def _resolve_cache_status(
     *,
     evaluator: ConcurrentEvaluator,
     topo_order: list[int],
-    labels: Mapping[int, str],
     diagnostics: list[PlanDiagnostic],
     probe_failures: list[ProbeFailure],
     scratch: Path,
@@ -377,27 +410,70 @@ def _resolve_cache_status(
     Anything the probe did not expect is collected as a
     :class:`ProbeFailure` rather than discarded (#294).
 
+    A cached dynamic task's template is expanded as a hit would replay it,
+    and each task it returns is probed in turn, so the plan shows every
+    child's own status. The parent's value is known only when they are all
+    cached.
+
     Returns
     -------
     dict[int, tuple[CacheStatus, tuple[str, ...]]]
         Each node's status, with the reasons a ``will_run`` node misses.
     """
-    nodes = evaluator.task_nodes
     probes: dict[int, tuple[CacheStatus, tuple[str, ...]]] = {}
-    for node_id in topo_order:
+    _probe_nodes(
+        evaluator=evaluator,
+        node_ids=topo_order,
+        probes=probes,
+        diagnostics=diagnostics,
+        probe_failures=probe_failures,
+        scratch=scratch,
+    )
+    return probes
+
+
+def _probe_nodes(
+    *,
+    evaluator: ConcurrentEvaluator,
+    node_ids: list[int],
+    probes: dict[int, tuple[CacheStatus, tuple[str, ...]]],
+    diagnostics: list[PlanDiagnostic],
+    probe_failures: list[ProbeFailure],
+    scratch: Path,
+) -> None:
+    """Probe *node_ids* in order, recursing into each cached dynamic template."""
+    nodes = evaluator.task_nodes
+    for node_id in node_ids:
         node = nodes[node_id]
-        probes[node_id] = _probe_node(
+        status, reasons, template = _probe_node(
             evaluator=evaluator,
             node=node,
             dependencies_cached=all(
-                probes[dep_id][0] == "cached" for dep_id in node.node.dependency_ids
+                nodes[dep_id].state == "completed" for dep_id in node.node.dependency_ids
             ),
-            label=labels[node_id],
             diagnostics=diagnostics,
             probe_failures=probe_failures,
             scratch=scratch,
         )
-    return probes
+        probes[node_id] = (status, reasons)
+        if template is None:
+            continue
+        try:
+            returned = evaluator.expand_probed_template(node=node, template=template)
+        except Exception as exc:
+            # The run would fail the same way when the hit replays it.
+            diagnostics.append(_diagnostic(node=node, exc=exc))
+            probes[node_id] = ("unknown", ())
+            continue
+        _probe_nodes(
+            evaluator=evaluator,
+            node_ids=returned,
+            probes=probes,
+            diagnostics=diagnostics,
+            probe_failures=probe_failures,
+            scratch=scratch,
+        )
+        evaluator.complete_probed_template(node=node)
 
 
 def _probe_node(
@@ -405,16 +481,19 @@ def _probe_node(
     evaluator: ConcurrentEvaluator,
     node: NodeRun,
     dependencies_cached: bool,
-    label: str,
     diagnostics: list[PlanDiagnostic],
     probe_failures: list[ProbeFailure],
     scratch: Path,
-) -> tuple[CacheStatus, tuple[str, ...]]:
-    """Return the cache status of one node, with the reasons a ``will_run`` misses."""
+) -> tuple[CacheStatus, tuple[str, ...], Any]:
+    """Return the cache status of one node, with the reasons a ``will_run`` misses.
+
+    The third item is the template a cached dynamic task's entry holds, for
+    the caller to expand, and otherwise ``None``.
+    """
     # Downstream of anything not known-cached: the cache key cannot be
     # computed without first running an upstream task.
     if not dependencies_cached:
-        return "unknown", ()
+        return "unknown", (), None
 
     try:
         resolved_args = evaluator.resolve_probe_args(node=node)
@@ -422,15 +501,13 @@ def _probe_node(
         # The honest unknowns: a working-tree path the live run would restore
         # from the artifact store before touching it, or a value the probe
         # cannot stage because staging is a side effect. No claim, no noise.
-        return "unknown", ()
+        return "unknown", (), None
     except Exception as exc:
         # Anything else is a probe defect, not an honest unknown. The preview
         # still degrades to "unknown" rather than aborting a dry run of a
         # workflow that may well execute fine — but it says so (#294).
-        probe_failures.append(
-            _probe_failure(node=node, label=label, stage="resolve_args", exc=exc)
-        )
-        return "unknown", ()
+        probe_failures.append(_probe_failure(node=node, stage="resolve_args", exc=exc))
+        return "unknown", (), None
 
     # Validated and hashed as the run will see them, after it restores any
     # upstream folder; dependents still read the arguments as resolved.
@@ -453,14 +530,14 @@ def _probe_node(
     try:
         evaluator.validator.validate_inputs(task_def=node.task_def, resolved_args=probe_args)
     except TypeError as exc:
-        diagnostics.append(_diagnostic(node=node, label=label, exc=exc))
-        return "will_run", ()
+        diagnostics.append(_diagnostic(node=node, exc=exc))
+        return "will_run", (), None
     except (FileNotFoundError, ValueError):
         # The same errors NodeCache._is_valid_cached_result treats as "not
         # really cached": typically a working-tree path the live run would
         # restore from the artifact store before validating. The probe must
         # not materialise anything, so it cannot tell — no claim.
-        return "unknown", ()
+        return "unknown", (), None
 
     # Some kinds' cache keys fold in the source hash of the directive their
     # body returns. The run calls the body for it; the probe must not run
@@ -476,8 +553,11 @@ def _probe_node(
             )
         )
         if directive is None:
-            return "unknown", ()
+            return "unknown", (), None
         extra_source_hash = directive.source_hash
+
+    if evaluator.rerun_requested(node=node):
+        return "will_run", ("rerun_requested",), None
 
     try:
         # Hash an upstream output by the digest its cache entry recorded, as
@@ -494,10 +574,10 @@ def _probe_node(
         # ref the probe deliberately left unstaged (``_hash_value`` refuses a
         # ``RemoteRef`` without a ``version_id``). Cannot know without
         # executing — the same reasoning as the block above.
-        return "unknown", ()
+        return "unknown", (), None
     except Exception as exc:
-        probe_failures.append(_probe_failure(node=node, label=label, stage="cache_key", exc=exc))
-        return "unknown", ()
+        probe_failures.append(_probe_failure(node=node, stage="cache_key", exc=exc))
+        return "unknown", (), None
 
     cached_value = (
         cache_store.load(cache_key=cache_key, task_def=node.task_def)
@@ -511,7 +591,7 @@ def _probe_node(
             input_hashes=input_hashes,
             extra_source_hash=extra_source_hash,
         )
-        return "will_run", tuple(reasons)
+        return "will_run", tuple(reasons), None
 
     # Record the hit so dependents can resolve their own arguments against
     # this output, mirroring the evaluator's prepare-phase cache fast path.
@@ -519,10 +599,13 @@ def _probe_node(
     # node's resolved arguments rather than its result.
     node.cache_key = cache_key
     node.resolved_args = resolved_args
+    if isinstance(cached_value, DynamicTemplate):
+        # Its value is the one its returned tasks resolve to, if they all hit.
+        return "cached", (), cached_value.template
     node.result = cached_value
     node.state = "completed"
     evaluator.node_cache.propagate_known_digests(cache_key=cache_key)
-    return "cached", ()
+    return "cached", (), None
 
 
 def _as_restored(
@@ -568,22 +651,22 @@ def _as_restored(
     return type(value)(copy)
 
 
-def _diagnostic(*, node: NodeRun, label: str, exc: Exception) -> PlanDiagnostic:
+def _diagnostic(*, node: NodeRun, exc: Exception) -> PlanDiagnostic:
     """Record a failure the run is certain to hit against *node*."""
     return PlanDiagnostic(
         task_id=task_id_for_node(node.node_id),
         task_name=node.task_def.base_name,
-        label=label,
+        label=node.label,
         message=str(exc),
     )
 
 
-def _probe_failure(*, node: NodeRun, label: str, stage: str, exc: Exception) -> ProbeFailure:
+def _probe_failure(*, node: NodeRun, stage: str, exc: Exception) -> ProbeFailure:
     """Record one unexpected probe error against the node it was probing."""
     return ProbeFailure(
         task_id=task_id_for_node(node.node_id),
         task_name=node.task_def.base_name,
-        label=label,
+        label=node.label,
         stage=stage,
         exception_type=type(exc).__name__,
         message=str(exc),

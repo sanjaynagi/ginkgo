@@ -455,6 +455,39 @@ def main():
         assert known.exists()
         assert not orphan.exists()
 
+    def test_cache_clear_task_removes_only_that_tasks_entries(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        first = _seed_cache_entry(cache_root=cache_root, name="a1", age_days=1, function="m.a")
+        second = _seed_cache_entry(cache_root=cache_root, name="a2", age_days=1, function="m.a")
+        other = _seed_cache_entry(cache_root=cache_root, name="b1", age_days=1, function="m.b")
+
+        result = _run_cli("cache", "clear", "--task", "a", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 2 cache entries" in result.stdout
+        assert not first.exists() and not second.exists()
+        assert other.exists()
+
+    def test_cache_clear_task_with_no_entries_is_an_error(self) -> None:
+        _seed_cache_entry(cache_root=Path(".ginkgo") / "cache", name="b1", age_days=1)
+
+        result = _run_cli("cache", "clear", "--task", "missing", cwd=Path.cwd())
+
+        assert result.returncode != 0
+        assert "No cache entries found for task: missing" in result.stdout + result.stderr
+
+    def test_cache_clear_all_removes_every_entry_and_orphan(self) -> None:
+        cache_root = Path(".ginkgo") / "cache"
+        known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+
+        result = _run_cli("cache", "clear", "--all", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
+        assert not known.exists() and not orphan.exists()
+
     @pytest.mark.parametrize("value", ["bad", "0d"])
     def test_cache_prune_rejects_an_invalid_duration_as_usage(self, value: str) -> None:
         result = _run_cli("cache", "prune", "--older-than", value, cwd=Path.cwd())
