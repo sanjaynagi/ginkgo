@@ -378,7 +378,7 @@ def run_workflow(
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(message)}")
 
     task_count = len(evaluator.task_nodes)
-    edge_count = sum(len(node.dependency_ids) for node in evaluator.task_nodes.values())
+    edge_count = sum(len(node.dependency_ids) for node in evaluator.graph.nodes.values())
     env_count = len(
         {node.task_def.env for node in evaluator.task_nodes.values() if node.task_def.env}
     )

@@ -708,7 +708,7 @@ class TestContainerKindRestriction:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=True),
         ):
-            evaluator._validator.validate_declared_envs(nodes=evaluator._nodes.values())
+            evaluator._validator.validate_declared_envs(nodes=evaluator.graph.nodes.values())
 
 
 # ------------------------------------------------------------------

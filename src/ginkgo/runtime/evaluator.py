@@ -211,8 +211,8 @@ def evaluate(
 #   the process pool or a remote executor (never for driver tasks); removed
 #   by _cleanup_transport once the worker's result is decoded, or when the
 #   attempt fails or is cancelled.
-# - blocked_by_task_id / blocked_by_task_name are non-None only in
-#   "skipped", naming the failed task the skip is attributed to.
+# - blocked_by is non-None only in "skipped", naming the failed task the
+#   skip is attributed to.
 _NodeState = Literal[
     "pending",
     "ready",
@@ -275,8 +275,8 @@ class NodeRun:
     runner_extras: dict[str, Any] | None = None
     remote_job_id: str | None = None
     measured_resources: dict[str, Any] | None = None
-    blocked_by_task_id: str | None = None
-    blocked_by_task_name: str | None = None
+    blocked_by: TaskNode | None = None
+    """The failed task a skip is attributed to; set only when "skipped"."""
 
     @property
     def remote(self) -> bool:
@@ -288,31 +288,15 @@ class NodeRun:
         """The name the node is shown under: its display label or bare task name."""
         return self.display_label or self.task_def.name.rsplit(".", 1)[-1]
 
-    # Identity views, delegated so collaborators that receive a run can
-    # read the vertex without reaching through ``.node``.
+    # The two identity views the runner contract (``TaskInvocation``) names;
+    # everything else about the graph vertex is read through ``node``.
     @property
     def node_id(self) -> int:
         return self.node.node_id
 
     @property
-    def expr(self) -> Expr:
-        return self.node.expr
-
-    @property
     def task_def(self) -> TaskDef:
         return self.node.task_def
-
-    @property
-    def dependency_ids(self) -> frozenset[int]:
-        return self.node.dependency_ids
-
-    @property
-    def concurrency_group(self) -> str | None:
-        return self.node.expr.concurrency_group
-
-    @property
-    def concurrency_group_limit(self) -> int | None:
-        return self.node.expr.concurrency_group_limit
 
 
 @dataclass(kw_only=True)
@@ -488,7 +472,7 @@ class ConcurrentEvaluator:
             The resolved keyword arguments for the task call.
         """
         return self._resolve_task_args(
-            expr=node.expr,
+            expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
@@ -518,8 +502,8 @@ class ConcurrentEvaluator:
             return self._materialize(expr)
 
         # Validate all statically declared environments before any work starts.
-        self._validator.validate_declared_envs(nodes=self._nodes.values())
-        self._validator.validate_declared_secrets(nodes=self._nodes.values())
+        self._validator.validate_declared_envs(nodes=self.graph.nodes.values())
+        self._validator.validate_declared_secrets(nodes=self.graph.nodes.values())
 
         with ExitStack() as stack:
             executors = stack.enter_context(
@@ -664,7 +648,7 @@ class ConcurrentEvaluator:
             for node in self._nodes.values():
                 if node.state != "pending":
                     continue
-                if not self._dependencies_complete(node.dependency_ids):
+                if not self._dependencies_complete(node.node.dependency_ids):
                     continue
 
                 try:
@@ -683,7 +667,7 @@ class ConcurrentEvaluator:
         """Resolve non-ephemeral inputs, then either cache-hit or ready the task."""
         prepare_started = time.perf_counter()
         resolved_args = self._resolve_task_args(
-            expr=node.expr,
+            expr=node.node.expr,
             task_def=node.task_def,
             include_tmp_dirs=False,
             stage_remote_refs=False,
@@ -692,7 +676,7 @@ class ConcurrentEvaluator:
         # serves the stale result.
         for message in untracked_directory_notices(
             task_def=node.task_def,
-            args=node.expr.args,
+            args=node.node.expr.args,
             resolved_args=resolved_args,
             warned=self._untracked_path_warnings,
         ):
@@ -815,8 +799,8 @@ class ConcurrentEvaluator:
             memory_gb=0 if node.remote else node.memory_gb,
             gpu=0 if node.remote else node.gpu,
             priority=node.task_def.priority,
-            concurrency_group=node.concurrency_group,
-            concurrency_group_limit=node.concurrency_group_limit,
+            concurrency_group=node.node.expr.concurrency_group,
+            concurrency_group_limit=node.node.expr.concurrency_group_limit,
             custom=node.custom_resources,
         )
 
@@ -837,7 +821,7 @@ class ConcurrentEvaluator:
             node = self._nodes[node_id]
             node.attempt += 1
             node.resolved_args = self._resolve_task_args(
-                expr=node.expr,
+                expr=node.node.expr,
                 task_def=node.task_def,
                 include_tmp_dirs=True,
                 existing_args=node.resolved_args,
@@ -1235,7 +1219,7 @@ class ConcurrentEvaluator:
         for node in self._nodes.values():
             if node.state == "ready":
                 return True
-            if node.state == "pending" and self._dependencies_complete(node.dependency_ids):
+            if node.state == "pending" and self._dependencies_complete(node.node.dependency_ids):
                 return True
             if node.state == "waiting_dynamic" and self._dependencies_complete(
                 node.dynamic_dependency_ids
@@ -1284,7 +1268,7 @@ class ConcurrentEvaluator:
 
     def _blocking_dependency(self, *, node: NodeRun) -> NodeRun | None:
         """Return a dependency of *node* that has failed or been skipped."""
-        for node_id in sorted(node.dependency_ids | node.dynamic_dependency_ids):
+        for node_id in sorted(node.node.dependency_ids | node.dynamic_dependency_ids):
             dependency = self._nodes[node_id]
             if dependency.state in {"failed", "skipped"}:
                 return dependency
@@ -1297,21 +1281,15 @@ class ConcurrentEvaluator:
         a node waiting on its own dynamic expansion has run its body, and the
         record of that work is true whatever the outcome.
         """
-        if blocker.state == "skipped":
-            blocked_by_id = blocker.blocked_by_task_id
-            blocked_by_name = blocker.blocked_by_task_name
-        else:
-            blocked_by_id = task_id_for_node(blocker.node_id)
-            blocked_by_name = blocker.task_def.name
-
+        blocked_by = blocker.blocked_by if blocker.state == "skipped" else blocker.node
+        assert blocked_by is not None
         node.state = "skipped"
-        node.blocked_by_task_id = blocked_by_id
-        node.blocked_by_task_name = blocked_by_name
+        node.blocked_by = blocked_by
         self._emit_task_event(
             TaskSkipped,
             node=node,
-            blocked_by_task_id=blocked_by_id or "",
-            blocked_by_task_name=blocked_by_name or "",
+            blocked_by_task_id=task_id_for_node(blocked_by.node_id),
+            blocked_by_task_name=blocked_by.task_def.name,
         )
 
     def _root_skipped_error(self) -> RootSkippedError | None:
@@ -1324,8 +1302,8 @@ class ConcurrentEvaluator:
             node = self._nodes[node_id]
             if node.state == "skipped":
                 return RootSkippedError(
-                    task_name=node.blocked_by_task_name or node.task_def.name,
-                    task_id=node.blocked_by_task_id or task_id_for_node(node.node_id),
+                    task_name=(node.blocked_by or node.node).task_def.name,
+                    task_id=task_id_for_node((node.blocked_by or node.node).node_id),
                 )
             if node.state == "failed":
                 return RootSkippedError(
@@ -1756,7 +1734,7 @@ class ConcurrentEvaluator:
             version=node.task_def.version,
             env_hash=self._env_identity(env=node.task_def.env),
             extra_source_hash=node.extra_source_hash,
-            dependency_ids=[task_id_for_node(dep) for dep in sorted(node.dependency_ids)],
+            dependency_ids=[task_id_for_node(dep) for dep in sorted(node.node.dependency_ids)],
             dynamic_dependency_ids=[
                 task_id_for_node(dep) for dep in sorted(node.dynamic_dependency_ids)
             ],
@@ -1846,7 +1824,8 @@ class ConcurrentEvaluator:
         result, say): that branch is named by the resolved value of its
         first label parameter, when one renders.
         """
-        if not node.expr.mapped or node.expr.display_label_parts or node.resolved_args is None:
+        expr = node.node.expr
+        if not expr.mapped or expr.display_label_parts or node.resolved_args is None:
             return node.display_label
 
         label_key = first_label_param_name(task_def=node.task_def)
