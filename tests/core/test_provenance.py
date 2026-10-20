@@ -185,7 +185,11 @@ def test_the_payload_carries_skipped_tasks_and_ignored_failures(ledger: Ledger) 
     failed, skipped = summary.tasks
     assert (failed.status, failed.ignored) == ("failed", True)
     assert skipped.status == "skipped"
-    assert skipped.skipped_because == {"task_id": "task_0000", "task_name": "demo.task"}
+    assert skipped.skipped_because == {
+        "reason": "upstream_failed",
+        "task_id": "task_0000",
+        "task_name": "demo.task",
+    }
     assert skipped.cache_label == "—"
     assert summary.skipped_count == 1
     assert summary.ignored_failure_count == 1
