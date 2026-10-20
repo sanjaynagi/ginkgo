@@ -676,10 +676,12 @@ The report contains the run summary and stat cards, run parameters, an SVG
 task-graph laid out as a layered DAG, per-task status and timing, failure cards
 with log tails, and links to rendered pages such as notebooks. By default it is written as a
 directory bundle at `.ginkgo/reports/<run-id>/` that you can open or share.
-Useful flags: `--single-file` (inline CSS, fonts and script into one file),
-`--out <dir>`, `--max-log-lines N` (default 80), and `--open`/`--no-open`. In
-the terminal, `ginkgo run` lists the run's rendered pages when it finishes;
-they live under the run directory's `notebooks/`.
+Useful flags: `--single-file` (inline CSS, fonts and script into one file,
+written to `.ginkgo/reports/<run-id>.html`; rendered pages and logs are linked
+but not included), `--out <path>` (a directory for a bundle, or the `.html`
+file with `--single-file`), `--max-log-lines N` (default 80), and
+`--open`/`--no-open`. In the terminal, `ginkgo run` lists the run's rendered
+pages when it finishes; they live under the run directory's `notebooks/`.
 
 ## Failures And Retries
 

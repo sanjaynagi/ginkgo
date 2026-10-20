@@ -208,6 +208,7 @@ class ReportData:
     # Identity
     run_id: str
     workflow: str | None
+    """The workflow file, relative to the project root when it sits below it."""
     workflow_label: str
     workspace_label: str | None
 
@@ -293,14 +294,6 @@ _STATUS_LABEL: dict[str, str] = {
     "running": "running",
     "pending": "pending",
     "unknown": "unknown",
-}
-
-_RUN_STATUS_LABEL: dict[str, str] = {
-    "succeeded": "completed",
-    "failed": "completed_with_errors",
-    "cancelled": "cancelled",
-    "running": "running",
-    "pending": "pending",
 }
 
 #: Document order of the report's sections, and the sidebar group each one
@@ -390,32 +383,31 @@ def build_report_data(
 
     status_raw = summary.status
     status_tone = _STATUS_TONE.get(status_raw, "warn")
-    status_label = _RUN_STATUS_LABEL.get(status_raw, status_raw)
+    # The run's status in the words ``ginkgo runs`` uses for it.
+    status_label = status_raw
 
     failed_count = summary.failed_count
     if failed_count > 0:
-        sidebar_status_label = f"completed · {failed_count} fail"
+        sidebar_status_label = f"{status_label} · {failed_count} failed"
         sidebar_status_tone = "fail"
-    elif status_raw == "succeeded":
-        sidebar_status_label = "completed"
-        sidebar_status_tone = "ok"
     else:
         sidebar_status_label = status_label
         sidebar_status_tone = status_tone
 
+    workflow = _project_relative(summary.workflow, project_root=workspace_root.parent)
     masthead_chips = _build_masthead_chips(summary=summary)
     masthead_kv = _build_masthead_kv(
         summary=summary,
+        workflow=workflow,
         workspace_label=workspace_label,
         status_label=status_label,
-        status_tone=status_tone,
         ginkgo_version=ginkgo_version,
     )
     environment = _build_environment_kv(summary=summary, ginkgo_version=ginkgo_version)
 
     return ReportData(
         run_id=summary.run_id,
-        workflow=summary.workflow,
+        workflow=workflow,
         workflow_label=summary.workflow_label,
         workspace_label=workspace_label,
         status_raw=status_raw,
@@ -827,21 +819,21 @@ def _build_masthead_chips(*, summary: RunSummary) -> tuple[MastheadChip, ...]:
 def _build_masthead_kv(
     *,
     summary: RunSummary,
+    workflow: str | None,
     workspace_label: str | None,
     status_label: str,
-    status_tone: str,
     ginkgo_version: str,
 ) -> tuple[KVEntry, ...]:
     """Key-value rows for the main masthead grid."""
     entries = [
         KVEntry(key="run_id", value=summary.run_id),
-        KVEntry(key="workflow", value=summary.workflow or "—"),
+        KVEntry(key="workflow", value=workflow or "—"),
     ]
     if workspace_label:
         entries.append(KVEntry(key="workspace", value=workspace_label))
     entries.extend(
         [
-            KVEntry(key="status", value=f"{status_label} · {status_tone}"),
+            KVEntry(key="status", value=status_label),
             KVEntry(key="started", value=format_timestamp(summary.started_at)),
             KVEntry(key="finished", value=format_timestamp(summary.finished_at)),
             KVEntry(key="duration", value=format_duration(summary.duration_s)),
@@ -849,6 +841,20 @@ def _build_masthead_kv(
         ]
     )
     return tuple(entries)
+
+
+def _project_relative(path: str | None, *, project_root: Path) -> str | None:
+    """Return *path* relative to *project_root* when it sits below it.
+
+    A report is read on other machines, where the absolute path the run
+    recorded names someone else's checkout.
+    """
+    if path is None:
+        return None
+    try:
+        return str(Path(path).resolve().relative_to(project_root.resolve()))
+    except ValueError:
+        return path
 
 
 def _build_environment_kv(*, summary: RunSummary, ginkgo_version: str) -> tuple[KVEntry, ...]:
