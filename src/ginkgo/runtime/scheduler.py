@@ -25,6 +25,12 @@ def _signal_handlers_preserved() -> Iterator[None]:
     every dispatch — so an interrupt arriving after the first wave killed the
     process outright, before the run could record that it was cancelled.
 
+    The signals are also blocked for the solve. CP-SAT's own handler would
+    otherwise take an interrupt that lands mid-solve: it stops the solve and
+    the run never hears of it, so a Ctrl-C was sometimes lost and the run
+    carried on. Blocked, the signal stays pending until the caller's handler
+    is back, and reaches that instead.
+
     Only meaningful on the main thread: :func:`signal.signal` refuses to run
     anywhere else, and there is nothing to restore there anyway.
     """
@@ -33,6 +39,7 @@ def _signal_handlers_preserved() -> Iterator[None]:
         return
 
     previous = {signum: signal.getsignal(signum) for signum in _GUARDED_SIGNALS}
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _GUARDED_SIGNALS)
     try:
         yield
     finally:
@@ -44,6 +51,9 @@ def _signal_handlers_preserved() -> Iterator[None]:
         for signum, handler in previous.items():
             if handler is not None:
                 signal.signal(signum, handler)
+        # Unblocked only once the handlers are back, so a pending signal is
+        # delivered to the caller's.
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 @dataclass(frozen=True)
