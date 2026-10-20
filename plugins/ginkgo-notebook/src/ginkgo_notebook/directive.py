@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import final
 
-from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.directive import DirectiveError, ExecutionDirective
 from ginkgo.core.hashing import hash_file
 from ginkgo.core.optional import OptionalOutput
 
@@ -74,8 +74,8 @@ def notebook(
     ------
     FileNotFoundError
         If the notebook does not exist.
-    ValueError
-        If it is not a ``.py`` file.
+    DirectiveError
+        If it is not a ``.py`` file, such as a Jupyter ``.ipynb`` notebook.
     SyntaxError
         If it is not valid Python. marimo would export such a notebook as an
         empty page and exit successfully, so it is refused here.
@@ -84,8 +84,10 @@ def notebook(
     if not resolved.is_file():
         raise FileNotFoundError(f"Notebook source not found: {str(resolved)!r}")
     if resolved.suffix.lower() != ".py":
-        raise ValueError(
-            f"notebook() runs marimo notebooks, which are .py files; got {str(resolved)!r}."
+        raise DirectiveError(
+            f"notebook() runs marimo notebooks, which are .py files; got {str(resolved)!r}. "
+            "Jupyter .ipynb notebooks are not supported: convert one with "
+            "`marimo convert notebook.ipynb -o notebook.py`."
         )
     ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved))
     return NotebookDirective(

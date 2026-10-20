@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from ginkgo.core.expr import ConstructedCall
 from ginkgo.runtime.caching.cache import MISSING
 from ginkgo.runtime.events import task_id_for_node
+from ginkgo.core.directive import DirectiveError
 from ginkgo.runtime.static_directive import static_directive
 from ginkgo.runtime.task_kinds import task_kind
 
@@ -468,13 +469,17 @@ def _probe_node(
     extra_source_hash: str | None = None
     kind = task_kind(node.task_def)
     if kind.eager_source_hash:
-        directive = (
-            None
-            if kind.directive is None
-            else static_directive(
-                fn=node.task_def.fn, resolved_args=resolved_args, directive_type=kind.directive
+        try:
+            directive = (
+                None
+                if kind.directive is None
+                else static_directive(
+                    fn=node.task_def.fn, resolved_args=resolved_args, directive_type=kind.directive
+                )
             )
-        )
+        except DirectiveError as exc:
+            diagnostics.append(_diagnostic(node=node, label=label, exc=exc))
+            return "will_run", ()
         if directive is None:
             return "unknown", ()
         extra_source_hash = directive.source_hash
