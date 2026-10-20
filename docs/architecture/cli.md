@@ -204,7 +204,7 @@ not. Durations are the same `30d` / `12h` / `45m` shape `cache prune
 --older-than` takes, parsed by `formatting.parse_duration`.
 
 Every command that prints a table builds it through `cli/common.py`'s
-`stdout_console()` and `new_table()`, so column style and the terminal-versus-pipe
+`console()` and `new_table()`, so column style and the terminal-versus-pipe
 width rule are written down once rather than in each command module.
 
 Three rules keep the live run table from flickering, all in

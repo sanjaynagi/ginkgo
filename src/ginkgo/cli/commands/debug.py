@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from ginkgo.cli.common import open_run, stdout_console
+from ginkgo.cli.common import console, open_run
 from ginkgo.cli.renderers.debug import (
     render_debug_failure_panel,
     render_debug_header,
@@ -18,7 +19,7 @@ from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 def command_debug(args) -> int:
     """Handle ``ginkgo debug``."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     with open_run(args.run_id) as (reader, run_id):
         summary = reader.run(run_id)
 

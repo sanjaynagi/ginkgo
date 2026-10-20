@@ -143,8 +143,7 @@ class TestEvaluatorDispatch:
 
         def fake_run_subprocess(
             *,
-            argv: str | list[str],
-            use_shell: bool,
+            argv: list[str],
             on_stdout: Any = None,
             on_stderr: Any = None,
             env: dict[str, str] | None = None,

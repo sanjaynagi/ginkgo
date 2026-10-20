@@ -17,7 +17,9 @@ access to the workspace; ``check`` and ``path`` do not.
 
 from __future__ import annotations
 
-from ginkgo.cli.common import stdout_console
+import sys
+
+from ginkgo.cli.common import console
 from ginkgo.formatting import cutoff_before, format_bytes, format_int
 from ginkgo.remote.staging import StagingCache
 from ginkgo.runtime.caching.cache import CacheStore
@@ -32,7 +34,7 @@ def command_db(args) -> int:
     """Handle ``ginkgo db`` subcommands."""
     layout = WorkspaceLayout.relative()
     path = layout.db
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
 
     if args.db_command == "path":
         rich_console.print(str(path))

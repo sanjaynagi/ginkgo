@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
 
 from ginkgo.core.hashing import hash_file
+from ginkgo.core.shell import shell_argv
 from ginkgo.envs.manifest import find_pixi_manifest
 from ginkgo.errors import FailureKind, GinkgoError
 
@@ -393,8 +394,9 @@ class PixiRegistry:
     def exec_argv(self, *, env: str, cmd: str) -> list[str]:
         """Build argv to run *cmd* inside the Pixi environment.
 
-        The command string is passed verbatim to ``bash -c``, which handles
-        shell quoting, redirection, and pipes exactly as the user wrote them.
+        The command string is passed verbatim to strict ``bash -c`` (see
+        :func:`~ginkgo.core.shell.shell_argv`), which handles shell quoting,
+        redirection, and pipes exactly as the user wrote them.
 
         Parameters
         ----------
@@ -415,9 +417,7 @@ class PixiRegistry:
             "--manifest-path",
             str(manifest),
             "--",
-            "bash",
-            "-c",
-            cmd,
+            *shell_argv(shell="bash", cmd=cmd),
         ]
 
 

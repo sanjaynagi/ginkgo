@@ -9,10 +9,13 @@ validation independently testable.
 
 from __future__ import annotations
 
+import numbers
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Iterable, get_args, get_origin
+
+import numpy as np
 
 from ginkgo.core.directive import ExecutionDirective
 from ginkgo.core.expr import Expr, ExprList, OutputIndex, OutputName
@@ -244,6 +247,17 @@ def is_untracked_directory_value(*, annotation: Any, value: Any) -> bool:
 #: container's label is chosen from (see its docstring).
 INPUT_TRACKING_LABELS = ("path", "output", "value", "version", "content", "untracked")
 
+# Values each scalar annotation accepts. ``float`` takes any real number,
+# ``str`` a path object and ``bool`` a NumPy bool (what a pandas comparison
+# returns), the widenings a caller would expect; ``bool`` is excluded from the
+# numbers below in ``_validate_scalar``.
+_SCALAR_TYPES: dict[type, tuple[type, ...]] = {
+    int: (numbers.Integral,),
+    float: (numbers.Real,),
+    bool: (bool, np.bool_),
+    str: (str, os.PathLike),
+}
+
 
 def _combine_container_labels(labels: list[str]) -> str:
     """Return the one label that stands for a whole container's elements.
@@ -374,6 +388,23 @@ def label_input_value(
         return "value"
 
     return "value"
+
+
+def _validate_scalar(*, annotation: type, value: Any, label: str) -> None:
+    """Raise ``TypeError`` when *value* does not match a scalar annotation.
+
+    A secret or remote reference stands in for a value resolved later, so it
+    is not checked.
+    """
+    if collect_secret_refs(value) or is_remote_path_value(value):
+        return
+    accepted = _SCALAR_TYPES[annotation]
+    if isinstance(value, accepted) and not (isinstance(value, bool) and annotation is not bool):
+        return
+    raise TypeError(
+        f"{label} is annotated {annotation.__name__!r} but was given "
+        f"{type(value).__name__} {value!r}."
+    )
 
 
 def is_remote_path_value(value: Any) -> bool:
@@ -821,7 +852,7 @@ class TaskValidator:
                 )
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
-        """Validate a task return value when it uses a Ginkgo path type."""
+        """Validate a task return value against its path or scalar annotation."""
         annotation = task_def.effective_return_annotation
         self.validate_annotated_value(
             annotation=annotation,
@@ -917,6 +948,10 @@ class TaskValidator:
 
         if annotation is tmp_dir:
             self._validate_tmp_dir_path(path=value, label=label)
+            return
+
+        if annotation in _SCALAR_TYPES:
+            _validate_scalar(annotation=annotation, value=value, label=label)
             return
 
         if is_path_annotation(annotation):

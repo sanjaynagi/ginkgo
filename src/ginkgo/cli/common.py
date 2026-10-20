@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Literal
@@ -21,39 +20,20 @@ CACHE_ROOT = _LAYOUT.cache
 RunMode = Literal["default", "verbose", "agent", "agent_verbose"]
 
 
-def console(output_stream, *, width: int | None = None) -> Console:
-    """Build the Rich console used by the CLI."""
+def console(output_stream) -> Console:
+    """Build the Rich console a command prints to.
+
+    A terminal sets its own width; anything else — a pipe, a file, a test —
+    gets a fixed 160 columns, so a table's columns, and the paths in a failure
+    panel, do not depend on where the output went.
+    """
+    is_tty = getattr(output_stream, "isatty", lambda: False)()
     return Console(
         file=output_stream,
         highlight=False,
         soft_wrap=False,
-        force_terminal=getattr(output_stream, "isatty", lambda: False)(),
-        width=width,
-    )
-
-
-def stdout_console(*, piped_width: int = 160) -> Console:
-    """Return the console a command prints its stdout report to.
-
-    A terminal sets its own width; anything else — a pipe, a file, a test —
-    gets a fixed one, so a table's columns, and the paths in a failure panel,
-    do not depend on where the output went. The read-only commands, ``run``
-    and ``debug`` all ask for their console here, which is why they wrap the
-    same way.
-
-    Parameters
-    ----------
-    piped_width : int, optional
-        The width to assume when stdout is not a terminal. Raise it for output
-        with more columns than a default terminal fits.
-    """
-    is_tty = getattr(sys.stdout, "isatty", lambda: False)()
-    return Console(
-        file=sys.stdout,
-        highlight=False,
-        soft_wrap=False,
         force_terminal=is_tty,
-        width=None if is_tty else piped_width,
+        width=None if is_tty else 160,
     )
 
 

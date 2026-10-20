@@ -9,10 +9,10 @@ are an orphan nothing ever collects.
 
 from __future__ import annotations
 
-
 import json
-import shutil
 import re
+import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,7 +24,7 @@ from rich.markup import escape
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import CACHE_ROOT, stdout_console, new_table
+from ginkgo.cli.common import CACHE_ROOT, console, new_table
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import cutoff_before, format_bytes, format_int, parse_timestamp
 from ginkgo.query import CacheEntryRow, CacheStats, Query
@@ -36,7 +36,7 @@ from ginkgo.workspace_layout import WorkspaceLayout
 
 def command_cache(args) -> int:
     """Handle ``ginkgo cache`` subcommands."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     if args.cache_command == "ls":
         rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]ls[/]\n")
         entries: list[CacheEntryDisplay] = []

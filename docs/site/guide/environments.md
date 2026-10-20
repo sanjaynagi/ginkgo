@@ -196,7 +196,7 @@ Anything the declarations cannot express goes in `ginkgo.toml`:
 runtime = "docker"                          # or "podman"
 pull_policy = "if-not-present"              # "always" re-pulls; "never" pulls nothing
 user = "auto"                               # host uid:gid; "root" or "1000:1000"
-shell = "bash"                              # for images that ship only "sh"
+shell = "bash"                              # "sh" for Alpine images without bash
 auto_mount = true
 extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 ```

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from ginkgo import Out, evaluate, file, shell, task
+from ginkgo.core.shell import shell_argv
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import EventBus, GinkgoEvent, TaskCacheHit, TaskCompleted, TaskStarted
 from ginkgo_pixi.environment import PixiEnvironment, PixiRegistry
@@ -96,7 +97,9 @@ class TestEnvBackedCaching:
             return manifest
 
         monkeypatch.setattr(registry, "prepare", fake_prepare)
-        monkeypatch.setattr(registry, "exec_argv", lambda *, env, cmd: ["bash", "-c", cmd])
+        monkeypatch.setattr(
+            registry, "exec_argv", lambda *, env, cmd: shell_argv(shell="bash", cmd=cmd)
+        )
 
         collector = _Events()
         evaluator = ConcurrentEvaluator(
@@ -229,7 +232,7 @@ class TestPixiFanOut:
         monkeypatch.setattr(
             registry,
             "exec_argv",
-            lambda *, env, cmd: ["bash", "-c", cmd],
+            lambda *, env, cmd: shell_argv(shell="bash", cmd=cmd),
         )
 
         outputs = [tmp_path / f"pixi-shell-{index}.txt" for index in range(3)]

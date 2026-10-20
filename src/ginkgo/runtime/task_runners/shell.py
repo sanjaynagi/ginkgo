@@ -23,7 +23,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Sequence, get_origin
 
 from ginkgo.core.optional import OptionalOutput
-from ginkgo.core.shell import ShellDirective
+from ginkgo.core.shell import ShellDirective, shell_argv
 from ginkgo.core.types import (
     STAGING_TASK_GUIDANCE,
     file,
@@ -680,8 +680,7 @@ class ShellRunner:
     def run_subprocess(
         self,
         *,
-        argv: str | list[str],
-        use_shell: bool,
+        argv: list[str],
         on_stdout: Any = None,
         on_stderr: Any = None,
         env: dict[str, str] | None = None,
@@ -694,7 +693,6 @@ class ShellRunner:
         the process exits (skipped when nothing could be sampled).
         """
         popen_kwargs: dict[str, Any] = {
-            "shell": use_shell,
             "stderr": subprocess.PIPE,
             "stdout": subprocess.PIPE,
             "text": True,
@@ -804,7 +802,7 @@ class ShellRunner:
             # The subprocess is the environment's launcher, not the command, so
             # an isolated environment is told which of the variables just
             # computed the command itself needs to see.
-            argv: str | list[str] = self.backend.exec_argv(
+            argv = self.backend.exec_argv(
                 env=node.task_def.env,
                 cmd=cmd,
                 mounts=[*declared_input_mounts(node=node), *mounts],
@@ -813,10 +811,8 @@ class ShellRunner:
                     *sorted(extra_env or {}),
                 ],
             )
-            use_shell = False
         else:
-            argv = cmd
-            use_shell = True
+            argv = shell_argv(shell="bash", cmd=cmd)
 
         stdout_handle = node.stdout_path.open("a", encoding="utf-8") if node.stdout_path else None
         stderr_handle = node.stderr_path.open("a", encoding="utf-8") if node.stderr_path else None
@@ -844,7 +840,6 @@ class ShellRunner:
         try:
             completed = self.run_subprocess(
                 argv=argv,
-                use_shell=use_shell,
                 on_stdout=lambda chunk: emit_chunk(stream="stdout", chunk=chunk),
                 on_stderr=lambda chunk: emit_chunk(stream="stderr", chunk=chunk),
                 env=subprocess_env,

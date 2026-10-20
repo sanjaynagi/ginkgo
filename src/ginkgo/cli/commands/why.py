@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 from rich.markup import escape
 
 from ginkgo import query
-from ginkgo.cli.common import stdout_console
+from ginkgo.cli.common import console
 from ginkgo.query import Provenance
 from ginkgo.store.jsonio import loads
 
@@ -17,7 +18,7 @@ __all__ = ["command_why"]
 
 def command_why(args) -> int:
     """Handle ``ginkgo why`` — trace one materialized path or artifact id."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
 
     # An unknown path raises, and the CLI's own error handler reports it.
     with query.open(missing_ok=True) as reader:

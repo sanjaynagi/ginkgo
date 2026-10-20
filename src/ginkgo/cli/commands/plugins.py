@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 
-from ginkgo.cli.common import stdout_console
+from ginkgo.cli.common import console
 from ginkgo.plugins.registry import describe_key, plugin_registry
 
 __all__ = ["command_plugins"]
@@ -40,7 +41,7 @@ def command_plugins(args) -> int:
         print(json.dumps(payload, indent=2))
         return 1 if registry.failures else 0
 
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     rich_console.print("[bold green]🌿 ginkgo plugins[/]\n")
     for plugin in registry.plugins:
         rich_console.print(f"[bold]{plugin.name}[/]")

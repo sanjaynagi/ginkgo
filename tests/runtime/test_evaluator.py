@@ -26,6 +26,7 @@ from ginkgo import (
     untracked,
 )
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
+from ginkgo.runtime.task_runners.shell import ShellTaskError
 from ginkgo.runtime.graph import CycleError
 from ginkgo.runtime.executors import Executors
 from tests.conftest import EventCollector, ShellEnvironment
@@ -204,6 +205,11 @@ def shell_write_output_task(output_path: str, log_path: untracked) -> file:
         output=output_path,
         log=log_path,
     )
+
+
+@task(kind="shell")
+def shell_command_task(command: str, output_path: str) -> file:
+    return shell(cmd=command.format(out=output_path), output=output_path)
 
 
 @task(kind="shell")
@@ -486,8 +492,7 @@ class TestEvaluate:
 
         def fake_run_subprocess(
             *,
-            argv: str | list[str],
-            use_shell: bool,
+            argv: list[str],
             on_stdout: Any = None,
             on_stderr: Any = None,
             **kwargs: Any,
@@ -520,8 +525,7 @@ class TestEvaluate:
 
         def fake_run_subprocess(
             *,
-            argv: str | list[str],
-            use_shell: bool,
+            argv: list[str],
             on_stdout: Any = None,
             on_stderr: Any = None,
             **kwargs: Any,
@@ -1005,6 +1009,28 @@ class TestShellTask:
         assert "captured stdout" in log.read_text(encoding="utf-8")
         assert "captured stderr" in log.read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "nosuchtool | cat > {out}",
+            "false\necho ok > {out}",
+            "false; echo ok > {out}",
+        ],
+        ids=["failing-pipeline-stage", "failing-line", "failing-statement"],
+    )
+    def test_shell_task_fails_on_any_failing_command(self, tmp_path: Path, command: str):
+        output = tmp_path / "out.txt"
+
+        with pytest.raises(ShellTaskError):
+            evaluate(shell_command_task(command=command, output_path=str(output)))
+
+    def test_shell_task_runs_under_bash(self, tmp_path: Path):
+        output = tmp_path / "out.txt"
+
+        evaluate(shell_command_task(command="cat <(echo bash) > {out}", output_path=str(output)))
+
+        assert output.read_text(encoding="utf-8") == "bash\n"
+
     def test_shell_task_requires_declared_output_to_exist(self, tmp_path: Path):
         output = tmp_path / "missing.txt"
 
@@ -1197,7 +1223,7 @@ class TestInterruptHandling:
 
         monkeypatch.setattr("ginkgo.runtime.task_runners.shell.subprocess.Popen", FakePopen)
 
-        completed = evaluator._shell_runner.run_subprocess(argv=["echo", "hi"], use_shell=False)
+        completed = evaluator._shell_runner.run_subprocess(argv=["echo", "hi"])
 
         assert completed.returncode == 0
         assert completed.stdout == "stdout"

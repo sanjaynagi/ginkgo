@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from rich.console import Group
 from rich.table import Table
 from rich.text import Text
 
 from ginkgo import query
-from ginkgo.cli.common import stdout_console, new_table
+from ginkgo.cli.common import console, new_table
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import format_bytes, format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import TaskRow
@@ -28,7 +29,7 @@ _KEY_PREFIX = 12
 
 def command_history(args) -> int:
     """Handle ``ginkgo history`` — how one task has fared over its runs."""
-    rich_console = stdout_console()
+    rich_console = console(sys.stdout)
     limit = getattr(args, "limit", 20)
     resources = getattr(args, "resources", False)
     by_label = getattr(args, "by_label", False)
