@@ -1936,61 +1936,6 @@ def main():
         assert "No runs recorded" in result.stderr
 
 
-class TestCliRunProfile:
-    def test_run_profile_emits_the_table(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def hello() -> str:
-    return "ok"
-
-@flow
-def main():
-    return hello()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", "--profile", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Runtime Profile" in result.stdout
-        assert "scheduler_dispatch" in result.stdout
-        assert "evaluator_validate" in result.stdout
-
-        # The run's own phases are recorded; the profiler's breakdown is a
-        # console report, not part of the run's provenance.
-        run_dir = _extract_run_dir(result.stdout)
-        shown = _run_cli("runs", "show", run_dir.name, "--json", cwd=Path.cwd())
-        assert shown.returncode == 0, shown.stderr
-        timings = json.loads(shown.stdout)["timings"]
-        assert timings["workflow_execute_seconds"] > 0
-        assert "scheduler_dispatch" not in timings
-
-    def test_run_without_profile_does_not_emit_the_table(self) -> None:
-        Path("workflow.py").write_text(
-            """
-from ginkgo import flow, task
-
-@task()
-def hello() -> str:
-    return "ok"
-
-@flow
-def main():
-    return hello()
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        result = _run_cli("run", "workflow.py", cwd=Path.cwd())
-        assert result.returncode == 0, result.stderr
-        assert "Runtime Profile" not in result.stdout
-
-
 _PARAM_WORKFLOW = (
     """
 import ginkgo

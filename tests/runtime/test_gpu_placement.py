@@ -113,7 +113,8 @@ class TestGpuPlacement:
     def test_placement_misconfiguration_fails_at_build(self) -> None:
         evaluator = ConcurrentEvaluator(jobs=1)
         with pytest.raises(ValueError, match="no default executor"):
-            evaluator.build_and_validate(explicitly_remote(x=1))
+            evaluator.build_graph(explicitly_remote(x=1))
+            evaluator.validate_graph()
 
 
 class TestSchedulerGpuBudget:

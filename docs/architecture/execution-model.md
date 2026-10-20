@@ -208,16 +208,6 @@ with a ready-at deadline; the scheduler wakes on the earliest deadline
 without busy-looping. `TaskRetrying` events carry the scheduled
 `delay_seconds`.
 
-**Runtime profiling (`--profile`).** `ginkgo run --profile` enables a coarse
-phase-timer recorder that attributes wall time to CLI startup, workflow
-module import, flow construction, evaluator validation, scheduler prepare /
-dispatch / wait / consume phases, event emission, resource monitor lifecycle,
-provenance finalize, manifest load, and renderer finish. The recorder is a
-no-op when `--profile` is not set and does not run when disabled, so the
-default path is not instrumented. The phase totals are persisted under
-`timings.profile` in the run manifest, printed as a Rich summary table at
-the end of the run, and exposed by `ginkgo runs show --json`.
-
 ## Remote References and Staged Access
 
 Phase 6 introduced first-class remote input support without changing the

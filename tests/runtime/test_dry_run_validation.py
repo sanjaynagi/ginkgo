@@ -77,7 +77,8 @@ def _plan_for(build):
     with record_constructed_calls() as calls:
         expr = build()
     evaluator = ConcurrentEvaluator(constructed_calls=tuple(calls))
-    evaluator.build_and_validate(expr)
+    evaluator.build_graph(expr)
+    evaluator.validate_graph()
     return build_dry_run_plan(evaluator=evaluator, workflow_label="workflow.py")
 
 

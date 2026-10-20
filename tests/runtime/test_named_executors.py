@@ -222,7 +222,8 @@ class TestExecutorRouting:
     def test_unknown_executor_name_fails_at_build(self) -> None:
         evaluator = self._evaluator(default="gpu-k8s")
         with pytest.raises(ValueError, match="executor='nope', which is not configured"):
-            evaluator.build_and_validate(stray(x=1))
+            evaluator.build_graph(stray(x=1))
+            evaluator.validate_graph()
 
     def test_non_python_kind_with_executor_is_rejected(self) -> None:
         @task(kind="shell", executor="gpu-k8s")

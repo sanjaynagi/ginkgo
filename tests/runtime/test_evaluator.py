@@ -634,7 +634,8 @@ class TestEvaluate:
             match="Detected cycle in workflow graph: test_evaluator.passthrough_task -> "
             "test_evaluator.passthrough_task -> test_evaluator.passthrough_task",
         ):
-            evaluator.build_and_validate(first)
+            evaluator.build_graph(first)
+            evaluator.validate_graph()
 
     def test_evaluate_rejects_cycles_nested_inside_containers(self):
         first = passthrough_task()
@@ -1144,8 +1145,8 @@ class TestInterruptHandling:
         pool_shutdowns: list[ProcessPoolExecutor] = []
 
         evaluator._running_futures = {
-            future_one: (0, "shell"),
-            future_two: (1, "python"),
+            future_one: (0, evaluator._on_runner_done),
+            future_two: (1, evaluator._on_worker_done),
         }
         evaluator._shell_runner._active_subprocesses = {
             tracked_one.pid: tracked_one,  # type: ignore[assignment]

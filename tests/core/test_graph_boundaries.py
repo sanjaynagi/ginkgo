@@ -535,7 +535,8 @@ def _validated_evaluator(build: Any) -> ConcurrentEvaluator:
     with record_constructed_calls() as constructed_calls:
         expr = build()
     evaluator = ConcurrentEvaluator(constructed_calls=tuple(constructed_calls))
-    evaluator.build_and_validate(expr)
+    evaluator.build_graph(expr)
+    evaluator.validate_graph()
     return evaluator
 
 
@@ -629,7 +630,8 @@ class TestUnreachableCalls:
     def test_no_recorder_means_no_reporting(self) -> None:
         """Expressions built outside a recorder never look unreachable."""
         evaluator = ConcurrentEvaluator()
-        evaluator.build_and_validate(make_label(text="a"))
+        evaluator.build_graph(make_label(text="a"))
+        evaluator.validate_graph()
 
         assert evaluator.unreachable_calls == []
 

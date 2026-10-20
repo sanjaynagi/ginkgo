@@ -115,7 +115,7 @@ surface — just the driver binary + `/dev/fuse`.
   envelope as `remote_input_access`.
 
 - **Provenance.** `ConcurrentEvaluator._fold_remote_input_access` records
-  the stats from `_handle_completed_worker_phase`, covering both local
+  the stats from `_on_worker_done`, covering both local
   and remote workers, and surfaces a notice on staged fallback.
 
 This is **one `MountedAccess` per task**, not one shared across the pool;

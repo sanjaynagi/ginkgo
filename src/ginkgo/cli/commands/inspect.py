@@ -86,7 +86,8 @@ def inspect_workflow(
             config_paths=config_paths,
         )
     )
-    evaluator.build_and_validate(expr)
+    evaluator.build_graph(expr)
+    evaluator.validate_graph()
 
     nodes = []
     for node in sorted(evaluator.task_nodes.values(), key=lambda item: item.node_id):
