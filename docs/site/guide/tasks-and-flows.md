@@ -202,6 +202,48 @@ must match the declared `Out[...]` paths exactly (in either order) — a shell
 task with `Out[...]` parameters and no `output=` at all is only an error if
 it declares none.
 
+### Outputs that may not be written
+
+Every declared output must exist once the task finishes, or the task fails.
+When a command writes a file only sometimes, wrap that entry of `output=` in
+`optional()`. A written file is hashed, cached and restored like any other
+output. A missing one resolves to `None`, so annotate that element
+`file | None` and have consumers check for `None`:
+
+```python
+from pathlib import Path
+
+from ginkgo import file, flow, optional, shell, task
+
+
+@task("shell")
+def call_variants(sample: str, emit_warnings: bool) -> tuple[file, file | None]:
+    warn = f" && echo low-depth > results/{sample}.warnings.txt" if emit_warnings else ""
+    return shell(
+        cmd=f"mkdir -p results && echo {sample} > results/{sample}.vcf{warn}",
+        output=(f"results/{sample}.vcf", optional(f"results/{sample}.warnings.txt")),
+    )
+
+
+@task()
+def report(vcf: file, warnings: file | None) -> str:
+    if warnings is None:
+        return f"{Path(vcf).name}: no warnings"
+    return f"{Path(vcf).name}: {Path(warnings).read_text().strip()}"
+
+
+@flow
+def main():
+    calls = call_variants(sample="s1", emit_warnings=False)
+    return report(vcf=calls.output[0], warnings=calls.output[1])
+```
+
+`optional()` works the same way on `script()` and `notebook()` outputs. It
+takes a path string; wrapping a `Path` is an error. It applies only to
+`output=` entries. An `Out[file | None]` parameter does not make its path
+optional: it lets the caller pass `None`, but a path that is passed must
+still be written, whether or not it also appears in `optional()`.
+
 ## Script Tasks
 
 Use `@task("script")` to run a standalone script file — Python (`.py`) or R
