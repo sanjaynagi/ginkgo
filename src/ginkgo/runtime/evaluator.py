@@ -74,7 +74,7 @@ from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.event_values import render_value
 from ginkgo.runtime.rundir import RunDir
-from ginkgo.runtime.scheduler import SchedulableTask, select_dispatch_subset
+from ginkgo.runtime.scheduler import ResourceLedger, SchedulableTask
 from ginkgo.runtime.environment.secrets import (
     SecretResolver,
     collect_resolved_secret_values,
@@ -336,6 +336,7 @@ class ConcurrentEvaluator:
     _nodes: dict[int, NodeRun] = field(default_factory=dict, init=False, repr=False)
     graph: TaskGraph = field(default_factory=TaskGraph, init=False, repr=False)
     placement: Placement = field(init=False)
+    _ledger: ResourceLedger = field(init=False, repr=False)
     # Each in-flight future maps to its node and the handler for its result.
     _running_futures: dict[Future[Any], tuple[int, Callable[..., None]]] = field(
         default_factory=dict,
@@ -373,6 +374,13 @@ class ConcurrentEvaluator:
         self.gpus = 0 if self.gpus is None else self.gpus
         if self.gpus < 0:
             raise ValueError("gpus must be at least 0")
+        self._ledger = ResourceLedger(
+            jobs=self.jobs,
+            cores=self.cores,
+            memory=self.memory,
+            gpus=self.gpus,
+            custom_budgets=self.resource_budgets,
+        )
         self.placement = Placement(
             executor_registry=self.executor_registry,
             resource_overrides=self.resource_overrides,
@@ -792,41 +800,36 @@ class ConcurrentEvaluator:
             env=node.task_def.env,
         )
 
+    def _footprint(self, node: NodeRun) -> SchedulableTask:
+        """Return what *node* holds of the run's budgets while it is in flight.
+
+        A remote-placed task holds a jobs slot but no local resources: the
+        executor satisfies its threads, memory and GPUs. Custom demands
+        stay, because those budgets are run-level.
+        """
+        return SchedulableTask(
+            node_id=node.node_id,
+            threads=0 if node.remote else node.threads,
+            memory_gb=0 if node.remote else node.memory_gb,
+            gpu=0 if node.remote else node.gpu,
+            priority=node.task_def.priority,
+            concurrency_group=node.concurrency_group,
+            concurrency_group_limit=node.concurrency_group_limit,
+            custom=node.custom_resources,
+        )
+
+    def _track(self, future: Future[Any], *, node: NodeRun, on_done: Callable[..., None]) -> None:
+        """Hold *node*'s footprint until *future*, its work in flight, is handled."""
+        self._running_futures[future] = (node.node_id, on_done)
+        self._ledger.reserve(self._footprint(node))
+
     def _dispatch_ready_nodes(self) -> None:
         """Submit a resource-feasible subset of ready nodes."""
         ready_nodes = [node for node in self._nodes.values() if node.state == "ready"]
         if not ready_nodes:
             return
 
-        available_jobs = self.jobs - len(self._running_futures)
-        available_cores = self.cores - self._running_cores()
-        available_memory = None if self.memory is None else self.memory - self._running_memory_gb()
-        available_gpus = (self.gpus or 0) - self._running_gpus()
-        available_group_slots = self._available_group_slots(ready_nodes=ready_nodes)
-        available_custom = self._available_custom_budgets()
-        # Remote-placed tasks consume a jobs slot but no local resource
-        # budget — their threads/memory/gpu are satisfied by the executor.
-        # Custom demands stay: those budgets are run-level.
-        selected = select_dispatch_subset(
-            ready_tasks=[
-                SchedulableTask(
-                    node_id=node.node_id,
-                    threads=0 if node.remote else node.threads,
-                    memory_gb=0 if node.remote else node.memory_gb,
-                    gpu=0 if node.remote else node.gpu,
-                    priority=node.task_def.priority,
-                    concurrency_group=node.concurrency_group,
-                    custom=node.custom_resources,
-                )
-                for node in ready_nodes
-            ],
-            jobs=available_jobs,
-            cores=available_cores,
-            memory=available_memory,
-            gpus=available_gpus,
-            available_group_slots=available_group_slots,
-            custom_budgets=available_custom,
-        )
+        selected = self._ledger.select([self._footprint(node) for node in ready_nodes])
 
         for node_id in selected:
             node = self._nodes[node_id]
@@ -851,7 +854,7 @@ class ConcurrentEvaluator:
                 )
                 assert self._executors is not None
                 future = self._executors.staging.submit(self._stager.stage_task_inputs, node=node)
-                self._running_futures[future] = (node_id, self._on_inputs_staged)
+                self._track(future, node=node, on_done=self._on_inputs_staged)
                 continue
 
             self._start_task_execution(node=node)
@@ -860,6 +863,7 @@ class ConcurrentEvaluator:
         """Hand each finished future's result to the handler it was submitted with."""
         for future in done_futures:
             node_id, on_done = self._running_futures.pop(future)
+            self._ledger.release(node_id)
             node = self._nodes[node_id]
             remote_handle = self._remote_dispatch.pop_handle(node_id)
             if remote_handle is not None:
@@ -1367,52 +1371,6 @@ class ConcurrentEvaluator:
         if self._executors is not None:
             self._executors.shutdown_all()
 
-    def _running_cores(self) -> int:
-        """Return the local core footprint of currently running tasks."""
-        return sum(
-            self._nodes[node_id].threads
-            for node_id, _ in self._running_futures.values()
-            if not self._nodes[node_id].remote
-        )
-
-    def _running_gpus(self) -> int:
-        """Return the local GPU footprint of currently running tasks."""
-        return sum(
-            self._nodes[node_id].gpu
-            for node_id, _ in self._running_futures.values()
-            if not self._nodes[node_id].remote
-        )
-
-    def _available_group_slots(self, *, ready_nodes: list[NodeRun]) -> dict[str, int]:
-        """Return the remaining concurrency budget per active group.
-
-        For each named concurrency group represented in the ready set, the
-        result contains the group's declared limit minus the number of tasks
-        from that group currently in flight.
-        """
-        active_groups: dict[str, int] = {}
-        for node in ready_nodes:
-            if node.concurrency_group is None or node.concurrency_group_limit is None:
-                continue
-            active_groups[node.concurrency_group] = node.concurrency_group_limit
-
-        if not active_groups:
-            return {}
-
-        running_per_group: dict[str, int] = {}
-        for node_id, _ in self._running_futures.values():
-            running_node = self._nodes[node_id]
-            if running_node.concurrency_group is None:
-                continue
-            running_per_group[running_node.concurrency_group] = (
-                running_per_group.get(running_node.concurrency_group, 0) + 1
-            )
-
-        return {
-            group_id: max(0, limit - running_per_group.get(group_id, 0))
-            for group_id, limit in active_groups.items()
-        }
-
     def _resources_payload(self, *, node: NodeRun) -> dict[str, Any]:
         """Return the event-payload view of a node's resolved resources."""
         payload: dict[str, Any] = {
@@ -1423,33 +1381,6 @@ class ConcurrentEvaluator:
         if node.custom_resources:
             payload["custom"] = dict(node.custom_resources)
         return payload
-
-    def _available_custom_budgets(self) -> dict[str, int] | None:
-        """Return the remaining budget per user-defined resource dimension.
-
-        Unlike the built-in dimensions, in-flight remote-placed tasks are
-        counted too: custom budgets (API quotas, database connections) are
-        run-level and apply wherever the task runs. Returns ``None`` when no
-        budgets are configured.
-        """
-        if not self.resource_budgets:
-            return None
-        running: dict[str, int] = {}
-        for node_id, _ in self._running_futures.values():
-            for dimension, demand in self._nodes[node_id].custom_resources.items():
-                running[dimension] = running.get(dimension, 0) + demand
-        return {
-            dimension: budget - running.get(dimension, 0)
-            for dimension, budget in self.resource_budgets.items()
-        }
-
-    def _running_memory_gb(self) -> int:
-        """Return the declared local memory footprint of currently running tasks."""
-        return sum(
-            self._nodes[node_id].memory_gb
-            for node_id, _ in self._running_futures.values()
-            if not self._nodes[node_id].remote
-        )
 
     def _start_task_execution(self, *, node: NodeRun) -> None:
         """Launch a task after its inputs have been staged locally."""
@@ -1494,7 +1425,7 @@ class ConcurrentEvaluator:
         )
         if task_kind(node.task_def).execution_mode == "driver":
             future = self._executors.shell.submit(self._run_driver_task, node=node)
-            self._running_futures[future] = (node.node_id, self._handle_task_body_result)
+            self._track(future, node=node, on_done=self._handle_task_body_result)
             return
 
         node.transport_path = Path(tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-"))
@@ -1512,7 +1443,7 @@ class ConcurrentEvaluator:
             )
         else:
             future = self._executors.python.submit(run_task, payload)
-        self._running_futures[future] = (node.node_id, self._on_worker_done)
+        self._track(future, node=node, on_done=self._on_worker_done)
 
     def _create_output_parent_dirs(self, *, node: NodeRun) -> None:
         """Create the parent directory of every declared ``Out[...]`` path.
@@ -2012,7 +1943,7 @@ class ConcurrentEvaluator:
             runner = self._runner_for(kind)
             node.state = "running_shell"
             future = self._executors.shell.submit(runner.run, node=node, directive=completed_value)
-            self._running_futures[future] = (node.node_id, self._on_runner_done)
+            self._track(future, node=node, on_done=self._on_runner_done)
             return
 
         if kind.directive is None:
