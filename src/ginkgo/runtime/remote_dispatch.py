@@ -117,12 +117,18 @@ class RemoteDispatchManager:
         """Remove and return the in-flight job handle for a node, if any."""
         return self._handles.pop(node_id, None)
 
+    def cancel(self, *, node_id: int) -> None:
+        """Cancel a node's in-flight remote job on its executor, if it has one."""
+        handle = self._handles.pop(node_id, None)
+        if handle is None:
+            return
+        with suppress(Exception):
+            handle.cancel()
+
     def cancel_all(self) -> None:
         """Cancel all in-flight remote job handles."""
-        for handle in self._handles.values():
-            with suppress(Exception):
-                handle.cancel()
-        self._handles.clear()
+        for node_id in list(self._handles):
+            self.cancel(node_id=node_id)
 
     def capture_logs(self, *, node: NodeRun, handle: RemoteJobHandle) -> None:
         """Fetch pod logs and write them to the standard task log paths."""

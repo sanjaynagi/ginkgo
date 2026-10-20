@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
+
 import pytest
 
 from ginkgo import task
@@ -543,3 +545,88 @@ class TestExecutionBackendContract:
         # The event name is only trustworthy if the task really was submitted.
         assert list(backends) == ["gpu-k8s"]
         assert len(backends["gpu-k8s"].submitted) == 1
+
+
+@task()
+def local_fails(x: int) -> int:
+    raise ValueError("local failure")
+
+
+class _CancellableHandle:
+    """Job handle that only records whether it was cancelled."""
+
+    def __init__(self, *, job_id: str, cancelled: list[str]) -> None:
+        self._job_id = job_id
+        self._cancelled = cancelled
+
+    @property
+    def job_id(self) -> str:
+        return self._job_id
+
+    def cancel(self) -> None:
+        self._cancelled.append(self._job_id)
+
+
+class _CancellableExecutor(RemoteExecutor):
+    """Executor that records which of its jobs were cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled: list[str] = []
+
+    def submit(self, *, attempt: dict) -> RemoteJobHandle:
+        return _CancellableHandle(job_id=attempt["task_name"], cancelled=self.cancelled)
+
+
+class _QueuedFuture(Future):
+    """Future of a work item that no pool thread has picked up yet.
+
+    A pool worker notifies waiters of a cancelled item when it dequeues it;
+    this future does so on cancellation, as no worker ever will.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._notified = False
+
+    def cancel(self) -> bool:
+        if self._notified:
+            return True
+        if not super().cancel():
+            return False
+        self._notified = True
+        self.set_running_or_notify_cancel()
+        return True
+
+
+class _QueuedWatcher:
+    """Watcher pool whose futures stay queued, never picked up by a thread."""
+
+    def submit(self, fn, *args, **kwargs) -> _QueuedFuture:
+        return _QueuedFuture()
+
+
+class TestRemoteCancellationOnFailFast:
+    def test_queued_remote_job_is_cancelled_on_its_executor(self, monkeypatch) -> None:
+        import ginkgo.runtime.executor_registry as registry_module
+        import ginkgo.runtime.remote_dispatch as dispatch_module
+        from ginkgo.runtime.executors import Executors
+
+        backend = _CancellableExecutor()
+        monkeypatch.setattr(registry_module, "_build_executor", lambda spec: backend)
+        monkeypatch.setattr(
+            dispatch_module.RemoteDispatchManager, "_ensure_artifact_store", lambda self: None
+        )
+        # The job is submitted but its watcher never starts, so fail-fast
+        # cancels the watcher future while the job is in flight.
+        monkeypatch.setattr(
+            Executors, "get_or_create_remote_watcher", lambda self: _QueuedWatcher()
+        )
+        evaluator = ConcurrentEvaluator(
+            jobs=2,
+            executor_registry=ExecutorRegistry.from_config(NO_CODE_CONFIG, default="gpu-k8s"),
+        )
+
+        with pytest.raises(ValueError, match="local failure"):
+            evaluator.evaluate([trains(x=1), local_fails(x=0)])
+
+        assert backend.cancelled == [evaluator._nodes[0].task_def.name]
