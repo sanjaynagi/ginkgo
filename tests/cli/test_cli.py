@@ -26,7 +26,7 @@ from ginkgo.cli import (
     _time_of_day_spinner,
     _truncate_task_label,
 )
-from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL
+from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL, _iter_template_files
 from ginkgo.cli.renderers.common import _MultiStateBar
 from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
@@ -993,6 +993,16 @@ def _third_party_imports(*, project_dir: Path) -> set[str]:
 
 
 class TestCliInit:
+    def test_template_walk_skips_bytecode_caches(self, tmp_path: Path) -> None:
+        (tmp_path / "workflow" / "__pycache__").mkdir(parents=True)
+        (tmp_path / "workflow" / "flow.py").write_text("", encoding="utf-8")
+        (tmp_path / "workflow" / "__pycache__" / "flow.cpython-312.pyc").write_bytes(b"")
+        (tmp_path / "stray.pyc").write_bytes(b"")
+
+        files = [str(relative) for _, relative in _iter_template_files(tmp_path)]
+
+        assert files == ["workflow/flow.py"]
+
     def test_init_creates_project_scaffold(self) -> None:
         result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
