@@ -764,7 +764,10 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "not reachable from the flow return value" in _unwrapped(result.stderr)
+        stderr = _unwrapped(result.stderr)
+        assert "not reachable from the flow return value" in stderr
+        # The fix doctor offers is shown too, not just the symptom (F9).
+        assert "Return its result from the flow" in stderr
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropped_producer_is_named_before_its_consumer_fails_validation(
@@ -2218,6 +2221,20 @@ def main():
         result = _run_cli("cache", "ls", "--bogus", cwd=Path.cwd())
         assert result.returncode == 2
         assert "unrecognized arguments: --bogus" in result.stderr
+
+    def test_other_commands_suggest_the_flag_a_typo_meant(self) -> None:
+        result = _run_cli("runs", "ls", "--limt", "5", cwd=Path.cwd())
+        assert result.returncode == 2
+        assert "--limt: did you mean --limit?" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("typo", "meant"), [("--dryrun", "--dry-run"), ("--n-rep", "--n-reps")]
+    )
+    def test_run_suggests_the_flag_or_parameter_a_typo_meant(self, typo: str, meant: str) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        result = _run_cli("run", "workflow.py", typo, cwd=Path.cwd())
+        assert result.returncode == 1
+        assert f"{typo}: did you mean {meant}?" in result.stdout + result.stderr
 
     def test_inspect_workflow_exposes_declared_parameters(self) -> None:
         Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")

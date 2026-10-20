@@ -37,7 +37,7 @@ def command_secrets(args) -> int:
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
-        validate_param_extras(session)
+        validate_param_extras(session, command_flags=getattr(args, "command_flags", ()))
         config = session.merged_loaded_values()
 
     graph = TaskGraph.build(expr)

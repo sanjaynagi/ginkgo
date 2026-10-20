@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+import ast
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass
+import inspect
 from pathlib import Path
+import textwrap
 from typing import Any
 
 from ginkgo.config import config_session
@@ -16,6 +19,7 @@ from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.graph import TaskGraph
 from ginkgo.runtime.placement import Placement
+from ginkgo.runtime.task_kinds import task_kind
 from ginkgo.runtime.task_validation import TaskValidator
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import USER_MODULE_PREFIX, load_module_from_path
@@ -23,6 +27,7 @@ from ginkgo.runtime.environment.secrets import SecretResolver
 
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
 PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
+MISSING_DIRECTIVE_CODE = "missing_directive_return"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -47,6 +52,7 @@ def collect_workflow_diagnostics(
     secret_resolver: SecretResolver | None,
     backend_factory: Callable[[], ExecutionEnvironment] | None = None,
     param_extras: Sequence[str] = (),
+    command_flags: Collection[str] = (),
 ) -> list[WorkflowDiagnostic]:
     """Collect structured workflow diagnostics.
 
@@ -68,6 +74,9 @@ def collect_workflow_diagnostics(
         Command-line tokens supplying declared workflow parameters. Required
         parameters need not be supplied: a workflow is still worth diagnosing
         without its inputs.
+    command_flags : Collection[str], optional
+        The command's own flags, offered as suggestions for an unrecognised
+        one.
 
     Returns
     -------
@@ -95,7 +104,7 @@ def collect_workflow_diagnostics(
             flow = discover_flow(module)
             with record_constructed_calls() as constructed_calls:
                 expr = flow()
-            validate_param_extras(session)
+            validate_param_extras(session, command_flags=command_flags)
         backend = backend_factory() if backend_factory is not None else None
         graph = TaskGraph.build(expr)
         # Collected before validation and kept if it fails: a consumer of a
@@ -131,11 +140,9 @@ def collect_workflow_diagnostics(
             )
         ]
         diagnostics.extend(dropped_calls)
-        diagnostics.extend(
-            path_like_str_param_diagnostics(
-                task_defs=(node.task_def for node in graph.nodes.values())
-            )
-        )
+        task_defs = [node.task_def for node in graph.nodes.values()]
+        diagnostics.extend(path_like_str_param_diagnostics(task_defs=task_defs))
+        diagnostics.extend(missing_directive_diagnostics(task_defs=task_defs))
         return diagnostics
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
@@ -255,6 +262,105 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
                 )
             )
     return diagnostics
+
+
+def missing_directive_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
+    """Build one warning per driver task whose body can never return its directive.
+
+    A ``shell`` task must return ``shell(...)``; one whose body only returns a
+    string fails when it runs, after its upstream tasks have already run.
+    Detection is best-effort and errs towards silence: a task is flagged only
+    when every ``return`` in its body yields a literal, an f-string, or
+    arithmetic over names and literals, none of which can be a directive. A
+    ``return`` of a call or a bare name might be one, so it is never flagged.
+
+    Parameters
+    ----------
+    task_defs : Iterable[TaskDef]
+        Task definitions to check, typically one per node in the built graph.
+        Deduplicated internally by :attr:`TaskDef.name`.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per flagged task, ordered by first
+        encounter.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen_task_names: set[str] = set()
+    for task_def in task_defs:
+        if task_def.name in seen_task_names:
+            continue
+        seen_task_names.add(task_def.name)
+        kind = task_kind(task_def)
+        if kind.directive is None or not _never_returns_directive(task_def.fn):
+            continue
+        task_label = _task_label(task_def)
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=MISSING_DIRECTIVE_CODE,
+                message=(
+                    f'{task_label} is declared @task("{kind.name}") but never returns '
+                    f"{kind.call_form}, so it will fail when it runs."
+                ),
+                location=task_def.name,
+                suggestion=(
+                    f"Return {kind.call_form} from {task_label}, or declare it @task() if it "
+                    "computes its result in Python."
+                ),
+            )
+        )
+    return diagnostics
+
+
+def _never_returns_directive(fn: Callable[..., Any]) -> bool:
+    """Whether every ``return`` in *fn*'s own body is plainly not a directive.
+
+    ``False`` whenever the source cannot be read or the body is a generator,
+    so an unreadable task is never flagged.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+    except (OSError, TypeError):
+        return False
+    function = next(
+        (
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        ),
+        None,
+    )
+    if function is None:
+        return False
+
+    returns: list[ast.Return] = []
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        # A nested function, class or lambda returns for itself, not the task.
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            continue
+        if isinstance(node, ast.Yield | ast.YieldFrom):
+            return False
+        if isinstance(node, ast.Return):
+            returns.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    # No return at all returns None, which is no directive either.
+    return all(node.value is None or _is_plain_value(node.value) for node in returns)
+
+
+def _is_plain_value(node: ast.expr) -> bool:
+    """Whether *node* is a literal, an f-string, or arithmetic over names and literals."""
+    if isinstance(node, ast.Constant | ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp):
+        return all(
+            isinstance(operand, ast.Name) or _is_plain_value(operand)
+            for operand in (node.left, node.right)
+        )
+    return False
 
 
 def _task_label(task_def: TaskDef) -> str:

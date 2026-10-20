@@ -1,14 +1,17 @@
 """Unit tests for ``ginkgo.runtime.diagnostics``.
 
 Covers issue #307: a ``str``-annotated parameter whose name looks path-like
-is not content-tracked by the cache and creates no dependency edge.
+is not content-tracked by the cache and creates no dependency edge. Also covers
+the warning for a driver task whose body can never return its directive.
 """
 
 from __future__ import annotations
 
-from ginkgo import task, untracked
+from ginkgo import shell, task, untracked
 from ginkgo.runtime.diagnostics import (
+    MISSING_DIRECTIVE_CODE,
     PATH_LIKE_STR_PARAM_CODE,
+    missing_directive_diagnostics,
     path_like_str_param_diagnostics,
 )
 from ginkgo.runtime.graph import TaskGraph
@@ -207,3 +210,64 @@ def main():
         err = capsys.readouterr().err
         assert status == 0
         assert "output_path" not in err
+
+
+@task("shell")
+def echo_as_string(name: str) -> str:
+    if not name:
+        return "true"
+    return f"echo {name}"
+
+
+@task("shell")
+def echo_as_shell(name: str) -> str:
+    return shell(cmd=f"echo {name}")
+
+
+@task("shell")
+def echo_through_a_name(name: str) -> str:
+    directive = shell(cmd=f"echo {name}")
+    return directive
+
+
+class TestMissingDirectiveDiagnostics:
+    """F8: a driver task that can never return its directive is flagged early."""
+
+    def test_warns_when_every_return_is_a_plain_value(self) -> None:
+        diagnostics = missing_directive_diagnostics(task_defs=[echo_as_string, echo_as_string])
+
+        assert len(diagnostics) == 1
+        assert diagnostics[0].code == MISSING_DIRECTIVE_CODE
+        assert diagnostics[0].severity == "warning"
+        assert '@task("shell")' in diagnostics[0].message
+        assert "shell(...)" in diagnostics[0].message
+
+    def test_never_warns_when_a_return_might_be_the_directive(self) -> None:
+        task_defs = [echo_as_shell, echo_through_a_name, greet]
+
+        assert missing_directive_diagnostics(task_defs=task_defs) == []
+
+    def test_dry_run_prints_it(self, tmp_path, monkeypatch, capsys) -> None:
+        from ginkgo.cli.app import main as cli_main
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "wf.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task("shell")
+def count_lines(path: str) -> str:
+    return f"wc -l {path}"
+
+@flow
+def main():
+    return count_lines(path="x")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        status = cli_main(["run", "wf.py", "--dry-run"])
+
+        assert status == 0
+        assert 'count_lines is declared @task("shell")' in capsys.readouterr().err

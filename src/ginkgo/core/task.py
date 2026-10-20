@@ -8,6 +8,7 @@ arguments), enabling lazy expression tree construction.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from importlib import import_module
 from itertools import product
@@ -15,7 +16,15 @@ from typing import Any, Callable, Literal, get_type_hints
 
 import re
 
-from ginkgo.core.expr import Expr, ExprList, record_call, record_partial_call, supersede_call
+from ginkgo.core.expr import (
+    Expr,
+    ExprList,
+    OutputIndex,
+    OutputName,
+    record_call,
+    record_partial_call,
+    supersede_call,
+)
 from ginkgo.core.resources import Resources
 from ginkgo.core.source_hash import compute_source_hash
 from ginkgo.core.types import (
@@ -387,6 +396,23 @@ class TaskDef:
         """Serialize task definitions by their module-level binding."""
         return (_load_taskdef, (self.fn.__module__, self.fn.__name__))
 
+    def __getattr__(self, name: str) -> Any:
+        """Refuse a missing attribute, pointing ``.map()`` at a call to fan out.
+
+        Only reached when normal lookup fails. Every other name gets Python's
+        usual error, so the dunders copy and pickle probe behave as before, and
+        ``fn`` is read from ``__dict__`` because those probes can reach an
+        instance whose fields are not yet set.
+        """
+        fn = self.__dict__.get("fn")
+        if name in ("map", "product_map") and fn is not None:
+            raise AttributeError(
+                f"{fn.__name__} is a task definition, not a call, so it has no .{name}(). "
+                "Call it first with the arguments every branch shares, leaving the varying "
+                f"parameters unset: {fn.__name__}(fixed=...).{name}(varying=[...])"
+            )
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
 
 @dataclass(frozen=True)
 class PartialCall:
@@ -689,6 +715,13 @@ def _materialize_varying_columns(
                 f"fan out over its individual characters. Pass a list of values, or pass "
                 f"{key}={value!r} as a fixed argument on the {task_def.fn.__name__}() call."
             )
+        if not isinstance(value, Iterable):
+            raise TypeError(
+                f"{function_name}() argument {key!r} is a single "
+                f"{type(value).__name__}, not a list of per-branch values. Pass a list of "
+                f"values, or pass {key}={value!r} as a fixed argument on the "
+                f"{task_def.fn.__name__}() call."
+            )
         if mode == "product" and isinstance(value, ExpandedTemplate):
             raise ValueError(
                 _expanded_template_in_product_message(key=key, column=value, axis_keys=axis_keys)
@@ -803,7 +836,7 @@ def _require_renderable(
                 f"argument to {function_name}() or as a fixed argument on the "
                 f"{task_def.fn.__name__}() call."
             )
-        if isinstance(values[name], Expr | ExprList):
+        if isinstance(values[name], Expr | ExprList | OutputIndex | OutputName):
             raise ValueError(
                 f"{function_name}() argument {key!r}: per_branch({template.template!r}) "
                 f"references {name!r}, which is a task result with no value until the run "
@@ -938,6 +971,10 @@ def _zip_label_parts_for_row(
 
     for key in varying_keys:
         value = row.get(key)
+        # A selected output (``t.output[0]``) belongs to the branch that
+        # produced it, so it inherits that branch's label too.
+        if isinstance(value, OutputIndex | OutputName):
+            value = value.expr
         if isinstance(value, Expr) and value.display_label_parts:
             return value.display_label_parts
 
@@ -956,12 +993,8 @@ def _is_short_scalar_label(rendered: str) -> bool:
 
 
 def _render_label_value(value: Any) -> str | None:
-    """Render one concise label-safe value."""
-    if isinstance(value, Expr):
-        return None
-    if isinstance(value, ExprList):
-        return None
-    if value is None:
+    """Render one concise label-safe value, or ``None`` for a deferred one."""
+    if value is None or isinstance(value, Expr | ExprList | OutputIndex | OutputName):
         return None
     return str(value)
 

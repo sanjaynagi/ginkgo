@@ -205,7 +205,10 @@ def plan(manifest: file) -> list[str]:
 A Python task (`kind="python"`) may return dynamic expressions but must not
 return an execution directive (`shell(...)`, `notebook(...)`, etc.) — doing so
 raises `TypeError`. Driver tasks (shell/script/notebook/subworkflow) return
-their directive, and may also return dynamic expressions.
+their directive, and may also return dynamic expressions. A driver task whose
+every `return` is a plain string or other literal can never return its
+directive, so `ginkgo doctor` and `ginkgo run --dry-run` warn about it
+(`missing_directive_return`) before a run fails there.
 
 ## Task Kinds
 
@@ -344,7 +347,7 @@ include it.
 Ginkgo reports these rather than dropping them quietly: `ginkgo doctor` emits an
 `unreachable_task_call` warning, `ginkgo run --dry-run` lists them under
 "Dropped (not reachable from the flow return value)", and a real run prints a
-notice before starting.
+notice, with the same fix, before starting.
 
 ## Environments
 

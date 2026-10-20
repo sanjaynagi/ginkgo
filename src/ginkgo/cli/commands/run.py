@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from rich.markup import escape
 
@@ -63,6 +63,7 @@ from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
+    missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     unreachable_call_diagnostics,
 )
@@ -115,6 +116,7 @@ def command_run(args, *, output_mode: RunMode) -> int:
         keep_going=getattr(args, "keep_going", False),
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
+        command_flags=getattr(args, "command_flags", ()),
     )
 
 
@@ -233,6 +235,7 @@ def run_workflow(
     executor: str = "local",
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
+    command_flags: Collection[str] = (),
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -272,7 +275,7 @@ def run_workflow(
         # Validated after the flow body has run, so parameters declared inside
         # it have had their chance to claim a flag. Deliberately outside the
         # construction recorder: parameter resolution mints no task calls.
-        validate_param_extras(session)
+        validate_param_extras(session, command_flags=command_flags)
         params = session.merged_loaded_values()
         declared_params = session.resolved_params()
         param_sources = session.param_sources()
@@ -369,10 +372,15 @@ def run_workflow(
     # only printed on --dry-run: unlike the two warnings above it fires once
     # per task definition regardless of how the graph is shaped, so a real
     # run would otherwise repeat it on every invocation.
+    # A driver task whose body can never return its directive (a shell task
+    # returning a plain string) is flagged the same way, so a dry run catches
+    # it before a real run fails there after its upstream tasks have run.
     if dry_run:
-        for diagnostic in path_like_str_param_diagnostics(
-            task_defs=(node.task_def for node in evaluator.task_nodes.values())
-        ):
+        task_defs = [node.task_def for node in evaluator.task_nodes.values()]
+        for diagnostic in [
+            *path_like_str_param_diagnostics(task_defs=task_defs),
+            *missing_directive_diagnostics(task_defs=task_defs),
+        ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.
             console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
@@ -750,9 +758,11 @@ def run_workflow(
 
 
 def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
-    """Warn on stderr about each task call dropped from the graph."""
+    """Warn on stderr about each task call dropped from the graph, with its fix."""
     for diagnostic in diagnostics:
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
+        if diagnostic.suggestion:
+            console(sys.stderr).print(f"  [dim]{escape(diagnostic.suggestion)}[/]")
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
@@ -32,6 +32,7 @@ def command_inspect(args) -> int:
         ).path,
         config_paths=[Path(path).resolve() for path in args.config],
         param_extras=getattr(args, "param_extras", ()),
+        command_flags=getattr(args, "command_flags", ()),
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -42,6 +43,7 @@ def inspect_workflow(
     workflow_path: Path,
     config_paths: list[Path],
     param_extras: Sequence[str] = (),
+    command_flags: Collection[str] = (),
 ) -> dict[str, Any]:
     """Return a static workflow graph snapshot.
 
@@ -55,6 +57,9 @@ def inspect_workflow(
         Command-line tokens supplying declared workflow parameters. A required
         parameter left unsupplied is reported rather than raised, so a workflow
         can still be described without its inputs.
+    command_flags : Collection[str], optional
+        The command's own flags, offered as suggestions for an unrecognised
+        one.
 
     Returns
     -------
@@ -72,7 +77,7 @@ def inspect_workflow(
         module = load_module_from_path(workflow_path)
         flow = discover_flow(module)
         expr = flow()
-        validate_param_extras(session)
+        validate_param_extras(session, command_flags=command_flags)
         params = [
             {
                 **decl.to_payload(),

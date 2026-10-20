@@ -68,11 +68,11 @@ def _write_workflow(*, env: str | None) -> None:
     decorator = '@task("shell")' if env is None else f'@task("shell", env="{env}")'
     Path("workflow.py").write_text(
         f"""
-from ginkgo import flow, task
+from ginkgo import flow, shell, task
 
 {decorator}
 def greet() -> str:
-    return "echo hello"
+    return shell(cmd="echo hello")
 
 @flow
 def main():
@@ -136,11 +136,11 @@ class TestDoctorUnreachableCalls:
     def _write_workflow_with_dropped_call(self) -> None:
         Path("workflow.py").write_text(
             """
-from ginkgo import flow, task
+from ginkgo import flow, shell, task
 
 @task("shell")
 def greet(text: str) -> str:
-    return f"echo {text}"
+    return shell(cmd=f"echo {text}")
 
 @flow
 def main():
