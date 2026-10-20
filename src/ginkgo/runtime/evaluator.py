@@ -699,7 +699,9 @@ class ConcurrentEvaluator:
                     raise RuntimeError("Scheduler reached a deadlock with unresolved tasks")
             except BaseException as exc:
                 # Whatever stopped the run, a task it started and will not see
-                # finish is closed in the record rather than left running.
+                # finish is closed in the record rather than left running, and
+                # a remote job it will not watch any more is cancelled.
+                self._remote_dispatch.cancel_all()
                 self._close_unfinished_nodes(reason=exc)
                 raise
             finally:
@@ -1738,9 +1740,15 @@ class ConcurrentEvaluator:
         return max(0.0, min(deadlines) - time.monotonic())
 
     def _cancel_pending_futures(self) -> None:
-        """Cancel queued futures that have not started yet."""
-        for future in self._running_futures:
-            future.cancel()
+        """Cancel queued futures that have not started yet.
+
+        A queued remote watcher's job is already submitted, and once its
+        watcher is cancelled nothing else would cancel the job, so it is
+        cancelled on its executor here.
+        """
+        for future, (node_id, _) in self._running_futures.items():
+            if future.cancel():
+                self._remote_dispatch.cancel(node_id=node_id)
 
     def _interrupt_running_work(self) -> None:
         """Stop queued and active work after an external interrupt."""
