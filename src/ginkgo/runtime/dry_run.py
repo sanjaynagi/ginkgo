@@ -20,6 +20,7 @@ from ginkgo.runtime.task_kinds import task_kind
 
 if TYPE_CHECKING:
     from ginkgo.runtime.evaluator import ConcurrentEvaluator, NodeRun
+    from ginkgo.runtime.graph import TaskNode
 
 CacheStatus = Literal["cached", "will_run", "unknown"]
 
@@ -246,7 +247,7 @@ def build_dry_run_plan(
         The structured plan, grouped into dependency waves.
     """
     nodes = evaluator.task_nodes
-    waves_by_node = _assign_waves(nodes)
+    waves_by_node = _assign_waves(evaluator.graph.nodes)
     topo_order = sorted(nodes, key=lambda node_id: (waves_by_node[node_id], node_id))
     labels = {node_id: node.label for node_id, node in nodes.items()}
     cache_status, diagnostics, probe_failures = _resolve_cache_status(
@@ -264,7 +265,7 @@ def build_dry_run_plan(
             label=labels[node_id],
             kind=task_def.kind,
             env=task_def.env,
-            mapped=node.expr.mapped,
+            mapped=node.node.expr.mapped,
             threads=resources.threads,
             memory_gb=resources.memory_gb,
             gpu=resources.gpu,
@@ -304,7 +305,7 @@ def _dropped_label(call: ConstructedCall) -> str:
     return call.label
 
 
-def _assign_waves(nodes: Mapping[int, NodeRun]) -> dict[int, int]:
+def _assign_waves(nodes: Mapping[int, TaskNode]) -> dict[int, int]:
     """Assign each node a 0-based wave (longest dependency path to a root)."""
     indegree = {node_id: len(node.dependency_ids) for node_id, node in nodes.items()}
     dependents: dict[int, list[int]] = {node_id: [] for node_id in nodes}
@@ -365,7 +366,7 @@ def _probe_node(
     """Return the cache status of one node, given resolved upstream statuses."""
     # Downstream of anything not known-cached: the cache key cannot be
     # computed without first running an upstream task.
-    if any(status.get(dep_id) != "cached" for dep_id in node.dependency_ids):
+    if any(status.get(dep_id) != "cached" for dep_id in node.node.dependency_ids):
         return "unknown"
 
     try:

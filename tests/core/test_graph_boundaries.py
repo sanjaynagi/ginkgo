@@ -23,7 +23,7 @@ from ginkgo.runtime.diagnostics import UNREACHABLE_CALL_CODE, unreachable_call_d
 from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.edge_inference import DuplicateOutputPathError, OutputOverwritesInputError
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
-from ginkgo.runtime.graph import CycleError, IncompleteCallError
+from ginkgo.runtime.graph import CycleError, IncompleteCallError, TaskNode
 from ginkgo.runtime.events import GraphNodeRegistered, TaskNotice
 from ginkgo.runtime.task_validation import (
     is_content_trackable_path_value,
@@ -880,9 +880,9 @@ def spawn_producer(*, path: str, gate: object) -> object:
     return aggregate(rows=3, output_path=path)
 
 
-def _node_for(evaluator: ConcurrentEvaluator, *, param: str, value: Any) -> Any:
+def _node_for(evaluator: ConcurrentEvaluator, *, param: str, value: Any) -> TaskNode:
     matches = [
-        node for node in evaluator.task_nodes.values() if node.expr.args.get(param) == value
+        node for node in evaluator.graph.nodes.values() if node.expr.args.get(param) == value
     ]
     assert len(matches) == 1, f"expected exactly one node with {param}={value!r}: {matches}"
     return matches[0]
@@ -903,7 +903,7 @@ class TestOutPathEdgeInference:
         rep_node = _node_for(evaluator, param="csv_path", value="agg.csv")
 
         assert agg_node.node_id in rep_node.dependency_ids
-        assert agg_node.node_id in rep_node.node.inferred_dependency_ids
+        assert agg_node.node_id in rep_node.inferred_dependency_ids
         assert unreachable == []
 
     def test_dry_run_shows_two_waves(self) -> None:

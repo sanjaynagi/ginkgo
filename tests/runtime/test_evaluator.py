@@ -874,7 +874,7 @@ class TestFailurePolicy:
 
         skipped = [node for node in evaluator.task_nodes.values() if node.state == "skipped"]
         assert len(skipped) == 2
-        assert {node.blocked_by_task_name for node in skipped} == {ignored_failure_task.name}
+        assert {node.blocked_by.task_def.name for node in skipped} == {ignored_failure_task.name}
 
     def test_a_diamond_skips_only_the_join_below_the_failure(self) -> None:
         log_path = "ignore-diamond.log"
@@ -930,7 +930,7 @@ class TestFailurePolicy:
 
         parent = evaluator.task_nodes[0]
         assert parent.state == "skipped"
-        assert parent.blocked_by_task_name == ignored_failure_task.name
+        assert parent.blocked_by.task_def.name == ignored_failure_task.name
         assert "expanded" in self._lines(log_path)
         assert [event.task_name for event in event_collector.started()] == [
             expand_into_a_failure_task.name,
