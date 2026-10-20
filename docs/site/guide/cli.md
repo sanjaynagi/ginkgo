@@ -224,10 +224,11 @@ correct, but it can only show the dependency edges the graph actually has: if
 two tasks are wired by repeating the same literal path instead of passing the
 producer's return value, dry-run sees no edge between them and cannot flag that
 the consumer might run before or alongside the producer. A task marked
-`? [unknown]` sits downstream of a task that would run, so its cache status
-cannot be predicted before that upstream task runs; the plan prints a one-line
-legend saying so. Where the cache check itself fails, dry-run says so and
-counts the tasks affected; `--verbose` names each one and the error behind it.
+`? [unknown]` has a cache status dry-run cannot work out without running
+anything, most often because it sits downstream of a task that would run; the
+plan prints a one-line legend saying so. Where the cache check itself fails,
+dry-run says so and counts the tasks affected; `--verbose` names each one and
+the error behind it.
 
 Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
 without touching the filesystem, a parameter whose name looks like a path

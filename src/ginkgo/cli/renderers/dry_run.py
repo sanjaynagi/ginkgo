@@ -25,7 +25,9 @@ _TAG: dict[CacheStatus, str] = {
 }
 
 # Legend for the one status that is not self-explanatory.
-_UNKNOWN_MEANING = "cache status cannot be predicted before upstream tasks run"
+_UNKNOWN_MEANING = (
+    "cache status cannot be known without running, often because an upstream task will run"
+)
 
 
 def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) -> None:

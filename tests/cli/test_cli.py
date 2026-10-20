@@ -705,7 +705,7 @@ def main():
         assert "Dry run" in result.stdout
         assert "1 task" in result.stdout
         # Nothing is unknown, so there is no legend for it.
-        assert "cannot be predicted" not in result.stdout
+        assert "cannot be known without running" not in result.stdout
         assert "Wave 1" in result.stdout
         # The plan labels a node exactly as the live run table does.
         assert "• write_marker  [will run]" in result.stdout
@@ -886,9 +886,7 @@ def main():
         # downstream of a will-run task are not.
         assert "[will run]" in result.stdout
         assert "[unknown]" in result.stdout
-        assert "? [unknown]  cache status cannot be predicted before upstream tasks run" in (
-            result.stdout
-        )
+        assert "? [unknown]  cache status cannot be known without running" in result.stdout
         assert "no tasks executed" in result.stdout
 
     def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:
