@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import final
 
 from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.hashing import hash_file, new_hasher
 
 
 @final
@@ -29,11 +30,15 @@ class SubWorkflowDirective(ExecutionDirective):
         ``--config``.
     config : tuple of str
         Additional ``--config`` paths to forward to the child run.
+    source_hash : str
+        Digest of the child's Python sources and config files, folded into the
+        parent task's cache key so editing the child re-runs it.
     """
 
     path: str
     params: dict = field(default_factory=dict)
     config: tuple[str, ...] = ()
+    source_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,4 +103,35 @@ def subworkflow(
         path=str(path),
         params=dict(params) if params is not None else {},
         config=config_tuple,
+        source_hash=_child_source_hash(path=Path(path), config=config_tuple),
     )
+
+
+def _child_source_hash(*, path: Path, config: tuple[str, ...]) -> str:
+    """Hash the Python sources beside a child workflow and its config files.
+
+    Every ``.py`` file under the child workflow's directory counts, which
+    covers the local modules it imports however it imports them. Hidden
+    directories and ``__pycache__`` are skipped, and nothing else is read, so
+    the files the child run writes never change the digest.
+    """
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Sub-workflow path does not exist: {str(path)!r}")
+    root = path.parent
+    sources = sorted(
+        source
+        for source in root.rglob("*.py")
+        if not any(
+            part.startswith(".") or part == "__pycache__"
+            for part in source.relative_to(root).parts
+        )
+    )
+    hasher = new_hasher()
+    for source in sources:
+        hasher.update(source.relative_to(root).as_posix().encode())
+        hasher.update(hash_file(source).encode())
+    for item in config:
+        hasher.update(item.encode())
+        hasher.update(hash_file(Path(item)).encode())
+    return hasher.hexdigest()

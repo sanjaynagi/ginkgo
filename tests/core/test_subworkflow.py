@@ -68,6 +68,13 @@ def call_child_wrong_return(*, workflow_path: str) -> SubWorkflowResult:
 
 
 class TestSubWorkflowConstructor:
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        Path("workflows").mkdir()
+        for name in ("workflows/child.py", "child.py", "overrides.yaml", "a.yaml", "b.yaml"):
+            Path(name).write_text("x = 1\n", encoding="utf-8")
+
     def test_basic_expr(self) -> None:
         expr = subworkflow("workflows/child.py", params={"x": 1})
         assert isinstance(expr, SubWorkflowDirective)
@@ -83,6 +90,10 @@ class TestSubWorkflowConstructor:
         with pytest.raises(ValueError, match="path"):
             subworkflow("")
 
+    def test_rejects_a_missing_child(self) -> None:
+        with pytest.raises(FileNotFoundError, match="missing.py"):
+            subworkflow("missing.py")
+
     def test_config_accepts_single_path(self) -> None:
         expr = subworkflow("child.py", config="overrides.yaml")
         assert expr.config == ("overrides.yaml",)
@@ -90,6 +101,37 @@ class TestSubWorkflowConstructor:
     def test_config_accepts_sequence(self) -> None:
         expr = subworkflow("child.py", config=["a.yaml", "b.yaml"])
         assert expr.config == ("a.yaml", "b.yaml")
+
+
+class TestChildSourceHash:
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        Path("child/modules").mkdir(parents=True)
+        Path("child/flow.py").write_text("x = 1\n", encoding="utf-8")
+        Path("child/modules/helpers.py").write_text("y = 1\n", encoding="utf-8")
+        Path("overrides.yaml").write_text("a: 1\n", encoding="utf-8")
+
+    def _hash(self) -> str:
+        return subworkflow("child/flow.py", config="overrides.yaml").source_hash
+
+    @pytest.mark.parametrize(
+        "edited", ["child/flow.py", "child/modules/helpers.py", "overrides.yaml"]
+    )
+    def test_an_edit_to_the_child_changes_the_hash(self, edited: str) -> None:
+        before = self._hash()
+        Path(edited).write_text("edited\n", encoding="utf-8")
+        assert self._hash() != before
+
+    def test_files_the_child_writes_do_not_change_the_hash(self) -> None:
+        before = self._hash()
+        Path("child/results").mkdir()
+        Path("child/results/out.txt").write_text("output\n", encoding="utf-8")
+        Path("child/.ginkgo").mkdir()
+        Path("child/.ginkgo/cache.py").write_text("z = 1\n", encoding="utf-8")
+        Path("child/modules/__pycache__").mkdir()
+        Path("child/modules/__pycache__/helpers.py").write_text("z = 1\n", encoding="utf-8")
+        assert self._hash() == before
 
 
 class TestRecursionGuard:
@@ -359,6 +401,69 @@ class TestEndToEnd:
         run_dirs = sorted(p for p in runs_dir.iterdir() if p.is_dir())
         # Two runs: parent + child.
         assert len(run_dirs) == 2
+
+    def test_editing_the_child_reruns_the_parent_task(self, tmp_path: Path) -> None:
+        child = tmp_path / "child" / "flow.py"
+        child.parent.mkdir()
+        child_source = textwrap.dedent(
+            """
+            from pathlib import Path
+            from ginkgo import flow, task
+
+
+            @task()
+            def touch(marker_path: str) -> str:
+                Path(marker_path).write_text("VERSION", encoding="utf-8")
+                return marker_path
+
+
+            @flow
+            def main():
+                return touch(marker_path=str(Path.cwd() / "child_marker.txt"))
+            """
+        )
+        child.write_text(child_source.replace("VERSION", "v1"), encoding="utf-8")
+        parent = tmp_path / "parent.py"
+        parent.write_text(
+            textwrap.dedent(
+                """
+                from ginkgo import flow, task, subworkflow, SubWorkflowResult
+
+
+                @task(kind="subworkflow")
+                def run_child() -> SubWorkflowResult:
+                    return subworkflow("child/flow.py")
+
+
+                @flow
+                def main():
+                    return run_child()
+                """
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"GINKGO_PARENT_RUN_ID", "GINKGO_PARENT_TASK_ID", "GINKGO_CALL_DEPTH"}
+        }
+
+        def run_parent() -> None:
+            result = subprocess.run(
+                [sys.executable, "-m", "ginkgo.cli", "run", str(parent)],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
+
+        run_parent()
+        child.write_text(child_source.replace("VERSION", "v2"), encoding="utf-8")
+        run_parent()
+
+        assert (tmp_path / "child_marker.txt").read_text(encoding="utf-8") == "v2"
 
 
 @task(kind="subworkflow")

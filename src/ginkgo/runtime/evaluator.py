@@ -439,6 +439,11 @@ class ConcurrentEvaluator:
         return self._cache_store
 
     @property
+    def node_cache(self) -> NodeCache:
+        """The run's cache lookups, shared with dry-run probing."""
+        return self._node_cache
+
+    @property
     def remote_stats(self) -> RemoteDispatchStats:
         """Aggregated remote-dispatch statistics for this run."""
         return self._remote_dispatch.stats
@@ -687,13 +692,17 @@ class ConcurrentEvaluator:
             resolved_args=resolved_args,
         )
 
-        # For kinds whose directive names a source file (a notebook, a script),
-        # evaluate the body now so that file's hash joins the cache key.
+        # For kinds whose directive names source files (a notebook, a script,
+        # a child workflow), evaluate the body now so their hash joins the
+        # cache key. A body that returns anything else is reported where its
+        # result is handled.
         extra_source_hash: str | None = None
-        if task_kind(node.task_def).eager_source_hash:
+        kind = task_kind(node.task_def)
+        if kind.eager_source_hash:
             directive = node.task_def.fn(**resolved_args)
             node.driver_directive = directive
-            extra_source_hash = directive.source_hash
+            if kind.directive is not None and isinstance(directive, kind.directive):
+                extra_source_hash = directive.source_hash
 
         node.resolved_args = resolved_args
         node.extra_source_hash = extra_source_hash

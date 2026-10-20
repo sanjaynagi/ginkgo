@@ -62,7 +62,11 @@ def encode_value(
     if isinstance(value, tmp_dir):
         return {"__ginkgo_type__": "tmp_dir", "value": str(value)}
 
-    if value is None or isinstance(value, (bool, int, float, str)):
+    # Exact types only: a subclass such as ``np.float64`` would otherwise be
+    # stored as JSON and come back from the cache as a plain ``float``, so a
+    # consumer would see a different value, and hash a different input, on
+    # a cache hit than on a fresh run.
+    if value is None or type(value) in (bool, int, float, str):
         return value
 
     if isinstance(value, list):

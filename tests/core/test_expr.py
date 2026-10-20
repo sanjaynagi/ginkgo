@@ -4,13 +4,18 @@ import dataclasses
 
 import pytest
 
-from ginkgo import Expr, ExprList, task
+from ginkgo import Expr, ExprList, file, task
 from ginkgo.core.expr import OutputIndex, _OutputProxy
 
 
 @task()
 def dummy(x: int) -> int:
     return x + 1
+
+
+@task()
+def path_task(x: int) -> file | None:
+    return None
 
 
 @task()
@@ -188,6 +193,15 @@ class TestOutputIndex:
         expr = pair_task(x=1)
         assert expr.output[0].index == 0
         assert expr.output[1].index == 1
+
+    @pytest.mark.parametrize("call", [lambda: dummy(x=1), lambda: path_task(x=1)])
+    def test_a_single_value_return_cannot_be_indexed(self, call):
+        with pytest.raises(TypeError, match=r"returns a single value, so it has no output \[0\]"):
+            call().output[0]
+
+    def test_a_single_value_fan_out_cannot_be_indexed(self):
+        with pytest.raises(TypeError, match="returns a single value"):
+            ExprList(exprs=[dummy(x=1)], task_def=dummy).output[0]
 
     def test_exprlist_output_returns_proxy(self):
         exprs = [pair_task(x=i) for i in range(3)]

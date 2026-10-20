@@ -1024,6 +1024,16 @@ class TestShellTask:
         with pytest.raises(ShellTaskError):
             evaluate(shell_command_task(command=command, output_path=str(output)))
 
+    def test_a_failed_shell_task_leaves_no_partial_output(self, tmp_path: Path):
+        output = tmp_path / "out.txt"
+
+        with pytest.raises(ShellTaskError):
+            evaluate(
+                shell_command_task(command="echo partial > {out}; exit 3", output_path=str(output))
+            )
+
+        assert not output.exists()
+
     def test_shell_task_runs_under_bash(self, tmp_path: Path):
         output = tmp_path / "out.txt"
 

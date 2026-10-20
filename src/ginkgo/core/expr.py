@@ -10,7 +10,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from types import UnionType
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, get_args
 
 if TYPE_CHECKING:
     from ginkgo.core.task import PartialCall, TaskDef
@@ -276,6 +277,9 @@ class _OutputProxy:
                 task_def=self._source.task_def,
             )
 
+        task_def = self._source.task_def
+        if task_def is not None:
+            _validate_output_index(task_def=task_def, index=index)
         if isinstance(self._source, Expr):
             return OutputIndex(expr=self._source, index=index)
 
@@ -284,6 +288,28 @@ class _OutputProxy:
             exprs=[OutputIndex(expr=e, index=index) for e in self._source],
             task_def=self._source.task_def,
         )
+
+
+def _validate_output_index(*, task_def: TaskDef, index: int) -> None:
+    """Raise a clear error if the task's declared return holds one value.
+
+    Indexing a single ``str`` or path result would otherwise select one of
+    its characters at run time, and the run would succeed with it.
+    """
+    from pathlib import Path
+
+    from ginkgo.core.types import file, folder
+
+    annotation = task_def.effective_return_annotation
+    members = get_args(annotation) if isinstance(annotation, UnionType) else (annotation,)
+    single_values = {file, folder, Path, str, int, float, bool, None, type(None)}
+    if not members or not all(member in single_values for member in members):
+        return
+    raise TypeError(
+        f"{task_def.fn.__name__}() returns a single value, so it has no output [{index}]. "
+        "Pass the result itself, or select an Out[...] parameter by name with "
+        '.output["name"].'
+    )
 
 
 def _validate_output_name(*, task_def: TaskDef, name: str) -> None:

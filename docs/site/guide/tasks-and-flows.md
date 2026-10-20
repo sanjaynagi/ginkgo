@@ -168,6 +168,9 @@ empty file. The shell itself depends on where the task runs:
   must accept `-o pipefail`; bash, zsh and Alpine's `sh` do, Debian's `dash`
   does not.
 
+When a command fails, ginkgo removes whatever it left at its declared output
+paths, so a partial or empty file never reads as a result.
+
 A command that expects a failing step has to say so. `grep` finding no match
 exits 1, and a stage that `head` stops reading early is killed by `SIGPIPE`
 (exit 141), which `pipefail` reports as a failure:
@@ -498,6 +501,11 @@ def run_child(dataset: file) -> SubWorkflowResult:
 `subworkflow()` accepts `params` (parameter overrides forwarded to the child as
 a config file) and `config` (additional `--config` paths). Subworkflows let you
 compose large pipelines from independently runnable units.
+
+The parent task's cache key includes every `.py` file under the child
+workflow's directory and the `config` files, so editing the child, or a module
+beside it, re-runs the parent task. The child's own tasks keep their cache, so
+that re-run repeats only what the edit changed.
 
 ## Fan-Out With `.map()`
 

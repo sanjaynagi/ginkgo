@@ -290,7 +290,6 @@ class TestScalarAnnotation:
             (str, file("a.txt")),
             (str, Path("a.txt")),
             (int, None),
-            (int, [1, 2]),
             (int, SecretRef(name="N")),
         ],
     )
@@ -304,3 +303,8 @@ class TestScalarAnnotation:
     def test_rejects(self, annotation, value) -> None:
         with pytest.raises(TypeError, match=f"t.n is annotated '{annotation.__name__}'"):
             self._validate(annotation, value)
+
+    @pytest.mark.parametrize("value", [[1, 2], (1, 2)])
+    def test_rejects_a_list_for_one_value(self, value) -> None:
+        with pytest.raises(TypeError, match="annotated 'int' but was given a list"):
+            self._validate(int, value)

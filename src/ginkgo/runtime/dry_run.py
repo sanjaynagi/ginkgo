@@ -417,9 +417,13 @@ def _probe_node(
 
     cache_store = evaluator.cache_store
     try:
+        # Hash an upstream output by the digest its cache entry recorded, as
+        # the run does: the run restores that output before this task reads
+        # it, so the bytes on disk now are not what this task will see.
         cache_key, _ = cache_store.build_cache_key(
             task_def=node.task_def,
             resolved_args=resolved_args,
+            known_digests=evaluator.node_cache.digests.known,
         )
     except (FileNotFoundError, ValueError):
         # Hashing a file input the live run would restore first, or a remote
@@ -446,6 +450,7 @@ def _probe_node(
     node.resolved_args = resolved_args
     node.result = cached_value
     node.state = "completed"
+    evaluator.node_cache.propagate_known_digests(cache_key=cache_key)
     return "cached"
 
 

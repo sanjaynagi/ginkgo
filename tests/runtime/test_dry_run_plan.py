@@ -14,7 +14,7 @@ import pytest
 from rich.console import Console
 
 import ginkgo
-from ginkgo import Out, file, task
+from ginkgo import Out, file, shell, task
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.core.expr import record_constructed_calls
 from ginkgo.runtime.dry_run import build_dry_run_plan
@@ -46,6 +46,16 @@ def collect(logs: list[file]) -> int:
 def busy(i: int) -> int:
     """Declare more threads than one core."""
     return i
+
+
+@task("shell")
+def make_shell(out: Out[file]):
+    """Write one declared output from a shell command."""
+    return shell(cmd=f"mkdir -p out && echo made > {out}")
+
+
+def _shell_flow():
+    return use(p=make_shell(out="out/s.txt"))
 
 
 def _single_flow():
@@ -91,6 +101,19 @@ class TestNamedOutputConsumers:
 
         assert plan.probe_failures == ()
         assert _statuses(plan) == {"make": "cached", "use": "cached"}
+
+    def test_a_rewritten_upstream_output_does_not_predict_a_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The run restores a cached shell output before the consumer reads it,
+        # so the consumer is a cache hit whatever the file now holds.
+        monkeypatch.chdir(tmp_path)
+        ginkgo.evaluate(_shell_flow())
+        Path("out/s.txt").write_text("rewritten")
+
+        plan = _plan_for(_shell_flow)
+
+        assert _statuses(plan) == {"make_shell": "cached", "use": "cached"}
 
     def test_consumer_of_a_cached_mapped_producer_is_probed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
