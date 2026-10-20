@@ -156,6 +156,18 @@ payload from resolved values, and only that payload is executed in the foreign
 environment. Shell, script, and notebook tasks can all declare an `env`; Python
 tasks cannot.
 
+### A background process keeps the task running
+
+A shell task finishes when its command has exited *and* everything it
+started has closed the task's output. A process left running in the
+background with `&` inherits stdout and stderr, so the task keeps waiting
+until that process exits too. Redirect a background process's output away
+from the task, or `wait` for it:
+
+```bash
+long_running_server > server.log 2>&1 &
+```
+
 ### Quoting values in the command
 
 `cmd=` is one string, and the shell splits it on whitespace and expands `$`,

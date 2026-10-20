@@ -22,6 +22,13 @@ Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 annotation — everything else is hashed from its `repr`. See
 [Cache Correctness](#cache-correctness) for the exact rule and why it exists.
 
+Hashing a large file on every run would be slow, so each digest is memoised
+under the file's device, inode, size and modification time, and reused while
+those four agree. A rewrite that keeps the size and the modification time —
+a tool that restores timestamps, `touch -r`, or a filesystem with coarse
+timestamps — is therefore not re-hashed, and the old digest stands. `touch`
+the file to make the next run hash it again.
+
 The import walk starts at the task's own module, so the unit of cache identity
 is one file plus the local modules that file imports — not one function. Two
 `@task` functions in the same `flow.py` are therefore coupled even though
