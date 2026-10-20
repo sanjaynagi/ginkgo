@@ -1915,7 +1915,7 @@ def main():
     def test_cache_explain_rejects_conflicting_run_ids(self) -> None:
         result = _run_cli("cache", "explain", "run-a", "--run", "run-b", cwd=Path.cwd())
         assert result.returncode == 2
-        assert "conflicting run ids" in result.stdout
+        assert "Conflicting run ids" in result.stderr
 
     def test_cache_explain_accepts_agreeing_run_ids(self) -> None:
         """Both forms naming the same run is not a usage error, only a missing run."""
