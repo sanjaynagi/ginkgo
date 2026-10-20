@@ -18,6 +18,7 @@ from ginkgo.envs.container import (
     ContainerPrepareError,
     ContainerRef,
     ContainerRuntimeNotFoundError,
+    container_backend_from_config,
     is_container_env,
     parse_container_uri,
 )
@@ -517,9 +518,11 @@ class TestContainerBackendPrepare:
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 backend.prepare(env="docker://myimg:latest")
 
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert call_args == ["docker", "pull", "myimg:latest"]
+            # The daemon is checked before the pull.
+            assert [call[0][0] for call in mock_run.call_args_list] == [
+                ["docker", "info"],
+                ["docker", "pull", "myimg:latest"],
+            ]
 
     def test_skips_pull_when_present(self, tmp_path: Path):
         backend = ContainerBackend(
@@ -547,14 +550,33 @@ class TestContainerBackendPrepare:
             mock_run.side_effect = [
                 # inspect fails — image not present
                 subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""),
+                # the daemon answers
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
                 # pull succeeds
                 subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ]
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 backend.prepare(env="docker://myimg:latest")
 
-            assert mock_run.call_count == 2
-            assert mock_run.call_args_list[1][0][0] == ["docker", "pull", "myimg:latest"]
+            assert mock_run.call_count == 3
+            assert mock_run.call_args_list[2][0][0] == ["docker", "pull", "myimg:latest"]
+
+    def test_a_daemon_that_does_not_answer_fails_before_the_pull(self, tmp_path: Path):
+        backend = ContainerBackend(project_root=tmp_path, pull_policy="always")
+        with patch("ginkgo.envs.container.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd=["docker", "info"], timeout=10)
+            with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
+                with pytest.raises(ContainerDaemonUnreachableError, match="did not answer"):
+                    backend.prepare(env="docker://myimg:latest")
+
+        assert mock_run.call_count == 1
+
+    @pytest.mark.parametrize(("key", "value"), [("pull_policy", "nevr"), ("runtime", "dockr")])
+    def test_an_unknown_setting_value_is_rejected(self, tmp_path: Path, key: str, value: str):
+        with pytest.raises(ValueError, match=f"\\[container\\] {key} must be one of"):
+            container_backend_from_config(
+                project_root=tmp_path, config={"container": {key: value}}
+            )
 
     def test_never_policy_skips_pull(self, tmp_path: Path):
         backend = ContainerBackend(
@@ -571,9 +593,10 @@ class TestContainerBackendPrepare:
             pull_policy="always",
         )
         with patch("ginkgo.envs.container.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="not found"
-            )
+            mock_run.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="not found"),
+            ]
             with patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"):
                 with pytest.raises(ContainerPrepareError, match="myimg:latest"):
                     backend.prepare(env="docker://myimg:latest")
@@ -591,8 +614,8 @@ class TestContainerBackendPrepare:
                 backend.prepare(env="docker://myimg:latest")
                 backend.prepare(env="docker://myimg:latest")
 
-            # Only pulled once.
-            assert mock_run.call_count == 1
+            # Only probed and pulled once.
+            assert mock_run.call_count == 2
 
 
 class TestContainerBackendEnvIdentity:

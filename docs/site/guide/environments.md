@@ -201,6 +201,13 @@ auto_mount = true
 extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 ```
 
+Unknown keys and values are rejected when a container task is validated:
+`runtime` must be `"docker"` or `"podman"`, and `pull_policy` one of
+`"if-not-present"`, `"always"` or `"never"`. Before pulling an image, ginkgo
+checks that the daemon answers `docker info` (or `podman info`) and stops with
+how to start it when it does not, rather than waiting on a pull that cannot
+finish. A fully cached run never pulls, so it does not need the daemon.
+
 Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
 licence file. Entries take the form `"/path"`, `"/path:rw"`, or
 `"/host:/container:rw"`, and default to read-only. An entry you write is treated

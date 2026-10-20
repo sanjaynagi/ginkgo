@@ -165,6 +165,11 @@ def test_preparing_env_is_an_active_status() -> None:
     assert state.rows[0].status == "preparing env"
 
 
+def _backdated(started: tuple[float, str | None], *, seconds: float) -> tuple[float, str | None]:
+    """Move a recorded preparation start *seconds* into the past."""
+    return (started[0] - seconds, started[1])
+
+
 def test_preparation_does_not_start_the_task_clock() -> None:
     state = _seeded_state()
 
@@ -185,7 +190,8 @@ def test_leaving_preparation_returns_the_row_to_waiting() -> None:
     state.handle_event_line(_event_line("waiting", env="analysis"))
 
     assert state.rows[0].status == "waiting"
-    assert state.prepared_envs == ["analysis"]
+    assert list(state.env_prepare_by_env) == ["analysis"]
+    assert state.failed_envs == set()
 
 
 def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
@@ -194,7 +200,17 @@ def test_a_waiting_event_outside_preparation_records_no_prepare_time() -> None:
     state.handle_event_line(_event_line("waiting"))
 
     assert state.env_prepare_seconds == 0.0
-    assert state.prepared_envs == []
+    assert state.env_prepare_by_env == {}
+
+
+def test_a_failed_preparation_is_attributed_to_its_own_environment() -> None:
+    state = _seeded_state()
+
+    state.handle_event_line(_event_line("preparing env", env="debian"))
+    state.handle_event_line(_event_line("failed", env="debian"))
+
+    assert state.failed_envs == {"debian"}
+    assert set(state.env_prepare_by_env) == {"debian"}
 
 
 def test_events_do_not_repaint_the_live_display(tmp_path: Path) -> None:
@@ -226,7 +242,7 @@ def test_env_prepare_time_accumulates_on_transition_out() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] -= 5.0
+    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=5.0)
     state.handle_event_line(_event_line("running"))
 
     assert state.env_prepare_seconds == pytest.approx(5.0, abs=0.05)
@@ -236,7 +252,7 @@ def test_failed_preparation_still_reports_its_time() -> None:
     state = _seeded_state()
 
     state.handle_event_line(_event_line("preparing env", env="analysis"))
-    state._env_prepare_started[0] -= 25.0
+    state._env_prepare_started[0] = _backdated(state._env_prepare_started[0], seconds=25.0)
     state.handle_event_line(_event_line("failed"))
 
     assert state.rows[0].status == "failed"
@@ -420,7 +436,9 @@ def test_summary_explains_slow_environment_preparation(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= 25.0
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=25.0
+    )
     renderer.write(_event_line("running") + "\n")
     renderer.write(_event_line("succeeded") + "\n")
     renderer.finish(elapsed=26.0, success=True)
@@ -434,7 +452,9 @@ def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= 25.0
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=25.0
+    )
     renderer.write(_event_line("failed") + "\n")
     renderer.finish(elapsed=25.0, success=False)
 
@@ -682,7 +702,9 @@ def test_summary_omits_explanation_for_fast_preparation(tmp_path: Path) -> None:
     renderer, output = _renderer(tmp_path)
 
     renderer.write(_event_line("preparing env", env="analysis") + "\n")
-    renderer._state._env_prepare_started[0] -= _ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2
+    renderer._state._env_prepare_started[0] = _backdated(
+        renderer._state._env_prepare_started[0], seconds=_ENV_PREPARE_REPORT_THRESHOLD_SECONDS / 2
+    )
     renderer.write(_event_line("running") + "\n")
     renderer.write(_event_line("succeeded") + "\n")
     renderer.finish(elapsed=1.0, success=True)
