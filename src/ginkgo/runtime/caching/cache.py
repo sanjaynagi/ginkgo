@@ -84,6 +84,46 @@ def key_components(meta: dict[str, Any]) -> dict[str, Any]:
     return components
 
 
+def diff_key_components(*, current: dict[str, Any], prior: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the cache-key components that differ between two entries."""
+    differences: list[dict[str, Any]] = []
+    for name in sorted(set(current) | set(prior)):
+        # A component absent from one side is a parameter that came or went.
+        if name not in current:
+            differences.append({"component": name, "status": "removed", "prior": prior[name]})
+        elif name not in prior:
+            differences.append({"component": name, "status": "added", "current": current[name]})
+        elif current[name] != prior[name]:
+            differences.append(
+                {
+                    "component": name,
+                    "status": "changed",
+                    "current": current[name],
+                    "prior": prior[name],
+                }
+            )
+    return differences
+
+
+def coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
+    """Return the summary reason codes implied by a component diff.
+
+    A moved component no code covers falls back to ``cache_key_changed``; the
+    component list names it either way.
+    """
+    moved = {str(component["component"]) for component in components}
+    reasons = []
+    if moved & {"source_hash", "extra_source_hash"}:
+        reasons.append("source_hash_changed")
+    if "version" in moved:
+        reasons.append("version_bump")
+    if moved & {"env", "env_hash.pixi_lock"}:
+        reasons.append("env_changed")
+    if any(name.startswith("inputs") for name in moved):
+        reasons.append("input_changed")
+    return reasons or ["cache_key_changed"]
+
+
 class UnresolvedEnvIdentityError(GinkgoError, RuntimeError):
     """Raised when a backend cannot identify an environment a task declares."""
 
@@ -212,6 +252,55 @@ class CacheStore:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded), input_hashes
+
+    def miss_reasons(
+        self,
+        *,
+        cache_key: str,
+        task_def: TaskDef,
+        input_hashes: dict[str, Any],
+        extra_source_hash: str | None = None,
+    ) -> list[str]:
+        """Return why a key built by :meth:`build_cache_key` would miss.
+
+        The key's components are compared with the newest entry the same
+        task wrote, the comparison ``ginkgo cache explain`` falls back to.
+
+        Parameters
+        ----------
+        cache_key : str
+            The key that misses.
+        task_def : TaskDef
+            The task it was built for.
+        input_hashes : dict[str, Any]
+            The input hashes :meth:`build_cache_key` returned with it.
+        extra_source_hash : str | None
+            The directive source hash folded into it, if any.
+
+        Returns
+        -------
+        list[str]
+            ``cache explain`` reason codes: ``no_prior_entry`` when the task
+            has no entry to compare with, otherwise those
+            :func:`coarse_reasons` gives.
+        """
+        prior = self.index.newest_entry(function=task_def.name, excluding=cache_key)
+        if prior is None:
+            return ["no_prior_entry"]
+        current = key_components(
+            {
+                "function": task_def.name,
+                "version": task_def.version,
+                "source_hash": task_def.cache_source_hash,
+                "extra_source_hash": extra_source_hash,
+                "env": task_def.env,
+                "env_hash": self._env_hash(task_def=task_def),
+                "input_hashes": input_hashes,
+            }
+        )
+        return coarse_reasons(
+            diff_key_components(current=current, prior=key_components(prior.as_meta()))
+        )
 
     def label_inputs(
         self,

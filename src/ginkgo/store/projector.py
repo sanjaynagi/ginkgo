@@ -590,8 +590,11 @@ def _task_skipped(event: StoredEvent, payload: dict[str, Any]) -> list[Projectio
                 dumps(
                     {
                         "skipped_because": {
-                            "task_id": payload.get("blocked_by_task_id"),
-                            "task_name": payload.get("blocked_by_task_name"),
+                            # A v1 payload predates the reasons: its only
+                            # skip was the upstream failure it names.
+                            "reason": payload.get("reason", "upstream_failed"),
+                            "task_id": payload.get("blocked_by_task_id") or None,
+                            "task_name": payload.get("blocked_by_task_name") or None,
                         }
                     }
                 ),

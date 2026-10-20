@@ -596,11 +596,13 @@ class TestHistoryOfBlockedTask:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == []
 
-    def test_include_pending_lists_it(self, blocked_workspace: Path) -> None:
-        result = _run_cli("history", "after", "--include-pending", "--json", cwd=blocked_workspace)
+    def test_include_unstarted_lists_it(self, blocked_workspace: Path) -> None:
+        result = _run_cli(
+            "history", "after", "--include-unstarted", "--json", cwd=blocked_workspace
+        )
 
         assert result.returncode == 0, result.stderr
-        assert [row["status"] for row in json.loads(result.stdout)] == ["pending"]
+        assert [row["status"] for row in json.loads(result.stdout)] == ["skipped"]
 
     def test_the_resource_aggregate_skips_it_too(self, blocked_workspace: Path) -> None:
         result = _run_cli("history", "after", "--resources", "--json", cwd=blocked_workspace)

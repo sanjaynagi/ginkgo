@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.formatting import duration_seconds, parse_timestamp
-from ginkgo.runtime.caching.cache import key_components
+from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
@@ -562,7 +562,7 @@ class Query:
         return {row["status"]: int(row["n"]) for row in rows}
 
     def task_history(
-        self, name: str, *, limit: int | None = 20, include_pending: bool = False
+        self, name: str, *, limit: int | None = 20, include_unstarted: bool = False
     ) -> list[TaskRow]:
         """Return every execution of one task in its most recent runs, newest first.
 
@@ -580,10 +580,10 @@ class Query:
         limit : int | None, optional
             Most runs to return rows from; ``None`` for the task's whole
             history, which is what a distribution over it needs.
-        include_pending : bool, optional
+        include_unstarted : bool, optional
             Also return runs in which the task never started, such as one
-            blocked by an upstream failure. Left out by default: they hold no
-            history of the task.
+            skipped after an upstream failure. Left out by default: they hold
+            no history of the task.
 
         Returns
         -------
@@ -596,7 +596,7 @@ class Query:
         rows = self._store.query(
             f"SELECT {_TASK_COLUMNS} "
             "FROM tasks t JOIN runs r ON r.run_id = t.run_id "
-            f"WHERE ({_TASK_MATCH}){'' if include_pending else _STARTED_ONLY} "
+            f"WHERE ({_TASK_MATCH}){'' if include_unstarted else _STARTED_ONLY} "
             "ORDER BY r.started_at DESC, t.run_id DESC, t.task_id",
             (name, name, _like_suffix(f".{name}")),
         )
@@ -842,10 +842,10 @@ class Query:
             )
 
         prior_key, strategy = prior
-        components = _diff_key_components(
+        components = diff_key_components(
             current=current, prior=self._cache_key_components(prior_key)
         )
-        details = _coarse_reasons(components)
+        details = coarse_reasons(components)
         return RerunExplanation(
             **identity,
             # A sibling's entry is the nearest thing to compare with, not a
@@ -1141,48 +1141,6 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
     return Query(open_store(path, readonly=readonly), layout=layout)
 
 
-def _diff_key_components(
-    *, current: dict[str, Any], prior: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Return the cache-key components that differ between two entries."""
-    differences: list[dict[str, Any]] = []
-    for name in sorted(set(current) | set(prior)):
-        # A component absent from one side is a parameter that came or went.
-        if name not in current:
-            differences.append({"component": name, "status": "removed", "prior": prior[name]})
-        elif name not in prior:
-            differences.append({"component": name, "status": "added", "current": current[name]})
-        elif current[name] != prior[name]:
-            differences.append(
-                {
-                    "component": name,
-                    "status": "changed",
-                    "current": current[name],
-                    "prior": prior[name],
-                }
-            )
-    return differences
-
-
-def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
-    """Return the summary reason codes implied by a component diff.
-
-    A moved component no code covers falls back to ``cache_key_changed``; the
-    component list names it either way.
-    """
-    moved = {str(component["component"]) for component in components}
-    reasons = []
-    if moved & {"source_hash", "extra_source_hash"}:
-        reasons.append("source_hash_changed")
-    if "version" in moved:
-        reasons.append("version_bump")
-    if moved & {"env", "env_hash.pixi_lock"}:
-        reasons.append("env_changed")
-    if any(name.startswith("inputs") for name in moved):
-        reasons.append("input_changed")
-    return reasons or ["cache_key_changed"]
-
-
 def _mentions(statement: str, table: str) -> bool:
     """Return whether *statement* names *table* as a whole identifier.
 
@@ -1289,8 +1247,10 @@ _TASK_COLUMNS = (
 _TASK_MATCH = "t.name = ? OR t.display_label = ? OR t.name LIKE ? ESCAPE '\\'"
 """Matches a task by name, by base name, or by one fan-out branch's label."""
 
-_STARTED_ONLY = " AND NOT (t.status = 'pending' AND t.started_at IS NULL)"
-"""Drops tasks no run ever started; one waiting to retry has started and stays."""
+_STARTED_ONLY = " AND NOT (t.status IN ('pending', 'skipped') AND t.started_at IS NULL)"
+"""Drops tasks a run never started: one skipped when its run stopped, or one
+still waiting in a run in progress. A cache hit never starts either, but it
+holds a result, so it stays; so does a task waiting to retry."""
 
 
 def _task_row(row: Any) -> TaskRow:

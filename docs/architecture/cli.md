@@ -56,10 +56,10 @@ qualified name (`TaskDef.name`: `<workflow>.align` for a single-file workflow),
 or the display label of one fan-out branch. `--limit` counts runs. Rows are
 ordered by the *run's* start time: a cached task never started, so its own
 timestamp is null and would sort out of the history it belongs to. A run in
-which the task is still pending and never started, such as one blocked by an
-upstream failure, is left out, because it holds no history of the task; a task
-waiting to retry has started and stays. `--include-pending` lists those runs
-too, and `--json` applies the same filter.
+which the task never started, such as one that skipped it after an upstream
+failure, is left out, because it holds no history of the task; a task waiting
+to retry has started and stays. `--include-unstarted` lists those runs too,
+and `--json` applies the same filter.
 
 `ginkgo query "<sql>"` runs one statement through `Query.sql` and prints a
 table, `--json`, or `--csv`. Three things are refused: a statement that is not a
@@ -136,6 +136,23 @@ not work this out" is a different claim from "your workflow is broken". The
 plan builder (`runtime/dry_run.py`) is
 read-only: no task runs, no environment is prepared, and no cached output is
 materialised. Large fan-out groups collapse unless `--verbose` is passed.
+
+Three more things keep the preview in step with the run. A kind with
+`eager_source_hash` (script, notebook, subworkflow) folds its directive's
+`source_hash` into the key, and the run gets it by calling the body; the probe
+instead evaluates a body that is a single `return constructor(...)` over a
+whitelisted expression subset (`runtime/static_directive.py`), calls the real
+constructor, which only hashes files, and leaves anything else `[unknown]`.
+An upstream folder output the run would restore before a consumer hashes it
+is swapped, when the working copy has drifted from its artifact, for a
+symlinked copy of the stored tree in a temporary directory, since a folder's
+hash covers contents and relative paths only. And a missed key carries
+`CacheStore.miss_reasons` — the `cache explain` reason codes from diffing its
+components against the task's newest entry — rendered as
+`[will run: source changed]`. Separately from the probe, every task's
+declared resources go through `ConcurrentEvaluator.check_resource_budget`,
+the run's own check, so a task the `--cores`/`--memory`/`--resource` budgets
+can never fit is a `PlanDiagnostic` too.
 
 There is no separate command for a project's validation workflows. `ginkgo test`
 used to discover every `*.py` under `tests/workflows/` (or a legacy `.tests/`)

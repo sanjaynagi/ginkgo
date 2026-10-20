@@ -471,6 +471,11 @@ def call_child_with_region(*, workflow_path: str, region: str) -> SubWorkflowRes
     return subworkflow(workflow_path, params={"region": region})
 
 
+@task(kind="subworkflow")
+def call_child_with_config(*, workflow_path: str, config_path: str) -> SubWorkflowResult:
+    return subworkflow(workflow_path, params={"region": "from-params"}, config=config_path)
+
+
 _CHILD_DECLARING_PARAMS = (
     """
 import ginkgo
@@ -526,6 +531,38 @@ class TestSubworkflowParams:
         )
 
         assert written["payload"] == {"params": {"region": "2L:1-100"}}
+
+    def test_params_layer_over_forwarded_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Config files layer in order, so the params file must come last.
+        child_path = tmp_path / "child.py"
+        child_path.write_text("", encoding="utf-8")
+        config_path = tmp_path / "child.toml"
+        config_path.write_text('[params]\nregion = "from-config"\n', encoding="utf-8")
+        recorder = Ledger.start(root=tmp_path, run_id="parent_run")
+        configs: list[str] = []
+
+        def fake_run_subprocess(**kwargs: Any) -> subprocess.CompletedProcess[str]:
+            argv = kwargs["argv"]
+            cmd = argv if isinstance(argv, str) else " ".join(argv)
+            configs.extend(part.split()[0].strip("'\"") for part in cmd.split("--config")[1:])
+            _record_child_run(root=tmp_path, run_id="child_run_1", parent_run_id="parent_run")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        evaluator = ConcurrentEvaluator(
+            run_dir=recorder.run_dir, event_bus=recorder.bus, jobs=1, cores=1
+        )
+        monkeypatch.setattr(evaluator._shell_runner, "run_subprocess", fake_run_subprocess)
+
+        evaluator.evaluate(
+            call_child_with_config(workflow_path=str(child_path), config_path=str(config_path))
+        )
+
+        assert configs[0] == str(config_path)
+        assert configs[-1].endswith("child-parameters.yaml")
 
     @pytest.mark.integration
     def test_child_resolves_parent_params_through_declared_parameters(self) -> None:

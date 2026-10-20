@@ -26,9 +26,9 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo history`
 : Show every run of one task, with its status, duration, and cache key. Runs in
-  which the task never started, such as one blocked by an upstream failure, are
-  left out; `--include-pending` lists them too. `--limit` counts runs, so every
-  branch of a fan-out in a listed run is shown.
+  which the task never started, such as one that skipped it after an upstream
+  failure, are left out; `--include-unstarted` lists them too. `--limit` counts
+  runs, so every branch of a fan-out in a listed run is shown.
 
 `ginkgo query`
 : Run one read-only SQL statement against the provenance database.
@@ -103,6 +103,14 @@ root — the nearest enclosing `ginkgo.toml` — and works from there, so
 `.ginkgo/`, config files, and task environments resolve identically wherever
 you invoke from. Paths you pass on the command line are relative to where you
 stand; a task's own relative output paths are relative to the project root.
+`ginkgo.toml` is optional: without one, the directory you run from is the
+project root, so run from the top of the project.
+
+A workflow file imports its own modules from three import roots: the file's
+own directory, the parent of the package it sits in (when its directory has
+an `__init__.py`), and the project root. So `exp/flow.py` can import
+`exp/tasks.py` either as `tasks` or as `exp.tasks`, and a test workflow under
+`tests/workflows/` can import the project's own package.
 
 Repeated `--resource name=value` flags budget any custom resource dimensions
 tasks declare (e.g. `--resource api_calls=10`) — see
@@ -116,6 +124,9 @@ run applies, so a kind/path mismatch (say, a DataFrame wired into a
 `file` parameter) is reported under **Problems** before anything runs &mdash;
 and the command exits non-zero, so a scripted preflight fails loudly. A
 first, cold dry run cannot resolve those arguments and so makes no claim.
+**Problems** also lists, cold or warm, any task whose `threads` or `memory`
+exceeds the run's `--cores` or `--memory` (or a custom resource its
+`--resource` budget), with the message the run would fail with.
 The plan covers only the graph the flow builds before anything runs: tasks a
 task returns at runtime are not shown, so for a dynamic workflow it is a lower
 bound on what the real run executes.
@@ -245,12 +256,29 @@ you *expressed* — one task's return value passed as another's argument — is
 correct, but it can only show the dependency edges the graph actually has: if
 two tasks are wired by repeating the same literal path instead of passing the
 producer's return value, dry-run sees no edge between them and cannot flag that
-the consumer might run before or alongside the producer. A task marked
-`? [unknown]` has a cache status dry-run cannot work out without running
-anything, most often because it sits downstream of a task that would run; the
-plan prints a one-line legend saying so. Where the cache check itself fails,
-dry-run says so and counts the tasks affected; `--verbose` names each one and
-the error behind it.
+the consumer might run before or alongside the producer.
+
+A task that would run says why, in the terms `ginkgo cache explain` uses
+after the fact: `[will run: no prior entry]` for a task never run before, or
+`source changed`, `input changed`, `version changed`, `environment changed`
+when its newest cache entry differs in that part of the key. A collapsed
+fan-out counts its branches by reason, as in
+`align × 96   90 cached, 6 will run (6 input changed)`.
+
+A task marked `? [unknown]` has a cache status dry-run cannot work out without
+running anything, most often because it sits downstream of a task that would
+run; the plan prints a one-line legend saying so. Dry-run never calls a task
+body, but a script, notebook or subworkflow task's key includes the file its
+body names, so dry-run reads the body instead. When the body is a single
+`return script(...)` (or `notebook(...)`, `subworkflow(...)`) whose arguments
+are literals, the task's parameters, module-level names, f-strings, `+`, `/`,
+`Path(...)`, `str(...)` and pure path operations (`.parent`, `.name`,
+`.stem`, `.suffix`, `.resolve()`, `.with_suffix()`, `.with_name()`,
+`.joinpath()`), dry-run evaluates it and predicts the task like any other.
+Any other body, such as one that computes the path in an earlier statement or
+calls a helper function, leaves the task, and everything downstream of it,
+`unknown`. Where the cache check itself fails, dry-run says so and counts the
+tasks affected; `--verbose` names each one and the error behind it.
 
 Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
 without touching the filesystem, a parameter whose name looks like a path
@@ -299,6 +327,11 @@ Pass `--json` for structured output suitable for programmatic use:
 ```bash
 ginkgo doctor flow.py --json
 ```
+
+Doctor checks the imports that run when the workflow module loads. An import
+inside a task body runs only when the task does, so a missing package
+imported there is not caught until the run reaches that task. Import at
+module level to have doctor check it.
 
 `ginkgo debug` is most useful after the fact: once a run directory exists, it
 surfaces recorded task status, logs, and cache behavior without manually

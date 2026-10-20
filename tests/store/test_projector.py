@@ -286,10 +286,34 @@ def test_task_skipped_closes_the_task_and_names_the_failure(started: SqliteStore
     assert task["cached"] == 0
     assert task["finished_at"] == "2026-08-28T09:00:00+00:00"
     assert json.loads(task["extra"])["skipped_because"] == {
+        "reason": "upstream_failed",
         "task_id": "task_0001",
         "task_name": "analysis.load",
     }
     assert not started.query("SELECT * FROM attempts")
+
+
+def test_a_v1_task_skipped_payload_replays_as_an_upstream_failure(
+    started: SqliteStore,
+) -> None:
+    """A run recorded before skip reasons knew only one: a failed upstream task."""
+    payload = json.loads((FIXTURES / "task_skipped.json").read_text(encoding="utf-8"))
+    del payload["reason"]
+    _apply(
+        started,
+        StoredEvent(
+            run_id=payload["run_id"],
+            ts=payload["ts"],
+            type="task_skipped",
+            v=1,
+            task_id=payload["task_id"],
+            attempt=0,
+            payload=json.dumps({**payload, "v": 1}, sort_keys=True),
+        ),
+    )
+
+    task = _row(started, "SELECT * FROM tasks")
+    assert json.loads(task["extra"])["skipped_because"]["reason"] == "upstream_failed"
 
 
 def test_a_skipped_task_keeps_the_attempt_it_really_made(started: SqliteStore) -> None:

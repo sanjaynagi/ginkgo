@@ -147,6 +147,7 @@ def _events() -> list[GinkgoEvent]:
         ),
         TaskSkipped(
             **TASK,
+            reason="upstream_failed",
             blocked_by_task_id="task_0001",
             blocked_by_task_name="analysis.load",
         ),

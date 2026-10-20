@@ -33,7 +33,7 @@ from ginkgo.core.types import (
     unwrap_optional_annotation,
 )
 from ginkgo.envs.mounts import Mount, MountMode, mount
-from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError
+from ginkgo.errors import FAILURE_KINDS, FailureKind, GinkgoError, describe_exception
 from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler
 from ginkgo.runtime.environment.secrets import redact_text
@@ -566,7 +566,7 @@ def classify_failure(*, exc: BaseException) -> dict[str, Any]:
     scheduler modules that raise them. Built-in exceptions are classified
     here; anything else was raised inside a task body and is user code.
     """
-    message = str(exc)
+    message = describe_exception(exc)
     declared = getattr(exc, "failure_kind", None)
     if declared in FAILURE_KINDS:
         kind = declared
@@ -852,6 +852,9 @@ class ShellRunner:
         user_log_handle = user_log_path.open("a", encoding="utf-8") if user_log_path else None
 
         def emit_chunk(*, stream: str, chunk: str) -> None:
+            # Output is read a line at a time, so a secret the command prints
+            # arrives whole and is redacted before it reaches any log.
+            chunk = redact_text(text=chunk, secret_values=node.secret_values)
             if stream == "stdout" and stdout_handle is not None:
                 stdout_handle.write(chunk)
                 stdout_handle.flush()

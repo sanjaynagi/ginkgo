@@ -226,11 +226,13 @@ grows by `retry_backoff_multiplier` on each attempt and is capped at
 
 Retries cannot help with a malformed input: it fails identically every time.
 By default the first failure a task's retries cannot absorb stops the run —
-in-flight tasks finish, nothing new is dispatched. Tasks that never started,
-including everything downstream of the failure, are left `pending` in
-`ginkgo runs show`; they are not run. An in-flight task that then fails is not
-retried, even with retries left; a notice such as `retry 1/2 not attempted:
-the run is stopping after an earlier failure` says so. In a wide fan-out that
+in-flight tasks finish, nothing new is dispatched. Tasks that never started
+are reported `skipped` in `ginkgo runs show`: blocked by the failure when they
+depend on it, otherwise not started because the run stopped. An in-flight task
+that then fails is not retried, even with retries left, and neither is a task
+already waiting for its retry; both are reported `failed`, and a notice such as
+`retry 1/2 not attempted: the run is stopping after an earlier failure` says
+so. In a wide fan-out that
 throws away the work of every healthy branch.
 
 ```python

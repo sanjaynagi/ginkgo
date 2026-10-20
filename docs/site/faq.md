@@ -56,7 +56,9 @@ my-project/
 no explicit path, autodiscovery looks for a file named `flow.py` at the project
 root or in one of its immediate subdirectories. The directory name does not
 matter, and `__init__.py` is not required. Exactly one candidate is used
-automatically; several candidates raise an error asking you to pass an explicit
+automatically. With several, `workflow/flow.py` wins over a `flow.py` in any
+other subdirectory, so a child workflow in its own folder does not get in the
+way; otherwise several candidates raise an error asking you to pass an explicit
 path. An explicit path accepts any file name, anywhere.
 
 ### What's the smallest possible workflow?
@@ -547,6 +549,10 @@ cached file/folder outputs are still materialised correctly. Running with
 checks that output files exist — quicker for warm reruns, but weaker, since it
 trusts the working tree instead of re-verifying bytes.
 
+Two runs started at the same time in one project are safe, since each keeps its
+own run record and the ledger and cache take their writes in turn. A run only
+sees cache entries that already exist, though, so both may compute the same task.
+
 ### How do I evict or prune the cache, and how do I force a re-run?
 
 ```bash
@@ -684,10 +690,12 @@ running. On the first unretryable failure the evaluator records the failure and
 cancels only the futures that are still queued and have not started. The main
 loop then keeps waiting on the already-running futures until they complete — it
 simply stops dispatching new tasks — after which it re-raises the stored failure
-and the run ends with status `failed`. Tasks that never started, including
-everything downstream of the failure, are left `pending`; they are not run.
-A running task that fails after that point is not retried, even with retries
-left, and a notice on the task says which retry was not attempted.
+and the run ends with status `failed`. No task is left without an outcome:
+tasks that never started are recorded `skipped`, those downstream of the
+failure as blocked by it and the rest as not started because the run stopped.
+A task that fails after that point is not retried, even with retries left; nor
+is one already waiting to retry. Each is recorded `failed` with its last
+failure, and a notice on the task says which retry was not attempted.
 
 That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
 whole run, makes a failure non-fatal: dispatch continues, only the tasks
@@ -742,7 +750,9 @@ failure already gives.
 `ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
 full snapshot — per-task status, attempts, cache key, exit code, the `failure`
 record, log paths, timings, dependencies, and (for remote tasks) the remote job
-id and backend.
+id and backend. A task that was retried also lists each attempt, with its
+status and failure, under `attempt_history`; the text view lists them under
+**Attempts**.
 
 ## Remote Execution
 
@@ -953,7 +963,12 @@ string form is a placeholder like `<secret:env:NAME>`, never the value. Task
 stdout/stderr pass through a redacting writer that replaces any resolved secret
 value with `[REDACTED]`, and exceptions are sanitised the same way before being
 recorded or displayed, so the plaintext secret does not reach logs, the manifest,
-or the report.
+or the report. That holds for every task kind: a shell, script or notebook
+command's output is redacted line by line before it is logged.
+
+Redaction covers what ginkgo records about a task, not what the task writes. A
+secret a task writes into an output file is stored in that file, and in its
+cached copy under `.ginkgo/`, like any other content.
 
 ## Sub-Workflows And Composition
 

@@ -35,7 +35,7 @@ from ginkgo.cli.renderers.common import (
 )
 from ginkgo.envs.interpreter import EnvironmentFinding, explain_import_failure
 from ginkgo.formatting import format_bytes, format_duration
-from ginkgo.runtime.run_summary import TERMINAL_STATUSES
+from ginkgo.runtime.run_summary import DONE_STATUSES, TERMINAL_STATUSES
 from ginkgo.cli.renderers.models import (
     FailureDetails,
     CliRenderedPage,
@@ -275,10 +275,10 @@ class _RunEventState:
             counts.setdefault(status, 0)
         return counts
 
-    def terminal_count(self) -> int:
-        """Return the number of task rows in a terminal status."""
+    def done_count(self) -> int:
+        """Return the number of task rows that produced a result: succeeded or cached."""
         counts = self.status_counts()
-        return sum(counts[status] for status in TERMINAL_STATUSES)
+        return sum(counts[status] for status in DONE_STATUSES)
 
 
 class _RunLayoutRenderer:
@@ -436,15 +436,15 @@ class _RunLayoutRenderer:
                 # Collapsed group row with multi-state progress bar.
                 counts = item.status_counts()
                 total = len(item.rows)
-                terminal = item.terminal_count()
-                bar_width = max(16, self.status_column_width() - len(f" {terminal}/{total}") - 1)
+                done = item.done_count()
+                bar_width = max(16, self.status_column_width() - len(f" {done}/{total}") - 1)
                 bar = _MultiStateBar(counts=counts, total=total, width=bar_width)
                 # Build status cell: bar + count label.
                 bar_text = Text()
                 for chunk in bar.__rich_console__(self._console, self._console.options):
                     if isinstance(chunk, Text):
                         bar_text.append_text(chunk)
-                bar_text.append(f" {terminal}/{total}", style="bold #134e4a")
+                bar_text.append(f" {done}/{total}", style="bold #134e4a")
                 elapsed = item.elapsed(now=now)
                 time_str = format_duration(elapsed) if elapsed is not None else "--"
                 table.add_row(
@@ -471,12 +471,20 @@ class _RunLayoutRenderer:
         return table
 
     def render_progress_section(self) -> Table:
-        completed = self._state.terminal_count()
+        # Only a task with a result counts as complete; one that failed or
+        # was skipped is terminal too, but is shown beside the count instead.
+        completed = self._state.done_count()
+        counts = self._state.status_counts()
         total = max(1, len(self._state.rows))
         progress = Table.grid(padding=(0, 1))
         progress.add_column()
         progress.add_column(no_wrap=True)
         progress_text = f"{completed}/{len(self._state.rows)} complete"
+        unfinished = [
+            f"{counts[status]} {status}" for status in ("failed", "skipped") if counts[status]
+        ]
+        if unfinished:
+            progress_text += f" ({', '.join(unfinished)})"
         progress.add_row(
             ProgressBar(
                 total=total,
@@ -583,19 +591,19 @@ class _RunLayoutRenderer:
         """Name the tasks a failure left without a result.
 
         Listed one per line while that stays readable; beyond that, counted
-        per blocking failure, because a handful of failures at the head of a
-        wide fan-out costs thousands of branches.
+        per cause, because a handful of failures at the head of a wide
+        fan-out costs thousands of branches.
         """
         text = Text()
         text.append(f"\n⊘ Left unrun by a failure ({len(skipped)})\n", style="bold")
         if len(skipped) <= _SKIP_REPORT_LIST_LIMIT:
             for item in skipped:
                 text.append(f"  {item.task_label}", style="dim")
-                text.append(f"  ← blocked by {item.blocker_label}\n", style="dim")
+                text.append(f"  ← {item.cause}\n", style="dim")
             return text
-        counts = Counter(item.blocker_label for item in skipped)
-        for blocker, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-            text.append(f"  {count} blocked by {blocker}\n", style="dim")
+        counts = Counter(item.cause for item in skipped)
+        for cause, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            text.append(f"  {count} {cause}\n", style="dim")
         return text
 
     def render_failure_category_summary(self, details: list[FailureDetails]) -> Text | None:
@@ -718,8 +726,8 @@ class _RunLayoutRenderer:
             if isinstance(item, _TaskGroup):
                 task_widths.append(len(_truncate_task_label(item.label, max_width=max_label)))
                 total = len(item.rows)
-                terminal = item.terminal_count()
-                status_widths.append(self.status_column_width() + len(f" {terminal}/{total}") + 1)
+                done = item.done_count()
+                status_widths.append(self.status_column_width() + len(f" {done}/{total}") + 1)
                 env_widths.append(len(item.env_label))
                 elapsed = item.elapsed(now=clock)
                 time_widths.append(len(format_duration(elapsed)) if elapsed is not None else 2)
