@@ -762,7 +762,10 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "not reachable from the flow return value" in _unwrapped(result.stderr)
+        stderr = _unwrapped(result.stderr)
+        assert "not reachable from the flow return value" in stderr
+        # The fix doctor offers is shown too, not just the symptom (F9).
+        assert "Return its result from the flow" in stderr
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropped_producer_is_named_before_its_consumer_fails_validation(

@@ -344,7 +344,7 @@ include it.
 Ginkgo reports these rather than dropping them quietly: `ginkgo doctor` emits an
 `unreachable_task_call` warning, `ginkgo run --dry-run` lists them under
 "Dropped (not reachable from the flow return value)", and a real run prints a
-notice before starting.
+notice, with the same fix, before starting.
 
 ## Environments
 

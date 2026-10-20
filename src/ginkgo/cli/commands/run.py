@@ -719,9 +719,11 @@ def run_workflow(
 
 
 def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
-    """Warn on stderr about each task call dropped from the graph."""
+    """Warn on stderr about each task call dropped from the graph, with its fix."""
     for diagnostic in diagnostics:
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
+        if diagnostic.suggestion:
+            console(sys.stderr).print(f"  [dim]{escape(diagnostic.suggestion)}[/]")
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:
