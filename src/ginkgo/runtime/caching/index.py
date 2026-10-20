@@ -242,6 +242,29 @@ class CacheIndex(DirectIndex):
         row["artifact_ids"] = {str(a["path"]): str(a["artifact_id"]) for a in artifacts}
         return CacheEntry(row)
 
+    def newest_entry(self, *, function: str, excluding: str) -> CacheEntry | None:
+        """Return the newest entry *function* wrote, other than *excluding*.
+
+        Parameters
+        ----------
+        function : str
+            The task's cache name, as entries record it.
+        excluding : str
+            A cache key to pass over, typically the one being explained.
+
+        Returns
+        -------
+        CacheEntry | None
+            The entry, without its artifact ids, or ``None`` when there is none.
+        """
+        with self._lock:
+            rows = self._query(
+                f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries "  # noqa: S608
+                "WHERE function = ? AND cache_key != ? ORDER BY created_at DESC LIMIT 1",
+                (function, excluding),
+            )
+        return CacheEntry.from_row(rows[0]) if rows else None
+
     def cache_keys(self) -> list[str]:
         """Return every cache key the index holds, sorted."""
         rows = self._query("SELECT cache_key FROM cache_entries ORDER BY cache_key")

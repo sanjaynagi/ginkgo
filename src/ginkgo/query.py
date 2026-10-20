@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ginkgo.formatting import duration_seconds, parse_timestamp
-from ginkgo.runtime.caching.cache import key_components
+from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.store.errors import StoreError
@@ -831,10 +831,10 @@ class Query:
             )
 
         prior_key, strategy = prior
-        components = _diff_key_components(
+        components = diff_key_components(
             current=current, prior=self._cache_key_components(prior_key)
         )
-        details = _coarse_reasons(components)
+        details = coarse_reasons(components)
         return RerunExplanation(
             **identity,
             reason=details[0],
@@ -1122,48 +1122,6 @@ def open(  # noqa: A001 - the module's verb; callers write ginkgo.query.open(...
         empty.restrict_to_reads()
         return Query(empty, layout=layout)
     return Query(open_store(path, readonly=readonly), layout=layout)
-
-
-def _diff_key_components(
-    *, current: dict[str, Any], prior: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Return the cache-key components that differ between two entries."""
-    differences: list[dict[str, Any]] = []
-    for name in sorted(set(current) | set(prior)):
-        # A component absent from one side is a parameter that came or went.
-        if name not in current:
-            differences.append({"component": name, "status": "removed", "prior": prior[name]})
-        elif name not in prior:
-            differences.append({"component": name, "status": "added", "current": current[name]})
-        elif current[name] != prior[name]:
-            differences.append(
-                {
-                    "component": name,
-                    "status": "changed",
-                    "current": current[name],
-                    "prior": prior[name],
-                }
-            )
-    return differences
-
-
-def _coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
-    """Return the summary reason codes implied by a component diff.
-
-    A moved component no code covers falls back to ``cache_key_changed``; the
-    component list names it either way.
-    """
-    moved = {str(component["component"]) for component in components}
-    reasons = []
-    if moved & {"source_hash", "extra_source_hash"}:
-        reasons.append("source_hash_changed")
-    if "version" in moved:
-        reasons.append("version_bump")
-    if moved & {"env", "env_hash.pixi_lock"}:
-        reasons.append("env_changed")
-    if any(name.startswith("inputs") for name in moved):
-        reasons.append("input_changed")
-    return reasons or ["cache_key_changed"]
 
 
 def _mentions(statement: str, table: str) -> bool:

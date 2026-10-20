@@ -729,32 +729,66 @@ class ConcurrentEvaluator:
         node.custom_resources = dict(resources.custom)
         node.executor_name = self.placement.resolve(task_def=node.task_def)
         self._apply_memory_escalation(node=node, resources=resources)
-        # Custom budgets are run-level, so the demand check applies wherever
-        # the task is placed.
-        for dimension, demand in node.custom_resources.items():
-            budget = (self.resource_budgets or {}).get(dimension)
-            if budget is not None and demand > budget:
-                raise ValueError(
-                    f"{node.task_def.name} requires {demand} {dimension} but only "
-                    f"{budget} are available in the run's {dimension} budget"
-                )
-        if not node.remote:
-            if node.threads > self.cores:
-                raise ValueError(
-                    f"{node.task_def.name} requires {node.threads} cores but only "
-                    f"{self.cores} are available"
-                )
-            if self.memory is not None and node.memory_gb > self.memory:
-                raise ValueError(
-                    f"{node.task_def.name} requires {node.memory_gb} GiB but only "
-                    f"{self.memory} GiB are available"
-                )
+        self.check_resource_budget(
+            task_name=node.task_def.name,
+            threads=node.threads,
+            memory_gb=node.memory_gb,
+            custom=node.custom_resources,
+            remote=node.remote,
+        )
         node.state = "ready"
         self._emit_task_event(
             TaskReady,
             node=node,
             resources=self._resources_payload(node=node),
         )
+
+    def check_resource_budget(
+        self,
+        *,
+        task_name: str,
+        threads: int,
+        memory_gb: int,
+        custom: Mapping[str, int],
+        remote: bool,
+    ) -> None:
+        """Refuse a task whose demand can never fit the run's budgets.
+
+        Parameters
+        ----------
+        task_name : str
+            The task, for the message.
+        threads, memory_gb : int
+            Its core and memory demand. Only checked when it runs locally:
+            a remote executor satisfies its own requests.
+        custom : Mapping[str, int]
+            Its user-defined resource demands. Checked wherever it runs,
+            since those budgets are run-level.
+        remote : bool
+            Whether the task is placed on a remote executor.
+
+        Raises
+        ------
+        ValueError
+            If any demand exceeds its budget.
+        """
+        for dimension, demand in custom.items():
+            budget = (self.resource_budgets or {}).get(dimension)
+            if budget is not None and demand > budget:
+                raise ValueError(
+                    f"{task_name} requires {demand} {dimension} but only "
+                    f"{budget} are available in the run's {dimension} budget"
+                )
+        if remote:
+            return
+        if threads > self.cores:
+            raise ValueError(
+                f"{task_name} requires {threads} cores but only {self.cores} are available"
+            )
+        if self.memory is not None and memory_gb > self.memory:
+            raise ValueError(
+                f"{task_name} requires {memory_gb} GiB but only {self.memory} GiB are available"
+            )
 
     def _prepare_task_environment(self, *, node: NodeRun) -> None:
         """Materialize any external execution environment required by a task."""

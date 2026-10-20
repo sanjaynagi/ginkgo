@@ -42,10 +42,15 @@ def parse_memory(value: str | None) -> int:
     Raises
     ------
     ValueError
-        If the string cannot be parsed.
+        If *value* is not a string, or cannot be parsed.
     """
     if value is None:
         return 0
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Invalid memory specification {value!r}: memory must be a string with a "
+            f"unit, e.g. memory='{value}Gi' for {value} GiB."
+        )
 
     match = _MEMORY_PATTERN.match(value.strip())
     if match is None:
