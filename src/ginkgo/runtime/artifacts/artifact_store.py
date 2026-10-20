@@ -26,10 +26,13 @@ join it against the cache tables in one query.
 from __future__ import annotations
 
 
+import logging
 import shutil
 import stat
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+import blake3
 
 from ginkgo.runtime.artifacts.artifact_model import (
     ArtifactRecord,
@@ -46,7 +49,11 @@ from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
+logger = logging.getLogger(__name__)
+
 DIGEST_ALGORITHM = "blake3"
+
+_COPY_CHUNK = 1 << 20
 
 # Longer than any real file extension; the digest already spends 64 of the
 # filename's 255 bytes, so an unbounded suffix could make store() fail.
@@ -93,7 +100,7 @@ class ArtifactStore(Protocol):
         """
         ...
 
-    def restore(self, *, artifact_id: str, dest_path: Path) -> None:
+    def restore(self, *, artifact_id: str, dest_path: Path) -> bool:
         """Materialise an artifact at *dest_path* as writable content.
 
         Parameters
@@ -102,6 +109,13 @@ class ArtifactStore(Protocol):
             The artifact ID returned by :meth:`store`.
         dest_path : Path
             Location where the writable file or directory should be restored.
+
+        Returns
+        -------
+        bool
+            ``True`` when the restored bytes hash to the artifact's digest;
+            ``False`` when the stored bytes are missing or corrupt, in which
+            case nothing is left at *dest_path*.
         """
         ...
 
@@ -278,8 +292,26 @@ class LocalArtifactStore:
         else:
             self._retrieve_tree(artifact_id=artifact_id, dest_path=dest_path)
 
-    def restore(self, *, artifact_id: str, dest_path: Path) -> None:
-        """Restore an artifact at *dest_path* as regular writable content."""
+    def restore(self, *, artifact_id: str, dest_path: Path) -> bool:
+        """Restore an artifact at *dest_path* as regular writable content.
+
+        The bytes are hashed as they are copied. A copy that does not match
+        the recorded digest is deleted, along with the corrupt stored bytes so
+        that the re-run which follows stores good ones, and the restore
+        reports failure.
+
+        Parameters
+        ----------
+        artifact_id : str
+            Artifact ID returned by :meth:`store`.
+        dest_path : Path
+            Location to restore the file or directory at.
+
+        Returns
+        -------
+        bool
+            ``True`` when the restored content matches the artifact digest.
+        """
         record = self._load_record(artifact_id=artifact_id)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -287,13 +319,25 @@ class LocalArtifactStore:
         _remove_dest(dest_path)
 
         if record.kind == "blob":
-            shutil.copy2(self._blob_path(record), dest_path)
-            dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-            self._record_materialization(path=dest_path, artifact_id=artifact_id)
-            return
+            restored = self._copy_verified(
+                src=self._blob_path(record), dst=dest_path, digest=record.digest_hex
+            )
+            if restored:
+                dest_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        else:
+            restored = self._restore_tree(record=record, dest_path=dest_path)
 
-        self._restore_tree(record=record, dest_path=dest_path)
+        if not restored:
+            _remove_dest(dest_path)
+            logger.warning(
+                "Stored bytes for artifact %s are missing or corrupt; "
+                "discarded them and re-running the task that produced %s",
+                artifact_id,
+                dest_path,
+            )
+            return False
         self._record_materialization(path=dest_path, artifact_id=artifact_id)
+        return True
 
     def matches(self, *, artifact_id: str, path: Path) -> bool:
         """Return whether *path* matches the stored artifact content."""
@@ -594,17 +638,56 @@ class LocalArtifactStore:
                 entry_dest.unlink()
             entry_dest.symlink_to(blob_path)
 
-    def _restore_tree(self, *, record: ArtifactRecord, dest_path: Path) -> None:
-        """Reconstruct a directory from its tree manifest as writable files."""
-        tree_ref = self._load_tree_ref(record=record)
+    def _restore_tree(self, *, record: ArtifactRecord, dest_path: Path) -> bool:
+        """Reconstruct a directory from its tree manifest as writable files.
+
+        Returns ``False`` at the first member whose bytes are missing or
+        corrupt, or when the manifest itself is gone.
+        """
+        try:
+            tree_ref = self._load_tree_ref(record=record)
+        except FileNotFoundError:
+            return False
         dest_path.mkdir(parents=True, exist_ok=True)
 
         for entry in tree_ref.entries:
             entry_dest = dest_path / entry.relative_path
             entry_dest.parent.mkdir(parents=True, exist_ok=True)
             blob_path = self._blobs_dir / entry.blob_digest
-            shutil.copy2(blob_path, entry_dest)
+            if not self._copy_verified(src=blob_path, dst=entry_dest, digest=entry.blob_digest):
+                return False
             entry_dest.chmod(entry.mode)
+        return True
+
+    def _copy_verified(self, *, src: Path, dst: Path, digest: str) -> bool:
+        """Copy a stored blob to *dst*, hashing the bytes on the way.
+
+        Returns ``False`` when *src* is missing or its bytes do not hash to
+        *digest*; the corrupt stored bytes are then discarded.
+        """
+        if not src.exists():
+            return False
+        hasher = blake3.blake3()
+        with src.open("rb") as reader, dst.open("wb") as writer:
+            for chunk in iter(lambda: reader.read(_COPY_CHUNK), b""):
+                hasher.update(chunk)
+                writer.write(chunk)
+        shutil.copystat(src, dst)
+        if hasher.hexdigest() == digest:
+            return True
+        self._discard_blob_bytes(digest=digest)
+        return False
+
+    def _discard_blob_bytes(self, *, digest: str) -> None:
+        """Delete every store filename holding the bytes named *digest*.
+
+        A recorded blob and a tree member can share one inode, so leaving
+        either name would let the next store copy the corrupt bytes back.
+        The row stays: a re-run storing the same content rewrites the bytes.
+        """
+        for path in self._blobs_dir.glob(f"{digest}*"):
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            path.unlink()
 
     def _build_tree_ref(self, src_path: Path) -> tuple[TreeRef, int]:
         """Return the manifest representation for a directory."""
@@ -684,7 +767,7 @@ class LocalArtifactStore:
         """
         self._index.record_artifact(record)
 
-    def integrity_problems(self) -> list[str]:
+    def integrity_problems(self, *, verify: bool = False) -> list[str]:
         """Return the ways the artifact rows and the bytes on disk disagree.
 
         Both directions: a row whose blob or tree manifest is gone names an
@@ -692,6 +775,18 @@ class LocalArtifactStore:
         with no row is bytes nothing can find — the digest that would name them
         only exists in the row. A tree's member blobs are reachable through its
         manifest rather than through a row of their own, so they count as known.
+
+        Parameters
+        ----------
+        verify : bool
+            Also rehash every stored blob and tree member and report the
+            ones whose bytes no longer match their digest. Reads every byte
+            in the store.
+
+        Returns
+        -------
+        list[str]
+            One line per problem; empty when the store is intact.
         """
         problems: list[str] = []
         known: set[Path] = set()
@@ -702,9 +797,21 @@ class LocalArtifactStore:
             if not path.exists():
                 problems.append(f"artifact {artifact_id} has a row but no bytes")
                 continue
-            if record is not None and record.kind != "blob":
-                tree = self._load_tree_ref(record=record)
-                known.update(self._blobs_dir / entry.blob_digest for entry in tree.entries)
+            if record is None:
+                continue
+            if record.kind == "blob":
+                if verify and hash_file(path) != record.digest_hex:
+                    problems.append(f"artifact {artifact_id}: bytes do not match its digest")
+                continue
+            tree = self._load_tree_ref(record=record)
+            for entry in tree.entries:
+                member = self._blobs_dir / entry.blob_digest
+                known.add(member)
+                if verify and member.exists() and hash_file(member) != entry.blob_digest:
+                    problems.append(
+                        f"artifact {artifact_id}: member {entry.relative_path} "
+                        "does not match its digest"
+                    )
 
         for directory in (self._blobs_dir, self._trees_dir):
             if not directory.is_dir():

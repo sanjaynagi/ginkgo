@@ -77,7 +77,8 @@ at the nearest `ginkgo.toml`.
 `ginkgo db`
 : Maintain the provenance database. `db path` prints where it is, `db migrate`
   creates or upgrades it, `db check` reports anything the database and the files
-  beside it disagree about, `db prune` deletes history you no longer need, and
+  beside it disagree about (`--verify` also rehashes every stored artifact),
+  `db prune` deletes history you no longer need, and
   `db vacuum` gives the freed space back. See
   [Caching and Provenance](caching-and-provenance.md).
 

@@ -342,6 +342,7 @@ Together, the cache and the ledger answer different questions:
 ```bash
 ginkgo db path                # where the database is
 ginkgo db check               # schema version, integrity, rows against bytes
+ginkgo db check --verify      # also rehash every stored artifact byte
 ginkgo db migrate             # create or upgrade it
 ginkgo db prune --events-older-than 90d --dry-run
 ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
@@ -351,7 +352,15 @@ ginkgo db vacuum              # give the freed space back
 `ginkgo db check` asks every index whether its rows and the files they name
 still agree — the cache, the artifact store, the run directories, the staged
 remote inputs — and reports both directions: a row whose bytes are gone, and
-bytes no row can find. It never repairs anything.
+bytes no row can find. It never repairs anything. Those checks compare rows
+with file names; they cannot see a stored file whose bytes changed in place.
+`--verify` rehashes every stored blob and directory member against its digest
+and reports each mismatch, exiting non-zero. It reads the whole store, so it
+takes as long as the store is large.
+
+A cache hit checks the bytes it restores anyway: they are hashed as they are
+copied, and a copy that does not match its digest is deleted with a warning,
+the corrupt stored bytes are discarded, and the task re-runs as a cache miss.
 
 `ginkgo db prune --events-older-than 90d` deletes the raw event stream of runs
 that finished more than 90 days ago. Everything `ginkgo runs show`, the report

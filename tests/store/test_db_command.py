@@ -311,6 +311,30 @@ class TestDbCheckWorkspace:
         assert main(["db", "check"]) == 1
         assert "artifact file blobs/abc123 has no row (orphan)" in capsys.readouterr().out
 
+    def test_verify_reports_a_blob_corrupted_in_place(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        main(["db", "migrate"])
+        blobs = tmp_path / ".ginkgo" / "artifacts" / "blobs"
+        blobs.mkdir(parents=True)
+        (blobs / "abc123").write_bytes(b"not the bytes abc123 names")
+        with CacheIndex.open(path=tmp_path / ".ginkgo" / "ginkgo.db") as index:
+            index.record_artifact(
+                ArtifactRecord(
+                    artifact_id="abc123",
+                    kind="blob",
+                    digest_algorithm="blake3",
+                    digest_hex="abc123",
+                    extension="",
+                    size=26,
+                    created_at=now_iso(),
+                    storage_backend="local",
+                )
+            )
+
+        assert main(["db", "check"]) == 0
+        assert main(["db", "check", "--verify"]) == 1
+        assert "artifact abc123: bytes do not match its digest" in capsys.readouterr().out
+
     def test_an_environment_that_materialized_two_ways_is_reported(
         self, tmp_path, monkeypatch, capsys
     ):
