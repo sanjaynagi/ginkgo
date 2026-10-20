@@ -132,7 +132,7 @@ def _run_completed(event: StoredEvent, payload: dict[str, Any]) -> list[Projecti
             """,
             params=(
                 _RUN_STATUS.get(str(payload.get("status")), "failed"),
-                payload.get("finished_at") or event.ts,
+                event.ts,
                 payload.get("error"),
                 dumps(resources) if resources else None,
                 event.run_id,
