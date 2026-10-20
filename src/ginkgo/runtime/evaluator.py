@@ -1317,12 +1317,12 @@ class ConcurrentEvaluator:
             node = self._nodes[node_id]
             if node.state == "skipped":
                 return RootSkippedError(
-                    task_name=(node.blocked_by or node.node).task_def.name,
+                    task_name=(node.blocked_by or node.node).task_def.base_name,
                     task_id=task_id_for_node((node.blocked_by or node.node).node_id),
                 )
             if node.state == "failed":
                 return RootSkippedError(
-                    task_name=node.task_def.name,
+                    task_name=node.task_def.base_name,
                     task_id=task_id_for_node(node.node_id),
                 )
         return None

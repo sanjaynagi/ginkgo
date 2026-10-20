@@ -686,7 +686,9 @@ class TaskValidator:
             # skip below, when it lands on a parameter declared to hold one value.
             scalar = unwrap_optional_annotation(annotation)[0]
             if scalar in _SCALAR_TYPES and isinstance(value, ExprList | list | tuple):
-                _reject_list_for_scalar(annotation=scalar, label=f"{node.task_def.name}.{name}")
+                _reject_list_for_scalar(
+                    annotation=scalar, label=f"{node.task_def.base_name}.{name}"
+                )
             if contains_dynamic_expression(value):
                 continue
             if collect_secret_refs(value):
@@ -695,13 +697,13 @@ class TaskValidator:
                 self.validate_output_argument(
                     annotation=annotation,
                     value=value,
-                    label=f"{node.task_def.name}.{name}",
+                    label=f"{node.task_def.base_name}.{name}",
                 )
                 continue
             self.validate_annotated_value(
                 annotation=annotation,
                 value=value,
-                label=f"{node.task_def.name}.{name}",
+                label=f"{node.task_def.base_name}.{name}",
                 execution_mode=task_kind(node.task_def).execution_mode,
                 produced_paths=produced_paths,
             )
