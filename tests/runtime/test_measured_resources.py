@@ -13,6 +13,12 @@ import pytest
 from ginkgo import file, shell, task
 from tests.conftest import Ledger
 from ginkgo.runtime.environment.resources import SubprocessUsageSampler, _parse_cputime
+from ginkgo.runtime.worker import (
+    _TaskPeakRss,
+    _current_rss_bytes,
+    _max_rss_bytes,
+    _rusage_snapshot,
+)
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 
 
@@ -61,6 +67,29 @@ class TestSubprocessUsageSampler:
         sampler.start()
         sampler.stop()
         assert sampler.result() is None
+
+
+class TestTaskPeakRss:
+    """A reused worker reports each task's own peak, not its lifetime one."""
+
+    def test_an_earlier_heavier_task_does_not_set_a_later_tasks_peak(self) -> None:
+        heavy = b"x" * 200_000_000
+        del heavy
+        lifetime = _max_rss_bytes(_rusage_snapshot().ru_maxrss)
+
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert 0 < peak < lifetime - 100_000_000
+
+    def test_the_tasks_own_allocation_is_seen(self) -> None:
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        before = _current_rss_bytes()
+        held = b"x" * 100_000_000
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert held
+        assert peak >= before + 90_000_000
 
 
 class TestUsageMerging:
