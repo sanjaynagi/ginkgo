@@ -747,7 +747,7 @@ class TestEnvironmentRouter:
         )
         with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, bare))):
             argv = self._make_composite(tmp_path).exec_argv(env="myenv", cmd="echo hi")
-        assert argv == ["bash", "-c", "echo hi"]
+        assert argv == ["bash", "-eo", "pipefail", "-c", "echo hi"]
 
     def test_a_bare_name_without_ginkgo_pixi_names_the_plugin(self, tmp_path: Path):
         composite = self._make_composite(tmp_path)
