@@ -683,6 +683,7 @@ class TaskValidator:
             here, but not when its path is one of these — a real run would
             produce it first, since an edge was inferred for it (#280).
         """
+        self.validate_command_paths(task_def=node.task_def, args=node.expr.args)
         for name, parameter in node.task_def.signature.parameters.items():
             annotation = node.task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in node.expr.args:
@@ -713,6 +714,46 @@ class TaskValidator:
                 produced_paths=produced_paths,
                 is_input=True,
             )
+
+    def validate_command_paths(self, *, task_def: TaskDef, args: dict[str, Any]) -> None:
+        """Reject a path with a space in a task whose body writes its command.
+
+        A ``shell(cmd=...)`` command is a string the shell splits on
+        whitespace, and ginkgo cannot quote the paths a body formats into
+        it, so a ``file``, ``folder`` or ``Out[...]`` path containing a space
+        would reach the command as two words. Other kinds receive their
+        paths as Python values or as arguments ginkgo quotes itself, and may
+        use any path.
+
+        Parameters
+        ----------
+        task_def : TaskDef
+            The task whose kind decides whether the rule applies.
+        args : dict[str, Any]
+            The task's arguments; a value not resolved yet is skipped.
+
+        Raises
+        ------
+        ValueError
+            If the kind builds its own command and a path contains a space.
+        """
+        if not task_kind(task_def).user_built_command:
+            return
+        for name, value in args.items():
+            annotation = task_def.type_hints.get(name)
+            if name not in task_def.output_params and not is_path_shaped_annotation(annotation):
+                continue
+            if contains_dynamic_expression(value) or collect_secret_refs(value):
+                continue
+            entries: list[tuple[str, str, str]] = []
+            _collect_output_paths(annotation=annotation, value=value, name=name, entries=entries)
+            for _name, path, _kind in entries:
+                if " " in path:
+                    raise ValueError(
+                        f"{task_def.base_name}.{name} must not contain spaces: {path!r}. "
+                        f"A {task_def.kind} task's command is a string the shell splits "
+                        "on whitespace; rename the path, or use a python or script task."
+                    )
 
     def validate_task_importable(self, *, task_def: TaskDef) -> None:
         """Require Python tasks to be plain top-level importable functions."""
@@ -758,6 +799,7 @@ class TaskValidator:
         resolved_args: dict[str, Any],
     ) -> None:
         """Validate resolved task inputs against Ginkgo path types."""
+        self.validate_command_paths(task_def=task_def, args=resolved_args)
         for name, parameter in task_def.signature.parameters.items():
             annotation = task_def.type_hints.get(name, parameter.annotation)
             if annotation is tmp_dir or name not in resolved_args:
@@ -840,9 +882,6 @@ class TaskValidator:
             )
 
         path_str = str(value)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
         is_file_kind = annotation_includes(annotation=annotation, expected=file)
         path_obj = Path(path_str)
         if not path_obj.exists():
@@ -1003,9 +1042,6 @@ class TaskValidator:
         and ``folder`` cannot express, so the error then names ``Out[...]``.
         """
         path_str = str(path)
-        if " " in path_str:
-            raise ValueError(f"{label} must not contain spaces: {path_str!r}")
-
         path_obj = Path(path_str)
         if path_obj.is_file() if kind == "file" else path_obj.is_dir():
             return

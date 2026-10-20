@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -42,6 +43,8 @@ from ginkgo.runtime.task_validation import TaskValidator, declared_output_paths_
 if TYPE_CHECKING:
     from ginkgo.plugins.api import TaskInvocation
     from ginkgo.plugins.api import RunnerContext
+
+logger = logging.getLogger(__name__)
 
 
 # ----- Exceptions -----------------------------------------------------------
@@ -724,11 +727,18 @@ class ShellRunner:
         When ``usage_callback`` is given, the subprocess tree's peak RSS and
         CPU time are sampled while it runs and reported to the callback once
         the process exits (skipped when nothing could be sampled).
+
+        Output is decoded as UTF-8 with undecodable bytes replaced, so a
+        command that prints binary keeps its (replaced) output and its exit
+        status. Each pipe is drained to the end whatever a callback does: a
+        reader that stopped early would leave the command blocked on, or
+        killed by, a pipe nobody reads.
         """
         popen_kwargs: dict[str, Any] = {
             "stderr": subprocess.PIPE,
             "stdout": subprocess.PIPE,
-            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
@@ -769,13 +779,15 @@ class ShellRunner:
 
         def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
             try:
-                while True:
-                    chunk = pipe.readline()
-                    if chunk == "":
-                        break
+                for chunk in iter(pipe.readline, ""):
                     sink.append(chunk)
-                    if callback is not None:
+                    if callback is None:
+                        continue
+                    try:
                         callback(chunk)
+                    except Exception:
+                        logger.exception("Output handler failed; still capturing the output")
+                        callback = None
             finally:
                 pipe.close()
 

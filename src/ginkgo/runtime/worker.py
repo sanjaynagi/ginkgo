@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import functools
 import io
+import os
 import sys
 from pathlib import Path
+from threading import Event, Thread
 import traceback
 from types import TracebackType
 from typing import Any
@@ -51,19 +55,121 @@ def _rusage_snapshot() -> Any | None:
     return resource.getrusage(resource.RUSAGE_SELF)
 
 
-def _attach_measured_resources(*, response: dict[str, Any], usage_start: Any | None) -> None:
+class _MachTaskBasicInfo(ctypes.Structure):
+    """``mach_task_basic_info``, for this process's resident size on macOS."""
+
+    _fields_ = [
+        ("virtual_size", ctypes.c_uint64),
+        ("resident_size", ctypes.c_uint64),
+        ("resident_size_max", ctypes.c_uint64),
+        ("user_time", ctypes.c_int32 * 2),
+        ("system_time", ctypes.c_int32 * 2),
+        ("policy", ctypes.c_int32),
+        ("suspend_count", ctypes.c_int32),
+    ]
+
+
+_MACH_TASK_BASIC_INFO = 20
+
+
+@functools.cache
+def _libsystem() -> ctypes.CDLL:
+    """Return macOS's C library, loaded once per process."""
+    return ctypes.CDLL("/usr/lib/libSystem.dylib")
+
+
+def _current_rss_bytes() -> int | None:
+    """Return this process's resident set size now, or ``None`` where unknown.
+
+    Read in-process — ``/proc`` on Linux, ``task_info`` on macOS — so a
+    sample costs microseconds rather than a ``ps``.
+    """
+    try:
+        if sys.platform == "darwin":
+            libc = _libsystem()
+            info = _MachTaskBasicInfo()
+            count = ctypes.c_uint32(ctypes.sizeof(info) // 4)
+            task = ctypes.c_uint32.in_dll(libc, "mach_task_self_")
+            if libc.task_info(
+                task, _MACH_TASK_BASIC_INFO, ctypes.byref(info), ctypes.byref(count)
+            ):
+                return None
+            return int(info.resident_size)
+        resident_pages = Path("/proc/self/statm").read_text().split()[1]
+        return int(resident_pages) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+class _TaskPeakRss:
+    """Measure this process's peak resident memory since one task started.
+
+    ``ru_maxrss`` is the process's lifetime high-water mark, and a pool
+    worker runs many tasks, so on its own it hands every task the peak of the
+    heaviest one before it. When the mark rose during the task, the task set
+    it and it is exact; otherwise the peak is the highest resident size
+    sampled while the task ran, a lower bound.
+
+    Parameters
+    ----------
+    usage_start : Any
+        The process's rusage as the task started.
+    interval_seconds : float
+        Seconds between resident-size samples.
+    """
+
+    def __init__(self, *, usage_start: Any, interval_seconds: float = 0.1) -> None:
+        self._usage_start = usage_start
+        self._interval = interval_seconds
+        self._stop = Event()
+        self._peak = 0
+        self._sample()
+        self._thread = Thread(target=self._run, name="ginkgo-task-rss", daemon=True)
+        self._thread.start()
+
+    def stop(self, *, usage_end: Any) -> int:
+        """Stop sampling and return the task's peak resident bytes.
+
+        Parameters
+        ----------
+        usage_end : Any
+            The process's rusage as the task finished.
+
+        Returns
+        -------
+        int
+            Peak resident bytes since the task started.
+        """
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self._sample()
+        if self._peak == 0 or usage_end.ru_maxrss > self._usage_start.ru_maxrss:
+            return _max_rss_bytes(usage_end.ru_maxrss)
+        return self._peak
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._sample()
+
+    def _sample(self) -> None:
+        rss = _current_rss_bytes()
+        if rss is not None:
+            self._peak = max(self._peak, rss)
+
+
+def _attach_measured_resources(
+    *, response: dict[str, Any], usage_start: Any | None, peak_rss: _TaskPeakRss | None
+) -> None:
     """Add the task-body usage measurement to a worker response.
 
     Attached to error responses too — the usage measured before a failure
     is what right-sizes an OOM-prone task.
     """
     usage_end = _rusage_snapshot() if usage_start is not None else None
-    if usage_start is None or usage_end is None:
+    if usage_start is None or usage_end is None or peak_rss is None:
         return
-    # ru_maxrss is the worker process's high-water mark, so a task run
-    # after a heavier one in a reused pool worker inherits its peak.
     response["measured_resources"] = {
-        "peak_rss_bytes": _max_rss_bytes(usage_end.ru_maxrss),
+        "peak_rss_bytes": peak_rss.stop(usage_end=usage_end),
         "cpu_seconds": round(
             (usage_end.ru_utime - usage_start.ru_utime)
             + (usage_end.ru_stime - usage_start.ru_stime),
@@ -114,6 +220,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         "display_label": payload.get("display_label"),
     }
     fn = None
+    peak_rss = _TaskPeakRss(usage_start=usage_start) if usage_start is not None else None
     try:
         with (
             _task_log_context(
@@ -157,13 +264,13 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
         exc.args = (redact_text(text=message, secret_values=secret_values),)
         response = error_response(exc)
-        _attach_measured_resources(response=response, usage_start=usage_start)
+        _attach_measured_resources(response=response, usage_start=usage_start, peak_rss=peak_rss)
         return response
     finally:
         if mounted_access is not None:
             mounted_access.close()
 
-    _attach_measured_resources(response=response, usage_start=usage_start)
+    _attach_measured_resources(response=response, usage_start=usage_start, peak_rss=peak_rss)
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     return response

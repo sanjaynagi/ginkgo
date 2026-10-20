@@ -1532,7 +1532,7 @@ class ConcurrentEvaluator:
             execution_args=node.execution_args,
         )
         if node.task_def.output_params:
-            self._create_output_parent_dirs(node=node)
+            self._prepare_output_paths(node=node)
         # Placement was resolved when the node was prepared; the backend
         # recorded in events and provenance is the executor's name.
         execution_backend = node.executor_name or LOCAL
@@ -1585,22 +1585,27 @@ class ConcurrentEvaluator:
                 with path.open("a", encoding="utf-8") as handle:
                     handle.write(header)
 
-    def _create_output_parent_dirs(self, *, node: NodeRun) -> None:
-        """Create the parent directory of every declared ``Out[...]`` path.
+    def _prepare_output_paths(self, *, node: NodeRun) -> None:
+        """Make every declared ``Out[...]`` path ready for the task to write.
 
         Runs once per node, after pre-execution validation passes and before
         the task body dispatches — on the driver, ahead of python workers,
         shell/script/notebook commands, and container runs alike, since all
-        of those are launched from this one call site. Only the *parent* is
+        of those are launched from this one call site. The *parent* is
         created (``exist_ok=True``): for ``Out[folder]`` the folder itself is
         left for the task body to create, since tools differ on whether they
-        want it to already exist.
+        want it to already exist. A read-only file left at an ``Out[file]``
+        path by an earlier run is removed, so a body opening it for writing
+        does not fail with a bare permission error.
         """
         assert node.execution_args is not None
-        for _, path, _kind in declared_output_paths(
+        for _, path, kind in declared_output_paths(
             task_def=node.task_def, resolved_args=node.execution_args
         ):
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            output = Path(path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "file" and output.is_file() and not os.access(output, os.W_OK):
+                output.unlink()
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.

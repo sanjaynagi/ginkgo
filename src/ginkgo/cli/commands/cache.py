@@ -119,17 +119,19 @@ def command_cache(args) -> int:
                 )
             return 0
 
+        freed_bytes = sum(entry.output_bytes for entry in entries)
         if entries or _database_exists():
             with _cache_store() as cache_store:
                 for entry in entries:
                     _remove_entry(cache_store, entry.cache_key)
-                # Clean up orphaned artifacts after pruning.
-                _gc_orphan_artifacts(cache_store)
+                # An artifact a surviving entry still names stays, so what was
+                # freed is counted from what the collector actually deleted.
+                freed_bytes += _gc_orphan_artifacts(cache_store)
 
         rich_console.print(
             f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
             f"{'entry' if len(entries) == 1 else 'entries'} "
-            f"([bold]{format_bytes(total_bytes)}[/])."
+            f"([bold]{format_bytes(freed_bytes)}[/] freed)."
         )
         return 0
 
@@ -302,6 +304,8 @@ class CacheEntryDisplay:
     """The fan-out branch that last recorded the key, or ``-``."""
     size: str
     size_bytes: int
+    """The entry's output plus the artifacts it names."""
+    output_bytes: int
     age: str
     created: str
     created_at: datetime | None
@@ -337,6 +341,7 @@ def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:
         label=row.display_label or "-",
         size=format_bytes(row.size_bytes),
         size_bytes=row.size_bytes,
+        output_bytes=row.output_bytes,
         age=_format_age(created_at),
         created=row.created_at or "-",
         created_at=created_at,
@@ -473,18 +478,26 @@ def _safe_rmtree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _gc_orphan_artifacts(cache_store: CacheStore) -> None:
-    """Remove artifacts no cache entry points at."""
+def _gc_orphan_artifacts(cache_store: CacheStore) -> int:
+    """Remove artifacts no cache entry points at, returning the bytes freed."""
     layout = WorkspaceLayout.relative()
     if not layout.artifacts.exists():
-        return
+        return 0
 
     referenced = cache_store.index.referenced_artifact_ids()
 
     store = cache_store.artifact_store_view
+    freed = 0
     for artifact_id in store.list_artifact_ids():
-        if artifact_id not in referenced:
-            store.delete(artifact_id=artifact_id)
+        if artifact_id in referenced:
+            continue
+        record = store.load_record(artifact_id=artifact_id)
+        if record is not None and record.kind == "blob":
+            freed += record.size
+        store.delete(artifact_id=artifact_id)
+    # A tree's member blobs outlive its row, since another tree may share
+    # them; the ones nothing reaches any more go here.
+    return freed + store.remove_orphan_files()
 
 
 #: Rich style for each tracking label ``cache explain`` prints, chosen to

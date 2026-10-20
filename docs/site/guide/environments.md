@@ -162,7 +162,7 @@ fail and tell you. Declare the index as an output and it becomes writable:
 @task(kind="shell", env="docker://quay.io/biocontainers/samtools:1.20--h50ea8bc_0")
 def index_reference(reference: file) -> file:
     index = f"{reference}.fai"
-    return shell(cmd=f"samtools faidx {reference}", output=index)
+    return shell(cmd=f"samtools faidx {shlex.quote(reference)}", output=index)
 ```
 
 Declaring it is also what keeps it. Anything a container writes to a path that
@@ -200,6 +200,13 @@ shell = "bash"                              # "sh" for Alpine images without bas
 auto_mount = true
 extra_mounts = ["/scratch:rw", "/opt/refs:ro"]
 ```
+
+Unknown keys and values are rejected when a container task is validated:
+`runtime` must be `"docker"` or `"podman"`, and `pull_policy` one of
+`"if-not-present"`, `"always"` or `"never"`. Before pulling an image, ginkgo
+checks that the daemon answers `docker info` (or `podman info`) and stops with
+how to start it when it does not, rather than waiting on a pull that cannot
+finish. A fully cached run never pulls, so it does not need the daemon.
 
 Use `extra_mounts` for paths no task declares — a tool's own cache directory, a
 licence file. Entries take the form `"/path"`, `"/path:rw"`, or

@@ -374,6 +374,17 @@ def list_dir_task(path: folder) -> list[str]:
 
 
 @task()
+def write_spaced_output(dest: Out[file]) -> file:
+    Path(dest).write_text("ok", encoding="utf-8")
+    return dest
+
+
+@task(kind="shell")
+def touch_via_shell(dest: Out[file]) -> file:
+    return shell(cmd=f"touch {dest}", output=dest)
+
+
+@task()
 def write_scratch_task(report_path: str, scratch: tmp_dir) -> str:
     scratch_path = Path(scratch)
     (scratch_path / "marker.txt").write_text("ok", encoding="utf-8")
@@ -1698,12 +1709,18 @@ class TestValidation:
         with pytest.raises(TypeError, match=f"annotated '{kind}' but was given a list"):
             evaluator.validate_graph()
 
-    def test_folder_inputs_must_not_contain_spaces(self, tmp_path: Path):
+    def test_python_tasks_accept_paths_with_spaces(self, tmp_path: Path):
         spaced_dir = tmp_path / "has space"
         spaced_dir.mkdir()
+        (spaced_dir / "a b.txt").write_text("")
 
+        assert evaluate(list_dir_task(path=str(spaced_dir))) == ["a b.txt"]
+        written = evaluate(write_spaced_output(dest=str(spaced_dir / "out put.txt")))
+        assert Path(str(written)).read_text(encoding="utf-8") == "ok"
+
+    def test_shell_task_outputs_must_not_contain_spaces(self, tmp_path: Path):
         with pytest.raises(ValueError, match="must not contain spaces"):
-            evaluate(list_dir_task(path=str(spaced_dir)))
+            evaluate(touch_via_shell(dest=str(tmp_path / "out put.txt")))
 
 
 class TestTmpDirLifecycle:

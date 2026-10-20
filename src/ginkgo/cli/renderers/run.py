@@ -94,8 +94,9 @@ class _RunEventState:
         self.row_order: list[int] = []
         self.notices: list[str] = []
         self.env_prepare_seconds = 0.0
-        self.prepared_envs: list[str] = []
-        self._env_prepare_started: dict[int, float] = {}
+        self.env_prepare_by_env: dict[str, float] = {}
+        self.failed_envs: set[str] = set()
+        self._env_prepare_started: dict[int, tuple[float, str | None]] = {}
 
     def seed(self, *, planned_tasks: list[tuple[int, str, str, str]]) -> None:
         """Register the planned task set before any events arrive.
@@ -193,17 +194,31 @@ class _RunEventState:
         env: object,
         event_time: float,
     ) -> None:
-        """Accumulate time a node spent preparing its execution environment."""
+        """Accumulate time a node spent preparing its execution environment.
+
+        Time is kept per environment, and a preparation that ended in failure
+        marks its environment, so the summary does not attribute one slow or
+        failed pull to every environment the run touched.
+        """
         if status == _ENV_PREPARE_STATUS:
-            self._env_prepare_started[node_id] = event_time
-            if isinstance(env, str) and env not in self.prepared_envs:
-                self.prepared_envs.append(env)
+            self._env_prepare_started[node_id] = (
+                event_time,
+                env if isinstance(env, str) else None,
+            )
             return
 
         started = self._env_prepare_started.pop(node_id, None)
         if started is None:
             return
-        self.env_prepare_seconds += max(0.0, event_time - started)
+        started_at, started_env = started
+        seconds = max(0.0, event_time - started_at)
+        self.env_prepare_seconds += seconds
+        if started_env is not None:
+            self.env_prepare_by_env[started_env] = (
+                self.env_prepare_by_env.get(started_env, 0.0) + seconds
+            )
+            if status == "failed":
+                self.failed_envs.add(started_env)
 
     def _apply_display_label(self, *, node_id: int, display_label: str) -> None:
         """Replace a fallback duplicate label with a richer runtime label."""
@@ -687,7 +702,23 @@ class _RunLayoutRenderer:
         """Explain a slow first run caused by environment preparation."""
         if self._state.env_prepare_seconds < _ENV_PREPARE_REPORT_THRESHOLD_SECONDS:
             return None
-        envs = ", ".join(self._state.prepared_envs)
+        state = self._state
+        # Environments that were already installed take a moment to check;
+        # only the ones that cost real time, or failed, are worth naming.
+        named = sorted(
+            (
+                (env, seconds)
+                for env, seconds in state.env_prepare_by_env.items()
+                if env in state.failed_envs or seconds >= _ENV_PREPARE_REPORT_THRESHOLD_SECONDS
+            ),
+            key=lambda item: -item[1],
+        )
+        envs = ", ".join(
+            f"{env} failed after {format_duration(seconds)}"
+            if env in state.failed_envs
+            else f"{env} {format_duration(seconds)}"
+            for env, seconds in named
+        )
         env_part = f" ({envs})" if envs else ""
         return Text(
             f"⚙ Environment preparation took "
@@ -764,7 +795,12 @@ class _RunLayoutRenderer:
         return self._resources.provider()
 
     def render_resource_footer(self, resources: dict[str, object]) -> Text | None:
-        """Render the final CPU/RSS summary line."""
+        """Render the final CPU/RSS summary line.
+
+        The figures sum the whole process tree — ginkgo, its worker pool and
+        every command — so the line says so and names the most processes it
+        saw: a pool of idle workers is most of a small run's RSS.
+        """
         average = resources.get("average")
         peak = resources.get("peak")
         if not isinstance(average, dict) or not isinstance(peak, dict):
@@ -774,8 +810,10 @@ class _RunLayoutRenderer:
         peak_cpu = _format_cpu_percent(_as_float(peak.get("cpu_percent")))
         avg_rss = format_bytes(_as_int(average.get("rss_bytes")))
         peak_rss = format_bytes(_as_int(peak.get("rss_bytes")))
+        processes = _format_count(peak.get("process_count"))
         return Text(
-            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss}",
+            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss} "
+            f"(process-tree total, up to {processes} processes)",
             style="dim",
         )
 

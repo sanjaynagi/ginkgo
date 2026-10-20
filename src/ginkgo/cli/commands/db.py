@@ -5,7 +5,8 @@
 history nothing reads any more, reclaim the space that frees, and say where the
 file is.
 
-``check`` reports rather than repairs, and every half is answered by whoever
+``check`` reports rather than repairs (``check --verify`` also rehashes
+every stored artifact byte), and every half is answered by whoever
 owns it: SQLite for the file's integrity, the cache and the artifact store for
 whether their rows and their bytes agree, ``rundir`` for the run directories,
 the staging cache for its downloads, the cache index for environment drift.
@@ -69,7 +70,7 @@ def command_db(args) -> int:
     if args.db_command == "prune":
         return _prune(args, path=path, rich_console=rich_console)
 
-    return _check(layout, rich_console=rich_console)
+    return _check(layout, verify=args.verify, rich_console=rich_console)
 
 
 def _prune(args, *, path, rich_console) -> int:
@@ -130,7 +131,7 @@ def _line(noun: str, count: int, *, dry_run: bool) -> str:
     return f"[green]✓[/] {verb} {format_int(count)} {noun} row{'' if count == 1 else 's'}"
 
 
-def _check(layout, *, rich_console) -> int:
+def _check(layout, *, verify: bool, rich_console) -> int:
     """Report every way the ledger and the bytes beside it disagree.
 
     A read path throughout: it opens the database read-only and never creates
@@ -140,6 +141,9 @@ def _check(layout, *, rich_console) -> int:
     warning instead, and still exits 0, because nothing here is corrupt and a
     missing ledger is not something ``db`` can repair. Creating the database
     is ``db migrate``'s job, and ``ginkgo run``'s.
+
+    With *verify* the artifact store also rehashes every stored byte, which
+    catches a blob corrupted in place — something no row comparison can see.
     """
     rich_console.print("[bold green]🌿 ginkgo db check[/]\n")
     path = layout.db
@@ -162,7 +166,7 @@ def _check(layout, *, rich_console) -> int:
     with CacheIndex.open(path=path, readonly=True) as index:
         cache = CacheStore(index=index, root=layout.cache)
         problems += cache.integrity_problems()
-        problems += cache.artifact_store_view.integrity_problems()
+        problems += cache.artifact_store_view.integrity_problems(verify=verify)
         problems += index.env_drift_problems()
 
     problems += StagingCache(db_path=path).integrity_problems()

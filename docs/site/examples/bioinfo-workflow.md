@@ -41,7 +41,7 @@ runs inside the named Pixi environment.
 def filter_fastq(sample_id: str, fastq: file, min_length: int) -> file:
     output = f"results/filtered/{sample_id}.fastq.gz"
     return shell(
-        cmd=f"seqkit seq -m {min_length} {fastq} -o {output}",
+        cmd=f"seqkit seq -m {min_length} {shlex.quote(fastq)} -o {shlex.quote(output)}",
         output=output,
         log=f"logs/filter_{sample_id}.log",
     )

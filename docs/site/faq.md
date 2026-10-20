@@ -490,6 +490,13 @@ multi-core hashing of large files). Because the key is derived from content,
 moving or renaming a file changes nothing, but changing its bytes produces a new
 key.
 
+Hashing a large file on every run would be slow, so each digest is memoised
+under the file's device, inode, size and modification time, and reused while
+those four agree. A rewrite that keeps the size and the modification time —
+a tool that restores timestamps, `touch -r`, or a filesystem with coarse
+timestamps — is therefore not re-hashed, and the old digest stands. `touch`
+the file to make the next run hash it again.
+
 ### What exactly goes into a task's cache key?
 
 The key hashes a sorted object with exactly these fields: the task name, the task
@@ -544,10 +551,11 @@ Cache lookups happen during node *preparation*, before any worker is dispatched.
 Once a task's inputs are resolved, Ginkgo tries to satisfy the node straight from
 cache; on a hit the node is marked complete and no execution slot is ever used.
 The default path builds the full content-addressed key and also validates that
-cached file/folder outputs are still materialised correctly. Running with
-`--trust-mtimes` enables a faster path that skips content hashing and only
-checks that output files exist — quicker for warm reruns, but weaker, since it
-trusts the working tree instead of re-verifying bytes.
+cached file/folder outputs are still materialised correctly. It hashes a file
+only when its stat metadata has changed since the digest was memoised (see
+above). Running with `--trust-mtimes` goes further: it skips content hashing and
+only checks that output files exist — quicker for warm reruns, but weaker again,
+since it trusts the working tree instead of re-verifying bytes.
 
 Two runs started at the same time in one project are safe, since each keeps its
 own run record and the ledger and cache take their writes in turn. A run only

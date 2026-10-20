@@ -216,8 +216,15 @@ class PixiRegistry:
         return source_manifest.stat().st_mtime > generated_manifest.stat().st_mtime
 
     def _import_conda_env_file(self, *, source_manifest: Path, output_dir: Path) -> None:
-        """Run ``pixi init --import`` into *output_dir* for a conda env spec."""
+        """Run ``pixi init --import`` into *output_dir* for a conda env spec.
+
+        ``pixi init`` refuses a directory that already holds a ``pixi.toml``,
+        so the one generated from an earlier version of the spec is removed
+        first. The lock and the installed environment are kept for pixi to
+        reconcile.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "pixi.toml").unlink(missing_ok=True)
         argv = [
             "pixi",
             "init",

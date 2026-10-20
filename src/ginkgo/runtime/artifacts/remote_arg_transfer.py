@@ -535,7 +535,11 @@ def materialize_output_params_from_remote(
     """
     for entry in entries:
         dest = Path(entry["original"])
-        remote_store.restore(artifact_id=entry["artifact_id"], dest_path=dest)
+        if not remote_store.restore(artifact_id=entry["artifact_id"], dest_path=dest):
+            raise RuntimeError(
+                f"Remote output {dest} (artifact {entry['artifact_id']}) "
+                "failed its integrity check after download"
+            )
 
 
 def stage_result_for_remote(
