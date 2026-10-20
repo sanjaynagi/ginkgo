@@ -764,7 +764,12 @@ class _RunLayoutRenderer:
         return self._resources.provider()
 
     def render_resource_footer(self, resources: dict[str, object]) -> Text | None:
-        """Render the final CPU/RSS summary line."""
+        """Render the final CPU/RSS summary line.
+
+        The figures sum the whole process tree — ginkgo, its worker pool and
+        every command — so the line says so and names the most processes it
+        saw: a pool of idle workers is most of a small run's RSS.
+        """
         average = resources.get("average")
         peak = resources.get("peak")
         if not isinstance(average, dict) or not isinstance(peak, dict):
@@ -774,8 +779,10 @@ class _RunLayoutRenderer:
         peak_cpu = _format_cpu_percent(_as_float(peak.get("cpu_percent")))
         avg_rss = format_bytes(_as_int(average.get("rss_bytes")))
         peak_rss = format_bytes(_as_int(peak.get("rss_bytes")))
+        processes = _format_count(peak.get("process_count"))
         return Text(
-            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss}",
+            f"CPU avg {avg_cpu}, peak {peak_cpu} | RSS avg {avg_rss}, peak {peak_rss} "
+            f"(process-tree total, up to {processes} processes)",
             style="dim",
         )
 
