@@ -263,7 +263,8 @@ ginkgo doctor flow.py --json
 
 `ginkgo debug` is most useful after the fact: once a run directory exists, it
 surfaces recorded task status, logs, and cache behavior without manually
-navigating `.ginkgo/runs/`.
+navigating `.ginkgo/runs/`. A retried task's attempts share one log file, so
+each retry starts with a `--- attempt N/M ---` line.
 
 `ginkgo cache` has several subcommands beyond listing:
 

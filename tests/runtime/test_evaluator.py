@@ -723,6 +723,25 @@ class TestEvaluate:
             "attempt",
         ]
 
+    def test_each_retry_is_marked_in_the_task_logs(self, tmp_path: Path) -> None:
+        ledger = Ledger.start(root=tmp_path, run_id=make_run_id(workflow_path=tmp_path / "w.py"))
+        evaluator = ConcurrentEvaluator(
+            jobs=1, cores=1, run_dir=ledger.run_dir, event_bus=ledger.bus
+        )
+
+        with pytest.raises(RuntimeError, match="still broken"):
+            evaluator.evaluate(always_fail_retry_task(log_path="marked.log"))
+        ledger.close()
+
+        node = evaluator.task_nodes[0]
+        for path in (node.stdout_path, node.stderr_path):
+            markers = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("--- attempt")
+            ]
+            assert markers == ["--- attempt 2/3 ---", "--- attempt 3/3 ---"]
+
     def test_retry_on_narrows_by_exception_class(self):
         log_path = "retry-ioerror.log"
 
