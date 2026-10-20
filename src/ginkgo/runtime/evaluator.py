@@ -14,8 +14,6 @@ from contextlib import ExitStack
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
-    ProcessPoolExecutor,
-    ThreadPoolExecutor,
     wait,
 )
 from dataclasses import dataclass, field
@@ -663,10 +661,7 @@ class ConcurrentEvaluator:
                     # A preparation failure stops the run here: nothing it
                     # readied in the same pass is dispatched.
                     if self._failure is None:
-                        self._dispatch_ready_nodes(
-                            python_executor=executors.python,
-                            shell_executor=executors.shell,
-                        )
+                        self._dispatch_ready_nodes()
 
                         if self._is_root_resolved() and not self._running_futures:
                             return self._materialize(self._root_template)
@@ -1182,12 +1177,7 @@ class ConcurrentEvaluator:
             env=node.task_def.env,
         )
 
-    def _dispatch_ready_nodes(
-        self,
-        *,
-        python_executor: ProcessPoolExecutor,
-        shell_executor: ThreadPoolExecutor,
-    ) -> None:
+    def _dispatch_ready_nodes(self) -> None:
         """Submit a resource-feasible subset of ready nodes."""
         ready_nodes = [node for node in self._nodes.values() if node.state == "ready"]
         if not ready_nodes:
@@ -1249,11 +1239,7 @@ class ConcurrentEvaluator:
                 self._running_futures[future] = (node_id, self._on_inputs_staged)
                 continue
 
-            self._start_task_execution(
-                node=node,
-                python_executor=python_executor,
-                shell_executor=shell_executor,
-            )
+            self._start_task_execution(node=node)
 
     def _consume_completed_futures(self, done_futures: set[Future[Any]]) -> None:
         """Hand each finished future's result to the handler it was submitted with."""
@@ -1326,12 +1312,7 @@ class ConcurrentEvaluator:
 
         node.resolved_args = completed_value
         self._validator.validate_inputs(task_def=node.task_def, resolved_args=node.resolved_args)
-        assert self._executors is not None
-        self._start_task_execution(
-            node=node,
-            python_executor=self._executors.python,
-            shell_executor=self._executors.shell,
-        )
+        self._start_task_execution(node=node)
 
     def _on_runner_done(self, *, node: NodeRun, completed_value: Any) -> None:
         """Handle the result of a directive a task runner executed."""
@@ -1860,22 +1841,12 @@ class ConcurrentEvaluator:
             if not self._nodes[node_id].remote
         )
 
-    def _start_task_execution(
-        self,
-        *,
-        node: NodeRun,
-        python_executor: ProcessPoolExecutor | ThreadPoolExecutor,
-        shell_executor: ThreadPoolExecutor,
-    ) -> None:
+    def _start_task_execution(self, *, node: NodeRun) -> None:
         """Launch a task after its inputs have been staged locally."""
         assert node.resolved_args is not None
+        assert self._executors is not None
 
-        # Fast path: in --trust-mtimes mode, try a stat-based index lookup
-        # before computing content-addressed cache keys.
-        if self.trust_mtimes and self._try_stat_index_hit(node=node):
-            return
-
-        if self._try_content_cache_hit(node=node):
+        if self._try_cache_hit(node=node):
             return
 
         self._emit_task_event(
@@ -1912,34 +1883,25 @@ class ConcurrentEvaluator:
             execution_backend=execution_backend,
         )
         if task_kind(node.task_def).execution_mode == "driver":
-            future = shell_executor.submit(
-                self._run_driver_task,
-                node=node,
-            )
+            future = self._executors.shell.submit(self._run_driver_task, node=node)
             self._running_futures[future] = (node.node_id, self._handle_task_body_result)
-            return
-
-        # Remote dispatch: the node was placed on an executor either
-        # explicitly (executor= / remote=True) or because its GPU requirement
-        # exceeds the local budget.
-        if node.executor_name is not None:
-            node.transport_path = Path(
-                tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-")
-            )
-            assert self._executors is not None
-            future = self._remote_dispatch.dispatch(
-                node=node,
-                executor_name=node.executor_name,
-                payload=self._build_worker_payload(node=node),
-                gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
-                watcher=self._executors.get_or_create_remote_watcher(),
-            )
-            self._running_futures[future] = (node.node_id, self._on_worker_done)
             return
 
         node.transport_path = Path(tempfile.mkdtemp(prefix=f"ginkgo-transport-{node.node_id}-"))
         payload = self._build_worker_payload(node=node)
-        future = python_executor.submit(run_task, payload)
+        # Remote dispatch: the node was placed on an executor either
+        # explicitly (executor= / remote=True) or because its GPU requirement
+        # exceeds the local budget.
+        if node.executor_name is not None:
+            future = self._remote_dispatch.dispatch(
+                node=node,
+                executor_name=node.executor_name,
+                payload=payload,
+                gpu_type=self.effective_resources(task_def=node.task_def).gpu_type,
+                watcher=self._executors.get_or_create_remote_watcher(),
+            )
+        else:
+            future = self._executors.python.submit(run_task, payload)
         self._running_futures[future] = (node.node_id, self._on_worker_done)
 
     def _create_output_parent_dirs(self, *, node: NodeRun) -> None:
@@ -2398,21 +2360,21 @@ class ConcurrentEvaluator:
         """
         if node.resolved_args is None or self._stager.cache_lookup_requires_staging(node=node):
             return False
+        return self._try_cache_hit(node=node)
 
-        if self.trust_mtimes and self._try_stat_index_hit(node=node):
-            return True
+    def _try_cache_hit(self, *, node: NodeRun) -> bool:
+        """Complete *node* from the cache if it has an entry.
 
-        return self._try_content_cache_hit(node=node)
-
-    def _try_content_cache_hit(self, *, node: NodeRun) -> bool:
-        """Attempt a content-addressed cache hit for one prepared node."""
+        Under ``--trust-mtimes`` the stat index is tried first, before any
+        content hashing; otherwise, or when it misses, the lookup is by
+        content.
+        """
         assert node.resolved_args is not None
         cache_lookup_started = time.perf_counter()
-        hit = self._node_cache.content_lookup(node=node)
-        self._record_task_metadata(
-            node=node,
-            include_env_metadata=False,
-        )
+        hit = self._node_cache.lookup_by_stat(node=node) if self.trust_mtimes else None
+        if hit is None:
+            hit = self._node_cache.content_lookup(node=node)
+        self._record_task_metadata(node=node, include_env_metadata=False)
         self._record_task_timing(
             node_id=node.node_id,
             phase="cache_lookup_seconds",
@@ -2420,34 +2382,6 @@ class ConcurrentEvaluator:
         )
         if hit is None:
             return False
-        self._mark_node_cached(node=node, value=hit.value, cache_key=hit.cache_key)
-        return True
-
-    def _try_stat_index_hit(self, *, node: NodeRun) -> bool:
-        """Attempt a stat-index cache hit for ``--trust-mtimes`` mode.
-
-        Returns ``True`` if the hit succeeded and the node was marked
-        complete, ``False`` to fall through to the content-addressed path.
-        """
-        cache_lookup_started = time.perf_counter()
-        hit = self._node_cache.lookup_by_stat(node=node)
-        if hit is None:
-            self._record_task_timing(
-                node_id=node.node_id,
-                phase="cache_lookup_seconds",
-                started=cache_lookup_started,
-            )
-            return False
-
-        self._record_task_metadata(
-            node=node,
-            include_env_metadata=False,
-        )
-        self._record_task_timing(
-            node_id=node.node_id,
-            phase="cache_lookup_seconds",
-            started=cache_lookup_started,
-        )
         self._mark_node_cached(node=node, value=hit.value, cache_key=hit.cache_key)
         return True
 
