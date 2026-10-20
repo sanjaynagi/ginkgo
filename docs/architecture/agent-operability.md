@@ -26,8 +26,11 @@ A task reaches exactly one of three terminal events: `task_completed`,
 when the run's failure policy let the failure pass and the run went on —
 `on_failure="ignore"` on the task or `--keep-going` on the run. It is false
 for a failure that lands after something has already stopped the run, because
-by then nothing was ignored. `TaskSkipped` carries `blocked_by_task_id` /
-`blocked_by_task_name`, the failed task it was waiting on. Most skipped tasks
+by then nothing was ignored. `TaskSkipped` (v2) carries `reason` —
+`upstream_failed`, `run_stopped` or `interrupted` — and `blocked_by_task_id` /
+`blocked_by_task_name`: the failed task it was waiting on, or the one whose
+failure stopped the run, and null when no task caused the skip. A finished run
+leaves no task without one of the three terminal events. Most skipped tasks
 never started; one kind did, and its `task_started` event and attempt stand:
 a task whose body returned further task expressions runs, then waits on them,
 so a failure inside its own expansion leaves it started and resultless.

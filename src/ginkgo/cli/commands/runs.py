@@ -118,6 +118,18 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
     rich_console.print("")
     rich_console.print(table)
 
+    retried = [task for task in summary.tasks if len(task.attempt_history) > 1]
+    if retried:
+        rich_console.print("\n[bold]Attempts[/]")
+        for task in retried:
+            rich_console.print(Text(f"  {task.label}", style="bold"))
+            for attempt in task.attempt_history:
+                line = Text(f"    {attempt['attempt']}: {attempt['status']}")
+                failure = attempt["failure"]
+                if isinstance(failure, dict) and failure.get("message"):
+                    line.append(f"  {failure['message']}", style="dim")
+                rich_console.print(line)
+
     pages = [
         (task, path)
         for task in summary.tasks

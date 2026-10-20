@@ -138,6 +138,7 @@ class RichEventRenderer:
                 "status": "skipped",
                 "node_id": _node_id_from_task_id(event.task_id),
                 "attempt": event.attempt,
+                "reason": event.reason,
                 "blocked_by_task_name": event.blocked_by_task_name,
             }
             if event.display_label is not None:

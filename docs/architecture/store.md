@@ -208,8 +208,9 @@ of the event-to-rows mapping, one pure function per event type. See
 [Provenance and Run State](provenance.md) for the shape of that path.
 
 `tasks.status` is free text, so a new terminal state costs no migration:
-`task_skipped` writes `'skipped'` and merges `skipped_because` — the failed
-task the skip is attributed to — into `tasks.extra`. `task_failed` merges
+`task_skipped` writes `'skipped'` and merges `skipped_because` — the skip's
+`reason` and the failed task it is attributed to — into `tasks.extra`; a v1
+payload predates reasons and replays as `upstream_failed`. `task_failed` merges
 `ignored: true` there when the run's failure policy let the failure pass; a v1
 payload has no such key and replays unchanged. `task_skipped` is in
 `TERMINAL_EVENTS`, so the writer commits after it and a reader sees it at

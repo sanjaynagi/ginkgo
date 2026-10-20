@@ -26,8 +26,8 @@ at the nearest `ginkgo.toml`.
 
 `ginkgo history`
 : Show every run of one task, with its status, duration, and cache key. Runs in
-  which the task never started, such as one blocked by an upstream failure, are
-  left out; `--include-pending` lists them too.
+  which the task never started, such as one that skipped it after an upstream
+  failure, are left out; `--include-unstarted` lists them too.
 
 `ginkgo query`
 : Run one read-only SQL statement against the provenance database.

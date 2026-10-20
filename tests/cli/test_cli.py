@@ -20,14 +20,14 @@ import yaml
 from rich.console import Console
 
 import ginkgo
-from ginkgo.cli import (
+from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL, _iter_template_files
+from ginkgo.cli.renderers.common import (
+    _MultiStateBar,
     _core_unit_label,
-    environment_label,
     _time_of_day_spinner,
     _truncate_task_label,
+    environment_label,
 )
-from ginkgo.cli.commands.init import GINKGO_BRANCH, GINKGO_REPO_URL, _iter_template_files
-from ginkgo.cli.renderers.common import _MultiStateBar
 from ginkgo.envs.interpreter import source_import_roots
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -581,7 +581,7 @@ def main():
         assert "boom" in failed.stdout
         assert "Log tail" in failed.stdout
         assert "about-to-fail:sample_1" in failed.stdout
-        assert "1/1 complete" in failed.stdout
+        assert "0/1 complete (1 failed)" in failed.stdout
         assert '{"status":' not in failed.stdout
         assert failed.stdout.index("CPU avg ") < failed.stdout.index("Failure Details: explode")
 
@@ -768,6 +768,34 @@ def main():
         assert "not reachable from the flow return value" in stderr
         # The fix doctor offers is shown too, not just the symptom (F9).
         assert "Return its result from the flow" in stderr
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_a_flow_whose_every_call_was_dropped_fails(self, dry_run: bool) -> None:
+        """N1: a flow that forgot to return its only call must not pass with nothing run."""
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def label(text: str) -> str:
+    return text
+
+@flow
+def main():
+    label(text="dropped")
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        args = ("run", "workflow.py", *(("--dry-run",) if dry_run else ()))
+        result = _run_cli(*args, cwd=Path.cwd())
+
+        assert result.returncode == 1
+        output = _unwrapped(result.stdout + result.stderr)
+        assert "label() is not reachable from the flow return value" in output
+        assert "No task would run" in output
+        assert "Return the result of each call the flow needs" in output
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropped_producer_is_named_before_its_consumer_fails_validation(
