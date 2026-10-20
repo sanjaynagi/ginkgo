@@ -65,12 +65,12 @@ def import_roots_for_path(path: str | Path) -> list[str]:
     # a test workflow under tests/workflows/ importing the project's own
     # package). Include the enclosing project root, identified by the
     # nearest ginkgo.toml/yaml/yml, so such imports resolve regardless of
-    # where the file sits relative to that package.
-    project_root = find_project_root(source_dir)
-    if project_root is not None:
-        candidate = str(project_root)
-        if candidate not in roots:
-            roots.append(candidate)
+    # where the file sits relative to that package. ginkgo.toml is optional:
+    # without one the project root is the working directory, as everywhere
+    # else in ginkgo.
+    candidate = str(find_project_root(source_dir) or Path.cwd().resolve())
+    if candidate not in roots:
+        roots.append(candidate)
 
     return roots
 
