@@ -21,7 +21,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, get_args
 
-__all__ = ["FAILURE_KINDS", "FailureKind", "FailureLocation", "GinkgoError", "failure_location"]
+__all__ = [
+    "FAILURE_KINDS",
+    "FailureKind",
+    "FailureLocation",
+    "GinkgoError",
+    "describe_exception",
+    "failure_location",
+]
 
 
 FailureKind = Literal[
@@ -53,6 +60,30 @@ class GinkgoError(Exception):
     location and no traceback, because neither would tell the user anything the
     message does not.
     """
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Return the one-line description a failure is reported under.
+
+    A :class:`GinkgoError`'s message is written to stand alone. Any other
+    exception's message often does not — a ``KeyError`` says only
+    ``'PRODUCT_TAG'`` — so its type leads it, as in a traceback's last line.
+
+    Parameters
+    ----------
+    exc : BaseException
+        The failure.
+
+    Returns
+    -------
+    str
+        ``<message>`` for a ginkgo error, else ``<Type>: <message>``, or just
+        ``<Type>`` when the message is empty.
+    """
+    message = str(exc)
+    if isinstance(exc, GinkgoError):
+        return message
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 @dataclass(frozen=True)

@@ -143,7 +143,11 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                     _traceback_from_task(exc=exc, fn=fn),
                     file=_RedactingWriter(handle=handle, secret_values=secret_values),
                 )
-        exc.args = (redact_text(text=str(exc), secret_values=secret_values),)
+        # The message travels as the rebuilt exception's one argument. A
+        # KeyError's message is its key's repr, so it carries the key itself,
+        # or the rebuilt one would quote it twice.
+        message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
+        exc.args = (redact_text(text=message, secret_values=secret_values),)
         response = error_response(exc)
         _attach_measured_resources(response=response, usage_start=usage_start)
         return response
