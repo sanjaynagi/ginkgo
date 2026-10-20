@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import sys
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ginkgo.errors import GinkgoError
 
@@ -469,13 +469,21 @@ def extract_flag_values(
     return values, consumed
 
 
-def format_param_help(decls: Iterable[ParamDecl]) -> list[str]:
+def format_param_help(
+    decls: Iterable[ParamDecl],
+    *,
+    config_defaults: Mapping[str, tuple[Any, str]] | None = None,
+) -> list[str]:
     """Render declared parameters as aligned help lines.
 
     Parameters
     ----------
     decls : Iterable[ParamDecl]
         Declarations to render, in declaration order.
+    config_defaults : Mapping[str, tuple[Any, str]] | None, optional
+        Parameter name to ``(value, origin)`` for parameters the config sets.
+        Such a parameter shows that value as its default, with the config file
+        it came from, in place of its declared default.
 
     Returns
     -------
@@ -489,7 +497,9 @@ def format_param_help(decls: Iterable[ParamDecl]) -> list[str]:
     signatures = {decl.name: _help_signature(decl) for decl in ordered}
     width = max(len(signature) for signature in signatures.values())
     return [
-        f"  {signatures[decl.name]:<{width}}  {_help_suffix(decl)}".rstrip() for decl in ordered
+        f"  {signatures[decl.name]:<{width}}  "
+        f"{_help_suffix(decl, config_default=(config_defaults or {}).get(decl.name))}".rstrip()
+        for decl in ordered
     ]
 
 
@@ -500,14 +510,17 @@ def _help_signature(decl: ParamDecl) -> str:
     return f"{decl.flag} {decl.type_label.upper()}"
 
 
-def _help_suffix(decl: ParamDecl) -> str:
+def _help_suffix(decl: ParamDecl, *, config_default: tuple[Any, str] | None) -> str:
     """Return the description-and-default portion of a parameter's help line."""
     parts: list[str] = []
     if decl.help_text:
         parts.append(decl.help_text)
     if decl.choices is not None:
         parts.append(f"(choices: {', '.join(str(item) for item in decl.choices)})")
-    if decl.required:
+    if config_default is not None:
+        value, origin = config_default
+        parts.append(f"(default: {value!r}, from {origin})")
+    elif decl.required:
         parts.append("(required)")
     else:
         parts.append(f"(default: {decl.default!r})")

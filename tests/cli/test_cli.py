@@ -704,6 +704,8 @@ def main():
         assert "🌿 ginkgo run workflow.py --dry-run" in result.stdout
         assert "Dry run" in result.stdout
         assert "1 task" in result.stdout
+        # Nothing is unknown, so there is no legend for it.
+        assert "cannot be predicted" not in result.stdout
         assert "Wave 1" in result.stdout
         # The plan labels a node exactly as the live run table does.
         assert "• write_marker  [will run]" in result.stdout
@@ -884,6 +886,9 @@ def main():
         # downstream of a will-run task are not.
         assert "[will run]" in result.stdout
         assert "[unknown]" in result.stdout
+        assert "? [unknown]  cache status cannot be predicted before upstream tasks run" in (
+            result.stdout
+        )
         assert "no tasks executed" in result.stdout
 
     def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:
@@ -1239,7 +1244,8 @@ def main():
         result = _run_cli("run", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert re.search(
-            r"🌿 ginkgo run flow\.py \([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
+            r"🌿 ginkgo run workflow/flow\.py \(auto-discovered\) "
+            r"\([0-9]{8}_[0-9]{6}_[0-9]{6}_[0-9a-f]{8}\)",
             result.stdout,
         )
         assert "✓ succeeded" in result.stdout
@@ -2136,6 +2142,26 @@ def main():
         assert "--n-reps INT" in result.stdout
         assert "Number of replicates" in result.stdout
         assert "--label STR" in result.stdout
+
+    def test_run_help_shows_the_config_value_as_the_default(self) -> None:
+        Path("workflow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+        Path("ginkgo.toml").write_text("[params]\nn_reps = 7\n", encoding="utf-8")
+        Path("extra.toml").write_text('[params]\nlabel = "override"\n', encoding="utf-8")
+
+        result = _run_cli("run", "workflow.py", "--config", "extra.toml", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Number of replicates (default: 7, from ginkgo.toml)" in result.stdout
+        assert "Run label (default: 'override', from extra.toml)" in result.stdout
+
+    def test_run_help_names_the_auto_discovered_workflow(self) -> None:
+        Path("flow.py").write_text(_PARAM_WORKFLOW, encoding="utf-8")
+
+        result = _run_cli("run", "--help", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "parameters declared by flow.py (auto-discovered):" in result.stdout
+        assert "--n-reps INT" in result.stdout
 
     def test_run_help_keeps_bracketed_words_in_the_usage_text(self) -> None:
         result = _run_cli("run", "--help", cwd=Path.cwd())

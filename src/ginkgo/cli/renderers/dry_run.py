@@ -24,6 +24,9 @@ _TAG: dict[CacheStatus, str] = {
     "unknown": "[unknown]",
 }
 
+# Legend for the one status that is not self-explanatory.
+_UNKNOWN_MEANING = "cache status cannot be predicted before upstream tasks run"
+
 
 def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) -> None:
     """Print a wave-grouped static execution plan for a dry run.
@@ -52,6 +55,12 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
     for wave in plan.waves:
         console.print()
         _render_wave(wave=wave, console=console, label_width=label_width, verbose=verbose)
+
+    if plan.unknown_count:
+        console.print()
+        console.print(
+            Text(f"  {_GLYPH['unknown']} {_TAG['unknown']}  {_UNKNOWN_MEANING}", style="dim")
+        )
 
     _render_dropped(plan=plan, console=console)
     _render_problems(plan=plan, console=console)
