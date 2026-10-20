@@ -28,7 +28,9 @@ class TestUserCodeClassification:
         failure = classify_failure(exc=exc)
         assert failure["kind"] == "user_code_error"
         assert failure["code"] == exc.__class__.__name__
-        assert failure["retryable"] is False
+        # Whether a failure is retried is the task's retry policy, which the
+        # retrying/failed events already show; the summary makes no claim.
+        assert set(failure) == {"kind", "message", "code"}
 
 
 class TestFrameworkClassification:

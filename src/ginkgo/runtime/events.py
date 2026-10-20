@@ -359,13 +359,14 @@ class RunCompleted(RunEvent):
     ``cancelled`` is the terminal status of a run an interrupt ended. It is
     kept apart from ``failed`` because the two are different events: one is
     the workflow going wrong, the other is a person changing their mind.
+
+    The event's ``ts`` is when the run finished.
     """
 
     event: str = "run_completed"
-    v: int = 2
+    v: int = 3
     status: Literal["success", "failed", "cancelled"] = "success"
     task_counts: dict[str, int] = field(default_factory=dict)
-    finished_at: str | None = None
     resources: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 

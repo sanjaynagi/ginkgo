@@ -679,6 +679,8 @@ loop then keeps waiting on the already-running futures until they complete — i
 simply stops dispatching new tasks — after which it re-raises the stored failure
 and the run ends with status `failed`. Tasks that never started, including
 everything downstream of the failure, are left `pending`; they are not run.
+A running task that fails after that point is not retried, even with retries
+left, and a notice on the task says which retry was not attempted.
 
 That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
 whole run, makes a failure non-fatal: dispatch continues, only the tasks

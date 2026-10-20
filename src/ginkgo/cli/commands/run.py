@@ -35,7 +35,7 @@ from ginkgo.cli.renderers.models import (
 from ginkgo.cli.renderers.rich import RichEventRenderer
 from ginkgo.cli.renderers.run import CliRunRenderer
 from ginkgo.cli.workflow_params import (
-    collect_param_declarations,
+    collect_param_help,
     global_param_reads,
     params_table,
     validate_param_extras,
@@ -54,7 +54,7 @@ from ginkgo.core.resources import (
     resource_budgets_from_config,
 )
 from ginkgo.core.flow import discover_flow
-from ginkgo.params import ParamContext, format_param_help
+from ginkgo.params import ParamContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
@@ -97,12 +97,13 @@ def _ginkgo_version() -> str | None:
 
 def command_run(args, *, output_mode: RunMode) -> int:
     """Handle ``ginkgo run``."""
-    workflow_path = resolve_workflow_path(
+    resolution = resolve_workflow_path(
         project_root=Path.cwd(),
         workflow=args.workflow,
-    ).path
+    )
     return run_workflow(
-        workflow_path=workflow_path,
+        workflow_path=resolution.path,
+        workflow_discovered=resolution.discovered,
         config_paths=[Path(path).resolve() for path in args.config],
         jobs=args.jobs,
         cores=args.cores,
@@ -144,32 +145,58 @@ def command_run_help(args, *, usage: str) -> int:
     rich_console.print(usage.rstrip(), highlight=False, markup=False)
 
     try:
-        workflow_path = resolve_workflow_path(
+        resolution = resolve_workflow_path(
             project_root=Path.cwd(),
             workflow=args.workflow,
-        ).path
+        )
     except BaseException:
         # No workflow resolved, so the usage text alone is the whole answer.
         return 0
 
+    workflow_name = workflow_display_name(
+        workflow_path=resolution.path, discovered=resolution.discovered
+    )
     try:
-        declarations = collect_param_declarations(
-            workflow_path=workflow_path,
+        help_lines = collect_param_help(
+            workflow_path=resolution.path,
             config_paths=[Path(path).resolve() for path in args.config],
         )
     except BaseException as exc:
         rich_console.print(
-            f"\n[yellow]⚠[/] Could not import {escape(workflow_path.name)} "
+            f"\n[yellow]⚠[/] Could not import {escape(workflow_name)} "
             f"to list its parameters: {escape(str(exc))}"
         )
         return 0
 
-    rich_console.print(
-        f"\nparameters declared by {workflow_path.name}:", highlight=False, markup=False
-    )
-    for line in format_param_help(declarations) or ["  (none)"]:
+    rich_console.print(f"\nparameters declared by {workflow_name}:", highlight=False, markup=False)
+    for line in help_lines or ["  (none)"]:
         rich_console.print(line, highlight=False, markup=False)
     return 0
+
+
+def workflow_display_name(*, workflow_path: Path, discovered: bool) -> str:
+    """Return how CLI output names the workflow being run.
+
+    A workflow the user named is shown by its filename. One found by
+    autodiscovery is shown by its path from the working directory and marked
+    as discovered, so output never reads as though the user typed a filename
+    they did not.
+
+    Parameters
+    ----------
+    workflow_path : Path
+        Absolute path to the workflow entrypoint.
+    discovered : bool
+        Whether the path was discovered rather than given on the command line.
+
+    Returns
+    -------
+    str
+        The display name.
+    """
+    if not discovered:
+        return workflow_path.name
+    return f"{workflow_path.relative_to(Path.cwd().resolve())} (auto-discovered)"
 
 
 def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, str, str]]:
@@ -194,6 +221,7 @@ def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, st
 def run_workflow(
     *,
     workflow_path: Path,
+    workflow_discovered: bool = False,
     config_paths: list[Path],
     jobs: int | None,
     cores: int | None,
@@ -211,13 +239,16 @@ def run_workflow(
 ) -> int:
     run_id = make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
+    workflow_name = escape(
+        workflow_display_name(workflow_path=workflow_path, discovered=workflow_discovered)
+    )
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [bold]--dry-run[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]\n"
         )
     elif output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{escape(workflow_path.name)}[/] [dim]({run_id})[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]\n"
         )
 
     load_started = time.perf_counter()

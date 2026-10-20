@@ -298,6 +298,15 @@ def test_format_param_help_lines():
     assert lines[2].strip() == "--verbose     (default: False)"
 
 
+def test_format_param_help_shows_config_default_and_origin():
+    lines = format_param_help(
+        [ParamDecl(name="n_reps", value_type=int, default=12), ParamDecl(name="region")],
+        config_defaults={"n_reps": (7, "ginkgo.toml"), "region": ("2L", "extra.toml")},
+    )
+    assert lines[0].strip() == "--n-reps INT  (default: 7, from ginkgo.toml)"
+    assert lines[1].strip() == "--region STR  (default: '2L', from extra.toml)"
+
+
 def test_format_param_help_empty():
     assert format_param_help([]) == []
 

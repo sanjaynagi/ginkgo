@@ -94,7 +94,8 @@ ginkgo run flow.py --dry-run
 tasks subject to the `--jobs`, `--cores`, `--memory`, and `--gpus` budgets,
 and writes run history under `.ginkgo/runs/`. Run it from a project root with
 no path argument and Ginkgo discovers the canonical `workflow/flow.py`
-entrypoint.
+entrypoint. Output then names the workflow by its discovered path, marked
+`(auto-discovered)`, so you can see which file is running.
 
 Commands may be run from any directory inside the project. Ginkgo locates the
 root — the nearest enclosing `ginkgo.toml` — and works from there, so
@@ -164,7 +165,11 @@ region = "2L:1-100000"
 ```
 
 `ginkgo run flow.py --help` lists the parameters that workflow declares,
-with their types and defaults. A flag the workflow does not declare is rejected
+with their types and defaults. A parameter set in `[params]` shows that value
+as its default and the file it came from, such as `(default: 24, from
+ginkgo.toml)`, since that is what a run without the flag would use. With no
+path, `ginkgo run --help` lists the parameters of the auto-discovered workflow
+and says so. A flag the workflow does not declare is rejected
 before anything runs, and the error names the parameters it does declare. A
 required parameter that is not supplied fails the same way.
 
@@ -218,9 +223,12 @@ you *expressed* — one task's return value passed as another's argument — is
 correct, but it can only show the dependency edges the graph actually has: if
 two tasks are wired by repeating the same literal path instead of passing the
 producer's return value, dry-run sees no edge between them and cannot flag that
-the consumer might run before or alongside the producer. Where it cannot work
-out a task's cache status it says so and counts the tasks affected; `--verbose`
-names each one and the error behind it.
+the consumer might run before or alongside the producer. A task marked
+`? [unknown]` has a cache status dry-run cannot work out without running
+anything, most often because it sits downstream of a task that would run; the
+plan prints a one-line legend saying so. Where the cache check itself fails,
+dry-run says so and counts the tasks affected; `--verbose` names each one and
+the error behind it.
 
 Both `ginkgo doctor` and `ginkgo run --dry-run` also flag, statically and
 without touching the filesystem, a parameter whose name looks like a path
@@ -266,7 +274,8 @@ ginkgo doctor flow.py --json
 
 `ginkgo debug` is most useful after the fact: once a run directory exists, it
 surfaces recorded task status, logs, and cache behavior without manually
-navigating `.ginkgo/runs/`.
+navigating `.ginkgo/runs/`. A retried task's attempts share one log file, so
+each retry starts with a `--- attempt N/M ---` line.
 
 `ginkgo cache` has several subcommands beyond listing:
 
