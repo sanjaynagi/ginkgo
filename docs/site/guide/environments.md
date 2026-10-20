@@ -225,7 +225,7 @@ kind='python'. Foreign environments only support driver tasks — use
 @task('shell'), @task('notebook'), or @task('script').
 ```
 
-`ginkgo doctor` reports the same thing as `INVALID_ENV_KIND` without running
+`ginkgo doctor` reports the same thing as `invalid_env_kind` without running
 anything.
 
 The consequence is the part worth internalising: **every import in a Python task

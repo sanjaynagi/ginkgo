@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass
 import inspect
@@ -17,12 +18,12 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_str_path_annotation, looks_path_like_param_name
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.graph import TaskGraph
+from ginkgo.runtime.graph import TaskGraph, TaskNode
 from ginkgo.runtime.placement import Placement
 from ginkgo.runtime.task_kinds import task_kind
-from ginkgo.runtime.task_validation import TaskValidator
+from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.module_loader import USER_MODULE_PREFIX, load_module_from_path
+from ginkgo.runtime.module_loader import load_module_from_path
 from ginkgo.runtime.environment.secrets import SecretResolver
 
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
@@ -140,9 +141,12 @@ def collect_workflow_diagnostics(
             )
         ]
         diagnostics.extend(dropped_calls)
-        task_defs = [node.task_def for node in graph.nodes.values()]
-        diagnostics.extend(path_like_str_param_diagnostics(task_defs=task_defs))
-        diagnostics.extend(missing_directive_diagnostics(task_defs=task_defs))
+        diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
+        diagnostics.extend(
+            missing_directive_diagnostics(
+                task_defs=[node.task_def for node in graph.nodes.values()]
+            )
+        )
         return diagnostics
     except Exception as exc:
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
@@ -198,7 +202,7 @@ def _unreachable_call_diagnostic(*, call: ConstructedCall) -> WorkflowDiagnostic
     )
 
 
-def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
+def path_like_str_param_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:
     """Build one warning per path-shaped ``str`` parameter across the graph.
 
     A parameter named like a path (``path``, ``output_dir``, ``report_files``,
@@ -209,17 +213,19 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
     :func:`~ginkgo.core.types.looks_like_path_string`). A directory, a bare
     word, or any other non-file path is tracked by its string alone, ``file`` and
     ``folder`` additionally validate that the path exists, and a path the
-    task writes belongs in ``Out[...]``. Purely static and name-based, so it
-    flags every task definition in the graph once, regardless of how many
-    calls or branches reach it.
+    task writes belongs in ``Out[...]``.
+
+    A parameter every call fills from an upstream task's result is left
+    alone: the producer's return annotation decides how that value is
+    tracked, and the run checks it when it arrives, so the warning's advice
+    would be wrong there. Otherwise the check is name-based and flags each
+    task definition once, however many calls or branches reach it.
 
     Parameters
     ----------
-    task_defs : Iterable[TaskDef]
-        Task definitions to check, typically one per node in the built graph
-        (``graph.nodes.values()``'s ``task_def``s). Deduplicated
-        internally by :attr:`TaskDef.name`, since the same task definition can
-        back many call sites.
+    nodes : Iterable[TaskNode]
+        The built graph's nodes. Grouped internally by :attr:`TaskDef.name`,
+        since the same task definition can back many call sites.
 
     Returns
     -------
@@ -227,19 +233,24 @@ def path_like_str_param_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Wor
         One ``warning``-severity diagnostic per matching parameter, ordered by
         first encounter.
     """
+    calls: dict[str, list[TaskNode]] = {}
+    for node in nodes:
+        calls.setdefault(node.task_def.name, []).append(node)
+
     diagnostics: list[WorkflowDiagnostic] = []
-    seen_task_names: set[str] = set()
-    for task_def in task_defs:
-        if task_def.name in seen_task_names:
-            continue
-        seen_task_names.add(task_def.name)
-        task_label = _task_label(task_def)
+    for task_nodes in calls.values():
+        task_def = task_nodes[0].task_def
+        task_label = task_def.base_name
         for param_name, annotation in task_def.type_hints.items():
             if param_name == "return":
                 continue
             if not looks_path_like_param_name(param_name):
                 continue
             if not is_str_path_annotation(annotation):
+                continue
+            if all(
+                contains_dynamic_expression(node.expr.args.get(param_name)) for node in task_nodes
+            ):
                 continue
             diagnostics.append(
                 WorkflowDiagnostic(
@@ -295,7 +306,7 @@ def missing_directive_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Workf
         kind = task_kind(task_def)
         if kind.directive is None or not _never_returns_directive(task_def.fn):
             continue
-        task_label = _task_label(task_def)
+        task_label = task_def.base_name
         diagnostics.append(
             WorkflowDiagnostic(
                 severity="warning",
@@ -363,19 +374,6 @@ def _is_plain_value(node: ast.expr) -> bool:
     return False
 
 
-def _task_label(task_def: TaskDef) -> str:
-    """Return the name a user would recognise for a task in a message.
-
-    A single-file workflow's module is loaded under a synthetic name
-    (``ginkgo_user_<stem>_<digest>``) that means nothing to its author, so
-    such a task is named by its function alone.
-    """
-    module = getattr(task_def.fn, "__module__", None) or ""
-    if module.startswith(USER_MODULE_PREFIX):
-        return task_def.fn.__qualname__
-    return task_def.name
-
-
 def _diagnostic_from_exception(
     *,
     exc: BaseException,
@@ -411,11 +409,16 @@ def _diagnostic_code_and_suggestion(*, exc: BaseException, message: str) -> tupl
     if isinstance(declared_code, str):
         return declared_code, getattr(exc, "diagnostic_suggestion", None)
     if isinstance(exc, RuntimeError) and "Missing secrets:" in message:
-        return "MISSING_SECRET", "Provide the referenced secret through the configured resolver."
+        return "missing_secret", "Provide the referenced secret through the configured resolver."
     if isinstance(exc, TypeError) and "top-level function" in message:
-        return "NON_IMPORTABLE_TASK", "Define tasks at module scope as plain importable functions."
+        return "non_importable_task", "Define tasks at module scope as plain importable functions."
     if isinstance(exc, RuntimeError) and "Expected exactly one @flow" in message:
-        return "FLOW_DISCOVERY_ERROR", "Keep one unambiguous @flow entrypoint per workflow module."
+        return "flow_discovery_error", "Keep one unambiguous @flow entrypoint per workflow module."
     if isinstance(exc, ValueError):
-        return "INVALID_VALUE", None
-    return exc.__class__.__name__.upper(), None
+        return "invalid_value", None
+    return _snake_case(type(exc).__name__), None
+
+
+def _snake_case(name: str) -> str:
+    """Return a CamelCase exception name as a snake_case diagnostic code."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).lower()

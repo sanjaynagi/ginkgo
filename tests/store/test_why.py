@@ -130,6 +130,14 @@ class TestWhy:
         with _reader(chained_run) as reader, pytest.raises(FileNotFoundError, match="Nothing"):
             reader.why("not-an-artifact")
 
+    def test_an_untracked_path_is_told_how_to_track_it(self, chained_run: Path) -> None:
+        """A path returned as a plain ``str`` leaves no record; say what would."""
+        with (
+            _reader(chained_run) as reader,
+            pytest.raises(FileNotFoundError, match=r"plain `str` is not tracked.*-> file"),
+        ):
+            reader.why("results/returned_as_str.txt")
+
 
 class TestWhyRendering:
     @staticmethod

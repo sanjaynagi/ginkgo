@@ -58,10 +58,6 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
         sections.append(
             Text(yaml.safe_dump(details.inputs, sort_keys=False).rstrip(), style="#7f1d1d")
         )
-    if details.log_tail:
-        sections.append(Text(""))
-        sections.append(Text("Log tail", style="bold #7f1d1d"))
-        sections.append(Text("\n".join(details.log_tail), style="#7f1d1d"))
 
     return Panel(
         Group(*sections),
@@ -70,6 +66,18 @@ def render_debug_failure_panel(details: FailureDetails) -> Panel:
         box=box.SQUARE,
         expand=False,
     )
+
+
+def render_log_tail(log_tail: list[str]) -> Text:
+    """Render a failed task's log tail, to print below its panel.
+
+    Outside the panel, and printed with ``soft_wrap=True``, because a
+    traceback's file paths folded at a panel's border cannot be clicked or
+    copied whole.
+    """
+    text = Text("Log tail\n", style="bold #7f1d1d")
+    text.append("\n".join(log_tail), style="#7f1d1d")
+    return text
 
 
 def render_run_failure_panel(run_error: object) -> Panel:

@@ -48,7 +48,7 @@ from ginkgo.plugins.registry import plugin_registry
 class EnvNotAllowedError(GinkgoError, TypeError):
     """Raised when a task declares ``env=`` on a kind that cannot take one."""
 
-    diagnostic_code: ClassVar[str] = "INVALID_ENV_KIND"
+    diagnostic_code: ClassVar[str] = "invalid_env_kind"
     diagnostic_suggestion: ClassVar[str] = (
         "Declare the task with a kind that runs in a foreign environment."
     )
@@ -58,7 +58,7 @@ class EnvNotAllowedError(GinkgoError, TypeError):
             f"@task({kind.name!r})" for kind in plugin_registry().all(TaskKind) if kind.allows_env
         )
         super().__init__(
-            f"{task_def.name} uses env {task_def.env!r} but is declared with "
+            f"{task_def.base_name} uses env {task_def.env!r} but is declared with "
             f"kind={task_def.kind!r}, which cannot run in a foreign environment. "
             f"Use one that can: {allowed or 'none is installed'}."
         )
@@ -660,7 +660,7 @@ class TaskValidator:
                 continue
             self.validate_process_safe_value(
                 value=value,
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
             )
 
     def validate_static_inputs(
@@ -714,13 +714,13 @@ class TaskValidator:
         fn = task_def.fn
         if fn.__qualname__ != fn.__name__:
             raise TypeError(
-                f"{task_def.name} is not a top-level function. "
+                f"{task_def.base_name} is not a top-level function. "
                 "Define tasks at module scope for process execution."
             )
 
         if fn.__closure__:
             raise TypeError(
-                f"{task_def.name} closes over local state. "
+                f"{task_def.base_name} closes over local state. "
                 "Pass required values as task arguments instead."
             )
 
@@ -728,7 +728,7 @@ class TaskValidator:
         imported = getattr(module, fn.__name__, None)
         if imported is not fn and getattr(imported, "fn", None) is not fn:
             raise TypeError(
-                f"{task_def.name} is not importable by module path. "
+                f"{task_def.base_name} is not importable by module path. "
                 "Define tasks as plain module-level functions."
             )
 
@@ -758,13 +758,13 @@ class TaskValidator:
                 self.validate_output_argument(
                     annotation=annotation,
                     value=resolved_args[name],
-                    label=f"{task_def.name}.{name}",
+                    label=f"{task_def.base_name}.{name}",
                 )
                 continue
             self.validate_annotated_value(
                 annotation=annotation,
                 value=resolved_args[name],
-                label=f"{task_def.name}.{name}",
+                label=f"{task_def.base_name}.{name}",
                 execution_mode=task_kind(task_def).execution_mode,
             )
 
@@ -862,7 +862,7 @@ class TaskValidator:
         ):
             if not output_path_matches_kind(path=path, kind=kind):
                 raise DeclaredOutputNotWrittenError(
-                    f"{task_def.name}.{name} is declared `Out[{kind}]` but "
+                    f"{task_def.base_name}.{name} is declared `Out[{kind}]` but "
                     f"{path!r} was not written."
                 )
 
@@ -872,7 +872,7 @@ class TaskValidator:
         self.validate_annotated_value(
             annotation=annotation,
             value=value,
-            label=f"{task_def.name}.return",
+            label=f"{task_def.base_name}.return",
             execution_mode=task_kind(task_def).execution_mode,
         )
 

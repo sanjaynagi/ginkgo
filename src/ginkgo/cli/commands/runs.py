@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
 from rich.text import Text
 
@@ -12,6 +11,7 @@ from ginkgo import query
 from ginkgo.cli.common import console, new_table, open_run
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
+from ginkgo.runtime.module_loader import display_path
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.rundir import runs_without_ledger_warning
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -68,7 +68,7 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
     for row in rows:
         table.add_row(
             row.run_id,
-            Path(row.workflow).name if row.workflow else "-",
+            Text(display_path(row.workflow)) if row.workflow else "-",
             row.status,
             format_timestamp(parse_timestamp(row.started_at)),
             format_duration(row.duration_s),
@@ -84,7 +84,8 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
         return 0
 
     rich_console.print(f"[bold green]🌿 ginkgo runs[/] [bold]show[/] [dim]{summary.run_id}[/]\n")
-    rich_console.print(f"Workflow: [bold]{summary.workflow_label}[/]")
+    workflow = display_path(summary.workflow) if summary.workflow else summary.workflow_label
+    rich_console.print("Workflow: ", Text(workflow, style="bold"), sep="")
     rich_console.print(f"Status: [bold]{summary.status}[/]")
     rich_console.print(f"Started: {format_timestamp(summary.started_at)}")
     rich_console.print(f"Duration: {format_duration(summary.duration_s)}")

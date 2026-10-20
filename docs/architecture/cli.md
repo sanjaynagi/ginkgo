@@ -52,7 +52,8 @@ is now only about a workflow's static graph.
 `ginkgo history <task-name>` crosses runs instead of staying inside one — one
 row per execution of that task, with status, duration, cache key and attempts,
 resolved through `Query.task_history`. The task is matched on its name, its
-fully qualified name, or the display label of one fan-out branch. Rows are
+qualified name (`TaskDef.name`: `<workflow>.align` for a single-file workflow),
+or the display label of one fan-out branch. `--limit` counts runs. Rows are
 ordered by the *run's* start time: a cached task never started, so its own
 timestamp is null and would sort out of the history it belongs to. A run in
 which the task is still pending and never started, such as one blocked by an

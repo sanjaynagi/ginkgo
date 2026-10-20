@@ -37,6 +37,24 @@ def cache_identity_module_name(name: str) -> str:
     return CACHE_IDENTITY_MODULE if name.startswith(USER_MODULE_PREFIX) else name
 
 
+def task_base_name(name: str) -> str:
+    """Return a recorded task name without its module: the name users see.
+
+    Parameters
+    ----------
+    name : str
+        A qualified task name, as events and the ledger record it
+        (``<workflow>.align``, ``pipeline.steps.align``), or already a base
+        name.
+
+    Returns
+    -------
+    str
+        The function name alone (``align``).
+    """
+    return name.rsplit(".", 1)[-1]
+
+
 def module_name_for_path(path: str | Path) -> str:
     """Return a stable synthetic module name for a source file."""
     source_path = Path(path).resolve()
@@ -189,18 +207,23 @@ def _relative_import_error(*, source_path: Path, error: ImportError) -> ImportEr
 
     directory = source_path.parent
     return ImportError(
-        f"{_display_path(source_path)} uses a relative import, but "
-        f"{_display_path(directory)}/ is not a Python package. Add an empty "
-        f"{_display_path(directory / '__init__.py')}, or use absolute imports."
+        f"{display_path(source_path)} uses a relative import, but "
+        f"{display_path(directory)}/ is not a Python package. Add an empty "
+        f"{display_path(directory / '__init__.py')}, or use absolute imports."
     )
 
 
-def _display_path(path: Path) -> str:
-    """Return *path* relative to the working directory when it sits below it."""
+def display_path(path: str | Path) -> str:
+    """Return *path* relative to the working directory when it sits below it.
+
+    How output names a file the user ran or should look at: the path they
+    would type from where they stand, or the absolute path from anywhere else.
+    """
+    resolved = Path(path).resolve()
     try:
-        return str(path.relative_to(Path.cwd()))
+        return str(resolved.relative_to(Path.cwd().resolve()))
     except ValueError:
-        return str(path)
+        return str(resolved)
 
 
 def _load_package_module(*, source_path: Path, dotted_name: str) -> ModuleType:

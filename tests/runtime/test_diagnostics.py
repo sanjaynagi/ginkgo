@@ -8,9 +8,12 @@ the warning for a driver task whose body can never return its directive.
 from __future__ import annotations
 
 from ginkgo import shell, task, untracked
+import pytest
+
 from ginkgo.runtime.diagnostics import (
     MISSING_DIRECTIVE_CODE,
     PATH_LIKE_STR_PARAM_CODE,
+    _diagnostic_code_and_suggestion,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
 )
@@ -34,19 +37,24 @@ def deliberate(output_path: untracked) -> str:
     return output_path
 
 
-def _task_defs_for(build):
-    """Build a graph and return the task defs of every node it registers."""
+@task()
+def produce(name: str) -> str:
+    return f"{name}.txt"
+
+
+def _nodes_for(build):
+    """Build a graph and return every node it registers."""
     expr = build()
     graph = TaskGraph.build(expr)
     graph.validate(validator=TaskValidator(), placement=Placement())
-    return [node.task_def for node in graph.nodes.values()]
+    return list(graph.nodes.values())
 
 
 class TestPathLikeStrParamDiagnostics:
     def test_warns_once_per_path_like_str_parameter(self) -> None:
-        task_defs = _task_defs_for(lambda: greet(name="alice", output_path="results/out.txt"))
+        nodes = _nodes_for(lambda: greet(name="alice", output_path="results/out.txt"))
 
-        diagnostics = path_like_str_param_diagnostics(task_defs=task_defs)
+        diagnostics = path_like_str_param_diagnostics(nodes=nodes)
 
         assert len(diagnostics) == 1
         diagnostic = diagnostics[0]
@@ -59,9 +67,9 @@ class TestPathLikeStrParamDiagnostics:
         assert "Out[file]" in diagnostic.message
 
     def test_does_not_warn_for_non_path_like_names_or_non_str_annotations(self) -> None:
-        task_defs = _task_defs_for(lambda: tidy(threshold=1, input_dir="data/raw"))
+        nodes = _nodes_for(lambda: tidy(threshold=1, input_dir="data/raw"))
 
-        diagnostics = path_like_str_param_diagnostics(task_defs=task_defs)
+        diagnostics = path_like_str_param_diagnostics(nodes=nodes)
 
         assert len(diagnostics) == 1
         assert diagnostics[0].message.count("threshold") == 0
@@ -69,23 +77,39 @@ class TestPathLikeStrParamDiagnostics:
 
     def test_dedupes_by_task_definition_not_by_call(self) -> None:
         """Two calls to the same task must warn once, not once per branch."""
-        task_defs = _task_defs_for(
+        nodes = _nodes_for(
             lambda: [
                 greet(name="alice", output_path="a.txt"),
                 greet(name="bob", output_path="b.txt"),
             ]
         )
 
-        diagnostics = path_like_str_param_diagnostics(task_defs=task_defs)
+        diagnostics = path_like_str_param_diagnostics(nodes=nodes)
 
         assert len(diagnostics) == 1
 
+    def test_no_warning_when_every_call_passes_an_upstream_result(self) -> None:
+        """The producer's annotation decides tracking; the advice would be wrong."""
+        nodes = _nodes_for(lambda: greet(name="alice", output_path=produce(name="a")))
+
+        assert path_like_str_param_diagnostics(nodes=nodes) == []
+
+    def test_warns_when_any_call_passes_a_literal(self) -> None:
+        nodes = _nodes_for(
+            lambda: [
+                greet(name="alice", output_path=produce(name="a")),
+                greet(name="bob", output_path="b.txt"),
+            ]
+        )
+
+        assert len(path_like_str_param_diagnostics(nodes=nodes)) == 1
+
     def test_no_warning_when_nothing_looks_path_like(self) -> None:
-        task_defs = _task_defs_for(lambda: tidy(threshold=1, input_dir="ignored"))
+        nodes = _nodes_for(lambda: tidy(threshold=1, input_dir="ignored"))
         # Strip the path-like parameter from consideration by only checking
         # a task whose remaining parameter is not path-shaped.
         filtered = path_like_str_param_diagnostics(
-            task_defs=[td for td in task_defs if "tidy" not in td.name]
+            nodes=[node for node in nodes if "tidy" not in node.task_def.name]
         )
         assert filtered == []
 
@@ -93,9 +117,9 @@ class TestPathLikeStrParamDiagnostics:
         """``untracked`` is a deliberate opt-out (#307 phase 2), not the
         silent trap this warning exists to flag — it must never fire for it,
         even though the parameter name (``output_path``) looks path-like."""
-        task_defs = _task_defs_for(lambda: deliberate(output_path="results/out.txt"))
+        nodes = _nodes_for(lambda: deliberate(output_path="results/out.txt"))
 
-        diagnostics = path_like_str_param_diagnostics(task_defs=task_defs)
+        diagnostics = path_like_str_param_diagnostics(nodes=nodes)
 
         assert diagnostics == []
 
@@ -271,3 +295,16 @@ def main():
 
         assert status == 0
         assert 'count_lines is declared @task("shell")' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (FileNotFoundError("gone"), "file_not_found_error"),
+        (OSError("disk"), "os_error"),
+        (ValueError("bad"), "invalid_value"),
+        (RuntimeError("Missing secrets: TOKEN"), "missing_secret"),
+    ],
+)
+def test_every_diagnostic_code_is_snake_case(exc: Exception, code: str) -> None:
+    assert _diagnostic_code_and_suggestion(exc=exc, message=str(exc))[0] == code

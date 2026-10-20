@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ginkgo.cli.app import main
 from ginkgo.formatting import now_iso
 from ginkgo.remote.staging import StagingCache, StagingEntry
@@ -398,14 +400,16 @@ class TestDbPrune:
     def test_naming_no_cutoff_is_an_error(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
 
-        assert main(["db", "prune"]) == 1
-        assert "provide --events-older-than" in capsys.readouterr().out
+        assert main(["db", "prune"]) == 2
+        assert "Provide --events-older-than" in capsys.readouterr().err
 
     def test_an_unparseable_duration_is_an_error(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
 
-        assert main(["db", "prune", "--events-older-than", "soon"]) == 1
-        assert "Invalid duration for --events-older-than" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exited:
+            main(["db", "prune", "--events-older-than", "soon"])
+        assert exited.value.code == 2
+        assert "argument --events-older-than: Invalid duration" in capsys.readouterr().err
 
 
 class TestDbVacuum:

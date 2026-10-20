@@ -261,7 +261,7 @@ def build_dry_run_plan(
         resources = evaluator.placement.effective_resources(task_def=task_def)
         planned[node_id] = PlannedTask(
             node_id=node_id,
-            base_name=task_def.name.rsplit(".", 1)[-1],
+            base_name=task_def.base_name,
             label=labels[node_id],
             kind=task_def.kind,
             env=task_def.env,

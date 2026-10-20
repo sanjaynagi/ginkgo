@@ -20,10 +20,10 @@ from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
-from ginkgo.cli.renderers.common import environment_label, task_base_name
+from ginkgo.cli.renderers.common import environment_label
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
-from ginkgo.cli.renderers.jsonl import JsonlEventRenderer
+from ginkgo.cli.renderers.jsonl import JsonlEventRenderer, event_line
 from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE
 from ginkgo.cli.renderers.models import (
     FailureDetails,
@@ -58,7 +58,7 @@ from ginkgo.params import ParamContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
-from ginkgo.runtime.module_loader import load_module_from_path
+from ginkgo.runtime.module_loader import display_path, load_module_from_path, task_base_name
 from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
@@ -78,6 +78,7 @@ from ginkgo.runtime.events import (
     RunStarted,
     RunValidated,
     TaskNotice,
+    event_timestamp,
 )
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -96,12 +97,43 @@ def _ginkgo_version() -> str | None:
 
 
 def command_run(args, *, output_mode: RunMode) -> int:
-    """Handle ``ginkgo run``."""
+    """Handle ``ginkgo run``.
+
+    Under ``--agent-output`` a failure before the run exists — a missing
+    workflow, a rejected parameter or budget, a graph that will not validate —
+    is reported on stdout as one ``run_rejected`` event as well, so a consumer
+    reading only the stream is not left with nothing. A failure after the run
+    exists is already reported there by its ``run_completed`` event.
+    """
+    run_id = make_run_id()
+    try:
+        return _run_resolved_workflow(args, output_mode=output_mode, run_id=run_id)
+    except Exception as exc:
+        if output_mode in {"agent", "agent_verbose"} and not (RUNS_ROOT / run_id).exists():
+            sys.stdout.write(
+                event_line(
+                    {
+                        "event": "run_rejected",
+                        "v": 1,
+                        "ts": event_timestamp(),
+                        "run_id": None,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+            )
+            sys.stdout.flush()
+        raise
+
+
+def _run_resolved_workflow(args, *, output_mode: RunMode, run_id: str) -> int:
+    """Resolve the workflow ``ginkgo run`` names, then run it."""
     resolution = resolve_workflow_path(
         project_root=Path.cwd(),
         workflow=args.workflow,
     )
     return run_workflow(
+        run_id=run_id,
         workflow_path=resolution.path,
         workflow_discovered=resolution.discovered,
         config_paths=[Path(path).resolve() for path in args.config],
@@ -177,10 +209,10 @@ def command_run_help(args, *, usage: str) -> int:
 def workflow_display_name(*, workflow_path: Path, discovered: bool) -> str:
     """Return how CLI output names the workflow being run.
 
-    A workflow the user named is shown by its filename. One found by
-    autodiscovery is shown by its path from the working directory and marked
-    as discovered, so output never reads as though the user typed a filename
-    they did not.
+    A workflow is shown by its path from the working directory, so
+    ``workflow/flow.py`` is not mistaken for a ``flow.py`` beside the user. One
+    found by autodiscovery is also marked as discovered, so output never reads
+    as though the user typed a path they did not.
 
     Parameters
     ----------
@@ -195,8 +227,8 @@ def workflow_display_name(*, workflow_path: Path, discovered: bool) -> str:
         The display name.
     """
     if not discovered:
-        return workflow_path.name
-    return f"{workflow_path.relative_to(Path.cwd().resolve())} (auto-discovered)"
+        return display_path(workflow_path)
+    return f"{display_path(workflow_path)} (auto-discovered)"
 
 
 def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, str, str]]:
@@ -220,6 +252,7 @@ def planned_task_rows(evaluator: ConcurrentEvaluator) -> list[tuple[int, str, st
 
 def run_workflow(
     *,
+    run_id: str | None = None,
     workflow_path: Path,
     workflow_discovered: bool = False,
     config_paths: list[Path],
@@ -237,18 +270,17 @@ def run_workflow(
     param_extras: Sequence[str] = (),
     command_flags: Collection[str] = (),
 ) -> int:
-    run_id = make_run_id(workflow_path=workflow_path)
+    run_id = run_id or make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
     workflow_name = escape(
         workflow_display_name(workflow_path=workflow_path, discovered=workflow_discovered)
     )
+    # A real run's header carries its id, so it is held back until the run is
+    # about to be created: an id printed before a load or validation failure
+    # would name a run that never exists.
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
             f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]\n"
-        )
-    elif output_mode not in {"agent", "agent_verbose"}:
-        rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]\n"
         )
 
     load_started = time.perf_counter()
@@ -367,8 +399,8 @@ def run_workflow(
     # only when its value names an existing regular file and reads as a path (a
     # separator or a file extension); a directory, a bare word or other non-file
     # path is tracked by its string alone and is never checked for existence
-    # (issue #307).
-    # Purely static and name-based, so it is cheap to check every time, but
+    # (issue #307). One every call fills from an upstream result is left alone.
+    # Static and name-based, so it is cheap to check every time, but
     # only printed on --dry-run: unlike the two warnings above it fires once
     # per task definition regardless of how the graph is shaped, so a real
     # run would otherwise repeat it on every invocation.
@@ -376,10 +408,11 @@ def run_workflow(
     # returning a plain string) is flagged the same way, so a dry run catches
     # it before a real run fails there after its upstream tasks have run.
     if dry_run:
-        task_defs = [node.task_def for node in evaluator.task_nodes.values()]
         for diagnostic in [
-            *path_like_str_param_diagnostics(task_defs=task_defs),
-            *missing_directive_diagnostics(task_defs=task_defs),
+            *path_like_str_param_diagnostics(nodes=evaluator.graph.nodes.values()),
+            *missing_directive_diagnostics(
+                task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
+            ),
         ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.
@@ -480,6 +513,9 @@ def run_workflow(
         return 0
 
     if output_mode not in {"agent", "agent_verbose"}:
+        rich_console.print(
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]\n"
+        )
         rich_console.print(
             f"[cyan]📦[/] Loading workflow...  [green]done[/] ({format_duration(load_elapsed)})"
         )

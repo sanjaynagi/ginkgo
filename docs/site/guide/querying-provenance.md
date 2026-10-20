@@ -19,9 +19,14 @@ ginkgo runs ls --status failed --limit 5
 ginkgo runs ls --since 2026-08-01 --json
 ```
 
+`--status` takes `running`, `succeeded`, `failed` or `cancelled`; anything else
+is refused rather than answered with an empty list. The Workflow column shows
+each workflow's path from where you stand.
+
 `ginkgo runs show <run_id>` prints one run: its workflow, status, duration, and
 a table of its tasks. `--json` prints the full run manifest — the same document
-`.ginkgo/runs/<run_id>/manifest.yaml` holds. The run id is optional; without one
+`.ginkgo/runs/<run_id>/manifest.yaml` holds — with each task's `task_name` and,
+for a fan-out branch, its `display_label`. The run id is optional; without one
 you get the most recent run.
 
 ### How one task has fared
@@ -31,10 +36,13 @@ ginkgo history prepare_data
 ginkgo history prepare_data --limit 50 --json
 ```
 
-One row per run of that task, newest first: when it started, how long it took,
-whether it was served from the cache, and which cache key it used. Give it the
-task's name, its fully qualified name, or the display label of one branch of a
-fan-out.
+One row per execution of that task, newest first: when it started, how long it
+took, whether it was served from the cache, and which cache key it used.
+`--limit` counts runs: a run of a fan-out has one row per branch, and all of a
+listed run's rows are shown. Give it the task's name, its qualified name, or the
+display label of one branch of a fan-out. In `--json`, each row's `task_name` is
+the task's name and `qualified_name` the form the ledger records (see
+[Task Names](cli.md#task-names)).
 
 ### Exporting a run
 
@@ -142,6 +150,10 @@ artifact id, and returns a `Provenance`: which run and task produced those
 bytes, the cache entry holding them, and the inputs that task recorded, one
 mapping per parameter. `ginkgo why <path>` prints the same thing.
 
+Only outputs ginkgo tracks are on record: a path a task returns as a plain `str`
+is not one. Annotate the return `-> file` (or `-> folder`), or write the file
+through an `Out[file]` parameter, and its runs record it.
+
 ### Cache statistics
 
 ```python
@@ -150,8 +162,8 @@ with query.open() as reader:
 
 print(f"{stats.entries} entries, {stats.total_bytes / 1e9:.1f} GB")
 print(f"{stats.never_hit} never hit ({stats.never_hit_bytes / 1e9:.1f} GB reclaimable)")
-for function, entries, size in stats.top_functions:
-    print(f"  {function}: {entries} entries, {size / 1e6:.0f} MB")
+for qualified_name, entries, size in stats.top_functions:
+    print(f"  {qualified_name}: {entries} entries, {size / 1e6:.0f} MB")
 ```
 
 ### Task history
@@ -161,6 +173,9 @@ with query.open() as reader:
     for row in reader.task_history("prepare_data", limit=20):
         print(row.run_id, row.status, row.duration_s, row.cached)
 ```
+
+`limit` counts runs, as `ginkgo history --limit` does; `limit=None` returns the
+task's whole history.
 
 ## The schema is not stable
 

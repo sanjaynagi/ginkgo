@@ -110,7 +110,7 @@ class ContainerDaemonUnreachableError(GinkgoError, RuntimeError):
     """
 
     failure_kind: ClassVar[FailureKind] = "env_mismatch"
-    diagnostic_code: ClassVar[str] = "CONTAINER_DAEMON_UNREACHABLE"
+    diagnostic_code: ClassVar[str] = "container_daemon_unreachable"
 
     def __init__(self, *, runtime: str, output: str, permission_denied: bool, fix: str) -> None:
         details = output.strip() or "no output from container runtime"
@@ -148,7 +148,7 @@ class ContainerImageNotFoundError(GinkgoError, RuntimeError):
     """
 
     failure_kind: ClassVar[FailureKind] = "env_mismatch"
-    diagnostic_code: ClassVar[str] = "MISSING_IMAGE"
+    diagnostic_code: ClassVar[str] = "missing_image"
     diagnostic_suggestion: ClassVar[str] = (
         "Pull the image, correct its name/tag, or adjust [container] pull_policy."
     )

@@ -48,13 +48,33 @@ if TYPE_CHECKING:
 
 
 class ShellTaskError(GinkgoError, RuntimeError):
-    """Shell task execution failure."""
+    """A shell or script task's command exited non-zero.
+
+    Parameters
+    ----------
+    task_kind : str
+        The task's kind, ``"shell"`` or ``"script"``, which the message names
+        so a failing script does not read as a failing shell command.
+    task_name : str
+        The name the task is shown under.
+    cmd : str
+        The command that ran, secrets redacted.
+    exit_code : int
+        Its exit status.
+    output : str
+        Its combined output, quoted when there is no log to point at.
+    log : str | None
+        The task's own log file, when it declared one.
+    hint : str | None, optional
+        Advice on what the exit status usually means.
+    """
 
     failure_kind: ClassVar[FailureKind] = "shell_command_error"
 
     def __init__(
         self,
         *,
+        task_kind: str,
         task_name: str,
         cmd: str,
         exit_code: int,
@@ -64,7 +84,9 @@ class ShellTaskError(GinkgoError, RuntimeError):
     ) -> None:
         self.exit_code = exit_code
 
-        details = f"Shell task {task_name} failed with exit code {exit_code}: {cmd}"
+        details = (
+            f"{task_kind.capitalize()} task {task_name} failed with exit code {exit_code}: {cmd}"
+        )
         if log is not None:
             details = f"{details} (log: {log})"
         elif output:
@@ -891,7 +913,7 @@ class ShellRunner:
         )
         if output is None:
             raise ValueError(
-                f"{task_def.name} declares kind='shell' with no Out[...] parameters, so "
+                f"{task_def.base_name} declares kind='shell' with no Out[...] parameters, so "
                 "shell(...) must declare output=... naming at least one path."
             )
 
@@ -909,7 +931,8 @@ class ShellRunner:
         if completed.returncode != 0:
             remove_failed_outputs(output)
             raise ShellTaskError(
-                task_name=task_def.name,
+                task_kind="shell",
+                task_name=node.display_label or task_def.base_name,
                 cmd=redact_text(text=directive.cmd, secret_values=node.secret_values),
                 exit_code=completed.returncode,
                 output=combined_output,
@@ -927,7 +950,7 @@ class ShellRunner:
         if missing_outputs:
             missing_label = missing_outputs[0] if len(missing_outputs) == 1 else missing_outputs
             raise FileNotFoundError(
-                f"Shell task {task_def.name} completed but did not create output {missing_label!r}"
+                f"Shell task {node.display_label or task_def.base_name} completed but did not create output {missing_label!r}"
             )
 
         return self.validator.coerce_return_value(

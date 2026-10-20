@@ -107,7 +107,7 @@ class NotebookRunner(DriverTaskRunner):
             remove_failed_outputs(output)
             combined = (completed.stdout or "") + (completed.stderr or "")
             raise NotebookTaskError(
-                task_name=node.task_def.name,
+                task_name=node.task_def.base_name,
                 cmd=cmd,
                 exit_code=completed.returncode,
                 output=combined,
@@ -119,7 +119,7 @@ class NotebookRunner(DriverTaskRunner):
         if output is None:
             return self.validator.coerce_return_value(task_def=node.task_def, value=str(html_path))
         return self._validate_and_return_output(
-            task_name=node.task_def.name, task_def=node.task_def, output=output
+            task_name=node.task_def.base_name, task_def=node.task_def, output=output
         )
 
     def _html_path(self, *, node: TaskInvocation) -> Path:
@@ -156,7 +156,7 @@ class NotebookRunner(DriverTaskRunner):
                 render_repeated_cli_tokens(
                     option=f"--{name.replace('_', '-')}",
                     value=value,
-                    label=f"{node.task_def.name}.{name}",
+                    label=f"{node.task_def.base_name}.{name}",
                     task_kind="notebook",
                 )
             )

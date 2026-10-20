@@ -127,7 +127,7 @@ def main():
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_SECRET"
+        assert payload["diagnostics"][0]["code"] == "missing_secret"
 
 
 class TestDoctorUnreachableCalls:
@@ -235,7 +235,7 @@ def main():
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
         [diagnostic] = payload["diagnostics"]
-        assert diagnostic["code"] == "INCOMPLETE_CALL"
+        assert diagnostic["code"] == "incomplete_call"
         assert "join() is missing required argument(s): right" in diagnostic["message"]
         assert ".map()" in diagnostic["suggestion"]
 
@@ -330,7 +330,7 @@ class TestDoctorEnvValidation:
         result = _run_doctor("--json", cwd=Path.cwd())
 
         payload = json.loads(result.stdout)
-        assert [item["code"] for item in payload["diagnostics"]] == ["INVALID_ENV_KIND"]
+        assert [item["code"] for item in payload["diagnostics"]] == ["invalid_env_kind"]
         assert "kind='subworkflow'" in payload["diagnostics"][0]["message"]
 
 
@@ -358,7 +358,7 @@ class TestDoctorContainerImageValidation:
         result = _run_doctor(cwd=Path.cwd(), path_prefix=fake_bin)
 
         assert result.returncode == 1
-        assert "MISSING_IMAGE" in result.stderr
+        assert "missing_image" in result.stderr
         assert "nope-this-image-does-not-exist:99.99" in result.stderr
 
     def test_bogus_image_is_reported_in_json(self) -> None:
@@ -371,7 +371,7 @@ class TestDoctorContainerImageValidation:
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_IMAGE"
+        assert payload["diagnostics"][0]["code"] == "missing_image"
 
 
 class TestDoctorContainerDaemonValidation:
@@ -386,7 +386,7 @@ class TestDoctorContainerDaemonValidation:
 
         assert result.returncode == 1
         [diagnostic] = json.loads(result.stdout)["diagnostics"]
-        assert diagnostic["code"] == "CONTAINER_DAEMON_UNREACHABLE"
+        assert diagnostic["code"] == "container_daemon_unreachable"
         assert "docker daemon is not reachable" in diagnostic["message"]
         assert "failed to connect to the docker API" in diagnostic["message"]
 
@@ -444,7 +444,7 @@ class TestDoctorExecutorSelection:
             },
         )
 
-        missing = [item for item in diagnostics if item.code == "FUSE_IMAGE_NOT_CONFIGURED"]
+        missing = [item for item in diagnostics if item.code == "fuse_image_not_configured"]
         assert len(missing) == 1
         assert "[remote.executors.gpu-k8s]" in missing[0].message
 
@@ -542,5 +542,5 @@ def test_only_installed_drivers_that_fail_their_health_check_are_reported(
     with use_plugin_registry(PluginRegistry(plugins=(BUILTIN, drivers))):
         (diagnostic,) = access_doctor._probe_driver_binaries()
 
-    assert diagnostic.code == "FUSE_DRIVERS_NOT_ON_HOST"
+    assert diagnostic.code == "fuse_drivers_not_on_host"
     assert diagnostic.message.endswith("mountpoint-s3 (s3://)")

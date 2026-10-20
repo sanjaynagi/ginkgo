@@ -73,7 +73,7 @@ from ginkgo.runtime.events import (
 from ginkgo.runtime.log_drain import LogDrain
 from ginkgo.runtime.module_loader import resolve_module_file
 from ginkgo.runtime.event_values import render_value
-from ginkgo.runtime.rundir import RunDir
+from ginkgo.runtime.rundir import RunDir, attempt_log_header
 from ginkgo.runtime.scheduler import ResourceLedger, SchedulableTask
 from ginkgo.runtime.environment.secrets import (
     SecretResolver,
@@ -286,7 +286,7 @@ class NodeRun:
     @property
     def label(self) -> str:
         """The name the node is shown under: its display label or bare task name."""
-        return self.display_label or self.task_def.name.rsplit(".", 1)[-1]
+        return self.display_label or self.task_def.base_name
 
     # The two identity views the runner contract (``TaskInvocation``) names;
     # everything else about the graph vertex is read through ``node``.
@@ -615,7 +615,7 @@ class ConcurrentEvaluator:
         if self.run_dir is not None:
             run.stdout_path, run.stderr_path = self.run_dir.log_paths_for(
                 node_id=node.node_id,
-                task_name=node.task_def.name,
+                task_name=node.task_def.base_name,
             )
             stdout_log = self.run_dir.relative(run.stdout_path)
             stderr_log = self.run_dir.relative(run.stderr_path)
@@ -735,18 +735,18 @@ class ConcurrentEvaluator:
             budget = (self.resource_budgets or {}).get(dimension)
             if budget is not None and demand > budget:
                 raise ValueError(
-                    f"{node.task_def.name} requires {demand} {dimension} but only "
+                    f"{node.task_def.base_name} requires {demand} {dimension} but only "
                     f"{budget} are available in the run's {dimension} budget"
                 )
         if not node.remote:
             if node.threads > self.cores:
                 raise ValueError(
-                    f"{node.task_def.name} requires {node.threads} cores but only "
+                    f"{node.task_def.base_name} requires {node.threads} cores but only "
                     f"{self.cores} are available"
                 )
             if self.memory is not None and node.memory_gb > self.memory:
                 raise ValueError(
-                    f"{node.task_def.name} requires {node.memory_gb} GiB but only "
+                    f"{node.task_def.base_name} requires {node.memory_gb} GiB but only "
                     f"{self.memory} GiB are available"
                 )
         node.state = "ready"
@@ -1454,7 +1454,7 @@ class ConcurrentEvaluator:
         Every attempt appends to the same log files, so without a marker a
         log tail cannot say which attempt a line came from.
         """
-        header = f"--- attempt {node.attempt}/{node.task_def.retries + 1} ---\n"
+        header = attempt_log_header(attempt=node.attempt, attempts=node.task_def.retries + 1)
         for path in (node.stdout_path, node.stderr_path):
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -1595,7 +1595,7 @@ class ConcurrentEvaluator:
         if task_def.has_inferred_return:
             if task_def.kind == "python" and value is not None:
                 raise TypeError(
-                    f"{task_def.name} has Out[...] parameters and no return annotation, "
+                    f"{task_def.base_name} has Out[...] parameters and no return annotation, "
                     "so its return value is inferred from those outputs — but the task "
                     f"body returned {value!r} instead of None. Add an explicit return "
                     "annotation (e.g. `-> file`) if this task needs to return something "
@@ -1866,8 +1866,10 @@ class ConcurrentEvaluator:
         if rendered is None:
             return node.display_label
 
-        base_name = node.task_def.name.rsplit(".", 1)[-1]
-        return f"{base_name}[{rendered}]"
+        # Through the graph, so the label is unique among every node's.
+        return self.graph.relabel(
+            current=node.label, wanted=f"{node.task_def.base_name}[{rendered}]"
+        )
 
     def _output_summary_for(
         self,
@@ -1944,13 +1946,13 @@ class ConcurrentEvaluator:
         if isinstance(completed_value, ExecutionDirective):
             if kind.directive is None:
                 raise TypeError(
-                    f"{node.task_def.name} returned {type(completed_value).__name__}, but the "
+                    f"{node.task_def.base_name} returned {type(completed_value).__name__}, but the "
                     f"task is declared with kind={kind.name!r}. "
                     f"{self._kind_suggestion(type(completed_value))}"
                 )
             if not isinstance(completed_value, kind.directive):
                 raise TypeError(
-                    f"{node.task_def.name} is declared with kind={kind.name!r} and must "
+                    f"{node.task_def.base_name} is declared with kind={kind.name!r} and must "
                     f"return {kind.call_form}, not {type(completed_value).__name__}. "
                     f"{self._kind_suggestion(type(completed_value))}"
                 )
@@ -1966,13 +1968,13 @@ class ConcurrentEvaluator:
         if kind.directive is None:
             self._validator.validate_process_safe_value(
                 value=completed_value,
-                label=f"{node.task_def.name}.return",
+                label=f"{node.task_def.base_name}.return",
             )
         if self._expand_dynamic(node=node, value=completed_value):
             return
         if kind.directive is not None:
             raise TypeError(
-                f"{node.task_def.name} is declared with kind={kind.name!r} and must return "
+                f"{node.task_def.base_name} is declared with kind={kind.name!r} and must return "
                 f"{kind.call_form or 'an execution directive'} or dynamic task expressions."
             )
 

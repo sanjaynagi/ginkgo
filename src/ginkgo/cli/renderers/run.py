@@ -19,6 +19,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
+from ginkgo.cli.renderers.debug import render_log_tail
 from ginkgo.cli.renderers.common import (
     _MultiStateBar,
     _format_cpu_percent,
@@ -560,13 +561,17 @@ class _RunLayoutRenderer:
                     same_failures=group[1:],
                 )
             )
+            if group[0].log_tail:
+                parts.append(render_log_tail(group[0].log_tail))
         if ignored:
             parts.append(Text(f"Failed, run continued ({len(ignored)})", style="bold #7f1d1d"))
             panelled = _panelled_with(items=ignored, kept=hinted, limit=_IGNORED_PANEL_LIMIT)
-            parts.extend(
-                self.render_failure_panel(item, hint=hint if item is hinted else None)
-                for item in panelled
-            )
+            for item in panelled:
+                parts.append(
+                    self.render_failure_panel(item, hint=hint if item is hinted else None)
+                )
+                if item.log_tail:
+                    parts.append(render_log_tail(item.log_tail))
             remaining = len(ignored) - len(panelled)
             if remaining > 0:
                 parts.append(
@@ -661,11 +666,6 @@ class _RunLayoutRenderer:
                     style="#7f1d1d",
                 )
             )
-        if details.log_tail:
-            sections.append(Text(""))
-            sections.append(Text("Log tail", style="bold #7f1d1d"))
-            sections.append(Text("\n".join(details.log_tail), style="#7f1d1d"))
-
         count_suffix = f" (×{len(same_failures) + 1})" if same_failures else ""
         return Panel(
             Group(*sections),
@@ -938,7 +938,10 @@ class CliRunRenderer:
             )
         if not success and failure_details:
             self._console.print(self._layout.render_failure_separator())
-            self._console.print(self._layout.render_failure_details(failure_details))
+            # Text parts, the log tails among them, print unwrapped so a
+            # traceback's paths stay whole; panels fold to the console.
+            for part in self._layout.render_failure_details(failure_details).renderables:
+                self._console.print(part, soft_wrap=isinstance(part, Text))
         if skipped:
             self._console.print(self._layout.render_skip_report(skipped))
         # A run that failed under its failure policy still produced whatever

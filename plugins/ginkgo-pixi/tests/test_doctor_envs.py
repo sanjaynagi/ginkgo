@@ -69,7 +69,7 @@ class TestDoctorEnvValidation:
         result = _run_doctor(cwd=Path.cwd())
 
         assert result.returncode == 1
-        assert "MISSING_ENV" in result.stderr
+        assert "missing_env" in result.stderr
         assert "not_a_real_env" in result.stderr
 
     def test_nonexistent_env_is_reported_in_json(self) -> None:
@@ -80,7 +80,7 @@ class TestDoctorEnvValidation:
         assert result.returncode == 1
         payload = json.loads(result.stdout)
         assert payload["ok"] is False
-        assert payload["diagnostics"][0]["code"] == "MISSING_ENV"
+        assert payload["diagnostics"][0]["code"] == "missing_env"
 
     def test_existing_env_passes(self) -> None:
         _write_env(name="probe_env")

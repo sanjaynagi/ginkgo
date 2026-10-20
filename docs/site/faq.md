@@ -565,10 +565,12 @@ flag on `ginkgo run`. To force a task to re-execute, either bump its `version=`
 source, or `ginkgo cache clear <cache-key>` for that entry.
 
 `cache clear` needs the *full* 64-character key: a prefix, even a long one, is
-reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, and
-`ginkgo cache explain <run_id>` prints each task's key beside its branch label
-(`fst[2L,YRI,CEU]`), which is the easiest way to find the key of one branch of a
-fan-out. To discard everything and start cold, run
+reported as `Cache entry not found`. `ginkgo cache ls` lists the full keys, one
+per line, and `ginkgo cache ls --task fst` narrows them to one task (it also
+takes a branch label); `ginkgo cache explain <run_id>` prints each task's key
+beside its branch label (`fst[2L,YRI,CEU]`), which is the easiest way to find
+the key of one branch of a fan-out. `--json` on `cache ls` gives the same list
+to a script. To discard everything and start cold, run
 `ginkgo cache prune --max-entries 0`.
 
 ### Where does the artifact store fit in for file/folder outputs?
@@ -644,6 +646,11 @@ works this through end to end.
 the cache entry that holds its bytes, and the inputs that task recorded. It also
 takes an artifact id, and `--json` emits the same as a structured payload. From
 Python, `ginkgo.query.Query.why` returns the same answer.
+
+It can only name a file ginkgo tracked. A task that returns a path as a plain
+`str` leaves no record of the file, and `why` says nothing produced it: annotate
+the return `-> file` (or `-> folder`), or write the file through an `Out[file]`
+parameter.
 
 ## Reports
 
@@ -726,8 +733,12 @@ from scratch.
 
 Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
 `.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
-task with the classified category and a log tail (add `--json` for
-machine-readable output); it defaults to the latest run if no id is given.
+task with the classified category, followed by its log tail (add `--json` for
+machine-readable output); it defaults to the latest run if no id is given. A
+retried task's tail shows its last attempt, the one that failed. In `--json`,
+each failure carries its `status` and its error as `failure.message`; the
+top-level `error` is set only when the run failed for a reason no task's
+failure already gives.
 `ginkgo runs show [RUN_ID]` prints the run and its tasks; add `--json` for the
 full snapshot — per-task status, attempts, cache key, exit code, the `failure`
 record, log paths, timings, dependencies, and (for remote tasks) the remote job

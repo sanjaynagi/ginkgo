@@ -165,7 +165,7 @@ class TaskDef:
                     raise ValueError(f"retry_on_exit_codes must be integers, got {code!r}")
 
         sig = inspect.signature(self.fn)
-        hints, output_params = _resolve_type_hints(fn=self.fn, task_name=self.name)
+        hints, output_params = _resolve_type_hints(fn=self.fn, task_name=self.base_name)
         required = frozenset(
             name
             for name, param in sig.parameters.items()
@@ -180,28 +180,23 @@ class TaskDef:
 
     @property
     def name(self) -> str:
-        """Fully qualified name of the wrapped function."""
-        module = getattr(self.fn, "__module__", None) or ""
-        return f"{module}.{self.fn.__qualname__}"
+        """Location-independent qualified name: the task's machine identity.
 
-    @property
-    def cache_name(self) -> str:
-        """Location-independent task identity used in the cache key.
+        The one qualified form ginkgo records — in events, the ledger's
+        ``tasks.name``, ``cache_entries.function`` and the cache key — so the
+        three always agree. A task defined inside a real package has a stable
+        dotted name that does not depend on where the project checkout lives.
+        A single-file workflow's module, by contrast, is loaded under a
+        synthetic name unique to the *absolute path* of that file (see
+        ``USER_MODULE_PREFIX``); that segment is replaced with
+        ``<workflow>``, so renaming, moving or copying the file neither
+        cold-starts its cache nor changes the name its history is filed under.
+        Two workflows defining a same-named task then share an identity, and
+        collide in the cache only if :attr:`cache_source_hash` also agrees,
+        i.e. their code is identical too — the correct, content-addressed
+        outcome.
 
-        A task defined inside a real package already has a stable dotted
-        name — :attr:`name` — that does not depend on where the project
-        checkout lives. A single-file workflow's module, by contrast, is
-        loaded under a synthetic name unique to the *absolute path* of that
-        file (see ``USER_MODULE_PREFIX``), so :attr:`name` for such a task
-        changes whenever the workflow file is renamed, moved or copied to
-        another checkout — even byte-for-byte — which would otherwise
-        cold-start its entire cache. That synthetic module segment is
-        replaced here with a fixed placeholder, so identically named tasks
-        loaded from single-file workflows share a cache identity regardless
-        of path. Two different workflows defining a same-named task can then
-        still collide only if :attr:`cache_source_hash` also agrees, i.e.
-        their code is identical too — which is the correct, content-addressed
-        outcome, not a false collision.
+        Messages a user reads name the task by :attr:`base_name` instead.
         """
         # Imported lazily: ``core`` must not depend on ``runtime`` at module
         # load time, only inside this property body (see the similar import in
@@ -210,6 +205,11 @@ class TaskDef:
 
         module = getattr(self.fn, "__module__", None) or ""
         return f"{cache_identity_module_name(module)}.{self.fn.__qualname__}"
+
+    @property
+    def base_name(self) -> str:
+        """The task's function name: what user-facing output calls it."""
+        return self.fn.__qualname__.rsplit(".", 1)[-1]
 
     @property
     def required_params(self) -> frozenset[str]:

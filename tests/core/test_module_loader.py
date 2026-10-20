@@ -366,9 +366,7 @@ class TestCacheNameIsPathIndependent:
     absolute path>``) leaked into the task's cache-key identity.
     """
 
-    def test_byte_identical_workflows_share_a_cache_name_across_paths(
-        self, tmp_path: Path
-    ) -> None:
+    def test_byte_identical_workflows_share_a_name_across_paths(self, tmp_path: Path) -> None:
         source = (
             "from ginkgo import task\n\n\n@task()\ndef greet(name: str) -> str:\n    return name\n"
         )
@@ -392,15 +390,14 @@ class TestCacheNameIsPathIndependent:
 
         # The synthetic module names themselves still differ per path/name...
         assert first_module.__name__ != second_module.__name__
-        assert first_module.greet.name != second_module.greet.name
 
-        # ...but the cache identity used for the cache key must agree.
-        assert first_module.greet.cache_name == second_module.greet.cache_name
-        assert first_module.greet.cache_name == "<workflow>.greet"
+        # ...but the task's recorded identity must agree.
+        assert first_module.greet.name == second_module.greet.name == "<workflow>.greet"
+        assert first_module.greet.base_name == "greet"
 
         # The source hash folds in the entry module's own name as part of its
         # local import closure; that must be path-independent too, or an
-        # identical cache_name still lands on a different cache key.
+        # identical name still lands on a different cache key.
         assert first_module.greet.cache_source_hash == second_module.greet.cache_source_hash
 
     def test_dotted_package_tasks_keep_their_real_name(self, tmp_path: Path) -> None:
@@ -421,7 +418,7 @@ class TestCacheNameIsPathIndependent:
             _forget_workflow_package()
 
         assert module.greet.name == "workflow.flow.greet"
-        assert module.greet.cache_name == module.greet.name
+        assert module.greet.base_name == "greet"
 
 
 class TestRelativeImportGuidance:

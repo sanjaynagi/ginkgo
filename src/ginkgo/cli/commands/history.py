@@ -11,8 +11,8 @@ from rich.text import Text
 
 from ginkgo import query
 from ginkgo.cli.common import console, new_table
-from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.formatting import format_bytes, format_duration, format_timestamp, parse_timestamp
+from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import TaskRow
 from ginkgo.resource_history import (
     ResourceHistory,
@@ -41,7 +41,7 @@ def command_history(args) -> int:
         # table under it, and a percentile that moved with a display setting
         # would be a percentile of nothing in particular.
         history = (
-            reader.task_resource_history(args.task, include_pending=include_pending)
+            reader.task_history(args.task, limit=None, include_pending=include_pending)
             if resources
             else []
         )

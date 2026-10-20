@@ -9,6 +9,7 @@ import sys
 
 from ginkgo import query as ledger
 from ginkgo.cli.common import console, new_table
+from ginkgo.cli.errors import UsageError
 from ginkgo.query import SqlResult
 
 __all__ = ["command_query"]
@@ -27,10 +28,9 @@ def command_query(args) -> int:
     if getattr(args, "schema", False):
         return _print_schema(args)
     if not args.sql:
-        console(sys.stderr).print(
+        raise UsageError(
             "Give `ginkgo query` one SELECT, or --schema for the tables and their columns."
         )
-        return 2
 
     with ledger.open(missing_ok=True) as reader:
         result = reader.sql(args.sql, limit=getattr(args, "limit", ledger.SQL_ROW_LIMIT))

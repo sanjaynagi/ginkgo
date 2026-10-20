@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 
 from ginkgo.cli.common import console
+from ginkgo.cli.errors import UsageError
 from ginkgo.formatting import cutoff_before, format_bytes, format_int
 from ginkgo.remote.staging import StagingCache
 from ginkgo.runtime.caching.cache import CacheStore
@@ -78,34 +79,25 @@ def _prune(args, *, path, rich_console) -> int:
         and args.digest_memo_older_than is None
         and args.staging_older_than is None
     ):
-        rich_console.print(
-            "[red]Error:[/] provide --events-older-than, --digest-memo-older-than "
-            "or --staging-older-than."
+        raise UsageError(
+            "Provide --events-older-than, --digest-memo-older-than or --staging-older-than."
         )
-        return 1
 
     rich_console.print("[bold green]🌿 ginkgo db prune[/]\n")
-    try:
-        cutoffs = {
-            "events": (
-                None
-                if args.events_older_than is None
-                else cutoff_before(args.events_older_than, option="--events-older-than")
-            ),
-            "memo": (
-                None
-                if args.digest_memo_older_than is None
-                else cutoff_before(args.digest_memo_older_than, option="--digest-memo-older-than")
-            ),
-            "staging": (
-                None
-                if args.staging_older_than is None
-                else cutoff_before(args.staging_older_than, option="--staging-older-than")
-            ),
-        }
-    except ValueError as exc:
-        rich_console.print(f"[red]Error:[/] {exc}")
-        return 1
+    # Each duration was validated as the command line was parsed.
+    cutoffs = {
+        "events": None
+        if args.events_older_than is None
+        else cutoff_before(args.events_older_than),
+        "memo": (
+            None
+            if args.digest_memo_older_than is None
+            else cutoff_before(args.digest_memo_older_than)
+        ),
+        "staging": (
+            None if args.staging_older_than is None else cutoff_before(args.staging_older_than)
+        ),
+    }
 
     with open_store(path) as store:
         if cutoffs["events"] is not None:

@@ -79,7 +79,7 @@ class Expr(Generic[T]):
         graph-build time, so the label is the same before dispatch as
         after it.
         """
-        base_name = self.task_def.name.rsplit(".", 1)[-1]
+        base_name = self.task_def.base_name
         if self.display_label_parts:
             return f"{base_name}[{','.join(self.display_label_parts)}]"
         return base_name
@@ -217,7 +217,7 @@ class Expr(Generic[T]):
             else:
                 arg_strs.append(f"{k}={v!r}")
         joined = ", ".join(arg_strs)
-        return f"Expr({self.task_def.name}({joined}))"
+        return f"Expr({self.task_def.base_name}({joined}))"
 
 
 @dataclass(frozen=True)

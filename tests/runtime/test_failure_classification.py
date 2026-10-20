@@ -42,7 +42,12 @@ class TestFrameworkClassification:
             (ImportError("cannot import name"), "import_error"),
             (
                 ShellTaskError(
-                    task_name="run_bwa", cmd="bwa", exit_code=1, output="failed", log=None
+                    task_kind="shell",
+                    task_name="run_bwa",
+                    cmd="bwa",
+                    exit_code=1,
+                    output="failed",
+                    log=None,
                 ),
                 "shell_command_error",
             ),

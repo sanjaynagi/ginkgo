@@ -60,7 +60,7 @@ class IncompleteCallError(GinkgoError, TypeError):
         returned it.
     """
 
-    diagnostic_code: ClassVar[str] = "INCOMPLETE_CALL"
+    diagnostic_code: ClassVar[str] = "incomplete_call"
     diagnostic_suggestion: ClassVar[str] = (
         "Pass every required argument, or complete the call with .map() or .product_map()."
     )
@@ -104,7 +104,7 @@ class TaskNode:
     @property
     def label(self) -> str:
         """The name the node is shown under: its display label or bare task name."""
-        return self.display_label or self.task_def.name.rsplit(".", 1)[-1]
+        return self.display_label or self.task_def.base_name
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -142,7 +142,9 @@ class TaskGraph:
     _dynamic_parent_ids: dict[int, int] = field(default_factory=dict, repr=False)
     """Node id -> id of the task whose dynamic expansion registered it."""
     _display_label_counts: Counter[str] = field(default_factory=Counter, repr=False)
-    """How many registered nodes each expression label has been given to."""
+    """The highest ordinal each requested label has been given so far."""
+    _display_labels: set[str] = field(default_factory=set, repr=False)
+    """Every label a node is shown under, bare task names included."""
 
     @classmethod
     def build(cls, value: Any) -> TaskGraph:
@@ -280,7 +282,7 @@ class TaskGraph:
         expr_id = id(expr)
         if expr_id in expr_stack:
             cycle_start = expr_stack.index(expr_id)
-            cycle = list(task_path[cycle_start:]) + [expr.task_def.name]
+            cycle = list(task_path[cycle_start:]) + [expr.task_def.base_name]
             raise CycleError(cycle)
 
         if expr_id in self._expr_nodes:
@@ -294,7 +296,7 @@ class TaskGraph:
         display_label = self._next_display_label(expr=expr)
 
         next_expr_stack = (*expr_stack, expr_id)
-        next_task_path = (*task_path, expr.task_def.name)
+        next_task_path = (*task_path, expr.task_def.base_name)
         dependency_ids: set[int] = set()
         for value in expr.args.values():
             dependency_ids |= self._register_value(
@@ -316,7 +318,7 @@ class TaskGraph:
         """Return the display label for the node being registered for *expr*.
 
         The expression's own label (its task name plus any fan-out values)
-        takes an ordinal when earlier nodes already hold it, counted across
+        takes an ordinal when an earlier node already holds it, counted across
         the static graph and every dynamic expansion. The second plain
         ``child(...)`` call is ``child[2]`` in the live table, the dry run,
         the ledger and ``history`` alike.
@@ -326,12 +328,40 @@ class TaskGraph:
         str | None
             The label, or ``None`` when it is the bare task name.
         """
-        label = expr.display_label
-        self._display_label_counts[label] += 1
-        count = self._display_label_counts[label]
-        if count > 1:
-            return f"{label}[{count}]"
-        return label if expr.display_label_parts else None
+        label = self._claim_display_label(expr.display_label)
+        return label if label != expr.task_def.base_name else None
+
+    def relabel(self, *, current: str, wanted: str) -> str:
+        """Give up a node's *current* label and return a unique form of *wanted*.
+
+        For a mapped branch named only once its arguments resolve: the label
+        it is given then must not repeat one another node already holds.
+
+        Parameters
+        ----------
+        current : str
+            The label the node was registered under, released first so a
+            branch that wants back the label it holds keeps it.
+        wanted : str
+            The label the node should be shown under.
+
+        Returns
+        -------
+        str
+            *wanted*, or *wanted* with an ordinal when another node holds it.
+        """
+        self._display_labels.discard(current)
+        return self._claim_display_label(wanted)
+
+    def _claim_display_label(self, label: str) -> str:
+        """Return *label*, or the next free ordinal form of it, and hold it."""
+        candidate = label
+        while candidate in self._display_labels:
+            count = max(self._display_label_counts[label], 1) + 1
+            self._display_label_counts[label] = count
+            candidate = f"{label}[{count}]"
+        self._display_labels.add(candidate)
+        return candidate
 
     # Edge inference ----------------------------------------------------------
 
@@ -380,13 +410,13 @@ class TaskGraph:
             node = self.nodes[node_id]
             node_produced = collect_produced_paths(
                 node_id=node_id,
-                task_name=node.task_def.name,
+                task_name=node.task_def.base_name,
                 task_def=node.task_def,
                 args=node.expr.args,
             )
             node_consumed = collect_consumed_paths(
                 node_id=node_id,
-                task_name=node.task_def.name,
+                task_name=node.task_def.base_name,
                 task_def=node.task_def,
                 args=node.expr.args,
             )
@@ -413,8 +443,8 @@ class TaskGraph:
                     continue
                 consumer_state = node_state(consumer.node_id)
                 if consumer_state != "pending":
-                    producer_name = self.nodes[producer.node_id].task_def.name
-                    consumer_name = self.nodes[consumer.node_id].task_def.name
+                    producer_name = self.nodes[producer.node_id].task_def.base_name
+                    consumer_name = self.nodes[consumer.node_id].task_def.base_name
                     raise RuntimeError(
                         f"{producer_name!r} was just registered declaring "
                         f"`Out[...]` path {producer.path!r}, but {consumer_name!r} "
@@ -434,7 +464,7 @@ class TaskGraph:
         if edges_added:
             cycle = self._find_cycle()
             if cycle is not None:
-                raise CycleError([self.nodes[node_id].task_def.name for node_id in cycle])
+                raise CycleError([self.nodes[node_id].task_def.base_name for node_id in cycle])
 
     def _add_inferred_dependencies(self, *, node_id: int, producer_ids: set[int]) -> bool:
         """Add inferred producer ids to a node's dependencies; return whether any were new."""
@@ -490,6 +520,6 @@ def _validate_task_kind(*, task_def: TaskDef) -> None:
     kind = task_kind(task_def)
     if task_def.retry_on_exit_codes is not None and not kind.exit_code_retries:
         raise ValueError(
-            f"{task_def.name} declares retry_on_exit_codes, which kind={kind.name!r} "
+            f"{task_def.base_name} declares retry_on_exit_codes, which kind={kind.name!r} "
             "does not support"
         )

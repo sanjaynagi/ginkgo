@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Collection, Sequence
 
-from ginkgo.cli.renderers.common import task_base_name
 from ginkgo.cli.workflow_params import load_param_config, validate_param_extras
 from ginkgo.cli.workspace import resolve_workflow_path
 from ginkgo.config import config_session
@@ -103,7 +102,7 @@ def inspect_workflow(
         nodes.append(
             {
                 "task_id": f"task_{node.node_id:04d}",
-                "task_name": task_base_name(node.task_def.name),
+                "task_name": node.task_def.base_name,
                 "kind": node.task_def.kind,
                 "env": node.task_def.env,
                 "execution_mode": task_kind(node.task_def).execution_mode,

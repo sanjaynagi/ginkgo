@@ -179,7 +179,7 @@ class SubworkflowRunner:
 
             if completed.returncode != 0:
                 raise SubWorkflowError(
-                    task_name=node.task_def.name,
+                    task_name=node.task_def.base_name,
                     path=str(workflow_path),
                     exit_code=completed.returncode,
                     child_run_id=child_run_id,
@@ -187,7 +187,7 @@ class SubworkflowRunner:
 
             if child_run_id is None:
                 raise RuntimeError(
-                    f"Sub-workflow {node.task_def.name} ({workflow_path!r}) exited "
+                    f"Sub-workflow {node.task_def.base_name} ({workflow_path!r}) exited "
                     f"successfully but recorded no run in {self.db_path}."
                 )
 

@@ -89,7 +89,7 @@ class PluginConflictError(GinkgoError, RuntimeError):
 class PluginNotFoundError(GinkgoError, LookupError):
     """Raised when no loaded plugin contributes the key asked for."""
 
-    diagnostic_code: ClassVar[str] = "PLUGIN_NOT_FOUND"
+    diagnostic_code: ClassVar[str] = "plugin_not_found"
     diagnostic_suggestion: ClassVar[str] = (
         "Install the plugin the message names, or run `ginkgo plugins` to see what is installed."
     )
