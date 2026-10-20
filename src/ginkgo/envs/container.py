@@ -179,6 +179,10 @@ _FALLBACK_SHELLS = ("sh", "bash", "ash")
 # A registry probe is skipped for anything else rather than guessed at.
 _MANIFEST_INSPECT_RUNTIMES = frozenset({"docker", "podman"})
 
+# Values the [container] table accepts for its enumerated settings.
+_RUNTIMES = ("docker", "podman")
+_PULL_POLICIES = ("if-not-present", "always", "never")
+
 # Ceiling on a registry round trip during validation. Validation runs at the
 # start of every real run, not just doctor/dry-run, so a hung registry or slow
 # DNS must not stall it — bounded, it still beats discovering a bad image name
@@ -282,6 +286,7 @@ class ContainerBackend:
     # Set once the daemon probe has answered without proving the daemon
     # unreachable, so it runs at most once per backend.
     _daemon_probed: bool = field(default=False, init=False, repr=False)
+    _daemon_answered: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Resolved once, so the path mounted and the path mounts are compared
@@ -381,12 +386,14 @@ class ContainerBackend:
             self._pulled_images.add(ref.image)
             return
 
+        _require_container_runtime(self.runtime)
         if self.pull_policy == "if-not-present" and self._image_exists_locally(ref.image):
             self._pulled_images.add(ref.image)
             return
 
-        # Pull the image.
-        _require_container_runtime(self.runtime)
+        # A pull against a stopped daemon can block indefinitely, so check the
+        # daemon first: the check is bounded and names how to start it.
+        self._require_daemon_reachable(before_pull=True)
         completed = subprocess.run(
             [self.runtime, "pull", ref.image],
             check=False,
@@ -605,16 +612,21 @@ class ContainerBackend:
             return True
         return completed.returncode == 0
 
-    def _require_daemon_reachable(self) -> None:
+    def _require_daemon_reachable(self, *, before_pull: bool = False) -> None:
         """Raise if ``<runtime> info`` reports the daemon unreachable.
 
         Only a non-zero exit raises. A runtime this backend does not know how
         to probe, a timeout, or a failure to execute the binary reads as
         "cannot tell" and lets validation continue, as the registry probe
-        does.
+        does. *before_pull* makes a timeout raise too: a daemon that cannot
+        answer ``info`` in time would leave the unbounded pull hanging.
         """
         start_hint = _DAEMON_START_HINTS.get(self.runtime)
-        if self._daemon_probed or start_hint is None:
+        if (
+            start_hint is None
+            or self._daemon_answered
+            or (self._daemon_probed and not before_pull)
+        ):
             return
 
         try:
@@ -625,7 +637,18 @@ class ContainerBackend:
                 capture_output=True,
                 timeout=_DAEMON_PROBE_TIMEOUT_SECONDS,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            if before_pull:
+                raise ContainerDaemonUnreachableError(
+                    runtime=self.runtime,
+                    output=f"`{self.runtime} info` did not answer within "
+                    f"{_DAEMON_PROBE_TIMEOUT_SECONDS}s",
+                    permission_denied=False,
+                    fix=start_hint,
+                ) from None
+            self._daemon_probed = True
+            return
+        except OSError:
             self._daemon_probed = True
             return
 
@@ -641,6 +664,7 @@ class ContainerBackend:
                 fix=_DAEMON_PERMISSION_HINTS[self.runtime] if permission_denied else start_hint,
             )
         self._daemon_probed = True
+        self._daemon_answered = True
 
     def _registry_reports_missing(self, image: str) -> bool:
         """Return whether *image*'s registry positively reports it missing.
@@ -770,14 +794,30 @@ def container_backend_from_config(
 
     return ContainerBackend(
         project_root=project_root,
-        runtime=_config_str(table, "runtime", "docker"),
-        pull_policy=_config_str(table, "pull_policy", "if-not-present"),
+        runtime=_config_choice(table, "runtime", "docker", choices=_RUNTIMES),
+        pull_policy=_config_choice(table, "pull_policy", "if-not-present", choices=_PULL_POLICIES),
         user=_config_str(table, "user", "auto"),
         shell=_config_str(table, "shell", "bash"),
         auto_mount=_config_bool(table, "auto_mount", True),
         extra_mounts=_config_mounts(table),
         probe_registry=probe_registry,
     )
+
+
+def _config_choice(
+    table: dict[str, Any], key: str, default: str, *, choices: tuple[str, ...]
+) -> str:
+    """Return a ``[container]`` string setting that must be one of *choices*.
+
+    A misspelt value would otherwise fall through to whatever the code does
+    for "anything else"; for ``pull_policy`` that is always pulling.
+    """
+    value = _config_str(table, key, default)
+    if value not in choices:
+        raise ValueError(
+            f"[container] {key} must be one of {', '.join(map(repr, choices))}, got {value!r}"
+        )
+    return value
 
 
 def _config_str(table: dict[str, Any], key: str, default: str) -> str:

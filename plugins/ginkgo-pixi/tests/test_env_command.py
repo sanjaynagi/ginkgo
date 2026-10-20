@@ -95,7 +95,7 @@ class TestCliEnv:
 
     def test_env_clear_requires_exactly_one_target(self) -> None:
         result = _run_cli("env", "clear", cwd=Path.cwd())
-        assert result.returncode == 1
+        assert result.returncode == 2
         assert "Specify exactly one of <env> or --all." in result.stderr
 
 
