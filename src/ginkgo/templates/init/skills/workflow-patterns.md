@@ -99,7 +99,30 @@ a `str` parameter whose name looks path-like (`path`, `output_dir`,
 `Out[file]`/`Out[folder]` for a write.
 
 A data file opened by a literal path inside a task body is invisible to the
-cache. Pass it in as a `file` argument instead.
+cache. Pass it in as a `file` argument instead. The same goes for a file a
+task writes to a path that is neither an `Out[...]` parameter nor returned:
+it is not tracked or restored, and Ginkgo says nothing about it. Declare it
+`Out[file]` or return it. A value read from `os.environ` in a task body is
+not part of the cache key either; pass it in as an argument or a
+`ginkgo.param`. Every task in a module re-runs when any of the module's text
+changes, comments included.
+
+A shell, script or notebook output that may legitimately not be written is
+wrapped in `optional()` in `output=`; when absent it resolves to `None`, so
+annotate that element `file | None`. `Out[file | None]` is different: it
+means the argument may be `None`, and a path that is passed must still be
+written.
+
+```python
+from ginkgo import file, optional, shell, task
+
+@task("shell")
+def call_variants(sample: str) -> tuple[file, file | None]:
+    return shell(
+        cmd=f"mkdir -p results && echo {sample} > results/{sample}.vcf",
+        output=(f"results/{sample}.vcf", optional(f"results/{sample}.warnings.txt")),
+    )
+```
 
 A task with `Out[...]` parameters and no return annotation has its return
 value inferred from them — one `Out[...]` parameter becomes the return

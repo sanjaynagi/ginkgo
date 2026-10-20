@@ -170,9 +170,12 @@ def main():
     return combine(results=per_sample)                 # reduce: depends on all branches
 ```
 
-`ExprList.map(...)` also exists to extend each existing branch with further
-zipped columns, and `max_concurrent=` on any of these throttles how many
-generated branches run at once, independently of the global `--jobs`/`--cores`
+`ExprList.map(...)` also exists to chain a second fan-out: each existing
+branch is combined with each new zipped row, giving one flat `ExprList`, so
+two branches mapped over three rows make six (see
+[Chaining Fan-Out](guide/tasks-and-flows.md#chaining-fan-out)).
+`max_concurrent=` on any of these throttles how many generated branches run
+at once, independently of the global `--jobs`/`--cores`
 budget. For building the input/output path lists you map over, see
 [Building The Varying Lists With `expand()`](guide/tasks-and-flows.md#building-the-varying-lists-with-expand);
 for one output path per grid cell, see
@@ -671,7 +674,8 @@ running. On the first unretryable failure the evaluator records the failure and
 cancels only the futures that are still queued and have not started. The main
 loop then keeps waiting on the already-running futures until they complete — it
 simply stops dispatching new tasks — after which it re-raises the stored failure
-and the run ends with status `failed`.
+and the run ends with status `failed`. Tasks that never started, including
+everything downstream of the failure, are left `pending`; they are not run.
 
 That is the default. `@task(on_failure="ignore")`, or `--keep-going` for the
 whole run, makes a failure non-fatal: dispatch continues, only the tasks

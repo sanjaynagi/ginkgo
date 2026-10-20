@@ -26,6 +26,8 @@ def train_model(dataset: folder) -> file:
   to additionally export `OMP_NUM_THREADS` and related BLAS/OpenMP variables.
 - `memory="8Gi"` declares the memory footprint. Format is Kubernetes-style
   (`512Mi`, `4Gi`, `16Gi`). Remote executors map this to pod resource requests.
+  For scheduling against `--memory`, the value is rounded up to whole GiB with
+  a minimum of 1 GiB, so `512Mi` reserves 1 GiB and `1.5Gi` reserves 2 GiB.
 - `gpu=N` declares a GPU requirement. It is satisfied from the local `--gpus`
   budget when it fits, dispatched to the remote executor when one is
   configured (`--executor`), and a build error otherwise. `gpu_type` selects
@@ -223,7 +225,9 @@ grows by `retry_backoff_multiplier` on each attempt and is capped at
 
 Retries cannot help with a malformed input: it fails identically every time.
 By default the first failure a task's retries cannot absorb stops the run —
-in-flight tasks finish, nothing new is dispatched. In a wide fan-out that
+in-flight tasks finish, nothing new is dispatched. Tasks that never started,
+including everything downstream of the failure, are left `pending` in
+`ginkgo runs show`; they are not run. In a wide fan-out that
 throws away the work of every healthy branch.
 
 ```python

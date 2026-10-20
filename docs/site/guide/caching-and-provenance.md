@@ -32,7 +32,9 @@ only through this hash, so hashing function bodies alone would serve stale
 results whenever such state changed. When a task is expensive and the code
 beside it is under active edit, move it into its own module; that is the only
 way to decouple them. `ginkgo cache explain <run_id>` reports
-`source_hash_changed` for a task invalidated this way.
+`source_hash_changed` for a task invalidated this way. The hash covers the
+module's raw text, so editing only a comment or whitespace in it also re-runs
+every task the module defines.
 
 Local-import tracking is conservative: changing a reachable helper module
 invalidates tasks that import it, even when the changed symbol is not called.
@@ -139,6 +141,11 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
 - `Out[file]` / `Out[folder]` compose with containers and optionals —
   `Out[list[file]]`, `Out[file | None]` — but must be the outermost wrapper:
   `list[Out[file]]` is rejected, `Out[list[file]]` is not.
+- `Out[file | None]` means the *argument* may be `None`, in which case the
+  task has nothing to write there. A path that is passed must still be
+  written. For a shell, script or notebook output that may legitimately not
+  be written, use [`optional()`](tasks-and-flows.md#outputs-that-may-not-be-written)
+  on its `output=` entry instead.
 - **Before execution:** an `Out[...]` argument need not exist yet — it is
   validated to be a local, path-like value, and if something already exists at
   the path it must be the declared kind (`Out[file]` pointing at an existing
@@ -283,6 +290,27 @@ prints one dim summary line — `N inputs are tracked by path only; see
 \`ginkgo cache explain\`` — so a remaining directory or bare-word case
 surfaces without having to go looking for it. A workflow with nothing
 tracked by path stays quiet.
+
+### What The Cache Cannot See
+
+The cache key is built from the task's arguments and source, and only declared
+outputs are stored. Two things a task body can do sit outside both.
+
+**A file written to a path the task neither declares nor returns.** A task
+that writes `results/side.txt` to a hard-coded path, with no `Out[...]`
+parameter for it and without returning it, leaves that file invisible to the
+cache. It is not tracked or stored, so on a cache hit the task does not re-run
+and a deleted or edited copy is not restored. Nothing about the file feeds a
+cache key either, so a change to it invalidates nothing downstream. Ginkgo
+prints nothing about it. Declare the path as an `Out[file]` parameter, or
+return it as `file(...)`.
+
+**A value read from the process environment.** `os.environ` read inside a task
+body is not part of the cache key. Re-running with `MY_SETTING=b` after a run
+with `MY_SETTING=a` serves the cached result computed with `a`. Pass the value
+in as a task argument instead, or declare it as a workflow parameter with
+`ginkgo.param` (see [Workflow Parameters](cli.md#workflow-parameters)) and pass
+that to the task.
 
 ## Artifact Storage
 
