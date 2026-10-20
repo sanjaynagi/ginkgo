@@ -174,7 +174,7 @@ exits 1, and a stage that `head` stops reading early is killed by `SIGPIPE`
 
 ```bash
 grep pattern in.txt > out.txt || true
-(zcat reads.fq.gz || true) | head -n 4000 > sample.fq
+(gzip -cd reads.fq.gz || true) | head -n 4000 > sample.fq
 ```
 
 ### Declaring outputs with `Out[...]` instead of `output=`

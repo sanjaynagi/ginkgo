@@ -203,4 +203,4 @@ Every shell task runs under `bash -eo pipefail -c` (a container task under
 `[container] shell`, `bash` by default, with the same flags), so a failing
 line or a failing stage of a pipeline fails the task. Append `|| true` to a
 step that may legitimately fail: a `grep` that can match nothing, or the
-stage before `| head`, which `SIGPIPE` kills (`(zcat x.gz || true) | head`).
+stage before `| head`, which `SIGPIPE` kills (`(gzip -cd x.gz || true) | head`).
