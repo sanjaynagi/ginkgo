@@ -561,7 +561,7 @@ class TestReportData:
             }
         )
 
-        assert _memory_label(task) == "2.0 KB / 64Mi"
+        assert _memory_label(task) == "2.0 KiB / 64Mi"
 
     def test_an_escalated_budget_is_shown_as_the_budget_the_attempt_ran_against(self) -> None:
         task = _task_with_usage(
