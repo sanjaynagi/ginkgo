@@ -66,6 +66,7 @@ def main():
         checksums=checksums,
         briefs=briefs,
         packages=packages,
+        output_path="results/summary.json",
     )
     notebook_html = render_overview_notebook(
         summary_path=summary,
@@ -75,6 +76,7 @@ def main():
         summary_path=summary,
         notebook_html=notebook_html,
         package_reports=packages,
+        output_path="results/delivery_manifest.md",
     )
 
 

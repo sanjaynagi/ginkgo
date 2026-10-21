@@ -545,6 +545,28 @@ function whose body holds an unindented line inside a triple-quoted string —
 both fall back to hashing the decorator text, which invalidates more often than
 strictly needed but never less.
 
+### Does changing an environment variable re-run a task?
+
+Yes, when the task reads it by a literal name: `os.environ["NAME"]`,
+`os.environ.get("NAME")`, `os.getenv("NAME")` or `"NAME" in os.environ`, in the
+task body, in a function it calls, or in a module-level assignment it reads
+(`SCALE = float(os.environ.get("SCALE", "1"))`), within the task's own module
+and the local modules it imports. A digest of the value, or of its absence, is
+part of the key, and `ginkgo cache explain` names the variable that moved
+(`environ.NAME`). A read without a literal name (`os.environ[name]`,
+`env=os.environ`) cannot be keyed, so `ginkgo run`, `--dry-run` and `ginkgo
+doctor` warn that its result may be stale. See
+[Environment Variables](guide/caching-and-provenance.md#environment-variables).
+
+### Does editing a file a task opens by a literal path re-run it?
+
+No. A task's key covers its arguments and source, so a file it opens itself
+(`open("data/genes.tsv")`), a script a shell command runs (`bash
+scripts/trim.sh`), or a figure a notebook embeds by path is invisible to it.
+`ginkgo run`, `--dry-run` and `ginkgo doctor` name each such project path
+(`undeclared_literal_path`, or a notebook notice). Pass the file in as a `file`
+argument, and declare a file another task writes as that task's `Out[file]`.
+
 ### How do warm runs skip work?
 
 Cache lookups happen during node *preparation*, before any worker is dispatched.
@@ -594,7 +616,10 @@ File and folder outputs are copied into a content-addressed artifact store under
 declared output path — is the durable source of truth. On a cache hit, the
 artifact store re-materialises the output into the working tree: a tracked
 output file or folder that is missing or modified on disk is restored without
-re-running the task, overwriting any hand edits. Only when no stored artifact
+re-running the task, overwriting any hand edits. An edit counts when it moves the
+file's size or modification time; one that keeps both is taken as unchanged and
+stays (see
+[What The Cache Cannot See](guide/caching-and-provenance.md#what-the-cache-cannot-see)). Only when no stored artifact
 exists to restore from, such as a task with an explicit `-> None` return, does
 the missing output count as a miss and the task re-run. Large serialized return
 values are also offloaded to the store rather than inlined.

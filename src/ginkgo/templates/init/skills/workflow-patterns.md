@@ -66,6 +66,26 @@ def render_report(sample_id: str) -> file:
     return notebook(_NOTEBOOKS_DIR / "report.py")
 ```
 
+A notebook should read every file through its arguments, never by a path
+written into the notebook. A figure one task draws and a notebook shows is an
+`Out[file]` of the task that draws it, passed on as a `file` argument:
+
+```python
+@task("notebook")
+def region_report(region: str, figure: Out[file]):
+    return notebook(_NOTEBOOKS_DIR / "region.py")   # saves to args.get("figure")
+
+@task("notebook")
+def overview(figures: list[file]) -> file:
+    return notebook(_NOTEBOOKS_DIR / "overview.py")  # mo.image() each get_all("figures")
+
+reports = region_report().map(region=regions, figure=expand("results/figures/{region}.png", region=regions))
+overview(figures=reports.output["figure"])
+```
+
+A notebook that builds the figure path itself is served stale from the cache
+after the figure is redrawn; doctor and `--dry-run` warn about it.
+
 ## Ginkgo types and cache correctness
 
 Every path a task touches is either read or written, and the annotation says
@@ -107,13 +127,16 @@ a `str` parameter whose name looks path-like (`path`, `output_dir`,
 `report_files`, ...), suggesting `file`/`folder` for a read or
 `Out[file]`/`Out[folder]` for a write.
 
-A data file opened by a literal path inside a task body is invisible to the
-cache. Pass it in as a `file` argument instead. The same goes for a file a
-task writes to a path that is neither an `Out[...]` parameter nor returned:
-it is not tracked or restored, and Ginkgo says nothing about it. Declare it
-`Out[file]` or return it. A value read from `os.environ` in a task body is
-not part of the cache key either (run and doctor warn about it); pass it in
-as an argument or a `ginkgo.param`. Every task in a module re-runs when any of the module's text
+A data file opened by a literal path inside a task body, or a script a shell
+command runs (`bash scripts/trim.sh`), is invisible to the cache: editing it
+does not re-run the task. Run, `--dry-run` and doctor warn about such a path
+(`undeclared_literal_path`). Pass it in as a `file` argument and use the
+argument instead. The same goes for a file a task writes to a path that is
+neither an `Out[...]` parameter nor returned: it is not tracked or restored.
+Declare it `Out[file]` or return it. An environment variable read by a
+literal name (`os.environ["NAME"]`, `os.getenv("NAME")`) is part of the cache
+key; one read without a literal name (`os.environ[name]`) is not, and run and
+doctor warn about it. Prefer passing settings as arguments or `ginkgo.param`. Every task in a module re-runs when any of the module's text
 changes, comments included.
 
 A shell, script or notebook output that may legitimately not be written is
