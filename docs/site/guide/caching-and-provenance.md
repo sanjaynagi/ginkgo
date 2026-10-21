@@ -22,6 +22,14 @@ Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 annotation — everything else is hashed from its `repr`. See
 [Cache Correctness](#cache-correctness) for the exact rule and why it exists.
 
+A list, tuple or dict that holds no file, folder or remote object is hashed as
+one digest of its elements, so a 200,000-number input costs the cache entry and
+the ledger one digest, and `cache explain` reports the parameter as changed
+rather than naming the element. A container holding a file keeps an entry per
+element, which is how `cache explain` and `ginkgo why` name the file that
+moved. Recorded inputs (`runs show --json`, `debug`, the manifest) keep the
+first 20 items of a long container, with its length and the number left out.
+
 Hashing a large file on every run would be slow, so each digest is memoised
 under the file's device, inode, size and modification time, and reused while
 those four agree. A rewrite that keeps the size and the modification time —

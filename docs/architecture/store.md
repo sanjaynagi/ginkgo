@@ -15,9 +15,14 @@ The store has two halves.
 - **The ledger.** One append-only `events` table. Each row is a runtime event
   from `runtime/events.py`: `run_id`, `ts`, `type`, `v`, the columns readers
   filter and join on (`task_id`, `attempt`, `cache_key`), and the
-  whole payload as JSON. `seq` is assigned by SQLite, so insertion order is the
-  order things happened. Because the payload is JSON, a new event type needs no
-  migration.
+  rest of the event as JSON. A field a column holds is not repeated in the
+  payload (it was a fifth of a cached task's events);
+  `StoredEvent.fields`/`event_fields` put the event back together, and the
+  projector and `Query.events` read through them. `seq` is assigned by SQLite,
+  so insertion order is the order things happened. Because the payload is JSON,
+  a new event type needs no migration. Nothing prunes the ledger on its own: a
+  fully cached run adds about 3.5 KiB per task, and `doctor` warns past 1 GiB
+  (`store.maintenance.large_ledger_warning`).
 - **The projections.** `runs`, `tasks`, `attempts`, `task_inputs`,
   `task_outputs`, `edges`. Every one of them is derived from the ledger and
   updated in the same transaction as the event that caused it. A projection is
@@ -109,8 +114,8 @@ reason about than eight, and an empty table costs nothing.
 
 Before 1.0 the schema is edited in place rather than migrated: a workspace is
 derived data, and carrying a step for every column change costs more than a
-cold cache. The schema is at version 3, and that is its first step — removing
-the asset catalog edited it in place. A database at a version `MIGRATIONS` has
+cold cache. The schema's first step is version 3 — removing the asset catalog
+edited it in place; version 4 drops an `events(type, ts)` index no query used. A database at a version `MIGRATIONS` has
 no step for (1 or 2, or a newer ginkgo's) is refused with
 `StaleWorkspaceError`, whose message names the workspace to delete; deleting
 `.ginkgo/` is the whole upgrade. A purely additive change, such as a nullable
@@ -173,7 +178,7 @@ provenance never degrades silently.
   `.ginkgo/` and this is their only eviction; a blob two URIs share is kept
   until the last row naming it goes. At least one cutoff is required.
 - `ginkgo db vacuum` — rebuild the file, returning the pages a prune freed to
-  the filesystem, and report the size either side. SQLite cannot rebuild while
+  the filesystem, and report the size either side, write-ahead log included. SQLite cannot rebuild while
   another connection holds the database and says nothing when it declines, so
   an unchanged size is reported as "no space reclaimed" rather than as a win.
 - `ginkgo db path` — where the database is, after `GINKGO_DB`.
