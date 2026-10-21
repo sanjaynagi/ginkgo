@@ -45,16 +45,19 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
     An empty index is two different workspaces: one nothing has run in, and
     one whose ledger is gone from under the runs it recorded. The second gets
     the warning that says so, so that the listing never affirms an empty
-    workspace over one holding runs.
+    workspace over one holding runs; so does a listing whose database was
+    recreated after older runs.
     """
     if as_json:
         print(json.dumps([row.to_payload() for row in rows], indent=2, sort_keys=True))
         return 0
 
     rich_console.print("[bold green]🌿 ginkgo runs[/] [bold]ls[/]\n")
+    # Run directories the ledger has no row for are missing from the listing
+    # however many rows it has: the database may have been replaced since.
+    warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
     if not rows:
         rich_console.print("[dim]No runs recorded in this workspace.[/]")
-        warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
         if warning is not None:
             rich_console.print(f"[yellow]⚠[/] {warning}")
         return 0
@@ -74,6 +77,8 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
             format_duration(row.duration_s),
         )
     rich_console.print(table)
+    if warning is not None:
+        rich_console.print(f"[yellow]⚠[/] {warning}")
     return 0
 
 

@@ -23,7 +23,12 @@ from ginkgo.remote.access.doctor import AccessDiagnostic, collect_access_diagnos
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import SecretResolver, build_secret_resolver
-from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
+from ginkgo.runtime.rundir import (
+    RUNS_WITHOUT_DIRECTORY_CODE,
+    RUNS_WITHOUT_LEDGER_CODE,
+    runs_without_directory_warning,
+    runs_without_ledger_warning,
+)
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -50,6 +55,7 @@ def command_doctor(args) -> int:
     # diagnostics below, because collecting those builds the run machinery,
     # which creates the ledger the question is about.
     ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+    run_directory_warning = runs_without_directory_warning(layout=WorkspaceLayout.relative())
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -99,6 +105,16 @@ def command_doctor(args) -> int:
                 message=ledger_warning,
                 suggestion="Restore .ginkgo/ginkgo.db, or delete the run directories "
                 "if their history is not wanted.",
+            )
+        )
+    if run_directory_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=RUNS_WITHOUT_DIRECTORY_CODE,
+                message=run_directory_warning,
+                suggestion="Restore .ginkgo/runs from a backup if the logs are wanted; "
+                "`ginkgo runs show` still reads what the ledger recorded.",
             )
         )
 

@@ -28,13 +28,17 @@ from typing import Any
 
 import yaml
 
+from ginkgo.store import open_store
+from ginkgo.store.errors import StoreError
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = [
     "RunDir",
+    "RUNS_WITHOUT_DIRECTORY_CODE",
     "RUNS_WITHOUT_LEDGER_CODE",
     "orphaned_run_directories",
     "run_directory_problems",
+    "runs_without_directory_warning",
     "runs_without_ledger_warning",
     "attempt_log_header",
     "combined_log_tail",
@@ -46,7 +50,10 @@ __all__ = [
 ]
 
 RUNS_WITHOUT_LEDGER_CODE = "runs_without_ledger"
-"""The diagnostic code for run directories whose ledger is gone."""
+"""The diagnostic code for run directories the ledger has no row for."""
+
+RUNS_WITHOUT_DIRECTORY_CODE = "runs_without_directory"
+"""The diagnostic code for recorded runs whose run directories are gone."""
 
 
 def orphaned_run_directories(*, recorded_run_ids: set[str], root: Path) -> list[str]:
@@ -74,39 +81,87 @@ def orphaned_run_directories(*, recorded_run_ids: set[str], root: Path) -> list[
 
 
 def runs_without_ledger_warning(*, layout: WorkspaceLayout) -> str | None:
-    """Return the warning for a workspace holding runs whose ledger is gone.
+    """Return the warning for a workspace holding runs its ledger has no row for.
 
-    The ledger is what every read surface reads, so a workspace missing one
-    answers "no runs" to all of them. That is the truth for a fresh project
-    and a falsehood for a workspace whose database was deleted, filtered out
-    of a backup, or copied without ``ginkgo.db`` — the run directories, their
-    logs and their notebooks are all still there. The two cases differ only by
-    what is under ``layout.runs``, so the question is asked once here and the
-    answer is what ``db check``, ``runs ls`` and ``doctor`` all report.
+    The ledger is what every read surface reads, so a run directory it has no
+    row for is invisible to all of them. With no database at all, the
+    workspace answers "no runs", which is the truth for a fresh project and a
+    falsehood for one whose database was deleted, filtered out of a backup, or
+    copied without ``ginkgo.db``. A database recreated since (the next run
+    starts a new one) hides the older directories the same way. ``db check``,
+    ``runs ls`` and ``doctor`` all report this answer.
 
     Parameters
     ----------
     layout : WorkspaceLayout
-        The workspace to inspect. Nothing is created or opened: both halves
-        of the question are answered by stat'ing paths.
+        The workspace to inspect. Nothing is created: a database that exists
+        is opened read-only.
 
     Returns
     -------
     str | None
-        One sentence naming how many run directories have no ledger, or
-        ``None`` when there is a ledger or there are no run directories.
+        One sentence naming how many run directories have no row, or ``None``
+        when there are none (or the database cannot be read, which the
+        command reading it reports for itself).
     """
-    if layout.db.is_file():
+    recorded = _recorded_run_ids(layout=layout)
+    if recorded is None and layout.db.is_file():
         return None
-    orphaned = orphaned_run_directories(recorded_run_ids=set(), root=layout.runs)
+    orphaned = orphaned_run_directories(recorded_run_ids=recorded or set(), root=layout.runs)
     if not orphaned:
         return None
     noun = "directory" if len(orphaned) == 1 else "directories"
+    if recorded is None:
+        return (
+            f"{len(orphaned)} run {noun} under {layout.runs} but no database at "
+            f"{layout.db}: this workspace has run, and its provenance cannot be read "
+            "until the ledger is restored"
+        )
     return (
-        f"{len(orphaned)} run {noun} under {layout.runs} but no database at "
-        f"{layout.db}: this workspace has run, and its provenance cannot be read "
-        "until the ledger is restored"
+        f"{len(orphaned)} run {noun} under {layout.runs} with no row in {layout.db}: "
+        "the database was deleted or replaced after those runs, so ginkgo cannot read "
+        "their provenance"
     )
+
+
+def runs_without_directory_warning(*, layout: WorkspaceLayout) -> str | None:
+    """Return the warning for recorded runs whose run directories are gone.
+
+    The ledger still describes those runs, but their logs, manifests and
+    rendered pages were deleted, so ``ginkgo debug`` and ``report`` have
+    nothing to show for them. ``db check`` fails on it; ``doctor`` warns.
+
+    Parameters
+    ----------
+    layout : WorkspaceLayout
+        The workspace to inspect. A database that exists is opened read-only.
+
+    Returns
+    -------
+    str | None
+        One sentence naming how many runs have no directory, or ``None``.
+    """
+    recorded = _recorded_run_ids(layout=layout)
+    missing = [run_id for run_id in sorted(recorded or ()) if not (layout.runs / run_id).is_dir()]
+    if not missing:
+        return None
+    noun, pronoun = ("run", "its") if len(missing) == 1 else ("runs", "their")
+    return (
+        f"{len(missing)} {noun} recorded in {layout.db} with no run directory under "
+        f"{layout.runs}: {pronoun} logs and manifests were deleted (`ginkgo db check` "
+        "lists them)"
+    )
+
+
+def _recorded_run_ids(*, layout: WorkspaceLayout) -> set[str] | None:
+    """Return every run the ledger has a row for, or ``None`` without a readable one."""
+    if not layout.db.is_file():
+        return None
+    try:
+        with open_store(layout.db, readonly=True) as store:
+            return {str(row["run_id"]) for row in store.query("SELECT run_id FROM runs")}
+    except StoreError:
+        return None
 
 
 def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[str]:

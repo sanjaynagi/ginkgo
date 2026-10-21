@@ -61,7 +61,12 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import display_path, load_module_from_path, task_base_name
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
+from ginkgo.runtime.rundir import (
+    RunDir,
+    combined_log_tail,
+    make_run_id,
+    runs_without_ledger_warning,
+)
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
     env_warning_diagnostic,
@@ -370,6 +375,15 @@ def run_workflow(
         "keep_going": keep_going,
         "rerun": frozenset(rerun),
     }
+    # A workspace whose ledger was deleted gets a new one from this run, which
+    # leaves the older run directories unreadable without saying so. Asked
+    # before the evaluator is built, since building it creates the ledger.
+    if not WorkspaceLayout.relative().db.is_file():
+        ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+        if ledger_warning is not None:
+            console(sys.stderr).print(
+                f"[yellow]⚠[/] {escape(ledger_warning)}; this run starts a new database."
+            )
     evaluator = ConcurrentEvaluator(**evaluator_kwargs)
     # A call the flow never returns is not in the graph, so its side effects
     # never happen: the run otherwise looks like a smaller but healthy one.

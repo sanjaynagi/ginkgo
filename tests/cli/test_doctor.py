@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -306,6 +307,44 @@ class TestDoctorWorkspaceLedger:
         assert payload["ok"] is True
         assert [item["code"] for item in payload["diagnostics"]] == ["runs_without_ledger"]
         assert payload["diagnostics"][0]["severity"] == "warning"
+
+    def _run_once(self) -> None:
+        Path("workflow.py").write_text(
+            "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
+            "@flow\ndef main():\n    return one()\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_run_directories_older_than_a_new_ledger_are_reported(self) -> None:
+        """ED-6: a database recreated after a deletion hides the older runs too."""
+        self._run_once()
+        (Path(".ginkgo") / "runs" / "20260101_000000_000000_deadbeef").mkdir()
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_ledger"
+        assert "1 run directory under .ginkgo/runs with no row" in diagnostic["message"]
+
+    def test_recorded_runs_without_directories_are_reported(self) -> None:
+        """ED-6: deleting .ginkgo/runs fails db check, so doctor must not pass silently."""
+        self._run_once()
+        shutil.rmtree(Path(".ginkgo") / "runs")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_directory"
+        assert "1 run recorded" in diagnostic["message"]
 
     def test_a_workspace_that_has_not_run_yet_is_not_reported(self) -> None:
         _write_workflow(env=None)
