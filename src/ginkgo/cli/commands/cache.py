@@ -629,6 +629,7 @@ _REASON_TEXT = {
     "version_bump": "the task's declared version changed",
     "env_changed": "the declared environment changed",
     "input_changed": "one or more inputs changed",
+    "environ_changed": "an environment variable the task reads changed",
     "cache_key_changed": "the cache key changed",
 }
 

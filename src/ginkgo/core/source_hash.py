@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from ginkgo.core.hashing import hash_file, hash_str
 
-__all__ = ["compute_own_source_hash", "compute_source_hash"]
+__all__ = ["compute_own_source_hash", "compute_source_hash", "local_import_closure"]
 
 #: ``task()`` keyword arguments that steer scheduling, placement, and what a
 #: failure stops — never what a task produces. None of them reaches the
@@ -107,7 +107,7 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
     # time (see the similar import in ``ginkgo.core.task``).
     from ginkgo.runtime.module_loader import cache_identity_module_name
 
-    modules = _local_import_closure(module)
+    modules = local_import_closure(module)
     module_hashes = [
         f"{cache_identity_module_name(name)}:{_hash_module_source(path)}"
         for name, path in sorted(modules.items())
@@ -280,7 +280,7 @@ def _offset(lineno: int, col_offset: int, line_starts: list[int]) -> int:
     return line_starts[lineno - 1] + col_offset
 
 
-def _local_import_closure(module: ModuleType) -> dict[str, Path]:
+def local_import_closure(module: ModuleType) -> dict[str, Path]:
     """Return the local Python modules ``module`` statically imports, transitively.
 
     The closure follows import statements anywhere in the source, function

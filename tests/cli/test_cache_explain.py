@@ -213,6 +213,34 @@ class TestCacheExplainComponents:
             "prior": "manifest-1",
         }
 
+    def test_environment_variable_change_is_named(self, tmp_path: Path) -> None:
+        with _index(tmp_path) as index:
+            _write_entry(
+                index,
+                "prior",
+                environ={"MY_SETTING": "digest-1"},
+                created_at="2026-08-18T09:00:00+00:00",
+            )
+            _write_entry(index, "current", environ={"MY_SETTING": "digest-2"})
+            _write_run(
+                _db(tmp_path),
+                run_id="run-1",
+                started_at="2026-08-18T09:00:00+00:00",
+                cache_key="prior",
+            )
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+            )
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "environ_changed"
+        assert [entry["component"] for entry in explanation["components"]] == [
+            "environ.MY_SETTING"
+        ]
+
     def test_version_bump_is_named(self, tmp_path: Path) -> None:
         with _index(tmp_path) as index:
             _two_runs(index, _db(tmp_path), version="v2")

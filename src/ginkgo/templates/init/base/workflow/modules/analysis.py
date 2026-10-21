@@ -74,6 +74,7 @@ def write_summary(
     checksums: list[file],
     briefs: list[file],
     packages: list[file],
+    output_path: Out[file],
 ) -> file:
     """Assemble a compact JSON summary across all fan-out artifacts.
 
@@ -91,6 +92,8 @@ def write_summary(
         Pixi-built Markdown briefs.
     packages : list[file]
         Packaging reports from the shell task.
+    output_path : Out[file]
+        Where the JSON summary is written.
 
     Returns
     -------
@@ -118,9 +121,7 @@ def write_summary(
             }
         )
 
-    output = Path("results/summary.json")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    Path(output_path).write_text(
         json.dumps(
             {
                 "row_count": len(rows),
@@ -131,4 +132,4 @@ def write_summary(
         ),
         encoding="utf-8",
     )
-    return file(str(output))
+    return file(output_path)

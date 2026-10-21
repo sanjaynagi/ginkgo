@@ -150,6 +150,7 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
     (3, _SCHEMA),
     (4, "DROP INDEX IF EXISTS events_type_ts;"),
+    (5, "ALTER TABLE cache_entries ADD COLUMN environ TEXT;"),
 ]
 """Every schema step, in the order they are applied, keyed by resulting version.
 
@@ -157,6 +158,9 @@ The schema starts at version 3: removing the asset catalog edited it in place,
 so a database written at version 1 or 2 is refused and the user deletes the
 workspace. Later additive changes get a step of their own. Version 4 drops an
 index on ``events(type, ts)`` that no query used and every event paid for.
+Version 5 adds ``cache_entries.environ``: a JSON map from each environment
+variable a task reads to a digest of its value, so ``cache explain`` can name a
+changed variable.
 """
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
