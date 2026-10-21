@@ -54,6 +54,7 @@ from ginkgo.runtime.artifacts.value_codec import (
     summarise_value,
 )
 from ginkgo.workspace_layout import WorkspaceLayout
+from ginkgo.runtime.module_loader import cache_identity_module_name
 
 
 logger = logging.getLogger(__name__)
@@ -1160,7 +1161,7 @@ class CacheStore:
         origin = get_origin(annotation)
         if origin in {list, tuple}:
             return self._hash_sequence(
-                type_name=origin.__name__,
+                type_name=_container_type_name(value=value, builtin_name=origin.__name__),
                 pairs=pair_elements_with_annotations(annotation=annotation, value=value),
                 container_annotation=annotation,
                 known_digests=known_digests,
@@ -1171,6 +1172,7 @@ class CacheStore:
             key_annotation, value_annotation = self._dict_annotations(annotation)
             return self._hash_mapping(
                 value=value,
+                type_name=_container_type_name(value=value, builtin_name="dict"),
                 key_annotation=key_annotation,
                 value_annotation=value_annotation,
                 container_annotation=annotation,
@@ -1178,9 +1180,14 @@ class CacheStore:
                 label=label,
             )
 
+        # A subclass such as a ``namedtuple`` is hashed item by item like the
+        # builtin, so a file it holds is still tracked by content, under its
+        # own type name, so it never keys the same as the builtin it is not.
         if isinstance(value, (list, tuple)):
             return self._hash_sequence(
-                type_name="list" if isinstance(value, list) else "tuple",
+                type_name=_container_type_name(
+                    value=value, builtin_name="list" if isinstance(value, list) else "tuple"
+                ),
                 pairs=[(annotation, item) for item in value],
                 container_annotation=annotation,
                 known_digests=known_digests,
@@ -1206,6 +1213,7 @@ class CacheStore:
         if isinstance(value, dict):
             return self._hash_mapping(
                 value=value,
+                type_name=_container_type_name(value=value, builtin_name="dict"),
                 key_annotation=Any,
                 value_annotation=Any,
                 container_annotation=Any,
@@ -1243,7 +1251,7 @@ class CacheStore:
         return {
             "codec": codec_name,
             "sha256": digest,
-            "type": f"{type(value).__module__}.{type(value).__name__}",
+            "type": _qualified_type_name(value),
         }
 
     def _hash_path_string_leaf(self, *, value: Any) -> Any:
@@ -1291,6 +1299,7 @@ class CacheStore:
         self,
         *,
         value: dict[Any, Any],
+        type_name: str,
         key_annotation: Any,
         value_annotation: Any,
         container_annotation: Any,
@@ -1308,13 +1317,13 @@ class CacheStore:
             label=label,
         )
         if not names_path:
-            return {"sha256": _digest_of_tokens(items), "type": "dict"}
+            return {"sha256": _digest_of_tokens(items), "type": type_name}
         return {
             "items": [
                 {"key": items[index], "value": items[index + 1]}
                 for index in range(0, len(items), 2)
             ],
-            "type": "dict",
+            "type": type_name,
         }
 
     def _hash_elements(
@@ -1342,7 +1351,8 @@ class CacheStore:
         tokens = [
             repr(item)
             if _hashes_as_repr(value=item, plain_strings=plain_strings)
-            else self._hash_value(
+            else _plain_data_hash(value=item, annotation=item_annotation)
+            or self._hash_value(
                 annotation=item_annotation,
                 value=item,
                 known_digests=known_digests,
@@ -1402,6 +1412,7 @@ class CacheStore:
         task_def: TaskDef,
         resolved_args: dict[str, Any],
         extra_source_hash: str | None = None,
+        input_hashes: dict[str, Any] | None = None,
     ) -> str:
         """Build a stat-based fingerprint for ``--trust-mtimes`` mode.
 
@@ -1416,6 +1427,10 @@ class CacheStore:
             Resolved input argument values.
         extra_source_hash : str | None
             Additional source hash (notebook/script).
+        input_hashes : dict[str, Any] | None
+            The input hashes :meth:`build_cache_key` already computed for
+            this call. An input that is not itself a path is fingerprinted
+            by that same hash, so a large value is not hashed a second time.
 
         Returns
         -------
@@ -1432,6 +1447,7 @@ class CacheStore:
                 value=resolved_args[name],
                 label=f"{task_def.base_name}.{name}",
                 is_output=name in task_def.output_params,
+                input_hash=(input_hashes or {}).get(name),
             )
 
         source_hash = task_def.cache_source_hash
@@ -1457,12 +1473,15 @@ class CacheStore:
         value: Any,
         label: str = "value",
         is_output: bool = False,
+        input_hash: Any = None,
     ) -> Any:
         """Build a stat-based representation for a value (no content reading).
 
         An ``Out[...]`` parameter (``is_output``) is never stat'd — like the
         content-addressed key, it contributes its path string only. Same for
-        an ``untracked``-annotated parameter.
+        an ``untracked``-annotated parameter. A value that is not a path is
+        represented by its content hash: *input_hash* when the caller already
+        has it, so it is not computed again.
         """
         if annotation is tmp_dir:
             return None
@@ -1546,6 +1565,8 @@ class CacheStore:
             return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "type": "file"}
 
         # For non-path types, use the same hash as the content-addressed path.
+        if input_hash is not None:
+            return input_hash
         return self._hash_value(annotation=annotation, value=value, label=label)
 
     def _dict_annotations(self, annotation: Any) -> tuple[Any, Any]:
@@ -1587,6 +1608,77 @@ def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
     if is_content_trackable_path_shape(annotation=annotation, value=value):
         return [str(value)]
     return []
+
+
+def _plain_data_hash(*, value: Any, annotation: Any) -> dict[str, str] | None:
+    """Return a nested container's hash in one tight walk, or ``None``.
+
+    The hash :meth:`CacheStore._hash_value` gives an exact ``list``, ``tuple``
+    or ``dict`` holding only plain scalars, strings that cannot name a path,
+    and more such containers, under an annotation that binds nothing to a
+    path. Each element is visited once, without the per-element dispatch the
+    general walk pays, which dominates the cache key of a large nested value.
+    ``None`` means the value holds something else, and the general walk
+    decides.
+    """
+    if type(value) not in (list, tuple, dict) or get_origin(annotation) is not None:
+        return None
+    if annotation in (file, folder, tmp_dir) or is_untracked_annotation(annotation):
+        return None
+    try:
+        return _plain_container_hash(value)
+    except _NotPlainData:
+        return None
+
+
+class _NotPlainData(Exception):
+    """Raised inside :func:`_plain_container_hash` on an element it cannot key."""
+
+
+def _plain_container_hash(value: Any) -> dict[str, str]:
+    """Return the hash of a plain-data container, or raise :class:`_NotPlainData`."""
+    value_type = type(value)
+    if value_type is dict:
+        # A dict carrying a type tag may be a fuse marker, keyed by its identity.
+        if "__ginkgo_type__" in value:
+            raise _NotPlainData
+        tokens: list[Any] = []
+        for key, item in sorted(value.items(), key=lambda pair: repr(pair[0])):
+            tokens.append(_plain_token(key))
+            tokens.append(_plain_token(item))
+    else:
+        tokens = [_plain_token(item) for item in value]
+    return {"sha256": _digest_of_tokens(tokens), "type": value_type.__name__}
+
+
+def _plain_token(value: Any) -> Any:
+    """Return one element's token as :meth:`CacheStore._hash_elements` keys it."""
+    value_type = type(value)
+    if value_type in PLAIN_SCALAR_TYPES or (
+        value_type is str and not looks_like_path_string(value)
+    ):
+        return repr(value)
+    if value_type in (list, tuple, dict):
+        return _plain_container_hash(value)
+    raise _NotPlainData
+
+
+def _qualified_type_name(value: Any) -> str:
+    """Return the module-qualified name of *value*'s type, as a cache key records it.
+
+    A class defined in a single-file workflow is named under a module that
+    does not depend on where the workflow file sits, so moving or copying the
+    project keeps its cache keys.
+    """
+    value_type = type(value)
+    return f"{cache_identity_module_name(value_type.__module__)}.{value_type.__name__}"
+
+
+def _container_type_name(*, value: Any, builtin_name: str) -> str:
+    """Return the type a container is keyed under: the builtin's, or its subclass's."""
+    if type(value) in (list, tuple, dict):
+        return builtin_name
+    return _qualified_type_name(value)
 
 
 def _hashes_as_repr(*, value: Any, plain_strings: bool) -> bool:

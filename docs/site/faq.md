@@ -629,11 +629,29 @@ values are also offloaded to the store rather than inlined.
 ### How does Ginkgo serialize values passed between tasks?
 
 Values crossing a task boundary go through a codec that turns a Python object
-into a JSON-safe payload tagged with a type marker. Primitives (`None`, `bool`,
-`int`, `float`, `str`) pass through as-is; `file`/`folder`/`tmp_dir` get typed
-wrappers; and `list`/`tuple`/`dict` are encoded recursively. Anything else falls through to a binary encoder, which
-serializes a NumPy array via `.npy`, a pandas DataFrame via Parquet (falling
-back to pickle), and every other object via `pickle` (protocol 5).
+into a JSON-safe payload tagged with a type marker. The same codec carries a
+value to a worker, back to the driver, and into and out of the cache, so a
+consumer sees the same value whether its producer ran or was served from the
+cache.
+
+- `None` and exact `bool`, `int`, `float` and `str` values pass through as-is.
+- `file`, `folder` and `tmp_dir` get typed wrappers.
+- An exact `list`, `tuple` or `dict` is encoded item by item.
+- Anything else goes to a binary encoder: a NumPy array as `.npy`, a pandas
+  DataFrame as Parquet (falling back to pickle), and every other object with
+  `pickle` (protocol 5).
+
+Only the exact builtins are encoded structurally. A subclass is pickled whole,
+so it comes back as itself: a NumPy scalar such as `np.float64`, a
+`namedtuple`, an `OrderedDict`, a `defaultdict` (with its default factory) or
+your own `list` subclass. A `file` or `folder` inside such a container is still
+tracked by content in the consumer's cache key.
+
+A class or enum defined in a workflow file round-trips too, on fresh, cached
+and `--rerun` runs alike, and after the project is moved or copied. A
+single-file workflow is loaded under a module name that only one process
+knows, so Ginkgo pickles its classes by the workflow file's path relative to
+the project root and finds that module again wherever the value is decoded.
 
 ### What's the inline-versus-artifact threshold?
 
@@ -647,9 +665,9 @@ callers do not see the difference.
 
 The codec is the same in both cases; the difference is what carries the bytes.
 Locally, the evaluator encodes task args into a transport directory and the
-process-pool worker decodes them; results often come back as a direct in-memory
-Python object with no re-serialization, while the Pixi subprocess path uses a
-pickle-over-JSON bridge. For remote execution the encoded payload is layered with
+process-pool worker decodes them, then encodes the result the same way for the
+driver to decode. Only a result holding task expressions (a dynamic task)
+comes back as one pickled object instead. For remote execution the encoded payload is layered with
 a remote-transfer step: `file`/`folder` artifacts are uploaded to a shared
 remote artifact store (object storage) as references, and the remote worker
 downloads them before running, then pushes outputs back the same way — so
@@ -660,8 +678,10 @@ nothing large travels inside the job payload itself.
 Any value the codec can encode: the typed cases above, plus anything that
 survives the binary encoder. A value with no dedicated codec is pickled
 (protocol 5) as the final fallback, so most standard Python objects work — but an
-object that cannot be pickled fails. Ginkgo validates process-bound values up
-front and raises an error naming the offending value's type if it cannot be
+object that cannot be pickled fails. Pickle finds a class by name, so it must
+be defined at module level: a `namedtuple` or class created inside a function
+cannot cross a task boundary. Ginkgo validates process-bound values up front
+and raises an error naming the offending value's type if it cannot be
 encoded, so unpicklable objects fail loudly rather than mid-transport.
 
 ## Outputs

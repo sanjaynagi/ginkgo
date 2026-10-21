@@ -167,6 +167,7 @@ class NodeCache:
             task_def=node.task_def,
             resolved_args=node.resolved_args,
             extra_source_hash=node.extra_source_hash,
+            input_hashes=node.input_hashes,
         )
         self.index.record_stat_index(stat_key=stat_key, cache_key=cache_key)
 

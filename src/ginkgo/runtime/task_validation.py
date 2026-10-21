@@ -33,6 +33,8 @@ from ginkgo.core.types import (
     is_untracked_annotation,
     looks_like_path_string,
     pair_elements_with_annotations,
+    plain_data_strings,
+    rebuild_sequence,
     require_path_value,
     tmp_dir,
     untracked,
@@ -352,6 +354,19 @@ def label_input_value(
         annotation=annotation, expected=tmp_dir
     ):
         return "value"
+    # A nested container of plain data is labelled from its distinct strings,
+    # with one existence check each rather than a call per element: under an
+    # annotation binding nothing to a path, a string that does not read as a
+    # path is labelled "path" exactly when it names something on disk.
+    if (
+        type(value) in (list, tuple, dict)
+        and get_origin(annotation) is None
+        and annotation not in (file, folder, tmp_dir)
+        and not is_untracked_annotation(annotation)
+    ):
+        strings = plain_data_strings(value)
+        if strings is not None and not any(looks_like_path_string(text) for text in strings):
+            return "path" if any(os.path.exists(text) for text in strings if text) else "value"
 
     origin = get_origin(annotation)
     if origin in {list, tuple}:
@@ -813,6 +828,8 @@ class TaskValidator:
         """Reject values that are not supported across process and cache boundaries."""
         if isinstance(value, (Expr, ExprList, ExecutionDirective, SecretRef)):
             return
+        if plain_data_strings(value) is not None:
+            return
         if collect_secret_refs(value):
             return
         try:
@@ -1045,6 +1062,15 @@ class TaskValidator:
             _reject_list_for_single_value(annotation=annotation, label=label)
 
         if isinstance(value, list | tuple):
+            # Each element is checked against this same annotation, which
+            # only checks a leaf when it is a path, scratch or scalar type:
+            # under any other, a long list has nothing to check.
+            if not (
+                annotation in {file, folder, tmp_dir}
+                or annotation in _SCALAR_TYPES
+                or is_path_annotation(annotation)
+            ):
+                return
             for index, item in enumerate(value):
                 self.validate_annotated_value(
                     annotation=annotation,
@@ -1129,7 +1155,11 @@ class TaskValidator:
         return self.coerce_annotated_value(annotation=annotation, value=value)
 
     def coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:
-        """Coerce values recursively for direct and container-wrapped path types."""
+        """Coerce values recursively for direct and container-wrapped path types.
+
+        A rewritten ``list`` or ``tuple`` keeps its own type, so a
+        ``namedtuple`` is not turned into the builtin the codec would not.
+        """
         if annotation in {None, Any} or type(value) in PLAIN_SCALAR_TYPES:
             return value
 
@@ -1140,43 +1170,24 @@ class TaskValidator:
             return None
 
         origin = get_origin(annotation)
-        if origin is list and isinstance(value, list):
-            inner_annotations = get_args(annotation)
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return [
-                self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
-            ]
-
-        if origin is tuple and isinstance(value, tuple):
-            inner_annotations = get_args(annotation)
-            if len(inner_annotations) == 2 and inner_annotations[1] is Ellipsis:
-                inner_annotation = inner_annotations[0]
-                return tuple(
-                    self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                    for item in value
-                )
-
-            if inner_annotations and len(inner_annotations) == len(value):
-                return tuple(
+        if origin in {list, tuple} and isinstance(value, (list, tuple)):
+            return rebuild_sequence(
+                like=value,
+                items=(
                     self.coerce_annotated_value(annotation=item_annotation, value=item)
-                    for item_annotation, item in zip(inner_annotations, value, strict=True)
-                )
-
-            inner_annotation = inner_annotations[0] if inner_annotations else Any
-            return tuple(
-                self.coerce_annotated_value(annotation=inner_annotation, value=item)
-                for item in value
+                    for item_annotation, item in pair_elements_with_annotations(
+                        annotation=annotation, value=value
+                    )
+                ),
             )
 
-        if isinstance(value, list):
-            return [
-                self.coerce_annotated_value(annotation=annotation, value=item) for item in value
-            ]
-
-        if isinstance(value, tuple):
-            return tuple(
-                self.coerce_annotated_value(annotation=annotation, value=item) for item in value
+        if isinstance(value, (list, tuple)):
+            return rebuild_sequence(
+                like=value,
+                items=(
+                    self.coerce_annotated_value(annotation=annotation, value=item)
+                    for item in value
+                ),
             )
 
         if annotation in {file, folder, tmp_dir} and isinstance(value, str):
