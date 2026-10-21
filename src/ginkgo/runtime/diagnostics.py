@@ -19,8 +19,6 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import is_str_path_annotation, looks_path_like_param_name
 from ginkgo.errors import failure_location
 from ginkgo.runtime.backend import ExecutionEnvironment
-from ginkgo.runtime.caching.environ_reads import environ_reads
-from ginkgo.runtime.literal_paths import literal_project_paths, path_strings
 from ginkgo.runtime.graph import TaskGraph, TaskNode
 from ginkgo.runtime.placement import Placement
 from ginkgo.runtime.task_kinds import task_kind
@@ -33,8 +31,6 @@ from ginkgo.runtime.environment.secrets import SecretResolver
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
 PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
 MISSING_DIRECTIVE_CODE = "missing_directive_return"
-ENVIRON_READ_CODE = "environ_read_in_task"
-LITERAL_PATH_CODE = "undeclared_literal_path"
 STATIC_NOTICE_CODE = "task_kind_notice"
 SPACED_COMMAND_PATH_CODE = "spaced_command_path"
 REFUSED_DIRECTIVE_CODE = "refused_directive"
@@ -176,10 +172,6 @@ def collect_workflow_diagnostics(
             env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
             for warning in validator.env_warnings
         )
-        diagnostics.extend(
-            environ_read_diagnostics(task_defs=[node.task_def for node in graph.nodes.values()])
-        )
-        diagnostics.extend(literal_path_diagnostics(nodes=graph.nodes.values(), root=Path.cwd()))
         diagnostics.extend(static_notice_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(spaced_command_path_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(refused_directive_diagnostics(nodes=graph.nodes.values()))
@@ -390,168 +382,6 @@ def missing_directive_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Workf
     return diagnostics
 
 
-def environ_read_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
-    """Build one warning per task that reads the environment in a way the cache cannot key.
-
-    A variable read by a literal name (``os.environ["NAME"]``,
-    ``os.getenv("NAME")``) in the task body, or in project code it reaches, is
-    part of the task's cache key (see
-    :mod:`~ginkgo.runtime.caching.environ_reads`). A read the scan cannot name
-    a variable for, such as ``os.environ[key]`` or ``dict(os.environ)``, is
-    not, so the task may serve a result computed with an old value.
-
-    Parameters
-    ----------
-    task_defs : Iterable[TaskDef]
-        Task definitions to check. Deduplicated internally by
-        :attr:`TaskDef.name`.
-
-    Returns
-    -------
-    list[WorkflowDiagnostic]
-        One ``warning``-severity diagnostic per flagged task, ordered by first
-        encounter.
-    """
-    diagnostics: list[WorkflowDiagnostic] = []
-    seen_task_names: set[str] = set()
-    for task_def in task_defs:
-        if task_def.name in seen_task_names:
-            continue
-        seen_task_names.add(task_def.name)
-        unresolved = environ_reads(task_def.fn).unresolved
-        if not unresolved:
-            continue
-        task_label = task_def.base_name
-        diagnostics.append(
-            WorkflowDiagnostic(
-                severity="warning",
-                code=ENVIRON_READ_CODE,
-                message=(
-                    f"Task {task_label!r} reads the process environment without a literal "
-                    f"variable name (in {', '.join(sorted(unresolved))}), so its cache key "
-                    "cannot include that variable and a cached result may be stale after it "
-                    'changes. Reads by a literal name, such as os.environ["NAME"] or '
-                    'os.getenv("NAME"), are keyed.'
-                ),
-                location=task_def.name,
-                suggestion=(
-                    "Read the variable by a literal name, or pass its value into "
-                    f"{task_label} as an argument (or declare it with ginkgo.param and pass that)."
-                ),
-            )
-        )
-    return diagnostics
-
-
-def literal_path_diagnostics(*, nodes: Iterable[TaskNode], root: Path) -> list[WorkflowDiagnostic]:
-    """Build one warning per project file a task body names but does not take as input.
-
-    ``Path("data/genes.tsv").read_text()`` in a task body, or ``bash
-    scripts/trim.sh`` in a shell command, reads a file the cache key never
-    sees, so editing it leaves the task cached. Only the task's own body is
-    read, and only string literals naming an existing file under *root*
-    count; a path any call passes as an argument is left alone.
-
-    Parameters
-    ----------
-    nodes : Iterable[TaskNode]
-        The graph's task nodes, grouped by :attr:`TaskDef.name`.
-    root : Path
-        The project root, against which relative literals resolve.
-
-    Returns
-    -------
-    list[WorkflowDiagnostic]
-        One ``warning``-severity diagnostic per task and file, ordered by first
-        encounter.
-    """
-    calls: dict[str, list[TaskNode]] = {}
-    for node in nodes:
-        calls.setdefault(node.task_def.name, []).append(node)
-
-    diagnostics: list[WorkflowDiagnostic] = []
-    for task_nodes in calls.values():
-        task_def = task_nodes[0].task_def
-        try:
-            function = ast.parse(textwrap.dedent(inspect.getsource(task_def.fn))).body[0]
-        except (OSError, TypeError, SyntaxError):
-            continue
-        if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        # The body only: a decorator's env= path and a parameter's default are
-        # declared, not hidden.
-        body = ast.Module(body=function.body, type_ignores=[])
-        kind = task_kind(task_def)
-        _forget_declared_literals(
-            body=body,
-            namespace=task_def.fn.__globals__,
-            hashed_directive=kind.call_form.split("(")[0] if kind.eager_source_hash else None,
-        )
-        passed = [
-            root / value for node in task_nodes for value in path_strings(node.expr.args.values())
-        ]
-        task_label = task_def.base_name
-        use = (
-            "interpolate that argument into the command"
-            if kind.name == "shell"
-            else "read that argument instead"
-        )
-        for path in literal_project_paths(tree=body, root=root, ignore=passed):
-            diagnostics.append(
-                WorkflowDiagnostic(
-                    severity="warning",
-                    code=LITERAL_PATH_CODE,
-                    message=(
-                        f"{task_label}'s body names the project path {path!r} instead of "
-                        "taking it as an argument, so its cache key cannot see that file: a "
-                        f"cached {task_label} is not re-run when it changes."
-                    ),
-                    location=task_def.name,
-                    suggestion=(
-                        f"Pass {path!r} into {task_label} as a `file` argument and {use}, "
-                        f"or declare it `Out[file]` if {task_label} writes it."
-                    ),
-                )
-            )
-    return diagnostics
-
-
-def _forget_declared_literals(
-    *, body: ast.Module, namespace: dict[str, Any], hashed_directive: str | None
-) -> None:
-    """Blank the string literals in *body* that some cache key already covers.
-
-    A path passed to another task (``deep_check(reads=f"data/{s}.txt")``,
-    ``.map(...)`` included) is that task's declared argument, and the file a
-    script, notebook or subworkflow directive names (``notebook("report.py")``)
-    is hashed with the directive.
-    """
-    for node in ast.walk(body):
-        if not isinstance(node, ast.Call):
-            continue
-        declared: list[ast.AST] = []
-        if isinstance(_call_root(call=node, namespace=namespace), TaskDef):
-            declared = [*node.args, *(keyword.value for keyword in node.keywords)]
-        elif hashed_directive and isinstance(node.func, ast.Name):
-            if node.func.id == hashed_directive:
-                declared = [
-                    *node.args[:1],
-                    *(keyword.value for keyword in node.keywords if keyword.arg == "path"),
-                ]
-        for argument in declared:
-            for literal in ast.walk(argument):
-                if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
-                    literal.value = None
-
-
-def _call_root(*, call: ast.expr, namespace: dict[str, Any]) -> Any:
-    """Return the global a call chain such as ``task(...).map(...)`` starts from."""
-    node = call
-    while isinstance(node, ast.Call | ast.Attribute):
-        node = node.func if isinstance(node, ast.Call) else node.value
-    return namespace.get(node.id) if isinstance(node, ast.Name) else None
-
-
 def spaced_command_path_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:
     """Warn where an upstream ``Out[...]`` path with a space feeds a shell command.
 
@@ -641,7 +471,9 @@ def static_notice_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiag
             continue
         if directive is None:
             continue
-        for message in kind.static_notices(directive, node.task_def.base_name, node.expr.args):
+        for message in kind.static_notices(
+            directive, node.task_def.base_name, list(node.expr.args)
+        ):
             if message in seen:
                 continue
             seen.add(message)

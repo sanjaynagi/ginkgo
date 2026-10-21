@@ -84,7 +84,7 @@ overview(figures=reports.output["figure"])
 ```
 
 A notebook that builds the figure path itself is served stale from the cache
-after the figure is redrawn; doctor and `--dry-run` warn about it.
+after the figure is redrawn.
 
 ## Ginkgo types and cache correctness
 
@@ -127,17 +127,23 @@ a `str` parameter whose name looks path-like (`path`, `output_dir`,
 `report_files`, ...), suggesting `file`/`folder` for a read or
 `Out[file]`/`Out[folder]` for a write.
 
-A data file opened by a literal path inside a task body, or a script a shell
-command runs (`bash scripts/trim.sh`), is invisible to the cache: editing it
-does not re-run the task. Run, `--dry-run` and doctor warn about such a path
-(`undeclared_literal_path`). Pass it in as a `file` argument and use the
-argument instead. The same goes for a file a task writes to a path that is
-neither an `Out[...]` parameter nor returned: it is not tracked or restored.
-Declare it `Out[file]` or return it. An environment variable read by a
-literal name (`os.environ["NAME"]`, `os.getenv("NAME")`) is part of the cache
-key; one read without a literal name (`os.environ[name]`) is not, and run and
-doctor warn about it. Prefer passing settings as arguments or `ginkgo.param`. Every task in a module re-runs when any of the module's text
-changes, comments included.
+A task sees only its arguments. Its cache key covers its arguments, its source
+and `version=`; anything else it reads must come in as an argument. A data file
+opened by a path inside a task body, or a script a shell command runs (`bash
+scripts/trim.sh`), is invisible to the cache: pass it in as a `file` argument
+and use the argument instead. A file a task writes to a path that is neither an
+`Out[...]` parameter nor returned is not tracked or restored: declare it
+`Out[file]` or return it. Read an environment variable in the flow body, which
+runs while the graph is built, and pass the value in as an argument:
+
+```python
+threshold = float(os.environ.get("PEAK_THRESHOLD", "0.05"))
+call_peaks(bam=bam, out="results/peaks.bed", threshold=threshold)
+```
+
+A `ginkgo.param` is the other route. A variable read inside a task body is
+invisible to the cache. Every task in a module re-runs when any of the
+module's text changes, comments included.
 
 A shell, script or notebook output that may legitimately not be written is
 wrapped in `optional()` in `output=`; when absent it resolves to `None`, so

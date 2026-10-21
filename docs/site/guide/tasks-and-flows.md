@@ -415,10 +415,8 @@ underscore. `ginkgo doctor` and `ginkgo run --dry-run` give the same warning
 before anything runs, when the body is a plain `return notebook(...)` whose
 path does not depend on an upstream result. The notebook file is
 source material for both execution and cache identity — when the notebook
-changes, the task's cache key changes. Nothing else the notebook opens is: the
-same checks warn about a project path the notebook names in a literal that its
-task does not pass (a `mo.cli_args()` fallback like the ones above excepted),
-since a cached notebook is not re-run when that file changes.
+changes, the task's cache key changes. Nothing else the notebook opens is, so
+pass every file it reads in as an argument.
 
 `mo.cli_args()` collects a repeated option into a list but joins
 space-separated values into one string. So a `list`/`tuple` parameter of
@@ -506,8 +504,7 @@ embeds each with `mo.image(path)`. The figures are then content-hashed inputs
 of `overview`, so a redrawn figure re-runs it, and Ginkgo runs `overview` after
 the tasks that draw them. A notebook that builds the path itself
 (`mo.image(f"results/figures/{region}.png")`) gets neither: it is served from
-the cache with the old figure, and may run before the figure exists. `ginkgo
-doctor` and `--dry-run` warn about such a path.
+the cache with the old figure, and may run before the figure exists.
 
 ### Staging A Python Value For A Notebook
 

@@ -15,8 +15,9 @@ level, Ginkgo hashes:
 - notebook source for notebook tasks
 - resolved input values
 - environment identity for foreign execution
-- the value of each environment variable the task reads by name (see
-  [Environment Variables](#environment-variables))
+
+Nothing else reaches the key (see
+[A Task Sees Only Its Arguments](#a-task-sees-only-its-arguments)).
 
 Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 `Any`/`list[str]`/...) value that names an existing *file* and reads as a path
@@ -41,45 +42,32 @@ the file to make the next run hash it again. The same memo checks a cached
 output on a cache hit, so an output edited that way is not restored either (see
 [What The Cache Cannot See](#what-the-cache-cannot-see)).
 
-### Environment Variables
+### A Task Sees Only Its Arguments
 
-A task that reads an environment variable by a literal name has that variable's
-current value in its cache key, so changing it re-runs the task:
+A task's cache key covers its arguments, its source and `version=`. Anything
+else the task reads must come in as an argument.
 
-```python
-SCALE = float(os.environ.get("SCALE", "1"))   # module level, read by a task: keyed
+- Files go in as `file` or `folder` arguments. Their contents are hashed, and a
+  file another task writes orders the graph, so the reader runs after the
+  writer.
+- Environment variables are read in the flow body, which runs while the graph
+  is built, and passed as plain arguments:
 
-@task()
-def call_peaks(bam: file, out: Out[file]) -> file:
-    threshold = os.environ.get("PEAK_THRESHOLD", "0.05")   # keyed
-    ...
-```
+  ```python
+  @flow
+  def main():
+      threshold = float(os.environ.get("PEAK_THRESHOLD", "0.05"))
+      return call_peaks(bam="data/a.bam", out="results/a.bed", threshold=threshold)
+  ```
 
-Ginkgo reads the task's source, without running it, for `os.environ["NAME"]`,
-`os.environ.get("NAME")`, `"NAME" in os.environ` and `os.getenv("NAME")` (also
-through `from os import environ, getenv`). It looks in the task body, in every
-function the task calls by name, and in every module-level assignment those
-read, as long as that code sits in the task's module or a local module it
-imports: the same files the source hash covers. An unset variable is keyed as
-unset, so setting it re-runs the task too. A dry run reports such a task as
-`will run: environment variable changed`, and `ginkgo cache explain` reports
-`environ_changed` and names the variable (`environ.PEAK_THRESHOLD`).
+  Workflow parameters are the other route (see
+  [Workflow Parameters](cli.md#workflow-parameters)). An argument's value is
+  recorded in provenance, so pass a secret with `ginkgo.secret(...)` instead
+  (see
+  [the FAQ](../faq.md#how-do-i-reference-a-secret-without-leaking-it-into-logs-provenance-or-the-report)).
 
-The key holds a digest of each value, never the value, so a token read from the
-environment does not reach the ledger. A short, guessable value can still be
-confirmed by hashing guesses against the digest; reference a real secret with
-`ginkgo.secret(...)` (see
-[the FAQ](../faq.md#how-do-i-reference-a-secret-without-leaking-it-into-logs-provenance-or-the-report))
-rather than reading it from a plain variable.
-
-A read without a literal name — `os.environ[name]`, `dict(os.environ)`,
-`subprocess.run(..., env=os.environ)` — cannot be keyed, because the scan cannot
-tell which variable matters. `ginkgo run`, `--dry-run` and `ginkgo doctor` warn
-about it (code `environ_read_in_task`): the task may serve a result computed
-with an old value. Read the variable by name, or pass the value in as an
-argument. Code outside your project, in an installed package, is not read at
-all. The values are those of the process running `ginkgo run`, which local
-workers inherit; a remote worker's own environment is not seen.
+A file the task body opens by its own path, or a variable it reads from
+`os.environ`, is invisible to the cache: changing it serves the cached result.
 
 The import walk starts at the task's own module, so the unit of cache identity
 is one file plus the local modules that file imports — not one function. Two
@@ -376,49 +364,27 @@ cache key either, so a change to it invalidates nothing downstream. Ginkgo
 prints nothing about it. Declare the path as an `Out[file]` parameter, or
 return it as `file(...)`.
 
-**An environment variable read without a literal name.** A variable read by
-name (`os.environ["NAME"]`, `os.getenv("NAME")`) in the task or in project code
-it reaches is part of the key (see
-[Environment Variables](#environment-variables)). One read as
-`os.environ[name]`, the whole of `os.environ` handed to a subprocess, or a read
-inside an installed package is not, so changing it serves the cached result.
-`ginkgo run`, `--dry-run` and `ginkgo doctor` warn about the first two (code
-`environ_read_in_task`). Read the variable by name, or pass the value in as a
-task argument or a `ginkgo.param` (see
-[Workflow Parameters](cli.md#workflow-parameters)).
-
-**A file a task names in its own body.** A task that opens
-`Path("data/genes.tsv")`, `pd.read_csv("data/samples.csv")` or
-`open(f"data/{sample}.tsv")` itself depends on a file its key never sees, so an
-edit to that file serves the cached result. `ginkgo run`, `--dry-run` and
-`ginkgo doctor` warn about a string literal in a task body that names an
-existing project file, or builds a path under an existing project directory
-(code `undeclared_literal_path`). Pass the file in as a `file` argument and read
-the argument instead: its bytes are then hashed, and the task is ordered after
-whatever produces it. The warning is all Ginkgo does. It does not hash such a
-file itself, because it cannot tell from source whether the task reads or writes
-the path, or which task writes it first; a declared argument answers both. The
-check reads only the task's own body, and skips paths the task passes on to
-another task and the file a script or notebook directive names, which is
-hashed already.
+**A file or environment variable read inside a task body.** A task that opens
+`Path("data/genes.tsv")` or reads `os.environ["PEAK_THRESHOLD"]` itself depends
+on something its key never sees, so a change to it serves the cached result.
+Pass the file in as a `file` argument, and read the variable in the flow body
+and pass its value in (see
+[A Task Sees Only Its Arguments](#a-task-sees-only-its-arguments)).
 
 **A script or tool a shell command runs.** A shell task's key covers the
 command it builds and its arguments, not the files the command executes. A
 task running `python scripts/filter.py {reads}` or `bash tools/annotate.sh`
 does not re-run when that script changes, and Snakemake behaves the same way.
-The `undeclared_literal_path` warning above names a script the command spells
-out under the project root. Pass the script in as a `file` argument and use it
-in the command, so its bytes are hashed; or make it a script task
-(`@task("script")`), whose script is part of the key; or bump `version=` on the
-task when you change it.
+Pass the script in as a `file` argument and use it in the command, so its bytes
+are hashed; or make it a script task (`@task("script")`), whose script is part
+of the key; or bump `version=` on the task when you change it.
 
 **A file a notebook reads by a literal path.** A notebook task's key covers the
 notebook source and the task's arguments. A notebook that calls
 `mo.image("results/figures/north.png")` or reads `pd.read_csv("results/x.csv")`
-itself is served from the cache after that file changes. `ginkgo doctor` and
-`--dry-run` warn about a project path a notebook names that its task does not
-pass. Declare the file as an `Out[file]` output of the task that writes it and
-pass that result to the notebook task as a `file` argument (see
+itself is served from the cache after that file changes. Declare the file as an
+`Out[file]` output of the task that writes it and pass that result to the
+notebook task as a `file` argument (see
 [Figures From Another Task](tasks-and-flows.md#figures-from-another-task)).
 
 **An edit that keeps a file's size and modification time.** A digest is reused
