@@ -111,8 +111,7 @@ CREATE TABLE cache_entries (
   inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON
   output_codec TEXT, size_bytes INTEGER,
   created_run_id TEXT, created_at TEXT NOT NULL,
-  hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT,
-  environ TEXT                -- JSON: each environment variable read -> digest of its value
+  hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT
 );
 CREATE INDEX cache_function ON cache_entries(function, created_at);
 CREATE TABLE cache_artifacts (cache_key TEXT NOT NULL, path TEXT NOT NULL, artifact_id TEXT NOT NULL,
@@ -139,7 +138,7 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """The version :func:`create_schema` writes; bump it with every edit to ``_SCHEMA``."""
 
 

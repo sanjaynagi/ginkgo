@@ -241,16 +241,12 @@ holds and could fall out of step with it.
 - `task`, `version`, `source_hash`, `extra_source_hash` (the notebook or script
   hash folded in for driver tasks), `env`, `env_hash.pixi_lock`;
 - one component per input parameter, `inputs.<parameter>`, so a moved input is
-  named rather than lumped into "the inputs changed";
-- one component per environment variable the task reads by a literal name,
-  `environ.<NAME>`, holding a digest of its value (`None` when unset). They come
-  from the `cache_entries.environ` column; see
-  [Environment variables](#environment-variables).
+  named rather than lumped into "the inputs changed".
 
 Each reported component carries a `status` — `changed` with both values, or
 `added` / `removed` for a parameter that appeared or went away. The coarse codes
 (`source_hash_changed`,
-`version_bump`, `env_changed`, `input_changed`, `environ_changed`, or `cache_key_changed` when no
+`version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
 component is conclusive or the one that moved has no code of its own) stay as
 the summary `reason` / `details`, with the components listed beneath them. A
 task forced by `--rerun` reports `rerun_requested`, read from the
@@ -399,50 +395,12 @@ worth more than a young one nothing has touched. Orphan artifacts are
 garbage-collected once at the end: an artifact no cache entry references is
 deleted.
 
-## Environment variables
+## What a task sees
 
-`runtime/caching/environ_reads.py` scans a task's source, without running it,
-for environment reads with a literal name: `os.environ["NAME"]`,
-`os.environ.get("NAME")` (and `setdefault`, `pop`), `"NAME" in os.environ` and
-`os.getenv("NAME")`, through `os.` or names bound by `from os import ...`. The
-scan starts at the task body and follows every global name it reads: a function
-is scanned in turn, and a module-level assignment is scanned for its value
-(`SCALE = float(os.environ.get("SCALE", "1"))`), as long as the code is in the
-task's module or the local import closure the source hash already covers
-(`source_hash.local_import_closure`). `from m import X` is followed to `m`'s
-binding of `X`, and `m.X` likewise. The result is cached per function.
-
-`build_cache_key` adds `environ: {NAME: digest | None}` to the key payload only
-when the scan named a variable, so the key of a task that reads none is
-unchanged. The digest is BLAKE3 over `NAME=value`, so a secret read from the
-environment reaches neither the key payload nor the ledger in clear; `save`
-records the same map in `cache_entries.environ` for `cache explain`, and
-`stat_fingerprint` folds it in too, so `--trust-mtimes` cannot serve a stale
-entry either. The values are read in the scheduler process when the key is
-built, which is the environment local workers inherit; a remote worker's own
-environment is not seen.
-
-A read the scan cannot name a variable for — `os.environ[key]`,
-`dict(os.environ)`, `subprocess.run(..., env=os.environ)` — is collected as
-`unresolved`, and `environ_read_diagnostics` warns (`environ_read_in_task`) that
-the result may be stale. Code outside the closure (an installed package) is not
-scanned.
-
-## Literal project paths
-
-`runtime/literal_paths.py` reports the project files a task body names in
-string literals: a token of a literal (split on whitespace and `=`) that names
-an existing file under the project root, or an f-string that builds a path
-under an existing project directory (`f"results/figures/{region}.png"`).
-`literal_path_diagnostics` warns (`undeclared_literal_path`) on every run, dry
-run and doctor, skipping docstrings, decorators and defaults, paths a call of
-the task passes as arguments, paths the body passes to another task, and the
-file a script, notebook or subworkflow directive names (hashed with the
-directive). The notebook plugin's `static_notices` hook runs the same scan over
-the notebook source, skipping `mo.cli_args()` fallback defaults.
-
-These paths are warned about, not hashed. Whether a literal is read or written,
-and which task produces it, is not knowable statically; hashing a file before
-its producer runs would key the wrong bytes, and the missing graph edge would
-remain. A `file` argument settles both. The same holds for a script a shell
-command runs (`bash scripts/trim.sh`).
+A task sees only its arguments. The key covers the arguments, the source (with
+its import closure and any hashed script, notebook or subworkflow) and
+`version=`; nothing scans a task body for the files it opens or the environment
+variables it reads. A file goes in as a `file` or `folder` argument, which is
+content-hashed and orders the graph. An environment variable is read in the
+flow body, while the graph is built, and passed as a plain argument or a
+workflow param. A read inside a task body is invisible to the cache.

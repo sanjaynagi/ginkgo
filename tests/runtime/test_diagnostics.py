@@ -7,21 +7,14 @@ the warning for a driver task whose body can never return its directive.
 
 from __future__ import annotations
 
-import os
-from os import getenv
-
 from ginkgo import Out, file, shell, task, untracked
 import pytest
 
 from ginkgo.runtime.diagnostics import (
-    ENVIRON_READ_CODE,
-    LITERAL_PATH_CODE,
     MISSING_DIRECTIVE_CODE,
     PATH_LIKE_STR_PARAM_CODE,
     SPACED_COMMAND_PATH_CODE,
     _diagnostic_code_and_suggestion,
-    environ_read_diagnostics,
-    literal_path_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     spaced_command_path_diagnostics,
@@ -336,186 +329,6 @@ def main():
 
         assert status == 0
         assert 'count_lines is declared @task("shell")' in capsys.readouterr().err
-
-
-@task()
-def read_environ(name: str) -> str:
-    return os.environ.get("SETTING", name)
-
-
-@task()
-def read_getenv_import(name: str) -> str:
-    return getenv("SETTING") or name
-
-
-@task()
-def read_environ_by_key(name: str) -> str:
-    return os.environ[name]
-
-
-@task("shell")
-def read_environ_in_shell(name: str) -> str:
-    return shell(cmd=f"echo {os.environ.get(name)}")
-
-
-class TestEnvironReadDiagnostics:
-    """EV-2: an environment read the cache cannot key may serve a stale result."""
-
-    def test_warns_only_for_reads_without_a_literal_name(self) -> None:
-        diagnostics = environ_read_diagnostics(
-            task_defs=[
-                read_environ,
-                read_getenv_import,
-                read_environ_by_key,
-                read_environ_by_key,
-                read_environ_in_shell,
-            ]
-        )
-
-        assert [d.location for d in diagnostics] == [
-            read_environ_by_key.name,
-            read_environ_in_shell.name,
-        ]
-        assert {d.code for d in diagnostics} == {ENVIRON_READ_CODE}
-        assert "may be stale" in diagnostics[0].message
-        assert "ginkgo.param" in diagnostics[0].suggestion
-
-    def test_a_task_that_does_not_read_it_is_not_flagged(self) -> None:
-        assert environ_read_diagnostics(task_defs=[greet, echo_as_shell]) == []
-
-    def test_doctor_and_run_report_it(self, tmp_path, monkeypatch, capsys) -> None:
-        from ginkgo.cli.app import main as cli_main
-
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "wf.py").write_text(
-            """
-import os
-from ginkgo import flow, task
-
-@task()
-def setting(name: str) -> str:
-    return os.environ.get(name, "a")
-
-@flow
-def main():
-    return setting(name="MY_SETTING")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        assert cli_main(["doctor", "wf.py", "--json"]) == 0
-        assert ENVIRON_READ_CODE in capsys.readouterr().out
-        assert cli_main(["run", "wf.py"]) == 0
-        assert "'setting' reads the process environment" in capsys.readouterr().err
-
-    def test_a_run_reruns_a_task_whose_variable_changed(
-        self, tmp_path, monkeypatch, capsys
-    ) -> None:
-        from ginkgo.cli.app import main as cli_main
-
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "wf.py").write_text(
-            """
-import os
-from pathlib import Path
-from ginkgo import Out, file, flow, task
-
-SCALE = os.environ.get("MY_SCALE", "1")
-
-@task()
-def setting(out: Out[file]) -> None:
-    Path(out).write_text(os.environ.get("MY_SETTING", "unset") + SCALE)
-
-@flow
-def main():
-    return setting(out="setting.txt")
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("MY_SETTING", "a")
-        assert cli_main(["run", "wf.py"]) == 0
-        monkeypatch.setenv("MY_SETTING", "b")
-        assert cli_main(["run", "wf.py"]) == 0
-        assert (tmp_path / "setting.txt").read_text() == "b1"
-        monkeypatch.setenv("MY_SCALE", "2")
-        assert cli_main(["run", "wf.py"]) == 0
-        assert (tmp_path / "setting.txt").read_text() == "b2"
-        assert "reads the process environment" not in capsys.readouterr().err
-
-
-@task()
-def read_literal_path(out: str) -> str:
-    return open("data/genes.tsv").read() + out
-
-
-@task("shell")
-def run_script_file(out: str) -> str:
-    return shell(cmd=f"bash scripts/trim.sh {out}")
-
-
-@task()
-def read_passed_path(path: str) -> str:
-    return open("data/genes.tsv").read() + path
-
-
-@task()
-def read_built_path(sample: str) -> str:
-    return open(f"data/{sample}.tsv").read()
-
-
-@task()
-def fan_out(samples: list[str]) -> list[str]:
-    return [read_passed_path(path=f"data/{sample}.tsv") for sample in samples]
-
-
-class TestLiteralPathDiagnostics:
-    """MG5-1, EV5-3: a project file named in a task body is invisible to its key."""
-
-    @pytest.fixture
-    def project(self, tmp_path):
-        (tmp_path / "data").mkdir()
-        (tmp_path / "data" / "genes.tsv").write_text("g\n")
-        (tmp_path / "scripts").mkdir()
-        (tmp_path / "scripts" / "trim.sh").write_text("echo\n")
-        return tmp_path
-
-    def test_warns_for_a_literal_read_and_a_script_in_a_command(self, project) -> None:
-        nodes = _nodes_for(lambda: [read_literal_path(out="o.txt"), run_script_file(out="o.txt")])
-
-        diagnostics = literal_path_diagnostics(nodes=nodes, root=project)
-
-        assert [(d.location, d.code) for d in diagnostics] == [
-            (read_literal_path.name, LITERAL_PATH_CODE),
-            (run_script_file.name, LITERAL_PATH_CODE),
-        ]
-        assert "'data/genes.tsv'" in diagnostics[0].message
-        assert "`file` argument" in diagnostics[0].suggestion
-        assert "interpolate" in diagnostics[1].suggestion
-
-    def test_a_path_passed_as_an_argument_is_not_flagged(self, project) -> None:
-        nodes = _nodes_for(lambda: read_passed_path(path="data/genes.tsv"))
-
-        assert literal_path_diagnostics(nodes=nodes, root=project) == []
-
-    def test_a_missing_file_is_not_flagged(self, tmp_path) -> None:
-        nodes = _nodes_for(lambda: read_literal_path(out="o.txt"))
-
-        assert literal_path_diagnostics(nodes=nodes, root=tmp_path) == []
-
-    def test_a_path_built_under_a_project_directory_is_flagged(self, project) -> None:
-        nodes = _nodes_for(lambda: read_built_path(sample="genes"))
-
-        diagnostics = literal_path_diagnostics(nodes=nodes, root=project)
-
-        assert ["'data/{...}'" in d.message for d in diagnostics] == [True]
-
-    def test_a_path_passed_to_another_task_is_not_flagged(self, project) -> None:
-        nodes = _nodes_for(lambda: fan_out(samples=["genes"]))
-
-        assert literal_path_diagnostics(nodes=nodes, root=project) == []
 
 
 @pytest.mark.parametrize(

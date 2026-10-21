@@ -12,7 +12,41 @@ from __future__ import annotations
 
 import ast
 import difflib
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Sequence
+
+from ginkgo.core.directive import ExecutionDirective
+from ginkgo_notebook.directive import NotebookDirective
+
+
+def notebook_static_notices(
+    directive: ExecutionDirective, task_name: str, passed: Sequence[str]
+) -> list[str]:
+    """Return the run's ``mo.cli_args()`` notices before anything runs.
+
+    The ``static_notices`` hook of the notebook task kind, so ``doctor`` and
+    ``--dry-run`` warn about a misnamed key the run would only report once the
+    notebook is under way.
+
+    Parameters
+    ----------
+    directive : ExecutionDirective
+        The task's ``notebook(...)`` directive.
+    task_name : str
+        The task, for the notice.
+    passed : Sequence[str]
+        The task's argument names.
+
+    Returns
+    -------
+    list[str]
+        As :func:`unpassed_cli_arg_notices`; empty when the notebook cannot be read.
+    """
+    assert isinstance(directive, NotebookDirective)
+    try:
+        source = directive.path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return unpassed_cli_arg_notices(source=source, task_name=task_name, passed=passed)
 
 
 def unpassed_cli_arg_notices(*, source: str, task_name: str, passed: Iterable[str]) -> list[str]:
@@ -63,7 +97,16 @@ def read_cli_arg_keys(source: str) -> set[str]:
         assigned to. Keys built at run time are not seen.
     """
     tree = ast.parse(source)
-    is_cli_args = _cli_args_matcher(tree)
+    names = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and _is_cli_args_call(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+    def is_cli_args(expr: ast.expr) -> bool:
+        return (isinstance(expr, ast.Name) and expr.id in names) or _is_cli_args_call(expr)
 
     keys: set[str] = set()
     for node in ast.walk(tree):
@@ -88,61 +131,6 @@ def read_cli_arg_keys(source: str) -> set[str]:
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
             keys.add(key.value)
     return keys
-
-
-def cli_arg_fallbacks(tree: ast.AST) -> list[ast.Constant]:
-    """Return the literal defaults a notebook falls back to when an argument is missing.
-
-    ``args.get("k", "data/x.csv")`` and ``args.get("k") or "data/x.csv"`` are
-    defaults for interactive editing; the task passes the value itself.
-
-    Parameters
-    ----------
-    tree : ast.AST
-        The parsed notebook.
-
-    Returns
-    -------
-    list[ast.Constant]
-        The default literals, as nodes of *tree*.
-    """
-    is_cli_args = _cli_args_matcher(tree)
-
-    def is_read(expr: ast.AST) -> bool:
-        return (
-            isinstance(expr, ast.Call)
-            and isinstance(expr.func, ast.Attribute)
-            and expr.func.attr == "get"
-            and is_cli_args(expr.func.value)
-        )
-
-    fallbacks: list[ast.expr] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and is_read(node) and len(node.args) > 1:
-            fallbacks.append(node.args[1])
-        elif (
-            isinstance(node, ast.BoolOp)
-            and isinstance(node.op, ast.Or)
-            and is_read(node.values[0])
-        ):
-            fallbacks.extend(node.values[1:])
-    return [node for node in fallbacks if isinstance(node, ast.Constant)]
-
-
-def _cli_args_matcher(tree: ast.AST) -> Callable[[ast.expr], bool]:
-    """Return a test for ``mo.cli_args()`` or a name *tree* assigns it to."""
-    names = {
-        target.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and _is_cli_args_call(node.value)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
-
-    def is_cli_args(expr: ast.expr) -> bool:
-        return (isinstance(expr, ast.Name) and expr.id in names) or _is_cli_args_call(expr)
-
-    return is_cli_args
 
 
 def _is_cli_args_call(expr: ast.expr) -> bool:

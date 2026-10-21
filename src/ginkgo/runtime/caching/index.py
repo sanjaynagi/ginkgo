@@ -55,22 +55,21 @@ ENTRY_COLUMNS = (
     "inputs",
     "input_hashes",
     "extra",
-    "environ",
     "size_bytes",
     "created_run_id",
     "created_at",
 )
 """What a reader selects to describe one entry, in row order."""
 
-_JSON_COLUMNS = frozenset({"env_hash", "inputs", "input_hashes", "extra", "environ"})
+_JSON_COLUMNS = frozenset({"env_hash", "inputs", "input_hashes", "extra"})
 """Entry columns whose text is JSON, decoded on the way out."""
 
 _INSERT_ENTRY = """
 INSERT OR IGNORE INTO cache_entries (
   cache_key, function, version, source_hash, extra_source_hash,
   env, env_hash, env_materialized_digest, inputs, input_hashes,
-  extra, environ, size_bytes, created_run_id, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  extra, size_bytes, created_run_id, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _INSERT_ARTIFACT = """
@@ -217,7 +216,6 @@ class CacheIndex(DirectIndex):
                     dumps_or_none(meta.get("inputs")),
                     dumps_or_none(meta.get("input_hashes")),
                     dumps_or_none(meta.get("extra")),
-                    dumps_or_none(meta.get("environ")),
                     size_bytes,
                     run_id,
                     meta.get("created_at") or now_iso(),

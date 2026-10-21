@@ -547,25 +547,19 @@ strictly needed but never less.
 
 ### Does changing an environment variable re-run a task?
 
-Yes, when the task reads it by a literal name: `os.environ["NAME"]`,
-`os.environ.get("NAME")`, `os.getenv("NAME")` or `"NAME" in os.environ`, in the
-task body, in a function it calls, or in a module-level assignment it reads
-(`SCALE = float(os.environ.get("SCALE", "1"))`), within the task's own module
-and the local modules it imports. A digest of the value, or of its absence, is
-part of the key, and `ginkgo cache explain` names the variable that moved
-(`environ.NAME`). A read without a literal name (`os.environ[name]`,
-`env=os.environ`) cannot be keyed, so `ginkgo run`, `--dry-run` and `ginkgo
-doctor` warn that its result may be stale. See
-[Environment Variables](guide/caching-and-provenance.md#environment-variables).
+Only when the variable reaches the task as an argument. Read it in the flow
+body, which runs while the graph is built, and pass the value in:
+`call_peaks(..., threshold=float(os.environ.get("PEAK_THRESHOLD", "0.05")))`.
+A variable read inside the task body is invisible to the cache. See
+[A Task Sees Only Its Arguments](guide/caching-and-provenance.md#a-task-sees-only-its-arguments).
 
-### Does editing a file a task opens by a literal path re-run it?
+### Does editing a file a task opens by its own path re-run it?
 
-No. A task's key covers its arguments and source, so a file it opens itself
-(`open("data/genes.tsv")`), a script a shell command runs (`bash
+No. A task's key covers its arguments, its source and `version=`, so a file it
+opens itself (`open("data/genes.tsv")`), a script a shell command runs (`bash
 scripts/trim.sh`), or a figure a notebook embeds by path is invisible to it.
-`ginkgo run`, `--dry-run` and `ginkgo doctor` name each such project path
-(`undeclared_literal_path`, or a notebook notice). Pass the file in as a `file`
-argument, and declare a file another task writes as that task's `Out[file]`.
+Pass the file in as a `file` argument, and declare a file another task writes
+as that task's `Out[file]`.
 
 ### How do warm runs skip work?
 

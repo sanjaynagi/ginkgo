@@ -72,8 +72,6 @@ from ginkgo.runtime.rundir import (
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
     env_warning_diagnostic,
-    environ_read_diagnostics,
-    literal_path_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     spaced_command_path_diagnostics,
@@ -445,18 +443,6 @@ def run_workflow(
         nodes=evaluator.graph.nodes.values(),
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(finding.message())}")
-    # The same holds for an environment variable the scan cannot name (one
-    # read by a literal name is keyed), and for a project file a task body
-    # names in a literal instead of taking it as an argument.
-    for diagnostic in [
-        *environ_read_diagnostics(
-            task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
-        ),
-        *literal_path_diagnostics(nodes=evaluator.graph.nodes.values(), root=Path.cwd()),
-    ]:
-        console(sys.stderr).print(
-            f"[yellow]⚠[/] {escape(diagnostic.message)} {escape(diagnostic.suggestion or '')}"
-        )
 
     # A misspelt --rerun name would otherwise quietly serve every result from
     # the cache. One no task the workflow defines carries is rejected now; one

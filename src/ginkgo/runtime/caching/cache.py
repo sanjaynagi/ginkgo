@@ -32,7 +32,6 @@ from ginkgo.core.types import (
 )
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
-from ginkgo.runtime.caching.environ_reads import environ_digests
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.task_validation import (
     declared_output_paths,
@@ -121,9 +120,6 @@ def key_components(meta: dict[str, Any]) -> dict[str, Any]:
     input_hashes = meta.get("input_hashes")
     if isinstance(input_hashes, dict):
         components.update({f"inputs.{name}": value for name, value in input_hashes.items()})
-    environ = meta.get("environ")
-    if isinstance(environ, dict):
-        components.update({f"environ.{name}": value for name, value in environ.items()})
     return components
 
 
@@ -164,8 +160,6 @@ def coarse_reasons(components: list[dict[str, Any]]) -> list[str]:
         reasons.append("env_changed")
     if any(name.startswith("inputs") for name in moved):
         reasons.append("input_changed")
-    if any(name.startswith("environ.") for name in moved):
-        reasons.append("environ_changed")
     return reasons or ["cache_key_changed"]
 
 
@@ -296,11 +290,6 @@ class CacheStore:
             "task": task_def.name,
             "version": task_def.version,
         }
-        # Added only when the task reads a variable, so every other key is
-        # unchanged by environment tracking.
-        environ = environ_digests(fn=task_def.fn)
-        if environ:
-            payload["environ"] = environ
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded), input_hashes
 
@@ -349,7 +338,6 @@ class CacheStore:
                 "env": task_def.env,
                 "env_hash": self._env_hash(task_def=task_def),
                 "input_hashes": input_hashes,
-                "environ": environ_digests(fn=task_def.fn),
             }
         )
         diffs = [
@@ -559,7 +547,6 @@ class CacheStore:
             "function": task_def.name,
             "inputs": self._serialise_inputs(task_def=task_def, resolved_args=resolved_args),
             "input_hashes": input_hashes,
-            "environ": environ_digests(fn=task_def.fn) or None,
             "source_hash": task_def.cache_source_hash,
             "created_at": now_iso(),
             "version": task_def.version,
@@ -1460,9 +1447,6 @@ class CacheStore:
             "task": task_def.name,
             "version": task_def.version,
         }
-        environ = environ_digests(fn=task_def.fn)
-        if environ:
-            payload["environ"] = environ
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hash_bytes(encoded)
 

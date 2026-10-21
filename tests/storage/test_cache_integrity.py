@@ -298,7 +298,7 @@ banner
         monkeypatch.delitem(sys.modules, "lazy_helpers", raising=False)
         with _imported_from(tmp_path, "lazy_tasks") as tasks:
             assert "lazy_helpers" not in sys.modules
-            assert set(source_hash.local_import_closure(tasks)) == {
+            assert set(source_hash._local_import_closure(tasks)) == {
                 "lazy_tasks",
                 "lazy_helpers",
             }
@@ -338,11 +338,11 @@ banner
             tasks = importlib.import_module("pkg.tasks")
 
             monkeypatch.setattr(source_hash, "_installed_roots", lambda: ())
-            unfiltered = source_hash.local_import_closure(tasks)
+            unfiltered = source_hash._local_import_closure(tasks)
             assert "vendorlib" in unfiltered
 
             monkeypatch.setattr(source_hash, "_installed_roots", lambda: (env_dir,))
-            assert set(source_hash.local_import_closure(tasks)) == {
+            assert set(source_hash._local_import_closure(tasks)) == {
                 "pkg",
                 "pkg.tasks",
                 "pkg.helpers",
@@ -403,7 +403,7 @@ class TestInstalledTaskModuleClosure:
 
         monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
         with _imported_from(install_root, "mypkg.tasks") as tasks:
-            assert set(source_hash.local_import_closure(tasks)) == {
+            assert set(source_hash._local_import_closure(tasks)) == {
                 "mypkg",
                 "mypkg.tasks",
                 "mypkg.helpers",
@@ -434,7 +434,7 @@ class TestInstalledTaskModuleClosure:
 
         monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
         with _imported_from(install_root, "ns.inner.tasks") as tasks:
-            assert set(source_hash.local_import_closure(tasks)) == {
+            assert set(source_hash._local_import_closure(tasks)) == {
                 "ns.inner",
                 "ns.inner.tasks",
                 "ns.inner.helpers",
@@ -507,7 +507,7 @@ class TestInstalledTaskModuleClosure:
         monkeypatch.setattr(source_hash, "_installed_roots", lambda: (install_root,))
         monkeypatch.setattr(source_hash, "_packages_distributions", dict)
         with _imported_from(install_root, "solo_tasks") as tasks:
-            assert set(source_hash.local_import_closure(tasks)) == {
+            assert set(source_hash._local_import_closure(tasks)) == {
                 "solo_tasks",
                 "vendorlib",
             }
@@ -531,7 +531,7 @@ class TestInstalledTaskModuleClosure:
             source_hash, "_packages_distributions", lambda: {"solo_tasks": ["solodist"]}
         )
         with _imported_from(install_root, "solo_tasks") as tasks:
-            assert set(source_hash.local_import_closure(tasks)) == {"solo_tasks"}
+            assert set(source_hash._local_import_closure(tasks)) == {"solo_tasks"}
 
 
 def _hash_module_task(path: Path, body: str, *, module_name: str) -> str:

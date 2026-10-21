@@ -8,9 +8,9 @@ the task's ``rendered_html``.
 from __future__ import annotations
 
 from ginkgo.plugins.api import Plugin, TaskKind
+from ginkgo_notebook.cli_args import notebook_static_notices
 from ginkgo_notebook.directive import NotebookDirective, notebook
 from ginkgo_notebook.runner import build_notebook_runner
-from ginkgo_notebook.static_notices import notebook_static_notices
 
 __all__ = ["PLUGIN", "NotebookDirective", "notebook"]
 
