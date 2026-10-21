@@ -601,3 +601,35 @@ def test_only_installed_drivers_that_fail_their_health_check_are_reported(
 
     assert diagnostic.code == "fuse_drivers_not_on_host"
     assert diagnostic.message.endswith("mountpoint-s3 (s3://)")
+
+
+class TestDoctorRefusedDirective:
+    """A directive refused whatever the run's state fails doctor, as it fails a dry run."""
+
+    def test_a_jupyter_notebook_task_is_an_error(self, tmp_path: Path) -> None:
+        Path("legacy.ipynb").write_text("{}", encoding="utf-8")
+        Path("workflow.py").write_text(
+            """
+from pathlib import Path
+
+from ginkgo import flow, task
+from ginkgo_notebook import notebook
+
+
+@task("notebook")
+def legacy() -> str:
+    return notebook(Path(__file__).parent / "legacy.ipynb")
+
+
+@flow
+def main():
+    return legacy()
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+        result = _run_doctor(cwd=tmp_path)
+
+        assert result.returncode == 1
+        assert "refused_directive" in result.stderr
+        assert "marimo convert" in result.stderr

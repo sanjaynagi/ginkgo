@@ -609,3 +609,79 @@ class TestHistoryOfBlockedTask:
 
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["resources"][0]["runs"] == 0
+
+
+class TestFailedFanOutRun:
+    """A run whose result was lost to one fan-out branch failing."""
+
+    @pytest.fixture(scope="class")
+    def failed_workspace(self, tmp_path_factory) -> Path:
+        root = tmp_path_factory.mktemp("failed")
+        (root / "workflow.py").write_text(
+            "from ginkgo import flow, task\n\n"
+            "@task()\n"
+            "def check(item: str) -> str:\n"
+            "    if item == 'omega':\n"
+            '        raise ValueError("bad seed")\n'
+            "    return item\n\n"
+            "@task()\n"
+            "def gather(items: list[str]) -> int:\n"
+            "    return len(items)\n\n"
+            "@flow\n"
+            "def main():\n"
+            "    return gather(items=check().map(item=['alpha', 'omega']))\n",
+            encoding="utf-8",
+        )
+        # 3: the run continued past the failure, then lost its result to it.
+        assert _run_cli("run", "workflow.py", "--keep-going", cwd=root).returncode == 3
+        return root
+
+    def test_runs_show_names_the_failed_branch_by_its_full_label(
+        self, failed_workspace: Path
+    ) -> None:
+        shown = _run_cli("runs", "show", cwd=failed_workspace)
+        recorded = json.loads(_run_cli("runs", "show", "--json", cwd=failed_workspace).stdout)
+
+        assert "check[omega]" in recorded["error"]
+        assert recorded["error"] in " ".join(shown.stdout.split())
+
+    def test_a_task_name_given_for_a_run_id_is_pointed_out(self, failed_workspace: Path) -> None:
+        result = _run_cli("cache", "explain", "gather", cwd=failed_workspace)
+
+        assert result.returncode == 1
+        assert "'gather' is a task, not a run" in " ".join(result.stderr.split())
+
+
+class TestDeclaredMemoryAsWritten:
+    def test_the_sizing_ratio_is_of_the_declaration_not_the_rounded_budget(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "workflow.py").write_text(
+            "from ginkgo import flow, task\n\n"
+            '@task(memory="512Mi")\n'
+            "def hold() -> int:\n"
+            "    return len(bytearray(1))\n\n"
+            "@flow\n"
+            "def main():\n"
+            "    return hold()\n",
+            encoding="utf-8",
+        )
+        assert _run_cli("run", "workflow.py", cwd=tmp_path).returncode == 0
+
+        text = _run_cli("history", "hold", "--resources", cwd=tmp_path).stdout
+        payload = json.loads(
+            _run_cli("history", "hold", "--resources", "--json", cwd=tmp_path).stdout
+        )
+
+        assert "declared 0.5 GiB" in text
+        assert "after escalation" not in text
+        assert payload["resources"][0]["declared_memory_gb"] == 0.5
+
+
+def test_a_flag_of_another_command_is_refused_with_the_commands_own_usage(
+    tmp_path: Path,
+) -> None:
+    result = _run_cli("run", "--no-open", cwd=tmp_path)
+
+    assert result.returncode == 2
+    assert "ginkgo run: error: unrecognized arguments: --no-open" in result.stderr
