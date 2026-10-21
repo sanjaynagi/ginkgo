@@ -244,7 +244,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         # Encode while any fuse mounts are still live: the result may
         # reference paths inside a mount (e.g. an input path returned
         # through), and encoding reads file content.
-        if payload.get("dynamic_result", True) and _is_dynamic_result(result):
+        if _is_dynamic_result(result):
             response = {"ok": True, "result": result, "result_encoding": "direct"}
         else:
             encoded_result = encode_value(result, base_dir=base_dir)
@@ -309,10 +309,16 @@ def _args_have_fuse_markers(value: Any) -> bool:
 
 
 def _is_dynamic_result(value: Any) -> bool:
-    from ginkgo.core.directive import ExecutionDirective
-    from ginkgo.core.expr import Expr, ExprList
+    """Return whether *value* is a directive or holds task expressions anywhere.
 
-    return isinstance(value, (Expr, ExprList, ExecutionDirective))
+    Such a result goes back to the driver as one object rather than encoded
+    leaf by leaf, so an expression it holds twice (``[merge(ps=calls),
+    calls]``) still arrives as one expression and registers as one task.
+    """
+    from ginkgo.core.directive import ExecutionDirective
+    from ginkgo.runtime.task_validation import contains_dynamic_expression
+
+    return isinstance(value, ExecutionDirective) or contains_dynamic_expression(value)
 
 
 @contextlib.contextmanager
