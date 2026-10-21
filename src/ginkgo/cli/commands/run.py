@@ -68,6 +68,7 @@ from ginkgo.runtime.diagnostics import (
     environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
+    static_notice_diagnostics,
     unreachable_call_diagnostics,
 )
 from ginkgo.runtime.dry_run import build_dry_run_plan
@@ -458,6 +459,7 @@ def run_workflow(
             *missing_directive_diagnostics(
                 task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
             ),
+            *static_notice_diagnostics(nodes=evaluator.graph.nodes.values()),
         ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.

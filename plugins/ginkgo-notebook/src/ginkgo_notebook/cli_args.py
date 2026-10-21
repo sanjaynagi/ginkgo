@@ -12,7 +12,41 @@ from __future__ import annotations
 
 import ast
 import difflib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+
+from ginkgo.core.directive import ExecutionDirective
+from ginkgo_notebook.directive import NotebookDirective
+
+
+def notebook_static_notices(
+    directive: ExecutionDirective, task_name: str, passed: Sequence[str]
+) -> list[str]:
+    """Return the run's ``mo.cli_args()`` notices before anything runs.
+
+    The ``static_notices`` hook of the notebook task kind, so ``doctor`` and
+    ``--dry-run`` warn about a misnamed key the run would only report once the
+    notebook is under way.
+
+    Parameters
+    ----------
+    directive : ExecutionDirective
+        The task's ``notebook(...)`` directive.
+    task_name : str
+        The task, for the notice.
+    passed : Sequence[str]
+        The task's argument names.
+
+    Returns
+    -------
+    list[str]
+        As :func:`unpassed_cli_arg_notices`; empty when the notebook cannot be read.
+    """
+    assert isinstance(directive, NotebookDirective)
+    try:
+        source = directive.path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return unpassed_cli_arg_notices(source=source, task_name=task_name, passed=passed)
 
 
 def unpassed_cli_arg_notices(*, source: str, task_name: str, passed: Iterable[str]) -> list[str]:

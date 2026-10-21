@@ -85,3 +85,35 @@ def test_a_run_warns_about_a_key_the_task_does_not_pass(
     assert len(notices) == 1
     assert "'summaries'" in notices[0]
     assert "did you mean 'summary'?" in notices[0]
+
+
+def test_doctor_and_dry_run_warn_before_the_notebook_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ginkgo.cli.app import main as cli_main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "report.py").write_text(_NOTEBOOK, encoding="utf-8")
+    (tmp_path / "wf.py").write_text(
+        """
+from ginkgo import file, flow, task
+from ginkgo_notebook import notebook
+
+@task("notebook")
+def render(sample_id: str, summary: str) -> file:
+    return notebook("report.py")
+
+@flow
+def main():
+    return render().map(sample_id=["s1", "s2"], summary=["x", "y"])
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert cli_main(["doctor", "wf.py", "--json"]) == 0
+    doctor_out = capsys.readouterr().out
+    assert doctor_out.count("did you mean 'summary'?") == 1
+    assert cli_main(["run", "wf.py", "--dry-run"]) == 0
+    assert "did you mean 'summary'?" in capsys.readouterr().err
+    assert not (tmp_path / ".ginkgo" / "notebooks").exists()

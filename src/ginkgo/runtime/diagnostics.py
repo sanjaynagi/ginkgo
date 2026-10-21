@@ -13,6 +13,7 @@ import textwrap
 from typing import Any
 
 from ginkgo.config import config_session
+from ginkgo.core.directive import DirectiveError
 from ginkgo.core.expr import ConstructedCall, record_constructed_calls
 from ginkgo.core.flow import discover_flow
 from ginkgo.core.task import TaskDef
@@ -22,6 +23,7 @@ from ginkgo.runtime.backend import ExecutionEnvironment
 from ginkgo.runtime.graph import TaskGraph, TaskNode
 from ginkgo.runtime.placement import Placement
 from ginkgo.runtime.task_kinds import task_kind
+from ginkgo.runtime.static_directive import static_directive
 from ginkgo.runtime.task_validation import TaskValidator, contains_dynamic_expression
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import load_module_from_path
@@ -31,6 +33,7 @@ UNREACHABLE_CALL_CODE = "unreachable_task_call"
 PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
 MISSING_DIRECTIVE_CODE = "missing_directive_return"
 ENVIRON_READ_CODE = "environ_read_in_task"
+STATIC_NOTICE_CODE = "task_kind_notice"
 _ENVIRON_ATTRIBUTES = frozenset({"environ", "environb", "getenv"})
 ENV_WARNING_CONSEQUENCE = (
     "A run fails at the first task in this environment that has to run; "
@@ -155,6 +158,7 @@ def collect_workflow_diagnostics(
         diagnostics.extend(
             environ_read_diagnostics(task_defs=[node.task_def for node in graph.nodes.values()])
         )
+        diagnostics.extend(static_notice_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(dropped_calls)
         diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(
@@ -402,6 +406,62 @@ def environ_read_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDi
                 ),
             )
         )
+    return diagnostics
+
+
+def static_notice_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:
+    """Build one warning per notice a task kind raises about a task's directive.
+
+    A kind with a ``static_notices`` hook (a notebook's ``mo.cli_args()`` keys)
+    is asked about each task whose directive can be worked out from its
+    literal arguments without running the body; a task whose directive
+    depends on an upstream result is skipped. A directive the constructor
+    refuses is left to the dry run's own report.
+
+    Parameters
+    ----------
+    nodes : Iterable[TaskNode]
+        The graph's task nodes.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per distinct notice, so a fan-out
+        of one task reports it once.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen: set[str] = set()
+    for node in nodes:
+        kind = task_kind(node.task_def)
+        if kind.static_notices is None or kind.directive is None:
+            continue
+        literal_args = {
+            name: value
+            for name, value in node.expr.args.items()
+            if not contains_dynamic_expression(value)
+        }
+        try:
+            directive = static_directive(
+                fn=node.task_def.fn, resolved_args=literal_args, directive_type=kind.directive
+            )
+        except DirectiveError:
+            continue
+        if directive is None:
+            continue
+        for message in kind.static_notices(
+            directive, node.task_def.base_name, list(node.expr.args)
+        ):
+            if message in seen:
+                continue
+            seen.add(message)
+            diagnostics.append(
+                WorkflowDiagnostic(
+                    severity="warning",
+                    code=STATIC_NOTICE_CODE,
+                    message=message,
+                    location=node.task_def.name,
+                )
+            )
     return diagnostics
 
 
