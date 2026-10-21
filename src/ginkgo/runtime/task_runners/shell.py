@@ -630,6 +630,46 @@ class SignalMonitor:
 # ----- Shell runner ---------------------------------------------------------
 
 
+RETAINED_OUTPUT_CHARS = 4096
+"""How much of each output stream a finished command keeps in memory.
+
+The task's log files get every byte as it arrives. What is kept is only what a
+failure quotes, and a failure is copied into the exception, two events, the
+ledger and the manifest, so a command printing 150 MB must not be."""
+
+
+class _OutputTail:
+    """The last :data:`RETAINED_OUTPUT_CHARS` characters a stream wrote."""
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._size = 0
+        self._dropped = 0
+
+    def append(self, chunk: str) -> None:
+        """Add *chunk*, trimming the oldest text once twice the limit is held."""
+        self._parts.append(chunk)
+        self._size += len(chunk)
+        if self._size > 2 * RETAINED_OUTPUT_CHARS:
+            self._trim()
+
+    def text(self) -> str:
+        """Return the kept text, opening with a count of what was left out."""
+        self._trim()
+        text = "".join(self._parts)
+        if not self._dropped:
+            return text
+        return f"[{self._dropped} earlier characters are only in the task's log]\n{text}"
+
+    def _trim(self) -> None:
+        text = "".join(self._parts)
+        if len(text) > RETAINED_OUTPUT_CHARS:
+            self._dropped += len(text) - RETAINED_OUTPUT_CHARS
+            text = text[-RETAINED_OUTPUT_CHARS:]
+        self._parts = [text]
+        self._size = len(text)
+
+
 # Type aliases used to keep signatures readable without forcing import cycles.
 LogEmitter = Callable[[str], None]
 LogEmitterFactory = Callable[..., LogEmitter]
@@ -732,7 +772,9 @@ class ShellRunner:
         command that prints binary keeps its (replaced) output and its exit
         status. Each pipe is drained to the end whatever a callback does: a
         reader that stopped early would leave the command blocked on, or
-        killed by, a pipe nobody reads.
+        killed by, a pipe nobody reads. The callbacks see every line; the
+        returned ``stdout`` and ``stderr`` keep only the last
+        :data:`RETAINED_OUTPUT_CHARS` of each, which is all a failure quotes.
         """
         popen_kwargs: dict[str, Any] = {
             "stderr": subprocess.PIPE,
@@ -761,8 +803,8 @@ class ShellRunner:
             if usage is not None and usage_callback is not None:
                 usage_callback(usage)
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
+        stdout_tail = _OutputTail()
+        stderr_tail = _OutputTail()
 
         if not hasattr(process, "stdout") or not hasattr(process, "stderr"):
             try:
@@ -777,7 +819,7 @@ class ShellRunner:
                 stderr=stderr_text,
             )
 
-        def consume_stream(*, pipe: Any, sink: list[str], callback: Any) -> None:
+        def consume_stream(*, pipe: Any, sink: _OutputTail, callback: Any) -> None:
             try:
                 for chunk in iter(pipe.readline, ""):
                     sink.append(chunk)
@@ -793,12 +835,12 @@ class ShellRunner:
 
         stdout_thread = Thread(
             target=consume_stream,
-            kwargs={"pipe": process.stdout, "sink": stdout_chunks, "callback": on_stdout},
+            kwargs={"pipe": process.stdout, "sink": stdout_tail, "callback": on_stdout},
             daemon=True,
         )
         stderr_thread = Thread(
             target=consume_stream,
-            kwargs={"pipe": process.stderr, "sink": stderr_chunks, "callback": on_stderr},
+            kwargs={"pipe": process.stderr, "sink": stderr_tail, "callback": on_stderr},
             daemon=True,
         )
         stdout_thread.start()
@@ -814,8 +856,8 @@ class ShellRunner:
         return subprocess.CompletedProcess(
             args=argv,
             returncode=returncode,
-            stdout="".join(stdout_chunks),
-            stderr="".join(stderr_chunks),
+            stdout=stdout_tail.text(),
+            stderr=stderr_tail.text(),
         )
 
     # Logged command --------------------------------------------------------
