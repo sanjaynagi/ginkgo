@@ -15,7 +15,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from ginkgo.store.errors import SchemaVersionError, StoreError, StoreLockedError
+from ginkgo.store.errors import (
+    CorruptStoreError,
+    SchemaVersionError,
+    StoreError,
+    StoreLockedError,
+)
 from ginkgo.store.fs import warn_if_network_filesystem
 from ginkgo.store.protocol import ProjectionOp, StoredEvent
 from ginkgo.store.schema import SCHEMA_VERSION, migrate, schema_version
@@ -97,9 +102,16 @@ class SqliteStore:
             connection = cls._connect(
                 _uri(path, readonly=True), path=path, thread_shared=thread_shared
             )
-            _apply_pragmas(connection, writable=False)
             store = cls(path=path, connection=connection, readonly=True)
-            found = schema_version(connection)
+            try:
+                _apply_pragmas(connection, writable=False)
+                found = schema_version(connection)
+            except sqlite3.OperationalError:
+                store.close()
+                raise
+            except sqlite3.DatabaseError as exc:
+                store.close()
+                raise CorruptStoreError(path=path, detail=str(exc)) from exc
             if found < SCHEMA_VERSION:
                 store.close()
                 raise SchemaVersionError(path=path, found=found, expected=SCHEMA_VERSION)
@@ -124,6 +136,9 @@ class SqliteStore:
             # the user is told which database and what to do about it.
             store.close()
             raise store._locked_or(exc) from exc
+        except sqlite3.DatabaseError as exc:
+            store.close()
+            raise CorruptStoreError(path=path, detail=str(exc)) from exc
         return store
 
     @staticmethod
