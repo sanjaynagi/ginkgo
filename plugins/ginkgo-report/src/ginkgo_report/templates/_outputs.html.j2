@@ -1,0 +1,22 @@
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "outputs") -}}
+<table class="tbl sortable">
+  <thead>
+    <tr>
+      <th data-sort="string">Task</th>
+      <th data-sort="string">Output</th>
+      <th data-sort="string">Kind</th>
+      <th data-sort="string">Path</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in report.outputs %}
+    <tr>
+      <td class="name">{{ row.label }}</td>
+      <td class="mono">{{ row.name }}</td>
+      <td><span class="tag">{{ row.kind }}</span></td>
+      <td class="mono">{{ row.path }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

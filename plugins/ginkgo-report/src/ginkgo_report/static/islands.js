@@ -4,6 +4,7 @@
 // Adds:
 //   - sidebar TOC scrollspy that highlights the current section
 //   - sortable task table (click column headers to sort)
+//   - embedded page frames sized to their content (single-file reports)
 
 /* ----- Scrollspy ----- */
 
@@ -119,3 +120,18 @@ function parseDurationLike(text) {
     + (Number(seconds) || 0)
   );
 }
+
+/* ----- Embedded page frames ----- */
+
+(function pageFrames() {
+  // The frames are sandboxed without scripts but share the report's origin,
+  // so their height can be read from here once they have loaded.
+  for (const frame of document.querySelectorAll("iframe.page-frame")) {
+    const fit = () => {
+      const root = frame.contentDocument?.documentElement;
+      if (root) frame.style.height = root.scrollHeight + 2 + "px";
+    };
+    frame.addEventListener("load", fit);
+    if (frame.contentDocument?.readyState === "complete") fit();
+  }
+})();

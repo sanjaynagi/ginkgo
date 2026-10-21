@@ -443,9 +443,11 @@ def test_summary_explains_slow_environment_preparation(tmp_path: Path) -> None:
     renderer.write(_event_line("succeeded") + "\n")
     renderer.finish(elapsed=26.0, success=True)
 
-    text = output.getvalue()
+    text = " ".join(output.getvalue().split())
     assert "Environment preparation took" in text
     assert "analysis" in text
+    # Preparation is only the install: a task's slow first start counts as the task's.
+    assert "counts as the task's time" in text
 
 
 def test_summary_explains_preparation_that_failed(tmp_path: Path) -> None:

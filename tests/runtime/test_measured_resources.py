@@ -80,16 +80,22 @@ class TestTaskPeakRss:
         tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
         peak = tracker.stop(usage_end=_rusage_snapshot())
 
-        assert 0 < peak < lifetime - 100_000_000
+        assert peak < lifetime - 100_000_000
 
     def test_the_tasks_own_allocation_is_seen(self) -> None:
         tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
-        before = _current_rss_bytes()
         held = b"x" * 100_000_000
         peak = tracker.stop(usage_end=_rusage_snapshot())
 
         assert held
-        assert peak >= before + 90_000_000
+        assert peak >= 90_000_000
+
+    def test_the_workers_resident_memory_is_the_baseline_not_the_tasks(self) -> None:
+        tracker = _TaskPeakRss(usage_start=_rusage_snapshot())
+        peak = tracker.stop(usage_end=_rusage_snapshot())
+
+        assert tracker.baseline_bytes >= _current_rss_bytes() // 2
+        assert peak < 10_000_000
 
 
 class TestUsageMerging:
@@ -151,10 +157,13 @@ class TestManifestRecording:
     def test_python_task_records_rusage(self, tmp_path: Path) -> None:
         usage = _run_with_ledger(_python_work(), tmp_path)
         assert usage["measured"]["source"] == "rusage"
-        assert usage["measured"]["peak_rss_bytes"] > 0
+        # The 4 MB the body allocates, not the worker's imports.
+        assert usage["measured"]["peak_rss_bytes"] < 50_000_000
+        assert usage["measured"]["baseline_rss_bytes"] > usage["measured"]["peak_rss_bytes"]
         assert usage["measured"]["cpu_seconds"] >= 0.0
         assert usage["declared"] == {
             "threads": 1,
+            "memory": "1Gi",
             "memory_gb": 1,
             "effective_memory_gb": 1,
         }
@@ -195,7 +204,7 @@ class TestManifestRecording:
         usage = _single_task_usage(ledger.finish(status="failed"))
         ledger.close()
         assert usage["measured"]["source"] == "rusage"
-        assert usage["measured"]["peak_rss_bytes"] > 0
+        assert usage["measured"]["baseline_rss_bytes"] > 0
 
 
 class TestRetryCarry:

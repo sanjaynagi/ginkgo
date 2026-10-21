@@ -18,6 +18,7 @@ from typing import Any
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
+from ginkgo_report.notebook_page import static_notebook_page
 from ginkgo_report.sizing import LogTail, SizingPolicy, build_log_tail
 
 
@@ -139,6 +140,45 @@ class FailureCard:
     log_relpath: str | None
 
 
+@dataclass(frozen=True, kw_only=True)
+class AttemptNote:
+    """One attempt of a task that ran more than once."""
+
+    number: int
+    status: str
+    message: str | None
+    """The attempt's error, when it failed."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetriedTask:
+    """A task that ran more than once, with what each attempt ended in.
+
+    A retry that succeeded leaves no failure card, so this is where the error
+    it recovered from is shown.
+    """
+
+    task_key: str
+    label: str
+    attempts: tuple[AttemptNote, ...]
+
+
+# ----- Outputs -------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutputRow:
+    """One file or folder a task produced."""
+
+    task_key: str
+    label: str
+    """The producing task's fan-out label, or its base name."""
+    name: str
+    """Which of the task's outputs this is, such as ``return`` or ``return[1]``."""
+    kind: str
+    path: str
+
+
 # ----- Rendered pages ----------------------------------------------------
 
 
@@ -151,6 +191,12 @@ class PageCard:
     sub_line: str
     link_relpath: str
     status_tone: str
+    embed_html: str
+    """What a single-file report embeds: a static copy of a marimo page, which
+    otherwise needs the network to display, or the page itself."""
+    static_relpath: str | None
+    """Where a bundle writes the static copy; ``None`` when the page is not a
+    marimo export and so is embedded as it is."""
 
 
 # ----- Bundle artifact plan ---------------------------------------------
@@ -241,6 +287,8 @@ class ReportData:
     graph: Graph
     tasks: tuple[TaskRow, ...]
     failures: tuple[FailureCard, ...]
+    retried: tuple[RetriedTask, ...]
+    outputs: tuple[OutputRow, ...]
     pages: tuple[PageCard, ...]
     environment: tuple[KVEntry, ...]
 
@@ -311,11 +359,15 @@ _SECTION_LAYOUT: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("graph", "Task graph"),
             ("tasks", "Tasks"),
             ("failure", "Failure"),
+            ("retries", "Retried attempts"),
         ),
     ),
     (
         "Results",
-        (("pages", "Rendered pages"),),
+        (
+            ("outputs", "Outputs"),
+            ("pages", "Rendered pages"),
+        ),
     ),
     (
         "Appendix",
@@ -380,6 +432,8 @@ def build_report_data(
         artifact_copies=artifact_copies,
     )
     graph = _build_graph(summary=summary, failures=failures)
+    retried = _build_retried(summary=summary)
+    outputs = _build_outputs(summary=summary)
     pages = _build_pages(summary=summary, run_dir=run_dir, artifact_copies=artifact_copies)
     summary_cards = _build_summary_cards(summary=summary)
 
@@ -426,6 +480,8 @@ def build_report_data(
         sidebar_status_tone=sidebar_status_tone,
         section_groups=_build_section_groups(
             has_failures=len(failures) > 0,
+            has_retries=len(retried) > 0,
+            has_outputs=len(outputs) > 0,
             has_pages=len(pages) > 0,
         ),
         summary_cards=summary_cards,
@@ -434,6 +490,8 @@ def build_report_data(
         graph=graph,
         tasks=tasks,
         failures=failures,
+        retried=retried,
+        outputs=outputs,
         pages=pages,
         environment=environment,
         ginkgo_version=ginkgo_version,
@@ -448,6 +506,8 @@ def build_report_data(
 def _build_section_groups(
     *,
     has_failures: bool,
+    has_retries: bool,
+    has_outputs: bool,
     has_pages: bool,
 ) -> tuple[ReportSectionGroup, ...]:
     """Number the sections this run renders, in document order.
@@ -455,7 +515,12 @@ def _build_section_groups(
     Optional sections drop out of the sequence entirely rather than reserving
     a numeral, so the rendered numbers are always contiguous.
     """
-    renders = {"failure": has_failures, "pages": has_pages}
+    renders = {
+        "failure": has_failures,
+        "retries": has_retries,
+        "outputs": has_outputs,
+        "pages": has_pages,
+    }
     groups: list[ReportSectionGroup] = []
     number = 0
     for label, entries in _SECTION_LAYOUT:
@@ -499,9 +564,12 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
 def _memory_label(task: TaskSummary) -> str:
     """Return ``measured / declared`` peak memory for the task ledger.
 
-    The denominator is the budget the task actually ran against, so an
-    escalated retry is not shown as having exceeded a declaration it was no
-    longer bound by. Shows the measured peak RSS alone when the task declared
+    The measurement is the task's own: a Python task's peak above the
+    worker's resident memory as the body started, or the peak of a
+    subprocess task's process tree. The declaration is shown as written
+    (``64Mi``), not as the whole GiB the scheduler rounds it up to, unless
+    a retry escalated it, when the denominator is the budget the attempt
+    actually ran against. Shows the measurement alone when the task declared
     no memory, and an em dash when nothing was measured (cached or never-ran
     tasks).
     """
@@ -510,11 +578,16 @@ def _memory_label(task: TaskSummary) -> str:
     if not isinstance(measured, dict):
         return "—"
     peak = measured.get("peak_rss_bytes")
-    if not isinstance(peak, int) or peak <= 0:
+    if not isinstance(peak, int) or peak < 0:
         return "—"
     label = format_bytes(peak)
     declared = usage.get("declared") if isinstance(usage.get("declared"), dict) else {}
-    declared_gb = declared.get("effective_memory_gb") or declared.get("memory_gb")
+    declared_gb = declared.get("memory_gb")
+    effective_gb = declared.get("effective_memory_gb")
+    if isinstance(effective_gb, int) and effective_gb > (declared_gb or 0):
+        return f"{label} / {effective_gb} GiB"
+    if isinstance(declared.get("memory"), str):
+        return f"{label} / {declared['memory']}"
     if isinstance(declared_gb, int) and declared_gb > 0:
         return f"{label} / {declared_gb} GiB"
     return label
@@ -709,6 +782,49 @@ def _build_failures(
     return tuple(cards)
 
 
+def _build_retried(*, summary: RunSummary) -> tuple[RetriedTask, ...]:
+    """List each task that ran more than once, with every attempt's outcome."""
+    retried: list[RetriedTask] = []
+    for task in summary.tasks:
+        if len(task.attempt_history) < 2:
+            continue
+        attempts = []
+        for attempt in task.attempt_history:
+            failure = attempt.get("failure")
+            message = failure.get("message") if isinstance(failure, dict) else None
+            attempts.append(
+                AttemptNote(
+                    number=int(attempt.get("attempt") or 0),
+                    status=str(attempt.get("status") or "unknown"),
+                    message=message if isinstance(message, str) else None,
+                )
+            )
+        retried.append(
+            RetriedTask(task_key=task.task_key, label=task.label, attempts=tuple(attempts))
+        )
+    return tuple(retried)
+
+
+def _build_outputs(*, summary: RunSummary) -> tuple[OutputRow, ...]:
+    """List the files and folders each task produced or reused from the cache."""
+    rows: list[OutputRow] = []
+    for task in summary.tasks:
+        for output in task.outputs:
+            path = output.get("path")
+            if not isinstance(path, str):
+                continue
+            rows.append(
+                OutputRow(
+                    task_key=task.task_key,
+                    label=task.label,
+                    name=str(output.get("name") or "return"),
+                    kind=str(output.get("type") or "file"),
+                    path=path,
+                )
+            )
+    return tuple(rows)
+
+
 def _first_log_path(*, task: TaskSummary, run_dir: Path) -> Path | None:
     """Return the first existing log path for a task (stderr preferred)."""
     for rel in (task.stderr_log, task.stdout_log):
@@ -737,8 +853,11 @@ def _build_pages(
         if source is None or not source.is_file():
             continue
         # Keyed by task, not name: the branches of a fan-out share a name.
-        dest = f"pages/{task.task_key}_{task.base_name}.html"
+        stem = f"pages/{task.task_key}_{task.base_name}"
+        dest = f"{stem}.html"
         artifact_copies.append(ArtifactCopy(source=source, dest_relpath=dest))
+        page = source.read_text(encoding="utf-8", errors="replace")
+        static = static_notebook_page(page=page, title=task.label)
 
         size_bytes = source.stat().st_size
         sub_parts = [format_duration(task.duration_s), format_bytes(size_bytes)]
@@ -751,6 +870,8 @@ def _build_pages(
                 sub_line=" · ".join(sub_parts),
                 link_relpath=dest,
                 status_tone=_STATUS_TONE.get(task.status, "warn"),
+                embed_html=static if static is not None else page,
+                static_relpath=f"{stem}.static.html" if static is not None else None,
             )
         )
     return tuple(cards)
@@ -765,7 +886,6 @@ def _build_summary_cards(*, summary: RunSummary) -> tuple[StatCard, ...]:
     succeeded = summary.succeeded_count + summary.cached_count
     failed = summary.failed_count
     cache_hits = sum(1 for task in summary.tasks if task.cached or task.status == "cached")
-    cache_pct = (100.0 * cache_hits / total_tasks) if total_tasks else 0.0
 
     tasks_sub_parts: list[str] = []
     if succeeded:
@@ -795,10 +915,21 @@ def _build_summary_cards(*, summary: RunSummary) -> tuple[StatCard, ...]:
         StatCard(
             label="Cache hits",
             value=f"{cache_hits} / {total_tasks}",
-            sub=f"{cache_pct:.1f} % warm",
+            sub=_cache_sub(cache_hits=cache_hits, total_tasks=total_tasks),
             tone="cool",
         ),
     )
+
+
+def _cache_sub(*, cache_hits: int, total_tasks: int) -> str:
+    """Say what share of the run's tasks were reused from the cache."""
+    if total_tasks == 0:
+        return "no tasks"
+    if cache_hits == 0:
+        return "every task ran"
+    if cache_hits == total_tasks:
+        return "every task reused from the cache"
+    return f"{100 * cache_hits / total_tasks:.0f} % of tasks reused from the cache"
 
 
 def _build_masthead_chips(*, summary: RunSummary) -> tuple[MastheadChip, ...]:

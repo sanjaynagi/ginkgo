@@ -43,6 +43,14 @@ The same workflow on the second run:
 ⏱ Completed in 0.7s - 1 tasks executed, 0 cached
 ```
 
+That figure is the `pixi install` alone. Pixi links packages from its shared
+cache, so installing an environment whose packages are already cached takes
+about a second. The first task to start in a newly installed environment can
+still be slow: on macOS the system checks each new native library the first
+time it is loaded, which can add tens of seconds to a notebook that imports
+pandas and marimo. That time belongs to the task, so it shows up in the task's
+duration rather than in the preparation line, and later runs do not pay it.
+
 Because Ginkgo shells out to do this, the tools must be on your `PATH`: `pixi`
 for Pixi environments, and `docker` or `podman` for container environments. See
 [Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
@@ -102,6 +110,26 @@ this search entirely and is resolved directly against the project root.
 
 If the environment cannot be found anywhere, the error lists every directory
 that was searched, and what each one holds.
+
+### Where An Environment Is Installed
+
+Pixi installs an environment next to its manifest, in a `.pixi/` directory:
+`workflow/envs/<env_name>/.pixi/envs/default/`. The `.gitignore` that
+`ginkgo init` writes already ignores `.pixi/`. `ginkgo env ls` lists each
+environment's install directory, and `ginkgo env clear <env_name>` removes it.
+The next run that needs the environment installs it again.
+
+An environment is large. Python with pandas and marimo comes to about 435 MB as
+`du` counts it. Most of that is not extra disk use: Pixi links files from its
+package cache (`pixi info` names the cache directory) with hard links, or with
+copy-on-write clones on APFS and btrfs. So a second environment, or a reinstall,
+with the same packages costs little more space. `du` counts every link in full
+either way.
+
+Pixi's own `detached-environments` setting installs environments outside the
+project tree. Ginkgo does not support it: `ginkgo env ls` and `ginkgo env clear`
+look for `.pixi/` beside the manifest, so they would report a detached
+environment as not installed and leave it on disk.
 
 ## Conda Environment Files
 

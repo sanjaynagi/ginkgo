@@ -41,6 +41,7 @@ ginkgo_report/
 ├── command.py           # argument parsing and command_report
 ├── model.py             # ReportData dataclass + builder
 ├── sizing.py            # log-tail cap and builder
+├── notebook_page.py     # network-free static copy of a marimo page
 ├── render.py            # Jinja env, bundle writer, single-file writer
 ├── templates/
 │   ├── index.html.j2    # master document shell
@@ -52,12 +53,14 @@ ginkgo_report/
 │   ├── _graph.html.j2
 │   ├── _tasks.html.j2
 │   ├── _failure.html.j2
-│   ├── _notebooks.html.j2   # the "Rendered pages" section
+│   ├── _retries.html.j2     # attempts of tasks that ran more than once
+│   ├── _outputs.html.j2     # files and folders each task produced
+│   ├── _pages.html.j2       # the "Rendered pages" section
 │   ├── _environment.html.j2
 │   └── _footer.html.j2
 └── static/
     ├── report.css       # tokens + component styles
-    ├── islands.js       # scrollspy + sortable task table
+    ├── islands.js       # scrollspy, sortable tables, embedded page sizing
     └── fonts/           # Commissioner, JetBrains Mono (woff2)
 ```
 
@@ -106,6 +109,7 @@ uses Rich styles and icons, the report uses tone tokens (`ok` / `fail` /
 │       ├── fraunces-italic.woff2
 │       └── jetbrains-mono.woff2
 ├── pages/<task_key>_<task>.html                # copied rendered_html pages
+├── pages/<task_key>_<task>.static.html         # static copy of a marimo page
 └── logs/<log_filename>                         # failed-task logs
 ```
 
@@ -113,9 +117,16 @@ Rendered pages and logs are copied rather than inlined. A task that records a
 `rendered_html` annotation (`TaskSummary.rendered_html`) gets a card in the
 "Rendered pages" section, titled by the task's label; a page a cache hit
 reused carries `from run <id>` in its sub-line. The report knows nothing about
-notebooks: any task kind that records the annotation is listed. The `--single-file` mode
-inlines the stylesheet, fonts and islands script so the document stands on
-its own.
+notebooks: any task kind that records the annotation is listed.
+
+A page `marimo export html` wrote is drawn by marimo's frontend, which the page
+loads from cdn.jsdelivr.net, so it is blank offline. `notebook_page.py` makes a
+static copy from the cell code and outputs the page carries in its mount
+config: markdown, HTML and images as marimo rendered them, `marimo-table`
+widgets as plain tables (first 200 rows), console output and errors as text,
+and any other widget named as needing marimo. A page that is not a marimo
+export has no static copy. The bundle writes the copy beside the page and links
+both; `PageCard.embed_html` is what a single-file report embeds.
 
 ## Destination safety
 
@@ -241,12 +252,18 @@ enhancement. There is no framework, no bundler, no build step.
 - Fonts rewritten to `data:font/woff2;base64,…` URIs inside `@font-face`.
 - Islands script inlined in a `<script type="module">` block.
 
-Rendered pages remain as relative references (their content is too
-large to reasonably base64 into a single document); `--single-file` is
-intended for short, self-contained report sharing. Logs copied into the
-bundle default mode are also referenced by relative path. `ExportResult.omitted_links`
-lists those references, and `ginkgo report` warns with them, since the links
-will not open from the single file.
+- Each rendered page in an `<iframe srcdoc>`, sandboxed without scripts: the
+  static copy of a marimo page, or any other page as it is. The frame shares
+  the report's origin, so the islands script sizes it to its content.
+
+So the file opens offline, pages included. What it cannot carry is a marimo
+page's interactivity, since marimo's frontend comes from its CDN and is
+neither small nor a single file (hundreds of lazily imported modules, about
+27 MB). Logs copied into the bundle are referenced by relative path.
+`ExportResult.omitted_links` lists those references, and `ginkgo report`
+warns with them, since the links will not open from the single file. The
+command also warns when the file is over 25 MB, which takes pages embedding
+large figures or tables.
 
 ## Determinism
 

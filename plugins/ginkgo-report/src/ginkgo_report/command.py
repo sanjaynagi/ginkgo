@@ -9,9 +9,14 @@ import webbrowser
 from pathlib import Path
 
 from ginkgo.cli.common import console, open_run
+from ginkgo.formatting import format_bytes
 from ginkgo.workspace_layout import WorkspaceLayout
 from ginkgo_report.render import export_report
 from ginkgo_report.sizing import SizingPolicy
+
+#: A single-file report above this size is too large to pass around comfortably,
+#: usually because a notebook page embeds large figures or tables.
+LARGE_SINGLE_FILE_BYTES = 25 * 1024 * 1024
 
 
 def add_report_arguments(parser: argparse.ArgumentParser) -> None:
@@ -40,8 +45,9 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
         "--single-file",
         action="store_true",
         help=(
-            "Emit one HTML file with CSS, fonts, and script inlined. Rendered "
-            "pages and logs are linked but not included."
+            "Emit one HTML file that opens offline, with CSS, fonts, script and "
+            "rendered pages inlined; a marimo page is inlined as a static copy of "
+            "its outputs. Logs are linked but not included."
         ),
     )
     parser.add_argument(
@@ -106,6 +112,13 @@ def command_report(args: argparse.Namespace) -> int:
             f"[yellow]⚠[/] The single-file report links {len(result.omitted_links)} "
             f"file(s) it does not include, so those links will not open: {listed}. "
             "Export without --single-file to include them."
+        )
+    size = result.index_path.stat().st_size
+    if result.single_file and size > LARGE_SINGLE_FILE_BYTES:
+        rich_console.print(
+            f"[yellow]⚠[/] The single-file report is {format_bytes(size)}, mostly "
+            "the rendered pages it embeds. Export without --single-file to keep "
+            "them as separate files."
         )
 
     if args.open:

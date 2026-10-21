@@ -1,0 +1,15 @@
+{% from "_section.html.j2" import section_heading %}
+{{ section_heading(report, "retries") -}}
+{% for task in report.retried %}
+<div class="retry-card">
+  <h4>{{ task.label }}</h4>
+  <ol class="attempts">
+    {% for attempt in task.attempts %}
+    <li>
+      <span class="pill {{ 'fail' if attempt.status == 'failed' else 'ok' if attempt.status == 'succeeded' else 'neutral' }}"><span class="dot"></span>attempt {{ attempt.number }} · {{ attempt.status }}</span>
+      {% if attempt.message %}<span class="attempt-message">{{ attempt.message }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endfor %}

@@ -723,7 +723,9 @@ class _RunLayoutRenderer:
         return Text(
             f"⚙ Environment preparation took "
             f"{format_duration(self._state.env_prepare_seconds)}{env_part} - "
-            f"first runs install environments, later runs reuse them",
+            "first runs install environments, later runs reuse them. A task's first "
+            "start in a new environment can be slower still while the system loads its "
+            "libraries, and counts as the task's time",
             style="dim",
         )
 

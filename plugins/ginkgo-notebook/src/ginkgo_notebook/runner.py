@@ -44,9 +44,14 @@ if TYPE_CHECKING:
 
 
 class NotebookTaskError(GinkgoError, RuntimeError):
-    """A notebook cell failed, or marimo could not run the notebook."""
+    """A notebook cell failed, or marimo could not run the notebook.
 
-    failure_kind: ClassVar[FailureKind] = "shell_command_error"
+    Reported as ``user_code_error``, like a refused ``.ipynb`` notebook: the
+    notebook is the task's code, so a failing cell is a failure in it rather
+    than in a shell command the user wrote.
+    """
+
+    failure_kind: ClassVar[FailureKind] = "user_code_error"
 
     def __init__(
         self, *, task_name: str, cmd: str, exit_code: int, output: str, hint: str | None

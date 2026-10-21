@@ -102,7 +102,13 @@ def _current_rss_bytes() -> int | None:
 
 
 class _TaskPeakRss:
-    """Measure this process's peak resident memory since one task started.
+    """Measure how far one task body raised this process's resident memory.
+
+    The worker is already resident before the body runs: the interpreter,
+    ginkgo, and the workflow module with everything it imports, which for a
+    workflow using notebooks includes marimo. That baseline, sampled as the
+    body starts, is the worker's and not the task's, so the measurement is the
+    peak above it. A task that allocates nothing measures close to zero.
 
     ``ru_maxrss`` is the process's lifetime high-water mark, and a pool
     worker runs many tasks, so on its own it hands every task the peak of the
@@ -124,11 +130,13 @@ class _TaskPeakRss:
         self._stop = Event()
         self._peak = 0
         self._sample()
+        # Resident bytes as the task started; 0 where they cannot be read.
+        self.baseline_bytes = self._peak
         self._thread = Thread(target=self._run, name="ginkgo-task-rss", daemon=True)
         self._thread.start()
 
     def stop(self, *, usage_end: Any) -> int:
-        """Stop sampling and return the task's peak resident bytes.
+        """Stop sampling and return the task's peak resident bytes above the baseline.
 
         Parameters
         ----------
@@ -138,14 +146,15 @@ class _TaskPeakRss:
         Returns
         -------
         int
-            Peak resident bytes since the task started.
+            Peak resident bytes since the task started, less ``baseline_bytes``.
         """
         self._stop.set()
         self._thread.join(timeout=1.0)
         self._sample()
-        if self._peak == 0 or usage_end.ru_maxrss > self._usage_start.ru_maxrss:
-            return _max_rss_bytes(usage_end.ru_maxrss)
-        return self._peak
+        peak = self._peak
+        if peak == 0 or usage_end.ru_maxrss > self._usage_start.ru_maxrss:
+            peak = _max_rss_bytes(usage_end.ru_maxrss)
+        return max(peak - self.baseline_bytes, 0)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
@@ -170,6 +179,7 @@ def _attach_measured_resources(
         return
     response["measured_resources"] = {
         "peak_rss_bytes": peak_rss.stop(usage_end=usage_end),
+        "baseline_rss_bytes": peak_rss.baseline_bytes,
         "cpu_seconds": round(
             (usage_end.ru_utime - usage_start.ru_utime)
             + (usage_end.ru_stime - usage_start.ru_stime),
@@ -197,7 +207,6 @@ def _traceback_from_task(*, exc: BaseException, fn: Any) -> TracebackType | None
 
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
-    usage_start = _rusage_snapshot()
     base_dir = Path(payload["transport_dir"])
     decoded_args = {
         name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
@@ -220,7 +229,8 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         "display_label": payload.get("display_label"),
     }
     fn = None
-    peak_rss = _TaskPeakRss(usage_start=usage_start) if usage_start is not None else None
+    usage_start: Any | None = None
+    peak_rss: _TaskPeakRss | None = None
     try:
         with (
             _task_log_context(
@@ -239,6 +249,11 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             task_binding = _load_task_binding(payload=payload)
             fn = getattr(task_binding, "fn", task_binding)
+            # Measured from here, once the workflow module is imported, so
+            # the body's usage is not charged with the worker's imports.
+            usage_start = _rusage_snapshot()
+            if usage_start is not None:
+                peak_rss = _TaskPeakRss(usage_start=usage_start)
             result = fn(**decoded_args)
 
         # Encode while any fuse mounts are still live: the result may
