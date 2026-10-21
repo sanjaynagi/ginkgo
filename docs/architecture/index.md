@@ -68,7 +68,7 @@ Each topic file below is self-contained. Load only the pages relevant to your ta
 - [Value Transport](value-transport.md) — codec layer for cross-process task inputs/outputs.
 - [Configuration, Parameters, and Secrets](config-secrets.md) — config layering, `ginkgo.param` declarations and resolution, secret references, resolvers, and redaction.
 - [Provenance and Run State](provenance.md) — how a run is recorded, the read model, and the on-disk run layout.
-- [Provenance Store](store.md) — the SQLite ledger and its projections: schema, pragmas, migrations, `ginkgo db`.
+- [Provenance Store](store.md) — the SQLite ledger and its projections: schema, pragmas, versioning, `ginkgo db`.
 - [CLI](cli.md) — available commands and capabilities.
 - [Plugins](plugins.md) — the plugin registry, its extension points, discovery, the dispatch sites that use it, and the first-party plugin distributions.
 - [Remote Execution](remote-execution.md) — `RemoteExecutor` protocol, Kubernetes and GCP Batch executors, remote worker, code sync, GCS backend, infrastructure scripts.

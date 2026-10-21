@@ -103,13 +103,13 @@ ginkgo/
 │   ├── __init__.py          # open_store, ProvenanceStore
 │   ├── protocol.py          # ProvenanceStore: the ledger's write and read surface
 │   ├── sqlite.py            # SqliteStore: connection, pragmas, transactions
-│   ├── schema.py            # versioned DDL steps and migrate()
+│   ├── schema.py            # the versioned DDL and create_schema()
 │   ├── direct_index.py      # DirectIndex: a connection, a lock, a transaction
 │   ├── maintenance.py       # prune_events / prune_digest_memo / vacuum
 │   ├── writer.py            # StoreWriter: queued, batched appends of stored rows
 │   ├── projector.py         # stored row -> projection rows, one function per type
 │   ├── fs.py                # network-filesystem detection for the SQLite warning
-│   └── errors.py            # StoreError, SchemaVersionError, StoreLockedError
+│   └── errors.py            # StoreError, StaleWorkspaceError, StoreLockedError
 ├── envs/
 │   ├── container.py         # ContainerBackend (Docker/Podman)
 │   ├── interpreter.py       # what the running interpreter cannot import

@@ -13,10 +13,10 @@ from ginkgo.errors import GinkgoError
 
 __all__ = [
     "CorruptStoreError",
-    "SchemaVersionError",
     "StaleWorkspaceError",
     "StoreError",
     "StoreLockedError",
+    "UninitializedStoreError",
 ]
 
 
@@ -24,28 +24,12 @@ class StoreError(GinkgoError):
     """The provenance store could not be opened, read, or written."""
 
 
-class SchemaVersionError(StoreError):
-    """The database schema is not the version this ginkgo expects.
-
-    Raised only on read-only opens: a write-mode open migrates instead.
-    """
-
-    def __init__(self, *, path: Path, found: int, expected: int) -> None:
-        super().__init__(
-            f"{path} is at schema version {found}, but this ginkgo expects "
-            f"{expected}. Run `ginkgo db migrate` to bring it up to date."
-        )
-        self.path = path
-        self.found = found
-        self.expected = expected
-
-
 class StaleWorkspaceError(StoreError):
-    """The database was written by a schema this ginkgo no longer knows.
+    """The database was written at a schema version other than this ginkgo's.
 
-    Before 1.0 the schema is edited in place rather than migrated, so there is
-    no path from an older database to this one. Deleting the workspace is the
-    upgrade: it holds derived data, and the runs it describes can be re-run.
+    Before 1.0 there are no migrations, so there is no path from another
+    version's database to this one. Deleting the workspace is the upgrade: it
+    holds derived data, and the runs it describes can be re-run.
     """
 
     def __init__(self, *, path: Path, found: int, expected: int) -> None:
@@ -58,6 +42,20 @@ class StaleWorkspaceError(StoreError):
         self.path = path
         self.found = found
         self.expected = expected
+
+
+class UninitializedStoreError(StoreError):
+    """A read-only open found the database file but no schema in it yet.
+
+    The window between a first run creating the file and committing its
+    schema. A reader cannot create the schema itself, so it says what will.
+    """
+
+    def __init__(self, *, path: Path) -> None:
+        super().__init__(
+            f"{path} has not been initialized yet. Run ginkgo once in this workspace to create it."
+        )
+        self.path = path
 
 
 class StoreLockedError(StoreError):

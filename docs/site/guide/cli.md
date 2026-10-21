@@ -75,8 +75,8 @@ at the nearest `ginkgo.toml`.
 : List and validate the secret references a workflow resolves at run time.
 
 `ginkgo db`
-: Maintain the provenance database. `db path` prints where it is, `db migrate`
-  creates or upgrades it, `db check` reports anything the database and the files
+: Maintain the provenance database. `db path` prints where it is,
+  `db check` reports anything the database and the files
   beside it disagree about (`--verify` also rehashes every stored artifact,
   `--fix` first removes what nothing can use any more),
   `db prune` deletes history you no longer need, and

@@ -1,4 +1,4 @@
-"""Opening, migrating and writing the provenance store."""
+"""Opening and writing the provenance store."""
 
 from __future__ import annotations
 
@@ -14,18 +14,13 @@ from ginkgo.store import open_store
 from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.errors import (
     CorruptStoreError,
-    SchemaVersionError,
     StaleWorkspaceError,
     StoreError,
     StoreLockedError,
+    UninitializedStoreError,
 )
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore, StoredEvent
-from ginkgo.store.schema import (
-    MIGRATIONS,
-    SCHEMA_VERSION,
-    migrate,
-    schema_version,
-)
+from ginkgo.store.schema import SCHEMA_VERSION, create_schema, schema_version
 from ginkgo.store.sqlite import SqliteStore
 
 
@@ -51,7 +46,7 @@ def _event(**overrides: Any) -> StoredEvent:
 class TestOpening:
     """What a write-mode open leaves behind."""
 
-    def test_a_fresh_database_is_migrated_to_the_current_version(self, tmp_path):
+    def test_a_fresh_database_is_created_at_the_current_version(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
             assert store.schema_version == SCHEMA_VERSION
 
@@ -80,7 +75,7 @@ class TestOpening:
         with open_store(path):
             assert path.exists()
 
-    def test_reopening_applies_nothing(self, tmp_path):
+    def test_reopening_creates_nothing(self, tmp_path):
         path = tmp_path / "ginkgo.db"
         with open_store(path):
             pass
@@ -88,7 +83,7 @@ class TestOpening:
         with open_store(path) as store:
             applied = store.query("SELECT version FROM schema_version")
 
-        assert [row["version"] for row in applied] == [version for version, _ in MIGRATIONS]
+        assert [row["version"] for row in applied] == [SCHEMA_VERSION]
 
     def test_pragmas_are_applied(self, tmp_path):
         with open_store(tmp_path / "ginkgo.db") as store:
@@ -104,7 +99,7 @@ class TestOpening:
 
 
 class TestReadOnlyOpening:
-    """A reader must never create, migrate, or lock the database."""
+    """A reader must never create, change, or lock the database."""
 
     def test_a_missing_database_is_an_error_rather_than_a_new_file(self, tmp_path):
         path = tmp_path / "ginkgo.db"
@@ -114,11 +109,12 @@ class TestReadOnlyOpening:
 
         assert not path.exists()
 
-    def test_a_behind_schema_database_names_the_command_that_migrates_it(self, tmp_path):
+    def test_a_database_with_no_schema_yet_says_what_creates_it(self, tmp_path):
+        """A reader can race the first run between it creating the file and the schema."""
         path = tmp_path / "ginkgo.db"
         sqlite3.connect(path).close()
 
-        with pytest.raises(SchemaVersionError, match="ginkgo db migrate"):
+        with pytest.raises(UninitializedStoreError, match="Run ginkgo once"):
             open_store(path, readonly=True)
 
     def test_a_reader_refuses_to_write(self, tmp_path):
@@ -153,10 +149,10 @@ class TestCorruptDatabase:
             open_store(path, readonly=readonly)
 
 
-class TestMigrations:
+class TestSchema:
     """The schema version is a fact about the file, not about this process."""
 
-    def test_an_unmigrated_database_is_at_version_zero(self, tmp_path):
+    def test_an_empty_database_is_at_version_zero(self, tmp_path):
         connection = sqlite3.connect(tmp_path / "ginkgo.db")
 
         assert schema_version(connection) == 0
@@ -167,30 +163,17 @@ class TestMigrations:
         connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
         connection.commit()
 
-        with pytest.raises(SchemaVersionError, match="ginkgo db migrate"):
+        with pytest.raises(CorruptStoreError, match="holds no version"):
             schema_version(connection)
 
-    def test_a_version_3_database_loses_the_unused_events_index(self, tmp_path):
-        connection = sqlite3.connect(tmp_path / "ginkgo.db")
-        connection.isolation_level = None
-        connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
-        connection.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY, type TEXT, ts TEXT)")
-        connection.execute("CREATE INDEX events_type_ts ON events(type, ts)")
-        connection.execute("CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY)")
-        connection.execute("INSERT INTO schema_version VALUES (3, '2026-10-01')")
-
-        assert migrate(connection) == SCHEMA_VERSION
-        indexes = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'events_type_ts'"
-        ).fetchall()
-        assert indexes == []
-
-    def test_migrating_twice_changes_nothing(self, tmp_path):
+    def test_creating_twice_changes_nothing(self, tmp_path):
         connection = sqlite3.connect(tmp_path / "ginkgo.db")
         connection.isolation_level = None
 
-        assert migrate(connection) == SCHEMA_VERSION
-        assert migrate(connection) == SCHEMA_VERSION
+        create_schema(connection)
+        create_schema(connection)
+
+        assert schema_version(connection) == SCHEMA_VERSION
 
     def test_every_object_in_the_schema_is_created(self, tmp_path):
         """A snapshot of ``sqlite_master``. Regenerate it deliberately."""
@@ -199,39 +182,26 @@ class TestMigrations:
         with open_store(tmp_path / "ginkgo.db") as store:
             assert _schema_snapshot(store) == expected
 
-    def test_a_database_from_before_the_asset_removal_is_refused(self, tmp_path):
-        """The schema was edited in place at version 3, so versions 1 and 2 stop."""
-        path = tmp_path / "ginkgo.db"
-        connection = sqlite3.connect(path)
-        connection.isolation_level = None
-        connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
-        connection.execute("INSERT INTO schema_version VALUES (2, '2026-09-01')")
-
-        with pytest.raises(StaleWorkspaceError) as caught:
-            migrate(connection)
-
-        assert caught.value.found == 2
-
-    def test_a_database_from_another_schema_version_is_refused(self, tmp_path):
-        """Pre-1.0 there is no path forward from an older schema, so say so.
+    @pytest.mark.parametrize("readonly", [False, True])
+    @pytest.mark.parametrize("found", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
+    def test_a_database_from_another_schema_version_is_refused(self, tmp_path, readonly, found):
+        """Pre-1.0 there is no path from another schema, so say so.
 
         Without this the stale database opens cleanly and dies later on the
         first query naming a column it does not have, which reads as a ginkgo
         bug rather than as a workspace to delete.
         """
         path = tmp_path / "ginkgo.db"
+        open_store(path).close()
         connection = sqlite3.connect(path)
-        connection.isolation_level = None
-        migrate(connection)
-        connection.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?, '2026-08-28')",
-            (SCHEMA_VERSION + 1,),
-        )
+        connection.execute("UPDATE schema_version SET version = ?", (found,))
+        connection.commit()
+        connection.close()
 
         with pytest.raises(StaleWorkspaceError, match="Delete the workspace") as caught:
-            migrate(connection)
+            open_store(path, readonly=readonly)
 
-        assert caught.value.found == SCHEMA_VERSION + 1
+        assert caught.value.found == found
         assert caught.value.expected == SCHEMA_VERSION
 
     def test_a_refused_database_names_the_directory_to_delete(self):
@@ -381,8 +351,8 @@ class TestConcurrentFirstOpen:
     """Two ginkgo processes may reach an empty workspace at the same moment.
 
     Three things race on a fresh database: creating the file, switching it into
-    WAL, and running the migration. Threads do not reproduce it — one finishes
-    the migration before the next is off the barrier — so this uses processes,
+    WAL, and creating the schema. Threads do not reproduce it — one finishes
+    the schema before the next is off the barrier — so this uses processes,
     which is also what the race is really between.
 
     It is a race, so it detects rather than proves: with the WAL retry and the
@@ -413,5 +383,5 @@ class TestConcurrentFirstOpen:
 
         with open_store(path, readonly=True) as store:
             applied = store.query("SELECT version FROM schema_version")
-        # Migrated once, not once per racing opener.
-        assert [row["version"] for row in applied] == [version for version, _ in MIGRATIONS]
+        # Created once, not once per racing opener.
+        assert [row["version"] for row in applied] == [SCHEMA_VERSION]

@@ -93,7 +93,7 @@ def _detach() -> None:
 def _wait_for_a_succeeded_task(*, root: Path, timeout: float = 60.0) -> None:
     """Block until the workspace's ledger records a succeeded task."""
     import ginkgo.query as query
-    from ginkgo.store.errors import SchemaVersionError
+    from ginkgo.store.errors import UninitializedStoreError
     from ginkgo.workspace_layout import WorkspaceLayout
 
     deadline = time.monotonic() + timeout
@@ -104,8 +104,8 @@ def _wait_for_a_succeeded_task(*, root: Path, timeout: float = 60.0) -> None:
                 rows = reader.runs(limit=1)
                 if rows and reader.task_status_counts(rows[0].run_id).get("succeeded"):
                     return
-        except SchemaVersionError:
-            # The run has created the ledger but not yet migrated it.
+        except UninitializedStoreError:
+            # The run has created the ledger but not yet its schema.
             continue
     pytest.fail("no task succeeded before the interrupt was due")
 

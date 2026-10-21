@@ -1,9 +1,8 @@
 """Provenance-database command handlers.
 
 ``ginkgo db`` is the maintenance surface for the ledger at
-``.ginkgo/ginkgo.db``: create or upgrade it, check that it is intact, delete
-history nothing reads any more, reclaim the space that frees, and say where the
-file is.
+``.ginkgo/ginkgo.db``: check that it is intact, delete history nothing reads
+any more, reclaim the space that frees, and say where the file is.
 
 ``check`` reports (``check --verify`` also rehashes every stored artifact
 byte); ``check --fix`` first removes what nothing can use any more. Every half
@@ -12,7 +11,7 @@ whether their rows and their bytes agree, ``rundir`` for the run directories,
 the staging cache for its downloads, the cache index for environment drift.
 It is a read path — it opens the database read-only and never creates one.
 
-``migrate``, ``prune``, ``vacuum`` and ``check --fix`` open in write mode and
+``prune``, ``vacuum`` and ``check --fix`` open in write mode and
 so need write access to the workspace; ``check`` and ``path`` do not.
 """
 
@@ -49,12 +48,6 @@ def command_db(args) -> int:
 
     if args.db_command == "path":
         rich_console.print(str(path))
-        return 0
-
-    if args.db_command == "migrate":
-        rich_console.print("[bold green]🌿 ginkgo db migrate[/]\n")
-        with open_store(path) as store:
-            rich_console.print(f"[green]✓[/] {path} at schema version {store.schema_version}")
         return 0
 
     if args.db_command == "vacuum":
@@ -214,7 +207,7 @@ def _check(layout, *, verify: bool, fix: bool, rich_console) -> int:
     says that once the run directories agree: a workspace holding runs whose
     ledger is gone gets the warning instead, and still exits 0, because
     nothing here is corrupt and a missing ledger is not something ``db`` can
-    repair. Creating the database is ``db migrate``'s job, and ``ginkgo run``'s.
+    repair. Creating the database is ``ginkgo run``'s job.
 
     With *verify* the artifact store also rehashes every stored byte, which
     catches a blob corrupted in place — something no row comparison can see.
