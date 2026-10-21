@@ -651,6 +651,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
@@ -661,6 +662,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
@@ -878,7 +880,8 @@ class CacheStore:
             except _UNREADABLE_ENTRY_ERRORS as exc:
                 problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
         problems += [
-            f"cache directory {entry.name} has no row (orphan)"
+            f"cache directory {entry.name} is not referenced by the ledger "
+            "(the ledger may have been reset)"
             for entry in self.orphan_entry_dirs()
         ]
         problems += [

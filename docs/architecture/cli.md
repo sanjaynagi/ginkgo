@@ -206,10 +206,13 @@ with run directories but no database is warned about rather than called empty,
 still at exit 0. Creating the database is `db migrate`'s job.
 
 `runs ls` and `doctor` report that same condition, from the one place that
-computes it (`rundir.runs_without_ledger_warning`): an empty run listing says
-so, and adds the warning when `.ginkgo/runs/` says otherwise; `doctor` reports
-it as a `runs_without_ledger` warning diagnostic, which leaves its exit status
-at 0.
+computes it (`rundir.runs_without_ledger_warning`), which also covers run
+directories older than a database recreated since (the next `ginkgo run` after
+a deletion starts a new one, and warns that it does): a run listing adds the
+warning when `.ginkgo/runs/` holds directories it has no row for; `doctor`
+reports it as a `runs_without_ledger` warning diagnostic, and recorded runs
+whose directories are gone (`rundir.runs_without_directory_warning`) as
+`runs_without_directory`. Both leave its exit status at 0.
 
 `db prune` takes three cutoffs, at least one required.
 `--events-older-than <duration>` deletes the raw events of runs that finished

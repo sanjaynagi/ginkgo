@@ -1,6 +1,6 @@
 """Failures the provenance store raises.
 
-All three are :class:`~ginkgo.errors.GinkgoError` subclasses, so the CLI prints
+Each is a :class:`~ginkgo.errors.GinkgoError` subclass, so the CLI prints
 their message and nothing else. Each message therefore has to be the whole
 report: which database, what is wrong with it, and the command that fixes it.
 """
@@ -11,7 +11,13 @@ from pathlib import Path
 
 from ginkgo.errors import GinkgoError
 
-__all__ = ["SchemaVersionError", "StaleWorkspaceError", "StoreError", "StoreLockedError"]
+__all__ = [
+    "CorruptStoreError",
+    "SchemaVersionError",
+    "StaleWorkspaceError",
+    "StoreError",
+    "StoreLockedError",
+]
 
 
 class StoreError(GinkgoError):
@@ -65,3 +71,16 @@ class StoreLockedError(StoreError):
         )
         self.path = path
         self.timeout_ms = timeout_ms
+
+
+class CorruptStoreError(StoreError):
+    """The database file is not a readable SQLite database."""
+
+    def __init__(self, *, path: Path, detail: str) -> None:
+        super().__init__(
+            f"{path} is not a readable ginkgo database ({detail}); it is corrupt or was "
+            f"overwritten. Move it aside (`mv {path} {path}.broken`) and run again: ginkgo "
+            "starts a new one, without the run history and cache entries the old one "
+            "held, so tasks run again rather than coming from the cache."
+        )
+        self.path = path

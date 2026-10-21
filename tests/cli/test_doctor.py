@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -307,6 +308,44 @@ class TestDoctorWorkspaceLedger:
         assert [item["code"] for item in payload["diagnostics"]] == ["runs_without_ledger"]
         assert payload["diagnostics"][0]["severity"] == "warning"
 
+    def _run_once(self) -> None:
+        Path("workflow.py").write_text(
+            "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
+            "@flow\ndef main():\n    return one()\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_run_directories_older_than_a_new_ledger_are_reported(self) -> None:
+        """ED-6: a database recreated after a deletion hides the older runs too."""
+        self._run_once()
+        (Path(".ginkgo") / "runs" / "20260101_000000_000000_deadbeef").mkdir()
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_ledger"
+        assert "1 run directory under .ginkgo/runs with no row" in diagnostic["message"]
+
+    def test_recorded_runs_without_directories_are_reported(self) -> None:
+        """ED-6: deleting .ginkgo/runs fails db check, so doctor must not pass silently."""
+        self._run_once()
+        shutil.rmtree(Path(".ginkgo") / "runs")
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "runs_without_directory"
+        assert "1 run recorded" in diagnostic["message"]
+
     def test_a_workspace_that_has_not_run_yet_is_not_reported(self) -> None:
         _write_workflow(env=None)
         (Path(".ginkgo") / "runs").mkdir(parents=True)
@@ -375,20 +414,38 @@ class TestDoctorContainerImageValidation:
 
 
 class TestDoctorContainerDaemonValidation:
-    """Issue #343: a Docker CLI whose daemon is down fails ``doctor`` with a
-    message naming the daemon, instead of passing and failing the run."""
+    """Issue #343: a Docker CLI whose daemon is down is named by ``doctor``.
+    It is a warning: only a container task that has to run needs the daemon."""
 
-    def test_unreachable_daemon_produces_a_diagnostic(self) -> None:
+    def test_unreachable_daemon_produces_a_warning(self) -> None:
         _write_workflow(env="docker://ubuntu:24.04")
         fake_bin = _write_fake_docker(daemon_up=False)
 
         result = _run_doctor("--json", cwd=Path.cwd(), path_prefix=fake_bin)
 
-        assert result.returncode == 1
+        assert result.returncode == 0, result.stdout
         [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["severity"] == "warning"
         assert diagnostic["code"] == "container_daemon_unreachable"
+        assert "cached tasks do not need it" in diagnostic["message"]
         assert "docker daemon is not reachable" in diagnostic["message"]
         assert "failed to connect to the docker API" in diagnostic["message"]
+
+    def test_dry_run_warns_and_passes(self) -> None:
+        _write_workflow(env="docker://ubuntu:24.04")
+        fake_bin = _write_fake_docker(daemon_up=False)
+
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py", "--dry-run"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "docker daemon is not reachable" in result.stderr
+        assert "cached tasks do not need it" in result.stderr
 
     def test_workflow_without_container_envs_does_not_probe(self) -> None:
         _write_workflow(env=None)

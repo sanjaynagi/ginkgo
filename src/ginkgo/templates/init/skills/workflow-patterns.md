@@ -112,8 +112,8 @@ cache. Pass it in as a `file` argument instead. The same goes for a file a
 task writes to a path that is neither an `Out[...]` parameter nor returned:
 it is not tracked or restored, and Ginkgo says nothing about it. Declare it
 `Out[file]` or return it. A value read from `os.environ` in a task body is
-not part of the cache key either; pass it in as an argument or a
-`ginkgo.param`. Every task in a module re-runs when any of the module's text
+not part of the cache key either (run and doctor warn about it); pass it in
+as an argument or a `ginkgo.param`. Every task in a module re-runs when any of the module's text
 changes, comments included.
 
 A shell, script or notebook output that may legitimately not be written is

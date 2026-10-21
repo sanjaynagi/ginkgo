@@ -226,7 +226,9 @@ required parameter that is not supplied fails the same way.
 `type=Path` all work. Without `type`, a `bool`, `int` or `float` default sets
 it, so `ginkgo.param("threshold", default=40.0)` reads `--threshold 2.5` as a
 float; any other default leaves values as strings. Booleans accept a bare `--flag` or an explicit
-`--flag false`, and `multiple=True` makes a flag repeatable:
+`--flag false`, which is how to turn off one whose default is `True`. `multiple=True`
+makes a flag repeatable, and the value is then a tuple (`("alpha", "beta")`),
+also when it comes from a list in `[params]` or a single value:
 
 ```bash
 ginkgo run flow.py --item alpha --item beta --verbose
@@ -338,6 +340,27 @@ ginkgo run tests/workflows/smoke.py            # execute
 Each such file must expose a flow, usually by re-exporting the project's own.
 `ginkgo init` scaffolds one `tests/workflows/smoke.py` that re-exports `main`
 from `workflow/flow.py`.
+
+### Several workflows in one project
+
+A file holds exactly one `@flow`, so a project with several workflows keeps one
+entry file per workflow, each importing tasks from the shared modules:
+
+```text
+workflow/
+├── flow.py          # the default: `ginkgo run` with no path runs this one
+├── qc_flow.py       # ginkgo run workflow/qc_flow.py
+├── report_flow.py   # ginkgo run workflow/report_flow.py
+└── modules/         # tasks the flows share
+```
+
+Auto-discovery only ever picks `flow.py`, so run the others by path. They all
+share the project's `.ginkgo/`: one ledger, one cache. A cache key depends on
+the task and its inputs, not on which flow called it, so a task two flows call
+with the same arguments runs once and is a cache hit in the other. Each run
+records the entry file it ran, and `ginkgo runs ls --workflow
+workflow/qc_flow.py` lists one workflow's runs. `ginkgo doctor <path>` and
+`ginkgo run <path> --dry-run` check one entry file at a time.
 
 `ginkgo doctor` catches environment and configuration problems before a run.
 Pass `--json` for structured output suitable for programmatic use:
@@ -451,6 +474,10 @@ Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`, one with no earlier entry of any kind
 to compare against reports `no_prior_entry`, and one whose key has no cache entry at all —
 because it failed, or because the entry was pruned — reports `no_entry_for_key`.
+A task that an earlier run of the same workflow knew under another module or
+qualified name reports `task_moved`, with that name as `moved_from`: a task's
+cache identity includes its module and name, so moving or renaming it starts it
+without a cache entry.
 
 ## A Typical Loop
 

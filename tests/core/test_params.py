@@ -300,11 +300,15 @@ def test_format_param_help_lines():
             ParamDecl(name="n_reps", value_type=int, default=12, help_text="Replicates"),
             ParamDecl(name="region", help_text="Genome region"),
             ParamDecl(name="verbose", value_type=bool, default=False),
+            ParamDecl(name="item", multiple=True, default=()),
         ]
     )
     assert lines[0].strip() == "--n-reps INT  Replicates (default: 12)"
     assert lines[1].strip() == "--region STR  Genome region (required)"
-    assert lines[2].strip() == "--verbose     (default: False)"
+    assert lines[2].strip() == (
+        "--verbose     (default: False) (bare --verbose is true; --verbose false turns it off)"
+    )
+    assert lines[3].strip() == "--item STR    (default: ()) (repeatable; the value is a tuple)"
 
 
 def test_format_param_help_shows_config_default_and_origin():

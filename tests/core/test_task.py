@@ -208,6 +208,15 @@ class TestTaskDefCall:
         with pytest.raises(TypeError, match="unexpected keyword arguments"):
             my_fn(x=1, bogus=2)
 
+    def test_positional_call_explains_keyword_only_calls(self):
+        @task()
+        def my_fn(sample: str, reads: int) -> int:
+            return reads
+
+        with pytest.raises(TypeError, match="keyword-only") as excinfo:
+            my_fn("a", 2)
+        assert "Call it as my_fn(sample=..., reads=...)" in str(excinfo.value)
+
     def test_expr_as_argument(self):
         @task()
         def step_a(x: int) -> int:

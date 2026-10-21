@@ -297,8 +297,8 @@ class ShellEnvironment:
 
     identity: str = "test-env-identity"
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
-        pass
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
+        return []
 
     def prepare(self, *, env: str) -> None:
         pass

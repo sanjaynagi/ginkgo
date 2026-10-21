@@ -37,6 +37,11 @@ The flow should primarily:
 
 Heavy transformation logic belongs in task bodies, not in the flow.
 
+Task calls are keyword-only: write `count_reads(sample="a", reads_path=path)`,
+not `count_reads("a", path)`. Each value names the parameter it fills, which is
+what fan-out, partial calls and cache keys are built from; a positional call
+fails with a message saying so.
+
 ## Task Kinds
 
 Ginkgo has five task kinds. They share the same `@task` decorator, typed inputs
@@ -405,7 +410,9 @@ The fallbacks are what you get when you open the notebook by hand with
 pass reads `None`, so a run warns, once per task, about each literal key the
 notebook reads (`args.get("k")`, `args.get_all("k")`, `args["k"]`, `"k" in args`)
 that is not one of the task's arguments, such as `summary_path` written with an
-underscore. The notebook file is
+underscore. `ginkgo doctor` and `ginkgo run --dry-run` give the same warning
+before anything runs, when the body is a plain `return notebook(...)` whose
+path does not depend on an upstream result. The notebook file is
 source material for both execution and cache identity — when the notebook
 changes, the task's cache key changes.
 

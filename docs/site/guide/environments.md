@@ -56,9 +56,12 @@ for Pixi environments, and `docker` or `podman` for container environments. See
 [Runtime Prerequisites](../getting-started/installation.md#runtime-prerequisites).
 Container environments also need the runtime's daemon running (on macOS and
 Windows, the Podman machine). `ginkgo doctor` and `ginkgo run --dry-run` check
-it and name a stopped or inaccessible daemon. `ginkgo run` does not check it up
-front, so a run whose container tasks are all cached still succeeds; one that
-has to run a container task fails when it reaches it.
+it and warn about a stopped or inaccessible daemon, but still pass: whether the
+run needs it depends on whether a container task has to run. `ginkgo run` does
+not check it up front, so a run whose container tasks are all cached still
+succeeds; one that has to run a container task fails when it reaches it. A
+fresh `ginkgo init` project has one container task, so its first run needs the
+daemon.
 
 ## Pixi Environments
 

@@ -455,9 +455,10 @@ class PixiEnvironment:
 
     pixi_registry: PixiRegistry
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
         """Raise for any environment name that cannot be resolved."""
         self.pixi_registry.validate_envs(env_names=env_names)
+        return []
 
     def prepare(self, *, env: str) -> None:
         """Materialize the Pixi environment."""

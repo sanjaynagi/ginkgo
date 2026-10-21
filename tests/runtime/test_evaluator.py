@@ -979,6 +979,16 @@ class TestFailurePolicy:
         failed = [event for event in event_collector.events if isinstance(event, TaskFailed)]
         assert [event.ignored for event in failed] == [True]
 
+    def test_the_missing_result_names_the_failed_branch_by_its_label(self) -> None:
+        """RP4-5: the message names the label, not an internal task id."""
+        evaluator = ConcurrentEvaluator(jobs=1, cores=1)
+
+        with pytest.raises(RootSkippedError) as excinfo:
+            evaluator.evaluate(ignored_failure_task().map(log_path=["first.log", "second.log"]))
+
+        assert "ignored_failure_task[first.log]" in str(excinfo.value)
+        assert "task_0" not in str(excinfo.value)
+
     def test_dependents_of_an_ignored_failure_are_skipped(
         self,
         event_collector: EventCollector,
