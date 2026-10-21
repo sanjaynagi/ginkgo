@@ -1579,20 +1579,20 @@ def main():
 
         result = _run_cli("run", "workflow.py", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
-        live_labels = re.findall(r"│ (child(?:\[\d\])?) +│", result.stdout)
-        assert live_labels == ["child", "child[2]", "child[3]"]
+        live_labels = re.findall(r"│ (child(?:\[\w\])?) +│", result.stdout)
+        assert live_labels == ["child[a]", "child[b]", "child[c]"]
 
         run_id = _extract_run_dir(result.stdout).name
         shown = _run_cli("runs", "show", run_id, cwd=Path.cwd())
         assert shown.returncode == 0, shown.stderr
-        assert re.findall(r"│ (child(?:\[\d\])?) +│", shown.stdout) == live_labels
+        assert re.findall(r"│ (child(?:\[\w\])?) +│", shown.stdout) == live_labels
 
-        history = _run_cli("history", "child[2]", "--json", cwd=Path.cwd())
+        history = _run_cli("history", "child[b]", "--json", cwd=Path.cwd())
         assert history.returncode == 0, history.stderr
         rows = json.loads(history.stdout)
         # The spawning task is node 0, so the second child is node 2.
         assert [(row["task_id"], row["display_label"]) for row in rows] == [
-            ("task_0002", "child[2]")
+            ("task_0002", "child[b]")
         ]
 
     def test_branches_the_run_never_prepared_keep_their_labels(self) -> None:

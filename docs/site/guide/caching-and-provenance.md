@@ -167,12 +167,10 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   fails naming the parameter and the path. On a cache hit, a tracked output
   file or folder that is missing or modified on disk is restored from the
   artifact store without re-running the task and without a log line. This
-  covers `file(...)` returns and inferred returns (below). The restore
-  overwrites hand edits: an edited output is reset to the cached bytes. An
-  `Out[...]` path that is not part of the return value, as with an explicit
-  `-> None` return, has no stored artifact: on a cache hit it is only checked
-  for existence. A missing one is a miss and the task re-runs; an edited one
-  is neither restored nor re-run, so the edit stays.
+  covers `file(...)` returns and every declared `Out[...]` path, whatever the
+  task's return annotation says (`-> str`, `-> None`, or a dynamic task
+  returning tasks). The restore overwrites hand edits: an edited output is
+  reset to the cached bytes.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned
@@ -180,11 +178,14 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   driver path before the post-execution check runs. Without a configured
   store, the declared path is sent to the worker unchanged, which only works
   when the worker shares the driver's filesystem.
-- The parent directory of every declared `Out[...]` path is created
-  automatically before the task body runs (`mkdir(parents=True)`), so a task
-  writing into a fresh subdirectory needs no boilerplate of its own. For
-  `Out[folder]` only the *parent* is created, not the folder itself — tools
-  differ on whether they want the target directory to already exist.
+- Before the task body runs, whatever is at every declared `Out[...]` path is
+  removed (a file, or a folder with everything in it), for every task kind,
+  so a task never reads its own stale output: a body globbing its
+  `Out[folder]` sees only the files this run wrote. The parent directory is
+  then created (`mkdir(parents=True)`), so a task writing into a fresh
+  subdirectory needs no boilerplate of its own. For `Out[folder]` only the
+  *parent* is created, not the folder itself — tools differ on whether they
+  want the target directory to already exist.
 
 A literal path elsewhere in the graph that matches an `Out[...]` path is now
 also a real dependency edge: if another task's argument is the same path

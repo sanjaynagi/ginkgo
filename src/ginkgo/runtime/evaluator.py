@@ -92,6 +92,7 @@ from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     SignalMonitor,
     classify_failure,
+    remove_declared_output,
     sanitize_exception,
 )
 from ginkgo.runtime.task_validation import (
@@ -300,6 +301,15 @@ class NodeRun:
     def label(self) -> str:
         """The name the node is shown under: its display label or bare task name."""
         return self.display_label or self.task_def.base_name
+
+    @property
+    def rerun_names(self) -> frozenset[str]:
+        """The names ``--rerun`` selects the node by.
+
+        Its qualified task name, its base name (every call of the task), and
+        the label it is shown under (one call).
+        """
+        return frozenset({self.task_def.name, self.task_def.base_name, self.label})
 
     # The two identity views the runner contract (``TaskInvocation``) names;
     # everything else about the graph vertex is read through ``node``.
@@ -964,6 +974,14 @@ class ConcurrentEvaluator:
             if remote_handle is not None:
                 node.remote_job_id = remote_handle.job_id
 
+            if isinstance(self._failure, KeyboardInterrupt) and (
+                future.cancelled() or future.exception() is not None
+            ):
+                # Work the interrupt stopped (a killed worker, a terminated
+                # command) did not fail: the node stays in flight and is
+                # closed as interrupted with every other unfinished task.
+                continue
+
             if future.cancelled():
                 # Only a stopping run cancels work; anything else is a
                 # scheduler bug, which stops the run and closes the node.
@@ -1102,7 +1120,9 @@ class ConcurrentEvaluator:
         A finished run has no task left ``pending``:
 
         - Work still in flight, and a task waiting on its own expansion, is
-          recorded as failed, cancelled by the stop.
+          recorded as failed, cancelled by the stop, when a failure stopped
+          the run. An interrupt is no task's failure, so under one it is
+          skipped as interrupted, like a task that never started.
         - A task between attempts, its retry scheduled, is recorded as failed
           with the failure of its last attempt; its remaining retries are
           abandoned, and a notice says so.
@@ -1111,13 +1131,17 @@ class ConcurrentEvaluator:
           waits on, if it waits on one, and else by the failure that stopped
           the run.
         """
+        interrupted = isinstance(reason, KeyboardInterrupt)
         for node in self._nodes.values():
             if node.state in _IN_FLIGHT_NODE_STATES or node.state == "waiting_dynamic":
-                self._close_unfinished_node(node=node, reason=reason)
+                if interrupted:
+                    self._cleanup_transport(node)
+                else:
+                    self._close_unfinished_node(node=node, reason=reason)
             elif node.state not in _TERMINAL_NODE_STATES and node.attempt > 0:
                 self._abandon_retry(node=node, reason=reason)
 
-        if isinstance(reason, KeyboardInterrupt):
+        if interrupted:
             for node in self._unfinished_nodes():
                 self._mark_node_skipped(node=node, reason="interrupted", blocker=None)
             return
@@ -1658,26 +1682,25 @@ class ConcurrentEvaluator:
                     handle.write(header)
 
     def _prepare_output_paths(self, *, node: NodeRun) -> None:
-        """Make every declared ``Out[...]`` path ready for the task to write.
+        """Clear every declared ``Out[...]`` path before the task writes it.
 
-        Runs once per node, after pre-execution validation passes and before
-        the task body dispatches — on the driver, ahead of python workers,
-        shell/script/notebook commands, and container runs alike, since all
-        of those are launched from this one call site. The *parent* is
-        created (``exist_ok=True``): for ``Out[folder]`` the folder itself is
-        left for the task body to create, since tools differ on whether they
-        want it to already exist. A read-only file left at an ``Out[file]``
-        path by an earlier run is removed, so a body opening it for writing
-        does not fail with a bare permission error.
+        Runs once per attempt, after pre-execution validation passes and
+        before the task body dispatches — on the driver, ahead of python
+        workers, shell/script/notebook commands, and container runs alike,
+        since all of those are launched from this one call site. Whatever an
+        earlier run left at a declared path is removed (a file, or a folder
+        with all its contents), so a body that globs its own ``Out[folder]``
+        never sees stale files. The *parent* is created; an ``Out[folder]``
+        itself is left for the task body to create, since tools differ on
+        whether they want it to already exist.
         """
         assert node.execution_args is not None
-        for _, path, kind in declared_output_paths(
+        for _, path, _ in declared_output_paths(
             task_def=node.task_def, resolved_args=node.execution_args
         ):
             output = Path(path)
+            remove_declared_output(output)
             output.parent.mkdir(parents=True, exist_ok=True)
-            if kind == "file" and output.is_file() and not os.access(output, os.W_OK):
-                output.unlink()
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.
@@ -1937,12 +1960,8 @@ class ConcurrentEvaluator:
         return True
 
     def rerun_requested(self, *, node: NodeRun) -> bool:
-        """Return whether ``--rerun`` names *node*, so its cache is not consulted.
-
-        A name matches a task's qualified name, its base name (every branch
-        of a fan-out), or one branch's display label.
-        """
-        return not self.rerun.isdisjoint({node.task_def.name, node.task_def.base_name, node.label})
+        """Return whether ``--rerun`` names *node*, so its cache is not consulted."""
+        return not self.rerun.isdisjoint(node.rerun_names)
 
     def _record_cache_hit(self, *, node: NodeRun, cache_key: str) -> None:
         """Record that *node* is served by the entry under *cache_key*."""

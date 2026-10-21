@@ -769,13 +769,17 @@ label from the most recent run that recorded each cache entry.
   has a usable value, a branch takes the label of the upstream branch it was
   mapped over, or else the first varying argument's value in full.
 - Chained fan-out joins the labels: `train[sample_a,lr=0.01,epochs=10]`.
-- A call that is neither mapped nor product-mapped has no label and is shown by
-  its task name.
+- Plain calls of one task gathered in one list are labelled as a `.map()`
+  over the arguments whose values differ would be: `[score(name=n) for n in
+  ["ann", "bo"]]` gives `score[ann]` and `score[bo]`, in a flow and in the
+  list a dynamic task returns alike.
+- Any other call that is neither mapped nor product-mapped has no label and is
+  shown by its task name.
 
 When two tasks would be shown under the same name or label, the second and
 later take an ordinal in graph order: `child`, `child[2]`, `child[3]`. This
-covers plain calls, branches whose values do not tell them apart, and the tasks
-a dynamic task returns.
+covers plain calls outside a shared list, and calls or branches whose values
+do not tell them apart.
 
 A `.map()` label comes from the values, so changing the `.map()` arguments can
 move a label onto different inputs. Compare cache keys before reading two
@@ -815,33 +819,49 @@ from ginkgo import Out, file, flow, folder, task
 
 
 @task()
-def count_lines(chunk: file) -> int:
-    return len(Path(chunk).read_text().splitlines())
+def sort_chunk(chunk: file, sorted_path: Out[file]) -> file:
+    lines = sorted(Path(chunk).read_text().splitlines())
+    Path(sorted_path).write_text("\n".join(lines) + "\n")
+    return file(sorted_path)
 
 
 @task()
-def split(table: file, chunks: Out[folder]) -> list:
-    Path(chunks).mkdir(parents=True, exist_ok=True)
-    paths = []
+def split(table: file, chunks: Out[folder]) -> list[file]:
+    Path(chunks).mkdir(parents=True)
     for i, block in enumerate(Path(table).read_text().split("\n\n")):
-        path = Path(chunks) / f"chunk{i}.txt"
-        path.write_text(block)
-        paths.append(str(path))
-    return [count_lines(chunk=path) for path in paths]
+        (Path(chunks) / f"chunk{i}.txt").write_text(block + "\n")
+    return [
+        sort_chunk(chunk=str(path), sorted_path=f"results/sorted/{path.name}")
+        for path in sorted(Path(chunks).glob("chunk*.txt"))
+    ]
+
+
+@task()
+def combine(parts: list[file], merged: Out[file]) -> file:
+    Path(merged).write_text("".join(Path(part).read_text() for part in parts))
+    return file(merged)
 
 
 @flow
 def main():
-    return split(table="data/table.txt", chunks="results/chunks")
+    parts = split(table="data/table.txt", chunks="results/chunks")
+    return combine(parts=parts, merged="results/merged.txt")
 ```
+
+Ginkgo removes `results/chunks` before `split` runs, as it does every
+declared `Out[...]` path before any task runs, so the glob sees only the
+chunks this run wrote, never ones left by an earlier run with a different
+table.
 
 The returned tasks read files the parent has already written, so they do not
 wait on it as a producer of `results/chunks`; the parent waits on them, and
-completes with the list of their results. A later run with an unchanged
-`table.txt` is a cache hit on `split`, whose returned tasks are replayed and
-hit in turn. A returned task that reads a path produced by a task downstream
-of its parent cannot run before that task, which waits on the parent: the
-expansion fails with a cycle error naming the task that returned it.
+completes with the list of their results. A downstream task such as `combine`
+takes that list like any other `list[file]` input, and runs once every chunk
+is sorted. A later run with an unchanged `table.txt` is a cache hit on
+`split`, whose returned tasks are replayed and hit in turn. A returned task
+that reads a path produced by a task downstream of its parent cannot run
+before that task, which waits on the parent: the expansion fails with a cycle
+error naming the task that returned it.
 
 ### Selecting One Output With `.output[i]`
 

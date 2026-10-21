@@ -246,7 +246,7 @@ class TestRemoteOutFile:
         )
         assert collector.cached()
 
-    def test_deleting_the_output_forces_a_rerun(self, tmp_path: Path) -> None:
+    def test_a_deleted_output_is_restored_on_a_hit(self, tmp_path: Path) -> None:
         out_path = tmp_path / "deleted.txt"
         _evaluate(
             remote_write_output_untracked_return(payload="v1", out_path=str(out_path)),
@@ -258,7 +258,7 @@ class TestRemoteOutFile:
             remote_write_output_untracked_return(payload="v1", out_path=str(out_path)),
             event_bus=collector.bus,
         )
-        assert not collector.cached()
+        assert collector.cached()
         assert out_path.read_text(encoding="utf-8") == "v1"
 
     def test_task_that_fails_to_write_its_output_fails_clearly(self, tmp_path: Path) -> None:

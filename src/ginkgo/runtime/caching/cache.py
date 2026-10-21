@@ -31,6 +31,7 @@ from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
 from ginkgo.runtime.caching.hash_memo import HashMemo
 from ginkgo.runtime.task_validation import (
+    declared_output_paths,
     is_content_trackable_path_shape,
     is_content_trackable_path_value,
     label_input_value,
@@ -374,10 +375,15 @@ class CacheStore:
         return labels
 
     def load(self, *, cache_key: str, task_def: TaskDef) -> Any:
-        """Load a cached result if present and still valid for its environment."""
+        """Load a cached result if present and still valid for its environment.
+
+        An entry is present only when the index holds its row: the bytes
+        under the cache root of a key the database no longer knows (a lost
+        ``ginkgo.db``, say) are stranded, never served.
+        """
         entry_dir = self._entry_dir(cache_key)
         output_path = entry_dir / "output.json"
-        if not output_path.exists():
+        if not output_path.exists() or not self.index.has_entry(cache_key):
             return MISSING
 
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
@@ -424,9 +430,12 @@ class CacheStore:
         Returns
         -------
         bool
-            ``True`` if a stored output exists for the key.
+            ``True`` if a stored output exists for the key and the index
+            holds its row, as :meth:`load` requires.
         """
         if not (self._entry_dir(cache_key) / "output.json").is_file():
+            return False
+        if not self.index.has_entry(cache_key):
             return False
         return self._env_materialization_matches(cache_key=cache_key, task_def=task_def)
 
@@ -469,11 +478,10 @@ class CacheStore:
             Mapping from output path strings to artifact IDs.
         """
         # Always store output artifacts, even if the cache entry already exists.
-        # A dynamic task's outputs are its children's, which stored their own.
-        records = (
-            {}
-            if isinstance(result, DynamicTemplate)
-            else self._store_output_artifacts(result=result, task_def=task_def)
+        # A dynamic task's returned outputs are its children's, which stored
+        # their own; its declared Out[...] paths are its own.
+        records = self._store_output_artifacts(
+            result=result, task_def=task_def, resolved_args=resolved_args
         )
 
         # Publish artifacts to remote store if a publisher is configured.
@@ -542,8 +550,19 @@ class CacheStore:
         )
         return artifact_ids
 
-    def validate_cached_outputs(self, *, cache_key: str, task_def: TaskDef, value: Any) -> bool:
+    def validate_cached_outputs(
+        self,
+        *,
+        cache_key: str,
+        task_def: TaskDef,
+        value: Any,
+        resolved_args: dict[str, Any],
+    ) -> bool:
         """Ensure cached file and folder outputs are materialized correctly.
+
+        Covers the returned outputs (none for a :class:`DynamicTemplate`,
+        whose children restore their own) and every declared ``Out[...]``
+        path, whatever the return annotation.
 
         Returns
         -------
@@ -553,14 +572,24 @@ class CacheStore:
             store. ``False`` if the cached artifact metadata is incomplete or
             a restore fails.
         """
-        return_annotation = task_def.effective_return_annotation
         artifact_ids = self.load_artifact_ids(cache_key=cache_key)
         if artifact_ids is None:
             return False
-        return self._validate_output_value(
-            annotation=return_annotation,
+        if not isinstance(value, DynamicTemplate) and not self._validate_output_value(
+            annotation=task_def.effective_return_annotation,
             value=value,
             artifact_ids=artifact_ids,
+        ):
+            return False
+        return all(
+            self._validate_output_value(
+                annotation=file if kind == "file" else folder,
+                value=path,
+                artifact_ids=artifact_ids,
+            )
+            for _, path, kind in declared_output_paths(
+                task_def=task_def, resolved_args=resolved_args
+            )
         )
 
     def _validate_output_value(
@@ -670,8 +699,12 @@ class CacheStore:
         *,
         result: Any,
         task_def: TaskDef,
+        resolved_args: dict[str, Any],
     ) -> dict[str, ArtifactRecord]:
-        """Store file/folder outputs in the artifact store.
+        """Store the file/folder outputs a task returned or declared ``Out[...]``.
+
+        Every declared output is stored whatever the return annotation says,
+        so a hit restores it just as it restores a returned ``file``.
 
         Returns
         -------
@@ -679,12 +712,16 @@ class CacheStore:
             Mapping from output path strings to the records stored for them.
         """
         records: dict[str, ArtifactRecord] = {}
-        return_annotation = task_def.effective_return_annotation
-        self._collect_output_artifacts(
-            annotation=return_annotation,
-            value=result,
-            records=records,
-        )
+        if not isinstance(result, DynamicTemplate):
+            self._collect_output_artifacts(
+                annotation=task_def.effective_return_annotation,
+                value=result,
+                records=records,
+            )
+        for _, path, kind in declared_output_paths(task_def=task_def, resolved_args=resolved_args):
+            self._collect_output_artifacts(
+                annotation=file if kind == "file" else folder, value=path, records=records
+            )
         return records
 
     def _publish_artifacts(self, records: dict[str, ArtifactRecord]) -> dict[str, ArtifactRecord]:
