@@ -62,11 +62,19 @@ from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
 from ginkgo.runtime.executor_registry import ExecutorRegistry
 from ginkgo.runtime.module_loader import display_path, load_module_from_path, task_base_name
 from ginkgo.runtime.environment.resources import RunResourceMonitor
-from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
+from ginkgo.runtime.rundir import (
+    RunDir,
+    combined_log_tail,
+    make_run_id,
+    runs_without_ledger_warning,
+)
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
+    env_warning_diagnostic,
+    environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
+    static_notice_diagnostics,
     unreachable_call_diagnostics,
 )
 from ginkgo.runtime.dry_run import build_dry_run_plan
@@ -368,6 +376,15 @@ def run_workflow(
         "keep_going": keep_going,
         "rerun": frozenset(rerun),
     }
+    # A workspace whose ledger was deleted gets a new one from this run, which
+    # leaves the older run directories unreadable without saying so. Asked
+    # before the evaluator is built, since building it creates the ledger.
+    if not WorkspaceLayout.relative().db.is_file():
+        ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+        if ledger_warning is not None:
+            console(sys.stderr).print(
+                f"[yellow]⚠[/] {escape(ledger_warning)}; this run starts a new database."
+            )
     evaluator = ConcurrentEvaluator(**evaluator_kwargs)
     # A call the flow never returns is not in the graph, so its side effects
     # never happen: the run otherwise looks like a smaller but healthy one.
@@ -403,6 +420,12 @@ def run_workflow(
         raise
     validate_elapsed = time.perf_counter() - validate_started
 
+    # Only a dry run probes the container daemon; a stopped one fails just the
+    # container tasks that have to run, so it is a warning here, not a failure.
+    for warning in evaluator.validator.env_warnings:
+        diagnostic = env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
+
     # A parameter must reach a task as an argument. One read from a module global
     # is invisible to that task's cache key, so a changed value would silently
     # reuse the previous result. Detection is best-effort, hence a warning.
@@ -411,6 +434,13 @@ def run_workflow(
         nodes=evaluator.graph.nodes.values(),
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(finding.message())}")
+    # The same holds for a value read from os.environ inside a task body.
+    for diagnostic in environ_read_diagnostics(
+        task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
+    ):
+        console(sys.stderr).print(
+            f"[yellow]⚠[/] {escape(diagnostic.message)} {escape(diagnostic.suggestion or '')}"
+        )
 
     # A misspelt --rerun name would otherwise quietly serve every result from
     # the cache. One no task the workflow defines carries is rejected now; one
@@ -445,6 +475,7 @@ def run_workflow(
             *missing_directive_diagnostics(
                 task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
             ),
+            *static_notice_diagnostics(nodes=evaluator.graph.nodes.values()),
         ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.

@@ -7,13 +7,18 @@ the warning for a driver task whose body can never return its directive.
 
 from __future__ import annotations
 
+import os
+from os import getenv
+
 from ginkgo import shell, task, untracked
 import pytest
 
 from ginkgo.runtime.diagnostics import (
+    ENVIRON_READ_CODE,
     MISSING_DIRECTIVE_CODE,
     PATH_LIKE_STR_PARAM_CODE,
     _diagnostic_code_and_suggestion,
+    environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
 )
@@ -295,6 +300,67 @@ def main():
 
         assert status == 0
         assert 'count_lines is declared @task("shell")' in capsys.readouterr().err
+
+
+@task()
+def read_environ(name: str) -> str:
+    return os.environ.get("SETTING", name)
+
+
+@task()
+def read_getenv_import(name: str) -> str:
+    return getenv("SETTING") or name
+
+
+@task("shell")
+def read_environ_in_shell(name: str) -> str:
+    return shell(cmd=f"echo {os.getenv('SETTING')} {name}")
+
+
+class TestEnvironReadDiagnostics:
+    """EV-2: an os.environ read inside a task body is invisible to its cache key."""
+
+    def test_warns_for_each_task_that_reads_the_environment(self) -> None:
+        diagnostics = environ_read_diagnostics(
+            task_defs=[read_environ, read_environ, read_getenv_import, read_environ_in_shell]
+        )
+
+        assert [d.location for d in diagnostics] == [
+            read_environ.name,
+            read_getenv_import.name,
+            read_environ_in_shell.name,
+        ]
+        assert {d.code for d in diagnostics} == {ENVIRON_READ_CODE}
+        assert "ginkgo.param" in diagnostics[0].suggestion
+
+    def test_a_task_that_does_not_read_it_is_not_flagged(self) -> None:
+        assert environ_read_diagnostics(task_defs=[greet, echo_as_shell]) == []
+
+    def test_doctor_and_run_report_it(self, tmp_path, monkeypatch, capsys) -> None:
+        from ginkgo.cli.app import main as cli_main
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "wf.py").write_text(
+            """
+import os
+from ginkgo import flow, task
+
+@task()
+def setting() -> str:
+    return os.environ.get("MY_SETTING", "a")
+
+@flow
+def main():
+    return setting()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert cli_main(["doctor", "wf.py", "--json"]) == 0
+        assert ENVIRON_READ_CODE in capsys.readouterr().out
+        assert cli_main(["run", "wf.py"]) == 0
+        assert "'setting' reads the process environment" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

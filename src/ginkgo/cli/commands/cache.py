@@ -559,6 +559,7 @@ _REASON_TEXT = {
     "all_inputs_match": "cache hit — every input matched the stored entry",
     "no_entry_for_key": "no cache entry exists for this key",
     "no_prior_entry": "no earlier run of this call to compare against",
+    "task_moved": "the task moved or was renamed, which starts it without a cache entry",
     "source_hash_changed": "the task's source changed",
     "version_bump": "the task's declared version changed",
     "env_changed": "the declared environment changed",
@@ -606,6 +607,12 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
 
     reason = str(task.get("reason") or "")
     rich_console.print(f"  reason: {_REASON_TEXT.get(reason, escape(reason))}")
+    moved_from = task.get("moved_from")
+    if moved_from:
+        rich_console.print(
+            f"  earlier runs knew it as [bold]{escape(str(moved_from))}[/]; a task's cache "
+            "identity includes its module and qualified name"
+        )
 
     input_labels = task.get("input_labels")
     if isinstance(input_labels, dict) and input_labels:

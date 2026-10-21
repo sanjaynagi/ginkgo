@@ -40,13 +40,19 @@ _WEBHOOK_EXAMPLE = 'webhook = { env = "GINKGO_SLACK_WEBHOOK" }'
 
 @dataclass(frozen=True, kw_only=True)
 class SlackNotificationConfig:
-    """Resolved Slack notification settings."""
+    """Resolved Slack notification settings.
+
+    ``ignored_events`` holds one message per ``events`` entry that names no
+    event. A misspelt entry beside valid ones is ignored rather than turning
+    every notification off, so the run still sends the events it can.
+    """
 
     enabled: bool = False
     webhook: SecretRef | None = None
     events: frozenset[str] = frozenset({"run_failed"})
     log_tail_lines: int = 10
     max_failed_tasks: int = 3
+    ignored_events: tuple[str, ...] = ()
 
 
 @dataclass(kw_only=True)
@@ -67,7 +73,7 @@ class SlackSubscriber:
         init=False,
         repr=False,
     )
-    _futures: list[Future[None]] = field(default_factory=list, init=False, repr=False)
+    _futures: list[tuple[str, Future[None]]] = field(default_factory=list, init=False, repr=False)
 
     def handle(self, event: GinkgoEvent) -> None:
         """Handle one runtime event."""
@@ -83,11 +89,11 @@ class SlackSubscriber:
     def close(self) -> None:
         """Wait for outstanding deliveries and emit warnings for failures."""
         self._executor.shutdown(wait=True)
-        for future in self._futures:
+        for event_name, future in self._futures:
             try:
                 future.result()
             except Exception as exc:
-                self.logger(f"Slack notification failed: {exc}")
+                self.logger(f"Slack notification for {event_name} failed: {exc}")
 
     def _handle_run_started(self, *, event: RunStarted) -> None:
         if "run_started" not in self.config.events:
@@ -97,7 +103,7 @@ class SlackSubscriber:
             run_id=event.run_id,
             ts=event.ts,
         )
-        self._submit(payload=payload)
+        self._submit(event_name="run_started", payload=payload)
 
     def _handle_task_failed(self, *, event: TaskFailed) -> None:
         if "retry_exhausted" not in self.config.events:
@@ -113,7 +119,7 @@ class SlackSubscriber:
             ts=event.ts,
             failed_task=task_failure,
         )
-        self._submit(payload=payload)
+        self._submit(event_name=f"retry_exhausted ({task_failure.task_name})", payload=payload)
 
     def _handle_run_completed(self, *, event: RunCompleted) -> None:
         # A run someone interrupted needs no announcement: the person who
@@ -131,7 +137,7 @@ class SlackSubscriber:
                 ts=event.ts,
                 task_counts=event.task_counts,
             )
-            self._submit(payload=payload)
+            self._submit(event_name="run_succeeded", payload=payload)
             return
 
         if "run_failed" not in self.config.events:
@@ -145,15 +151,16 @@ class SlackSubscriber:
             failed_tasks=self._failed_tasks(),
             error=event.error,
         )
-        self._submit(payload=payload)
+        self._submit(event_name="run_failed", payload=payload)
 
-    def _submit(self, *, payload: dict[str, Any]) -> None:
+    def _submit(self, *, event_name: str, payload: dict[str, Any]) -> None:
+        """Post *payload* in the background; *event_name* names it if delivery fails."""
         future = self._executor.submit(
             post_slack_message,
             webhook_url=self.webhook_url,
             payload=payload,
         )
-        self._futures.append(future)
+        self._futures.append((event_name, future))
 
     def _summary(self) -> RunSummary:
         """Reload the run from the ledger, which the recorder has committed."""
@@ -225,6 +232,8 @@ def build_slack_subscriber(context: EventSubscriberContext) -> SlackSubscriber |
         for problem in problems:
             context.warn(f"Slack notifications are off: {problem}")
         return None
+    for message in config.ignored_events:
+        context.warn(message)
 
     return SlackSubscriber(
         config=config,
@@ -256,7 +265,7 @@ def check_slack_config(context: EventSubscriberCheckContext) -> list[str]:
         _, problem = _resolve_webhook(ref=config.webhook, resolver=context.secret_resolver)
         if problem is not None:
             problems.append(problem)
-    return problems
+    return [*problems, *config.ignored_events]
 
 
 def parse_notification_config(
@@ -294,8 +303,9 @@ def parse_notification_config(
         problems.append(f"{_TABLE} enabled must be true or false, not {enabled!r}.")
 
     if "events" in raw:
-        events, event_problems = _parse_events(raw["events"])
+        events, ignored, event_problems = _parse_events(raw["events"])
         settings["events"] = events
+        settings["ignored_events"] = ignored
         problems.extend(event_problems)
 
     for key, (minimum, maximum) in _INT_SETTINGS.items():
@@ -320,22 +330,44 @@ def parse_notification_config(
     return SlackNotificationConfig(**settings), problems
 
 
-def _parse_events(value: Any) -> tuple[frozenset[str], list[str]]:
-    """Parse the ``events`` list, naming any entry that is not an event."""
+def _parse_events(value: Any) -> tuple[frozenset[str], tuple[str, ...], list[str]]:
+    """Parse the ``events`` list.
+
+    Returns the events, one message per entry that names no event (ignored
+    while another entry is valid), and the problems that leave nothing to send.
+    """
     if not isinstance(value, list):
-        return frozenset(), [f"{_TABLE} events must be a list of event names, not {value!r}."]
+        return (
+            frozenset(),
+            (),
+            [f"{_TABLE} events must be a list of event names, not {value!r}."],
+        )
     if not value:
-        return frozenset(), [f"{_TABLE} events is empty, so nothing would be sent."]
+        return frozenset(), (), [f"{_TABLE} events is empty, so nothing would be sent."]
     known = ", ".join(sorted({*VALID_NOTIFICATION_EVENTS, *EVENT_ALIASES}))
     parsed: set[str] = set()
-    problems: list[str] = []
+    unknown: list[Any] = []
     for item in value:
         name = EVENT_ALIASES.get(item, item) if isinstance(item, str) else item
         if name in VALID_NOTIFICATION_EVENTS:
             parsed.add(name)
         else:
-            problems.append(f"{_TABLE} events has no event {item!r}; the events are {known}.")
-    return frozenset(parsed), problems
+            unknown.append(item)
+    if not parsed:
+        return (
+            frozenset(),
+            (),
+            [
+                f"{_TABLE} events has no event {item!r}; the events are {known}."
+                for item in unknown
+            ],
+        )
+    ignored = tuple(
+        f"{_TABLE} events has no event {item!r}, so it is ignored and the other events "
+        f"are still sent; the events are {known}."
+        for item in unknown
+    )
+    return frozenset(parsed), ignored, []
 
 
 def _parse_webhook(value: Any) -> tuple[SecretRef | None, str | None]:

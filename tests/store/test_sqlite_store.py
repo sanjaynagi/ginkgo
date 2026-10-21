@@ -13,6 +13,7 @@ import pytest
 from ginkgo.store import open_store
 from ginkgo.store import sqlite as sqlite_module
 from ginkgo.store.errors import (
+    CorruptStoreError,
     SchemaVersionError,
     StaleWorkspaceError,
     StoreError,
@@ -138,6 +139,18 @@ class TestReadOnlyOpening:
 
         with open_store(path, readonly=True) as reader:
             assert len(reader.query("SELECT seq FROM events")) == 1
+
+
+class TestCorruptDatabase:
+    """ED-5: a garbage database file names its recovery, not a bare driver error."""
+
+    @pytest.mark.parametrize("readonly", [False, True])
+    def test_a_garbage_file_says_how_to_recover(self, tmp_path, readonly):
+        path = tmp_path / "ginkgo.db"
+        path.write_bytes(b"not a database at all" * 500)
+
+        with pytest.raises(CorruptStoreError, match=re.escape(f"mv {path} {path}.broken")):
+            open_store(path, readonly=readonly)
 
 
 class TestMigrations:

@@ -130,6 +130,31 @@ class TestNotificationConfig:
         assert "'run_finished'" in problems[1]
         assert "log_tail_lines" in problems[2]
 
+    def test_a_misspelt_event_beside_valid_ones_is_ignored_not_fatal(self) -> None:
+        """RP4-4: one typo must not turn off the alerts that were spelt right."""
+        config, problems = parse_notification_config(
+            config=_slack(
+                enabled=True,
+                webhook={"env": "GINKGO_SLACK_WEBHOOK"},
+                events=["run_faild", "run_failed"],
+            )
+        )
+
+        assert problems == []
+        assert config.events == frozenset({"run_failed"})
+        [ignored] = config.ignored_events
+        assert "'run_faild', so it is ignored" in ignored
+        # doctor still names it.
+        environ = {"GINKGO_SLACK_WEBHOOK": "http://127.0.0.1:1/"}
+        assert _check(
+            _slack(
+                enabled=True,
+                webhook={"env": "GINKGO_SLACK_WEBHOOK"},
+                events=["run_faild", "run_failed"],
+            ),
+            environ=environ,
+        ) == [ignored]
+
     def test_a_literal_webhook_url_is_explained(self) -> None:
         _, problems = parse_notification_config(
             config=_slack(enabled=True, webhook="https://hooks.slack.com/services/x")
@@ -315,8 +340,8 @@ def main():
 
         result = _run_cli("run", "workflow.py", cwd=Path.cwd(), env=dict(os.environ))
         assert result.returncode == 0, result.stderr
-        assert "Slack notification failed:" in result.stderr
+        assert "Slack notification for run_succeeded failed:" in result.stderr
 
         # The failure is kept with the run, not only printed while it ran.
         shown = _run_cli("runs", "show", cwd=Path.cwd(), env=dict(os.environ))
-        assert "Notice: Slack notification failed:" in shown.stdout
+        assert "Notice: Slack notification for run_succeeded failed:" in shown.stdout

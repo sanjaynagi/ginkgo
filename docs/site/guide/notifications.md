@@ -12,11 +12,11 @@ The current implementation supports Slack incoming webhooks only.
 Supported notification events:
 
 - `run_started`
-- `run_completed`
+- `run_succeeded` (`run_completed` is accepted as another name for it)
 - `run_failed`
 - `retry_exhausted`
 
-`run_completed` is the success notification event. `run_failed` is the terminal
+`run_succeeded` is the success notification event. `run_failed` is the terminal
 run-level failure notification. `retry_exhausted` is a task-level notification
 sent when a task fails after using all configured retries.
 
@@ -28,7 +28,7 @@ Add notification settings to `ginkgo.toml`:
 [notifications.slack]
 enabled = true
 webhook = { env = "GINKGO_SLACK_WEBHOOK" }
-events = ["run_started", "run_completed", "run_failed", "retry_exhausted"]
+events = ["run_started", "run_succeeded", "run_failed", "retry_exhausted"]
 log_tail_lines = 10
 max_failed_tasks = 3
 ```
@@ -50,12 +50,14 @@ Notes:
 - `max_failed_tasks` (1 to 10, default 3) controls how many failed tasks are
   summarized in one failure notification.
 - `events` defaults to `["run_failed"]`.
-- A table with an unknown setting, an unknown event, an out-of-range number, or
+- A table with an unknown setting, an out-of-range number, no valid event, or
   a webhook secret that is unset or empty sends nothing. `ginkgo run` warns with
   each problem, and `ginkgo doctor` reports them as errors before you run.
-- Notification delivery is best-effort. A Slack failure warns but does not fail
-  the run, and the warning is kept with the run: `ginkgo runs show` and
-  `ginkgo report` list it as a notice.
+- An unknown name in `events` beside valid ones is ignored: `ginkgo run` warns
+  about it and still sends the valid events, and `ginkgo doctor` reports it.
+- Notification delivery is best-effort. A Slack failure warns, naming the event
+  it was for, but does not fail the run, and the warning is kept with the run:
+  `ginkgo runs show` and `ginkgo report` list it as a notice.
 
 ## Set Up The Slack Webhook
 

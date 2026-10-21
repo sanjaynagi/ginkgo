@@ -99,7 +99,7 @@ def test_an_environment_failure_fails_its_task_and_drains_work_in_flight(
     def _fail_to_pull(self: ContainerBackend, *, env: str) -> None:
         raise ContainerPrepareError(image="ubuntu:24.04", output="daemon is not running")
 
-    monkeypatch.setattr(ContainerBackend, "validate_envs", lambda self, *, env_names: None)
+    monkeypatch.setattr(ContainerBackend, "validate_envs", lambda self, *, env_names: [])
     monkeypatch.setattr(ContainerBackend, "prepare", _fail_to_pull)
 
     status, view, tasks = _run(workflow=_ENV_FAILURE_WORKFLOW)

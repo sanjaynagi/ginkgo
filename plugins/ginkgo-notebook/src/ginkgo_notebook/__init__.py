@@ -8,6 +8,7 @@ the task's ``rendered_html``.
 from __future__ import annotations
 
 from ginkgo.plugins.api import Plugin, TaskKind
+from ginkgo_notebook.cli_args import notebook_static_notices
 from ginkgo_notebook.directive import NotebookDirective, notebook
 from ginkgo_notebook.runner import build_notebook_runner
 
@@ -25,6 +26,7 @@ PLUGIN = Plugin(
             remote_capable=False,
             eager_source_hash=True,
             runner=build_notebook_runner,
+            static_notices=notebook_static_notices,
         ),
     ),
 )

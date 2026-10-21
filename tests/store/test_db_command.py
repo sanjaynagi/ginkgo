@@ -75,7 +75,9 @@ class TestDbCheckCache:
         (orphan / "output.json").write_text("{}", encoding="utf-8")
 
         assert main(["db", "check"]) == 1
-        assert "cache directory orphan-1 has no row (orphan)" in capsys.readouterr().out
+        assert (
+            "cache directory orphan-1 is not referenced by the ledger" in capsys.readouterr().out
+        )
 
     def test_a_cache_artifact_missing_from_the_store_is_reported(
         self, tmp_path, monkeypatch, capsys
@@ -272,7 +274,7 @@ class TestDbCheckWorkspace:
         (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
 
         assert main(["db", "check"]) == 1
-        assert "run directory run-2 has no row (orphan)" in capsys.readouterr().out
+        assert "run directory run-2 is not referenced by the ledger" in capsys.readouterr().out
 
     def test_a_run_with_its_directory_passes(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -309,7 +311,9 @@ class TestDbCheckWorkspace:
         (blobs / "abc123").write_bytes(b"orphaned")
 
         assert main(["db", "check"]) == 1
-        assert "artifact file blobs/abc123 has no row (orphan)" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "artifact file blobs/abc123 is not referenced by the ledger" in out
+        assert "(the ledger may have been reset)" in out
 
     def test_verify_reports_a_blob_corrupted_in_place(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

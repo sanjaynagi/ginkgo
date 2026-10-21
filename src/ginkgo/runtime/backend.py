@@ -27,8 +27,16 @@ class ExecutionEnvironment(Protocol):
     subprocess argument construction, and identity hashing for cache keys.
     """
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
-        """Raise if any environment name cannot be resolved."""
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
+        """Raise if any environment name cannot be resolved.
+
+        Returns
+        -------
+        list[Exception]
+            Problems that would fail a task in one of these environments if it
+            has to run, but that a run whose tasks are all cached never meets
+            (a stopped container daemon). Reported as warnings.
+        """
         ...
 
     def prepare(self, *, env: str) -> None:
@@ -177,14 +185,16 @@ class EnvironmentRouter:
             self._built[environment_type.name] = built
         return built
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
         """Validate each env name with the environment that owns it."""
         by_environment: dict[int, tuple[ExecutionEnvironment, set[str]]] = {}
         for env in sorted(env_names):
             environment = self._route(env=env)
             by_environment.setdefault(id(environment), (environment, set()))[1].add(env)
+        warnings: list[Exception] = []
         for environment, names in by_environment.values():
-            environment.validate_envs(env_names=names)
+            warnings.extend(environment.validate_envs(env_names=names))
+        return warnings
 
     def prepare(self, *, env: str) -> None:
         """Delegate to the owning environment."""

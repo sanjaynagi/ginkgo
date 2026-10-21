@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numbers
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Iterable, Literal, get_args, get_origin
 
@@ -595,10 +595,17 @@ class TaskValidator:
         Execution environment used to validate declared task environments.
     secret_resolver : SecretResolver | None
         Resolver used to verify declared secret references resolve.
+
+    Attributes
+    ----------
+    env_warnings : list[Exception]
+        What env validation found that fails a task only if it has to run (a
+        stopped container daemon), for the caller to report as warnings.
     """
 
     backend: ExecutionEnvironment | None = None
     secret_resolver: SecretResolver | None = None
+    env_warnings: list[Exception] = field(default_factory=list, init=False)
 
     # Static graph validation -------------------------------------------------
 
@@ -619,7 +626,7 @@ class TaskValidator:
             node.task_def.env for node in node_list if node.task_def.env is not None
         }
         if env_names:
-            self.backend.validate_envs(env_names=env_names)
+            self.env_warnings = self.backend.validate_envs(env_names=env_names)
 
     def validate_declared_secrets(self, *, nodes: Iterable[Any]) -> None:
         """Raise if any statically declared secrets are missing."""
@@ -921,6 +928,27 @@ class TaskValidator:
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
         """Validate a task return value against its path or scalar annotation."""
         annotation = task_def.effective_return_annotation
+        inner, admits_none = unwrap_optional_annotation(annotation)
+        if (
+            value is None
+            and task_kind(task_def).directive is None
+            and not admits_none
+            and is_path_shaped_annotation(inner)
+        ):
+            # A Python task whose body has no return statement: `optional(...)`
+            # belongs to driver kinds, so the generic advice below would mislead.
+            outputs = task_def.output_params_in_order
+            fix = (
+                f"Return the output it wrote (`return {outputs[0]}`), or drop the return "
+                "annotation so the task returns its Out[...] parameters itself."
+                if outputs
+                else "Return the path it wrote, or annotate the return `... | None` if "
+                "returning nothing is expected."
+            )
+            raise TypeError(
+                f"{task_def.base_name} returned None, but its return annotation does not "
+                f"admit None. {fix}"
+            )
         self.validate_annotated_value(
             annotation=annotation,
             value=value,
