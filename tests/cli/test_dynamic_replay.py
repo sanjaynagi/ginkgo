@@ -331,3 +331,34 @@ def test_rerun_of_a_name_no_task_carries_is_a_usage_error() -> None:
 
     assert result.returncode == 2
     assert "--rerun nosuch names no task" in result.stderr
+
+
+STATIC_SCORES = """\
+from ginkgo import flow, task
+
+
+@task()
+def score(name: str) -> str:
+    return name.upper()
+
+
+@flow
+def main():
+    return score().map(name=["ann", "bo"])
+"""
+
+
+def test_rerun_of_a_label_no_call_carries_is_a_usage_error() -> None:
+    """MG5-4: a defined task with a branch that is not in the run."""
+    _write("flow.py", STATIC_SCORES)
+
+    result = subprocess.run(
+        [str(PYTHON), "-m", "ginkgo.cli", "run", "flow.py", "--dry-run", "--rerun", "score[zed]"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "--rerun score[zed] names no call of score in this run" in result.stderr
+    assert "score[ann]" in result.stderr

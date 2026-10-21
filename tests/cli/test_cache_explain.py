@@ -7,6 +7,7 @@ runs or entries to compare it against.
 
 from __future__ import annotations
 
+import json
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -645,3 +646,149 @@ class TestExplainTextRendering:
     def test_no_tasks_says_so_rather_than_printing_nothing(self) -> None:
         text = self._rendered({"run_id": "run-2", "workflow": None, "tasks": []})
         assert "No tasks found" in text
+
+
+def _write_miss_event(db_path: Path, *, run_id: str, rerun_requested: bool) -> None:
+    """Record the cache-miss event a run emitted for its one task."""
+    with open_store(db_path) as store, store.transaction():
+        store.apply(
+            [
+                ProjectionOp(
+                    sql="INSERT INTO events (run_id, ts, type, task_id, payload) "
+                    "VALUES (?, '2026-08-18T10:00:00+00:00', 'task_cache_miss', 'task_0000', ?)",
+                    params=(run_id, json.dumps({"rerun_requested": rerun_requested})),
+                )
+            ]
+        )
+
+
+class TestRoundFiveReasons:
+    def test_a_pruned_entry_is_no_entry_for_key_not_an_older_diff(self, tmp_path: Path) -> None:
+        """EV5-1: the node ran under this key before; its entry was pruned."""
+        with _index(tmp_path) as index:
+            _write_entry(
+                index, "older", source_hash="src-0", created_at="2026-08-17T09:00:00+00:00"
+            )
+            _write_entry(index, "current")
+            for run_id, started_at, key in (
+                ("run-0", "2026-08-17T09:00:00+00:00", "older"),
+                ("run-1", "2026-08-18T09:00:00+00:00", "current"),
+                ("run-2", "2026-08-18T10:00:00+00:00", "current"),
+            ):
+                _write_run(_db(tmp_path), run_id=run_id, started_at=started_at, cache_key=key)
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "no_entry_for_key"
+        assert "components" not in explanation
+
+    def test_a_removed_prior_entry_is_not_diffed_as_all_added(self, tmp_path: Path) -> None:
+        with _index(tmp_path) as index:
+            _write_entry(index, "current", source_hash="src-2")
+            for run_id, started_at, key in (
+                ("run-1", "2026-08-18T09:00:00+00:00", "pruned"),
+                ("run-2", "2026-08-18T10:00:00+00:00", "current"),
+            ):
+                _write_run(_db(tmp_path), run_id=run_id, started_at=started_at, cache_key=key)
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "prior_entry_removed"
+        assert explanation["components"] == []
+
+    def test_a_forced_rerun_is_explained_as_forced(self, tmp_path: Path) -> None:
+        """EV5-2: --rerun never consulted the cache, so no key diff applies."""
+        with _index(tmp_path) as index:
+            _two_runs(index, _db(tmp_path), source_hash="src-2")
+            _write_miss_event(_db(tmp_path), run_id="run-2", rerun_requested=True)
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "rerun_requested"
+
+    def test_a_fanned_out_task_moved_to_another_module_says_moved(self, tmp_path: Path) -> None:
+        """EV5-6: the branch label matches, the module does not."""
+        with _index(tmp_path) as index:
+            _write_entry(
+                index, "prior", function="old.produce", created_at="2026-08-18T09:00:00+00:00"
+            )
+            _write_entry(index, "current", function="new.produce", source_hash="src-2")
+            for run_id, started_at, key, name in (
+                ("run-1", "2026-08-18T09:00:00+00:00", "prior", "old.produce"),
+                ("run-2", "2026-08-18T10:00:00+00:00", "current", "new.produce"),
+            ):
+                _write_run(
+                    _db(tmp_path),
+                    run_id=run_id,
+                    started_at=started_at,
+                    cache_key=key,
+                    task_name=name,
+                    display_label="produce[a]",
+                )
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "task_moved"
+        assert explanation["moved_from"] == "old.produce"
+
+    def test_a_renamed_task_says_moved(self, tmp_path: Path) -> None:
+        """EV5-6: same node, same parameters, a name the run no longer has."""
+        with _index(tmp_path) as index:
+            _write_entry(index, "current", function="m.make")
+            for run_id, started_at, key, name in (
+                ("run-1", "2026-08-18T09:00:00+00:00", "prior", "m.produce"),
+                ("run-2", "2026-08-18T10:00:00+00:00", "current", "m.make"),
+            ):
+                _write_run(
+                    _db(tmp_path),
+                    run_id=run_id,
+                    started_at=started_at,
+                    cache_key=key,
+                    task_name=name,
+                )
+                _write_task_input(
+                    _db(tmp_path),
+                    run_id=run_id,
+                    task_id="task_0000",
+                    param="samples",
+                    tracking="value",
+                )
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "task_moved"
+        assert explanation["moved_from"] == "m.produce"
+
+    def test_a_neighbouring_edit_is_named_as_module_coupling(self, tmp_path: Path) -> None:
+        """EV5-7: the task's own text is unchanged; its module moved."""
+        with _index(tmp_path) as index:
+            _write_entry(
+                index,
+                "prior",
+                extra={"own_source_hash": "own-1"},
+                created_at="2026-08-18T09:00:00+00:00",
+            )
+            _write_entry(index, "current", source_hash="src-2", extra={"own_source_hash": "own-1"})
+            for run_id, started_at, key in (
+                ("run-1", "2026-08-18T09:00:00+00:00", "prior"),
+                ("run-2", "2026-08-18T10:00:00+00:00", "current"),
+            ):
+                _write_run(_db(tmp_path), run_id=run_id, started_at=started_at, cache_key=key)
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "module_source_changed"
+        out = StringIO()
+        _render_explain_text(
+            Console(file=out, width=300), {"run_id": "run-2", "tasks": [explanation]}
+        )
+        assert "another task defined in the same file" in out.getvalue()
+
+    def test_the_text_names_the_changed_input_and_its_values(self, tmp_path: Path) -> None:
+        """EV5-8: the text says what the JSON says."""
+        with _index(tmp_path) as index:
+            _two_runs(
+                index, _db(tmp_path), input_hashes={"samples": "hash-b", "threads": "hash-t"}
+            )
+            explanation = _explain(_db(tmp_path))
+        out = StringIO()
+        _render_explain_text(
+            Console(file=out, width=300), {"run_id": "run-2", "tasks": [explanation]}
+        )
+
+        assert "reason: input samples changed" in out.getvalue()
+        assert "inputs.samples (changed: hash-a → hash-b)" in out.getvalue()

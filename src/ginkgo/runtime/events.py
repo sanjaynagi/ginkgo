@@ -87,10 +87,15 @@ class TaskCacheHit(TaskEvent):
 
 @dataclass(kw_only=True, frozen=True)
 class TaskCacheMiss(TaskEvent):
-    """Cache miss event."""
+    """Cache miss event.
+
+    ``rerun_requested`` marks a miss forced by ``--rerun``: the cache was never
+    consulted, so ``ginkgo cache explain`` says so rather than diffing keys.
+    """
 
     event: str = "task_cache_miss"
     cache_key: str = ""
+    rerun_requested: bool = False
 
 
 @dataclass(kw_only=True, frozen=True)

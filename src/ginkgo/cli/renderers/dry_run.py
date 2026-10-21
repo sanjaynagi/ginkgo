@@ -26,10 +26,17 @@ _TAG: dict[CacheStatus, str] = {
 
 # Legend for the one status that is not self-explanatory.
 _UNKNOWN_MEANING = (
-    "cache status cannot be known without running something: an upstream task "
-    "will run, or a script, notebook or subworkflow task's body is more than a "
-    "single `return script(...)`, `notebook(...)` or `subworkflow(...)` whose "
-    "arguments a dry run can work out"
+    "cache status cannot be known without running something: a script, notebook "
+    "or subworkflow task's body is more than a single `return script(...)`, "
+    "`notebook(...)` or `subworkflow(...)` whose arguments a dry run can work out, "
+    "or an input is a path the run restores first"
+)
+
+# Legend for an unknown task that only waits on its upstream tasks.
+_UPSTREAM_PENDING = "after upstream"
+_UPSTREAM_PENDING_MEANING = (
+    "an upstream task runs first; this task is served from cache if that task's "
+    "output comes out unchanged and nothing of its own changed"
 )
 
 # Why a task will run, by ``ginkgo cache explain`` reason code.
@@ -72,8 +79,19 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
         console.print()
         _render_wave(wave=wave, console=console, label_width=label_width, verbose=verbose)
 
-    if plan.unknown_count:
+    unknown = [
+        task for wave in plan.waves for task in wave.tasks if task.cache_status == "unknown"
+    ]
+    if unknown:
         console.print()
+    if any(task.run_reasons for task in unknown):
+        console.print(
+            Text(
+                f"  {_GLYPH['unknown']} [unknown: {_UPSTREAM_PENDING}]  {_UPSTREAM_PENDING_MEANING}",
+                style="dim",
+            )
+        )
+    if any(not task.run_reasons for task in unknown):
         console.print(
             Text(f"  {_GLYPH['unknown']} {_TAG['unknown']}  {_UNKNOWN_MEANING}", style="dim")
         )
@@ -194,6 +212,8 @@ def _tag(task: PlannedTask) -> str:
     """Return a task's status tag, naming why it will run when known."""
     if not task.run_reasons:
         return _TAG[task.cache_status]
+    if task.cache_status == "unknown":
+        return f"[unknown: {_UPSTREAM_PENDING}]"
     return f"[will run: {_run_reason(task)}]"
 
 
@@ -209,7 +229,9 @@ def _render_collapsed_group(*, base_name: str, group: list[PlannedTask], console
     ``will run`` count carries those reasons, counted, rather than a list.
     """
     counts = Counter(task.cache_status for task in group)
-    reasons = Counter(_run_reason(task) for task in group if task.run_reasons)
+    reasons = Counter(
+        _run_reason(task) for task in group if task.run_reasons and task.cache_status == "will_run"
+    )
     parts = []
     for status in ("cached", "will_run", "unknown"):
         if not counts[status]:

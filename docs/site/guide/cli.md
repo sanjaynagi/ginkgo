@@ -142,7 +142,9 @@ fan-out, a display label such as `align[sample_a]` reruns one. The rerun
 saves its result as usual. Tasks downstream run again only if that result
 changed, and a dynamic task's children are still looked up on their own,
 and can be named by their labels too. A name that no task in the workflow's
-modules carries is a usage error (exit 2) before anything runs. A name of a
+modules carries is a usage error (exit 2) before anything runs, and so is a
+label of a task the graph does call that matches none of its calls
+(`align[sample_z]` for samples without one), which the error lists. A name of a
 defined task that the flow's graph lacks may still match a task a dynamic task
 returns; if nothing in the finished run matched it, the run warns. A dry run
 shows a rerun task as `will_run`.
@@ -471,13 +473,25 @@ A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
-did not re-run reports `all_inputs_match`, one with no earlier entry of any kind
-to compare against reports `no_prior_entry`, and one whose key has no cache entry at all —
-because it failed, or because the entry was pruned — reports `no_entry_for_key`.
+did not re-run reports `all_inputs_match`; one named by `--rerun` reports
+`rerun_requested`, since its cache was never consulted; one with no earlier entry
+of any kind to compare against reports `no_prior_entry`; and one whose node ran
+under this very key before, but whose entry is gone — pruned, cleared, or never
+written because that run failed — reports `no_entry_for_key`. When the key moved
+but the entry it moved from has since been removed, the reason is
+`prior_entry_removed`: there is nothing left to name the moved component from.
 A task that an earlier run of the same workflow knew under another module or
-qualified name reports `task_moved`, with that name as `moved_from`: a task's
-cache identity includes its module and name, so moving or renaming it starts it
-without a cache entry.
+qualified name — moved to another file, or renamed with its parameters kept —
+reports `task_moved`, with that name as `moved_from`: a task's cache identity
+includes its module and name, so moving or renaming it starts it without a cache
+entry.
+
+A source change where the task's own text is unchanged reports
+`module_source_changed` instead of `source_hash_changed`: the source hash also
+covers the task's module and the local modules it imports, so editing another
+task defined in the same file re-runs this one too (see
+[Caching and Provenance](caching-and-provenance.md)). The text form names the
+changed inputs and shows each moved component's earlier and current value.
 
 ## A Typical Loop
 

@@ -242,11 +242,23 @@ Each reported component carries a `status` — `changed` with both values, or
 `version_bump`, `env_changed`, `input_changed`, or `cache_key_changed` when no
 component is conclusive or the one that moved has no code of its own) stay as
 the summary `reason` / `details`, with the components listed beneath them. A
-task whose key has no entry in the cache at all — a task that failed, or whose
-entry has been pruned — reports `no_entry_for_key` and no components, and one
-with no sibling to compare against reports `no_prior_entry`, or `task_moved`
-(with `moved_from`) when an earlier run of the workflow had a task of the same
-base name under another qualified name (`Query._moved_from`).
+task forced by `--rerun` reports `rerun_requested`, read from the
+`rerun_requested` flag on its `task_cache_miss` event. A task whose key has no
+entry in the cache at all, or whose same node ran under this very key before (the
+entry was pruned, cleared, or never written because that run failed), reports
+`no_entry_for_key` and no components; one whose earlier key's entry is gone
+reports `prior_entry_removed` rather than a diff against nothing. One with no
+sibling to compare against reports `no_prior_entry`, or `task_moved` (with
+`moved_from`) when an earlier run of the workflow had a task of the same base
+name under another qualified name, or the same node under a name this run no
+longer has with the same parameters (`Query._moved_from`). A same-node
+comparison whose `task` component moved is also `task_moved`.
+
+Every entry records the task's own definition digest, `own_source_hash`, in its
+`extra` column (`TaskDef.own_source_hash`, without the module closure the
+`source_hash` folds in). When the source hash moved but that digest did not, the
+code is `module_source_changed`: a neighbour in the module, or a local import,
+changed.
 
 What to compare against is the whole of the question. `explain_rerun` (through
 its private `_previous_cache_key`) looks for the *same node* — the same `display_label`, or the task name where a

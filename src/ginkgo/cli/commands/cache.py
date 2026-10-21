@@ -581,10 +581,22 @@ _TRACKING_HINTS = {
 
 _REASON_TEXT = {
     "all_inputs_match": "cache hit — every input matched the stored entry",
-    "no_entry_for_key": "no cache entry exists for this key",
+    "rerun_requested": "forced by --rerun; the cache was not consulted",
+    "no_entry_for_key": (
+        "no cache entry exists for this key — nothing it is keyed on changed, but the "
+        "entry was removed (cache prune or clear) or never written (the earlier run failed)"
+    ),
+    "prior_entry_removed": (
+        "the cache key changed, and the previous entry has since been removed, so the "
+        "component that moved cannot be named"
+    ),
     "no_prior_entry": "no earlier run of this call to compare against",
     "task_moved": "the task moved or was renamed, which starts it without a cache entry",
     "source_hash_changed": "the task's source changed",
+    "module_source_changed": (
+        "the task's own code is unchanged, but its module or a local module it imports "
+        "changed — for example another task defined in the same file"
+    ),
     "version_bump": "the task's declared version changed",
     "env_changed": "the declared environment changed",
     "input_changed": "one or more inputs changed",
@@ -630,7 +642,8 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
         rich_console.print(f"  cache key: [bold]{escape(str(cache_key))}[/]")
 
     reason = str(task.get("reason") or "")
-    rich_console.print(f"  reason: {_REASON_TEXT.get(reason, escape(reason))}")
+    components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
+    rich_console.print(f"  reason: {_reason_text(reason=reason, components=components)}")
     moved_from = task.get("moved_from")
     if moved_from:
         rich_console.print(
@@ -645,7 +658,6 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
             rich_console.print(f"    {_render_tracking_label(param=param, label=label)}")
 
     compared_with = task.get("compared_with")
-    components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
     if isinstance(compared_with, dict):
         # A sibling's entry is context for a new branch, not its history.
         against = (
@@ -657,11 +669,36 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
             f"  compared with {against}, [bold]{escape(str(compared_with.get('cache_key')))}[/]"
         )
         for component in components:
-            rich_console.print(
-                f"    {escape(str(component.get('component')))} "
-                f"[dim]({escape(str(component.get('status')))})[/]"
-            )
+            rich_console.print(f"    {_component_line(component)}")
     rich_console.print()
+
+
+def _reason_text(*, reason: str, components: list[dict[str, Any]]) -> str:
+    """Return the reason line, naming the inputs that moved as the JSON does."""
+    inputs = [
+        str(item["component"]).removeprefix("inputs.")
+        for item in components
+        if str(item.get("component", "")).startswith("inputs.")
+    ]
+    if reason == "input_changed" and inputs:
+        noun = "input" if len(inputs) == 1 else "inputs"
+        return f"{noun} {escape(', '.join(inputs))} changed"
+    return _REASON_TEXT.get(reason, escape(reason))
+
+
+def _component_line(component: dict[str, Any]) -> str:
+    """Return one moved component with its prior and current values, shortened."""
+    name = escape(str(component.get("component")))
+    values = [_short_value(component[side]) for side in ("prior", "current") if side in component]
+    status = str(component.get("status"))
+    detail = f"{status}: {' → '.join(values)}" if values else status
+    return f"{name} [dim]({escape(detail)})[/]"
+
+
+def _short_value(value: object) -> str:
+    """Return a component value short enough to read beside its name."""
+    text = str(value)
+    return text if len(text) <= 16 else f"{text[:12]}…"
 
 
 def _render_tracking_label(*, param: object, label: object) -> str:

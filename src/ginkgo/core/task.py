@@ -26,7 +26,7 @@ from ginkgo.core.expr import (
     supersede_call,
 )
 from ginkgo.core.resources import Resources
-from ginkgo.core.source_hash import compute_source_hash
+from ginkgo.core.source_hash import compute_own_source_hash, compute_source_hash
 from ginkgo.core.types import (
     contains_output_annotation,
     contains_pathlib_annotation,
@@ -127,6 +127,7 @@ class TaskDef:
     _output_params: frozenset[str] = field(init=False, repr=False)
     _required_params: frozenset[str] = field(init=False, repr=False)
     _source_hash: str = field(init=False, repr=False)
+    _own_source_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.retries < 0:
@@ -177,6 +178,7 @@ class TaskDef:
         object.__setattr__(self, "_output_params", output_params)
         object.__setattr__(self, "_required_params", required)
         object.__setattr__(self, "_source_hash", compute_source_hash(self.fn))
+        object.__setattr__(self, "_own_source_hash", compute_own_source_hash(self.fn))
 
     @property
     def name(self) -> str:
@@ -280,6 +282,11 @@ class TaskDef:
     def source_hash(self) -> str:
         """BLAKE3 digest of task source and local imported modules."""
         return self._source_hash
+
+    @property
+    def own_source_hash(self) -> str:
+        """BLAKE3 digest of the task definition alone, without its modules."""
+        return self._own_source_hash
 
     @property
     def threads(self) -> int:

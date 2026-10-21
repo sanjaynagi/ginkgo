@@ -456,6 +456,12 @@ def run_workflow(
             "'fastq_stats[sample_a]'`). A task whose module only a task body imports "
             "is found once the workflow imports that module too."
         )
+    # A label of a task the static graph has calls of names a branch that is
+    # not there — `trim[S99]` for a sample list without S99 — and would
+    # otherwise rerun nothing and exit 0.
+    missing_labels = _missing_rerun_labels(evaluator=evaluator, names=unmatched)
+    if missing_labels:
+        raise UsageError(" ".join(missing_labels))
 
     # A parameter named like a path but annotated a bare `str` is content-tracked
     # only when its value names an existing regular file and reads as a path (a
@@ -869,6 +875,31 @@ def run_workflow(
 def _rerun_names(*, evaluator: ConcurrentEvaluator) -> set[str]:
     """Return every name ``--rerun`` selects one of the graph's tasks by."""
     return {name for node in evaluator.task_nodes.values() for name in node.rerun_names}
+
+
+def _missing_rerun_labels(*, evaluator: ConcurrentEvaluator, names: set[str]) -> list[str]:
+    """Return one message per ``--rerun`` label naming no call of a task in the graph.
+
+    Only a label (``task[branch]``) whose task the static graph does call is
+    judged here: a bare name, or a label of a task only a dynamic expansion
+    returns, may still match once the run expands it.
+    """
+    labels_by_task: dict[str, list[str]] = {}
+    for node in evaluator.task_nodes.values():
+        for name in (node.task_def.name, node.task_def.base_name):
+            labels_by_task.setdefault(name, []).append(node.label)
+    messages = []
+    for name in sorted(names):
+        task_name, bracket, _ = name.partition("[")
+        labels = labels_by_task.get(task_name)
+        if not bracket or labels is None:
+            continue
+        shown = ", ".join(sorted(labels)[:5]) + (", ..." if len(labels) > 5 else "")
+        messages.append(
+            f"--rerun {name} names no call of {task_name} in this run; its calls are "
+            f"labelled {shown}."
+        )
+    return messages
 
 
 def _defined_task_names(*, root: Path) -> set[str]:

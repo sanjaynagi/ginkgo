@@ -47,7 +47,8 @@ only through this hash, so hashing function bodies alone would serve stale
 results whenever such state changed. When a task is expensive and the code
 beside it is under active edit, move it into its own module; that is the only
 way to decouple them. `ginkgo cache explain <run_id>` reports
-`source_hash_changed` for a task invalidated this way. The hash covers the
+`module_source_changed` for a task invalidated this way — its own text is
+unchanged — and `source_hash_changed` when the task's own definition moved. The hash covers the
 module's raw text, so editing only a comment or whitespace in it also re-runs
 every task the module defines.
 

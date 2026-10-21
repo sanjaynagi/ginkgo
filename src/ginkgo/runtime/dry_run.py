@@ -122,7 +122,11 @@ class PlannedTask:
         For a ``will_run`` task, why its key misses, as ``ginkgo cache
         explain`` reason codes (``source_hash_changed``, ``input_changed``,
         ``no_prior_entry``, ...), or ``rerun_requested`` for a task named
-        by ``--rerun``. Empty otherwise.
+        by ``--rerun``. For an ``unknown`` task waiting on an upstream task
+        that is not known to be cached, ``upstream_pending``: it is cached
+        if that task's output comes out unchanged and nothing of its own
+        changed, which only running the upstream task can tell. Empty
+        otherwise.
     """
 
     node_id: int
@@ -284,17 +288,19 @@ def build_dry_run_plan(
         node = nodes[node_id]
         task_def = node.task_def
         resources = evaluator.placement.effective_resources(task_def=task_def)
+        status, run_reasons = probes[node_id]
+        # A cached task is never dispatched, so the run holds it to no budget.
         try:
-            evaluator.check_resource_budget(
-                task_name=task_def.name,
-                threads=resources.threads,
-                memory_gb=resources.memory_gb,
-                custom=resources.custom,
-                remote=evaluator.placement.resolve(task_def=task_def) is not None,
-            )
+            if status != "cached":
+                evaluator.check_resource_budget(
+                    task_name=task_def.name,
+                    threads=resources.threads,
+                    memory_gb=resources.memory_gb,
+                    custom=resources.custom,
+                    remote=evaluator.placement.resolve(task_def=task_def) is not None,
+                )
         except ValueError as exc:
             diagnostics.append(_diagnostic(node=node, exc=exc))
-        status, run_reasons = probes[node_id]
         planned[node_id] = PlannedTask(
             node_id=node_id,
             base_name=task_def.base_name,
@@ -494,7 +500,7 @@ def _probe_node(
     # Downstream of anything not known-cached: the cache key cannot be
     # computed without first running an upstream task.
     if not dependencies_cached:
-        return "unknown", (), None
+        return "unknown", ("upstream_pending",), None
 
     try:
         resolved_args = evaluator.resolve_probe_args(node=node)
