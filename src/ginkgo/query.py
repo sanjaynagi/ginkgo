@@ -18,7 +18,6 @@ query written against them may need rewriting after an upgrade. The methods on
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -33,7 +32,7 @@ from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.rundir import runs_without_ledger_warning
 from ginkgo.store.errors import StoreError
-from ginkgo.store.protocol import ProvenanceStore
+from ginkgo.store.protocol import ProvenanceStore, event_fields
 from ginkgo.store.sqlite import MEMORY, open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -653,7 +652,7 @@ class Query:
             filter_sql = f" AND type IN ({', '.join('?' for _ in types)})"
             params.extend(types)
         rows = self._store.query(
-            "SELECT seq, run_id, ts, type, task_id, payload FROM events "
+            "SELECT seq, run_id, ts, type, v, task_id, attempt, cache_key, payload FROM events "
             f"WHERE run_id = ? AND seq > ?{filter_sql} ORDER BY seq",  # noqa: S608
             params,
         )
@@ -664,7 +663,16 @@ class Query:
                 ts=row["ts"],
                 type=row["type"],
                 task_id=row["task_id"],
-                payload=json.loads(row["payload"]),
+                payload=event_fields(
+                    run_id=row["run_id"],
+                    ts=row["ts"],
+                    type=row["type"],
+                    v=row["v"],
+                    task_id=row["task_id"],
+                    attempt=row["attempt"],
+                    cache_key=row["cache_key"],
+                    payload=row["payload"],
+                ),
             )
 
     # -- cache ---------------------------------------------------------------

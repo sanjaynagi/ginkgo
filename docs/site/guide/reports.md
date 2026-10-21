@@ -25,7 +25,7 @@ says what share of the run that is, from "every task ran" to "every task reused
 from the cache".
 
 The task ledger's **Peak memory** column shows the memory each task used
-against what it declared, as written (`48.0 KB / 64Mi`), or the measured figure
+against what it declared, as written (`48.0 KiB / 64Mi`), or the measured figure
 alone when the task declared no `memory`. A Python task's figure is how far its
 body raised its worker's memory, so the worker's own interpreter and imports are
 left out and a task that allocates nothing reads close to `0 B`. When a retry

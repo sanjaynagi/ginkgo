@@ -27,7 +27,7 @@ from ginkgo.remote.staging import StagingCache
 from ginkgo.runtime.caching.cache import CacheStore
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.rundir import run_directory_problems, runs_without_ledger_warning
-from ginkgo.store.maintenance import prune_digest_memo, prune_events, vacuum
+from ginkgo.store.maintenance import on_disk_bytes, prune_digest_memo, prune_events, vacuum
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
@@ -50,10 +50,12 @@ def command_db(args) -> int:
 
     if args.db_command == "vacuum":
         rich_console.print("[bold green]🌿 ginkgo db vacuum[/]\n")
-        before = path.stat().st_size if path.is_file() else 0
+        before = on_disk_bytes(path)
         with open_store(path) as store:
             vacuum(store)
-        after = path.stat().st_size if path.is_file() else 0
+        # Measured after the store closes, which checkpoints the write-ahead
+        # log the vacuum wrote through and removes it.
+        after = on_disk_bytes(path)
         if after >= before:
             # SQLite rebuilds into a new file and swaps it in, which it cannot
             # do while another connection holds the database open. It reports
@@ -64,7 +66,10 @@ def command_db(args) -> int:
                 "reclaim, or another process is reading the database"
             )
             return 0
-        rich_console.print(f"[green]✓[/] {path}: {format_int(before)} → {format_int(after)} bytes")
+        rich_console.print(
+            f"[green]✓[/] {path}: {format_bytes(before)} → {format_bytes(after)} on disk, "
+            "write-ahead log included"
+        )
         return 0
 
     if args.db_command == "prune":

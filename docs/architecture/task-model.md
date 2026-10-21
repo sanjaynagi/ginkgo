@@ -244,6 +244,16 @@ storing nothing so the task never cached. `pair_elements_with_annotations`
 Anything else walking a container annotation should use it rather than
 reaching for `get_args(...)[0]`.
 
+Those walks run on every cache lookup, so they must stay cheap for a
+200,000-element input. A value whose exact type is in `PLAIN_SCALAR_TYPES`
+(`None`, `bool`, `int`, `float`; `core/types.py`) cannot name a path, a remote
+object or a secret, and each walk settles it with a type check —
+`holds_only_plain_scalars` lets a walk pass over a whole container of them.
+`CacheStore._hash_value` hashes a container whose elements name no path as one
+digest of their tokens (a plain scalar or a string that cannot be a path is its
+`repr`); only a container holding a file, folder or remote object keeps an
+`items` entry per element.
+
 Three walks over a declared output serve different needs, all in
 `runtime/task_runners/shell.py`: `iter_output_values` returns every path
 (pre-execution cleanup must remove a stale optional file too, or it would be

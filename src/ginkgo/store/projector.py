@@ -18,7 +18,6 @@ kept so lineage queries do not have to parse JSON.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from ginkgo.store.jsonio import dumps, dumps_or_none
@@ -51,7 +50,7 @@ def projection_ops(event: StoredEvent) -> list[ProjectionOp]:
     handler = _HANDLERS.get(event.type)
     if handler is None:
         return []
-    return handler(event, json.loads(event.payload))
+    return handler(event, event.fields())
 
 
 # ---------------------------------------------------------------- run events

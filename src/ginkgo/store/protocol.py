@@ -14,6 +14,7 @@ SQLite, not because a second backend is planned.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-__all__ = ["ProjectionOp", "ProvenanceStore", "StoredEvent"]
+__all__ = ["ProjectionOp", "ProvenanceStore", "StoredEvent", "event_fields"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -30,7 +31,10 @@ class StoredEvent:
 
     The columns mirror what the ``events`` table filters and joins on; every
     other field of the originating :class:`~ginkgo.runtime.events.GinkgoEvent`
-    stays in *payload*, so a new event type needs no migration.
+    stays in *payload*, so a new event type needs no migration. A field a
+    column holds is not repeated in *payload*: a cached task writes six events
+    a run, and the repeated run id, timestamp and cache key were a fifth of
+    them. :meth:`fields` puts the event back together.
 
     Attributes
     ----------
@@ -45,7 +49,7 @@ class StoredEvent:
     task_id, attempt, cache_key
         Set when the event carries them; ``None`` for run-level events.
     payload : str
-        JSON text of the whole event payload.
+        JSON text of the event's other fields.
     """
 
     run_id: str
@@ -56,6 +60,57 @@ class StoredEvent:
     attempt: int | None = None
     cache_key: str | None = None
     payload: str
+
+    def fields(self) -> dict[str, Any]:
+        """Return every field of the event, the columns folded back into the payload."""
+        return event_fields(
+            run_id=self.run_id,
+            ts=self.ts,
+            type=self.type,
+            v=self.v,
+            task_id=self.task_id,
+            attempt=self.attempt,
+            cache_key=self.cache_key,
+            payload=self.payload,
+        )
+
+
+def event_fields(
+    *,
+    run_id: str,
+    ts: str,
+    type: str,
+    v: int,
+    task_id: str | None,
+    attempt: int | None,
+    cache_key: str | None,
+    payload: str,
+) -> dict[str, Any]:
+    """Return a stored event's fields from its columns and payload text.
+
+    Parameters
+    ----------
+    run_id, ts, type, v, task_id, attempt, cache_key
+        The ``events`` row's columns. ``type`` is the event's ``event`` field;
+        a column that is ``None`` was not lifted out of the payload.
+    payload : str
+        The row's payload JSON.
+
+    Returns
+    -------
+    dict[str, Any]
+        The event as :meth:`~ginkgo.runtime.events.GinkgoEvent.to_payload`
+        gave it.
+    """
+    lifted = {"task_id": task_id, "attempt": attempt, "cache_key": cache_key}
+    return {
+        **json.loads(payload),
+        "run_id": run_id,
+        "ts": ts,
+        "event": type,
+        "v": v,
+        **{name: value for name, value in lifted.items() if value is not None},
+    }
 
 
 @dataclass(frozen=True)

@@ -22,6 +22,14 @@ Inputs annotated `file` or `folder` are hashed by content. A plain `str` (or
 annotation — everything else is hashed from its `repr`. See
 [Cache Correctness](#cache-correctness) for the exact rule and why it exists.
 
+A list, tuple or dict that holds no file, folder or remote object is hashed as
+one digest of its elements, so a 200,000-number input costs the cache entry and
+the ledger one digest, and `cache explain` reports the parameter as changed
+rather than naming the element. A container holding a file keeps an entry per
+element, which is how `cache explain` and `ginkgo why` name the file that
+moved. Recorded inputs (`runs show --json`, `debug`, the manifest) keep the
+first 20 items of a long container, with its length and the number left out.
+
 Hashing a large file on every run would be slow, so each digest is memoised
 under the file's device, inode, size and modification time, and reused while
 those four agree. A rewrite that keeps the size and the modification time —
@@ -419,7 +427,16 @@ file digests, which cost only a re-hash to lose, `--staging-older-than` to
 evict downloaded remote inputs that nothing has read for a while — bytes and
 row together, and the only eviction the staging cache has — and `--dry-run` to
 see the counts first. Deleting rows does not shrink the database file; `ginkgo
-db vacuum` does.
+db vacuum` does, and reports the file and its write-ahead log together.
+`ginkgo cache clear` and `cache prune` likewise free their entries' rows for
+reuse without shrinking the file; the bytes they report freed are the cached
+outputs and artifacts they deleted.
+
+Nothing is pruned for you. Every run adds to the ledger, a fully cached one
+too: about 3.5 KiB per task, two thirds of it events, so a 1,000-task workflow
+run nightly adds about 1.3 GB a year. `ginkgo doctor` warns once the ledger
+passes 1 GiB; pruning events older than a few months and vacuuming keeps it
+in check.
 
 `ginkgo db check` reads; it never creates. In a directory nobody has run a
 workflow in it says so and succeeds.
@@ -506,7 +523,8 @@ ginkgo cache prune --max-size 5GB --least-recently-hit
 Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
 the entries with the oldest last hit first — an old entry that hits on every run
 is worth more than a young one nothing has touched. `--max-size` counts each
-entry's artifacts as well as its return value. Artifacts no remaining entry
+entry's artifacts as well as its return value; `5GB` means 5,000,000,000 bytes
+and `5GiB` means 5 × 1024³. Sizes are printed in binary units (KiB, MiB, GiB). Artifacts no remaining entry
 names are garbage-collected at the end of the operation, and the bytes
 reported as freed are the ones actually deleted: an artifact a surviving entry
 still names stays. Use `--dry-run` to preview what would be removed.

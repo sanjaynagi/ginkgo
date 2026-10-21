@@ -25,7 +25,9 @@ from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
     annotation_includes,
     file,
+    PLAIN_SCALAR_TYPES,
     folder,
+    holds_only_plain_scalars,
     is_path_like,
     is_path_shaped_annotation,
     is_untracked_annotation,
@@ -156,6 +158,10 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
         ``True`` when the value should be content-hashed as a root path
         input.
     """
+    # The textual test first: it settles most strings without a stat or a
+    # walk over the annotation.
+    if not is_path_like(value) or not looks_like_path_string(str(value)):
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -165,11 +171,7 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
     if isinstance(value, (file, folder, tmp_dir, untracked)):
         return False
     text = _resolved_existing_path_text(value)
-    if text is None:
-        return False
-    if not looks_like_path_string(text):
-        return False
-    return os.path.isfile(text)
+    return text is not None and os.path.isfile(text)
 
 
 def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
@@ -200,6 +202,9 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     bool
         ``True`` when the value is a path the cache key does not track.
     """
+    # Most values name nothing on disk, which one stat settles.
+    if _resolved_existing_path_text(value) is None:
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -207,8 +212,6 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     ):
         return False
     if isinstance(value, (file, folder, tmp_dir, untracked)):
-        return False
-    if _resolved_existing_path_text(value) is None:
         return False
     if is_content_trackable_path_value(annotation=annotation, value=value):
         return False
@@ -344,6 +347,11 @@ def label_input_value(
         return "version"
     if isinstance(value, SecretRef):
         return "value"
+    # A long list of numbers is labelled without a call per element.
+    if holds_only_plain_scalars(value) and not annotation_includes(
+        annotation=annotation, expected=tmp_dir
+    ):
+        return "value"
 
     origin = get_origin(annotation)
     if origin in {list, tuple}:
@@ -406,12 +414,25 @@ def _reject_list_for_single_value(*, annotation: Any, label: str) -> None:
     )
 
 
+def _is_exact_scalar(*, annotation: Any, value: Any) -> bool:
+    """Return whether *value* is exactly the scalar type *annotation* names.
+
+    Settles each element of a long ``list[int]`` with a type check, where the
+    general check costs an ABC ``isinstance`` and a walk for secrets.
+    """
+    if type(value) is annotation:
+        return annotation in _SCALAR_TYPES
+    return annotation is float and type(value) is int
+
+
 def _validate_scalar(*, annotation: type, value: Any, label: str) -> None:
     """Raise ``TypeError`` when *value* does not match a scalar annotation.
 
     A secret or remote reference stands in for a value resolved later, so it
     is not checked.
     """
+    if _is_exact_scalar(annotation=annotation, value=value):
+        return
     if collect_secret_refs(value) or is_remote_path_value(value):
         return
     accepted = _SCALAR_TYPES[annotation]
@@ -998,6 +1019,8 @@ class TaskValidator:
         if origin in {list, tuple}:
             paired = pair_elements_with_annotations(annotation=annotation, value=value)
             for index, (item_annotation, item) in enumerate(paired):
+                if _is_exact_scalar(annotation=item_annotation, value=item):
+                    continue
                 self.validate_annotated_value(
                     annotation=item_annotation,
                     value=item,
@@ -1097,7 +1120,7 @@ class TaskValidator:
 
     def coerce_annotated_value(self, *, annotation: Any, value: Any) -> Any:
         """Coerce values recursively for direct and container-wrapped path types."""
-        if annotation in {None, Any}:
+        if annotation in {None, Any} or type(value) in PLAIN_SCALAR_TYPES:
             return value
 
         # An absent optional output stays None; a present one coerces against

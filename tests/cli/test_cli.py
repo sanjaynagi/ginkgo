@@ -446,7 +446,7 @@ def main():
         assert entry["size_bytes"] == entry["output_bytes"] + 1100
         assert stats["total_bytes"] == entry["size_bytes"]
         assert stats["top_functions"][0]["bytes"] == entry["size_bytes"]
-        assert "Artifact store: 1.1 KB" in text.stdout
+        assert "Artifact store: 1.1 KiB" in text.stdout
 
     def test_cache_prune_max_size_counts_and_frees_artifact_bytes(self) -> None:
         self._run_artifact_workflow()
@@ -508,6 +508,18 @@ def main():
         assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
         assert not known.exists() and not orphan.exists()
 
+    def test_cache_clear_counts_what_it_freed_and_points_at_vacuum(self) -> None:
+        """The rows go too, but their space is only returned by `db vacuum`."""
+        _seed_cache_entry(
+            cache_root=Path(".ginkgo") / "cache", name="known", age_days=1, payload="x" * 2048
+        )
+
+        result = _run_cli("cache", "clear", "--task", "demo.x", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "(2.0 KiB freed)" in result.stdout
+        assert "ginkgo db vacuum" in _unwrapped(result.stdout)
+
     @pytest.mark.parametrize("value", ["bad", "0d"])
     def test_cache_prune_rejects_an_invalid_duration_as_usage(self, value: str) -> None:
         result = _run_cli("cache", "prune", "--older-than", value, cwd=Path.cwd())
@@ -545,8 +557,8 @@ def main():
             for index, age_days in enumerate([100, 60, 5])
         ]
 
-        # Cap total at 2KB so only the oldest must drop.
-        result = _run_cli("cache", "prune", "--max-size", "2KB", cwd=Path.cwd())
+        # Cap total at 2KiB so only the oldest must drop.
+        result = _run_cli("cache", "prune", "--max-size", "2KiB", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
         assert not entries[0].exists()
         assert entries[1].exists()

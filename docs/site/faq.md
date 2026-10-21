@@ -750,7 +750,13 @@ from scratch.
 ### How do I debug a failed task — where are the logs, and what do the commands show?
 
 Per-task `stdout`/`stderr` are written to `<run_dir>/logs/` (under
-`.ginkgo/runs/<run_id>/logs/`). `ginkgo debug [RUN_ID]` prints a panel per failed
+`.ginkgo/runs/<run_id>/logs/`). The logs are the only place a command's full
+output is kept: a failed shell, script or notebook task quotes at most the last
+4096 characters of each stream in its error, which is what the terminal, the
+ledger and the manifest record. Output is decoded as UTF-8, so bytes that are
+not valid UTF-8 are logged as the replacement character `�` (three bytes each);
+a command printing binary to stdout leaves a log larger than what it printed —
+redirect binary output to a file instead. `ginkgo debug [RUN_ID]` prints a panel per failed
 task with the classified category, followed by its log tail (add `--json` for
 machine-readable output); it defaults to the latest run if no id is given. A
 retried task's tail shows its last attempt, the one that failed. In `--json`,

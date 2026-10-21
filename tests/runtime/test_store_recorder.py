@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 import pytest
 import yaml
 
+from ginkgo import task
 from ginkgo.cli.commands.run import _close_unfinished_run
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.events import (
     EventBus,
     GraphNodeRegistered,
@@ -21,10 +24,11 @@ from ginkgo.runtime.events import (
 )
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.rundir import RunDir
-from ginkgo.runtime.store_recorder import StoreRecorder
+from ginkgo.runtime.store_recorder import StoreRecorder, stored_event
 from ginkgo.store.errors import StoreError
 from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
+from tests.conftest import Ledger
 
 
 def _recorder(tmp_path: Path, *, run_id: str = "run-1") -> tuple[StoreRecorder, EventBus, Path]:
@@ -246,3 +250,45 @@ def test_a_task_that_failed_before_any_attempt_reports_no_attempts(tmp_path: Pat
     assert task.status == "failed"
     assert task.attempts == 0
     assert task.attempts_label == "—"
+
+
+def test_a_stored_event_holds_each_column_once_and_reads_back_whole() -> None:
+    event = TaskCompleted(
+        run_id="run-1", task_id="task_0003", task_name="demo", attempt=2, cache_key="k" * 64
+    )
+
+    row = stored_event(event)
+
+    lifted = {"run_id", "ts", "event", "v", "task_id", "attempt", "cache_key"}
+    assert not lifted & set(json.loads(row.payload))
+    assert row.fields() == event.to_payload()
+
+
+@task()
+def _square(i: int) -> int:
+    return i * i
+
+
+def test_a_cached_rerun_stores_little_per_task(tmp_path: Path) -> None:
+    """A nightly rerun of a cached workflow grows the ledger by about this much a task."""
+    for _ in range(2):
+        ledger = Ledger.start(root=tmp_path)
+        try:
+            ConcurrentEvaluator(jobs=1, run_dir=ledger.run_dir, event_bus=ledger.bus).evaluate(
+                _square().map(i=list(range(20)))
+            )
+            ledger.finish()
+        finally:
+            ledger.close()
+
+    with open_store(ledger.db, readonly=True) as store:
+        (row,) = store.query(
+            "SELECT sum(length(payload)) AS size FROM events "
+            "WHERE run_id = ? AND task_id IS NOT NULL",
+            (ledger.run_id,),
+        )
+        (cached,) = store.query(
+            "SELECT count(*) AS n FROM tasks WHERE run_id = ? AND cached = 1", (ledger.run_id,)
+        )
+    assert cached["n"] == 20
+    assert row["size"] / 20 < 1_500

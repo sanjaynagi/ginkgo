@@ -29,6 +29,7 @@ from ginkgo.runtime.rundir import (
     runs_without_directory_warning,
     runs_without_ledger_warning,
 )
+from ginkgo.store.maintenance import LARGE_LEDGER_CODE, large_ledger_warning
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -56,6 +57,7 @@ def command_doctor(args) -> int:
     # which creates the ledger the question is about.
     ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
     run_directory_warning = runs_without_directory_warning(layout=WorkspaceLayout.relative())
+    size_warning = large_ledger_warning(WorkspaceLayout.relative().db)
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -115,6 +117,17 @@ def command_doctor(args) -> int:
                 message=run_directory_warning,
                 suggestion="Restore .ginkgo/runs from a backup if the logs are wanted; "
                 "`ginkgo runs show` still reads what the ledger recorded.",
+            )
+        )
+
+    if size_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=LARGE_LEDGER_CODE,
+                message=size_warning,
+                suggestion="Drop old runs' events with `ginkgo db prune --events-older-than "
+                "90d`, then `ginkgo db vacuum`; the runs themselves stay listed.",
             )
         )
 

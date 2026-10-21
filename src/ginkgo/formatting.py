@@ -153,14 +153,14 @@ def format_bytes(size_bytes: int | None) -> str:
     Returns
     -------
     str
-        Human-readable size (``"14.2 MB"``, ``"62 KB"``, ``"1.2 GB"``) or
-        ``"—"`` when the size is unknown.
+        Human-readable size in binary units (``"14.2 MiB"``, ``"62.0 KiB"``,
+        ``"1.2 GiB"``) or ``"—"`` when the size is unknown.
     """
     if size_bytes is None:
         return "—"
     value = float(max(0, int(size_bytes)))
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
             if unit == "B":
                 return f"{int(value)} {unit}"
             return f"{value:.1f} {unit}"
