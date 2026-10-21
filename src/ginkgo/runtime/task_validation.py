@@ -928,6 +928,27 @@ class TaskValidator:
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
         """Validate a task return value against its path or scalar annotation."""
         annotation = task_def.effective_return_annotation
+        inner, admits_none = unwrap_optional_annotation(annotation)
+        if (
+            value is None
+            and task_kind(task_def).directive is None
+            and not admits_none
+            and is_path_shaped_annotation(inner)
+        ):
+            # A Python task whose body has no return statement: `optional(...)`
+            # belongs to driver kinds, so the generic advice below would mislead.
+            outputs = task_def.output_params_in_order
+            fix = (
+                f"Return the output it wrote (`return {outputs[0]}`), or drop the return "
+                "annotation so the task returns its Out[...] parameters itself."
+                if outputs
+                else "Return the path it wrote, or annotate the return `... | None` if "
+                "returning nothing is expected."
+            )
+            raise TypeError(
+                f"{task_def.base_name} returned None, but its return annotation does not "
+                f"admit None. {fix}"
+            )
         self.validate_annotated_value(
             annotation=annotation,
             value=value,

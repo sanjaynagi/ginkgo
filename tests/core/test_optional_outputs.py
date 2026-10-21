@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import ginkgo
-from ginkgo import file, folder, optional, shell, task
+from ginkgo import Out, file, folder, optional, shell, task
 from ginkgo.core.optional import OptionalOutput
 from ginkgo.core.types import unwrap_optional_annotation
 from ginkgo.runtime.artifacts.output_index import output_summary
@@ -124,6 +124,11 @@ class TestDeclarationWalking:
 # ---------------------------------------------------------------------------
 
 
+@task()
+def _write_without_return(output_path: Out[file]) -> file:
+    Path(output_path).write_text("x", encoding="utf-8")
+
+
 class TestOptionalAnnotation:
     """``X | None`` splits into its inner type and a nullability flag."""
 
@@ -142,6 +147,15 @@ class TestOptionalAnnotation:
         validator = TaskValidator()
         with pytest.raises(TypeError, match="does not admit None"):
             validator.validate_annotated_value(annotation=file, value=None, label="demo.out")
+
+    def test_a_python_task_without_a_return_is_told_to_return_its_output(self) -> None:
+        """K4-2: `optional(...)` is a driver-kind remedy, not this one."""
+        with pytest.raises(TypeError) as excinfo:
+            TaskValidator().validate_return_value(task_def=_write_without_return, value=None)
+        message = str(excinfo.value)
+        assert "`return output_path`" in message
+        assert "drop the return annotation" in message
+        assert "optional" not in message
 
     def test_none_under_non_path_annotation_is_tolerated(self) -> None:
         """`doctor` and `inspect workflow` pass None for unsupplied parameters,
