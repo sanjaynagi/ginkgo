@@ -249,6 +249,15 @@ class CacheIndex(DirectIndex):
         row["artifact_ids"] = {str(a["path"]): str(a["artifact_id"]) for a in artifacts}
         return CacheEntry(row)
 
+    def has_entry(self, cache_key: str) -> bool:
+        """Return whether the index holds a row for *cache_key*."""
+        with self._lock:
+            return bool(
+                self._query(
+                    "SELECT 1 FROM cache_entries WHERE cache_key = ? LIMIT 1", (cache_key,)
+                )
+            )
+
     def recent_entries(
         self, *, function: str, excluding: str, limit: int = PRIOR_ENTRY_WINDOW
     ) -> list[CacheEntry]:

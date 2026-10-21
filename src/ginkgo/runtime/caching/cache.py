@@ -375,10 +375,15 @@ class CacheStore:
         return labels
 
     def load(self, *, cache_key: str, task_def: TaskDef) -> Any:
-        """Load a cached result if present and still valid for its environment."""
+        """Load a cached result if present and still valid for its environment.
+
+        An entry is present only when the index holds its row: the bytes
+        under the cache root of a key the database no longer knows (a lost
+        ``ginkgo.db``, say) are stranded, never served.
+        """
         entry_dir = self._entry_dir(cache_key)
         output_path = entry_dir / "output.json"
-        if not output_path.exists():
+        if not output_path.exists() or not self.index.has_entry(cache_key):
             return MISSING
 
         if not self._env_materialization_matches(cache_key=cache_key, task_def=task_def):
@@ -425,9 +430,12 @@ class CacheStore:
         Returns
         -------
         bool
-            ``True`` if a stored output exists for the key.
+            ``True`` if a stored output exists for the key and the index
+            holds its row, as :meth:`load` requires.
         """
         if not (self._entry_dir(cache_key) / "output.json").is_file():
+            return False
+        if not self.index.has_entry(cache_key):
             return False
         return self._env_materialization_matches(cache_key=cache_key, task_def=task_def)
 
