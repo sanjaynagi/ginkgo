@@ -6,6 +6,9 @@ import base64
 import io
 import logging
 import pickle
+import sys
+import types
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
@@ -14,6 +17,11 @@ import pandas as pd
 
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.errors import FailureKind, GinkgoError
+from ginkgo.runtime.module_loader import (
+    CACHE_IDENTITY_MODULE,
+    import_workflow_attribute,
+    workflow_module_reference,
+)
 
 if TYPE_CHECKING:
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
@@ -69,7 +77,10 @@ def encode_value(
     if value is None or type(value) in (bool, int, float, str):
         return value
 
-    if isinstance(value, list):
+    # Exact containers only, for the same reason: a ``namedtuple``,
+    # ``defaultdict`` or ``OrderedDict`` would come back as the plain builtin,
+    # so it is pickled whole instead.
+    if type(value) is list:
         return {
             "__ginkgo_type__": "list",
             "items": [
@@ -83,7 +94,7 @@ def encode_value(
             ],
         }
 
-    if isinstance(value, tuple):
+    if type(value) is tuple:
         return {
             "__ginkgo_type__": "tuple",
             "items": [
@@ -97,7 +108,7 @@ def encode_value(
             ],
         }
 
-    if isinstance(value, dict):
+    if type(value) is dict:
         # Fuse-streamed marker dicts produced by the driver-side resolver
         # are JSON-safe already; pass them through untouched so the worker
         # receives the original payload unchanged.
@@ -165,14 +176,20 @@ def decode_value(
         return _decode_path_marker(marker_cls=folder, payload=payload)
     if kind == "tmp_dir":
         return tmp_dir(payload["value"])
+    # Only a dict item carries a tag; a scalar item is its own value, so a long
+    # list of numbers decodes without a call per element.
     if kind == "list":
         return [
             decode_value(item, base_dir=base_dir, artifact_store=artifact_store)
+            if type(item) is dict
+            else item
             for item in payload["items"]
         ]
     if kind == "tuple":
         return tuple(
             decode_value(item, base_dir=base_dir, artifact_store=artifact_store)
+            if type(item) is dict
+            else item
             for item in payload["items"]
         )
     if kind == "dict":
@@ -281,15 +298,18 @@ def summarise_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):
-        items = (summarise_value(item) for item in value)
-        kind = "list" if isinstance(value, list) else "tuple"
-        return {"type": kind, **_capped_items(items), "length": len(value)}
+        return {
+            "type": _summary_type_name(value),
+            **_capped_items(value, summarise=summarise_value),
+            "length": len(value),
+        }
     if isinstance(value, dict):
-        items = (
-            {"key": summarise_value(key), "value": summarise_value(item)}
-            for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-        )
-        return {"type": "dict", **_capped_items(items), "length": len(value)}
+        pairs = sorted(value.items(), key=lambda pair: repr(pair[0]))
+        return {
+            "type": _summary_type_name(value),
+            **_capped_items(pairs, summarise=_summarise_pair),
+            "length": len(value),
+        }
 
     if isinstance(value, np.ndarray):
         return {
@@ -308,26 +328,43 @@ def summarise_value(value: Any) -> Any:
     return {"type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
-def _capped_items(items: Any) -> dict[str, Any]:
-    """Keep the first summaries and every one naming a path; count the rest."""
+def _summary_type_name(value: Any) -> str:
+    """Return a container's summary type: the builtin's name, or its subclass's."""
+    if type(value) in (list, tuple, dict):
+        return type(value).__name__
+    return f"{type(value).__module__}.{type(value).__name__}"
+
+
+def _summarise_pair(pair: tuple[Any, Any]) -> dict[str, Any]:
+    """Summarise one dict item."""
+    key, item = pair
+    return {"key": summarise_value(key), "value": summarise_value(item)}
+
+
+def _capped_items(items: Iterable[Any], *, summarise: Callable[[Any], Any]) -> dict[str, Any]:
+    """Summarise the first items and every one naming a path; count the rest.
+
+    An item past the limit is only summarised when it holds a path, so a
+    large container costs a cheap scan rather than a summary per item.
+    """
     kept: list[Any] = []
     omitted = 0
-    for summary in items:
-        if len(kept) < SUMMARY_ITEM_LIMIT or _names_a_path(summary):
-            kept.append(summary)
+    for item in items:
+        if len(kept) < SUMMARY_ITEM_LIMIT or _holds_a_path(item):
+            kept.append(summarise(item))
         else:
             omitted += 1
     return {"items": kept, "omitted": omitted} if omitted else {"items": kept}
 
 
-def _names_a_path(summary: Any) -> bool:
-    """Return whether a summary is, or contains, a file or folder."""
-    if isinstance(summary, list):
-        return any(_names_a_path(item) for item in summary)
-    if isinstance(summary, dict):
-        if summary.get("type") in {"file", "folder"}:
-            return True
-        return any(_names_a_path(item) for item in summary.values())
+def _holds_a_path(value: Any) -> bool:
+    """Return whether a value is, or contains, a file or folder."""
+    if isinstance(value, (file, folder)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_holds_a_path(item) for item in value)
+    if isinstance(value, dict):
+        return any(_holds_a_path(key) or _holds_a_path(item) for key, item in value.items())
     return False
 
 
@@ -345,7 +382,7 @@ def hash_value_bytes(value: Any) -> tuple[str, str]:
 
     from ginkgo.core.hashing import hash_bytes
 
-    codec_name, data, _extension = _encode_bytes(value)
+    codec_name, data, _extension = _encode_bytes(value, for_identity=True)
     digest = hash_bytes(data)
     return codec_name, digest
 
@@ -358,12 +395,13 @@ def ensure_serializable(value: Any, *, label: str) -> None:
     ):
         return
 
-    if isinstance(value, list | tuple):
+    # Mirrors ``encode_value``: only exact containers are encoded item by item.
+    if type(value) in (list, tuple):
         for index, item in enumerate(value):
             ensure_serializable(item, label=f"{label}[{index}]")
         return
 
-    if isinstance(value, dict):
+    if type(value) is dict:
         for key, item in value.items():
             ensure_serializable(key, label=f"{label}.key")
             ensure_serializable(item, label=f"{label}[{key!r}]")
@@ -444,7 +482,19 @@ def _decode_binary_payload(
     return _decode_bytes(codec_name=payload["codec"], data=data)
 
 
-def _encode_bytes(value: Any) -> tuple[str, bytes, str]:
+def _encode_bytes(value: Any, *, for_identity: bool = False) -> tuple[str, bytes, str]:
+    """Return the codec name, bytes and file extension for a binary value.
+
+    Parameters
+    ----------
+    value : Any
+        The value to encode.
+    for_identity : bool
+        Whether the bytes are only hashed, never decoded. Classes and
+        functions of a single-file workflow are then recorded under one
+        location-independent name, so a renamed or copied workflow hashes its
+        values the same.
+    """
     if isinstance(value, np.ndarray):
         buffer = io.BytesIO()
         np.save(buffer, value, allow_pickle=True)
@@ -454,9 +504,54 @@ def _encode_bytes(value: Any) -> tuple[str, bytes, str]:
         parquet_bytes = _try_encode_dataframe_parquet(value)
         if parquet_bytes is not None:
             return "pandas.parquet", parquet_bytes, "parquet"
-        return "python.pickle", pickle.dumps(value, protocol=5), "pkl"
 
-    return "python.pickle", pickle.dumps(value, protocol=5), "pkl"
+    buffer = io.BytesIO()
+    try:
+        _WorkflowPickler(buffer, for_identity=for_identity).dump(value)
+    except (pickle.PicklingError, TypeError, AttributeError) as exc:
+        raise CodecError(
+            f"Cannot pickle a {type(value).__module__}.{type(value).__qualname__} value: "
+            f"{exc}. Values other than plain lists, tuples, dicts and scalars are "
+            "pickled, so their classes must be importable: defined at module "
+            "level, not inside a function."
+        ) from exc
+    return "python.pickle", buffer.getvalue(), "pkl"
+
+
+class _WorkflowPickler(pickle.Pickler):
+    """Pickle that records single-file workflow classes by a portable reference.
+
+    Such a class lives in a module named after the workflow's absolute path in
+    this process (see :data:`~ginkgo.runtime.module_loader.USER_MODULE_PREFIX`),
+    which a worker or a later run cannot import. It is recorded instead as a
+    call to :func:`~ginkgo.runtime.module_loader.import_workflow_attribute`,
+    which finds the workflow again wherever the value is decoded.
+    """
+
+    def __init__(self, file: io.BytesIO, *, for_identity: bool) -> None:
+        super().__init__(file, protocol=5)
+        self._for_identity = for_identity
+
+    def reducer_override(self, obj: Any) -> Any:
+        if not isinstance(obj, (type, types.FunctionType)):
+            return NotImplemented
+        module_name = getattr(obj, "__module__", None)
+        if not isinstance(module_name, str):
+            return NotImplemented
+        reference = workflow_module_reference(module_name)
+        if reference is None:
+            return NotImplemented
+        # Only what pickle itself could find by name: a lambda or a class
+        # defined inside a function keeps pickle's own error.
+        qualname = obj.__qualname__
+        found: Any = sys.modules[module_name]
+        for part in qualname.split("."):
+            found = getattr(found, part, None)
+        if found is not obj:
+            return NotImplemented
+        if self._for_identity:
+            reference = CACHE_IDENTITY_MODULE
+        return import_workflow_attribute, (reference, qualname)
 
 
 def _decode_bytes(*, codec_name: str, data: bytes) -> Any:

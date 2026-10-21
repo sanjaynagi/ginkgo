@@ -31,6 +31,7 @@ from ginkgo.core.types import (
     file,
     folder,
     pair_elements_with_annotations,
+    rebuild_sequence,
     unwrap_optional_annotation,
 )
 from ginkgo.remote.access.protocol import (
@@ -423,7 +424,7 @@ def stage_output_params_for_dispatch(
             return list(items) if origin is list else tuple(items)
         if isinstance(value, (list, tuple)):
             items = [remap(annotation=inner_annotation, value=item, name=name) for item in value]
-            return type(value)(items)
+            return rebuild_sequence(like=value, items=items)
 
         kind = (
             "file" if annotation_includes(annotation=inner_annotation, expected=file) else "folder"

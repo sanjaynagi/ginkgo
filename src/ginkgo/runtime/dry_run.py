@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ginkgo.core.expr import ConstructedCall
+from ginkgo.core.types import rebuild_sequence
 from ginkgo.runtime.caching.cache import MISSING, DynamicTemplate
 from ginkgo.runtime.events import task_id_for_node
 from ginkgo.core.directive import DirectiveError
@@ -631,14 +632,17 @@ def _as_restored(
     their recorded digest.
     """
     if isinstance(value, list | tuple):
-        return type(value)(
-            _as_restored(
-                value=item,
-                known_digests=known_digests,
-                artifact_store=artifact_store,
-                scratch=scratch,
-            )
-            for item in value
+        return rebuild_sequence(
+            like=value,
+            items=(
+                _as_restored(
+                    value=item,
+                    known_digests=known_digests,
+                    artifact_store=artifact_store,
+                    scratch=scratch,
+                )
+                for item in value
+            ),
         )
     if not isinstance(value, str | os.PathLike):
         return value

@@ -208,15 +208,13 @@ def _traceback_from_task(*, exc: BaseException, fn: Any) -> TracebackType | None
 def run_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute a task payload inside a process-pool worker."""
     base_dir = Path(payload["transport_dir"])
-    decoded_args = {
-        name: decode_value(value, base_dir=base_dir) for name, value in payload["args"].items()
-    }
 
     # Mount any fuse-marked inputs against a task-local mount root so
     # concurrent workers never collide on a shared bucket mount point. The
     # access instance is held before hydration so the finally below always
-    # tears mounts down, even if hydration itself fails partway.
-    mounted_access = _local_fuse_access(args=decoded_args, base_dir=base_dir)
+    # tears mounts down, even if hydration itself fails partway. Encoding
+    # passes fuse markers through, so the encoded arguments show them.
+    mounted_access = _local_fuse_access(args=payload["args"], base_dir=base_dir)
 
     stdout_path = payload.get("stdout_path")
     stderr_path = payload.get("stderr_path")
@@ -241,14 +239,21 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             _worker_param_session(payload=payload),
         ):
+            # The task's module is loaded before its arguments are decoded,
+            # so a value of a class the workflow defines finds that module
+            # already imported, as the task itself uses it.
+            task_binding = _load_task_binding(payload=payload)
+            fn = getattr(task_binding, "fn", task_binding)
+            decoded_args = {
+                name: decode_value(value, base_dir=base_dir)
+                for name, value in payload["args"].items()
+            }
             if mounted_access is not None:
                 from ginkgo.remote.access.worker_hydration import hydrate_fuse_refs
 
                 decoded_args, _ = hydrate_fuse_refs(
                     args=decoded_args, mounted_access=mounted_access
                 )
-            task_binding = _load_task_binding(payload=payload)
-            fn = getattr(task_binding, "fn", task_binding)
             # Measured from here, once the workflow module is imported, so
             # the body's usage is not charged with the worker's imports.
             usage_start = _rusage_snapshot()
