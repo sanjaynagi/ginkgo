@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from dataclasses import dataclass
 
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +17,9 @@ import pytest
 from ginkgo.cli import main
 from ginkgo_report.command import _resolve_destination
 from ginkgo.formatting import format_bytes, format_duration
-from ginkgo_report.model import build_report_data
+from ginkgo_report import command as report_command
+from ginkgo_report.model import _memory_label, build_report_data
+from ginkgo_report.notebook_page import static_notebook_page
 from ginkgo_report.render import _MARKER_NAME, export_report
 from ginkgo_report.sizing import SizingPolicy, build_log_tail
 from ginkgo.runtime.events import (
@@ -225,8 +228,67 @@ def _make_run(
     return run
 
 
-def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
-    """Build a terminal run whose single task rendered a page."""
+def _marimo_page() -> str:
+    """Return a tiny page shaped like ``marimo export html`` output.
+
+    Its cells are drawn by marimo's frontend, loaded from a CDN; the cells'
+    code and outputs travel in the mount config.
+    """
+    notebook = {
+        "cells": [
+            {"id": "a", "code": "mo.md('# Cases')", "config": {"hide_code": False}},
+            {"id": "b", "code": "mo.ui.table(df)", "config": {"hide_code": False}},
+            {"id": "c", "code": "mo.image(fig)", "config": {"hide_code": True}},
+            {"id": "d", "code": "raise ValueError('boom')", "config": {"hide_code": False}},
+        ]
+    }
+    rows = json.dumps(json.dumps([{"_marimo_row_id": 0, "region": "north", "cases": 3}]))
+    table = (
+        "<marimo-ui-element object-id='b-0'><marimo-table data-label='null' "
+        f"data-data='{rows.replace(chr(34), '&quot;')}' data-total-rows='1'>"
+        "</marimo-table></marimo-ui-element>"
+    )
+    session = {
+        "cells": [
+            {
+                "id": "a",
+                "console": [{"name": "stdout", "text": "loaded 3 rows\n", "type": "stream"}],
+                "outputs": [{"type": "data", "data": {"text/markdown": "<h1>Cases</h1>"}}],
+            },
+            {
+                "id": "b",
+                "console": [],
+                "outputs": [{"type": "data", "data": {"text/html": table}}],
+            },
+            {
+                "id": "c",
+                "console": [],
+                "outputs": [
+                    {
+                        "type": "data",
+                        "data": {"text/html": "<img src='data:image/png;base64,AA=='>"},
+                    }
+                ],
+            },
+            {
+                "id": "d",
+                "console": [],
+                "outputs": [{"type": "error", "ename": "ValueError", "evalue": "boom"}],
+            },
+        ]
+    }
+    return (
+        "<!doctype html><html><head>"
+        '<script type="module" src="https://cdn.jsdelivr.net/npm/@marimo-team/frontend/i.js">'
+        "</script></head><body><div id='root'></div><script data-marimo='true'>"
+        'Object.defineProperty(window, "__MARIMO_MOUNT_CONFIG__", {value: Object.freeze({'
+        f'"notebook": {json.dumps(notebook)},\n"session": {json.dumps(session)},\n'
+        "})});</script></body></html>"
+    )
+
+
+def _make_page_run(*, tmp_path: Path, run_id: str, page: str = "<html>rendered</html>") -> _Run:
+    """Build a terminal run whose single task rendered *page*."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     workflow_path = tmp_path / "workflow.py"
     workflow_path.write_text("# demo\n", encoding="utf-8")
@@ -249,7 +311,7 @@ def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
     )
     html_path = ledger.path / "notebooks" / "report.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text("<html>rendered</html>", encoding="utf-8")
+    html_path.write_text(page, encoding="utf-8")
     ledger.bus.emit(
         TaskAnnotated(
             run_id=run_id,
@@ -268,6 +330,16 @@ def _make_page_run(*, tmp_path: Path, run_id: str) -> _Run:
         )
     )
     return _Run(ledger=ledger, tmp_path=tmp_path)
+
+
+def _task_with_usage(resource_usage: dict[str, Any]) -> Any:
+    """Return a stand-in task carrying only *resource_usage*."""
+
+    @dataclass
+    class _Task:
+        resource_usage: dict[str, Any]
+
+    return _Task(resource_usage=resource_usage)
 
 
 # ----- Formatting --------------------------------------------------------
@@ -412,6 +484,94 @@ class TestReportData:
 
         assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
         assert [card.attempts_label for card in report.failures] == ["3 / 3"]
+
+    def test_a_retried_attempts_error_is_shown_after_the_retry_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        ledger = _Ledger.start(root=tmp_path, run_id="run-retried")
+        ledger.bus.emit(
+            GraphNodeRegistered(
+                run_id="run-retried",
+                task_id="task_0000",
+                node_id=0,
+                task_name="demo.flaky",
+                retries=1,
+            )
+        )
+        for attempt in (1, 2):
+            ledger.bus.emit(
+                TaskStarted(
+                    run_id="run-retried",
+                    task_id="task_0000",
+                    task_name="demo.flaky",
+                    attempt=attempt,
+                )
+            )
+        ledger.bus.emit(
+            TaskRetrying(
+                run_id="run-retried",
+                task_id="task_0000",
+                task_name="demo.flaky",
+                attempt=1,
+                failure={"kind": "user_code_error", "message": "RuntimeError: transient"},
+            )
+        )
+        ledger.bus.emit(
+            TaskCompleted(
+                run_id="run-retried", task_id="task_0000", task_name="demo.flaky", attempt=2
+            )
+        )
+        ledger.finish(status="success")
+        summary = ledger.summary()
+        ledger.close()
+
+        result = export_report(summary=summary, out=tmp_path / "out")
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert "Retried attempts" in html
+        assert "RuntimeError: transient" in html
+
+    def test_each_tasks_output_paths_are_listed(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-page")
+
+        report = build_report_data(summary=run.summary())
+
+        (row,) = report.outputs
+        assert (row.label, row.kind) == ("report", "file")
+        assert row.path.endswith("notebooks/report.html")
+
+    def test_the_cache_card_says_what_share_of_tasks_was_reused(self, tmp_path: Path) -> None:
+        executed = build_report_data(
+            summary=_make_run(tmp_path=tmp_path / "a", run_id="run-a", fail=False).summary()
+        )
+        cached = build_report_data(
+            summary=_make_run(
+                tmp_path=tmp_path / "b", run_id="run-b", fail=False, cached=True
+            ).summary()
+        )
+
+        assert executed.summary_cards[2].sub == "every task ran"
+        assert cached.summary_cards[2].sub == "every task reused from the cache"
+
+    def test_declared_memory_is_shown_as_written(self) -> None:
+        task = _task_with_usage(
+            {
+                "declared": {"memory": "64Mi", "memory_gb": 1, "effective_memory_gb": 1},
+                "measured": {"peak_rss_bytes": 2048, "baseline_rss_bytes": 120_000_000},
+            }
+        )
+
+        assert _memory_label(task) == "2.0 KB / 64Mi"
+
+    def test_an_escalated_budget_is_shown_as_the_budget_the_attempt_ran_against(self) -> None:
+        task = _task_with_usage(
+            {
+                "declared": {"memory": "16Gi", "memory_gb": 16, "effective_memory_gb": 32},
+                "measured": {"peak_rss_bytes": 0},
+            }
+        )
+
+        assert _memory_label(task) == "0 B / 32 GiB"
 
     def test_a_run_notice_is_shown_in_the_summary(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
@@ -721,7 +881,8 @@ class TestExport:
         result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
-        assert '<span class="num">05</span>Rendered pages' in html
+        assert '<span class="num">05</span>Outputs' in html
+        assert '<span class="num">06</span>Rendered pages' in html
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
             "01",
             "02",
@@ -729,7 +890,19 @@ class TestExport:
             "04",
             "05",
             "06",
+            "07",
         ]
+
+    def test_recorded_values_are_escaped(self, tmp_path: Path) -> None:
+        ledger = _Ledger.start(root=tmp_path, run_id="run-esc", params={"note": "<b>x</b>"})
+        ledger.finish(status="success")
+
+        result = export_report(summary=ledger.summary(), out=tmp_path / "out")
+        ledger.close()
+
+        html = result.index_path.read_text(encoding="utf-8")
+        assert "&lt;b&gt;x&lt;/b&gt;" in html
+        assert "<b>x</b>" not in html
 
     def test_no_network_references_in_rendered_html(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
@@ -859,12 +1032,64 @@ class TestExport:
         assert target.read_text(encoding="utf-8") == "<html>mine</html>"
 
     def test_single_file_export_lists_the_links_it_omits(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+
+        assert result.omitted_links == ("logs/task_0001.stderr.log",)
+
+    def test_single_file_embeds_a_marimo_page_as_a_static_copy(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+        html = result.index_path.read_text(encoding="utf-8")
+
+        assert result.omitted_links == ()
+        # The page's rows reach the file; marimo's CDN-loaded frontend does not.
+        assert "&lt;td&gt;north&lt;/td&gt;" in html
+        assert 'src="https://' not in html
+        assert "<iframe" in html
+
+    def test_single_file_embeds_another_page_as_it_is(self, tmp_path: Path) -> None:
         run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
 
         result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
 
-        assert len(result.omitted_links) == 1
-        assert result.omitted_links[0].startswith("pages/")
+        assert 'srcdoc="&lt;html&gt;rendered&lt;/html&gt;"' in result.index_path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_bundle_writes_a_static_copy_beside_a_marimo_page(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb", page=_marimo_page())
+
+        export_report(summary=run.summary(), out=tmp_path / "out")
+
+        (static,) = (tmp_path / "out" / "pages").glob("*.static.html")
+        assert "<td>north</td>" in static.read_text(encoding="utf-8")
+
+
+class TestNotebookPage:
+    def test_a_marimo_page_is_drawn_without_its_frontend(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases")
+
+        assert page is not None
+        assert "cdn.jsdelivr" not in page
+        assert "<h1>Cases</h1>" in page
+        assert "<td>north</td><td>3</td>" in page
+        assert "_marimo_row_id" not in page
+        assert "data:image/png;base64,AA==" in page
+        assert "loaded 3 rows" in page
+        assert "ValueError: boom" in page
+
+    def test_hidden_code_stays_hidden(self) -> None:
+        page = static_notebook_page(page=_marimo_page(), title="cases")
+
+        assert page is not None
+        assert "mo.ui.table(df)" in page
+        assert "mo.image(fig)" not in page
+
+    def test_a_page_that_is_not_a_marimo_export_has_no_static_copy(self) -> None:
+        assert static_notebook_page(page="<html>rendered</html>", title="x") is None
 
 
 class TestOutputDir:
@@ -952,6 +1177,20 @@ class TestReportCli:
 
         assert (bundle / "assets" / "report.css").is_file()
         assert (bundle.parent / "run-ok.html").is_file()
+
+    def test_a_very_large_single_file_report_is_flagged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+        monkeypatch.setattr(report_command, "LARGE_SINGLE_FILE_BYTES", 1)
+
+        assert main(["report", "--single-file", "--no-open"]) == 0
+
+        assert "Export without --single-file" in " ".join(capsys.readouterr().out.split())
 
     def test_single_file_out_writes_that_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

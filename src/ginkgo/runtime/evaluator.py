@@ -261,6 +261,8 @@ class NodeRun:
     threads: int = 1
     memory_gb: int = 0
     declared_memory_gb: int = 0
+    declared_memory: str | None = None
+    """The memory declaration as written, such as ``"64Mi"``, before rounding to GiB."""
     gpu: int = 0
     custom_resources: dict[str, int] = field(default_factory=dict)
     executor_name: str | None = None
@@ -801,6 +803,7 @@ class ConcurrentEvaluator:
         # Kept across escalation: node.memory_gb becomes the retry's budget,
         # so without this the declaration a user would edit is lost.
         node.declared_memory_gb = resources.memory_gb
+        node.declared_memory = resources.memory
         node.gpu = resources.gpu
         node.custom_resources = dict(resources.custom)
         node.executor_name = self.placement.resolve(task_def=node.task_def)
@@ -2079,6 +2082,7 @@ class ConcurrentEvaluator:
         return {
             "declared": {
                 "threads": node.threads,
+                "memory": node.declared_memory,
                 "memory_gb": node.declared_memory_gb,
                 "effective_memory_gb": node.memory_gb,
             },
