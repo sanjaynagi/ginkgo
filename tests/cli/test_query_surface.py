@@ -681,7 +681,8 @@ class TestDeclaredMemoryAsWritten:
 def test_a_flag_of_another_command_is_refused_with_the_commands_own_usage(
     tmp_path: Path,
 ) -> None:
-    result = _run_cli("run", "--no-open", cwd=tmp_path)
+    # A core command's flag, so the test holds without the plugins installed.
+    result = _run_cli("run", "--include-unstarted", cwd=tmp_path)
 
     assert result.returncode == 2
-    assert "ginkgo run: error: unrecognized arguments: --no-open" in result.stderr
+    assert "ginkgo run: error: unrecognized arguments: --include-unstarted" in result.stderr

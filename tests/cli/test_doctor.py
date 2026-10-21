@@ -607,6 +607,7 @@ class TestDoctorRefusedDirective:
     """A directive refused whatever the run's state fails doctor, as it fails a dry run."""
 
     def test_a_jupyter_notebook_task_is_an_error(self, tmp_path: Path) -> None:
+        pytest.importorskip("ginkgo_notebook")
         Path("legacy.ipynb").write_text("{}", encoding="utf-8")
         Path("workflow.py").write_text(
             """
