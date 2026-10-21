@@ -170,6 +170,18 @@ class TestWorkflowClasses:
         assert hash_value_bytes(original.Point(3)) == hash_value_bytes(copy.Point(3))
 
 
+class TestArrayCodecs:
+    def test_an_array_round_trips(self, tmp_path) -> None:
+        value = np.arange(6, dtype=np.int32).reshape(2, 3)
+
+        decoded = decode_value(
+            encode_value(value, base_dir=tmp_path, inline_limit=0), base_dir=tmp_path
+        )
+
+        assert decoded.dtype == value.dtype
+        assert (decoded == value).all()
+
+
 class TestDecodeTags:
     def test_an_unknown_tag_raises(self, tmp_path) -> None:
         with pytest.raises(CodecError, match="Unknown encoded value type: 'retired'"):

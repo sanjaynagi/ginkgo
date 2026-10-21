@@ -26,3 +26,9 @@ relative to the project root, which resolves to the workflow already loaded
 in the decoding process or loads it. For hashing, the reference is replaced by
 `CACHE_IDENTITY_MODULE`, so a moved or copied workflow keeps its cache keys.
 A worker loads its task's module before decoding the task's arguments.
+
+NumPy and pandas are imported lazily: the codec recognises an array or a
+DataFrame through `sys.modules`, since such a value can only exist once its
+library is imported, and imports the library only to encode, decode or hash
+one. A spawned worker therefore starts its first task without paying for
+those imports.

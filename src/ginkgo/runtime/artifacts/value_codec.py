@@ -12,9 +12,6 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, ClassVar, TYPE_CHECKING
 
-import numpy as np
-import pandas as pd
-
 from ginkgo.core.types import file, folder, tmp_dir
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.runtime.module_loader import (
@@ -24,6 +21,8 @@ from ginkgo.runtime.module_loader import (
 )
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from ginkgo.runtime.artifacts.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -261,6 +260,24 @@ def _reject_unknown_tag(payload: dict[str, Any]) -> None:
         raise CodecError(f"Unknown encoded value type: {kind!r}")
 
 
+def _is_ndarray(value: Any) -> bool:
+    """Return whether *value* is a NumPy array, without importing NumPy.
+
+    An array exists only once NumPy is imported, so a process that never
+    imported it pays nothing to learn that a value is not one. A worker thus
+    starts its first task without the second or so NumPy and pandas take to
+    import.
+    """
+    numpy = sys.modules.get("numpy")
+    return numpy is not None and isinstance(value, numpy.ndarray)
+
+
+def _is_dataframe(value: Any) -> bool:
+    """Return whether *value* is a pandas DataFrame, without importing pandas."""
+    pandas = sys.modules.get("pandas")
+    return pandas is not None and isinstance(value, pandas.DataFrame)
+
+
 def _encode_path_marker(*, kind: str, value: file | folder) -> dict[str, Any]:
     """Encode a ``file``/``folder`` marker."""
     return {"__ginkgo_type__": kind, "value": str(value)}
@@ -311,14 +328,14 @@ def summarise_value(value: Any) -> Any:
             "length": len(value),
         }
 
-    if isinstance(value, np.ndarray):
+    if _is_ndarray(value):
         return {
             "type": "numpy.ndarray",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
 
-    if isinstance(value, pd.DataFrame):
+    if _is_dataframe(value):
         return {
             "type": "pandas.DataFrame",
             "columns": list(map(str, value.columns)),
@@ -370,9 +387,9 @@ def _holds_a_path(value: Any) -> bool:
 
 def hash_value_bytes(value: Any) -> tuple[str, str]:
     """Return the codec name and BLAKE3 digest for a Python value."""
-    if isinstance(value, np.ndarray) and value.dtype.hasobject is False:
+    if _is_ndarray(value) and value.dtype.hasobject is False:
         return "numpy.ndarray", _hash_numpy_array(value)
-    if isinstance(value, pd.DataFrame):
+    if _is_dataframe(value):
         try:
             return "pandas.DataFrame", _hash_pandas_dataframe(value)
         except Exception:
@@ -495,12 +512,14 @@ def _encode_bytes(value: Any, *, for_identity: bool = False) -> tuple[str, bytes
         location-independent name, so a renamed or copied workflow hashes its
         values the same.
     """
-    if isinstance(value, np.ndarray):
+    if _is_ndarray(value):
+        import numpy as np
+
         buffer = io.BytesIO()
         np.save(buffer, value, allow_pickle=True)
         return "numpy.npy", buffer.getvalue(), "npy"
 
-    if isinstance(value, pd.DataFrame):
+    if _is_dataframe(value):
         parquet_bytes = _try_encode_dataframe_parquet(value)
         if parquet_bytes is not None:
             return "pandas.parquet", parquet_bytes, "parquet"
@@ -556,9 +575,13 @@ class _WorkflowPickler(pickle.Pickler):
 
 def _decode_bytes(*, codec_name: str, data: bytes) -> Any:
     if codec_name == "numpy.npy":
+        import numpy as np
+
         return np.load(io.BytesIO(data), allow_pickle=True)
 
     if codec_name == "pandas.parquet":
+        import pandas as pd
+
         return pd.read_parquet(io.BytesIO(data))
 
     if codec_name == "python.pickle":
@@ -592,6 +615,8 @@ def _try_encode_dataframe_parquet(value: Any) -> bytes | None:
 
 def _hash_numpy_array(value: Any) -> str:
     """Return a stable BLAKE3 digest for a non-object NumPy array."""
+    import numpy as np
+
     from ginkgo.core.hashing import new_hasher
 
     normalized = np.ascontiguousarray(value)
@@ -612,6 +637,9 @@ def _hash_numpy_array(value: Any) -> str:
 
 def _hash_pandas_dataframe(value: pd.DataFrame) -> str:
     """Return a stable BLAKE3 digest for a pandas DataFrame."""
+    import numpy as np
+    import pandas as pd
+
     from ginkgo.core.hashing import new_hasher
 
     hasher = new_hasher()
