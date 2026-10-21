@@ -17,11 +17,14 @@ from ginkgo.core.remote import RemoteRef
 from ginkgo.core.secret import SecretRef
 from ginkgo.core.task import TaskDef
 from ginkgo.core.types import (
+    PLAIN_SCALAR_TYPES,
     annotation_includes,
     file,
     folder,
+    holds_only_plain_scalars,
     is_path_shaped_annotation,
     is_untracked_annotation,
+    looks_like_path_string,
     pair_elements_with_annotations,
     require_path_value,
     tmp_dir,
@@ -607,6 +610,8 @@ class CacheStore:
         annotation, admits_none = unwrap_optional_annotation(annotation)
         if value is None:
             return admits_none or not is_path_shaped_annotation(annotation)
+        if holds_only_plain_scalars(value) and not is_path_shaped_annotation(annotation):
+            return True
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
@@ -1080,71 +1085,33 @@ class CacheStore:
 
         origin = get_origin(annotation)
         if origin in {list, tuple}:
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=item_annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item_annotation, item in pair_elements_with_annotations(
-                        annotation=annotation, value=value
-                    )
-                ],
-                "type": origin.__name__,
-            }
+            return self._hash_sequence(
+                type_name=origin.__name__,
+                pairs=pair_elements_with_annotations(annotation=annotation, value=value),
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
         if origin is dict:
             key_annotation, value_annotation = self._dict_annotations(annotation)
-            return {
-                "items": [
-                    {
-                        "key": self._hash_value(
-                            annotation=key_annotation,
-                            value=key,
-                            known_digests=known_digests,
-                            label=label,
-                        ),
-                        "value": self._hash_value(
-                            annotation=value_annotation,
-                            value=item,
-                            known_digests=known_digests,
-                            label=label,
-                        ),
-                    }
-                    for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-                ],
-                "type": "dict",
-            }
+            return self._hash_mapping(
+                value=value,
+                key_annotation=key_annotation,
+                value_annotation=value_annotation,
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
-        if isinstance(value, list):
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item in value
-                ],
-                "type": "list",
-            }
-
-        if isinstance(value, tuple):
-            return {
-                "items": [
-                    self._hash_value(
-                        annotation=annotation,
-                        value=item,
-                        known_digests=known_digests,
-                        label=label,
-                    )
-                    for item in value
-                ],
-                "type": "tuple",
-            }
+        if isinstance(value, (list, tuple)):
+            return self._hash_sequence(
+                type_name="list" if isinstance(value, list) else "tuple",
+                pairs=[(annotation, item) for item in value],
+                container_annotation=annotation,
+                known_digests=known_digests,
+                label=label,
+            )
 
         if annotation_includes(annotation=annotation, expected=file) or isinstance(value, file):
             require_path_value(value=value, annotation_label="file", label=label)
@@ -1163,16 +1130,14 @@ class CacheStore:
             return {"sha256": self._hash_folder_contents(Path(str(value))), "type": "folder"}
 
         if isinstance(value, dict):
-            return {
-                "items": [
-                    {
-                        "key": self._hash_value(annotation=Any, value=key),
-                        "value": self._hash_value(annotation=Any, value=item),
-                    }
-                    for key, item in sorted(value.items(), key=lambda pair: repr(pair[0]))
-                ],
-                "type": "dict",
-            }
+            return self._hash_mapping(
+                value=value,
+                key_annotation=Any,
+                value_annotation=Any,
+                container_annotation=Any,
+                known_digests=known_digests,
+                label=label,
+            )
 
         # Root-input path hashing (#307 phase 2, closes #121/#281): a value
         # that is not ``Out[...]``, not ``tmp_dir``/``untracked``, and not
@@ -1223,6 +1188,103 @@ class CacheStore:
                 "type": type(value).__name__,
             }
         return {"sha256": hash_str(repr(value)), "type": type(value).__name__}
+
+    def _hash_sequence(
+        self,
+        *,
+        type_name: str,
+        pairs: list[tuple[Any, Any]],
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> dict[str, Any]:
+        """Hash a list or tuple from its ``(annotation, element)`` pairs.
+
+        See :meth:`_hash_elements` for when it is one digest and when it keeps
+        an entry per element.
+        """
+        items, names_path = self._hash_elements(
+            pairs=pairs,
+            container_annotation=container_annotation,
+            known_digests=known_digests,
+            label=label,
+        )
+        if not names_path:
+            return {"sha256": _digest_of_tokens(items), "type": type_name}
+        return {"items": items, "type": type_name}
+
+    def _hash_mapping(
+        self,
+        *,
+        value: dict[Any, Any],
+        key_annotation: Any,
+        value_annotation: Any,
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> dict[str, Any]:
+        """Hash a dict, its items ordered by the ``repr`` of their keys."""
+        pairs: list[tuple[Any, Any]] = []
+        for key, item in sorted(value.items(), key=lambda pair: repr(pair[0])):
+            pairs.extend([(key_annotation, key), (value_annotation, item)])
+        items, names_path = self._hash_elements(
+            pairs=pairs,
+            container_annotation=container_annotation,
+            known_digests=known_digests,
+            label=label,
+        )
+        if not names_path:
+            return {"sha256": _digest_of_tokens(items), "type": "dict"}
+        return {
+            "items": [
+                {"key": items[index], "value": items[index + 1]}
+                for index in range(0, len(items), 2)
+            ],
+            "type": "dict",
+        }
+
+    def _hash_elements(
+        self,
+        *,
+        pairs: list[tuple[Any, Any]],
+        container_annotation: Any,
+        known_digests: dict[str, str] | None,
+        label: str,
+    ) -> tuple[list[Any], bool]:
+        """Return a container's element hashes and whether one names a path.
+
+        A container whose elements hold no file, folder or remote object is
+        hashed as one digest of them: an entry per element would make a
+        200,000-number list a 200,000-entry key component, stored with the
+        cache entry and in every run's ledger. Only a container that does hold
+        one keeps an entry per element, so ``cache explain`` and the ledger
+        can name the file that moved.
+
+        A plain scalar, or a string that cannot name a path, stands for itself
+        as its ``repr`` without going through :meth:`_hash_value`; it gets the
+        usual hash only when the container keeps an entry per element.
+        """
+        plain_strings = not is_path_shaped_annotation(container_annotation)
+        tokens = [
+            repr(item)
+            if _hashes_as_repr(value=item, plain_strings=plain_strings)
+            else self._hash_value(
+                annotation=item_annotation,
+                value=item,
+                known_digests=known_digests,
+                label=label,
+            )
+            for item_annotation, item in pairs
+        ]
+        if not any(_names_tracked_path(token) for token in tokens):
+            return tokens, False
+        items = [
+            self._hash_value(annotation=item_annotation, value=item, label=label)
+            if isinstance(token, str)
+            else token
+            for (item_annotation, item), token in zip(pairs, tokens, strict=True)
+        ]
+        return items, True
 
     def _serialise_inputs(
         self,
@@ -1424,6 +1486,8 @@ def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
     does, pairing each element with its own annotation. Includes paths whose
     file does not exist yet, so a task that creates one can be noticed.
     """
+    if type(value) in PLAIN_SCALAR_TYPES:
+        return []
     annotation, _ = unwrap_optional_annotation(annotation)
     if isinstance(value, (list, tuple)):
         if get_origin(annotation) in {list, tuple}:
@@ -1446,3 +1510,31 @@ def _content_trackable_paths(*, annotation: Any, value: Any) -> list[str]:
     if is_content_trackable_path_shape(annotation=annotation, value=value):
         return [str(value)]
     return []
+
+
+def _hashes_as_repr(*, value: Any, plain_strings: bool) -> bool:
+    """Return whether a container element is keyed by its ``repr`` alone.
+
+    True for a plain scalar, and, when the container's annotation binds no
+    element to a path (``plain_strings``), for a string that does not read as
+    one: :meth:`CacheStore._hash_value` keys either by its ``repr`` too.
+    """
+    if type(value) in PLAIN_SCALAR_TYPES:
+        return True
+    return plain_strings and type(value) is str and not looks_like_path_string(value)
+
+
+def _names_tracked_path(element_hash: Any) -> bool:
+    """Return whether an element's hash is, or holds, a file, folder or remote object."""
+    if not isinstance(element_hash, dict):
+        return False
+    return (
+        "items" in element_hash
+        or element_hash.get("type") in {"file", "folder"}
+        or "bucket" in element_hash
+    )
+
+
+def _digest_of_tokens(tokens: list[Any]) -> str:
+    """Return the one digest of a container's element hashes."""
+    return hash_str(json.dumps(tokens, sort_keys=True, separators=(",", ":")))

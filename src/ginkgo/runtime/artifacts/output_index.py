@@ -15,6 +15,7 @@ from ginkgo.core.types import (
     annotation_includes,
     file,
     folder,
+    holds_only_plain_scalars,
     is_path_shaped_annotation,
     pair_elements_with_annotations,
     unwrap_optional_annotation,
@@ -83,6 +84,8 @@ def _present_output_summary(
     """Return the output index for a value that is known to be present."""
     origin = get_origin(annotation)
     if isinstance(value, (list, tuple)):
+        if holds_only_plain_scalars(value) and not is_path_shaped_annotation(annotation):
+            return _plain_value_entries(value, name=name)
         if origin in {list, tuple}:
             paired = pair_elements_with_annotations(annotation=annotation, value=value)
         else:
@@ -155,6 +158,25 @@ def _cap_value_entries(entries: list[dict[str, Any]], *, name: str) -> list[dict
     if omitted:
         kept.append({"name": name, "type": "truncated", "omitted": omitted})
     return kept
+
+
+def _plain_value_entries(value: list[Any] | tuple[Any, ...], *, name: str) -> list[dict[str, Any]]:
+    """Index a list or tuple of plain scalars without an entry per element.
+
+    The same entries the general walk and :func:`_cap_value_entries` make —
+    one per present element up to :data:`SUMMARY_ITEM_LIMIT`, then a
+    ``truncated`` count — built only for the elements kept.
+    """
+    present = [(index, item) for index, item in enumerate(value) if item is not None]
+    entries: list[dict[str, Any]] = [
+        {"name": f"{name}[{index}]", "type": "value", "summary": item}
+        for index, item in present[:SUMMARY_ITEM_LIMIT]
+    ]
+    if len(present) > SUMMARY_ITEM_LIMIT:
+        entries.append(
+            {"name": name, "type": "truncated", "omitted": len(present) - SUMMARY_ITEM_LIMIT}
+        )
+    return entries
 
 
 def _path_entry(

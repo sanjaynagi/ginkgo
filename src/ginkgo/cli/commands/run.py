@@ -667,7 +667,8 @@ def run_workflow(
                             if key not in RUNTIME_CONFIG_TABLES
                         },
                         **declared_params,
-                    }
+                    },
+                    item_limit=None,
                 ),
                 param_sources=param_sources,
                 ginkgo_version=_ginkgo_version(),

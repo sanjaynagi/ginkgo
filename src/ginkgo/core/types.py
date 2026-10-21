@@ -315,6 +315,39 @@ def pair_elements_with_annotations(*, annotation: Any, value: Any) -> list[tuple
     return [(inner_annotation, item) for item in value]
 
 
+#: Exact types of a value that cannot name a path, a remote object or a secret.
+#: Walks over task values settle such a leaf with one type check, so a long list
+#: of numbers costs little to hash, label or validate.
+PLAIN_SCALAR_TYPES = frozenset({type(None), bool, int, float})
+
+
+def holds_only_plain_scalars(value: Any) -> bool:
+    """Return whether *value* is a list, tuple or dict of plain scalars only.
+
+    Such a container names no path, remote object or secret, so a walk looking
+    for one can pass over it whole.
+
+    Parameters
+    ----------
+    value : Any
+        The candidate value.
+
+    Returns
+    -------
+    bool
+        ``True`` when every element (every key and value, for a dict) has one
+        of the :data:`PLAIN_SCALAR_TYPES`.
+    """
+    if isinstance(value, dict):
+        return all(
+            type(key) in PLAIN_SCALAR_TYPES and type(item) in PLAIN_SCALAR_TYPES
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return all(type(item) in PLAIN_SCALAR_TYPES for item in value)
+    return False
+
+
 #: Exact parameter names that read as a path regardless of any suffix.
 _PATH_LIKE_PARAM_NAMES = frozenset({"path", "file", "dir"})
 
