@@ -449,6 +449,10 @@ Some tasks get a summary `reason` on its own, with no `components`: a task that
 did not re-run reports `all_inputs_match`, one with no earlier entry of any kind
 to compare against reports `no_prior_entry`, and one whose key has no cache entry at all —
 because it failed, or because the entry was pruned — reports `no_entry_for_key`.
+A task that an earlier run of the same workflow knew under another module or
+qualified name reports `task_moved`, with that name as `moved_from`: a task's
+cache identity includes its module and name, so moving or renaming it starts it
+without a cache entry.
 
 ## A Typical Loop
 

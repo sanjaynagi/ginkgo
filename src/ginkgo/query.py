@@ -356,7 +356,7 @@ class RerunExplanation:
         The task's base name; *display_label* names the branch.
     reason : str
         The summary code: ``all_inputs_match``, ``no_entry_for_key``,
-        ``no_prior_entry``, or the first of *details*. A node with no earlier
+        ``no_prior_entry``, ``task_moved``, or the first of *details*. A node with no earlier
         entry of its own is ``no_prior_entry`` even when a sibling's entry
         was compared against.
     details : list[str]
@@ -370,6 +370,11 @@ class RerunExplanation:
         with.
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
+    moved_from : str | None
+        With reason ``task_moved``: the qualified name (``module.task``) an
+        earlier run of the same workflow knew this task by. A task's cache
+        identity includes its module and name, so moving or renaming it
+        starts it without a cache entry.
     input_labels : dict[str, str]
         Each input parameter's cache-tracking label (``content``, ``version``,
         ``path``, ``value``, ``output``, ``untracked`` — see
@@ -387,6 +392,7 @@ class RerunExplanation:
     details: list[str]
     compared_with: dict[str, str] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
+    moved_from: str | None = None
     input_labels: dict[str, str] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
@@ -400,6 +406,8 @@ class RerunExplanation:
         }
         if self.input_labels:
             payload["input_labels"] = self.input_labels
+        if self.moved_from is not None:
+            payload["moved_from"] = self.moved_from
         if self.compared_with is None and not self.components:
             return payload
         return payload | {
@@ -877,8 +885,13 @@ class Query:
 
         prior = self._previous_cache_key(run_id=run_id, task_id=task_id, current=current)
         if prior is None:
+            moved_from = self._moved_from(run_id=run_id, task_id=task_id)
             return RerunExplanation(
-                **identity, reason="no_prior_entry", details=[], input_labels=input_labels
+                **identity,
+                reason="no_prior_entry" if moved_from is None else "task_moved",
+                details=[],
+                moved_from=moved_from,
+                input_labels=input_labels,
             )
 
         prior_key, strategy = prior
@@ -896,6 +909,34 @@ class Query:
             compared_with={"cache_key": prior_key, "strategy": strategy},
             components=components,
             input_labels=input_labels,
+        )
+
+    def _moved_from(self, *, run_id: str, task_id: str) -> str | None:
+        """Return the qualified name an earlier run of this workflow gave this task.
+
+        Only asked once no earlier entry of the same qualified name exists: a
+        task of the same base name under another module, in the latest earlier
+        run of the same workflow that had one, is this task before it moved.
+        """
+        rows = self._store.query(
+            "SELECT t.name, r.workflow, r.started_at FROM tasks t "
+            "JOIN runs r ON r.run_id = t.run_id WHERE t.run_id = ? AND t.task_id = ?",
+            (run_id, task_id),
+        )
+        if not rows:
+            return None
+        name = str(rows[0]["name"])
+        base_name = task_base_name(name)
+        earlier = self._store.query(
+            "SELECT DISTINCT t.name, r.started_at FROM tasks t "
+            "JOIN runs r ON r.run_id = t.run_id "
+            "WHERE r.workflow = ? AND r.started_at < ? AND t.name != ? "
+            "ORDER BY r.started_at DESC",
+            (rows[0]["workflow"], rows[0]["started_at"], name),
+        )
+        return next(
+            (str(row["name"]) for row in earlier if task_base_name(str(row["name"])) == base_name),
+            None,
         )
 
     def _task_input_labels(self, *, run_id: str, task_id: str) -> dict[str, str]:

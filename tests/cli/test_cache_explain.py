@@ -11,6 +11,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+
 from ginkgo import task
 from ginkgo.cli.commands.cache import _render_explain_text, explain_run_cache
 from ginkgo.query import Query
@@ -337,6 +339,36 @@ class TestCacheExplainComponents:
             "prior": "analysis.produce",
         }
         assert explanation["reason"] == "cache_key_changed"
+
+    def test_a_moved_task_names_its_earlier_module(self, tmp_path: Path) -> None:
+        """EV-6: moving a task restarts its cache; say so, not "no earlier run"."""
+        with _index(tmp_path) as index:
+            _write_entry(index, "prior", function="workflow.old.produce")
+            _write_entry(index, "current", function="workflow.new.produce")
+            _write_run(
+                _db(tmp_path),
+                run_id="run-1",
+                started_at="2026-08-18T09:00:00+00:00",
+                cache_key="prior",
+                task_name="workflow.old.produce",
+            )
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+                task_name="workflow.new.produce",
+            )
+
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["reason"] == "task_moved"
+        assert explanation["moved_from"] == "workflow.old.produce"
+        out = StringIO()
+        _render_explain_text(
+            Console(file=out, width=200), {"run_id": "run-2", "tasks": [explanation]}
+        )
+        assert "earlier runs knew it as workflow.old.produce" in out.getvalue()
 
     def test_cached_task_and_first_run_keep_their_summaries(self, tmp_path: Path) -> None:
         with _index(tmp_path) as index:

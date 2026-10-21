@@ -244,7 +244,9 @@ component is conclusive or the one that moved has no code of its own) stay as
 the summary `reason` / `details`, with the components listed beneath them. A
 task whose key has no entry in the cache at all — a task that failed, or whose
 entry has been pruned — reports `no_entry_for_key` and no components, and one
-with no sibling to compare against reports `no_prior_entry`.
+with no sibling to compare against reports `no_prior_entry`, or `task_moved`
+(with `moved_from`) when an earlier run of the workflow had a task of the same
+base name under another qualified name (`Query._moved_from`).
 
 What to compare against is the whole of the question. `explain_rerun` (through
 its private `_previous_cache_key`) looks for the *same node* — the same `display_label`, or the task name where a
