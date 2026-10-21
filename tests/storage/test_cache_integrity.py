@@ -17,6 +17,7 @@ from ginkgo import Out, evaluate, file, folder, shell, task, untracked
 from ginkgo.cli.commands.cache import _safe_rmtree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
+from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
 from tests.conftest import EventCollector
 
 
@@ -916,6 +917,25 @@ class TestWritableFileOutputs:
         assert output.read_text(encoding="utf-8") == "GOOD"
         assert blob.read_text(encoding="utf-8") == "GOOD"
 
+    def test_a_hit_with_its_stored_bytes_deleted_stores_them_again(self, tmp_path):
+        """ED-7: the outputs are intact, so the hit stands and re-stores them."""
+        import shutil
+
+        output = tmp_path / "intact.txt"
+        evaluate(write_python_file_task(output_path=str(output), payload="GOOD"))
+        artifacts = tmp_path / ".ginkgo" / "artifacts"
+        make_writable_recursive(artifacts)
+        shutil.rmtree(artifacts)
+
+        collector = EventCollector()
+        evaluate(
+            write_python_file_task(output_path=str(output), payload="GOOD"),
+            event_bus=collector.bus,
+        )
+        assert collector.cached()
+        (blob,) = (artifacts / "blobs").iterdir()
+        assert blob.read_text(encoding="utf-8") == "GOOD"
+
     def test_python_file_output_rerun_overwrites_previous_materialization(self, tmp_path):
         output = tmp_path / "python.txt"
         first = evaluate(write_python_file_task(output_path=str(output), payload="first"))
@@ -958,6 +978,23 @@ class TestWritableFolderOutputs:
         result_path = Path(str(result))
         assert result_path.is_dir()
         assert (result_path / "a.txt").read_text().strip() == "a"
+
+    def test_a_hit_with_its_stored_tree_deleted_stores_it_again(self, tmp_path):
+        """ED-7, for a folder: its manifest and member blobs come back."""
+        import shutil
+
+        output = tmp_path / "dir_intact"
+        evaluate(write_folder_task(output_dir=str(output)))
+        artifacts = tmp_path / ".ginkgo" / "artifacts"
+        make_writable_recursive(artifacts)
+        shutil.rmtree(artifacts)
+
+        collector = EventCollector()
+        evaluate(write_folder_task(output_dir=str(output)), event_bus=collector.bus)
+        assert collector.cached()
+        shutil.rmtree(output)
+        result = evaluate(write_folder_task(output_dir=str(output)))
+        assert (Path(str(result)) / "b.txt").read_text().strip() == "b"
 
     def test_modified_folder_is_restored_without_cache_miss(self, tmp_path):
         output = tmp_path / "dir_modified"

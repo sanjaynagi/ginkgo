@@ -339,6 +339,32 @@ class LocalArtifactStore:
         self._record_materialization(path=dest_path, artifact_id=artifact_id)
         return True
 
+    def restock(self, *, artifact_id: str, path: Path) -> None:
+        """Store *path* again when the stored bytes of *artifact_id* are gone.
+
+        For a cache hit whose outputs are intact but whose ``artifacts/``
+        directory was deleted: the hit is still right, but nothing could
+        restore those outputs if they were deleted next. Call it only once
+        :meth:`matches` has confirmed *path* holds the artifact's content.
+
+        Parameters
+        ----------
+        artifact_id : str
+            The artifact *path* matches.
+        path : Path
+            The working-tree copy to store from.
+        """
+        record = self._load_record(artifact_id=artifact_id)
+        if record.kind == "blob":
+            missing = not self._blob_path(record).exists()
+        else:
+            missing = not self.artifact_path(artifact_id=artifact_id).exists() or any(
+                not (self._blobs_dir / entry.blob_digest).exists()
+                for entry in self._load_tree_ref(record=record).entries
+            )
+        if missing:
+            self.store(src_path=path, src_is_readonly=False)
+
     def matches(self, *, artifact_id: str, path: Path) -> bool:
         """Return whether *path* matches the stored artifact content."""
         if not path.exists():

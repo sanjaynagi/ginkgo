@@ -617,6 +617,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)
@@ -627,6 +628,7 @@ class CacheStore:
         if artifact_id is None or not self._artifact_store.exists(artifact_id=artifact_id):
             return False
         if self._artifact_store.matches(artifact_id=artifact_id, path=path):
+            self._artifact_store.restock(artifact_id=artifact_id, path=path)
             return True
         self._artifact_store.restore(artifact_id=artifact_id, dest_path=path)
         return self._artifact_store.matches(artifact_id=artifact_id, path=path)

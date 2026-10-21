@@ -334,7 +334,9 @@ For file and folder outputs, Ginkgo stores content-addressed artifacts under
 outputs.
 
 A task's declared output path is not the source of truth — the artifact store
-is.
+is. If `.ginkgo/artifacts/` is deleted while the outputs themselves are intact,
+the next cache hit stores them again from the working tree; an output that is
+gone or edited by then cannot be restored, so its task re-runs.
 
 ## Where Provenance Lives
 
