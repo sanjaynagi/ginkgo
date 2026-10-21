@@ -504,6 +504,7 @@ class TestContainerBackendDaemonProbe:
         backend = ContainerBackend(project_root=tmp_path, runtime="podman", probe_registry=True)
         with (
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/podman"),
+            patch("ginkgo.envs.container.sys.platform", "darwin"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch(
                 "ginkgo.envs.container.subprocess.run",
