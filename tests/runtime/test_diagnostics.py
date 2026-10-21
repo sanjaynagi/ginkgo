@@ -199,7 +199,7 @@ def main():
                 workflow_path=workflow_path,
                 config_paths=[],
                 secret_resolver=None,
-            )
+            ).diagnostics
         finally:
             os.chdir(old_cwd)
 

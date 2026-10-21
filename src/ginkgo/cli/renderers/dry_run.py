@@ -97,12 +97,30 @@ def render_dry_run_plan(*, plan: DryRunPlan, console: Console, verbose: bool) ->
             Text(f"  {_GLYPH['unknown']} {_TAG['unknown']}  {_UNKNOWN_MEANING}", style="dim")
         )
 
+    _render_fan_outs(plan=plan, console=console)
     _render_dropped(plan=plan, console=console)
     _render_problems(plan=plan, console=console)
     _render_probe_failures(plan=plan, console=console, verbose=verbose)
 
     console.print()
     console.print(_summary(plan))
+
+
+def _render_fan_outs(*, plan: DryRunPlan, console: Console) -> None:
+    """Say which tasks add tasks only when they run, and so are missing from the plan."""
+    if not plan.fan_out_labels:
+        return
+    console.print()
+    names = ", ".join(plan.fan_out_labels)
+    one = len(plan.fan_out_labels) == 1
+    console.print(
+        Text(
+            f"  ↳ {names} {'calls' if one else 'call'} tasks in {'its' if one else 'their'} "
+            f"body: the tasks {'it returns are' if one else 'they return are'} added at run "
+            "time, so they are not in this plan or its counts",
+            style="dim",
+        )
+    )
 
 
 def _render_dropped(*, plan: DryRunPlan, console: Console) -> None:
@@ -262,7 +280,18 @@ def _summary(plan: DryRunPlan) -> Text:
     parts: list[str] = []
     # Declared demand, not occupancy: the scheduler holds a wave to the core
     # budget, so this figure may exceed it.
-    if resources.peak_wave_threads:
+    # Counted over the tasks that will run; a cache hit holds no thread. When
+    # none asked for more than the default one, say so rather than calling
+    # that a request.
+    if resources.peak_wave_threads and (
+        resources.peak_wave_threads == resources.peak_wave_task_count
+    ):
+        count = resources.peak_wave_task_count
+        parts.append(
+            f"up to {count} task{'' if count == 1 else 's'} at once, one thread each "
+            f"(wave {resources.peak_wave_index})"
+        )
+    elif resources.peak_wave_threads:
         parts.append(
             f"{resources.peak_wave_threads} threads requested at peak "
             f"(wave {resources.peak_wave_index})"

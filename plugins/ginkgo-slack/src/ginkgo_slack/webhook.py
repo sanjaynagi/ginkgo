@@ -11,8 +11,18 @@ from urllib.request import Request, urlopen
 from ginkgo.errors import GinkgoError
 
 
+#: Seconds one delivery may wait on Slack. Delivery runs beside the workflow,
+#: but the run waits for what is outstanding as it ends, so an unreachable
+#: host costs at most this, once (see ``SlackSubscriber``).
+DELIVERY_TIMEOUT_SECONDS = 3.0
+
+
 class SlackDeliveryError(GinkgoError, RuntimeError):
     """Raised when a Slack webhook request cannot be delivered."""
+
+
+class SlackUnreachableError(SlackDeliveryError):
+    """Raised when the Slack webhook's host could not be reached at all."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -30,7 +40,7 @@ def post_slack_message(
     *,
     webhook_url: str,
     payload: dict[str, Any],
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = DELIVERY_TIMEOUT_SECONDS,
 ) -> None:
     """Send one JSON payload to a Slack incoming webhook."""
     body = json.dumps(payload).encode("utf-8")
@@ -50,7 +60,7 @@ def post_slack_message(
     except URLError as exc:
         reason = getattr(exc, "reason", None)
         detail = str(reason) if reason else exc.__class__.__name__
-        raise SlackDeliveryError(f"Slack webhook request failed: {detail}.") from exc
+        raise SlackUnreachableError(f"Slack webhook request failed: {detail}.") from exc
     except Exception as exc:  # pragma: no cover - defensive wrapper
         raise SlackDeliveryError("Slack webhook request failed.") from exc
 

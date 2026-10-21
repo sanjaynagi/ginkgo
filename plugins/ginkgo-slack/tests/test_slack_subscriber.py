@@ -13,10 +13,15 @@ from pathlib import Path
 import pytest
 
 from ginkgo.core.secret import SecretRef
-from ginkgo.plugins.api import EventSubscriberCheckContext
+from ginkgo.plugins.api import EventSubscriberCheckContext, EventSubscriberConfigProblem
 from ginkgo.runtime.environment.secrets import build_secret_resolver
-from ginkgo_slack.subscriber import check_slack_config, parse_notification_config
-from ginkgo_slack.webhook import build_run_failed_payload
+from ginkgo_slack.subscriber import (
+    SlackNotificationConfig,
+    SlackSubscriber,
+    check_slack_config,
+    parse_notification_config,
+)
+from ginkgo_slack.webhook import SlackUnreachableError, build_run_failed_payload
 
 
 def _run_cli(
@@ -91,7 +96,9 @@ def _slack(**settings: object) -> dict[str, object]:
     return {"notifications": {"slack": settings}}
 
 
-def _check(config: dict[str, object], *, environ: dict[str, str]) -> list[str]:
+def _check(
+    config: dict[str, object], *, environ: dict[str, str]
+) -> list[EventSubscriberConfigProblem]:
     resolver = build_secret_resolver(project_root=Path.cwd(), config=config, environ=environ)
     return check_slack_config(EventSubscriberCheckContext(config=config, secret_resolver=resolver))
 
@@ -144,7 +151,7 @@ class TestNotificationConfig:
         assert config.events == frozenset({"run_failed"})
         [ignored] = config.ignored_events
         assert "'run_faild', so it is ignored" in ignored
-        # doctor still names it.
+        # doctor still names it, as a warning: the run still sends.
         environ = {"GINKGO_SLACK_WEBHOOK": "http://127.0.0.1:1/"}
         assert _check(
             _slack(
@@ -153,7 +160,7 @@ class TestNotificationConfig:
                 events=["run_faild", "run_failed"],
             ),
             environ=environ,
-        ) == [ignored]
+        ) == [EventSubscriberConfigProblem(message=ignored, blocking=False)]
 
     def test_a_literal_webhook_url_is_explained(self) -> None:
         _, problems = parse_notification_config(
@@ -167,10 +174,43 @@ class TestNotificationConfig:
         config = _slack(enabled=True, webhook={"env": "GINKGO_SLACK_WEBHOOK"})
 
         assert _check(config, environ={"GINKGO_SLACK_WEBHOOK": ""}) == [
-            "[notifications.slack] webhook reads the environment variable "
-            "GINKGO_SLACK_WEBHOOK, which is unset or empty."
+            EventSubscriberConfigProblem(
+                message="[notifications.slack] webhook reads the environment variable "
+                "GINKGO_SLACK_WEBHOOK, which is unset or empty."
+            )
         ]
         assert _check(config, environ={"GINKGO_SLACK_WEBHOOK": "http://127.0.0.1:1/"}) == []
+
+
+class TestDelivery:
+    def test_once_slack_is_unreachable_later_notifications_are_not_attempted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        attempts: list[dict[str, object]] = []
+
+        def unreachable(*, webhook_url: str, payload: dict[str, object]) -> None:
+            attempts.append(payload)
+            raise SlackUnreachableError("Slack webhook request failed: timed out.")
+
+        monkeypatch.setattr("ginkgo_slack.subscriber.post_slack_message", unreachable)
+        warnings: list[str] = []
+        subscriber = SlackSubscriber(
+            config=SlackNotificationConfig(enabled=True),
+            webhook_url="http://127.0.0.1:1/hook",
+            store=None,  # type: ignore[arg-type]
+            run_id="run-1",
+            run_dir=tmp_path,
+            workflow_path=tmp_path / "workflow.py",
+            logger=warnings.append,
+        )
+
+        subscriber._submit(event_name="run_started", payload={"text": "a"})
+        subscriber._submit(event_name="run_failed", payload={"text": "b"})
+        subscriber.close()
+
+        assert attempts == [{"text": "a"}]
+        assert len(warnings) == 2
+        assert "run_failed" in warnings[1] and "not sent" in warnings[1]
 
 
 @pytest.mark.integration
@@ -309,6 +349,31 @@ def main():
         assert result.returncode == 1
         assert "notification_config" in result.stderr
         assert "'run_finished'" in result.stderr
+
+    def test_doctor_warns_but_passes_on_an_unknown_event_beside_valid_ones(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("GINKGO_SLACK_WEBHOOK", "http://127.0.0.1:1/hook")
+        Path("ginkgo.toml").write_text(
+            """
+[notifications.slack]
+enabled = true
+webhook = { env = "GINKGO_SLACK_WEBHOOK" }
+events = ["run_faild", "run_failed"]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        Path("workflow.py").write_text(
+            "from ginkgo import flow, task\n\n@task()\ndef succeed() -> str:\n"
+            '    return "ok"\n\n@flow\ndef main():\n    return succeed()\n',
+            encoding="utf-8",
+        )
+
+        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd(), env=dict(os.environ))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "'run_faild'" in result.stdout + result.stderr
 
     def test_cli_run_warns_when_slack_webhook_is_unreachable(self, monkeypatch) -> None:
         monkeypatch.setenv("GINKGO_SLACK_WEBHOOK", "http://127.0.0.1:1/hook")

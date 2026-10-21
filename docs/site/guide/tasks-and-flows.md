@@ -369,8 +369,9 @@ def render_overview(summary_path: file, run_label: str) -> file:
 
 `notebook()` takes a marimo notebook, which is a `.py` file; any other file is
 refused. Jupyter `.ipynb` notebooks are not supported: convert one with
-`marimo convert notebook.ipynb -o notebook.py`. `ginkgo run --dry-run` reports
-a refused path when the body is a plain `return notebook(...)`. The decorated function defines the typed parameter schema; its
+`marimo convert notebook.ipynb -o notebook.py`. `ginkgo doctor` and
+`ginkgo run --dry-run` both report a refused path as an error when the body is
+a plain `return notebook(...)`. The decorated function defines the typed parameter schema; its
 resolved inputs are passed to the notebook as command-line arguments, which the
 notebook reads with `mo.cli_args()`. As with script tasks, underscores become
 hyphens, so `summary_path` is read as `summary-path`:
@@ -446,10 +447,18 @@ writes a session file under `__marimo__/` beside the notebook, which you can
 ignore in version control. A
 notebook task can declare an `env`, and then runs `python -m marimo` inside
 that environment, which must therefore provide marimo. Without `env=`, the
-notebook runs under Ginkgo's own interpreter.
+notebook runs under Ginkgo's own interpreter. A notebook environment with
+marimo, pandas and a plotting library is several hundred MB on disk, and the
+first run that needs it installs it and says how long that took; see
+[Where An Environment Is Installed](environments.md#where-an-environment-is-installed).
 
 If a cell fails, the task fails, but marimo still writes the page, showing the
-failing cell; the error message points at it. The rendered page is recorded
+failing cell; the error message points at it. Some mistakes stop marimo before
+any cell runs, such as two cells defining the same name
+(`MultipleDefinitionError`) or a cycle between cells; the task then fails with
+marimo's message in its log. `marimo check notebooks/overview.py` reports
+those in a second, without running the workflow, so it is worth running after
+editing a notebook by hand. The rendered page is recorded
 against the task, listed under "Rendered pages" at the end of the run, and
 linked from the [run report](reports.md).
 

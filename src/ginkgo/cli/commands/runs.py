@@ -131,10 +131,12 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool, all_tasks:
     if summary.error:
         # A cancelled run has no error to report — the recorded line says which
         # signal stopped it, which is a reason, not a fault.
+        # Printed as text, not markup: a label such as ``analyze[omega]`` would
+        # otherwise lose its bracketed part as an unknown style tag.
         if summary.status == "cancelled":
-            rich_console.print(f"Ended by: [yellow]{summary.error}[/]")
+            rich_console.print("Ended by: ", Text(summary.error, style="yellow"), sep="")
         else:
-            rich_console.print(f"Error: [red]{summary.error}[/]")
+            rich_console.print("Error: ", Text(summary.error, style="red"), sep="")
     for notice in summary.notices:
         rich_console.print(Text(f"Notice: {notice}", style="yellow"))
 

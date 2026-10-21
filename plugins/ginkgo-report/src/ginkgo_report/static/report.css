@@ -415,6 +415,21 @@ p.empty {
 }
 .notices li + li { margin-top: 6px; }
 
+.outcome {
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+.outcome.fail { border-color: var(--fail-line); background: var(--fail-soft); color: var(--fail); }
+
+.skipped { margin: 18px 0; }
+.skipped ul { margin: 6px 0; padding-left: 18px; font-size: 12.5px; }
+.skipped .name { font-family: var(--font-mono); }
+.skipped .cause { color: var(--ink-muted); }
+
 /* ========== Code / params ========== */
 
 pre.code {

@@ -94,7 +94,7 @@ def command_doctor(args) -> int:
         config=config,
         environ=os.environ,
     )
-    diagnostics = collect_workflow_diagnostics(
+    check = collect_workflow_diagnostics(
         workflow_path=workflow_path,
         config_paths=[Path(path).resolve() for path in args.config],
         secret_resolver=secret_resolver,
@@ -102,6 +102,7 @@ def command_doctor(args) -> int:
         param_extras=getattr(args, "param_extras", ()),
         command_flags=getattr(args, "command_flags", ()),
     )
+    diagnostics = check.diagnostics
     # A run only warns about a notification table it cannot use, once the run
     # is under way; doctor is where to find out beforehand.
     diagnostics.extend(_notification_diagnostics(config=config, secret_resolver=secret_resolver))
@@ -156,7 +157,13 @@ def command_doctor(args) -> int:
     # task imports first. Reported here, where it is cheap to see. Running
     # from the project's own environment gets the other finding: the same
     # missing import, but a fix that edits the manifest instead.
-    import_problem = detect_import_problem(workflow_path=workflow_path, project_root=Path.cwd())
+    # A notebook or script a task runs in its own ``env=`` imports from that
+    # environment, so its imports are not this interpreter's to supply.
+    import_problem = detect_import_problem(
+        workflow_path=workflow_path,
+        project_root=Path.cwd(),
+        excluded_sources=check.env_sources,
+    )
     environment_diagnostics: list[AccessDiagnostic | EnvironmentFinding] = [
         *([] if import_problem is None else [import_problem]),
         *access_diagnostics,
@@ -209,9 +216,12 @@ def command_doctor(args) -> int:
     for item in environment_diagnostics:
         marker = {"error": "[red]✖[/]", "warning": "[yellow]![/]"}.get(item.severity, "[cyan]ℹ[/]")
         target = rich_console_err if item.severity == "error" else rich_console_out
+        # The suggestion is soft-wrapped: it names interpreter and manifest
+        # paths, and Rich would otherwise break a long one onto a line of its
+        # own, leaving its label ("project:") looking empty.
         target.print(f"{marker} {item.code}: {escape(item.message)}")
         if item.suggestion:
-            target.print(f"[dim]{escape(item.suggestion)}[/]")
+            target.print(f"[dim]{escape(item.suggestion)}[/]", soft_wrap=True)
 
     has_errors = bool(workflow_errors) or any(
         item.severity == "error" for item in environment_diagnostics
@@ -274,9 +284,10 @@ def _notification_diagnostics(
 ) -> list[WorkflowDiagnostic]:
     """Check each ``[notifications.<name>]`` table with the subscriber that reads it.
 
-    A table no installed subscriber reads is a warning, as it is at run time;
-    each problem a subscriber's ``check`` finds is an error, since the run
-    would send nothing through that table.
+    A table no installed subscriber reads is a warning, as it is at run time.
+    A problem a subscriber's ``check`` finds is an error when the run would
+    send nothing through that table, and a warning when it would still send,
+    such as an unknown event name ignored beside valid ones.
     """
     notifications = config.get("notifications") if isinstance(config, dict) else None
     if not isinstance(notifications, dict):
@@ -299,8 +310,12 @@ def _notification_diagnostics(
             continue
         context = EventSubscriberCheckContext(config=config, secret_resolver=secret_resolver)
         diagnostics.extend(
-            WorkflowDiagnostic(severity="error", code="notification_config", message=message)
-            for message in subscriber_type.check(context)
+            WorkflowDiagnostic(
+                severity="error" if problem.blocking else "warning",
+                code="notification_config",
+                message=problem.message,
+            )
+            for problem in subscriber_type.check(context)
         )
     return diagnostics
 

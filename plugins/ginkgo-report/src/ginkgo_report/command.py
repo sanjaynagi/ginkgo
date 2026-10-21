@@ -8,6 +8,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from rich.text import Text
+
 from ginkgo.cli.common import console, open_run
 from ginkgo.formatting import format_bytes
 from ginkgo.workspace_layout import WorkspaceLayout
@@ -29,7 +31,7 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
             "Where to write the report. A bundle is written into this directory "
             "(default: <workspace>/.ginkgo/reports/<run-id>/). With --single-file, "
             "a path ending in .html is the file itself and any other path is a "
-            "directory to write index.html into "
+            "directory to write index.html into, and any other extension is refused "
             "(default: <workspace>/.ginkgo/reports/<run-id>.html)."
         ),
     )
@@ -37,8 +39,9 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help=(
-            "Replace an --out destination that holds files ginkgo did not write. "
-            "Without this, such a destination is left untouched."
+            "Write into an --out destination that holds files ginkgo did not write, "
+            "replacing only the report's own files. Without this, such a "
+            "destination is left untouched."
         ),
     )
     parser.add_argument(
@@ -48,6 +51,14 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
             "Emit one HTML file that opens offline, with CSS, fonts, script and "
             "rendered pages inlined; a marimo page is inlined as a static copy of "
             "its outputs. Logs are linked but not included."
+        ),
+    )
+    parser.add_argument(
+        "--hide-code",
+        action="store_true",
+        help=(
+            "Leave each cell's code out of the static copies of notebook pages. "
+            "By default it is shown, folded above the cell's output."
         ),
     )
     parser.add_argument(
@@ -78,15 +89,19 @@ def command_report(args: argparse.Namespace) -> int:
     try:
         with open_run(args.run_id) as (reader, run_id):
             summary = reader.run(run_id)
+            measured_runs = reader.measured_executions(
+                task.cache_key
+                for task in summary.tasks
+                if task.cache_label == "hit" and task.cache_key
+            )
     except FileNotFoundError as exc:
-        rich_console.print(f"[red]✖[/] {exc}")
+        rich_console.print(Text.assemble(("✖ ", "red"), str(exc)))
         return 1
     run_dir = summary.run_dir
-
-    out = _resolve_destination(run_dir=run_dir, out=args.out, single_file=args.single_file)
     policy = SizingPolicy(log_lines=int(args.max_log_lines) if args.max_log_lines else 80)
 
     try:
+        out = _resolve_destination(run_dir=run_dir, out=args.out, single_file=args.single_file)
         result = export_report(
             summary=summary,
             out=out,
@@ -94,13 +109,15 @@ def command_report(args: argparse.Namespace) -> int:
             single_file=bool(args.single_file),
             managed_destination=args.out is None,
             force=bool(args.force),
+            measured_runs=measured_runs,
+            include_code=not args.hide_code,
         )
     except ValueError as exc:
-        rich_console.print(f"[red]✖[/] {exc}")
+        rich_console.print(Text.assemble(("✖ ", "red"), str(exc)))
         return 1
     except FileExistsError as exc:
-        rich_console.print(f"[red]✖[/] {exc}")
-        rich_console.print("  Pass --force to replace it, or choose another --out.")
+        rich_console.print(Text.assemble(("✖ ", "red"), str(exc)))
+        rich_console.print("  Pass --force to write into it anyway, or choose another --out.")
         return 1
 
     rich_console.print("[bold green]🌿 ginkgo report[/]\n")
@@ -134,12 +151,23 @@ def _resolve_destination(*, run_dir: Path, out: str | None, single_file: bool) -
 
     A single-file report defaults to ``.ginkgo/reports/<run-id>.html``, beside
     rather than inside the run's bundle directory, so neither replaces the other.
+
+    Raises
+    ------
+    ValueError
+        When a single-file ``out`` names a file that is not HTML, such as
+        ``report.txt``, rather than silently making it a directory.
     """
     if out is not None:
         path = Path(out).resolve()
-        if single_file and path.suffix.lower() not in {".html", ".htm"}:
-            return path / "index.html"
-        return path
+        if not single_file or path.suffix.lower() in {".html", ".htm"}:
+            return path
+        if path.suffix and not path.is_dir():
+            raise ValueError(
+                f"--out {out} names a {path.suffix} file, but a single-file report is "
+                "HTML: name it with .html, or give a directory to write index.html into"
+            )
+        return path / "index.html"
     workspace = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
     reports_root = WorkspaceLayout(root=workspace).reports
     if single_file:

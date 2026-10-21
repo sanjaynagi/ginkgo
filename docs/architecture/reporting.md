@@ -78,8 +78,15 @@ directly — everything they render lives as a typed field on the report.
 This constraint is what keeps the document provenance-bound: if a field
 isn't present on `ReportData`, it can't show up on the page.
 
-`ReportData` consumes only `RunSummary` (the shared post-run data model used
-by the CLI renderers). The report and the CLI renderers build their own payloads from
+`ReportData` consumes `RunSummary` (the shared post-run data model used
+by the CLI renderers), plus one ledger lookup the run itself cannot answer:
+`measured_runs`, from `Query.measured_executions`, the earlier execution that
+measured each cache hit's result, so a cached task's peak memory is that run's,
+named after it. A run that did not succeed carries `outcome` (its recorded
+error) at the head of the summary, and `skipped` lists each task left without
+a result with the cause `TaskSummary.skip_cause` gives, the same wording the
+CLI's end-of-run report uses. Failure messages and log tails have paths under
+the project made relative to it. The report and the CLI renderers build their own payloads from
 the same `RunSummary`, so the two presentation layers diverge cleanly
 without duplicating parsing logic.
 
@@ -126,7 +133,9 @@ config: markdown, HTML and images as marimo rendered them, `marimo-table`
 widgets as plain tables (first 200 rows), console output and errors as text,
 and any other widget named as needing marimo. A page that is not a marimo
 export has no static copy. The bundle writes the copy beside the page and links
-both; `PageCard.embed_html` is what a single-file report embeds.
+both; `PageCard.embed_html` is what a single-file report embeds. Each cell's
+code is folded above its output unless the notebook hides it or `--hide-code`
+(`include_code=False`) leaves it out.
 
 ## Destination safety
 
@@ -145,10 +154,15 @@ and `_prepare_out_dir` accepts either:
 | `out` state (bundle)                  | Behaviour                             |
 | ------------------------------------- | ------------------------------------- |
 | missing or empty                      | used as is                            |
-| `managed_destination`                 | emptied and rewritten                 |
-| holds `.ginkgo-report.json`           | emptied and rewritten                 |
+| `managed_destination`                 | report entries removed, rewritten     |
+| holds `.ginkgo-report.json`           | report entries removed, rewritten     |
 | non-empty, neither signal             | `FileExistsError`, nothing is touched |
-| non-empty, neither signal, `force`    | emptied and rewritten                 |
+| non-empty, neither signal, `force`    | written in; nothing removed           |
+
+The report entries are what a bundle writes at its root (`_BUNDLE_ENTRIES`:
+the marker, `index.html`, `assets/`, `pages/`, `logs/`). Nothing else is ever
+removed, so a user's files kept beside a report survive re-rendering, and
+`--force` into a foreign directory replaces only files of the same name.
 
 The marker alone would not do: a report directory written before the marker
 existed carries none, so inferring ownership from it would break re-rendering
@@ -285,8 +299,11 @@ ordering hooks worth knowing about:
 ginkgo report <run-id>
     [--out PATH]                # bundle dir, default <workspace>/.ginkgo/reports/<run-id>/;
                                 # with --single-file, the .html file (default <run-id>.html)
-    [--force]                   # replace an --out dir ginkgo did not write
-    [--single-file]             # inline CSS, fonts and script
+    [--force]                   # write into an --out dir ginkgo did not write,
+                                # replacing only the report's own files
+    [--single-file]             # inline CSS, fonts and script; --out must end
+                                # .html, or name a directory
+    [--hide-code]               # leave cell code out of notebook static copies
     [--max-log-lines N]         # default 80
     [--open]                    # open the result in the browser
 ```
@@ -305,11 +322,13 @@ ginkgo report <run-id>
   strings, absence of external URLs, contiguous section numerals,
   conditional failure section,
   the destination guard (foreign directory refused, `force=True`
-  replaces it, an own report directory re-renders, a
+  writes into it without removing its files, an own report directory
+  re-renders and keeps files kept beside it, a
   `managed_destination` replaces an unmarked bundle), deterministic
   re-render.
 - `ginkgo report` end to end — `--out` at a directory holding unrelated
-  files leaves them intact and exits 1, `--force` replaces it, and the
+  files leaves them intact and exits 1, `--force` writes the report in
+  without deleting them, a non-HTML `--single-file --out` is refused, and the
   managed report directory re-renders with no flag whether or not it
   carries the marker.
 

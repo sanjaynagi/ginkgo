@@ -54,6 +54,12 @@ def make_shell(out: Out[file]):
     return shell(cmd=f"mkdir -p out && echo made > {out}")
 
 
+@task()
+def fan_out(n: int) -> list[int]:
+    """Return one ``busy`` call per item: a dynamic fan-out."""
+    return [busy(i=i) for i in range(n)]
+
+
 def _shell_flow():
     return use(p=make_shell(out="out/s.txt"))
 
@@ -152,3 +158,40 @@ class TestResourceSummaryLabel:
 
         assert "12 threads requested at peak (wave 1)" in text
         assert "cores peak" not in text
+
+    def test_tasks_declaring_no_threads_are_counted_as_tasks_at_one_thread_each(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        for name in ("a.txt", "b.txt", "c.txt"):
+            Path(name).write_text(name)
+        plan = _plan_for(lambda: use().map(p=["a.txt", "b.txt", "c.txt"]))
+
+        console = Console(record=True, width=120)
+        render_dry_run_plan(plan=plan, console=console, verbose=False)
+        text = console.export_text()
+
+        assert "up to 3 tasks at once, one thread each (wave 1)" in text
+        assert "threads requested" not in text
+
+
+class TestDynamicFanOut:
+    def test_a_task_that_returns_task_calls_is_named_as_adding_tasks_at_run_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        plan = _plan_for(lambda: fan_out(n=3))
+
+        console = Console(record=True, width=160)
+        render_dry_run_plan(plan=plan, console=console, verbose=False)
+        text = console.export_text()
+
+        assert plan.fan_out_labels == ("fan_out",)
+        assert "fan_out calls tasks in its body" in text
+
+    def test_a_task_that_calls_no_task_is_not_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        assert _plan_for(_single_flow).fan_out_labels == ()
