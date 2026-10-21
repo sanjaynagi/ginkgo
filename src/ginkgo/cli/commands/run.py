@@ -64,6 +64,7 @@ from ginkgo.runtime.environment.resources import RunResourceMonitor
 from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
+    env_warning_diagnostic,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     unreachable_call_diagnostics,
@@ -401,6 +402,12 @@ def run_workflow(
             _print_dropped_calls(diagnostics=dropped_calls)
         raise
     validate_elapsed = time.perf_counter() - validate_started
+
+    # Only a dry run probes the container daemon; a stopped one fails just the
+    # container tasks that have to run, so it is a warning here, not a failure.
+    for warning in evaluator.validator.env_warnings:
+        diagnostic = env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
 
     # A parameter must reach a task as an argument. One read from a module global
     # is invisible to that task's cache key, so a changed value would silently

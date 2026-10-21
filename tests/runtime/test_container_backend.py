@@ -380,10 +380,10 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=denied),
-            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        message = str(excinfo.value)
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
+        message = str(warning)
         assert "denied access to the docker daemon" in message
         assert "docker group" in message
         assert "systemctl start" not in message
@@ -402,7 +402,9 @@ class TestContainerBackendDaemonProbe:
         assert mock_run.call_args[0][0] == ["docker", "image", "inspect", "img:1"]
         assert mock_run.call_args.kwargs["timeout"] > 0
 
-    def test_unreachable_daemon_raises(self, tmp_path: Path):
+    def test_unreachable_daemon_is_returned_as_a_warning(self, tmp_path: Path):
+        """A run whose container tasks are all cached never needs the daemon,
+        so validation reports it instead of raising."""
         backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
         refused = _completed(
             returncode=1, stderr="failed to connect to the docker API at unix:///x/docker.sock"
@@ -411,10 +413,10 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=refused) as mock_run,
-            pytest.raises(ContainerDaemonUnreachableError) as excinfo,
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
-        message = str(excinfo.value)
+            [warning] = backend.validate_envs(env_names={"docker://img:1", "docker://img:2"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
+        message = str(warning)
         assert "docker daemon is not reachable" in message
         assert "failed to connect to the docker API" in message
         assert "pull" not in message.lower()
@@ -427,9 +429,9 @@ class TestContainerBackendDaemonProbe:
             patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
             patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
             patch("ginkgo.envs.container.subprocess.run", return_value=_completed(returncode=1)),
-            pytest.raises(ContainerDaemonUnreachableError),
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert isinstance(warning, ContainerDaemonUnreachableError)
 
     def test_reachable_daemon_goes_on_to_check_the_image(self, tmp_path: Path):
         backend = ContainerBackend(project_root=tmp_path, pull_policy="never", probe_registry=True)
@@ -487,9 +489,9 @@ class TestContainerBackendDaemonProbe:
                 "ginkgo.envs.container.subprocess.run",
                 return_value=_completed(returncode=125, stderr="Cannot connect to Podman"),
             ) as mock_run,
-            pytest.raises(ContainerDaemonUnreachableError, match="podman machine start"),
         ):
-            backend.validate_envs(env_names={"docker://img:1"})
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert "podman machine start" in str(warning)
         assert mock_run.call_args[0][0] == ["podman", "info"]
 
     def test_unknown_runtime_is_not_probed(self, tmp_path: Path):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Callable, Collection, Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import inspect
 from pathlib import Path
 import textwrap
@@ -29,6 +29,10 @@ from ginkgo.runtime.environment.secrets import SecretResolver
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
 PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
 MISSING_DIRECTIVE_CODE = "missing_directive_return"
+ENV_WARNING_CONSEQUENCE = (
+    "A run fails at the first task in this environment that has to run; "
+    "cached tasks do not need it."
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -113,8 +117,9 @@ def collect_workflow_diagnostics(
         dropped_calls = unreachable_call_diagnostics(
             calls=graph.unreachable_calls(constructed_calls)
         )
+        validator = TaskValidator(backend=backend, secret_resolver=secret_resolver)
         graph.validate(
-            validator=TaskValidator(backend=backend, secret_resolver=secret_resolver),
+            validator=validator,
             placement=Placement(
                 executor_registry=ExecutorRegistry.for_validation(
                     project_root=Path.cwd(),
@@ -140,6 +145,10 @@ def collect_workflow_diagnostics(
                 nodes=graph.nodes.values(),
             )
         ]
+        diagnostics.extend(
+            env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
+            for warning in validator.env_warnings
+        )
         diagnostics.extend(dropped_calls)
         diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(
@@ -152,6 +161,21 @@ def collect_workflow_diagnostics(
         # KeyboardInterrupt and SystemExit are left to propagate: a user who
         # interrupts doctor wants it to stop, not to be told about a diagnostic.
         return [*dropped_calls, _diagnostic_from_exception(exc=exc, workflow_path=workflow_path)]
+
+
+def env_warning_diagnostic(*, warning: Exception, workflow_path: Path) -> WorkflowDiagnostic:
+    """Build the warning for an env problem that fails a task only if it runs.
+
+    A stopped container daemon fails every container task that has to run, but
+    a run whose container tasks are all cached never needs it, so doctor and a
+    dry run warn rather than fail.
+    """
+    diagnostic = _diagnostic_from_exception(exc=warning, workflow_path=workflow_path)
+    return replace(
+        diagnostic,
+        severity="warning",
+        message=f"{diagnostic.message} {ENV_WARNING_CONSEQUENCE}",
+    )
 
 
 def unreachable_call_diagnostics(*, calls: Sequence[ConstructedCall]) -> list[WorkflowDiagnostic]:

@@ -375,20 +375,38 @@ class TestDoctorContainerImageValidation:
 
 
 class TestDoctorContainerDaemonValidation:
-    """Issue #343: a Docker CLI whose daemon is down fails ``doctor`` with a
-    message naming the daemon, instead of passing and failing the run."""
+    """Issue #343: a Docker CLI whose daemon is down is named by ``doctor``.
+    It is a warning: only a container task that has to run needs the daemon."""
 
-    def test_unreachable_daemon_produces_a_diagnostic(self) -> None:
+    def test_unreachable_daemon_produces_a_warning(self) -> None:
         _write_workflow(env="docker://ubuntu:24.04")
         fake_bin = _write_fake_docker(daemon_up=False)
 
         result = _run_doctor("--json", cwd=Path.cwd(), path_prefix=fake_bin)
 
-        assert result.returncode == 1
+        assert result.returncode == 0, result.stdout
         [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["severity"] == "warning"
         assert diagnostic["code"] == "container_daemon_unreachable"
+        assert "cached tasks do not need it" in diagnostic["message"]
         assert "docker daemon is not reachable" in diagnostic["message"]
         assert "failed to connect to the docker API" in diagnostic["message"]
+
+    def test_dry_run_warns_and_passes(self) -> None:
+        _write_workflow(env="docker://ubuntu:24.04")
+        fake_bin = _write_fake_docker(daemon_up=False)
+
+        result = subprocess.run(
+            [str(PYTHON), "-m", "ginkgo.cli", "run", "workflow.py", "--dry-run"],
+            check=False,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "docker daemon is not reachable" in result.stderr
+        assert "cached tasks do not need it" in result.stderr
 
     def test_workflow_without_container_envs_does_not_probe(self) -> None:
         _write_workflow(env=None)

@@ -299,16 +299,16 @@ class ContainerBackend:
     # ExecutionEnvironment protocol
     # ------------------------------------------------------------------
 
-    def validate_envs(self, *, env_names: set[str]) -> None:
+    def validate_envs(self, *, env_names: set[str]) -> list[Exception]:
         """Validate container env URIs, config, runtime availability, and images.
 
         An installed runtime whose daemon is unreachable fails every image
         lookup, so when an image is not found locally and ``probe_registry``
         is set, the daemon is probed first (``<runtime> info``, bounded, once
-        per backend) and reported as the cause rather than the image. A real
-        run does not probe: it fails at dispatch only if it has to run a
-        container task, so a fully cached run is not blocked by a stopped
-        daemon.
+        per backend) and reported as the cause rather than the image. It is
+        returned as a warning, not raised: a run fails on a stopped daemon only
+        if it has to run a container task, and one whose container tasks are
+        all cached does not. A real run does not probe at all.
 
         A run is certain to fail if a declared image is neither present
         locally nor ever going to be pulled (``pull_policy = "never"``), so
@@ -319,6 +319,12 @@ class ContainerBackend:
         inaccessible raises — a timeout, network error, or unrecognised
         response is never treated as failure, since it must not block a run
         that would otherwise have succeeded.
+
+        Returns
+        -------
+        list[Exception]
+            Problems that would fail a container task that has to run but do
+            not fail validation: at most one ``ContainerDaemonUnreachableError``.
         """
         refs = [parse_container_uri(env) for env in sorted(env_names)]
 
@@ -330,7 +336,12 @@ class ContainerBackend:
         _require_container_runtime(self.runtime)
 
         for ref in refs:
-            self._validate_image_available(ref.image)
+            try:
+                self._validate_image_available(ref.image)
+            except ContainerDaemonUnreachableError as exc:
+                # No image can be checked without the daemon, so stop here.
+                return [exc]
+        return []
 
     def _validate_image_available(self, image: str) -> None:
         """Raise if *image* is certain to make a run using it fail.
