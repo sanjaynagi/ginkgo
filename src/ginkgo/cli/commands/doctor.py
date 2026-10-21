@@ -15,6 +15,7 @@ from ginkgo.plugins.api import (
     EventSubscriberType,
 )
 from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
+from ginkgo.cli.commands.db import ledger_problems
 from ginkgo.cli.common import console
 from ginkgo.cli.workspace import resolve_envs_workflow_root, resolve_workflow_path
 from ginkgo.config import load_runtime_config
@@ -30,7 +31,14 @@ from ginkgo.runtime.rundir import (
     runs_without_ledger_warning,
 )
 from ginkgo.store.maintenance import LARGE_LEDGER_CODE, large_ledger_warning
+from ginkgo.store.errors import StoreError
 from ginkgo.workspace_layout import WorkspaceLayout
+
+CORRUPT_LEDGER_CODE = "corrupt_ledger"
+"""Diagnostic code for a ledger SQLite cannot read or calls corrupt."""
+
+LEDGER_DRIFT_CODE = "ledger_drift"
+"""Diagnostic code for cache bytes and ledger rows that disagree."""
 
 
 def command_doctor(args) -> int:
@@ -58,6 +66,7 @@ def command_doctor(args) -> int:
     ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
     run_directory_warning = runs_without_directory_warning(layout=WorkspaceLayout.relative())
     size_warning = large_ledger_warning(WorkspaceLayout.relative().db)
+    ledger_diagnostics = _ledger_diagnostics(layout=WorkspaceLayout.relative())
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -119,6 +128,8 @@ def command_doctor(args) -> int:
                 "`ginkgo runs show` still reads what the ledger recorded.",
             )
         )
+
+    diagnostics.extend(ledger_diagnostics)
 
     if size_warning is not None:
         diagnostics.append(
@@ -206,6 +217,56 @@ def command_doctor(args) -> int:
         item.severity == "error" for item in environment_diagnostics
     )
     return 1 if has_errors else 0
+
+
+def _ledger_diagnostics(*, layout: WorkspaceLayout) -> list[WorkflowDiagnostic]:
+    """Return what ``ginkgo db check`` would fail on, beside the run-directory warnings.
+
+    A corrupt or unreadable ledger is an error: every read surface and the
+    next run depend on it. Drift between the ledger and the cache's bytes is a
+    warning — each such entry only misses — that points at ``db check --fix``.
+    Runs and run directories without a counterpart are left to the warnings
+    doctor already gives for them.
+    """
+    if not layout.db.is_file():
+        return []
+    suggestion = "Run `ginkgo db check` for the full list."
+    try:
+        found = ledger_problems(layout)
+    except StoreError as exc:
+        return [
+            WorkflowDiagnostic(
+                severity="error",
+                code=CORRUPT_LEDGER_CODE,
+                message=f"The ledger {layout.db} cannot be read: {exc}",
+                suggestion="Move it aside and run again to start a new one; "
+                "`ginkgo db check --fix` then clears what the old one recorded.",
+            )
+        ]
+    diagnostics = []
+    if found.corrupt:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="error",
+                code=CORRUPT_LEDGER_CODE,
+                message=f"The ledger {layout.db} fails SQLite's integrity check: "
+                f"{found.corrupt[0]}",
+                suggestion=suggestion,
+            )
+        )
+    if found.drift:
+        count = len(found.drift)
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=LEDGER_DRIFT_CODE,
+                message=f"`ginkgo db check` finds {count} problem{'' if count == 1 else 's'} "
+                f"with the cache beside the ledger, the first: {found.drift[0]}",
+                suggestion=f"{suggestion} `ginkgo db check --fix` removes what nothing can "
+                "use any more.",
+            )
+        )
+    return diagnostics
 
 
 def _notification_diagnostics(

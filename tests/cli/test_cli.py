@@ -461,6 +461,72 @@ def main():
         assert list(blobs.iterdir()) == []
         assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
 
+    def _run_large_value_workflow(self) -> None:
+        """Run a workflow with a value large enough to leave inline storage."""
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def big() -> bytes:
+    return b"z" * (300 * 1024)
+
+@task()
+def small() -> int:
+    return 1
+
+@flow
+def main():
+    return [big(), small()]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        run = _run_cli("run", "workflow.py", cwd=Path.cwd())
+        assert run.returncode == 0, run.stderr
+
+    def test_an_entry_size_counts_the_blob_its_value_names(self) -> None:
+        """SC5-3: a large value lives in the artifact store, not in output.json."""
+        self._run_large_value_workflow()
+
+        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
+
+        big = next(entry for entry in entries if entry["task_name"] == "big")
+        assert big["size_bytes"] > 300 * 1024
+
+    def test_clearing_one_entry_keeps_another_entrys_value_blob(self) -> None:
+        """SC5-3: the collector must not take a blob a surviving value names."""
+        self._run_large_value_workflow()
+        entries = json.loads(_run_cli("cache", "ls", "--json", cwd=Path.cwd()).stdout)
+        small = next(entry for entry in entries if entry["task_name"] == "small")
+
+        cleared = _run_cli("cache", "clear", small["cache_key"], cwd=Path.cwd())
+        assert cleared.returncode == 0, cleared.stderr
+        rerun = _run_cli("run", "workflow.py", "--agent-output", cwd=Path.cwd())
+
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
+        completed = [
+            event
+            for event in map(json.loads, rerun.stdout.splitlines())
+            if event.get("event") == "task_completed"
+        ]
+        statuses = {event["task_name"].rsplit(".", 1)[-1]: event["status"] for event in completed}
+        assert statuses == {"big": "cached", "small": "success"}
+
+    def test_prune_removes_cache_directories_no_row_names(self) -> None:
+        """EV5-10: prune leaves nothing behind for `db check` to flag."""
+        cache_root = Path(".ginkgo") / "cache"
+        _seed_cache_entry(cache_root=cache_root, name="old", age_days=100)
+        orphan = cache_root / "orphan"
+        orphan.mkdir(parents=True)
+
+        result = _run_cli("cache", "prune", "--older-than", "30d", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        assert "Removed 1 cache entry and 1 orphaned directory" in _unwrapped(result.stdout)
+        assert not orphan.exists()
+        assert _run_cli("db", "check", cwd=Path.cwd()).returncode == 0
+
     def test_cache_clear_orphans_removes_directories_with_no_row(self) -> None:
         cache_root = Path(".ginkgo") / "cache"
         known = _seed_cache_entry(cache_root=cache_root, name="known", age_days=1)
@@ -517,7 +583,8 @@ def main():
         result = _run_cli("cache", "clear", "--task", "demo.x", cwd=Path.cwd())
 
         assert result.returncode == 0, result.stderr
-        assert "(2.0 KiB freed)" in result.stdout
+        # The space on disk, in allocated blocks, as `du` would count it.
+        assert "KiB freed on disk)" in result.stdout
         assert "ginkgo db vacuum" in _unwrapped(result.stdout)
 
     @pytest.mark.parametrize("value", ["bad", "0d"])
@@ -982,8 +1049,8 @@ def main():
         # The leaf task's cache state is determinable; fan-out branches
         # downstream of a will-run task are not.
         assert "[will run: no prior entry]" in result.stdout
-        assert "[unknown]" in result.stdout
-        assert "? [unknown]  cache status cannot be known without running" in result.stdout
+        assert "[unknown: after upstream]" in result.stdout
+        assert "? [unknown: after upstream]  an upstream task runs first" in result.stdout
         assert "no tasks executed" in result.stdout
 
     def test_run_dry_run_reports_cached_tasks_after_a_real_run(self) -> None:

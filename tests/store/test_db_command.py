@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -259,6 +261,57 @@ class TestDbCommands:
         assert not (tmp_path / ".ginkgo").exists()
 
 
+class TestDbCheckFix:
+    """EV5-11/ED5-7: ``db check --fix`` clears what nothing can use any more."""
+
+    def test_fix_removes_stranded_directories_and_rows_without_bytes(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(tmp_path)
+        _run_row(tmp_path, "run-1")
+        (tmp_path / ".ginkgo" / "runs" / "run-1").mkdir(parents=True)
+        stranded = tmp_path / ".ginkgo" / "runs" / "run-gone"
+        (stranded / "logs").mkdir(parents=True)
+        _entry(tmp_path, "kept")
+        _entry(tmp_path, "no-bytes", with_bytes=False)
+        orphan = tmp_path / ".ginkgo" / "cache" / "orphan"
+        orphan.mkdir(parents=True)
+
+        assert main(["db", "check", "--fix"]) == 0
+
+        output = capsys.readouterr().out
+        assert "removed 1 run directory the ledger has no row for" in output
+        assert "removed 1 cache entry whose bytes are missing or unreadable" in output
+        assert "removed 1 cache directory the ledger has no row for" in output
+        assert not stranded.exists() and not orphan.exists()
+        assert (tmp_path / ".ginkgo" / "runs" / "run-1").is_dir()
+        assert (tmp_path / ".ginkgo" / "cache" / "kept" / "output.json").is_file()
+        assert main(["db", "check"]) == 0
+
+    def test_fix_after_a_ledger_was_moved_aside(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        workspace = tmp_path / ".ginkgo"
+        (workspace / "runs" / "run-1").mkdir(parents=True)
+        (workspace / "ginkgo.db-wal").write_bytes(b"stale")
+        (workspace / "ginkgo.db-shm").write_bytes(b"stale")
+
+        assert main(["db", "check", "--fix"]) == 0
+
+        output = capsys.readouterr().out
+        assert "removed ginkgo.db-wal, ginkgo.db-shm, left behind without ginkgo.db" in output
+        assert "removed 1 run directory the ledger has no row for" in output
+        assert list(workspace.iterdir()) == [workspace / "runs"]
+        assert not (workspace / "ginkgo.db").exists()
+
+    def test_check_without_fix_points_at_it(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        main(["db", "migrate"])
+        (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
+
+        assert main(["db", "check"]) == 1
+        assert "db check --fix" in capsys.readouterr().out
+
+
 class TestDbCheckWorkspace:
     """``db check`` looks at every index and the bytes beside it."""
 
@@ -509,3 +562,50 @@ class TestDbVacuum:
 
         assert main(["db", "check"]) == 0
         assert "integrity check passed" in capsys.readouterr().out
+
+
+class TestEventRetention:
+    """SC5-4: ``[ledger] keep_events_for`` opts a workspace into pruning."""
+
+    def _run(self, tmp_path, toml: str) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "ginkgo.toml").write_text(toml, encoding="utf-8")
+        (tmp_path / "workflow.py").write_text(
+            "from ginkgo import flow, task\n\n@task()\ndef one() -> int:\n    return 1\n\n"
+            "@flow\ndef main():\n    return one()\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "ginkgo.cli", "run", "workflow.py"],
+            cwd=tmp_path,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+    def _event_runs(self, tmp_path) -> set[str]:
+        with open_store(tmp_path / ".ginkgo" / "ginkgo.db", readonly=True) as store:
+            return {row["run_id"] for row in store.query("SELECT DISTINCT run_id FROM events")}
+
+    def test_a_run_prunes_the_events_of_runs_older_than_the_setting(self, tmp_path):
+        _run_row(tmp_path, "old", finished_at="2020-01-02T00:00:00+00:00", events=3)
+
+        result = self._run(tmp_path, '[ledger]\nkeep_events_for = "30d"\n')
+
+        assert result.returncode == 0, result.stderr
+        runs = self._event_runs(tmp_path)
+        assert "old" not in runs
+        assert len(runs) == 1
+
+    def test_without_the_setting_nothing_is_pruned(self, tmp_path):
+        _run_row(tmp_path, "old", finished_at="2020-01-02T00:00:00+00:00", events=3)
+
+        result = self._run(tmp_path, "")
+
+        assert result.returncode == 0, result.stderr
+        assert "old" in self._event_runs(tmp_path)
+
+    def test_a_malformed_setting_fails_before_running(self, tmp_path):
+        result = self._run(tmp_path, '[ledger]\nkeep_events_for = "soon"\n')
+
+        assert result.returncode == 1
+        assert "[ledger] keep_events_for: Invalid duration 'soon'" in result.stderr

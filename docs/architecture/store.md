@@ -20,8 +20,10 @@ The store has two halves.
   `StoredEvent.fields`/`event_fields` put the event back together, and the
   projector and `Query.events` read through them. `seq` is assigned by SQLite,
   so insertion order is the order things happened. Because the payload is JSON,
-  a new event type needs no migration. Nothing prunes the ledger on its own: a
-  fully cached run adds about 3.5 KiB per task, and `doctor` warns past 1 GiB
+  a new event type needs no migration. Nothing prunes the ledger unless the
+  workspace opts in with `[ledger] keep_events_for` (`maintenance.event_retention`,
+  applied by `ginkgo run` once a run finishes): a fully cached run adds about
+  4 KiB per task, and `doctor` warns past 1 GiB
   (`store.maintenance.large_ledger_warning`).
 - **The projections.** `runs`, `tasks`, `attempts`, `task_inputs`,
   `task_outputs`, `edges`. Every one of them is derived from the ledger and
@@ -188,7 +190,8 @@ directories: back it up as you would `.git`. Losing it loses the run history —
 the `events` ledger has no on-disk counterpart at all — and colds the cache,
 because since the cache index moved into the database the key that finds an
 entry exists nowhere else. The bytes stay behind as orphans; `db check` lists
-them and `ginkgo cache clear --orphans` removes them. Each run directory keeps a
+them, and `db check --fix` removes them with the stranded run directories and a
+write-ahead log left without its database (`cli.commands.db._repair`). Each run directory keeps a
 `manifest.yaml` of what that run did, to be read rather than re-imported.
 
 ## Layering

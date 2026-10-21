@@ -48,6 +48,7 @@ from ginkgo.runtime.artifacts.value_codec import (
     check_encoded,
     decode_value,
     encode_value,
+    encoded_artifact_ids,
     hash_value_bytes,
     summarise_value,
 )
@@ -524,8 +525,13 @@ class CacheStore:
 
         # Measured from disk rather than from what was just written, so a
         # re-save over bytes another run wrote records their size, not zero.
+        # A large value (a DataFrame's Parquet, say) lives in the artifact
+        # store and is counted with the entry that names it.
         output_path = entry_dir / "output.json"
         size_bytes = output_path.stat().st_size if output_path.is_file() else 0
+        for artifact_id in self._value_artifact_ids(entry_dir=entry_dir):
+            record = self._artifact_store.load_record(artifact_id=artifact_id)
+            size_bytes += record.size if record is not None else 0
 
         materialized_digest = self._materialized_digest(task_def=task_def)
         self._record_env_materialization(task_def=task_def, digest=materialized_digest)
@@ -852,6 +858,50 @@ class CacheStore:
             if entry.is_dir() and entry.name not in known and ".tmp-" not in entry.name
         )
 
+    def value_artifact_ids(self) -> set[str]:
+        """Return every artifact an entry's encoded value names.
+
+        These are not among the entries' ``cache_artifacts`` rows, which
+        record output paths; a garbage collector must keep them too. Reads
+        every ``output.json``, so it is for maintenance, not the run path.
+        """
+        return set().union(
+            *(
+                self._value_artifact_ids(entry_dir=self._entry_dir(key))
+                for key in self.index.cache_keys()
+            )
+        )
+
+    def _value_artifact_ids(self, *, entry_dir: Path) -> set[str]:
+        """Return the artifacts one entry's encoded value names, none if unreadable."""
+        try:
+            encoded = json.loads((entry_dir / "output.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return encoded_artifact_ids(encoded)
+
+    def unusable_entry_keys(self) -> list[str]:
+        """Return the entries that can only miss: bytes gone, unreadable, or incomplete.
+
+        An entry whose ``output.json`` is missing or cannot be decoded, or
+        that names an artifact the store no longer holds, would be treated as
+        a miss on every lookup. Removing it loses nothing.
+        """
+        unusable = []
+        for key in self.index.cache_keys():
+            entry_dir = self._entry_dir(key)
+            entry = self.index.entry(key)
+            artifact_ids = {
+                *self._value_artifact_ids(entry_dir=entry_dir),
+                *(entry.artifact_ids.values() if entry is not None else ()),
+            }
+            if not self._entry_readable(entry_dir) or any(
+                not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+                for artifact_id in artifact_ids
+            ):
+                unusable.append(key)
+        return unusable
+
     def integrity_problems(self) -> list[str]:
         """Return the ways the index and the bytes on disk disagree.
 
@@ -876,9 +926,17 @@ class CacheStore:
                 problems.append(f"cache entry {key} has a row but no output.json")
                 continue
             try:
-                check_encoded(json.loads(output_path.read_text(encoding="utf-8")))
+                encoded = json.loads(output_path.read_text(encoding="utf-8"))
+                check_encoded(encoded)
             except _UNREADABLE_ENTRY_ERRORS as exc:
                 problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
+                continue
+            problems += [
+                f"cache entry {key} names value artifact {artifact_id}, which is missing "
+                "from the artifact store"
+                for artifact_id in sorted(encoded_artifact_ids(encoded))
+                if not self._artifact_store.artifact_path(artifact_id=artifact_id).exists()
+            ]
         problems += [
             f"cache directory {entry.name} is not referenced by the ledger "
             "(the ledger may have been reset)"

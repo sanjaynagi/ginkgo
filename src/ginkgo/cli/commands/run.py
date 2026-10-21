@@ -22,7 +22,7 @@ from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.errors import GinkgoError
-from ginkgo.formatting import format_duration
+from ginkgo.formatting import cutoff_before, format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer, event_line
 from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE, UsageError
@@ -94,6 +94,9 @@ from ginkgo.runtime.events import (
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
+from ginkgo.store.errors import StoreError
+from ginkgo.store.maintenance import event_retention, prune_events
+from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -360,6 +363,7 @@ def run_workflow(
     # CLI --resource flags win over [resources.budgets] per dimension.
     resource_budgets = resource_budgets_from_config(runtime_config.get("resources"))
     resource_budgets.update(parse_resource_budget_args(resource_args))
+    keep_events_for = event_retention(runtime_config)
     # Shared by the validate/dry-run evaluator and the run evaluator below —
     # the two must resolve resources and placement identically.
     evaluator_kwargs: dict[str, Any] = {
@@ -625,6 +629,9 @@ def run_workflow(
         bus.emit(RunNotice(run_id=run_id, message=message))
 
     with ExitStack() as stack:
+        # Registered first, so it runs last: once this run's events are in.
+        if keep_events_for is not None:
+            stack.callback(_prune_old_events, keep_events_for=keep_events_for)
         stack.callback(recorder.close)
         # Stopped before the recorder closes: stopping emits a final sample.
         stack.callback(resource_monitor.stop)
@@ -928,6 +935,21 @@ def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
         if diagnostic.suggestion:
             console(sys.stderr).print(f"  [dim]{escape(diagnostic.suggestion)}[/]")
+
+
+def _prune_old_events(*, keep_events_for: str) -> None:
+    """Apply ``[ledger] keep_events_for``: drop the events of runs older than it.
+
+    A ledger another process holds locked is left for the next run, with a
+    warning, rather than failing a run that has already finished.
+    """
+    try:
+        with open_store(WorkspaceLayout.relative().db) as store:
+            prune_events(store, before=cutoff_before(keep_events_for))
+    except StoreError as exc:
+        console(sys.stderr).print(
+            f"[yellow]⚠[/] [ledger] keep_events_for: old events were not pruned: {escape(str(exc))}"
+        )
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:

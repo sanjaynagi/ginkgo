@@ -14,7 +14,7 @@ from ginkgo.runtime.caching.cache import MISSING, CacheStore, DynamicTemplate
 from ginkgo.runtime.caching.index import CacheIndex
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo import Out, evaluate, file, folder, shell, task, untracked
-from ginkgo.cli.commands.cache import _safe_rmtree
+from ginkgo.cli.commands.cache import _remove_tree
 from ginkgo.core import source_hash
 from ginkgo.core.task import TaskDef
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
@@ -1032,7 +1032,7 @@ class TestCachePruneReadOnly:
             entry.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
         for entry in entries:
-            _safe_rmtree(entry)
+            _remove_tree(entry)
 
         assert not any(child.is_dir() for child in cache_root.iterdir())
 

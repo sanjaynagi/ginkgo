@@ -62,8 +62,15 @@ Losing the database means a cold cache, and by a specific mechanism:
 owns, that returns `None` when there is no row, and a candidate hit with no
 recorded outputs is refused. The bytes survive, but nothing can find them — the
 key that would is only in the row that is gone. `ginkgo db check` reports those
-directories and `ginkgo cache clear --orphans` removes them; prune never does so
-implicitly. Back the database up as you would `.git`.
+directories, and `ginkgo cache clear --orphans`, every `cache prune` and
+`db check --fix` remove them. Back the database up as you would `.git`.
+
+A value too large to inline (`INLINE_BYTES_LIMIT`) — a DataFrame's Parquet, a
+pickle — is stored in the artifact store and named by id from inside
+`output.json`, not by a `cache_artifacts` row. `encoded_artifact_ids` reads
+those ids back: `save` adds their sizes to the entry's `size_bytes`, the
+garbage collector keeps them (`CacheStore.value_artifact_ids`), and `db check`
+reports one that is missing.
 
 `ginkgo cache stats` reports what the index holds: entry count, total bytes, the
 hit-count histogram, how much is taken by entries nobody has ever used, and the

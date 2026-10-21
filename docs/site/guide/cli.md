@@ -77,7 +77,8 @@ at the nearest `ginkgo.toml`.
 `ginkgo db`
 : Maintain the provenance database. `db path` prints where it is, `db migrate`
   creates or upgrades it, `db check` reports anything the database and the files
-  beside it disagree about (`--verify` also rehashes every stored artifact),
+  beside it disagree about (`--verify` also rehashes every stored artifact,
+  `--fix` first removes what nothing can use any more),
   `db prune` deletes history you no longer need, and
   `db vacuum` gives the freed space back. See
   [Caching and Provenance](caching-and-provenance.md).
@@ -412,7 +413,10 @@ duration is a positive whole number of minutes, hours or days (`45m`, `12h`,
 ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 `--json`. Its artifact-store figure (`artifact_bytes` in JSON) is separate from
 the entries' total size: the store also holds bytes no entry names, so pruning
-entries does not bound it.
+entries does not bound it. Both are apparent sizes; `On disk` (`disk_bytes`) is
+the space the cache and the artifact store occupy in allocated blocks, as `du`
+counts it, and the space `clear` and `prune` report freed is measured the same
+way.
 
 ### Why Did This Task Run Again?
 

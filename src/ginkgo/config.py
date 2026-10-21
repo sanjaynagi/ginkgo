@@ -26,7 +26,7 @@ PARAMS_CONFIG_KEY = "params"
 """Config table holding declared workflow parameter values."""
 
 RUNTIME_CONFIG_TABLES = frozenset(
-    {PARAMS_CONFIG_KEY, "notifications", "remote", "resources", "secrets"}
+    {PARAMS_CONFIG_KEY, "ledger", "notifications", "remote", "resources", "secrets"}
 )
 """Top-level ``ginkgo.toml`` tables that configure ginkgo rather than the workflow.
 
