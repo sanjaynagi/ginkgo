@@ -990,9 +990,9 @@ timestamp plus a discriminator) holding the bytes:
 - `logs/` — per-task stdout/stderr.
 - `notebooks/` — rendered notebook HTML pages (`task_NNNN.html`).
 
-Runs recorded by a version of ginkgo older than the database are not migrated
-and are not visible. Delete `.ginkgo/`, or keep it and accept that the older
-runs no longer show up.
+Before 1.0 there are no schema migrations: a database written by a ginkgo with
+a different schema version is refused, with an error naming the workspace.
+Delete `.ginkgo/` and run again.
 
 ## Configuration And Secrets
 

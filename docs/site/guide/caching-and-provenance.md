@@ -484,7 +484,6 @@ ginkgo db path                # where the database is
 ginkgo db check               # schema version, integrity, rows against bytes
 ginkgo db check --verify      # also rehash every stored artifact byte
 ginkgo db check --fix         # first remove what nothing can use any more
-ginkgo db migrate             # create or upgrade it
 ginkgo db prune --events-older-than 90d --dry-run
 ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
 ginkgo db vacuum              # give the freed space back
@@ -560,9 +559,9 @@ are invisible to every command. If you have one, delete `.ginkgo/` and run the
 workflow again; there is no import path, and nothing in the old layout is read
 by mistake.
 
-The same holds between schema versions before 1.0: the schema is edited in
-place rather than migrated, so a database written by an older ginkgo is refused
-with an error naming both versions. Delete `.ginkgo/` and run again.
+The same holds between schema versions before 1.0: there are no migrations,
+so a database written at a different schema version is refused with an error
+naming both versions. Delete `.ginkgo/` and run again.
 
 `ginkgo.db` is the record of your runs and of your cache; back it up as you
 would `.git`. If it is lost, the run history goes with it and the cache goes

@@ -1,34 +1,25 @@
-"""The ledger schema and its migrations.
+"""The ledger schema.
 
 The store is one append-only ``events`` table plus projection tables derived
-from it. Every table exists from the first step even though later phases are what
-populate most of them: one migration is easier to reason about than eight, and
-an empty table costs nothing.
+from it. Every table exists from the start even though later phases are what
+populate most of them: an empty table costs nothing.
 
-Before 1.0 the schema is edited in place rather than migrated. Ginkgo has a
-handful of users and a workspace is derived data — the events it holds describe
-runs that can be re-run — so carrying migration steps for every column change
-buys less than it costs in schema that has to be read as archaeology. A database
-written by an older schema is refused with an error telling the user to delete
-the workspace, which is the whole upgrade procedure. The exception is a purely
-additive change (a nullable column), which is cheap to step forward and not
-worth a cold cache: those get a migration step of their own.
-
-The machinery for stepped migrations is still here, and this becomes the usual
-"never edit a shipped step; add another one" once there is history worth
-preserving.
+Before 1.0 there are no migrations. Any schema change edits ``_SCHEMA`` in
+place and bumps :data:`SCHEMA_VERSION`. A workspace written at any other
+version is refused with an error telling the user to delete it: it holds
+derived data, and the runs it describes can be re-run.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection
 
-from ginkgo.store.errors import SchemaVersionError, StaleWorkspaceError
+from ginkgo.store.errors import CorruptStoreError, StaleWorkspaceError
 
-__all__ = ["MIGRATIONS", "SCHEMA_VERSION", "migrate", "schema_version"]
+__all__ = ["SCHEMA_VERSION", "create_schema", "schema_version"]
 
 
 _SCHEMA = """
@@ -120,7 +111,8 @@ CREATE TABLE cache_entries (
   inputs TEXT, input_hashes TEXT, extra TEXT,               -- JSON
   output_codec TEXT, size_bytes INTEGER,
   created_run_id TEXT, created_at TEXT NOT NULL,
-  hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT
+  hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT,
+  environ TEXT                -- JSON: each environment variable read -> digest of its value
 );
 CREATE INDEX cache_function ON cache_entries(function, created_at);
 CREATE TABLE cache_artifacts (cache_key TEXT NOT NULL, path TEXT NOT NULL, artifact_id TEXT NOT NULL,
@@ -147,28 +139,12 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 """
 
 
-MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
-    (3, _SCHEMA),
-    (4, "DROP INDEX IF EXISTS events_type_ts;"),
-    (5, "ALTER TABLE cache_entries ADD COLUMN environ TEXT;"),
-]
-"""Every schema step, in the order they are applied, keyed by resulting version.
-
-The schema starts at version 3: removing the asset catalog edited it in place,
-so a database written at version 1 or 2 is refused and the user deletes the
-workspace. Later additive changes get a step of their own. Version 4 drops an
-index on ``events(type, ts)`` that no query used and every event paid for.
-Version 5 adds ``cache_entries.environ``: a JSON map from each environment
-variable a task reads to a digest of its value, so ``cache explain`` can name a
-changed variable.
-"""
-
-SCHEMA_VERSION = MIGRATIONS[-1][0]
-"""The version a freshly migrated database ends up at."""
+SCHEMA_VERSION = 6
+"""The version :func:`create_schema` writes; bump it with every edit to ``_SCHEMA``."""
 
 
 def schema_version(conn: Connection) -> int:
-    """Return the schema version recorded in *conn*, or ``0`` if unmigrated.
+    """Return the schema version recorded in *conn*, or ``0`` if it has none.
 
     Parameters
     ----------
@@ -178,14 +154,14 @@ def schema_version(conn: Connection) -> int:
     Returns
     -------
     int
-        The highest applied version, ``0`` for a database with no
+        The recorded version, ``0`` for a database with no
         ``schema_version`` table.
 
     Raises
     ------
-    SchemaVersionError
+    CorruptStoreError
         If the table exists but holds no usable version — a database that was
-        truncated or hand-edited mid-migration.
+        truncated or hand-edited.
     """
     tables = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
@@ -195,20 +171,22 @@ def schema_version(conn: Connection) -> int:
     row = conn.execute("SELECT max(version) FROM schema_version").fetchone()
     version = None if row is None else row[0]
     if not isinstance(version, int):
-        raise SchemaVersionError(path=_database_path(conn), found=0, expected=SCHEMA_VERSION)
+        raise CorruptStoreError(
+            path=_database_path(conn), detail="its schema_version table holds no version"
+        )
     return version
 
 
-def migrate(conn: Connection) -> int:
-    """Apply every migration step *conn* is missing and return the new version.
+def create_schema(conn: Connection) -> None:
+    """Create the schema on an empty database, and check it on any other.
 
-    Applying nothing is the common case and costs one query. All outstanding
-    steps share a single transaction, so an interrupted migration leaves the
-    database at the version it started from rather than part-way through.
+    A database already at :data:`SCHEMA_VERSION` is left alone, which is the
+    common case and costs one query. The DDL runs in a single transaction, so
+    an interrupted creation leaves an empty database rather than half a schema.
 
-    Two processes can reach an unmigrated workspace at the same moment, so the
+    Two processes can reach an empty workspace at the same moment, so the
     version is read again under the write lock: whichever loses the race sees
-    the other's work and applies nothing, rather than re-running the DDL and
+    the other's schema and creates nothing, rather than re-running the DDL and
     failing on a table that now exists.
 
     Parameters
@@ -216,52 +194,48 @@ def migrate(conn: Connection) -> int:
     conn : Connection
         A write-mode connection.
 
-    Returns
-    -------
-    int
-        The schema version after migrating.
-
     Raises
     ------
     StaleWorkspaceError
-        If the database is at a version this schema has no step for — a
-        newer ginkgo's, or one from before the schema was last edited in
-        place. Without this check it would open cleanly and then fail on the
-        first query naming a column it does not have.
+        If the database is at any other version. Without this check it would
+        open cleanly and then fail on the first query naming a column it does
+        not have.
     """
-    current = schema_version(conn)
-    if current != 0 and current not in {version for version, _ in MIGRATIONS}:
-        raise StaleWorkspaceError(
-            path=_database_path(conn), found=current, expected=SCHEMA_VERSION
-        )
-    if not [version for version, _ in MIGRATIONS if version > current]:
-        return current
+    if _check_version(conn):
+        return
 
     # Statements are executed one at a time rather than through
     # ``executescript``, which commits any open transaction before it runs and
-    # so would break a partly applied migration into separately durable pieces.
+    # so would break the schema into separately durable pieces.
     conn.execute("BEGIN IMMEDIATE")
     try:
-        current = schema_version(conn)
-        pending = [(version, step) for version, step in MIGRATIONS if version > current]
-        if not pending:
-            conn.execute("COMMIT")
-            return current
-        for version, step in pending:
-            if isinstance(step, str):
-                for statement in _statements(step):
-                    conn.execute(statement)
-            else:
-                step(conn)
+        if not _check_version(conn):
+            for statement in _statements(_SCHEMA):
+                conn.execute(statement)
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                (version, datetime.now(UTC).isoformat()),
+                (SCHEMA_VERSION, datetime.now(UTC).isoformat()),
             )
     except BaseException:
         conn.execute("ROLLBACK")
         raise
     conn.execute("COMMIT")
-    return pending[-1][0]
+
+
+def _check_version(conn: Connection) -> bool:
+    """Return whether *conn* has the current schema, ``False`` if it has none.
+
+    Raises
+    ------
+    StaleWorkspaceError
+        If the database is at any other version.
+    """
+    current = schema_version(conn)
+    if current not in {0, SCHEMA_VERSION}:
+        raise StaleWorkspaceError(
+            path=_database_path(conn), found=current, expected=SCHEMA_VERSION
+        )
+    return current == SCHEMA_VERSION
 
 
 def _statements(script: str) -> Iterator[str]:

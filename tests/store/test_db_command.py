@@ -42,6 +42,11 @@ def _run_row(tmp_path, run_id: str, *, finished_at: str | None = None, events: i
         )
 
 
+def _create_db(tmp_path) -> None:
+    """Create the workspace's database with nothing in it, as a first run would."""
+    open_store(tmp_path / ".ginkgo" / "ginkgo.db").close()
+
+
 def _entry(tmp_path, cache_key: str, *, with_bytes: bool = True) -> None:
     """Record one cache entry, optionally without the bytes it names."""
     if with_bytes:
@@ -165,18 +170,11 @@ class TestDbCheckCache:
 class TestDbCommands:
     """Each subcommand, run against a workspace that starts out empty."""
 
-    def test_migrate_creates_the_database(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.chdir(tmp_path)
-
-        assert main(["db", "migrate"]) == 0
-        assert (tmp_path / ".ginkgo" / "ginkgo.db").exists()
-        assert f"schema version {SCHEMA_VERSION}" in capsys.readouterr().out
-
     def test_check_reports_the_version_and_the_integrity_result(
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         capsys.readouterr()
 
         assert main(["db", "check"]) == 0
@@ -186,7 +184,7 @@ class TestDbCommands:
         assert "integrity check passed" in output
 
     def test_check_on_an_empty_workspace_creates_nothing(self, tmp_path, monkeypatch, capsys):
-        """Creating the database is migrate's job, and a run's. Not a check's."""
+        """Creating the database is a run's job. Not a check's."""
         monkeypatch.chdir(tmp_path)
 
         assert main(["db", "check"]) == 0
@@ -227,9 +225,9 @@ class TestDbCommands:
         assert "2 run directories under .ginkgo/runs" in capsys.readouterr().out
 
     def test_check_never_opens_a_write_connection(self, tmp_path, monkeypatch):
-        """A read path must not be able to migrate a database out from under a run."""
+        """A read path must not be able to change a database out from under a run."""
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         opened: list[bool] = []
         real_open = sqlite_module.SqliteStore.open
 
@@ -255,7 +253,7 @@ class TestDbCommands:
         elsewhere = tmp_path / "local" / "ledger.db"
         monkeypatch.setenv("GINKGO_DB", str(elsewhere))
 
-        assert main(["db", "migrate"]) == 0
+        assert main(["db", "vacuum"]) == 0
 
         assert elsewhere.exists()
         assert not (tmp_path / ".ginkgo").exists()
@@ -305,7 +303,7 @@ class TestDbCheckFix:
 
     def test_check_without_fix_points_at_it(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
 
         assert main(["db", "check"]) == 1
@@ -324,7 +322,7 @@ class TestDbCheckWorkspace:
 
     def test_a_run_directory_without_a_row_is_reported(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         (tmp_path / ".ginkgo" / "runs" / "run-2").mkdir(parents=True)
 
         assert main(["db", "check"]) == 1
@@ -359,7 +357,7 @@ class TestDbCheckWorkspace:
 
     def test_an_orphan_blob_is_reported(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         blobs = tmp_path / ".ginkgo" / "artifacts" / "blobs"
         blobs.mkdir(parents=True)
         (blobs / "abc123").write_bytes(b"orphaned")
@@ -371,7 +369,7 @@ class TestDbCheckWorkspace:
 
     def test_verify_reports_a_blob_corrupted_in_place(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
+        _create_db(tmp_path)
         blobs = tmp_path / ".ginkgo" / "artifacts" / "blobs"
         blobs.mkdir(parents=True)
         (blobs / "abc123").write_bytes(b"not the bytes abc123 names")
@@ -530,7 +528,6 @@ class TestDbVacuum:
     def test_vacuum_says_so_when_nothing_was_reclaimed(self, tmp_path, monkeypatch, capsys):
         """An unchanged size is the only signal SQLite gives that it did nothing."""
         monkeypatch.chdir(tmp_path)
-        main(["db", "migrate"])
         main(["db", "vacuum"])
         capsys.readouterr()
 

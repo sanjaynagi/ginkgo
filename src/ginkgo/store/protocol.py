@@ -31,7 +31,7 @@ class StoredEvent:
 
     The columns mirror what the ``events`` table filters and joins on; every
     other field of the originating :class:`~ginkgo.runtime.events.GinkgoEvent`
-    stays in *payload*, so a new event type needs no migration. A field a
+    stays in *payload*, so a new event type needs no schema change. A field a
     column holds is not repeated in *payload*: a cached task writes six events
     a run, and the repeated run id, timestamp and cache key were a fifth of
     them. :meth:`fields` puts the event back together.

@@ -3,7 +3,7 @@
 The public way to ask ginkgo what has happened. Every CLI read path goes
 through here, so there is one place that knows the schema and one place to
 change when it moves. Readers open the database read-only, which means they
-work while a run is writing and can never migrate it out from under one.
+work while a run is writing and can never change it out from under one.
 
 Every method returns either a core type ginkgo already models — a
 :class:`~ginkgo.runtime.run_summary.RunSummary` — or a frozen row dataclass

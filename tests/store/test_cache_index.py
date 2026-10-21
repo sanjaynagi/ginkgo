@@ -69,7 +69,7 @@ class TestOpening:
     """Which database an index touches is always the caller's decision."""
 
     def test_constructing_a_cache_creates_no_database(self, tmp_path: Path) -> None:
-        """A read path must not migrate a workspace by being constructed."""
+        """A read path must not create a database by being constructed."""
         from ginkgo.runtime.artifacts.artifact_store import LocalArtifactStore
         from ginkgo.runtime.caching.cache import CacheStore
 
@@ -86,8 +86,8 @@ class TestOpening:
 
         assert not list(tmp_path.glob("**/ginkgo.db*"))
 
-    def test_a_read_only_index_never_migrates(self, tmp_path: Path) -> None:
-        """It reads the rows that are there; it does not bring them up to date."""
+    def test_a_read_only_index_never_writes(self, tmp_path: Path) -> None:
+        """It reads the rows that are there and refuses to change them."""
         path = tmp_path / "ginkgo.db"
         with CacheIndex.open(path=path) as writer:
             _record(writer, "key-1")

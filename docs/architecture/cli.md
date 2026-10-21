@@ -22,7 +22,6 @@ The current CLI supports:
 - `ginkgo cache clear`
 - `ginkgo cache prune`
 - `ginkgo env ls` / `ginkgo env clear` (from the `ginkgo-pixi` plugin)
-- `ginkgo db migrate`
 - `ginkgo db check`
 - `ginkgo db prune`
 - `ginkgo db vacuum`
@@ -204,7 +203,7 @@ recorded as materializing two different ways across hosts — and exits 1 if it
 found anything. Like every other read path it opens the database read-only and
 never creates one; an empty workspace reports that and exits 0. A workspace
 with run directories but no database is warned about rather than called empty,
-still at exit 0. Creating the database is `db migrate`'s job.
+still at exit 0. Creating the database is `ginkgo run`'s job.
 
 `runs ls` and `doctor` report that same condition, from the one place that
 computes it (`rundir.runs_without_ledger_warning`), which also covers run

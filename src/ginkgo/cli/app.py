@@ -549,7 +549,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 
     db_parser = subparsers.add_parser("db", help="Maintain the provenance database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
-    db_subparsers.add_parser("migrate", help="Create or upgrade the provenance database")
     db_check_parser = db_subparsers.add_parser(
         "check", help="Check database integrity and schema version"
     )
