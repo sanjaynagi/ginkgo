@@ -91,7 +91,8 @@ only through this hash, so hashing function bodies alone would serve stale
 results whenever such state changed. When a task is expensive and the code
 beside it is under active edit, move it into its own module; that is the only
 way to decouple them. `ginkgo cache explain <run_id>` reports
-`source_hash_changed` for a task invalidated this way. The hash covers the
+`module_source_changed` for a task invalidated this way — its own text is
+unchanged — and `source_hash_changed` when the task's own definition moved. The hash covers the
 module's raw text, so editing only a comment or whitespace in it also re-runs
 every task the module defines.
 
@@ -482,6 +483,7 @@ Together, the cache and the ledger answer different questions:
 ginkgo db path                # where the database is
 ginkgo db check               # schema version, integrity, rows against bytes
 ginkgo db check --verify      # also rehash every stored artifact byte
+ginkgo db check --fix         # first remove what nothing can use any more
 ginkgo db migrate             # create or upgrade it
 ginkgo db prune --events-older-than 90d --dry-run
 ginkgo db prune --staging-older-than 30d    # staged remote inputs, and their bytes
@@ -491,8 +493,15 @@ ginkgo db vacuum              # give the freed space back
 `ginkgo db check` asks every index whether its rows and the files they name
 still agree — the cache, the artifact store, the run directories, the staged
 remote inputs — and reports both directions: a row whose bytes are gone, and
-bytes no row can find. It never repairs anything. Those checks compare rows
-with file names; they cannot see a stored file whose bytes changed in place.
+bytes no row can find. On its own it repairs nothing; `--fix` first removes
+what nothing can use any more — run directories and cache directories the
+ledger has no row for, cache entries whose bytes are missing or unreadable
+(each would only miss), the artifacts no entry names, and a `ginkgo.db-wal` /
+`-shm` left behind by a database that was moved or deleted — then reports what
+is left. A run row whose directory is gone is kept: it is the only record of
+that run. `ginkgo doctor` reports what `db check` fails on as well: a ledger
+SQLite cannot read is an error, and cache drift a warning pointing at `--fix`.
+Those checks compare rows with file names; they cannot see a stored file whose bytes changed in place.
 `--verify` rehashes every stored blob and directory member against its digest
 and reports each mismatch, exiting non-zero. It reads the whole store, so it
 takes as long as the store is large.
@@ -511,14 +520,26 @@ row together, and the only eviction the staging cache has — and `--dry-run` to
 see the counts first. Deleting rows does not shrink the database file; `ginkgo
 db vacuum` does, and reports the file and its write-ahead log together.
 `ginkgo cache clear` and `cache prune` likewise free their entries' rows for
-reuse without shrinking the file; the bytes they report freed are the cached
-outputs and artifacts they deleted.
+reuse without shrinking the file; the space they report freed is what the
+cached outputs and artifacts they deleted occupied on disk, in allocated
+blocks as `du` counts them.
 
-Nothing is pruned for you. Every run adds to the ledger, a fully cached one
-too: about 3.5 KiB per task, two thirds of it events, so a 1,000-task workflow
-run nightly adds about 1.3 GB a year. `ginkgo doctor` warns once the ledger
-passes 1 GiB; pruning events older than a few months and vacuuming keeps it
-in check.
+Every run adds to the ledger, a fully cached one too: about 4 KiB per task
+(3.5–4.5 KiB in our measurements, more for a task with many inputs), of which
+the raw events are between a third and two thirds, so a 1,000-task workflow run
+nightly adds about 1.5 GB a year. `ginkgo doctor` warns once the ledger passes
+1 GiB. Nothing is pruned unless you ask: prune events older than a few months
+and vacuum, or opt the workspace in to pruning after every run in
+`ginkgo.toml`:
+
+```toml
+[ledger]
+keep_events_for = "90d"   # each run drops the events of runs finished over 90 days ago
+```
+
+That is `ginkgo db prune --events-older-than 90d` run as each run finishes; the
+runs themselves stay listed, and `ginkgo db vacuum` still returns the space to
+the disk.
 
 `ginkgo db check` reads; it never creates. In a directory nobody has run a
 workflow in it says so and succeeds.
@@ -528,7 +549,8 @@ says that instead — how many runs are stranded, and that their provenance
 cannot be read until the ledger is restored. `ginkgo runs ls` and
 `ginkgo doctor` report the same thing. It is a warning rather than a failure,
 so all three still exit 0: nothing is corrupt, and the fix is to restore the
-file (or delete the directories if the history is not wanted).
+file — or, if the history is not wanted, `ginkgo db check --fix`, which removes
+the stranded run directories and any write-ahead log the database left behind.
 
 ### Upgrading from a pre-ledger workspace
 
@@ -546,7 +568,8 @@ with an error naming both versions. Delete `.ginkgo/` and run again.
 would `.git`. If it is lost, the run history goes with it and the cache goes
 cold: the cached bytes are still under `.ginkgo/cache/`, but the keys that find
 them were rows in the database. `ginkgo db check` lists those stranded
-directories and `ginkgo cache clear --orphans` removes them.
+cache and run directories; `ginkgo db check --fix` removes both, and
+`ginkgo cache clear --orphans` (or any `cache prune`) the cache ones.
 
 Each run directory still holds a `manifest.yaml` of what that run did, which is
 there to be read rather than re-imported: ginkgo does not load it back.
@@ -605,11 +628,16 @@ ginkgo cache prune --max-size 5GB --least-recently-hit
 Eviction is oldest-first unless you pass `--least-recently-hit`, which gives up
 the entries with the oldest last hit first — an old entry that hits on every run
 is worth more than a young one nothing has touched. `--max-size` counts each
-entry's artifacts as well as its return value; `5GB` means 5,000,000,000 bytes
+entry's artifacts as well as its return value — including a large value kept
+in the artifact store, such as a DataFrame's Parquet; `5GB` means 5,000,000,000 bytes
 and `5GiB` means 5 × 1024³. Sizes are printed in binary units (KiB, MiB, GiB). Artifacts no remaining entry
-names are garbage-collected at the end of the operation, and the bytes
-reported as freed are the ones actually deleted: an artifact a surviving entry
-still names stays. Use `--dry-run` to preview what would be removed.
+names are garbage-collected at the end of the operation, and the space
+reported as freed is what was actually deleted, measured on disk: an artifact a
+surviving entry still names stays. Entry sizes in `cache ls` and the totals in
+`cache stats` are apparent sizes — what the files hold — while `cache stats`
+also reports the space the cache takes on disk, which for many small entries is
+far larger. A prune also removes cache directories the database has no row
+for. Use `--dry-run` to preview what would be removed.
 
 ## Partial Resume
 

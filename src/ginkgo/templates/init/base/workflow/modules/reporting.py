@@ -47,7 +47,7 @@ def write_delivery_manifest(
     notebook_html : file
         Rendered notebook HTML.
     package_reports : list[file]
-        Packaging reports produced by the Docker task.
+        Packaging reports produced by the shell task.
     output_path : Out[file]
         Where the Markdown manifest is written.
 

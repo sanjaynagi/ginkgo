@@ -39,7 +39,7 @@ from typing import Any, Callable
 
 from ginkgo.core.hashing import hash_file, hash_str
 
-__all__ = ["compute_source_hash", "local_import_closure"]
+__all__ = ["compute_own_source_hash", "compute_source_hash", "local_import_closure"]
 
 #: ``task()`` keyword arguments that steer scheduling, placement, and what a
 #: failure stops — never what a task produces. None of them reaches the
@@ -98,14 +98,7 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         If the source cannot be extracted (lambdas, dynamic functions), or
         if a module in the local import closure cannot be read or parsed.
     """
-    try:
-        raw_source = inspect.getsource(fn)
-    except OSError as exc:
-        raise ValueError(
-            f"Cannot extract source for task '{fn.__qualname__}'. "
-            "Tasks must be defined as named, top-level functions."
-        ) from exc
-    source = _without_resource_kwargs(textwrap.dedent(raw_source))
+    source = _task_source(fn)
     module = sys.modules.get(fn.__module__)
     if not isinstance(module, ModuleType):
         return hash_str(source)
@@ -120,6 +113,45 @@ def compute_source_hash(fn: Callable[..., Any]) -> str:
         for name, path in sorted(modules.items())
     ]
     return hash_str("\n".join((source, *module_hashes)))
+
+
+def compute_own_source_hash(fn: Callable[..., Any]) -> str:
+    """Return the digest of the task definition's own text.
+
+    :func:`compute_source_hash` also folds in every module of the task's local
+    import closure, its own module included, so an edit to a task defined
+    beside it changes the cache key too. Recorded with each cache entry, this
+    digest lets ``ginkgo cache explain`` tell an edit to the task from an edit
+    next to it.
+
+    Parameters
+    ----------
+    fn : Callable
+        The task function.
+
+    Returns
+    -------
+    str
+        Hex-encoded BLAKE3 digest, resource-only keyword arguments removed.
+
+    Raises
+    ------
+    ValueError
+        If the source cannot be extracted.
+    """
+    return hash_str(_task_source(fn))
+
+
+def _task_source(fn: Callable[..., Any]) -> str:
+    """Return the task definition's dedented text, resource kwargs removed."""
+    try:
+        raw_source = inspect.getsource(fn)
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot extract source for task '{fn.__qualname__}'. "
+            "Tasks must be defined as named, top-level functions."
+        ) from exc
+    return _without_resource_kwargs(textwrap.dedent(raw_source))
 
 
 def _hash_module_source(path: Path) -> str:

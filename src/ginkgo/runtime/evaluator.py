@@ -1275,9 +1275,11 @@ class ConcurrentEvaluator:
         """Validate a task's result, then persist it and mark the node completed."""
         value = self._finalize_result_value(node=node, value=value)
         finalize_started = time.perf_counter()
-        extra_meta: dict[str, Any] | None = None
+        # The task's own text, apart from the modules folded into its source
+        # hash, lets `cache explain` say when only a neighbour changed.
+        extra_meta: dict[str, Any] = {"own_source_hash": node.task_def.own_source_hash}
         if node.runner_extras is not None:
-            extra_meta = {"runner_extras": node.runner_extras}
+            extra_meta["runner_extras"] = node.runner_extras
         written_notice = written_str_inputs_notice(self._node_cache.written_str_inputs(node=node))
         if written_notice is not None:
             self._emit_task_event(TaskNotice, node=node, message=written_notice)
@@ -1612,6 +1614,7 @@ class ConcurrentEvaluator:
             TaskCacheMiss,
             node=node,
             cache_key=node.cache_key,
+            rerun_requested=self.rerun_requested(node=node),
         )
 
         node.state = "running"

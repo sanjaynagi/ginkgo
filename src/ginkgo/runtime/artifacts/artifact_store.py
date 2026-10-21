@@ -852,11 +852,11 @@ class LocalArtifactStore:
         Returns
         -------
         int
-            Bytes the deleted files occupied.
+            Disk space the deleted files occupied, in allocated blocks.
         """
         freed = 0
         for path in self._orphan_files():
-            freed += path.stat().st_size
+            freed += path.stat().st_blocks * 512
             path.chmod(stat.S_IRUSR | stat.S_IWUSR)
             path.unlink()
         return freed

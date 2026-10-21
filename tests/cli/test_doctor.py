@@ -346,6 +346,32 @@ class TestDoctorWorkspaceLedger:
         assert diagnostic["code"] == "runs_without_directory"
         assert "1 run recorded" in diagnostic["message"]
 
+    def test_cache_rows_without_bytes_are_a_warning(self) -> None:
+        """ED5-7: what `db check` fails on, doctor reports."""
+        self._run_once()
+        for entry in (Path(".ginkgo") / "cache").iterdir():
+            shutil.rmtree(entry)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 0, result.stderr
+        [diagnostic] = json.loads(result.stdout)["diagnostics"]
+        assert diagnostic["code"] == "ledger_drift"
+        assert "has a row but no output.json" in diagnostic["message"]
+        assert "db check --fix" in diagnostic["suggestion"]
+
+    def test_a_corrupt_ledger_is_an_error(self) -> None:
+        """ED5-7: doctor must not pass a ledger `db check` cannot open."""
+        _write_workflow(env=None)
+        Path(".ginkgo").mkdir()
+        Path(".ginkgo", "ginkgo.db").write_bytes(b"not a database" * 100)
+
+        result = _run_doctor("--json", cwd=Path.cwd())
+
+        assert result.returncode == 1
+        codes = [item["code"] for item in json.loads(result.stdout)["diagnostics"]]
+        assert "corrupt_ledger" in codes
+
     def test_a_workspace_that_has_not_run_yet_is_not_reported(self) -> None:
         _write_workflow(env=None)
         (Path(".ginkgo") / "runs").mkdir(parents=True)

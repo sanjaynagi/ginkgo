@@ -60,8 +60,11 @@ it and warn about a stopped or inaccessible daemon, but still pass: whether the
 run needs it depends on whether a container task has to run. `ginkgo run` does
 not check it up front, so a run whose container tasks are all cached still
 succeeds; one that has to run a container task fails when it reaches it. A
-fresh `ginkgo init` project has one container task, so its first run needs the
-daemon.
+fresh `ginkgo init` project runs without a container runtime: its shell task,
+`package_brief`, runs locally, and naming an image with
+`env="docker://ubuntu:24.04"` is all it takes to move it into one. The start
+hint ginkgo prints for a stopped daemon is the platform's own: Docker Desktop
+on macOS and Windows, `systemctl` on Linux.
 
 ## Pixi Environments
 

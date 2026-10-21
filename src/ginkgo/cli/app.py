@@ -135,6 +135,8 @@ def _normalize_working_directory(args: argparse.Namespace) -> None:
     root = project_root()
     if root == Path.cwd():
         return
+    # Kept for the run header, which says whose project this is.
+    args.invoked_from = str(Path.cwd())
 
     # Resolved before the chdir, while they still mean what the user typed.
     for name in _PATH_ARGS:
@@ -556,6 +558,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         action="store_true",
         help="Also rehash every stored artifact and report corrupt bytes (reads the whole store).",
     )
+    db_check_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help=(
+            "First remove what nothing can use: run and cache directories with no ledger row, "
+            "cache rows whose bytes are gone, and a write-ahead log without its database."
+        ),
+    )
     db_subparsers.add_parser("path", help="Print the provenance database path")
     db_subparsers.add_parser("vacuum", help="Rebuild the database, releasing freed space")
     db_prune_parser = db_subparsers.add_parser(
@@ -636,6 +646,12 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     runs_show_parser.add_argument("run_id", nargs="?")
     runs_show_parser.add_argument(
         "--json", action="store_true", help="Emit the full run manifest as JSON."
+    )
+    runs_show_parser.add_argument(
+        "--all",
+        dest="all_tasks",
+        action="store_true",
+        help="List every task; a large run otherwise lists its first tasks and every failure.",
     )
 
     history_parser = subparsers.add_parser("history", help="Show every run of one task")

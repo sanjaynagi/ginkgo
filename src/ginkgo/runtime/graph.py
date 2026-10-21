@@ -298,11 +298,11 @@ class TaskGraph:
             return self._expr_nodes[expr_id]
         _validate_task_kind(task_def=expr.task_def)
 
-        # The id and label are taken before the arguments are walked, so a
-        # node's arguments take later ids and ordinals follow ascending id.
+        # The id is taken before the arguments are walked, so a node's
+        # arguments take later ids; its label after, so an ordinal follows
+        # dependency order and the first of a chain to run has the bare name.
         node_id = self.next_node_id
         self.next_node_id += 1
-        display_label = self._next_display_label(expr=expr)
 
         next_expr_stack = (*expr_stack, expr_id)
         next_task_path = (*task_path, expr.task_def.base_name)
@@ -317,7 +317,7 @@ class TaskGraph:
             node_id=node_id,
             expr=expr,
             dependency_ids=frozenset(dependency_ids),
-            display_label=display_label,
+            display_label=self._next_display_label(expr=expr),
         )
         self._expr_nodes[expr_id] = node_id
         self.new_node_ids.append(node_id)

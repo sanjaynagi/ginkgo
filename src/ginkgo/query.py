@@ -18,6 +18,7 @@ query written against them may need rewriting after an upgrade. The methods on
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator
@@ -356,13 +357,18 @@ class RerunExplanation:
     task_name : str
         The task's base name; *display_label* names the branch.
     reason : str
-        The summary code: ``all_inputs_match``, ``no_entry_for_key``,
-        ``no_prior_entry``, ``task_moved``, or the first of *details*. A node with no earlier
+        The summary code: ``all_inputs_match``, ``rerun_requested`` (forced
+        by ``--rerun``), ``no_entry_for_key`` (the node ran under this key
+        before and its entry is gone), ``prior_entry_removed`` (the key moved
+        but the entry it moved from is gone), ``no_prior_entry``,
+        ``task_moved``, or the first of *details*. A node with no earlier
         entry of its own is ``no_prior_entry`` even when a sibling's entry
         was compared against.
     details : list[str]
         Every summary code the component diff implies, in the order source,
-        version, environment, inputs.
+        version, environment, inputs. A source change where the task's own
+        text is unchanged is ``module_source_changed``: something else in its
+        module or its local imports moved.
     compared_with : dict[str, str] | None
         The entry compared against and how it was found — ``cache_key`` and a
         ``strategy`` of ``same_node`` (this node's previous entry) or
@@ -486,6 +492,36 @@ class Provenance:
             "cache_key": self.cache_key,
             "inputs": [dict(entry) for entry in self.inputs],
         }
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PriorEntry:
+    """The earlier cache key ``ginkgo cache explain`` compares a task against.
+
+    Attributes
+    ----------
+    cache_key : str
+        The earlier key.
+    strategy : str
+        ``same_node`` (this node's previous run) or ``most_similar_by_function``
+        (the closest entry of the same task, for a node with no history).
+    task_name : str
+        The qualified name the earlier run knew the task by.
+    """
+
+    cache_key: str
+    strategy: str
+    task_name: str
+
+
+def _own_source_unchanged(*, current: CacheEntry, prior: CacheEntry) -> bool:
+    """Return whether two entries record the same task text.
+
+    Their source hashes can still differ: each also covers the task's module
+    and local imports, so an edit to a neighbouring task moves it.
+    """
+    current_own = (current.extra or {}).get("own_source_hash")
+    return current_own is not None and current_own == (prior.extra or {}).get("own_source_hash")
 
 
 class Query:
@@ -759,6 +795,14 @@ class Query:
             for row in rows
         ]
 
+    def _cache_entry(self, cache_key: str) -> CacheEntry | None:
+        """Return one entry's row, or ``None`` once it has been removed."""
+        rows = self._store.query(
+            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
+            (cache_key,),
+        )
+        return CacheEntry.from_row(rows[0]) if rows else None
+
     def _cache_key_components(self, cache_key: str) -> dict[str, Any]:
         """Return the labelled components of one entry's cache key.
 
@@ -766,13 +810,8 @@ class Query:
         payload the key is hashed from, so the two cannot drift and no second
         table has to be kept in step.
         """
-        rows = self._store.query(
-            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM cache_entries WHERE cache_key = ?",  # noqa: S608
-            (cache_key,),
-        )
-        if not rows:
-            return {}
-        return key_components(CacheEntry.from_row(rows[0]).as_meta())
+        entry = self._cache_entry(cache_key)
+        return {} if entry is None else key_components(entry.as_meta())
 
     def cache_stats(self) -> CacheStats:
         """Return entry counts, bytes and hit statistics for the whole cache."""
@@ -810,13 +849,14 @@ class Query:
 
     def _previous_cache_key(
         self, *, run_id: str, task_id: str, current: dict[str, Any]
-    ) -> tuple[str, str] | None:
+    ) -> _PriorEntry | None:
         """Return the key this task's node last used, and how it was found.
 
         The comparison ``ginkgo cache explain`` wants is against the same node
-        of the same workflow in the run before this one — the entry this run
-        superseded. Where that node is new, the closest thing to a predecessor
-        is whichever recent earlier entry of the same function differs from
+        of the same workflow in the latest run before this one. That key can
+        be this run's own: the node ran under it before, and the entry it left
+        is gone. Where the node is new, the closest thing to a predecessor is
+        whichever recent earlier entry of the same function differs from
         *current* least, and the caller is told which of the two it got so it
         does not read a fan-out sibling as a history (issue #223).
 
@@ -831,10 +871,8 @@ class Query:
 
         Returns
         -------
-        tuple[str, str] | None
-            ``(cache_key, strategy)`` where strategy is ``"same_node"`` or
-            ``"most_similar_by_function"``, or ``None`` when nothing earlier
-            exists.
+        _PriorEntry | None
+            The earlier key, or ``None`` when nothing earlier exists.
         """
         rows = self._store.query(
             "SELECT t.name, t.display_label, t.cache_key, r.workflow, r.started_at "
@@ -846,19 +884,18 @@ class Query:
             return None
         task = rows[0]
         same_node = self._store.query(
-            "SELECT t.cache_key FROM tasks t JOIN runs r ON r.run_id = t.run_id "
+            "SELECT t.name, t.cache_key FROM tasks t JOIN runs r ON r.run_id = t.run_id "
             "WHERE r.workflow = ? AND r.started_at < ? AND t.cache_key IS NOT NULL "
-            "AND t.cache_key != ? AND coalesce(t.display_label, t.name) = ? "
+            "AND coalesce(t.display_label, t.name) = ? "
             "ORDER BY r.started_at DESC LIMIT 1",
-            (
-                task["workflow"],
-                task["started_at"],
-                task["cache_key"],
-                task["display_label"] or task["name"],
-            ),
+            (task["workflow"], task["started_at"], task["display_label"] or task["name"]),
         )
         if same_node:
-            return str(same_node[0]["cache_key"]), "same_node"
+            return _PriorEntry(
+                cache_key=str(same_node[0]["cache_key"]),
+                strategy="same_node",
+                task_name=str(same_node[0]["name"]),
+            )
 
         siblings = self._store.query(
             "SELECT cache_key FROM cache_entries WHERE function = ? AND cache_key != ? "
@@ -876,7 +913,9 @@ class Query:
                 diff_key_components(current=current, prior=self._cache_key_components(key))
             ),
         )
-        return closest, "most_similar_by_function"
+        return _PriorEntry(
+            cache_key=closest, strategy="most_similar_by_function", task_name=str(task["name"])
+        )
 
     def explain_rerun(self, run_id: str, task_id: str) -> RerunExplanation:
         """Explain why one task of a run executed rather than serving from cache.
@@ -913,18 +952,18 @@ class Query:
             "task_name": task_base_name(str(task["name"])),
             "display_label": task["display_label"],
             "cache_key": cache_key,
+            "input_labels": self._task_input_labels(run_id=run_id, task_id=task_id),
         }
-        input_labels = self._task_input_labels(run_id=run_id, task_id=task_id)
         if task["status"] == "cached":
-            return RerunExplanation(
-                **identity, reason="all_inputs_match", details=[], input_labels=input_labels
-            )
+            return RerunExplanation(**identity, reason="all_inputs_match", details=[])
+        # Asked before any key is compared: a forced task never looked.
+        if self._rerun_requested(run_id=run_id, task_id=task_id):
+            return RerunExplanation(**identity, reason="rerun_requested", details=[])
 
-        current = self._cache_key_components(cache_key) if isinstance(cache_key, str) else {}
-        if not current:
-            return RerunExplanation(
-                **identity, reason="no_entry_for_key", details=[], input_labels=input_labels
-            )
+        current_entry = self._cache_entry(cache_key) if isinstance(cache_key, str) else None
+        if current_entry is None:
+            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+        current = key_components(current_entry.as_meta())
 
         prior = self._previous_cache_key(run_id=run_id, task_id=task_id, current=current)
         if prior is None:
@@ -934,32 +973,73 @@ class Query:
                 reason="no_prior_entry" if moved_from is None else "task_moved",
                 details=[],
                 moved_from=moved_from,
-                input_labels=input_labels,
+            )
+        compared_with = {"cache_key": prior.cache_key, "strategy": prior.strategy}
+        if prior.cache_key == cache_key:
+            # The node ran under this very key before, so nothing it is keyed
+            # on changed: the entry that run left was removed (`cache prune`,
+            # `cache clear`), or never written because the run failed.
+            return RerunExplanation(**identity, reason="no_entry_for_key", details=[])
+        prior_entry = self._cache_entry(prior.cache_key)
+        if prior_entry is None:
+            # Diffing against nothing would call every component "added".
+            return RerunExplanation(
+                **identity, reason="prior_entry_removed", details=[], compared_with=compared_with
             )
 
-        prior_key, strategy = prior
         components = diff_key_components(
-            current=current, prior=self._cache_key_components(prior_key)
+            current=current, prior=key_components(prior_entry.as_meta())
         )
         details = coarse_reasons(components)
-        return RerunExplanation(
-            **identity,
+        if _own_source_unchanged(current=current_entry, prior=prior_entry):
+            details = [
+                "module_source_changed" if code == "source_hash_changed" else code
+                for code in details
+            ]
+        moved_from = (
+            prior.task_name
+            if prior.strategy == "same_node" and prior.task_name != task["name"]
+            else None
+        )
+        if moved_from is not None:
+            reason = "task_moved"
+        elif prior.strategy == "same_node":
+            reason = details[0]
+        else:
             # A sibling's entry is the nearest thing to compare with, not a
             # predecessor: this node has no earlier entry, so nothing of its
             # own changed. The sibling diff stays as detail.
-            reason=details[0] if strategy == "same_node" else "no_prior_entry",
+            reason = "no_prior_entry"
+        return RerunExplanation(
+            **identity,
+            reason=reason,
             details=details,
-            compared_with={"cache_key": prior_key, "strategy": strategy},
+            compared_with=compared_with,
             components=components,
-            input_labels=input_labels,
+            moved_from=moved_from,
         )
+
+    def _rerun_requested(self, *, run_id: str, task_id: str) -> bool:
+        """Return whether ``--rerun`` forced this task past its cache entry.
+
+        Read from the task's cache-miss event, so it is unknown — ``False`` —
+        once ``ginkgo db prune`` has dropped that run's events.
+        """
+        rows = self._store.query(
+            "SELECT payload FROM events WHERE run_id = ? AND task_id = ? "
+            "AND type = 'task_cache_miss'",
+            (run_id, task_id),
+        )
+        return any(json.loads(row["payload"]).get("rerun_requested") for row in rows)
 
     def _moved_from(self, *, run_id: str, task_id: str) -> str | None:
         """Return the qualified name an earlier run of this workflow gave this task.
 
-        Only asked once no earlier entry of the same qualified name exists: a
-        task of the same base name under another module, in the latest earlier
-        run of the same workflow that had one, is this task before it moved.
+        Only asked once no earlier entry of the same node exists. A task of the
+        same base name under another module, in the latest earlier run of the
+        same workflow that had one, is this task before it moved. Failing
+        that, a rename: the same node of the latest earlier run, under a name
+        this run no longer has and with the same parameters.
         """
         rows = self._store.query(
             "SELECT t.name, r.workflow, r.started_at FROM tasks t "
@@ -977,10 +1057,34 @@ class Query:
             "ORDER BY r.started_at DESC",
             (rows[0]["workflow"], rows[0]["started_at"], name),
         )
-        return next(
+        moved = next(
             (str(row["name"]) for row in earlier if task_base_name(str(row["name"])) == base_name),
             None,
         )
+        if moved is not None:
+            return moved
+
+        previous_run = self._store.query(
+            "SELECT run_id FROM runs WHERE workflow = ? AND started_at < ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (rows[0]["workflow"], rows[0]["started_at"]),
+        )
+        if not previous_run:
+            return None
+        earlier_run_id = str(previous_run[0]["run_id"])
+        same_node = self._store.query(
+            "SELECT name FROM tasks WHERE run_id = ? AND task_id = ? "
+            "AND name NOT IN (SELECT name FROM tasks WHERE run_id = ?)",
+            (earlier_run_id, task_id, run_id),
+        )
+        if not same_node:
+            return None
+        params = "SELECT param FROM task_inputs WHERE run_id = ? AND task_id = ? ORDER BY param"
+        current_params = [row["param"] for row in self._store.query(params, (run_id, task_id))]
+        earlier_params = [
+            row["param"] for row in self._store.query(params, (earlier_run_id, task_id))
+        ]
+        return str(same_node[0]["name"]) if current_params == earlier_params else None
 
     def _task_input_labels(self, *, run_id: str, task_id: str) -> dict[str, str]:
         """Return one task's per-parameter cache-tracking labels.

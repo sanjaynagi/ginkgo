@@ -24,7 +24,9 @@ is refused rather than answered with an empty list. The Workflow column shows
 each workflow's path from where you stand.
 
 `ginkgo runs show <run_id>` prints one run: its workflow, status, duration, and
-a table of its tasks. `--json` prints the full run manifest — the same document
+a table of its tasks. A run of more than 50 tasks lists every task that did not
+succeed and the first of the rest, under a count of each status; `--all` lists
+every task. `--json` prints the full run manifest — the same document
 `.ginkgo/runs/<run_id>/manifest.yaml` holds — with each task's `task_name` and,
 for a fan-out branch, its `display_label`. The run id is optional; without one
 you get the most recent run.

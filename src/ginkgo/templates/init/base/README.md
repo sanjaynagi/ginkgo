@@ -71,7 +71,8 @@ patterns in one small workflow:
 - Python tasks
 - local shell tasks
 - Pixi-backed script execution
-- Docker-backed shell execution
+- a shell task that a single `env="docker://..."` argument moves into a
+  container (see `package_brief` in `workflow/modules/analysis.py`)
 - notebook rendering
 - fan-out and fan-in
 - `expand(...)` for deterministic output-path columns
@@ -95,7 +96,7 @@ patterns in one small workflow:
 
 The default run creates a small set of synthetic work items, normalizes them
 with a local shell task, builds Markdown briefs with a Pixi-backed script task,
-packages those briefs with a Docker-backed shell task, renders a notebook
+packages those briefs with a local shell task, renders a notebook
 overview, and then writes a final delivery manifest.
 
 Outputs are written under `results/`.

@@ -125,7 +125,7 @@ class TestScriptTasks:
 
         assert _tasks(plan) == {
             "write_tag": ("will_run", ("source_hash_changed",)),
-            "read_tag": ("unknown", ()),
+            "read_tag": ("unknown", ("upstream_pending",)),
         }
 
     def test_a_body_dry_run_cannot_evaluate_stays_unknown(self, project: Path) -> None:
@@ -161,6 +161,22 @@ class TestRunReasons:
 
         assert "[will run: no prior entry]" in console.export_text()
 
+    def test_a_task_after_a_will_run_task_says_what_decides_it(self, project: Path) -> None:
+        """NB5-2: not a bare unknown — it waits on its upstream task's output."""
+        ginkgo.evaluate(write_tag(tag="v1", out="tag.txt"))
+        (project / "write_tag.py").write_text(SCRIPT + "# edited\n")
+        console = Console(record=True, width=200)
+
+        render_dry_run_plan(
+            plan=_plan(read_tag(src=write_tag(tag="v1", out="tag.txt"))),
+            console=console,
+            verbose=False,
+        )
+
+        text = console.export_text()
+        assert "[unknown: after upstream]" in text
+        assert "served from cache if that task's output comes out unchanged" in text
+
 
 class TestFolderOutputs:
     def test_a_hand_edit_inside_an_upstream_folder_is_restored_as_the_run_would(
@@ -195,6 +211,12 @@ class TestResourceBudgets:
     def test_a_task_within_budget_is_clean(self, project: Path) -> None:
         assert _plan(big(), cores=8, memory=64).diagnostics == ()
 
+    def test_a_cached_task_over_budget_is_clean(self, project: Path) -> None:
+        """MG5-5: the run serves it from cache and never holds it to the budget."""
+        ginkgo.evaluate(big(), cores=8, memory=64)
+
+        assert _plan(big(), cores=2, memory=4).diagnostics == ()
+
 
 class TestDynamicTasks:
     """G1: a cached dynamic task's children are probed, each on its own."""
@@ -226,7 +248,7 @@ class TestDynamicTasks:
             "read_parts": ("cached", ()),
             "read_tag[part0.txt]": ("cached", ()),
             "read_tag[part1.txt]": ("will_run", ("input_changed",)),
-            "total_length": ("unknown", ()),
+            "total_length": ("unknown", ("upstream_pending",)),
         }
         # Children come after the task that returns them, and its dependents
         # after the children.

@@ -957,11 +957,21 @@ class TaskValidator:
         for name, path, kind in declared_output_paths(
             task_def=task_def, resolved_args=resolved_args
         ):
-            if not output_path_matches_kind(path=path, kind=kind):
-                raise DeclaredOutputNotWrittenError(
-                    f"{task_def.base_name}.{name} is declared `Out[{kind}]` but "
-                    f"{path!r} was not written."
+            if output_path_matches_kind(path=path, kind=kind):
+                continue
+            # Something of the other kind at the path is a different mistake
+            # from nothing at all: the task wrote, just not what it declared.
+            found = Path(path)
+            written = "a directory" if found.is_dir() else "a file" if found.exists() else None
+            if written is None:
+                detail = "was not written."
+            else:
+                detail = f"is {written}; `Out[{kind}]` needs " + (
+                    "a regular file there." if kind == "file" else "a directory there."
                 )
+            raise DeclaredOutputNotWrittenError(
+                f"{task_def.base_name}.{name} is declared `Out[{kind}]` but {path!r} {detail}"
+            )
 
     def validate_return_value(self, *, task_def: TaskDef, value: Any) -> None:
         """Validate a task return value against its path or scalar annotation."""

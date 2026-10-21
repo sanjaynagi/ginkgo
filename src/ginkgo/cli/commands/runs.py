@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter
+from collections.abc import Sequence
 
 from rich.text import Text
 
@@ -12,11 +14,17 @@ from ginkgo.cli.common import console, new_table, open_run
 from ginkgo.formatting import format_duration, format_timestamp, parse_timestamp
 from ginkgo.query import RunRow
 from ginkgo.runtime.module_loader import display_path
-from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.rundir import runs_without_ledger_warning
 from ginkgo.workspace_layout import WorkspaceLayout
 
 __all__ = ["command_runs"]
+
+_TASK_ROW_LIMIT = 50
+"""Most task rows ``runs show`` lists without ``--all``; failures always show."""
+
+_UNREMARKABLE = frozenset({"succeeded", "cached"})
+"""Task statuses a long listing may leave out."""
 
 
 def command_runs(args) -> int:
@@ -36,7 +44,27 @@ def command_runs(args) -> int:
 
     with open_run(args.run_id) as (reader, run_id):
         summary = reader.run(run_id)
-    return _render_show(rich_console, summary=summary, as_json=as_json)
+    return _render_show(
+        rich_console,
+        summary=summary,
+        as_json=as_json,
+        all_tasks=bool(getattr(args, "all_tasks", False)),
+    )
+
+
+def _shown_tasks(tasks: Sequence[TaskSummary], *, all_tasks: bool) -> Sequence[TaskSummary]:
+    """Return the tasks ``runs show`` lists, in run order.
+
+    Every task that did not succeed, then the first of the rest up to
+    :data:`_TASK_ROW_LIMIT` rows.
+    """
+    if all_tasks or len(tasks) <= _TASK_ROW_LIMIT:
+        return tasks
+    notable = [task for task in tasks if task.status not in _UNREMARKABLE]
+    room = max(_TASK_ROW_LIMIT - len(notable), 0)
+    rest = [task for task in tasks if task.status in _UNREMARKABLE][:room]
+    kept = {id(task) for task in (*notable, *rest)}
+    return [task for task in tasks if id(task) in kept]
 
 
 def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
@@ -82,8 +110,13 @@ def _render_ls(rich_console, *, rows: list[RunRow], as_json: bool) -> int:
     return 0
 
 
-def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
-    """Print one run as JSON or as a header and a task table."""
+def _render_show(rich_console, *, summary: RunSummary, as_json: bool, all_tasks: bool) -> int:
+    """Print one run as JSON or as a header and a task table.
+
+    A run of more than :data:`_TASK_ROW_LIMIT` tasks lists its first ones and
+    every task that did not succeed, under a count of each status, unless
+    *all_tasks* asks for the lot; ``--json`` always holds every task.
+    """
     if as_json:
         print(json.dumps(summary.to_payload(), indent=2, sort_keys=True))
         return 0
@@ -111,13 +144,19 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
         rich_console.print("\n[dim]This run recorded no tasks.[/]")
         return 0
 
+    shown = _shown_tasks(summary.tasks, all_tasks=all_tasks)
+    if len(shown) < len(summary.tasks):
+        counts = Counter(task.status for task in summary.tasks)
+        breakdown = ", ".join(f"{count} {status}" for status, count in counts.most_common())
+        rich_console.print(f"\nTasks: {len(summary.tasks)} ({breakdown})")
+
     table = new_table()
     table.add_column("Task", style="bold", overflow="fold")
     table.add_column("Status")
     table.add_column("Cached")
     table.add_column("Duration", justify="right")
     table.add_column("Attempts", justify="right")
-    for task in summary.tasks:
+    for task in shown:
         table.add_row(
             Text(task.label),
             task.status,
@@ -127,6 +166,12 @@ def _render_show(rich_console, *, summary: RunSummary, as_json: bool) -> int:
         )
     rich_console.print("")
     rich_console.print(table)
+    hidden = len(summary.tasks) - len(shown)
+    if hidden:
+        rich_console.print(
+            f"[dim]… {hidden} more {'task' if hidden == 1 else 'tasks'}, all succeeded or "
+            "cached — `--all` lists every one.[/]"
+        )
 
     retried = [task for task in summary.tasks if len(task.attempt_history) > 1]
     if retried:

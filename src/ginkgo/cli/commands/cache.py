@@ -27,6 +27,7 @@ from ginkgo import query
 from ginkgo.cli.common import CACHE_ROOT, console, new_table
 from ginkgo.cli.errors import UsageError
 from ginkgo.formatting import cutoff_before, format_bytes, format_int, parse_timestamp
+from ginkgo.store.maintenance import disk_usage
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.query import CacheEntryRow, CacheStats, Query
 from ginkgo.runtime.artifacts.artifact_store import make_writable_recursive
@@ -66,6 +67,9 @@ def command_cache(args) -> int:
         table.add_column("Label", no_wrap=True)
         table.add_column("Size", justify="right")
         table.add_column("Age", justify="right")
+        # Apparent bytes: a file smaller than a filesystem block still takes one.
+        table.caption = "Sizes are apparent; `ginkgo cache stats` gives the space on disk."
+
         table.add_column("Created", no_wrap=True)
         for row in entries:
             table.add_row(
@@ -111,7 +115,7 @@ def command_cache(args) -> int:
             )
             rich_console.print(
                 f"[cyan]Preview:[/] {len(entries)} entries {reason} "
-                f"([bold]{format_bytes(total_bytes)}[/]) would be removed."
+                f"([bold]{format_bytes(total_bytes)}[/] apparent size) would be removed."
             )
             for entry in entries:
                 rich_console.print(
@@ -119,19 +123,27 @@ def command_cache(args) -> int:
                 )
             return 0
 
-        freed_bytes = sum(entry.output_bytes for entry in entries)
+        freed_bytes = 0
+        orphans = 0
         if entries or _database_exists():
             with _cache_store() as cache_store:
                 for entry in entries:
-                    _remove_entry(cache_store, entry.cache_key)
+                    freed_bytes += remove_entry(cache_store, entry.cache_key)
+                # Directories no row names are bytes nothing will ever hit,
+                # which `db check` would otherwise go on flagging.
+                orphan_dirs = cache_store.orphan_entry_dirs()
+                orphans = len(orphan_dirs)
+                freed_bytes += sum(_remove_tree(path) for path in orphan_dirs)
                 # An artifact a surviving entry still names stays, so what was
                 # freed is counted from what the collector actually deleted.
-                freed_bytes += _gc_orphan_artifacts(cache_store)
+                freed_bytes += gc_orphan_artifacts(cache_store)
 
+        removed = f"{len(entries)} cache {'entry' if len(entries) == 1 else 'entries'}"
+        if orphans:
+            removed += f" and {orphans} orphaned {'directory' if orphans == 1 else 'directories'}"
         rich_console.print(
-            f"[green]✓[/] Removed [bold]{len(entries)}[/] cache "
-            f"{'entry' if len(entries) == 1 else 'entries'} "
-            f"([bold]{format_bytes(freed_bytes)}[/] freed)."
+            f"[green]✓[/] Removed [bold]{removed}[/] ([bold]{format_bytes(freed_bytes)}[/] "
+            "freed on disk)."
         )
         if entries:
             rich_console.print(_LEDGER_SPACE_NOTE)
@@ -172,15 +184,14 @@ def _clear(args, rich_console) -> int:
         if not (CACHE_ROOT / args.cache_key).is_dir():
             raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
         with _cache_store() as cache_store:
-            output_bytes = _output_bytes(cache_store, args.cache_key)
-            _remove_entry(cache_store, args.cache_key)
-            freed_bytes = output_bytes + _gc_orphan_artifacts(cache_store)
+            freed_bytes = remove_entry(cache_store, args.cache_key)
+            freed_bytes += gc_orphan_artifacts(cache_store)
 
         message = Text()
         message.append("✓ ", style="green")
         message.append("Removed cache entry ")
         message.append(args.cache_key, style="bold")
-        message.append(f" ({format_bytes(freed_bytes)} freed).")
+        message.append(f" ({format_bytes(freed_bytes)} freed on disk).")
         message.no_wrap = True
         rich_console.print(message)
         rich_console.print(_LEDGER_SPACE_NOTE)
@@ -195,7 +206,7 @@ def _clear(args, rich_console) -> int:
     if args.orphans:
         with _cache_store() as cache_store:
             orphans = _remove_orphans(cache_store)
-            _gc_orphan_artifacts(cache_store)
+            gc_orphan_artifacts(cache_store)
         rich_console.print(
             f"[green]✓[/] Removed [bold]{orphans}[/] orphaned cache "
             f"{'directory' if orphans == 1 else 'directories'}."
@@ -207,16 +218,15 @@ def _clear(args, rich_console) -> int:
     if args.task is not None and not rows:
         raise FileNotFoundError(f"No cache entries found for task: {args.task}")
     with _cache_store() as cache_store:
-        for row in rows:
-            _remove_entry(cache_store, row.cache_key)
+        freed_bytes = sum(remove_entry(cache_store, row.cache_key) for row in rows)
         orphans = _remove_orphans(cache_store) if args.clear_all else 0
         # As prune counts it: an artifact another entry still names stays.
-        freed_bytes = sum(row.output_bytes for row in rows) + _gc_orphan_artifacts(cache_store)
+        freed_bytes += gc_orphan_artifacts(cache_store)
     removed = f"{len(rows)} cache {'entry' if len(rows) == 1 else 'entries'}"
     if orphans:
         removed += f" and {orphans} orphaned {'directory' if orphans == 1 else 'directories'}"
     rich_console.print(
-        f"[green]✓[/] Removed [bold]{removed}[/] ({format_bytes(freed_bytes)} freed)."
+        f"[green]✓[/] Removed [bold]{removed}[/] ({format_bytes(freed_bytes)} freed on disk)."
     )
     if rows:
         rich_console.print(_LEDGER_SPACE_NOTE)
@@ -230,17 +240,11 @@ _LEDGER_SPACE_NOTE = (
 """What ``clear`` and ``prune`` say about bytes their freed count leaves out."""
 
 
-def _output_bytes(cache_store: CacheStore, cache_key: str) -> int:
-    """Return the stored output bytes of one entry, ``0`` when it has no row."""
-    entry = cache_store.index.entry(cache_key)
-    return 0 if entry is None else int(entry["size_bytes"] or 0)
-
-
 def _remove_orphans(cache_store: CacheStore) -> int:
     """Remove the entry directories with no row.
 
     The artifacts they named are the caller's to collect, with
-    :func:`_gc_orphan_artifacts`.
+    :func:`gc_orphan_artifacts`.
 
     Returns
     -------
@@ -249,7 +253,7 @@ def _remove_orphans(cache_store: CacheStore) -> int:
     """
     orphans = cache_store.orphan_entry_dirs()
     for entry_dir in orphans:
-        _safe_rmtree(entry_dir)
+        _remove_tree(entry_dir)
     return len(orphans)
 
 
@@ -259,12 +263,15 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
     if _database_exists():
         with _reader() as reader:
             stats = reader.cache_stats()
+    layout = WorkspaceLayout.relative()
+    disk_bytes = disk_usage(layout.cache) + disk_usage(layout.artifacts)
     if as_json:
         print(
             json.dumps(
                 {
                     "entries": stats.entries,
                     "total_bytes": stats.total_bytes,
+                    "disk_bytes": disk_bytes,
                     "artifact_bytes": stats.artifact_bytes,
                     "never_hit": stats.never_hit,
                     "never_hit_bytes": stats.never_hit_bytes,
@@ -287,8 +294,12 @@ def _render_stats(rich_console, *, as_json: bool) -> int:
 
     rich_console.print("[bold green]🌿 ginkgo cache[/] [bold]stats[/]\n")
     rich_console.print(f"Entries: [bold]{format_int(stats.entries)}[/]")
-    rich_console.print(f"Total size: [bold]{format_bytes(stats.total_bytes)}[/]")
-    rich_console.print(f"Artifact store: [bold]{format_bytes(stats.artifact_bytes)}[/]")
+    rich_console.print(f"Total size: [bold]{format_bytes(stats.total_bytes)}[/] apparent")
+    rich_console.print(f"Artifact store: [bold]{format_bytes(stats.artifact_bytes)}[/] apparent")
+    rich_console.print(
+        f"On disk: [bold]{format_bytes(disk_bytes)}[/] [dim](cache entries and artifact "
+        "store, in allocated blocks as du counts them)[/]"
+    )
     rich_console.print(
         f"Never hit: [bold]{format_int(stats.never_hit)}[/] "
         f"([bold]{format_bytes(stats.never_hit_bytes)}[/])"
@@ -330,15 +341,21 @@ def _cache_store() -> Iterator[CacheStore]:
         yield CacheStore(index=index, root=layout.cache)
 
 
-def _remove_entry(cache_store: CacheStore, cache_key: str) -> None:
+def remove_entry(cache_store: CacheStore, cache_key: str) -> int:
     """Remove one entry's bytes, then its rows — in that order.
 
     A row without bytes is a miss the next run pays for once; bytes without a
     row are an orphan nothing collects. Doing it the other way round leaves the
     worse of the two behind if the process dies between the halves.
+
+    Returns
+    -------
+    int
+        The disk space the entry's directory occupied.
     """
-    _safe_rmtree(cache_store.output_path(cache_key).parent)
+    freed = _remove_tree(cache_store.output_path(cache_key).parent)
     cache_store.index.forget_entries([cache_key])
+    return freed
 
 
 def _database_exists() -> bool:
@@ -361,8 +378,7 @@ class CacheEntryDisplay:
     """The fan-out branch that last recorded the key, or ``-``."""
     size: str
     size_bytes: int
-    """The entry's output plus the artifacts it names."""
-    output_bytes: int
+    """The entry's apparent size: its output, its value's blobs and the artifacts it names."""
     age: str
     created: str
     created_at: datetime | None
@@ -398,7 +414,6 @@ def _cache_entry_row(row: CacheEntryRow) -> CacheEntryDisplay:
         label=row.display_label or "-",
         size=format_bytes(row.size_bytes),
         size_bytes=row.size_bytes,
-        output_bytes=row.output_bytes,
         age=_format_age(created_at),
         created=row.created_at or "-",
         created_at=created_at,
@@ -528,22 +543,35 @@ def parse_size_bytes(value: str) -> int:
     return int(float(count) * (1024 if binary else 1000) ** exponent)
 
 
-def _safe_rmtree(path: Path) -> None:
-    """Remove a cache entry directory, handling read-only artifacts."""
+def _remove_tree(path: Path) -> int:
+    """Remove a cache entry directory, handling read-only artifacts.
+
+    Returns
+    -------
+    int
+        The disk space it occupied — allocated blocks, as ``du`` counts them,
+        not the apparent size of its files — or ``0`` if it was not there.
+    """
+    if not path.exists():
+        return 0
+    freed = disk_usage(path)
     try:
         shutil.rmtree(path)
     except PermissionError:
         make_writable_recursive(path)
         shutil.rmtree(path)
+    return freed
 
 
-def _gc_orphan_artifacts(cache_store: CacheStore) -> int:
+def gc_orphan_artifacts(cache_store: CacheStore) -> int:
     """Remove artifacts no cache entry points at, returning the bytes freed."""
     layout = WorkspaceLayout.relative()
     if not layout.artifacts.exists():
         return 0
 
-    referenced = cache_store.index.referenced_artifact_ids()
+    # An entry names its output paths' artifacts in rows, and a large value's
+    # (a DataFrame's Parquet) from inside its encoded value; both are kept.
+    referenced = cache_store.index.referenced_artifact_ids() | cache_store.value_artifact_ids()
 
     store = cache_store.artifact_store_view
     freed = 0
@@ -551,8 +579,9 @@ def _gc_orphan_artifacts(cache_store: CacheStore) -> int:
         if artifact_id in referenced:
             continue
         record = store.load_record(artifact_id=artifact_id)
-        if record is not None and record.kind == "blob":
-            freed += record.size
+        path = store.artifact_path(artifact_id=artifact_id)
+        if record is not None and record.kind == "blob" and path.is_file():
+            freed += disk_usage(path)
         store.delete(artifact_id=artifact_id)
     # A tree's member blobs outlive its row, since another tree may share
     # them; the ones nothing reaches any more go here.
@@ -581,10 +610,22 @@ _TRACKING_HINTS = {
 
 _REASON_TEXT = {
     "all_inputs_match": "cache hit — every input matched the stored entry",
-    "no_entry_for_key": "no cache entry exists for this key",
+    "rerun_requested": "forced by --rerun; the cache was not consulted",
+    "no_entry_for_key": (
+        "no cache entry exists for this key — nothing it is keyed on changed, but the "
+        "entry was removed (cache prune or clear) or never written (the earlier run failed)"
+    ),
+    "prior_entry_removed": (
+        "the cache key changed, and the previous entry has since been removed, so the "
+        "component that moved cannot be named"
+    ),
     "no_prior_entry": "no earlier run of this call to compare against",
     "task_moved": "the task moved or was renamed, which starts it without a cache entry",
     "source_hash_changed": "the task's source changed",
+    "module_source_changed": (
+        "the task's own code is unchanged, but its module or a local module it imports "
+        "changed — for example another task defined in the same file"
+    ),
     "version_bump": "the task's declared version changed",
     "env_changed": "the declared environment changed",
     "input_changed": "one or more inputs changed",
@@ -631,7 +672,8 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
         rich_console.print(f"  cache key: [bold]{escape(str(cache_key))}[/]")
 
     reason = str(task.get("reason") or "")
-    rich_console.print(f"  reason: {_REASON_TEXT.get(reason, escape(reason))}")
+    components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
+    rich_console.print(f"  reason: {_reason_text(reason=reason, components=components)}")
     moved_from = task.get("moved_from")
     if moved_from:
         rich_console.print(
@@ -646,7 +688,6 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
             rich_console.print(f"    {_render_tracking_label(param=param, label=label)}")
 
     compared_with = task.get("compared_with")
-    components = [item for item in (task.get("components") or []) if isinstance(item, dict)]
     if isinstance(compared_with, dict):
         # A sibling's entry is context for a new branch, not its history.
         against = (
@@ -658,11 +699,36 @@ def _render_task_explanation(rich_console, task: dict[str, Any]) -> None:
             f"  compared with {against}, [bold]{escape(str(compared_with.get('cache_key')))}[/]"
         )
         for component in components:
-            rich_console.print(
-                f"    {escape(str(component.get('component')))} "
-                f"[dim]({escape(str(component.get('status')))})[/]"
-            )
+            rich_console.print(f"    {_component_line(component)}")
     rich_console.print()
+
+
+def _reason_text(*, reason: str, components: list[dict[str, Any]]) -> str:
+    """Return the reason line, naming the inputs that moved as the JSON does."""
+    inputs = [
+        str(item["component"]).removeprefix("inputs.")
+        for item in components
+        if str(item.get("component", "")).startswith("inputs.")
+    ]
+    if reason == "input_changed" and inputs:
+        noun = "input" if len(inputs) == 1 else "inputs"
+        return f"{noun} {escape(', '.join(inputs))} changed"
+    return _REASON_TEXT.get(reason, escape(reason))
+
+
+def _component_line(component: dict[str, Any]) -> str:
+    """Return one moved component with its prior and current values, shortened."""
+    name = escape(str(component.get("component")))
+    values = [_short_value(component[side]) for side in ("prior", "current") if side in component]
+    status = str(component.get("status"))
+    detail = f"{status}: {' → '.join(values)}" if values else status
+    return f"{name} [dim]({escape(detail)})[/]"
+
+
+def _short_value(value: object) -> str:
+    """Return a component value short enough to read beside its name."""
+    text = str(value)
+    return text if len(text) <= 16 else f"{text[:12]}…"
 
 
 def _render_tracking_label(*, param: object, label: object) -> str:

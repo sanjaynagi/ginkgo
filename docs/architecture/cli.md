@@ -192,7 +192,8 @@ the end. `--dry-run` previews what would be removed without touching disk.
 
 `ginkgo cache clear <key>` removes one entry. `ginkgo cache clear --orphans`
 removes every entry directory the database has no row for, which is what a lost
-database leaves behind; `ginkgo db check` lists them first. `ginkgo cache stats`
+database leaves behind; `ginkgo db check` lists them first, and `cache prune` and
+`db check --fix` remove them too. `ginkgo cache stats`
 summarises the index — entries, bytes, hit histogram, never-hit bytes, and the
 functions holding the most — as a table or `--json`.
 
@@ -212,7 +213,10 @@ a deletion starts a new one, and warns that it does): a run listing adds the
 warning when `.ginkgo/runs/` holds directories it has no row for; `doctor`
 reports it as a `runs_without_ledger` warning diagnostic, and recorded runs
 whose directories are gone (`rundir.runs_without_directory_warning`) as
-`runs_without_directory`. Both leave its exit status at 0.
+`runs_without_directory`. Both leave its exit status at 0. Everything else
+`db check` fails on reaches doctor through `db.ledger_problems`: a ledger SQLite
+cannot open, or whose integrity check fails, is a `corrupt_ledger` error, and
+cache drift a `ledger_drift` warning that points at `db check --fix`.
 
 `db prune` takes three cutoffs, at least one required.
 `--events-older-than <duration>` deletes the raw events of runs that finished

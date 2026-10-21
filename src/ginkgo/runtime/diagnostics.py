@@ -36,6 +36,7 @@ MISSING_DIRECTIVE_CODE = "missing_directive_return"
 ENVIRON_READ_CODE = "environ_read_in_task"
 LITERAL_PATH_CODE = "undeclared_literal_path"
 STATIC_NOTICE_CODE = "task_kind_notice"
+SPACED_COMMAND_PATH_CODE = "spaced_command_path"
 REFUSED_DIRECTIVE_CODE = "refused_directive"
 ENV_WARNING_CONSEQUENCE = (
     "A run fails at the first task in this environment that has to run; "
@@ -180,6 +181,7 @@ def collect_workflow_diagnostics(
         )
         diagnostics.extend(literal_path_diagnostics(nodes=graph.nodes.values(), root=Path.cwd()))
         diagnostics.extend(static_notice_diagnostics(nodes=graph.nodes.values()))
+        diagnostics.extend(spaced_command_path_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(refused_directive_diagnostics(nodes=graph.nodes.values()))
         diagnostics.extend(dropped_calls)
         diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
@@ -548,6 +550,63 @@ def _call_root(*, call: ast.expr, namespace: dict[str, Any]) -> Any:
     while isinstance(node, ast.Call | ast.Attribute):
         node = node.func if isinstance(node, ast.Call) else node.value
     return namespace.get(node.id) if isinstance(node, ast.Name) else None
+
+
+def spaced_command_path_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:
+    """Warn where an upstream ``Out[...]`` path with a space feeds a shell command.
+
+    A task whose body writes its own command (``shell(cmd=...)``) cannot take a
+    path containing a space: the shell splits it in two, so the run refuses it
+    once the path is resolved. A literal path the task is given is refused by
+    the dry run already; one that only arrives as an upstream task's result is
+    known only when that task has run — mid-run, after the work before it.
+    The upstream task's literal ``Out[...]`` path says so beforehand.
+
+    Parameters
+    ----------
+    nodes : Iterable[TaskNode]
+        The graph's task nodes.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning`` per upstream output path, however many consumers read it.
+    """
+    by_id = {node.node_id: node for node in nodes}
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen: set[tuple[str, str]] = set()
+    for node in by_id.values():
+        if not task_kind(node.task_def).user_built_command:
+            continue
+        for dependency_id in sorted(node.dependency_ids):
+            upstream = by_id.get(dependency_id)
+            if upstream is None:
+                continue
+            for name in sorted(upstream.task_def.output_params):
+                path = upstream.expr.args.get(name)
+                if not isinstance(path, str | Path) or " " not in str(path):
+                    continue
+                key = (node.task_def.name, str(path))
+                if key in seen:
+                    continue
+                seen.add(key)
+                consumer = node.task_def.base_name
+                diagnostics.append(
+                    WorkflowDiagnostic(
+                        severity="warning",
+                        code=SPACED_COMMAND_PATH_CODE,
+                        message=(
+                            f"{consumer} is a {node.task_def.kind} task reading the result of "
+                            f"{upstream.task_def.base_name}, whose {name} is {str(path)!r}: a "
+                            "path with a space cannot reach a command the shell splits on "
+                            f"whitespace, so the run would stop at {consumer}."
+                        ),
+                        location=node.task_def.name,
+                        suggestion="Rename the path without spaces, or make "
+                        f"{consumer} a python or script task.",
+                    )
+                )
+    return diagnostics
 
 
 def static_notice_diagnostics(*, nodes: Iterable[TaskNode]) -> list[WorkflowDiagnostic]:

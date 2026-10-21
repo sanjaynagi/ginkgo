@@ -77,7 +77,8 @@ at the nearest `ginkgo.toml`.
 `ginkgo db`
 : Maintain the provenance database. `db path` prints where it is, `db migrate`
   creates or upgrades it, `db check` reports anything the database and the files
-  beside it disagree about (`--verify` also rehashes every stored artifact),
+  beside it disagree about (`--verify` also rehashes every stored artifact,
+  `--fix` first removes what nothing can use any more),
   `db prune` deletes history you no longer need, and
   `db vacuum` gives the freed space back. See
   [Caching and Provenance](caching-and-provenance.md).
@@ -142,7 +143,9 @@ fan-out, a display label such as `align[sample_a]` reruns one. The rerun
 saves its result as usual. Tasks downstream run again only if that result
 changed, and a dynamic task's children are still looked up on their own,
 and can be named by their labels too. A name that no task in the workflow's
-modules carries is a usage error (exit 2) before anything runs. A name of a
+modules carries is a usage error (exit 2) before anything runs, and so is a
+label of a task the graph does call that matches none of its calls
+(`align[sample_z]` for samples without one), which the error lists. A name of a
 defined task that the flow's graph lacks may still match a task a dynamic task
 returns; if nothing in the finished run matched it, the run warns. A dry run
 shows a rerun task as `will_run`.
@@ -318,6 +321,12 @@ alone, and nothing checks that it exists. A path the task writes belongs in
 fills from another task's result is not flagged: the producing task's return
 annotation decides how that value is tracked.
 
+They also warn, as `spaced_command_path`, where a shell task reads the result
+of a task whose literal `Out[...]` path contains a space. A shell command is a
+string the shell splits on whitespace, so the run would refuse that path when
+it reaches the shell task, after the work upstream of it; a literal path given
+to the shell task itself is already a dry-run problem.
+
 Every diagnostic code is lower snake_case, such as `missing_secret` or
 `invalid_env_kind`. An error doctor does not recognise is reported under its
 exception's name, as in `file_not_found_error`.
@@ -416,7 +425,10 @@ duration is a positive whole number of minutes, hours or days (`45m`, `12h`,
 ones, and `--dry-run` to preview what would be removed. `cache stats` takes
 `--json`. Its artifact-store figure (`artifact_bytes` in JSON) is separate from
 the entries' total size: the store also holds bytes no entry names, so pruning
-entries does not bound it.
+entries does not bound it. Both are apparent sizes; `On disk` (`disk_bytes`) is
+the space the cache and the artifact store occupy in allocated blocks, as `du`
+counts it, and the space `clear` and `prune` report freed is measured the same
+way.
 
 ### Why Did This Task Run Again?
 
@@ -479,13 +491,25 @@ A component's `status` is `changed`, or `added` / `removed` for a parameter that
 appeared or went away.
 
 Some tasks get a summary `reason` on its own, with no `components`: a task that
-did not re-run reports `all_inputs_match`, one with no earlier entry of any kind
-to compare against reports `no_prior_entry`, and one whose key has no cache entry at all —
-because it failed, or because the entry was pruned — reports `no_entry_for_key`.
+did not re-run reports `all_inputs_match`; one named by `--rerun` reports
+`rerun_requested`, since its cache was never consulted; one with no earlier entry
+of any kind to compare against reports `no_prior_entry`; and one whose node ran
+under this very key before, but whose entry is gone — pruned, cleared, or never
+written because that run failed — reports `no_entry_for_key`. When the key moved
+but the entry it moved from has since been removed, the reason is
+`prior_entry_removed`: there is nothing left to name the moved component from.
 A task that an earlier run of the same workflow knew under another module or
-qualified name reports `task_moved`, with that name as `moved_from`: a task's
-cache identity includes its module and name, so moving or renaming it starts it
-without a cache entry.
+qualified name — moved to another file, or renamed with its parameters kept —
+reports `task_moved`, with that name as `moved_from`: a task's cache identity
+includes its module and name, so moving or renaming it starts it without a cache
+entry.
+
+A source change where the task's own text is unchanged reports
+`module_source_changed` instead of `source_hash_changed`: the source hash also
+covers the task's module and the local modules it imports, so editing another
+task defined in the same file re-runs this one too (see
+[Caching and Provenance](caching-and-provenance.md)). The text form names the
+changed inputs and shows each moved component's earlier and current value.
 
 ## A Typical Loop
 

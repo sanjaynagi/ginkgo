@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Collection, Sequence
 
 from rich.markup import escape
+from rich.text import Text
 
 from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
@@ -22,7 +23,7 @@ from ginkgo.plugins.registry import PluginNotFoundError, plugin_registry
 from ginkgo.cli.common import RUNS_ROOT, RunMode, console
 from ginkgo.cli.renderers.common import environment_label
 from ginkgo.errors import GinkgoError
-from ginkgo.formatting import format_duration
+from ginkgo.formatting import cutoff_before, format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer, event_line
 from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE, UsageError
@@ -75,6 +76,7 @@ from ginkgo.runtime.diagnostics import (
     literal_path_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
+    spaced_command_path_diagnostics,
     static_notice_diagnostics,
     unreachable_call_diagnostics,
 )
@@ -95,6 +97,9 @@ from ginkgo.runtime.events import (
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
 from ginkgo.runtime.task_runners.subworkflow import PARENT_RUN_ID_ENV, PARENT_TASK_ID_ENV
+from ginkgo.store.errors import StoreError
+from ginkgo.store.maintenance import event_retention, prune_events
+from ginkgo.store.sqlite import open_store
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -162,6 +167,7 @@ def _run_resolved_workflow(args, *, output_mode: RunMode, run_id: str) -> int:
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
         command_flags=getattr(args, "command_flags", ()),
+        invoked_from=Path(args.invoked_from) if getattr(args, "invoked_from", None) else None,
     )
 
 
@@ -283,6 +289,7 @@ def run_workflow(
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
     command_flags: Collection[str] = (),
+    invoked_from: Path | None = None,
 ) -> int:
     run_id = run_id or make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -294,8 +301,9 @@ def run_workflow(
     # would name a run that never exists.
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]"
         )
+        _print_project_root(rich_console, invoked_from=invoked_from)
 
     load_started = time.perf_counter()
     # The runtime config is loaded before the workflow is imported so that
@@ -361,6 +369,7 @@ def run_workflow(
     # CLI --resource flags win over [resources.budgets] per dimension.
     resource_budgets = resource_budgets_from_config(runtime_config.get("resources"))
     resource_budgets.update(parse_resource_budget_args(resource_args))
+    keep_events_for = event_retention(runtime_config)
     # Shared by the validate/dry-run evaluator and the run evaluator below —
     # the two must resolve resources and placement identically.
     evaluator_kwargs: dict[str, Any] = {
@@ -425,7 +434,8 @@ def run_workflow(
     # container tasks that have to run, so it is a warning here, not a failure.
     for warning in evaluator.validator.env_warnings:
         diagnostic = env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
-        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
+        # Not hard-wrapped: the message names paths and commands to copy.
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}", soft_wrap=True)
 
     # A parameter must reach a task as an argument. One read from a module global
     # is invisible to that task's cache key, so a changed value would silently
@@ -462,6 +472,12 @@ def run_workflow(
             "'fastq_stats[sample_a]'`). A task whose module only a task body imports "
             "is found once the workflow imports that module too."
         )
+    # A label of a task the static graph has calls of names a branch that is
+    # not there — `trim[S99]` for a sample list without S99 — and would
+    # otherwise rerun nothing and exit 0.
+    missing_labels = _missing_rerun_labels(evaluator=evaluator, names=unmatched)
+    if missing_labels:
+        raise UsageError(" ".join(missing_labels))
 
     # A parameter named like a path but annotated a bare `str` is content-tracked
     # only when its value names an existing regular file and reads as a path (a
@@ -482,6 +498,7 @@ def run_workflow(
                 task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
             ),
             *static_notice_diagnostics(nodes=evaluator.graph.nodes.values()),
+            *spaced_command_path_diagnostics(nodes=evaluator.graph.nodes.values()),
         ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.
@@ -583,8 +600,9 @@ def run_workflow(
 
     if output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]"
         )
+        _print_project_root(rich_console, invoked_from=invoked_from)
         rich_console.print(
             f"[cyan]📦[/] Loading workflow...  [green]done[/] ({format_duration(load_elapsed)})"
         )
@@ -625,6 +643,9 @@ def run_workflow(
         bus.emit(RunNotice(run_id=run_id, message=message))
 
     with ExitStack() as stack:
+        # Registered first, so it runs last: once this run's events are in.
+        if keep_events_for is not None:
+            stack.callback(_prune_old_events, keep_events_for=keep_events_for)
         stack.callback(recorder.close)
         # Stopped before the recorder closes: stopping emits a final sample.
         stack.callback(resource_monitor.stop)
@@ -877,6 +898,31 @@ def _rerun_names(*, evaluator: ConcurrentEvaluator) -> set[str]:
     return {name for node in evaluator.task_nodes.values() for name in node.rerun_names}
 
 
+def _missing_rerun_labels(*, evaluator: ConcurrentEvaluator, names: set[str]) -> list[str]:
+    """Return one message per ``--rerun`` label naming no call of a task in the graph.
+
+    Only a label (``task[branch]``) whose task the static graph does call is
+    judged here: a bare name, or a label of a task only a dynamic expansion
+    returns, may still match once the run expands it.
+    """
+    labels_by_task: dict[str, list[str]] = {}
+    for node in evaluator.task_nodes.values():
+        for name in (node.task_def.name, node.task_def.base_name):
+            labels_by_task.setdefault(name, []).append(node.label)
+    messages = []
+    for name in sorted(names):
+        task_name, bracket, _ = name.partition("[")
+        labels = labels_by_task.get(task_name)
+        if not bracket or labels is None:
+            continue
+        shown = ", ".join(sorted(labels)[:5]) + (", ..." if len(labels) > 5 else "")
+        messages.append(
+            f"--rerun {name} names no call of {task_name} in this run; its calls are "
+            f"labelled {shown}."
+        )
+    return messages
+
+
 def _defined_task_names(*, root: Path) -> set[str]:
     """Return the qualified and base names of every task defined under *root*.
 
@@ -903,6 +949,50 @@ def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
         if diagnostic.suggestion:
             console(sys.stderr).print(f"  [dim]{escape(diagnostic.suggestion)}[/]")
+
+
+def _print_project_root(rich_console, *, invoked_from: Path | None) -> None:
+    """Print the project root the run resolves paths and writes ``.ginkgo/`` in.
+
+    Run from a subdirectory with no ``ginkgo.toml`` of its own, ginkgo runs the
+    project the nearest one above belongs to; that is said outright, since a
+    bare ``ginkgo run`` there runs that project's workflow, not one beside the
+    user.
+    """
+    rich_console.print(
+        Text.assemble(("Project: ", "dim"), (str(Path.cwd()), "dim")), soft_wrap=True
+    )
+    if invoked_from is not None:
+        subdirectory = (
+            invoked_from.relative_to(Path.cwd())
+            if invoked_from.is_relative_to(Path.cwd())
+            else invoked_from
+        )
+        rich_console.print(
+            Text(
+                f"Run from {subdirectory}/, which has no ginkgo.toml of its own: using the "
+                "project above it. Relative paths, outputs and .ginkgo/ are all at the "
+                "project root.",
+                style="yellow",
+            ),
+            soft_wrap=True,
+        )
+    rich_console.print()
+
+
+def _prune_old_events(*, keep_events_for: str) -> None:
+    """Apply ``[ledger] keep_events_for``: drop the events of runs older than it.
+
+    A ledger another process holds locked is left for the next run, with a
+    warning, rather than failing a run that has already finished.
+    """
+    try:
+        with open_store(WorkspaceLayout.relative().db) as store:
+            prune_events(store, before=cutoff_before(keep_events_for))
+    except StoreError as exc:
+        console(sys.stderr).print(
+            f"[yellow]⚠[/] [ledger] keep_events_for: old events were not pruned: {escape(str(exc))}"
+        )
 
 
 def _close_unfinished_run(*, bus: EventBus, recorder: StoreRecorder, run_id: str) -> None:

@@ -245,6 +245,35 @@ def check_encoded(payload: Any) -> None:
     _reject_unknown_tag(payload)
 
 
+def encoded_artifact_ids(payload: Any) -> set[str]:
+    """Return the artifact-store ids an encoded value names.
+
+    A large binary payload — a DataFrame's Parquet, a pickle, raw bytes — is
+    kept in the artifact store and named by id from inside the encoded value,
+    not by a cache entry's output-path rows. Whatever sizes an entry, or
+    collects the artifacts no entry needs, reads them from here.
+
+    Parameters
+    ----------
+    payload : Any
+        Encoded payload from :func:`encode_value`.
+
+    Returns
+    -------
+    set[str]
+        Every ``artifact_id`` of a payload stored in the artifact store.
+    """
+    if isinstance(payload, list):
+        return set().union(*(encoded_artifact_ids(item) for item in payload))
+    if not isinstance(payload, dict):
+        return set()
+    found = set().union(*(encoded_artifact_ids(item) for item in payload.values()))
+    artifact_id = payload.get("artifact_id")
+    if payload.get("storage") == "artifact_store" and isinstance(artifact_id, str):
+        found.add(artifact_id)
+    return found
+
+
 def _reject_unknown_tag(payload: dict[str, Any]) -> None:
     """Raise for a tag no decoder branch handled.
 
