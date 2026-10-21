@@ -30,8 +30,22 @@ alone when the task declared no `memory`. A Python task's figure is how far its
 body raised its worker's memory, so the worker's own interpreter and imports are
 left out and a task that allocates nothing reads close to `0 B`. When a retry
 escalated the memory, the figure is shown against the budget the attempt ran
-with (`30.1 GiB / 32 GiB`). The column reads an em dash for tasks that never ran
-or were served from cache. See [Measured Usage](resources.md#measured-usage).
+with (`30.1 GiB / 32 GiB`). A task served from the cache measured nothing in
+this run, so it shows the peak of the earlier run that produced its result,
+named after that run (`48.0 KiB (run 9e1f3e6c)`). The column reads an em dash
+for a task that never ran, and for a shell or script task too short to sample.
+See [Measured Usage](resources.md#measured-usage).
+
+A run that did not succeed says so first: the summary opens with the run's
+error, such as which failure left the workflow without a result, and the
+**Tasks** card counts the tasks that succeeded, failed and were skipped. The
+**Failure** section lists each skipped task with why it never ran
+(`blocked by analyze[omega]`), or counts them per cause when there are many.
+Paths under the project in a failure's error and log tail are shown relative to
+the project, since the report is read on other machines.
+
+The **Attempts** column reads `1 of 2 allowed` for a task whose `retries` allow
+two attempts and that needed one.
 
 Useful flags:
 
@@ -44,14 +58,23 @@ Useful flags:
   the report. It warns when the file is over 25 MB.
 - `--out <path>` — write the report somewhere other than the default. For a
   bundle, `<path>` is a directory that must be empty, missing, or hold an
-  earlier ginkgo report; otherwise the command stops and changes nothing. With
-  `--single-file`, a path ending in `.html` is the file itself
-  (`--out report.html`), and any other path is a directory that `index.html` is
-  written into; only that file is written, and an existing file is replaced
-  only when it is an earlier ginkgo report. The default destinations always
+  earlier ginkgo report; otherwise the command stops and changes nothing.
+  Re-rendering into an earlier report replaces only the report's own files
+  (`index.html`, `assets/`, `pages/`, `logs/`), so anything else kept there
+  stays. With `--single-file`, a path ending in `.html` is the file itself
+  (`--out report.html`), a path with no extension is a directory that
+  `index.html` is written into, and any other extension (`--out report.txt`) is
+  refused; only that file is written, and an existing file is replaced only
+  when it is an earlier ginkgo report. The default destinations always
   re-render.
-- `--force` — replace an `--out` destination that holds files ginkgo did not
-  write.
+- `--force` — write into an `--out` destination that holds files ginkgo did not
+  write. Only the files the report itself writes are replaced; nothing else in
+  the directory is removed.
+- `--hide-code` — leave each cell's code out of the static copies of notebook
+  pages, for readers who want the results only. By default the code is shown,
+  folded under a "code" toggle above each cell's output; a cell the notebook
+  itself hides keeps its code hidden either way. The interactive marimo page is
+  the notebook's own export and is not changed.
 - `--open` / `--no-open` — open (or do not open) the report in a browser when
   the build finishes.
 - `--max-log-lines N` — control how many log lines are shown per failed task

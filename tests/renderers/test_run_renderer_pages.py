@@ -1,7 +1,8 @@
 """The run banner's end-of-run sections: rendered pages and the resource footer.
 
-A cached rerun lists the page an earlier run rendered, marked as reused, and
-does not count it as this run's work (regression cover for issue #202 part 2).
+A cached rerun lists the page an earlier run rendered, marked as reused so it
+does not read as this run's work (regression cover for issue #202 part 2). The
+count is of the pages listed, so it never reads 0 above a list of pages.
 """
 
 from __future__ import annotations
@@ -43,12 +44,19 @@ def test_a_page_this_run_rendered_is_counted(tmp_path: Path) -> None:
     assert "↺" not in text
 
 
-def test_a_reused_page_is_listed_but_not_counted(tmp_path: Path) -> None:
+def test_a_reused_page_is_counted_and_marked_as_reused(tmp_path: Path) -> None:
     text = _renderer(tmp_path).render_pages([_page(tmp_path, replayed_from_run_id="run_1")]).plain
 
-    assert "Rendered pages (0)" in text
-    assert "↺ 1 from an earlier run" in text
+    assert "Rendered pages (1)  ↺ all reused from an earlier run" in text
     assert "↺ from run run_1" in text
+
+
+def test_a_mix_of_pages_says_how_many_were_reused(tmp_path: Path) -> None:
+    pages = [_page(tmp_path), _page(tmp_path, replayed_from_run_id="run_1")]
+
+    text = _renderer(tmp_path).render_pages(pages).plain
+
+    assert "Rendered pages (2)  ↺ 1 reused from an earlier run" in text
 
 
 def test_the_resource_footer_says_its_rss_is_a_process_tree_total(tmp_path: Path) -> None:

@@ -539,11 +539,12 @@ class _RunLayoutRenderer:
         """
         text = Text()
         replayed = [page for page in pages if page.replayed_from_run_id is not None]
-        text.append(f"\n📄 Rendered pages ({len(pages) - len(replayed)})", style="bold")
+        text.append(f"\n📄 Rendered pages ({len(pages)})", style="bold")
         if replayed:
             source_count = len({page.replayed_from_run_id for page in replayed})
             source = "an earlier run" if source_count == 1 else "earlier runs"
-            text.append(f"  ↺ {len(replayed)} from {source}", style="bold #0f766e")
+            reused = "all" if len(replayed) == len(pages) else str(len(replayed))
+            text.append(f"  ↺ {reused} reused from {source}", style="bold #0f766e")
         text.append("\n")
         for page in pages:
             text.append(f"  {page.task_label}  ", style="bold #134e4a")
