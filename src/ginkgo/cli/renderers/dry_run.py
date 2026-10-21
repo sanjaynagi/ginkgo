@@ -27,8 +27,9 @@ _TAG: dict[CacheStatus, str] = {
 # Legend for the one status that is not self-explanatory.
 _UNKNOWN_MEANING = (
     "cache status cannot be known without running something: an upstream task "
-    "will run, or a script, notebook or subworkflow body does more than "
-    "`return script(...)` with arguments dry-run can evaluate"
+    "will run, or a script, notebook or subworkflow task's body is more than a "
+    "single `return script(...)`, `notebook(...)` or `subworkflow(...)` whose "
+    "arguments a dry run can work out"
 )
 
 # Why a task will run, by ``ginkgo cache explain`` reason code.

@@ -13,6 +13,7 @@ from ginkgo.runtime.events import (
     EventBus,
     GraphNodeRegistered,
     RunCompleted,
+    RunNotice,
     RunStarted,
     TaskCompleted,
     TaskFailed,
@@ -147,6 +148,20 @@ def test_completing_twice_writes_the_manifest_once(tmp_path: Path) -> None:
     recorder.close()
 
     assert manifest_path.read_text(encoding="utf-8") == written
+
+
+def test_a_notice_after_completion_is_kept_with_the_run(tmp_path: Path) -> None:
+    # A notification posted for RunCompleted can only fail once the run is over.
+    recorder, bus, db = _recorder(tmp_path)
+    bus.emit(RunStarted(run_id="run-1", workflow="flow.py"))
+    bus.emit(RunCompleted(run_id="run-1", status="success"))
+    bus.emit(RunNotice(run_id="run-1", message="Slack notification failed: refused"))
+    recorder.close()
+
+    manifest = yaml.safe_load(
+        (tmp_path / ".ginkgo" / "runs" / "run-1" / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["notices"] == ["Slack notification failed: refused"]
 
 
 def test_a_run_that_unwinds_without_completing_is_marked_failed(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from ginkgo.cli import main
-from ginkgo_report.command import _resolve_output_dir
+from ginkgo_report.command import _resolve_destination
 from ginkgo.formatting import format_bytes, format_duration
 from ginkgo_report.model import build_report_data
 from ginkgo_report.render import _MARKER_NAME, export_report
@@ -30,7 +30,7 @@ from ginkgo.runtime.events import (
     TaskStarted,
 )
 
-from ginkgo.runtime.events import EventBus, RunCompleted, RunStarted
+from ginkgo.runtime.events import EventBus, RunCompleted, RunNotice, RunStarted
 from ginkgo.runtime.rundir import RunDir
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.runtime.store_recorder import StoreRecorder
@@ -413,6 +413,31 @@ class TestReportData:
         assert [task.attempts_label for task in report.tasks] == ["3 / 3"]
         assert [card.attempts_label for card in report.failures] == ["3 / 3"]
 
+    def test_a_run_notice_is_shown_in_the_summary(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.ledger.bus.emit(RunNotice(run_id="run-ok", message="Slack notification failed"))
+
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
+
+        assert "<li>Slack notification failed</li>" in result.index_path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_run_status_uses_the_cli_vocabulary(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.status_label == "succeeded"
+        assert report.sidebar_status_label == "succeeded"
+
+    def test_the_workflow_is_shown_relative_to_the_project(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
+
+        report = build_report_data(summary=run.summary())
+
+        assert report.workflow == "workflow.py"
+
     def test_a_cancelled_run_can_be_reported_on(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-cancelled", fail=False)
         run.status = "cancelled"
@@ -599,7 +624,7 @@ class TestExport:
         run = _Run(ledger=ledger, tmp_path=tmp_path)
 
         out_dir = tmp_path / "out"
-        export_report(summary=run.summary(), out_dir=out_dir)
+        export_report(summary=run.summary(), out=out_dir)
         report = build_report_data(summary=run.summary())
 
         copies = [out_dir / card.link_relpath for card in report.pages]
@@ -611,7 +636,7 @@ class TestExport:
     def test_fan_out_branches_are_named_by_their_labels(self, tmp_path: Path) -> None:
         run = _make_fan_out_run(tmp_path=tmp_path, run_id="run-fan-out")
 
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         task_names = re.findall(r'<td class="name">([^<]*)</td>', html)
@@ -623,7 +648,7 @@ class TestExport:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "out"
-        result = export_report(summary=run.summary(), out_dir=out_dir)
+        result = export_report(summary=run.summary(), out=out_dir)
 
         assert result.index_path == out_dir / "index.html"
         assert result.index_path.is_file()
@@ -640,19 +665,19 @@ class TestExport:
     def test_failure_section_present_only_when_failures_exist(self, tmp_path: Path) -> None:
         ok_run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         ok_out = tmp_path / "ok-out"
-        export_report(summary=ok_run.summary(), out_dir=ok_out)
+        export_report(summary=ok_run.summary(), out=ok_out)
         assert 'id="failure"' not in ok_out.joinpath("index.html").read_text(encoding="utf-8")
 
         fail_run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
         fail_out = tmp_path / "fail-out"
-        export_report(summary=fail_run.summary(), out_dir=fail_out)
+        export_report(summary=fail_run.summary(), out=fail_out)
         assert 'id="failure"' in fail_out.joinpath("index.html").read_text(encoding="utf-8")
 
     def test_single_file_inlines_css_and_fonts(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "sf"
-        result = export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
+        result = export_report(summary=run.summary(), out=out_dir, single_file=True)
 
         assert result.single_file is True
         html = result.index_path.read_text(encoding="utf-8")
@@ -667,7 +692,7 @@ class TestExport:
         # numerals must run 01..05 with no hole where an omitted section sat.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         headings = re.findall(r'<span class="num">(\d+)</span>', html)
@@ -678,7 +703,7 @@ class TestExport:
 
     def test_rendered_section_numerals_include_the_failure_section(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-fail", fail=True)
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         assert re.findall(r'<span class="num">(\d+)</span>', html) == [
@@ -693,7 +718,7 @@ class TestExport:
 
     def test_the_pages_section_renders_when_the_run_produced_one(self, tmp_path: Path) -> None:
         run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
-        result = export_report(summary=run.summary(), out_dir=tmp_path / "out")
+        result = export_report(summary=run.summary(), out=tmp_path / "out")
         html = result.index_path.read_text(encoding="utf-8")
 
         assert '<span class="num">05</span>Rendered pages' in html
@@ -710,7 +735,7 @@ class TestExport:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
         out_dir = tmp_path / "out"
-        export_report(summary=run.summary(), out_dir=out_dir)
+        export_report(summary=run.summary(), out=out_dir)
         html = (out_dir / "index.html").read_text(encoding="utf-8")
 
         # Allow HTTP namespace URIs (xmlns) but forbid external asset URLs.
@@ -735,8 +760,8 @@ class TestExport:
 
         monkeypatch.setattr(model_module, "datetime", _FixedDatetime)
 
-        first = export_report(summary=run.summary(), out_dir=tmp_path / "a")
-        second = export_report(summary=run.summary(), out_dir=tmp_path / "b")
+        first = export_report(summary=run.summary(), out=tmp_path / "a")
+        second = export_report(summary=run.summary(), out=tmp_path / "b")
         assert first.index_path.read_bytes() == second.index_path.read_bytes()
 
     def test_refuses_to_overwrite_foreign_directory_by_default(self, tmp_path: Path) -> None:
@@ -748,7 +773,7 @@ class TestExport:
         (out_dir / "subdir" / "notes.txt").write_text("more data", encoding="utf-8")
 
         with pytest.raises(FileExistsError):
-            export_report(summary=run.summary(), out_dir=out_dir)
+            export_report(summary=run.summary(), out=out_dir)
 
         assert (out_dir / "my_thesis.txt").read_text(encoding="utf-8") == "important user data"
         assert (out_dir / "subdir" / "notes.txt").is_file()
@@ -761,7 +786,7 @@ class TestExport:
         out_dir.mkdir()
         (out_dir / "existing.txt").write_text("goodbye", encoding="utf-8")
 
-        result = export_report(summary=run.summary(), out_dir=out_dir, force=True)
+        result = export_report(summary=run.summary(), out=out_dir, force=True)
 
         assert result.index_path.is_file()
         assert not (out_dir / "existing.txt").exists()
@@ -771,12 +796,12 @@ class TestExport:
         run.summary()
         out_dir = tmp_path / "reports" / "run-ok"
 
-        first = export_report(summary=run.summary(), out_dir=out_dir)
+        first = export_report(summary=run.summary(), out=out_dir)
         assert (out_dir / _MARKER_NAME).is_file()
         stale = out_dir / "assets" / "stale-figure.png"
         stale.write_bytes(b"stale")
 
-        second = export_report(summary=run.summary(), out_dir=out_dir)
+        second = export_report(summary=run.summary(), out=out_dir)
 
         assert second.index_path == first.index_path
         assert second.index_path.is_file()
@@ -792,7 +817,7 @@ class TestExport:
         (out_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
         (out_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")
 
-        result = export_report(summary=run.summary(), out_dir=out_dir, managed_destination=True)
+        result = export_report(summary=run.summary(), out=out_dir, managed_destination=True)
 
         assert result.index_path.is_file()
         assert "old report" not in result.index_path.read_text(encoding="utf-8")
@@ -804,30 +829,67 @@ class TestExport:
         out_dir = tmp_path / "empty"
         out_dir.mkdir()
 
-        result = export_report(summary=run.summary(), out_dir=out_dir)
+        result = export_report(summary=run.summary(), out=out_dir)
 
         assert result.index_path.is_file()
 
-    def test_single_file_export_marks_its_directory(self, tmp_path: Path) -> None:
+    def test_single_file_export_writes_only_its_file(self, tmp_path: Path) -> None:
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
-        run.summary()
-        out_dir = tmp_path / "sf"
+        out_dir = tmp_path / "shared"
+        out_dir.mkdir()
+        (out_dir / "notes.txt").write_text("keep me", encoding="utf-8")
 
-        export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
-        assert (out_dir / _MARKER_NAME).is_file()
+        export_report(summary=run.summary(), out=out_dir / "report.html", single_file=True)
+        # A second single-file export over its own file is allowed.
+        result = export_report(
+            summary=run.summary(), out=out_dir / "report.html", single_file=True
+        )
 
-        # A second single-file export over the same directory is allowed.
-        result = export_report(summary=run.summary(), out_dir=out_dir, single_file=True)
-        assert result.index_path.is_file()
+        assert result.index_path == out_dir / "report.html"
+        assert sorted(path.name for path in out_dir.iterdir()) == ["notes.txt", "report.html"]
+
+    def test_single_file_export_refuses_to_replace_a_foreign_file(self, tmp_path: Path) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        target = tmp_path / "page.html"
+        target.write_text("<html>mine</html>", encoding="utf-8")
+
+        with pytest.raises(FileExistsError):
+            export_report(summary=run.summary(), out=target, single_file=True)
+
+        assert target.read_text(encoding="utf-8") == "<html>mine</html>"
+
+    def test_single_file_export_lists_the_links_it_omits(self, tmp_path: Path) -> None:
+        run = _make_page_run(tmp_path=tmp_path, run_id="run-nb")
+
+        result = export_report(summary=run.summary(), out=tmp_path / "r.html", single_file=True)
+
+        assert len(result.omitted_links) == 1
+        assert result.omitted_links[0].startswith("pages/")
 
 
 class TestOutputDir:
     def test_the_default_lands_in_the_workspace_reports_directory(self, tmp_path: Path) -> None:
         run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
 
-        resolved = _resolve_output_dir(run_dir=run_dir, out=None, single_file=False)
+        resolved = _resolve_destination(run_dir=run_dir, out=None, single_file=False)
 
         assert resolved == (tmp_path / ".ginkgo" / "reports" / "run-abc").resolve()
+
+    def test_a_single_file_defaults_beside_the_bundle(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
+
+        resolved = _resolve_destination(run_dir=run_dir, out=None, single_file=True)
+
+        assert resolved == (tmp_path / ".ginkgo" / "reports" / "run-abc.html").resolve()
+
+    def test_a_single_file_out_ending_in_html_is_the_file(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / ".ginkgo" / "runs" / "run-abc"
+
+        resolved = _resolve_destination(
+            run_dir=run_dir, out=str(tmp_path / "x.html"), single_file=True
+        )
+
+        assert resolved == (tmp_path / "x.html").resolve()
 
 
 class TestReportCli:
@@ -878,6 +940,29 @@ class TestReportCli:
         assert main(["report", "--no-open"]) == 0
         assert main(["report", "--no-open"]) == 0
 
+    def test_a_single_file_report_leaves_the_bundle_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+        bundle = _resolve_destination(run_dir=run.run_dir, out=None, single_file=False)
+
+        assert main(["report", "--no-open"]) == 0
+        assert main(["report", "--single-file", "--no-open"]) == 0
+
+        assert (bundle / "assets" / "report.css").is_file()
+        assert (bundle.parent / "run-ok.html").is_file()
+
+    def test_single_file_out_writes_that_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
+        run.summary()
+
+        assert main(["report", "--single-file", "--out", "x.html", "--no-open"]) == 0
+
+        assert (tmp_path / "x.html").is_file()
+
     def test_unmarked_bundle_at_the_default_location_rerenders_without_a_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -885,7 +970,7 @@ class TestReportCli:
         # re-rendering: the default destination needs no proof of ownership.
         run = _make_run(tmp_path=tmp_path, run_id="run-ok", fail=False)
         run.summary()
-        managed_dir = _resolve_output_dir(run_dir=run.run_dir, out=None, single_file=False)
+        managed_dir = _resolve_destination(run_dir=run.run_dir, out=None, single_file=False)
         (managed_dir / "assets").mkdir(parents=True)
         (managed_dir / "index.html").write_text("<html>old report</html>", encoding="utf-8")
         (managed_dir / "assets" / "report.css").write_text("/* old */", encoding="utf-8")

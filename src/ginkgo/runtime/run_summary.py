@@ -213,6 +213,9 @@ class RunSummary:
         Run-level phase timings, in seconds.
     tasks : tuple[TaskSummary, ...]
         Tasks ordered by ``node_id`` ascending.
+    notices : tuple[str, ...]
+        Run-level problems recorded as ``run_notice`` events, in the order
+        they happened, such as a notification that was not delivered.
     """
 
     run_id: str
@@ -235,6 +238,7 @@ class RunSummary:
     param_sources: dict[str, str]
     timings: dict[str, float]
     tasks: tuple[TaskSummary, ...]
+    notices: tuple[str, ...] = ()
 
     @classmethod
     def load(
@@ -296,6 +300,7 @@ class RunSummary:
             param_sources=_mapping(run.get("param_sources")),
             timings=_mapping(run.get("timings")),
             tasks=tasks,
+            notices=_load_notices(store=store, run_id=run_id),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -389,6 +394,7 @@ class RunSummary:
             "timings": self.timings,
             "tasks": tasks,
             "dynamic_expansions": expansions,
+            "notices": list(self.notices),
         }
 
     # ----- Aggregations -----------------------------------------------------
@@ -440,6 +446,15 @@ class RunSummary:
     def succeeded(self) -> bool:
         """Return whether the run finished successfully."""
         return self.status == "succeeded"
+
+
+def _load_notices(*, store: ProvenanceStore, run_id: str) -> tuple[str, ...]:
+    """Return the run's ``run_notice`` messages in ledger order."""
+    rows = store.query(
+        "SELECT payload FROM events WHERE run_id = ? AND type = 'run_notice' ORDER BY seq",
+        (run_id,),
+    )
+    return tuple(str(loads(row["payload"]).get("message") or "") for row in rows)
 
 
 def _load_tasks(*, store: ProvenanceStore, run_id: str) -> tuple[TaskSummary, ...]:

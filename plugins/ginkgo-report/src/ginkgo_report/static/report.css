@@ -403,6 +403,18 @@ p.empty {
   font-variant-numeric: tabular-nums;
 }
 
+.notices {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+}
+.notices li + li { margin-top: 6px; }
+
 /* ========== Code / params ========== */
 
 pre.code {

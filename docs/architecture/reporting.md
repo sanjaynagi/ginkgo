@@ -131,7 +131,7 @@ and `_prepare_out_dir` accepts either:
   what lets a user's own `--out` directory be re-rendered once ginkgo has
   written a report into it.
 
-| `out_dir` state                       | Behaviour                             |
+| `out` state (bundle)                  | Behaviour                             |
 | ------------------------------------- | ------------------------------------- |
 | missing or empty                      | used as is                            |
 | `managed_destination`                 | emptied and rewritten                 |
@@ -148,10 +148,12 @@ original hole for any `--out` target that happens to hold one.
 `force=False` and `managed_destination=False` are the library defaults, so the
 Python API cannot lose a caller's files by omission either.
 
-In `--single-file` mode the marker sits beside `index.html` as the directory's
-only companion file. The HTML stays self-contained, so sharing it alone still
-works; the dotfile is what allows a second `--single-file` export over the same
-directory.
+In `--single-file` mode `out` is the HTML file, and nothing else is written or
+removed: the file often shares a directory, such as `.ginkgo/reports/`, with the
+bundle of the same run. `_prepare_out_file` replaces an existing file only when
+it is managed, `force` is set, or its head carries the
+`<meta name="generator" content="ginkgo-report">` tag every report page has; a
+directory at that path is refused.
 
 ## Size caps (`SizingPolicy`)
 
@@ -242,7 +244,9 @@ enhancement. There is no framework, no bundler, no build step.
 Rendered pages remain as relative references (their content is too
 large to reasonably base64 into a single document); `--single-file` is
 intended for short, self-contained report sharing. Logs copied into the
-bundle default mode are also referenced by relative path.
+bundle default mode are also referenced by relative path. `ExportResult.omitted_links`
+lists those references, and `ginkgo report` warns with them, since the links
+will not open from the single file.
 
 ## Determinism
 
@@ -262,7 +266,8 @@ ordering hooks worth knowing about:
 
 ```
 ginkgo report <run-id>
-    [--out DIR]                 # default: <workspace>/.ginkgo/reports/<run-id>/
+    [--out PATH]                # bundle dir, default <workspace>/.ginkgo/reports/<run-id>/;
+                                # with --single-file, the .html file (default <run-id>.html)
     [--force]                   # replace an --out dir ginkgo did not write
     [--single-file]             # inline CSS, fonts and script
     [--max-log-lines N]         # default 80

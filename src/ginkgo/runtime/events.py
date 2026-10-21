@@ -368,6 +368,19 @@ class RunResourcesSampled(RunEvent):
 
 
 @dataclass(kw_only=True, frozen=True)
+class RunNotice(RunEvent):
+    """A problem worth keeping with the run that is not any one task's.
+
+    Such as a notification that could not be configured or delivered. It may
+    arrive after ``RunCompleted``: a notification posted at the end of the run
+    fails after the run has finished.
+    """
+
+    event: str = "run_notice"
+    message: str = ""
+
+
+@dataclass(kw_only=True, frozen=True)
 class RunCompleted(RunEvent):
     """Run completion event.
 

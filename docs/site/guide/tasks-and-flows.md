@@ -363,7 +363,9 @@ def render_overview(summary_path: file, run_label: str) -> file:
 ```
 
 `notebook()` takes a marimo notebook, which is a `.py` file; any other file is
-refused. The decorated function defines the typed parameter schema; its
+refused. Jupyter `.ipynb` notebooks are not supported: convert one with
+`marimo convert notebook.ipynb -o notebook.py`. `ginkgo run --dry-run` reports
+a refused path when the body is a plain `return notebook(...)`. The decorated function defines the typed parameter schema; its
 resolved inputs are passed to the notebook as command-line arguments, which the
 notebook reads with `mo.cli_args()`. As with script tasks, underscores become
 hyphens, so `summary_path` is read as `summary-path`:
@@ -399,7 +401,11 @@ if __name__ == "__main__":
 ```
 
 The fallbacks are what you get when you open the notebook by hand with
-`marimo edit`; during a run the task's arguments win. The notebook file is
+`marimo edit`; during a run the task's arguments win. A key the task does not
+pass reads `None`, so a run warns, once per task, about each literal key the
+notebook reads (`args.get("k")`, `args.get_all("k")`, `args["k"]`, `"k" in args`)
+that is not one of the task's arguments, such as `summary_path` written with an
+underscore. The notebook file is
 source material for both execution and cache identity — when the notebook
 changes, the task's cache key changes.
 
@@ -436,6 +442,13 @@ If a cell fails, the task fails, but marimo still writes the page, showing the
 failing cell; the error message points at it. The rendered page is recorded
 against the task, listed under "Rendered pages" at the end of the run, and
 linked from the [run report](reports.md).
+
+The rendered page is a single HTML file, so an image a markdown cell links by
+a relative path (`![plot](results/plot.png)`) does not resolve from where the
+page is stored: embed it instead, with `mo.image("results/plot.png")` or a
+`data:` URI, which carries the bytes in the page. marimo's exported page loads
+its frontend from the `cdn.jsdelivr.net` CDN, so it renders blank without a
+network connection.
 
 Inside the run directory the rendered page is stored under
 `.ginkgo/runs/<run_id>/notebooks/` with a generated name (`task_0000.html`). To

@@ -20,7 +20,7 @@ version, and the specs here may change in step with them.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
@@ -47,10 +47,12 @@ __all__ = [
     "EnvironmentContext",
     "EnvironmentType",
     "EventSubscriber",
+    "EventSubscriberCheckContext",
     "EventSubscriberContext",
     "EventSubscriberType",
     "ExecutorType",
     "MountDriverType",
+    "Notice",
     "ObjectStoreContext",
     "ObjectStoreType",
     "Plugin",
@@ -235,7 +237,9 @@ class EventSubscriberContext:
     workflow_path : Path
         The workflow file being run.
     warn : Callable[[str], None]
-        Report a non-fatal problem to the user.
+        Report a non-fatal problem to the user. The message is also recorded
+        with the run as a notice, which ``ginkgo runs show`` and reports
+        display, so it may be called from ``close`` after the run has ended.
     """
 
     config: Mapping[str, Any] | None
@@ -260,22 +264,44 @@ class EventSubscriber(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class EventSubscriberCheckContext:
+    """What ``ginkgo doctor`` hands an event subscriber's config check.
+
+    Parameters
+    ----------
+    config : Mapping[str, Any]
+        Merged runtime config; each subscriber reads its own table.
+    secret_resolver : SecretResolver | None
+        The secret resolver a run would use.
+    """
+
+    config: Mapping[str, Any]
+    secret_resolver: SecretResolver | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class EventSubscriberType:
     """A run observer, such as a notification channel.
 
     Parameters
     ----------
     name : str
-        Identifies the subscriber, e.g. ``"slack"``.
+        Identifies the subscriber, e.g. ``"slack"``. Its config is the
+        ``[notifications.<name>]`` table.
     build : Callable[[EventSubscriberContext], EventSubscriber | None]
         Return a subscriber for this run, or ``None`` when its config leaves
         it disabled.
+    check : Callable[[EventSubscriberCheckContext], Sequence[str]] | None
+        Return one message per problem with the subscriber's config, so
+        ``ginkgo doctor`` reports what a run would only warn about. ``None``
+        when there is nothing to check.
     """
 
     point_name: ClassVar[str] = "event subscriber"
 
     name: str
     build: Callable[[EventSubscriberContext], EventSubscriber | None]
+    check: Callable[[EventSubscriberCheckContext], Sequence[str]] | None = None
 
     @property
     def keys(self) -> tuple[str, ...]:
@@ -411,6 +437,12 @@ class Annotate(Protocol):
     def __call__(self, *, node: TaskInvocation, fields: dict[str, Any]) -> None: ...
 
 
+class Notice(Protocol):
+    """Report a task-scoped problem to the user, as a ``TaskNotice`` event."""
+
+    def __call__(self, *, node: TaskInvocation, message: str) -> None: ...
+
+
 @dataclass(frozen=True, kw_only=True)
 class RunnerContext:
     """The evaluator services a task runner may use.
@@ -426,6 +458,8 @@ class RunnerContext:
         The run directory; ``None`` for dry runs and validation.
     annotate : Annotate
         Records facts against a task.
+    notice : Notice
+        Shows the user a task-scoped warning that does not fail the task.
     run_id : Callable[[], str]
         Returns the current run id.
     db_path : Path
@@ -436,6 +470,7 @@ class RunnerContext:
     shell_runner: ShellRunner
     run_dir: RunDir | None
     annotate: Annotate
+    notice: Notice
     run_id: Callable[[], str]
     db_path: Path
 

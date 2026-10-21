@@ -20,20 +20,29 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--out",
         default=None,
-        help="Destination directory (default: <workspace>/.ginkgo/reports/<run-id>/)",
+        help=(
+            "Where to write the report. A bundle is written into this directory "
+            "(default: <workspace>/.ginkgo/reports/<run-id>/). With --single-file, "
+            "a path ending in .html is the file itself and any other path is a "
+            "directory to write index.html into "
+            "(default: <workspace>/.ginkgo/reports/<run-id>.html)."
+        ),
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help=(
-            "Replace the contents of an --out directory that holds files ginkgo "
-            "did not write. Without this, such a directory is left untouched."
+            "Replace an --out destination that holds files ginkgo did not write. "
+            "Without this, such a destination is left untouched."
         ),
     )
     parser.add_argument(
         "--single-file",
         action="store_true",
-        help="Emit one HTML file with CSS, fonts, and script inlined.",
+        help=(
+            "Emit one HTML file with CSS, fonts, and script inlined. Rendered "
+            "pages and logs are linked but not included."
+        ),
     )
     parser.add_argument(
         "--max-log-lines",
@@ -41,8 +50,19 @@ def add_report_arguments(parser: argparse.ArgumentParser) -> None:
         default=80,
         help="Trailing log lines to retain for failed tasks (default: 80).",
     )
-    parser.add_argument("--open", dest="open", action="store_true", default=False)
-    parser.add_argument("--no-open", dest="open", action="store_false")
+    parser.add_argument(
+        "--open",
+        dest="open",
+        action="store_true",
+        default=False,
+        help="Open the report in the default browser once it is written.",
+    )
+    parser.add_argument(
+        "--no-open",
+        dest="open",
+        action="store_false",
+        help="Do not open the report (the default).",
+    )
 
 
 def command_report(args: argparse.Namespace) -> int:
@@ -57,13 +77,13 @@ def command_report(args: argparse.Namespace) -> int:
         return 1
     run_dir = summary.run_dir
 
-    out_dir = _resolve_output_dir(run_dir=run_dir, out=args.out, single_file=args.single_file)
+    out = _resolve_destination(run_dir=run_dir, out=args.out, single_file=args.single_file)
     policy = SizingPolicy(log_lines=int(args.max_log_lines) if args.max_log_lines else 80)
 
     try:
         result = export_report(
             summary=summary,
-            out_dir=out_dir,
+            out=out,
             policy=policy,
             single_file=bool(args.single_file),
             managed_destination=args.out is None,
@@ -74,12 +94,19 @@ def command_report(args: argparse.Namespace) -> int:
         return 1
     except FileExistsError as exc:
         rich_console.print(f"[red]✖[/] {exc}")
-        rich_console.print("  Pass --force to replace it, or choose an empty --out directory.")
+        rich_console.print("  Pass --force to replace it, or choose another --out.")
         return 1
 
     rich_console.print("[bold green]🌿 ginkgo report[/]\n")
     rich_console.print(f"[cyan]Run:[/] [bold]{run_dir.name}[/]")
     rich_console.print(f"[cyan]Output:[/] [bold]{result.index_path}[/]")
+    if result.omitted_links:
+        listed = ", ".join(result.omitted_links)
+        rich_console.print(
+            f"[yellow]⚠[/] The single-file report links {len(result.omitted_links)} "
+            f"file(s) it does not include, so those links will not open: {listed}. "
+            "Export without --single-file to include them."
+        )
 
     if args.open:
         opened = _open_path(result.index_path)
@@ -89,13 +116,21 @@ def command_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_output_dir(*, run_dir: Path, out: str | None, single_file: bool) -> Path:
-    """Resolve the destination directory for the bundle."""
+def _resolve_destination(*, run_dir: Path, out: str | None, single_file: bool) -> Path:
+    """Resolve where the report is written: the bundle's directory or the single file.
+
+    A single-file report defaults to ``.ginkgo/reports/<run-id>.html``, beside
+    rather than inside the run's bundle directory, so neither replaces the other.
+    """
     if out is not None:
-        return Path(out).resolve()
-    # Default: <workspace>/.ginkgo/reports/<run-id>/
+        path = Path(out).resolve()
+        if single_file and path.suffix.lower() not in {".html", ".htm"}:
+            return path / "index.html"
+        return path
     workspace = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
     reports_root = WorkspaceLayout(root=workspace).reports
+    if single_file:
+        return (reports_root / f"{run_dir.name}.html").resolve()
     return (reports_root / run_dir.name).resolve()
 
 

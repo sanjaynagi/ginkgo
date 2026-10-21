@@ -258,7 +258,7 @@ def _loaded_global_names(function: Any) -> set[str]:
 def param(
     name: str,
     *,
-    type: Callable[[str], Any] = str,  # noqa: A002 - matches argparse's keyword
+    type: Callable[[str], Any] | None = None,  # noqa: A002 - matches argparse's keyword
     default: Any = REQUIRED,
     help: str | None = None,  # noqa: A002 - matches argparse's keyword
     choices: Sequence[Any] | None = None,
@@ -272,10 +272,12 @@ def param(
         Parameter name. Must start with a letter and contain only letters,
         digits, and underscores. The command-line flag is the dashed form, so
         ``n_replicates`` is supplied as ``--n-replicates``.
-    type : Callable[[str], Any], optional
+    type : Callable[[str], Any] | None, optional
         Callable applied to string values, following ``argparse``'s ``type``
-        convention. Defaults to ``str``. ``bool`` is handled specially: the flag
-        may be given bare (``--flag``) or with a literal (``--flag false``).
+        convention. When omitted, it is the type of a ``bool``, ``int`` or
+        ``float`` default, so ``default=40.0`` reads ``--threshold 2.5`` as a
+        float; otherwise ``str``. ``bool`` is handled specially: the flag may be
+        given bare (``--flag``) or with a literal (``--flag false``).
     default : Any, optional
         Value used when the parameter is supplied neither on the command line
         nor in config. Omit to make the parameter required.
@@ -301,7 +303,7 @@ def param(
     """
     decl = ParamDecl(
         name=name,
-        value_type=type,
+        value_type=type if type is not None else _type_of_default(default),
         default=default,
         help_text=help,
         choices=tuple(choices) if choices is not None else None,
@@ -557,6 +559,15 @@ def _help_suffix(decl: ParamDecl, *, config_default: tuple[Any, str] | None) -> 
     if decl.multiple:
         parts.append("(repeatable)")
     return " ".join(parts)
+
+
+def _type_of_default(default: Any) -> Callable[[str], Any]:
+    """Return the type a parameter without ``type=`` converts its values to."""
+    # bool first: it is a subclass of int.
+    for candidate in (bool, int, float):
+        if isinstance(default, candidate):
+            return candidate
+    return str
 
 
 def _validate_declaration(decl: ParamDecl) -> None:

@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from ginkgo_slack.subscriber import parse_notification_config
+from ginkgo.core.secret import SecretRef
+from ginkgo.plugins.api import EventSubscriberCheckContext
+from ginkgo.runtime.environment.secrets import build_secret_resolver
+from ginkgo_slack.subscriber import check_slack_config, parse_notification_config
 from ginkgo_slack.webhook import build_run_failed_payload
 
 
@@ -84,33 +87,65 @@ def _payload_text(payload: dict[str, object]) -> str:
     return "\n".join(fragments)
 
 
+def _slack(**settings: object) -> dict[str, object]:
+    return {"notifications": {"slack": settings}}
+
+
+def _check(config: dict[str, object], *, environ: dict[str, str]) -> list[str]:
+    resolver = build_secret_resolver(project_root=Path.cwd(), config=config, environ=environ)
+    return check_slack_config(EventSubscriberCheckContext(config=config, secret_resolver=resolver))
+
+
 class TestNotificationConfig:
     def test_parse_notification_config_supports_aliases_and_secret_refs(self) -> None:
-        config = parse_notification_config(
-            config={
-                "notifications": {
-                    "slack": {
-                        "enabled": True,
-                        "webhook": {"env": "GINKGO_SLACK_WEBHOOK"},
-                        "events": ["run_started", "run_completed", "retry_exhausted"],
-                        "log_tail_lines": 50,
-                        "max_failed_tasks": 20,
-                    },
-                }
-            }
+        config, problems = parse_notification_config(
+            config=_slack(
+                enabled=True,
+                webhook={"env": "GINKGO_SLACK_WEBHOOK"},
+                events=["run_started", "run_completed", "retry_exhausted"],
+                log_tail_lines=25,
+                max_failed_tasks=10,
+            )
         )
 
-        assert config.slack.enabled is True
-        assert config.slack.webhook is not None
-        assert config.slack.webhook.backend == "env"
-        assert config.slack.webhook.name == "GINKGO_SLACK_WEBHOOK"
+        assert problems == []
+        assert config.webhook == SecretRef(name="GINKGO_SLACK_WEBHOOK", backend="env")
         # "run_completed" is an alias for "run_succeeded"; the parser normalises it.
-        assert config.slack.events == frozenset(
-            {"run_started", "run_succeeded", "retry_exhausted"}
+        assert config.events == frozenset({"run_started", "run_succeeded", "retry_exhausted"})
+        assert (config.log_tail_lines, config.max_failed_tasks) == (25, 10)
+
+    def test_every_invalid_setting_is_named(self) -> None:
+        _, problems = parse_notification_config(
+            config=_slack(
+                enabled=True,
+                webhook={"env": "GINKGO_SLACK_WEBHOOK"},
+                events=["run_finished"],
+                channel="#alerts",
+                log_tail_lines=-3,
+            )
         )
-        # Values are capped at the schema maximums (50 → 25, 20 → 10).
-        assert config.slack.log_tail_lines == 25
-        assert config.slack.max_failed_tasks == 10
+
+        assert len(problems) == 3
+        assert "'channel'" in problems[0]
+        assert "'run_finished'" in problems[1]
+        assert "log_tail_lines" in problems[2]
+
+    def test_a_literal_webhook_url_is_explained(self) -> None:
+        _, problems = parse_notification_config(
+            config=_slack(enabled=True, webhook="https://hooks.slack.com/services/x")
+        )
+
+        assert len(problems) == 1
+        assert 'webhook = { env = "GINKGO_SLACK_WEBHOOK" }' in problems[0]
+
+    def test_the_check_names_an_unset_environment_variable(self) -> None:
+        config = _slack(enabled=True, webhook={"env": "GINKGO_SLACK_WEBHOOK"})
+
+        assert _check(config, environ={"GINKGO_SLACK_WEBHOOK": ""}) == [
+            "[notifications.slack] webhook reads the environment variable "
+            "GINKGO_SLACK_WEBHOOK, which is unset or empty."
+        ]
+        assert _check(config, environ={"GINKGO_SLACK_WEBHOOK": "http://127.0.0.1:1/"}) == []
 
 
 @pytest.mark.integration
@@ -216,6 +251,40 @@ def main():
             assert "Ginkgo Run Failed" in _payload_text(requests[1])
             assert "fail" in _payload_text(requests[1])
 
+    def test_doctor_reports_an_invalid_slack_table(self, monkeypatch) -> None:
+        monkeypatch.delenv("GINKGO_SLACK_WEBHOOK", raising=False)
+        Path("ginkgo.toml").write_text(
+            """
+[notifications.slack]
+enabled = true
+webhook = { env = "GINKGO_SLACK_WEBHOOK" }
+events = ["run_finished"]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        Path("workflow.py").write_text(
+            """
+from ginkgo import flow, task
+
+@task()
+def succeed() -> str:
+    return "ok"
+
+@flow
+def main():
+    return succeed()
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = _run_cli("doctor", "workflow.py", cwd=Path.cwd(), env=dict(os.environ))
+
+        assert result.returncode == 1
+        assert "notification_config" in result.stderr
+        assert "'run_finished'" in result.stderr
+
     def test_cli_run_warns_when_slack_webhook_is_unreachable(self, monkeypatch) -> None:
         monkeypatch.setenv("GINKGO_SLACK_WEBHOOK", "http://127.0.0.1:1/hook")
         Path("ginkgo.toml").write_text(
@@ -247,3 +316,7 @@ def main():
         result = _run_cli("run", "workflow.py", cwd=Path.cwd(), env=dict(os.environ))
         assert result.returncode == 0, result.stderr
         assert "Slack notification failed:" in result.stderr
+
+        # The failure is kept with the run, not only printed while it ran.
+        shown = _run_cli("runs", "show", cwd=Path.cwd(), env=dict(os.environ))
+        assert "Notice: Slack notification failed:" in shown.stdout

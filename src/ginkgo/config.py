@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 PARAMS_CONFIG_KEY = "params"
 """Config table holding declared workflow parameter values."""
 
+RUNTIME_CONFIG_TABLES = frozenset(
+    {PARAMS_CONFIG_KEY, "notifications", "remote", "resources", "secrets"}
+)
+"""Top-level ``ginkgo.toml`` tables that configure ginkgo rather than the workflow.
+
+A workflow that loads ``ginkgo.toml`` with ``config()`` reads them too, but
+they are not the run's parameters, and may name where its secrets are kept.
+"""
+
 
 class ConfigKeyError(KeyError):
     """A key that is not in the config file, reported with the keys that are.

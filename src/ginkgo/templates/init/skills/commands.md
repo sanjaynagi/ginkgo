@@ -35,8 +35,10 @@ When you already have a run id:
   Emits structured diagnostics for programmatic consumers.
 - `ginkgo report <run_id>`
   Renders a run as an HTML report; needs the `ginkgo-report` plugin.
-  `--out <dir>` writes it to a directory, with rendered notebooks under
-  `<dir>/notebooks/`.
+  `--out <dir>` writes the bundle to a directory, with rendered notebook
+  pages under `<dir>/pages/`. `--single-file` writes one HTML file instead, by
+  default `.ginkgo/reports/<run_id>.html` or the `--out` path ending in
+  `.html`; it links rendered pages but does not include them.
 - `ginkgo cache ls`
   Lists cache entries with their full keys.
 - `ginkgo cache explain <run_id>`

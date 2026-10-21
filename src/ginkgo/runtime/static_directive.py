@@ -21,7 +21,7 @@ from pathlib import Path, PurePath
 from types import ModuleType
 from typing import Any
 
-from ginkgo.core.directive import ExecutionDirective
+from ginkgo.core.directive import DirectiveError, ExecutionDirective
 
 # Pure path methods an argument expression may call.
 _PATH_METHODS = frozenset(
@@ -64,7 +64,13 @@ def static_directive(
         The directive, built by calling the real constructor (which only reads
         the files it hashes), or ``None`` when the body is not the supported
         shape, an argument is outside the evaluable subset, or the constructor
-        raises.
+        raises anything but ``DirectiveError``.
+
+    Raises
+    ------
+    DirectiveError
+        If the constructor refuses the request whatever the run's state, such
+        as a notebook that is not a ``.py`` file.
     """
     call = _returned_call(fn)
     if call is None:
@@ -94,6 +100,9 @@ def static_directive(
                 raise _NotStatic("** unpacking")
             kwargs[keyword.arg] = _data(_evaluate(keyword.value, scope=scope))
         directive = constructor(*args, **kwargs)
+    except DirectiveError:
+        # The request is wrong however the run goes, so it is worth reporting.
+        raise
     except Exception:
         # _NotStatic, or anything the constructor raised (a missing script, an
         # unknown extension): either way the directive cannot be predicted.

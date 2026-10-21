@@ -26,16 +26,21 @@ ran or were served from cache. See [Measured Usage](resources.md#measured-usage)
 Useful flags:
 
 - `--single-file` — emit one HTML file with the CSS, fonts and script inlined;
-  easy to share or attach. Rendered-page and log links are not inlined and remain
-  relative references. A small `.ginkgo-report.json` marker is written beside
-  it so the directory can be re-rendered; the HTML itself is self-contained and
-  can be shared on its own.
-- `--out <dir>` — write the report bundle somewhere other than the default. The
-  directory must be empty, missing, or hold an earlier ginkgo report; otherwise
-  the command stops and changes nothing. The default destination always
-  re-renders.
-- `--force` — replace the contents of an `--out` directory that holds files
-  ginkgo did not write.
+  easy to share or attach. It is written to `.ginkgo/reports/<run-id>.html`,
+  beside the bundle directory, so exporting both keeps both. Rendered pages
+  and logs are not included: their links stay relative and will not open from
+  the single file, and the command lists them when it writes the report. Use the
+  bundle when those pages matter.
+- `--out <path>` — write the report somewhere other than the default. For a
+  bundle, `<path>` is a directory that must be empty, missing, or hold an
+  earlier ginkgo report; otherwise the command stops and changes nothing. With
+  `--single-file`, a path ending in `.html` is the file itself
+  (`--out report.html`), and any other path is a directory that `index.html` is
+  written into; only that file is written, and an existing file is replaced
+  only when it is an earlier ginkgo report. The default destinations always
+  re-render.
+- `--force` — replace an `--out` destination that holds files ginkgo did not
+  write.
 - `--open` / `--no-open` — open (or do not open) the report in a browser when
   the build finishes.
 - `--max-log-lines N` — control how many log lines are shown per failed task

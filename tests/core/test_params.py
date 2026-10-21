@@ -75,6 +75,15 @@ def test_type_conversion_applied():
         assert ginkgo.param("out", type=Path, default=Path(".")) == Path("results/x.txt")
 
 
+@pytest.mark.parametrize(
+    ("default", "token", "expected"),
+    [(40.0, "2.5", 2.5), (3, "7", 7), (False, "true", True), ("a", "7", "7")],
+)
+def test_type_is_inferred_from_the_default(default, token, expected):
+    with config_session(cli_extras=["--threshold", token]):
+        assert ginkgo.param("threshold", default=default) == expected
+
+
 def test_config_string_coerced_to_declared_type():
     with config_session(param_config={"n": "12"}):
         assert ginkgo.param("n", type=int, default=0) == 12

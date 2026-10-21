@@ -221,7 +221,9 @@ before anything runs, and the error names the parameters it does declare. A
 required parameter that is not supplied fails the same way.
 
 `type` follows `argparse`'s convention, so `type=int`, `type=float`, and
-`type=Path` all work. Booleans accept a bare `--flag` or an explicit
+`type=Path` all work. Without `type`, a `bool`, `int` or `float` default sets
+it, so `ginkgo.param("threshold", default=40.0)` reads `--threshold 2.5` as a
+float; any other default leaves values as strings. Booleans accept a bare `--flag` or an explicit
 `--flag false`, and `multiple=True` makes a flag repeatable:
 
 ```bash
@@ -428,9 +430,10 @@ differs. Component names follow the cache key: `task`, `version`, `source_hash`,
 `compared_with` says what the entry was compared against, and how it was found.
 `"strategy": "same_node"` means the key this same node used in the most recent
 earlier run of the workflow — the entry this run superseded, which is the
-comparison you want. `"strategy": "newest_by_function"` is the fallback used
-when the node is new or its label changed: the newest earlier entry written by
-the same task, which may be a different branch of a fan-out. Nothing of the
+comparison you want. `"strategy": "most_similar_by_function"` is the fallback
+used when the node is new or its label changed: of the task's recent earlier
+entries, the one that differs from this node least, which may be a different
+branch of a fan-out. Nothing of the
 node's own changed then, so its `reason` is `no_prior_entry`; `details` and
 `components` describe how it differs from that sibling, as context.
 

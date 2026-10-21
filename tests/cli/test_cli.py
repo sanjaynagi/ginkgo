@@ -1270,6 +1270,23 @@ class TestCliInit:
 
         project_dir = Path("demo-project")
         assert not (project_dir / "skills").exists()
+        assert not (project_dir / "AGENTS.md").exists()
+
+    def test_init_points_agents_at_the_skills(self) -> None:
+        result = _run_cli("init", "demo-project", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert "skills/index.md" in Path("demo-project", "AGENTS.md").read_text(encoding="utf-8")
+
+    def test_init_leaves_an_existing_agents_file_alone(self) -> None:
+        project_dir = Path("demo-project")
+        project_dir.mkdir()
+        (project_dir / "AGENTS.md").write_text("ours\n", encoding="utf-8")
+
+        result = _run_cli("init", "demo-project", "--skills-only", cwd=Path.cwd())
+        assert result.returncode == 0, result.stderr
+
+        assert (project_dir / "AGENTS.md").read_text(encoding="utf-8") == "ours\n"
 
     def test_init_can_create_skills_only_for_existing_project(self) -> None:
         project_dir = Path("demo-project")
@@ -2471,7 +2488,8 @@ def main():
             encoding="utf-8",
         )
         Path("ginkgo.toml").write_text(
-            'other = "kept"\n\n[params]\nlabel = "stale"\n', encoding="utf-8"
+            'other = "kept"\n\n[params]\nlabel = "stale"\n\n[secrets.dotenv]\nenabled = false\n',
+            encoding="utf-8",
         )
         result = _run_cli("run", "workflow.py", "--label", "effective", cwd=Path.cwd())
         assert result.returncode == 0, result.stderr
@@ -2479,7 +2497,9 @@ def main():
         params = _manifest(_extract_run_dir(result.stdout))["params"]
         assert params["label"] == "effective"
         assert params["other"] == "kept"
+        # Neither the raw [params] table nor ginkgo's own tables are parameters.
         assert "params" not in params
+        assert "secrets" not in params
 
     def test_run_warns_when_a_task_body_reads_a_parameter_global(self) -> None:
         Path("workflow.py").write_text(_GLOBAL_PARAM_WORKFLOW, encoding="utf-8")

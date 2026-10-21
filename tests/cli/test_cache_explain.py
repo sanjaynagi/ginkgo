@@ -252,9 +252,7 @@ class TestCacheExplainComponents:
         assert explanation["compared_with"] == {"cache_key": "prior", "strategy": "same_node"}
         assert _component(explanation, "source_hash")["prior"] == "src-1"
 
-    def test_a_new_node_falls_back_to_the_newest_entry_for_the_function(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_new_node_falls_back_to_an_entry_for_the_function(self, tmp_path: Path) -> None:
         with _index(tmp_path) as index:
             _write_entry(
                 index, "older", source_hash="src-0", created_at="2026-08-17T09:00:00+00:00"
@@ -274,12 +272,37 @@ class TestCacheExplainComponents:
 
         assert explanation["compared_with"] == {
             "cache_key": "newer",
-            "strategy": "newest_by_function",
+            "strategy": "most_similar_by_function",
         }
         assert _component(explanation, "source_hash")["prior"] == "src-1"
         # A sibling is context, not history: nothing of this node's own changed.
         assert explanation["reason"] == "no_prior_entry"
         assert explanation["details"] == ["source_hash_changed"]
+
+    def test_the_fallback_is_the_entry_that_differs_least(self, tmp_path: Path) -> None:
+        # The newest entry is another fan-out branch, differing in its sample.
+        with _index(tmp_path) as index:
+            _write_entry(
+                index, "same-branch", source_hash="src-0", created_at="2026-08-17T09:00:00+00:00"
+            )
+            _write_entry(
+                index,
+                "other-branch",
+                input_hashes={"samples": "hash-b", "threads": "hash-t"},
+                created_at="2026-08-18T09:00:00+00:00",
+            )
+            _write_entry(index, "current", source_hash="src-0", version="v2")
+            _write_run(
+                _db(tmp_path),
+                run_id="run-2",
+                started_at="2026-08-18T10:00:00+00:00",
+                cache_key="current",
+                display_label="produce[new]",
+            )
+            explanation = _explain(_db(tmp_path))
+
+        assert explanation["compared_with"]["cache_key"] == "same-branch"
+        assert explanation["details"] == ["version_bump"]
 
     def test_a_differing_task_identity_is_named(self, tmp_path: Path) -> None:
         """Same base name, different module: the moved component is ``task``."""
@@ -368,6 +391,48 @@ class TestCacheExplainComponents:
                 cache_key="missing",
             )
             assert _explain(_db(tmp_path))["reason"] == "no_entry_for_key"
+
+
+class TestMissReasons:
+    def test_a_miss_is_explained_against_the_entry_that_differs_least(
+        self, tmp_path: Path
+    ) -> None:
+        """A fan-out sibling written last must not read as an input change."""
+
+        @task()
+        def produce(value: str) -> str:
+            return value
+
+        index = CacheIndex.open(path=_db(tmp_path))
+        store = CacheStore(index=index, root=tmp_path / "cache")
+
+        def save(value: str) -> None:
+            cache_key, input_hashes = store.build_cache_key(
+                task_def=produce, resolved_args={"value": value}
+            )
+            store.save(
+                cache_key=cache_key,
+                result=value,
+                task_def=produce,
+                resolved_args={"value": value},
+                input_hashes=input_hashes,
+                extra_source_hash="notebook-1",
+            )
+
+        save("a")
+        save("b")
+        cache_key, input_hashes = store.build_cache_key(
+            task_def=produce, resolved_args={"value": "a"}
+        )
+        reasons = store.miss_reasons(
+            cache_key=cache_key + "-moved",
+            task_def=produce,
+            input_hashes=input_hashes,
+            extra_source_hash="notebook-2",
+        )
+        index.close()
+
+        assert reasons == ["source_hash_changed"]
 
 
 class TestSavedKeyComponents:

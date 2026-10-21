@@ -28,7 +28,7 @@ from typing import Any, Sequence
 
 from ginkgo.formatting import duration_seconds, parse_timestamp
 from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, key_components
-from ginkgo.runtime.caching.index import ENTRY_COLUMNS, CacheEntry
+from ginkgo.runtime.caching.index import ENTRY_COLUMNS, PRIOR_ENTRY_WINDOW, CacheEntry
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
 from ginkgo.store.errors import StoreError
@@ -364,8 +364,8 @@ class RerunExplanation:
     compared_with : dict[str, str] | None
         The entry compared against and how it was found — ``cache_key`` and a
         ``strategy`` of ``same_node`` (this node's previous entry) or
-        ``newest_by_function`` (the newest earlier entry of the same task, for
-        a node that has none) — or ``None`` when there was nothing to compare
+        ``most_similar_by_function`` (the earlier entry of the same task that
+        differs from this one least, for a node that has none) — or ``None`` when there was nothing to compare
         with.
     components : list[dict[str, Any]]
         One entry per cache-key component that differs.
@@ -756,15 +756,17 @@ class Query:
             ],
         )
 
-    def _previous_cache_key(self, *, run_id: str, task_id: str) -> tuple[str, str] | None:
+    def _previous_cache_key(
+        self, *, run_id: str, task_id: str, current: dict[str, Any]
+    ) -> tuple[str, str] | None:
         """Return the key this task's node last used, and how it was found.
 
         The comparison ``ginkgo cache explain`` wants is against the same node
         of the same workflow in the run before this one — the entry this run
-        superseded. Where that node is new, the newest earlier entry written by
-        the same function is the closest thing to a predecessor, and the caller
-        is told which of the two it got so it does not read a fan-out sibling
-        as a history (issue #223).
+        superseded. Where that node is new, the closest thing to a predecessor
+        is whichever recent earlier entry of the same function differs from
+        *current* least, and the caller is told which of the two it got so it
+        does not read a fan-out sibling as a history (issue #223).
 
         Parameters
         ----------
@@ -772,12 +774,15 @@ class Query:
             The run being explained.
         task_id : str
             The task within it.
+        current : dict[str, Any]
+            The task's own cache-key components.
 
         Returns
         -------
         tuple[str, str] | None
             ``(cache_key, strategy)`` where strategy is ``"same_node"`` or
-            ``"newest_by_function"``, or ``None`` when nothing earlier exists.
+            ``"most_similar_by_function"``, or ``None`` when nothing earlier
+            exists.
         """
         rows = self._store.query(
             "SELECT t.name, t.display_label, t.cache_key, r.workflow, r.started_at "
@@ -803,16 +808,23 @@ class Query:
         if same_node:
             return str(same_node[0]["cache_key"]), "same_node"
 
-        sibling = self._store.query(
+        siblings = self._store.query(
             "SELECT cache_key FROM cache_entries WHERE function = ? AND cache_key != ? "
             "AND created_at < coalesce("
             "  (SELECT created_at FROM cache_entries WHERE cache_key = ?), created_at"
-            ") ORDER BY created_at DESC LIMIT 1",
-            (task["name"], task["cache_key"], task["cache_key"]),
+            ") ORDER BY created_at DESC LIMIT ?",
+            (task["name"], task["cache_key"], task["cache_key"], PRIOR_ENTRY_WINDOW),
         )
-        if sibling:
-            return str(sibling[0]["cache_key"]), "newest_by_function"
-        return None
+        if not siblings:
+            return None
+        # min() keeps the first of equals, and the entries come newest first.
+        closest = min(
+            (str(row["cache_key"]) for row in siblings),
+            key=lambda key: len(
+                diff_key_components(current=current, prior=self._cache_key_components(key))
+            ),
+        )
+        return closest, "most_similar_by_function"
 
     def explain_rerun(self, run_id: str, task_id: str) -> RerunExplanation:
         """Explain why one task of a run executed rather than serving from cache.
@@ -862,7 +874,7 @@ class Query:
                 **identity, reason="no_entry_for_key", details=[], input_labels=input_labels
             )
 
-        prior = self._previous_cache_key(run_id=run_id, task_id=task_id)
+        prior = self._previous_cache_key(run_id=run_id, task_id=task_id, current=current)
         if prior is None:
             return RerunExplanation(
                 **identity, reason="no_prior_entry", details=[], input_labels=input_labels

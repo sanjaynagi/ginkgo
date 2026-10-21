@@ -297,8 +297,10 @@ class CacheStore:
     ) -> list[str]:
         """Return why a key built by :meth:`build_cache_key` would miss.
 
-        The key's components are compared with the newest entry the same
-        task wrote, the comparison ``ginkgo cache explain`` falls back to.
+        The key's components are compared with whichever of the task's recent
+        entries differs from them least: the newest entry of a fanned-out task
+        is usually another branch, which would report inputs that only differ
+        between branches. ``ginkgo cache explain`` falls back to the same choice.
 
         Parameters
         ----------
@@ -318,8 +320,8 @@ class CacheStore:
             has no entry to compare with, otherwise those
             :func:`coarse_reasons` gives.
         """
-        prior = self.index.newest_entry(function=task_def.name, excluding=cache_key)
-        if prior is None:
+        priors = self.index.recent_entries(function=task_def.name, excluding=cache_key)
+        if not priors:
             return ["no_prior_entry"]
         current = key_components(
             {
@@ -332,9 +334,12 @@ class CacheStore:
                 "input_hashes": input_hashes,
             }
         )
-        return coarse_reasons(
+        diffs = [
             diff_key_components(current=current, prior=key_components(prior.as_meta()))
-        )
+            for prior in priors
+        ]
+        # min() keeps the first of equals, and the entries come newest first.
+        return coarse_reasons(min(diffs, key=lambda diff: len(diff)))
 
     def label_inputs(
         self,
