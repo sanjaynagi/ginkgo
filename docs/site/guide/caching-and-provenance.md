@@ -180,11 +180,14 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   driver path before the post-execution check runs. Without a configured
   store, the declared path is sent to the worker unchanged, which only works
   when the worker shares the driver's filesystem.
-- The parent directory of every declared `Out[...]` path is created
-  automatically before the task body runs (`mkdir(parents=True)`), so a task
-  writing into a fresh subdirectory needs no boilerplate of its own. For
-  `Out[folder]` only the *parent* is created, not the folder itself — tools
-  differ on whether they want the target directory to already exist.
+- Before the task body runs, whatever is at every declared `Out[...]` path is
+  removed (a file, or a folder with everything in it), for every task kind,
+  so a task never reads its own stale output: a body globbing its
+  `Out[folder]` sees only the files this run wrote. The parent directory is
+  then created (`mkdir(parents=True)`), so a task writing into a fresh
+  subdirectory needs no boilerplate of its own. For `Out[folder]` only the
+  *parent* is created, not the folder itself — tools differ on whether they
+  want the target directory to already exist.
 
 A literal path elsewhere in the graph that matches an `Out[...]` path is now
 also a real dependency edge: if another task's argument is the same path

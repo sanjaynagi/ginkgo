@@ -815,33 +815,49 @@ from ginkgo import Out, file, flow, folder, task
 
 
 @task()
-def count_lines(chunk: file) -> int:
-    return len(Path(chunk).read_text().splitlines())
+def sort_chunk(chunk: file, sorted_path: Out[file]) -> file:
+    lines = sorted(Path(chunk).read_text().splitlines())
+    Path(sorted_path).write_text("\n".join(lines) + "\n")
+    return file(sorted_path)
 
 
 @task()
-def split(table: file, chunks: Out[folder]) -> list:
-    Path(chunks).mkdir(parents=True, exist_ok=True)
-    paths = []
+def split(table: file, chunks: Out[folder]) -> list[file]:
+    Path(chunks).mkdir(parents=True)
     for i, block in enumerate(Path(table).read_text().split("\n\n")):
-        path = Path(chunks) / f"chunk{i}.txt"
-        path.write_text(block)
-        paths.append(str(path))
-    return [count_lines(chunk=path) for path in paths]
+        (Path(chunks) / f"chunk{i}.txt").write_text(block + "\n")
+    return [
+        sort_chunk(chunk=str(path), sorted_path=f"results/sorted/{path.name}")
+        for path in sorted(Path(chunks).glob("chunk*.txt"))
+    ]
+
+
+@task()
+def combine(parts: list[file], merged: Out[file]) -> file:
+    Path(merged).write_text("".join(Path(part).read_text() for part in parts))
+    return file(merged)
 
 
 @flow
 def main():
-    return split(table="data/table.txt", chunks="results/chunks")
+    parts = split(table="data/table.txt", chunks="results/chunks")
+    return combine(parts=parts, merged="results/merged.txt")
 ```
+
+Ginkgo removes `results/chunks` before `split` runs, as it does every
+declared `Out[...]` path before any task runs, so the glob sees only the
+chunks this run wrote, never ones left by an earlier run with a different
+table.
 
 The returned tasks read files the parent has already written, so they do not
 wait on it as a producer of `results/chunks`; the parent waits on them, and
-completes with the list of their results. A later run with an unchanged
-`table.txt` is a cache hit on `split`, whose returned tasks are replayed and
-hit in turn. A returned task that reads a path produced by a task downstream
-of its parent cannot run before that task, which waits on the parent: the
-expansion fails with a cycle error naming the task that returned it.
+completes with the list of their results. A downstream task such as `combine`
+takes that list like any other `list[file]` input, and runs once every chunk
+is sorted. A later run with an unchanged `table.txt` is a cache hit on
+`split`, whose returned tasks are replayed and hit in turn. A returned task
+that reads a path produced by a task downstream of its parent cannot run
+before that task, which waits on the parent: the expansion fails with a cycle
+error naming the task that returned it.
 
 ### Selecting One Output With `.output[i]`
 

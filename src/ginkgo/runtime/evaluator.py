@@ -92,6 +92,7 @@ from ginkgo.runtime.task_runners.shell import (
     ShellRunner,
     SignalMonitor,
     classify_failure,
+    remove_declared_output,
     sanitize_exception,
 )
 from ginkgo.runtime.task_validation import (
@@ -1658,26 +1659,25 @@ class ConcurrentEvaluator:
                     handle.write(header)
 
     def _prepare_output_paths(self, *, node: NodeRun) -> None:
-        """Make every declared ``Out[...]`` path ready for the task to write.
+        """Clear every declared ``Out[...]`` path before the task writes it.
 
-        Runs once per node, after pre-execution validation passes and before
-        the task body dispatches — on the driver, ahead of python workers,
-        shell/script/notebook commands, and container runs alike, since all
-        of those are launched from this one call site. The *parent* is
-        created (``exist_ok=True``): for ``Out[folder]`` the folder itself is
-        left for the task body to create, since tools differ on whether they
-        want it to already exist. A read-only file left at an ``Out[file]``
-        path by an earlier run is removed, so a body opening it for writing
-        does not fail with a bare permission error.
+        Runs once per attempt, after pre-execution validation passes and
+        before the task body dispatches — on the driver, ahead of python
+        workers, shell/script/notebook commands, and container runs alike,
+        since all of those are launched from this one call site. Whatever an
+        earlier run left at a declared path is removed (a file, or a folder
+        with all its contents), so a body that globs its own ``Out[folder]``
+        never sees stale files. The *parent* is created; an ``Out[folder]``
+        itself is left for the task body to create, since tools differ on
+        whether they want it to already exist.
         """
         assert node.execution_args is not None
-        for _, path, kind in declared_output_paths(
+        for _, path, _ in declared_output_paths(
             task_def=node.task_def, resolved_args=node.execution_args
         ):
             output = Path(path)
+            remove_declared_output(output)
             output.parent.mkdir(parents=True, exist_ok=True)
-            if kind == "file" and output.is_file() and not os.access(output, os.W_OK):
-                output.unlink()
 
     def _fold_remote_input_access(self, *, node: NodeRun, payload: Any) -> None:
         """Fold worker-reported input-access stats into provenance.

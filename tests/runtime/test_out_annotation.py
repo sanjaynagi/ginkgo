@@ -329,3 +329,20 @@ def test_a_read_only_output_left_by_an_earlier_run_is_replaced(tmp_path: Path) -
     evaluate(write_output(payload="new", out_path=str(out_path)))
 
     assert out_path.read_text(encoding="utf-8") == "new"
+
+
+@task()
+def list_folder(out_dir: Out[folder]) -> list[str]:
+    """Writes one file into its folder and reports everything it finds there."""
+    path = Path(out_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "new.txt").write_text("new", encoding="utf-8")
+    return sorted(child.name for child in path.iterdir())
+
+
+def test_a_python_task_starts_with_its_out_folder_cleared(tmp_path: Path) -> None:
+    out_dir = tmp_path / "chunks"
+    out_dir.mkdir()
+    (out_dir / "stale.txt").write_text("stale", encoding="utf-8")
+
+    assert evaluate(list_folder(out_dir=str(out_dir))) == ["new.txt"]
