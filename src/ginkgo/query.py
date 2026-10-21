@@ -31,6 +31,7 @@ from ginkgo.runtime.caching.cache import coarse_reasons, diff_key_components, ke
 from ginkgo.runtime.caching.index import ENTRY_COLUMNS, PRIOR_ENTRY_WINDOW, CacheEntry
 from ginkgo.runtime.module_loader import task_base_name
 from ginkgo.runtime.run_summary import RunSummary
+from ginkgo.runtime.rundir import runs_without_ledger_warning
 from ginkgo.store.errors import StoreError
 from ginkgo.store.protocol import ProvenanceStore
 from ginkgo.store.sqlite import MEMORY, open_store
@@ -1090,6 +1091,15 @@ class Query:
         )
         if known:
             return path_or_artifact_id, None
+        # A ledger lost or replaced since the run that wrote the path knows
+        # nothing of it, whatever the task's annotations were.
+        ledger_gap = runs_without_ledger_warning(layout=self._layout)
+        if ledger_gap is not None:
+            raise FileNotFoundError(
+                f"Nothing in the ledger produced {path_or_artifact_id!r}, and {ledger_gap}. "
+                "A path written by one of those runs cannot be traced; run the workflow "
+                "again to record it."
+            )
         raise FileNotFoundError(
             f"Nothing in the ledger produced {path_or_artifact_id!r}: it is neither an "
             "artifact id nor a path ginkgo has materialized. A path a task returns as a "
