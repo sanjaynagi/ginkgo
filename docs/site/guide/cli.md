@@ -463,7 +463,9 @@ node's own changed then, so its `reason` is `no_prior_entry`; `details` and
 `components` describe how it differs from that sibling, as context.
 
 When more than one thing moved, `details` lists every reason in a fixed order —
-`source_hash_changed`, `version_bump`, `env_changed`, `input_changed` — and
+`source_hash_changed`, `version_bump`, `env_changed`, `input_changed`,
+`environ_changed` (an environment variable the task reads, named as an
+`environ.<NAME>` component) — and
 `reason` is the first of them. A moved component none of those covers reports
 `cache_key_changed`.
 

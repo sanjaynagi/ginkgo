@@ -176,6 +176,7 @@ class TestMigrations:
         connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
         connection.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY, type TEXT, ts TEXT)")
         connection.execute("CREATE INDEX events_type_ts ON events(type, ts)")
+        connection.execute("CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY)")
         connection.execute("INSERT INTO schema_version VALUES (3, '2026-10-01')")
 
         assert migrate(connection) == SCHEMA_VERSION
