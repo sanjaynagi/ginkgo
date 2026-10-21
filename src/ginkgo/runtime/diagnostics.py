@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
 import inspect
+import os
 from pathlib import Path
 import textwrap
 from typing import Any
@@ -29,6 +30,8 @@ from ginkgo.runtime.environment.secrets import SecretResolver
 UNREACHABLE_CALL_CODE = "unreachable_task_call"
 PATH_LIKE_STR_PARAM_CODE = "path_like_str_param"
 MISSING_DIRECTIVE_CODE = "missing_directive_return"
+ENVIRON_READ_CODE = "environ_read_in_task"
+_ENVIRON_ATTRIBUTES = frozenset({"environ", "environb", "getenv"})
 ENV_WARNING_CONSEQUENCE = (
     "A run fails at the first task in this environment that has to run; "
     "cached tasks do not need it."
@@ -148,6 +151,9 @@ def collect_workflow_diagnostics(
         diagnostics.extend(
             env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
             for warning in validator.env_warnings
+        )
+        diagnostics.extend(
+            environ_read_diagnostics(task_defs=[node.task_def for node in graph.nodes.values()])
         )
         diagnostics.extend(dropped_calls)
         diagnostics.extend(path_like_str_param_diagnostics(nodes=graph.nodes.values()))
@@ -347,6 +353,81 @@ def missing_directive_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[Workf
             )
         )
     return diagnostics
+
+
+def environ_read_diagnostics(*, task_defs: Iterable[TaskDef]) -> list[WorkflowDiagnostic]:
+    """Build one warning per task whose body reads the process environment.
+
+    The cache key covers a task's arguments and source, not ``os.environ``, so
+    a task that reads ``MY_SETTING`` keeps serving the result computed with
+    its old value. Detection is best-effort: it reads the task body's own
+    source for ``os.environ``, ``os.getenv`` and ``os.environb``, and for
+    module globals bound to them by ``from os import ...``, but not a read
+    made by a helper the task calls.
+
+    Parameters
+    ----------
+    task_defs : Iterable[TaskDef]
+        Task definitions to check. Deduplicated internally by
+        :attr:`TaskDef.name`.
+
+    Returns
+    -------
+    list[WorkflowDiagnostic]
+        One ``warning``-severity diagnostic per flagged task, ordered by first
+        encounter.
+    """
+    diagnostics: list[WorkflowDiagnostic] = []
+    seen_task_names: set[str] = set()
+    for task_def in task_defs:
+        if task_def.name in seen_task_names:
+            continue
+        seen_task_names.add(task_def.name)
+        if not _reads_environ(task_def.fn):
+            continue
+        task_label = task_def.base_name
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=ENVIRON_READ_CODE,
+                message=(
+                    f"Task {task_label!r} reads the process environment (os.environ or "
+                    "os.getenv). Cache keys hash task arguments, so changing the variable "
+                    "will not re-run this task."
+                ),
+                location=task_def.name,
+                suggestion=(
+                    f"Pass the value into {task_label} as an argument, or declare it with "
+                    "ginkgo.param and pass that."
+                ),
+            )
+        )
+    return diagnostics
+
+
+def _reads_environ(fn: Callable[..., Any]) -> bool:
+    """Whether *fn*'s source reads ``os.environ``, ``os.getenv`` or ``os.environb``.
+
+    ``False`` whenever the source cannot be read.
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    except (OSError, TypeError, SyntaxError):
+        return False
+    function_globals = getattr(fn, "__globals__", {})
+    # environb is POSIX-only.
+    readers = {id(os.environ), id(getattr(os, "environb", os.environ)), id(os.getenv)}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in _ENVIRON_ATTRIBUTES
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+        ):
+            return True
+        if isinstance(node, ast.Name) and id(function_globals.get(node.id)) in readers:
+            return True
+    return False
 
 
 def _never_returns_directive(fn: Callable[..., Any]) -> bool:

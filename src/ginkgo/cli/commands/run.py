@@ -65,6 +65,7 @@ from ginkgo.runtime.rundir import RunDir, combined_log_tail, make_run_id
 from ginkgo.runtime.diagnostics import (
     WorkflowDiagnostic,
     env_warning_diagnostic,
+    environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
     unreachable_call_diagnostics,
@@ -417,6 +418,13 @@ def run_workflow(
         nodes=evaluator.graph.nodes.values(),
     ):
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(finding.message())}")
+    # The same holds for a value read from os.environ inside a task body.
+    for diagnostic in environ_read_diagnostics(
+        task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
+    ):
+        console(sys.stderr).print(
+            f"[yellow]⚠[/] {escape(diagnostic.message)} {escape(diagnostic.suggestion or '')}"
+        )
 
     # A misspelt --rerun name would otherwise quietly serve every result from
     # the cache. Only warned: a task a dynamic expansion returns is not known

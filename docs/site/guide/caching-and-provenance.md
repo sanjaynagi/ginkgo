@@ -323,7 +323,9 @@ body is not part of the cache key. Re-running with `MY_SETTING=b` after a run
 with `MY_SETTING=a` serves the cached result computed with `a`. Pass the value
 in as a task argument instead, or declare it as a workflow parameter with
 `ginkgo.param` (see [Workflow Parameters](cli.md#workflow-parameters)) and pass
-that to the task.
+that to the task. `ginkgo run` and `ginkgo doctor` warn about a task body that
+reads `os.environ`, `os.getenv` or `os.environb` (code `environ_read_in_task`);
+a read made by a helper function the task calls is not detected.
 
 ## Artifact Storage
 
