@@ -113,12 +113,10 @@ class RootSkippedError(GinkgoError, RuntimeError):
     normally, so this is an outcome rather than a crash.
     """
 
-    def __init__(self, *, task_name: str, task_id: str) -> None:
-        self.task_name = task_name
-        self.task_id = task_id
+    def __init__(self, *, label: str) -> None:
+        self.label = label
         super().__init__(
-            f"The workflow result depends on {task_name} ({task_id}), which failed. "
-            "No result was produced."
+            f"The workflow result depends on {label}, which failed. No result was produced."
         )
 
 
@@ -1512,15 +1510,11 @@ class ConcurrentEvaluator:
         for node_id in sorted(self._root_dependency_ids):
             node = self._nodes[node_id]
             if node.state == "skipped":
-                return RootSkippedError(
-                    task_name=(node.blocked_by or node.node).task_def.base_name,
-                    task_id=task_id_for_node((node.blocked_by or node.node).node_id),
-                )
+                # Labelled as its run is, which a dynamic branch gets on resolution.
+                blocker = node if node.blocked_by is None else self._nodes[node.blocked_by.node_id]
+                return RootSkippedError(label=blocker.label)
             if node.state == "failed":
-                return RootSkippedError(
-                    task_name=node.task_def.base_name,
-                    task_id=task_id_for_node(node.node_id),
-                )
+                return RootSkippedError(label=node.label)
         return None
 
     @property
