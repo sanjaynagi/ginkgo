@@ -90,10 +90,20 @@ declared `threads`/`memory` in the run manifest. Measurement happens on
 failure too: usage recorded right before an OOM kill is exactly what you
 need to size the retry.
 
-`ginkgo report` surfaces it as a **Peak RSS** column in the task ledger
-(`measured / declared`, e.g. `3.2 GiB / 16 GiB`); `ginkgo runs show --json`
-includes the raw `resource_usage` record per task. See
-[Reports](reports.md).
+A Python task runs in a worker process that is already resident before the
+task starts: the interpreter, ginkgo, and the workflow module with everything
+it imports, which is often 100 MB or more. That memory is the worker's, not the
+task's, so a Python task's `peak_rss_bytes` is its peak *above* the worker's
+resident memory as the body started, and the worker's figure is recorded
+beside it as `baseline_rss_bytes`. A task that allocates nothing measures close
+to zero. CPU time is likewise measured from the start of the body, after the
+workflow module is imported. A subprocess task's figure is its whole process
+tree, which is all the task's own.
+
+`ginkgo report` surfaces it as a **Peak memory** column in the task ledger
+(`measured / declared`, e.g. `3.2 GiB / 16Gi`, with the declaration as
+written); `ginkgo runs show --json` includes the raw `resource_usage` record per
+task. See [Reports](reports.md).
 
 ### Across Runs
 

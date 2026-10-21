@@ -25,7 +25,7 @@ from ginkgo.errors import GinkgoError
 from ginkgo.formatting import format_duration
 from ginkgo.cli.renderers.dry_run import render_dry_run_plan
 from ginkgo.cli.renderers.jsonl import JsonlEventRenderer, event_line
-from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE
+from ginkgo.cli.errors import IGNORED_FAILURES_EXIT_CODE, UsageError
 from ginkgo.cli.renderers.models import (
     FailureDetails,
     CliRenderedPage,
@@ -55,6 +55,7 @@ from ginkgo.core.resources import (
     resource_budgets_from_config,
 )
 from ginkgo.core.flow import discover_flow
+from ginkgo.core.task import TaskDef
 from ginkgo.params import ParamContext
 from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.evaluator import ConcurrentEvaluator, RootSkippedError
@@ -442,17 +443,18 @@ def run_workflow(
         )
 
     # A misspelt --rerun name would otherwise quietly serve every result from
-    # the cache. Only warned: a task a dynamic expansion returns is not known
-    # until the run gets there.
-    static_names = {
-        name
-        for node in evaluator.task_nodes.values()
-        for name in (node.task_def.name, node.task_def.base_name, node.label)
-    }
-    for name in sorted(set(rerun) - static_names):
-        console(sys.stderr).print(
-            f"[yellow]⚠[/] --rerun {escape(name)} names no task in the static graph; it "
-            "applies only if a dynamic task returns one by that name."
+    # the cache. One no task the workflow defines carries is rejected now; one
+    # naming a defined task the static graph lacks may still match a task a
+    # dynamic expansion returns, so it is checked once the run has finished.
+    unmatched = set(rerun) - _rerun_names(evaluator=evaluator)
+    defined = _defined_task_names(root=Path.cwd()) if unmatched else set()
+    unknown = sorted(name for name in unmatched if name.split("[", 1)[0] not in defined)
+    if unknown:
+        raise UsageError(
+            f"--rerun {', '.join(unknown)} names no task the workflow's modules define. "
+            "Name a task, or one call by its label as the run table shows it (`--rerun "
+            "'fastq_stats[sample_a]'`). A task whose module only a task body imports "
+            "is found once the workflow imports that module too."
         )
 
     # A parameter named like a path but annotated a bare `str` is content-tracked
@@ -730,6 +732,10 @@ def run_workflow(
         root_skipped: RootSkippedError | None = None
         try:
             evaluator.evaluate(expr)
+            for name in sorted(set(rerun) - _rerun_names(evaluator=evaluator)):
+                console(sys.stderr).print(
+                    f"[yellow]⚠[/] --rerun {escape(name)} matched no task in this run."
+                )
         except RootSkippedError as exc:
             # An expected outcome of a non-fatal failure policy, not a
             # crash: the run drained, it just has no result to show.
@@ -857,6 +863,31 @@ def run_workflow(
                 path_tracked_inputs=_count_path_tracked_inputs(run_summary=run_summary),
             )
     return 0
+
+
+def _rerun_names(*, evaluator: ConcurrentEvaluator) -> set[str]:
+    """Return every name ``--rerun`` selects one of the graph's tasks by."""
+    return {name for node in evaluator.task_nodes.values() for name in node.rerun_names}
+
+
+def _defined_task_names(*, root: Path) -> set[str]:
+    """Return the qualified and base names of every task defined under *root*.
+
+    Read from the modules already imported from the project, the workflow and
+    every module it imports, so a task only a dynamic expansion returns is
+    counted too.
+    """
+    names: set[str] = set()
+    for module in list(sys.modules.values()):
+        module_file = getattr(module, "__file__", None)
+        if module_file is None or "site-packages" in Path(module_file).parts:
+            continue
+        if not Path(module_file).resolve().is_relative_to(root.resolve()):
+            continue
+        for value in list(vars(module).values()):
+            if isinstance(value, TaskDef):
+                names |= {value.name, value.base_name}
+    return names
 
 
 def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:

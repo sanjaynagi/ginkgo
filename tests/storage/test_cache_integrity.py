@@ -1122,3 +1122,34 @@ class TestDynamicTemplateEntries:
             # The child is renamed away: the stored template can no longer load.
             monkeypatch.delattr(tasks, "child")
             assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
+
+    def test_an_entry_the_index_has_no_row_for_is_a_miss(self, tmp_path):
+        _write_module(
+            tmp_path / "rowless_tasks.py",
+            """\
+            from ginkgo import task
+
+            @task()
+            def child(x: int) -> int:
+                return x
+
+            @task()
+            def parent() -> int:
+                return child(x=1)
+            """,
+        )
+        with _imported_from(tmp_path, "rowless_tasks") as tasks:
+            saved = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+            saved.save(
+                cache_key="k",
+                result=DynamicTemplate(tasks.child(x=1)),
+                task_def=tasks.parent,
+                resolved_args={},
+                input_hashes={},
+            )
+
+            # A lost ginkgo.db: the entry's bytes remain, its row does not.
+            store = CacheStore(index=CacheIndex.in_memory(), root=tmp_path / "cache")
+
+            assert store.load(cache_key="k", task_def=tasks.parent) is MISSING
+            assert not store.has_entry(cache_key="k", task_def=tasks.parent)

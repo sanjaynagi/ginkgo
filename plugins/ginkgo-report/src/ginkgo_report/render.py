@@ -2,9 +2,10 @@
 
 The default output is a directory bundle containing ``index.html``, the
 stylesheet, bundled fonts, a small islands JS module, and copied artifacts
-(rendered pages, log files). ``single_file=True`` produces one HTML document
-with the stylesheet, fonts and script inlined; it links, but does not embed,
-the rendered pages and logs.
+(rendered pages, log files), with a network-free static copy beside each
+marimo page. ``single_file=True`` produces one HTML document with the
+stylesheet, fonts and script inlined and each rendered page embedded, as its
+static copy when it is a marimo page; it links, but does not include, the logs.
 """
 
 from __future__ import annotations
@@ -48,8 +49,8 @@ class ExportResult:
     single_file : bool
         Whether the report is one self-contained HTML file.
     omitted_links : tuple[str, ...]
-        Relative paths of files the report links but did not write, such as
-        rendered pages and logs left out of a single-file report.
+        Relative paths of files the report links but did not write: the logs
+        a single-file report leaves out.
     """
 
     index_path: Path
@@ -82,8 +83,8 @@ def export_report(
     policy : SizingPolicy | None
         Size caps applied at export time.
     single_file : bool
-        When True, emit one HTML file with CSS, fonts, and script inlined.
-        Rendered pages and logs are not embedded, so their links are listed
+        When True, emit one HTML file with CSS, fonts, and script inlined and
+        the rendered pages embedded. Logs are not, so their links are listed
         in ``ExportResult.omitted_links``.
     managed_destination : bool
         Set when ``out`` is a path ginkgo derived rather than one a user
@@ -115,7 +116,12 @@ def export_report(
     if single_file:
         _prepare_out_file(out, managed_destination=managed_destination, force=force)
         index_path = _render_single_file(report=report, out_path=out)
-        omitted = tuple(copy.dest_relpath for copy in report.artifact_copies)
+        embedded = {card.link_relpath for card in report.pages}
+        omitted = tuple(
+            copy.dest_relpath
+            for copy in report.artifact_copies
+            if copy.dest_relpath not in embedded
+        )
         return ExportResult(index_path=index_path, single_file=True, omitted_links=omitted)
 
     _prepare_out_dir(out, managed_destination=managed_destination, force=force)
@@ -131,11 +137,13 @@ def _render_bundle(*, report: ReportData, out_dir: Path) -> Path:
     """Write a directory bundle at ``out_dir``."""
     _copy_static(out_dir=out_dir)
     _copy_artifacts(report=report, out_dir=out_dir)
+    _write_static_pages(report=report, out_dir=out_dir)
 
     env = _jinja_env()
     template = env.get_template("index.html.j2")
     html = template.render(
         report=report,
+        single_file=False,
         css_href="assets/report.css",
         islands_src="assets/islands.js",
         logo_src="assets/images/ginkgo-leaf.png",
@@ -185,11 +193,18 @@ def _copy_artifacts(*, report: ReportData, out_dir: Path) -> None:
         shutil.copyfile(copy.source, dest)
 
 
+def _write_static_pages(*, report: ReportData, out_dir: Path) -> None:
+    """Write the network-free copy of each marimo page beside the page."""
+    for card in report.pages:
+        if card.static_relpath is not None:
+            (out_dir / card.static_relpath).write_text(card.embed_html, encoding="utf-8")
+
+
 # ----- Single-file mode ---------------------------------------------------
 
 
 def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
-    """Render a single HTML file with its stylesheet, fonts and script inlined."""
+    """Render a single HTML file with its stylesheet, fonts, script and pages inlined."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     css_text = _load_text(_STATIC_DIR / "report.css")
@@ -204,6 +219,7 @@ def _render_single_file(*, report: ReportData, out_path: Path) -> Path:
     template = env.get_template("index.html.j2")
     html = template.render(
         report=report,
+        single_file=True,
         css_href=None,
         islands_src=None,
         logo_src=logo_src,
@@ -264,7 +280,7 @@ def _jinja_env() -> jinja2.Environment:
     """Build the Jinja environment used for rendering."""
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(_TEMPLATES_DIR),
-        autoescape=jinja2.select_autoescape(["html", "htm", "xml"]),
+        autoescape=jinja2.select_autoescape(["html", "htm", "xml", "html.j2"]),
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,

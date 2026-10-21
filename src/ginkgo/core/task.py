@@ -915,7 +915,12 @@ def _label_parts_for_row(
         return ()
 
     if mode == "zip":
-        return _zip_label_parts_for_row(row=row, varying_keys=varying_keys, label_keys=label_keys)
+        return _zip_label_parts_for_row(
+            row=row,
+            varying_keys=varying_keys,
+            label_keys=label_keys,
+            inherited=lambda expr: expr.display_label_parts,
+        )
 
     parts: list[str] = []
     valid_params = set(task_def.all_params.keys())
@@ -969,6 +974,7 @@ def _zip_label_parts_for_row(
     row: dict[str, Any],
     varying_keys: tuple[str, ...],
     label_keys: tuple[str, ...],
+    inherited: Callable[[Expr], tuple[str, ...]],
 ) -> tuple[str, ...]:
     """Build the label for one zip fan-out row.
 
@@ -976,9 +982,10 @@ def _zip_label_parts_for_row(
     :func:`_zip_label_keys` found are needed to tell the fan-out's branches
     apart. When none renders as a short scalar (every value is an
     ``Expr``/``ExprList``, the normal shape for a chained downstream task),
-    inherit the label of the upstream branch that produced it, since the zip
-    position ties each row back to exactly one producing branch. Falls back
-    to the first key's rendered value, matching the previous behaviour.
+    inherit the label of the upstream branch that produced it, as
+    *inherited* gives it, since the zip position ties each row back to
+    exactly one producing branch. Falls back to the first key's rendered
+    value, matching the previous behaviour.
     """
     parts = [
         rendered
@@ -994,14 +1001,71 @@ def _zip_label_parts_for_row(
         # produced it, so it inherits that branch's label too.
         if isinstance(value, OutputIndex | OutputName):
             value = value.expr
-        if isinstance(value, Expr) and value.display_label_parts:
-            return value.display_label_parts
+        if isinstance(value, Expr) and (parts := inherited(value)):
+            return parts
 
     first_key = varying_keys[0]
     rendered = _render_label_value(row.get(first_key))
     if rendered is None:
         return ()
     return (rendered,)
+
+
+def sibling_label_parts(
+    *, calls: list[Expr], inherited: Callable[[Expr], tuple[str, ...]]
+) -> list[tuple[str, ...]]:
+    """Label plain calls of one task gathered in one list as ``.map()`` would.
+
+    ``[child(name=n) for n in names]`` builds the calls a ``.map()`` over
+    ``name`` builds, so its calls take the same labels (``child[c0]``) rather
+    than ordinals. The arguments whose values differ between the calls are
+    the varying axes, chosen and rendered as for a zip fan-out.
+
+    Parameters
+    ----------
+    calls : list[Expr]
+        Unmapped calls of one task.
+    inherited : Callable[[Expr], tuple[str, ...]]
+        Returns the label parts an upstream call is shown under, for a call
+        whose varying arguments are all upstream results.
+
+    Returns
+    -------
+    list[tuple[str, ...]]
+        The label parts of each call, in order; empty where none renders.
+    """
+    rows = [call.args for call in calls]
+    varying_keys = tuple(
+        name
+        for name in calls[0].task_def.signature.parameters
+        if any(not _same_argument(row.get(name), rows[0].get(name)) for row in rows[1:])
+    )
+    if not varying_keys:
+        return [() for _ in calls]
+    label_keys = _zip_label_keys(rows=rows, varying_keys=varying_keys)
+    return [
+        _zip_label_parts_for_row(
+            row=row, varying_keys=varying_keys, label_keys=label_keys, inherited=inherited
+        )
+        for row in rows
+    ]
+
+
+def _same_argument(left: Any, right: Any) -> bool:
+    """Return whether two calls received the same value for one argument.
+
+    A deferred value is the same only as itself: comparing it with a plain
+    value raises, by design.
+    """
+    if left is right:
+        return True
+    deferred = Expr | ExprList | OutputIndex | OutputName
+    if isinstance(left, deferred) or isinstance(right, deferred):
+        return False
+    try:
+        return bool(left == right)
+    except Exception:  # noqa: BLE001 - an array or other value with no plain equality
+        return False
 
 
 def _is_short_scalar_label(rendered: str) -> bool:

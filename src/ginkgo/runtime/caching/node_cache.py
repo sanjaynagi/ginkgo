@@ -67,26 +67,22 @@ class NodeCache:
         """Return a valid content-addressed cached result for a prepared node.
 
         The cache key is computed first, as :meth:`ensure_cache_key` does. A
-        dynamic task's entry holds a :class:`DynamicTemplate`, which is
-        returned without validating any output: the children it replays
-        validate and restore their own.
+        dynamic task's entry holds a :class:`DynamicTemplate`: only its
+        declared ``Out[...]`` paths are restored, since the children it
+        replays validate and restore their own outputs.
         """
         self.ensure_cache_key(node=node)
         assert node.cache_key is not None
+        assert node.resolved_args is not None
         cached_result = self.cache_store.load(cache_key=node.cache_key, task_def=node.task_def)
         if cached_result is MISSING:
             return None
-        if isinstance(cached_result, DynamicTemplate):
-            valid = self._declared_outputs_present(
-                task_def=node.task_def, resolved_args=node.resolved_args
-            )
-        else:
-            valid = self._is_valid_cached_result(
-                cache_key=node.cache_key,
-                task_def=node.task_def,
-                value=cached_result,
-                resolved_args=node.resolved_args,
-            )
+        valid = self._is_valid_cached_result(
+            cache_key=node.cache_key,
+            task_def=node.task_def,
+            value=cached_result,
+            resolved_args=node.resolved_args,
+        )
         return CacheHit(value=cached_result, cache_key=node.cache_key) if valid else None
 
     def ensure_cache_key(self, *, node: NodeRun) -> None:
@@ -191,28 +187,28 @@ class NodeCache:
         cache_key: str,
         task_def: TaskDef,
         value: Any,
-        resolved_args: dict[str, Any] | None,
+        resolved_args: dict[str, Any],
     ) -> bool:
         """Return whether a cached value still satisfies return validation.
 
-        For file/folder outputs, the cache store ensures the working tree has a
-        matching writable materialization before standard return validation
-        checks run. An ``Out[...]`` parameter is not part of the return value
-        the artifact store tracks, so its own path is checked separately.
+        For file/folder outputs, returned or declared ``Out[...]``, the cache
+        store ensures the working tree has a matching writable
+        materialization before standard return validation checks run.
         """
         if not self.cache_store.validate_cached_outputs(
             cache_key=cache_key,
             task_def=task_def,
             value=value,
+            resolved_args=resolved_args,
         ):
             return False
-
+        if isinstance(value, DynamicTemplate):
+            return True
         try:
             self.validator.validate_return_value(task_def=task_def, value=value)
         except (FileNotFoundError, TypeError, ValueError):
             return False
-
-        return self._declared_outputs_present(task_def=task_def, resolved_args=resolved_args)
+        return True
 
     def _declared_outputs_present(
         self,

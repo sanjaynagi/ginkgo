@@ -283,20 +283,35 @@ def main():
 
 When the number of branches depends on data a task writes, write the pieces
 into the task's own `Out[folder]` and return one task per piece; the returned
-tasks run after it, and it completes with their results:
+tasks run after it, and it completes with their results. A downstream task
+takes that list like any other input (fan-in):
 
 ```python
 @task()
-def split(table: file, chunks: Out[folder]) -> list:
-    Path(chunks).mkdir(parents=True, exist_ok=True)
-    paths = write_chunks(table, chunks)  # your own helper
-    return [count_lines(chunk=str(path)) for path in paths]
+def split(table: file, chunks: Out[folder]) -> list[file]:
+    write_chunks(table, chunks)  # your own helper
+    return [
+        sort_chunk(chunk=str(path), sorted_path=f"results/sorted/{path.name}")
+        for path in sorted(Path(chunks).glob("chunk*.txt"))
+    ]
+
+
+@task()
+def combine(parts: list[file], merged: Out[file]) -> file: ...
+
+
+@flow
+def main():
+    parts = split(table="data/table.txt", chunks="results/chunks")
+    return combine(parts=parts, merged="results/merged.txt")
 ```
 
-On a cache hit the returned tasks are replayed and each is looked up on its
-own, so editing a child's script or module re-runs that child only. A returned
-task must not read a path written by a task downstream of its parent: that is
-a cycle, and the run fails naming it.
+Every declared `Out[...]` path is removed before its task runs, so globbing
+the task's own `Out[folder]` sees only this run's files. On a cache hit the
+returned tasks are replayed and each is looked up on its own, so editing a
+child's script or module re-runs that child only. A returned task must not
+read a path written by a task downstream of its parent: that is a cycle, and
+the run fails naming it.
 
 ## Shell commands are strict
 

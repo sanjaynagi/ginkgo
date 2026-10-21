@@ -11,6 +11,7 @@ from ginkgo.runtime.dry_run import build_dry_run_plan
 from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from ginkgo.runtime.rundir import RunDir, make_run_id
 from ginkgo.runtime.events import EventBus, TaskAnnotated
+from ginkgo.runtime.task_runners.shell import classify_failure
 from ginkgo_notebook import notebook
 from ginkgo_notebook.runner import NotebookTaskError
 
@@ -137,8 +138,10 @@ def test_editing_the_notebook_reruns_the_task(tmp_path: Path, notebook_path: Pat
 def test_a_failing_cell_fails_the_task_and_points_at_the_page(
     tmp_path: Path, notebook_path: Path
 ) -> None:
-    with pytest.raises(NotebookTaskError, match="shows the failing cell"):
+    with pytest.raises(NotebookTaskError, match="shows the failing cell") as raised:
         _evaluate(render_failing(notebook_path=str(notebook_path), fail=True), root=tmp_path)
+
+    assert classify_failure(exc=raised.value)["kind"] == "user_code_error"
 
 
 def test_a_declared_output_is_the_result(tmp_path: Path, notebook_path: Path) -> None:

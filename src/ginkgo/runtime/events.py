@@ -262,7 +262,8 @@ SkipReason = Literal["upstream_failed", "run_stopped", "interrupted"]
 - ``upstream_failed``: a task it waits on failed, or was skipped for that.
 - ``run_stopped``: the run stopped, at a failure it does not wait on, before
   the task started.
-- ``interrupted``: the run was interrupted before the task started.
+- ``interrupted``: the run was interrupted before the task finished, whether
+  or not it had started.
 """
 
 

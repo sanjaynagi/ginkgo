@@ -140,10 +140,12 @@ touching the cache by hand. It is repeatable, and takes a task the way
 [Task Names](#task-names) describe: a function name reruns every branch of a
 fan-out, a display label such as `align[sample_a]` reruns one. The rerun
 saves its result as usual. Tasks downstream run again only if that result
-changed, and a dynamic task's children are still looked up on their own. A
-name that matches no task in the graph the flow builds is warned about, since
-only a dynamic task can still return one by that name. A dry run shows a
-rerun task as `will_run`.
+changed, and a dynamic task's children are still looked up on their own,
+and can be named by their labels too. A name that no task in the workflow's
+modules carries is a usage error (exit 2) before anything runs. A name of a
+defined task that the flow's graph lacks may still match a task a dynamic task
+returns; if nothing in the finished run matched it, the run warns. A dry run
+shows a rerun task as `will_run`.
 
 `--keep-going` stops a task failure from ending the run: every task is treated
 as `on_failure="ignore"`, so each branch that does not depend on the failure
@@ -166,9 +168,9 @@ none is printed.
 | --- | --- |
 | 0 | Success. |
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement. The message goes to stderr. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement, `run --rerun` naming no task the workflow defines. The message goes to stderr. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
-| 130 | Interrupted with Ctrl-C. |
+| 130 | Interrupted with Ctrl-C. The run is recorded `cancelled`; every task it had not finished, running or not yet started, is recorded `skipped` as interrupted, not `failed`. |
 
 ### Task Names
 

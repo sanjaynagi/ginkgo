@@ -211,8 +211,8 @@ class TestDynamicTasks:
 
         assert _by_label(plan) == {
             "read_parts": ("cached", ()),
-            "read_tag": ("cached", ()),
-            "read_tag[2]": ("cached", ()),
+            "read_tag[part0.txt]": ("cached", ()),
+            "read_tag[part1.txt]": ("cached", ()),
             "total_length": ("cached", ()),
         }
         assert plan.task_count == 4
@@ -224,20 +224,20 @@ class TestDynamicTasks:
 
         assert _by_label(plan) == {
             "read_parts": ("cached", ()),
-            "read_tag": ("cached", ()),
-            "read_tag[2]": ("will_run", ("input_changed",)),
+            "read_tag[part0.txt]": ("cached", ()),
+            "read_tag[part1.txt]": ("will_run", ("input_changed",)),
             "total_length": ("unknown", ()),
         }
         # Children come after the task that returns them, and its dependents
         # after the children.
         assert [[task.label for task in wave.tasks] for wave in plan.waves] == [
             ["read_parts"],
-            ["read_tag", "read_tag[2]"],
+            ["read_tag[part0.txt]", "read_tag[part1.txt]"],
             ["total_length"],
         ]
 
     def test_rerun_marks_the_named_task_will_run(self, parts: Path) -> None:
-        plan = _plan(total_length(parts=read_parts(n=2)), rerun=frozenset({"read_tag[2]"}))
+        plan = _plan(total_length(parts=read_parts(n=2)), rerun=frozenset({"read_tag[part1.txt]"}))
 
-        assert _by_label(plan)["read_tag[2]"] == ("will_run", ("rerun_requested",))
-        assert _by_label(plan)["read_tag"] == ("cached", ())
+        assert _by_label(plan)["read_tag[part1.txt]"] == ("will_run", ("rerun_requested",))
+        assert _by_label(plan)["read_tag[part0.txt]"] == ("cached", ())

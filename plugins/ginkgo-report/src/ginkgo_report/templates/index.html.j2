@@ -31,6 +31,14 @@
       {% include "_failure.html.j2" %}
     {% endif %}
 
+    {% if report.retried %}
+      {% include "_retries.html.j2" %}
+    {% endif %}
+
+    {% if report.outputs %}
+      {% include "_outputs.html.j2" %}
+    {% endif %}
+
     {% if report.pages %}
       {% include "_pages.html.j2" %}
     {% endif %}
