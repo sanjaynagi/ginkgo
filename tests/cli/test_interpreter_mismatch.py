@@ -20,6 +20,7 @@ from rich.spinner import Spinner
 from ginkgo.cli.errors import report_failure
 from ginkgo.cli.renderers.models import CliRunSummary, FailureDetails
 from ginkgo.cli.renderers.run import _RunEventState, _RunLayoutRenderer
+from ginkgo.runtime.diagnostics import collect_workflow_diagnostics
 from ginkgo.envs.interpreter import (
     InterpreterMismatch,
     MissingDependency,
@@ -92,6 +93,38 @@ class TestImportScan:
         _workflow()
 
         assert workflow_import_roots(workflow_path=Path("workflow.py")) == ("ginkgo",)
+
+    def test_a_source_run_in_a_tasks_own_env_is_left_out(self) -> None:
+        """A notebook a task runs in its ``env=`` imports from that env."""
+        Path("notebooks").mkdir()
+        notebook = Path("notebooks") / "overview.py"
+        notebook.write_text(f"import {ABSENT}\n", encoding="utf-8")
+        _workflow()
+
+        assert workflow_import_roots(
+            workflow_path=Path("workflow.py"), excluded_sources=frozenset({notebook.resolve()})
+        ) == ("ginkgo",)
+
+    def test_doctor_learns_which_sources_run_in_a_tasks_env(self) -> None:
+        Path("tool.py").write_text(f"import {ABSENT}\n", encoding="utf-8")
+        Path("workflow.py").write_text(
+            "from pathlib import Path\n\n"
+            "from ginkgo import flow, script, task\n\n"
+            "_HERE = Path(__file__).resolve().parent\n\n\n"
+            '@task("script", env="analysis")\n'
+            "def tool():\n"
+            '    return script(_HERE / "tool.py")\n\n\n'
+            "@flow\n"
+            "def main():\n"
+            "    return tool()\n",
+            encoding="utf-8",
+        )
+
+        check = collect_workflow_diagnostics(
+            workflow_path=Path("workflow.py").resolve(), config_paths=[], secret_resolver=None
+        )
+
+        assert check.env_sources == frozenset({Path("tool.py").resolve()})
 
     def test_a_file_that_does_not_parse_contributes_nothing(self) -> None:
         _workflow()

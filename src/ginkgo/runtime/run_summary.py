@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -150,15 +151,46 @@ class TaskSummary:
 
     @property
     def attempts_label(self) -> str:
-        """Return ``"N"``, ``"N / M"``, or ``"—"`` when nothing was attempted."""
+        """Return ``"N"``, ``"N of M allowed"``, or ``"—"`` when nothing was attempted.
+
+        ``M`` is the attempts the task's retries allow, so a task that
+        succeeded first time with a retry to spare reads ``1 of 2 allowed``.
+        """
         if self.attempts == 0 or self.status == "cached":
             return "—"
         if self.status == "skipped" and not self.started:
             return "—"
         # ``attempts`` is the ledger's 1-based count of attempts made.
         if self.max_attempts is not None and self.max_attempts > 1:
-            return f"{self.attempts} / {self.max_attempts}"
+            return f"{self.attempts} of {self.max_attempts} allowed"
         return f"{self.attempts}"
+
+    def skip_cause(self, *, labels: Mapping[str, str]) -> str | None:
+        """Say why a skipped task never produced a result; ``None`` when it was not skipped.
+
+        Parameters
+        ----------
+        labels : Mapping[str, str]
+            The label to name each task of the run by, keyed by ``task_key``,
+            so the blocking task is named the way the skipped one is.
+        """
+        if self.status != "skipped":
+            return None
+        blocker = self.skipped_because or {}
+        blocker_name = blocker.get("task_name")
+        blocker_label = labels.get(str(blocker.get("task_id"))) or (
+            _base_name(blocker_name)
+            if isinstance(blocker_name, str) and blocker_name
+            else "a failed task"
+        )
+        reason = blocker.get("reason")
+        if reason == "interrupted":
+            return "not started: the run was interrupted"
+        if reason == "run_stopped":
+            if blocker.get("task_id"):
+                return f"not started: the run stopped when {blocker_label} failed"
+            return "not started: the run stopped"
+        return f"blocked by {blocker_label}"
 
     def rendered_html_absolute(self, *, run_dir: Path) -> Path | None:
         """Resolve ``rendered_html`` against the run directory.

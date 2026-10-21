@@ -27,7 +27,7 @@
 
     {% include "_tasks.html.j2" %}
 
-    {% if report.has_failures %}
+    {% if report.has_failures or report.skipped %}
       {% include "_failure.html.j2" %}
     {% endif %}
 

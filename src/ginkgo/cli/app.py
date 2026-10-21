@@ -167,7 +167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         known_options=_all_option_strings(parser),
     )
     _refuse_uninstalled_command(parser=parser, argv=known_argv)
-    args = parser.parse_args(known_argv)
+    args, misplaced = parser.parse_known_args(known_argv)
 
     # Commands that import a workflow accept its declared parameters as flags.
     # Every other command must still reject anything it does not recognise.
@@ -175,6 +175,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.command_flags = frozenset(
         flag for action in command_parser._actions for flag in action.option_strings
     )
+    # A flag another command defines (``run --no-open``) got past the split
+    # above. Refused by the command it was given to, so the usage shown is
+    # that command's rather than the whole CLI's.
+    if misplaced:
+        command_parser.error(
+            unrecognized_arguments_message(tokens=misplaced, known_flags=args.command_flags)
+        )
     if _accepts_workflow_params(args):
         args.param_extras = tuple(extras)
     elif extras:

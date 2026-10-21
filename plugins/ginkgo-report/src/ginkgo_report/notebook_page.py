@@ -53,7 +53,7 @@ p.note { font-size: 12px; color: #7F786C; font-style: italic; }
 """
 
 
-def static_notebook_page(*, page: str, title: str) -> str | None:
+def static_notebook_page(*, page: str, title: str, include_code: bool = True) -> str | None:
     """Return a network-free HTML copy of a marimo export.
 
     Parameters
@@ -62,6 +62,9 @@ def static_notebook_page(*, page: str, title: str) -> str | None:
         The page ``marimo export html`` wrote.
     title : str
         Title for the copy, such as the task's label.
+    include_code : bool
+        Whether each cell's code is shown, folded above its output. A cell
+        the notebook hides its code for never shows it.
 
     Returns
     -------
@@ -84,7 +87,14 @@ def static_notebook_page(*, page: str, title: str) -> str | None:
     for cell in notebook.get("cells", []):
         if not isinstance(cell, dict):
             continue
-        parts.append(_render_cell(code=cell, session=outputs.get(cell.get("id"), {}), files=files))
+        parts.append(
+            _render_cell(
+                code=cell,
+                session=outputs.get(cell.get("id"), {}),
+                files=files,
+                include_code=include_code,
+            )
+        )
     parts.append("</body></html>")
     return "\n".join(parts)
 
@@ -125,11 +135,13 @@ def _static_files(page: str) -> dict[str, str]:
 # ----- Drawing a cell ---------------------------------------------------------
 
 
-def _render_cell(*, code: dict[str, Any], session: dict[str, Any], files: dict[str, str]) -> str:
+def _render_cell(
+    *, code: dict[str, Any], session: dict[str, Any], files: dict[str, str], include_code: bool
+) -> str:
     """Draw one cell: its code, folded, then its output and console."""
     parts = ['<section class="cell">']
     source = code.get("code")
-    hide_code = (code.get("config") or {}).get("hide_code")
+    hide_code = (code.get("config") or {}).get("hide_code") or not include_code
     if isinstance(source, str) and source.strip() and not hide_code:
         parts.append(
             f'<details class="code"><summary>code</summary><pre>{html.escape(source)}</pre>'

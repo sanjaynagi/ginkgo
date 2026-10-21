@@ -8,14 +8,15 @@ prose. Templates read these fields directly without computing anything.
 from __future__ import annotations
 
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ginkgo.formatting import format_bytes, format_duration, format_int, format_timestamp
+from ginkgo.query import TaskRow as MeasuredTask
 from ginkgo.runtime.run_summary import RunSummary, TaskSummary
 
 from ginkgo_report.notebook_page import static_notebook_page
@@ -141,6 +142,24 @@ class FailureCard:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SkippedTask:
+    """A task the run left without a result, and why."""
+
+    task_key: str
+    label: str
+    cause: str
+    """Why it never produced a result, such as ``blocked by analyze[omega]``."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class SkipCause:
+    """How many tasks one cause left without a result."""
+
+    cause: str
+    count: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class AttemptNote:
     """One attempt of a task that ran more than once."""
 
@@ -263,6 +282,9 @@ class ReportData:
     status_label: str
     status_tone: str
     has_failures: bool
+    outcome: str | None
+    """What the run as a whole came to when it did not succeed: its recorded
+    error, such as which failure left the workflow without a result."""
 
     # Timings
     started_label: str
@@ -287,6 +309,10 @@ class ReportData:
     graph: Graph
     tasks: tuple[TaskRow, ...]
     failures: tuple[FailureCard, ...]
+    skipped: tuple[SkippedTask, ...]
+    skip_causes: tuple[SkipCause, ...]
+    """The skipped tasks counted per cause, which the report shows instead of
+    the list once the list is too long to read."""
     retried: tuple[RetriedTask, ...]
     outputs: tuple[OutputRow, ...]
     pages: tuple[PageCard, ...]
@@ -383,6 +409,8 @@ def build_report_data(
     policy: SizingPolicy | None = None,
     ginkgo_version: str | None = None,
     generated_at: datetime | None = None,
+    measured_runs: Mapping[str, TaskRow] | None = None,
+    include_code: bool = True,
 ) -> ReportData:
     """Build a :class:`ReportData` from a completed run.
 
@@ -402,6 +430,12 @@ def build_report_data(
     generated_at : datetime | None
         Timestamp rendered in the single determinism-sensitive footer
         element. Defaults to ``datetime.now(UTC)``.
+    measured_runs : Mapping[str, TaskRow] | None
+        The execution that measured each cache key's result, from an earlier
+        run. A cache hit measures nothing, so its peak memory is that run's.
+    include_code : bool
+        Whether a notebook page's static copy shows each cell's code, folded
+        under its output. The code is shown by default.
 
     Returns
     -------
@@ -418,23 +452,31 @@ def build_report_data(
 
     policy = policy or SizingPolicy()
     workspace_root = run_dir.parents[1] if len(run_dir.parents) >= 2 else run_dir.parent
+    project_root = workspace_root.parent
     workspace_label = workspace_label or workspace_root.parent.name
     ginkgo_version = _resolve_ginkgo_version(ginkgo_version)
 
     # Sections — each returns its typed pieces plus any copy instructions.
     artifact_copies: list[ArtifactCopy] = []
 
-    tasks = _build_task_rows(summary=summary)
+    tasks = _build_task_rows(summary=summary, measured_runs=measured_runs or {})
     failures = _build_failures(
         summary=summary,
         run_dir=run_dir,
+        project_root=project_root,
         policy=policy,
         artifact_copies=artifact_copies,
     )
+    skipped = _build_skipped(summary=summary)
     graph = _build_graph(summary=summary, failures=failures)
     retried = _build_retried(summary=summary)
     outputs = _build_outputs(summary=summary)
-    pages = _build_pages(summary=summary, run_dir=run_dir, artifact_copies=artifact_copies)
+    pages = _build_pages(
+        summary=summary,
+        run_dir=run_dir,
+        artifact_copies=artifact_copies,
+        include_code=include_code,
+    )
     summary_cards = _build_summary_cards(summary=summary)
 
     status_raw = summary.status
@@ -442,15 +484,15 @@ def build_report_data(
     # The run's status in the words ``ginkgo runs`` uses for it.
     status_label = status_raw
 
-    failed_count = summary.failed_count
-    if failed_count > 0:
-        sidebar_status_label = f"{status_label} · {failed_count} failed"
-        sidebar_status_tone = "fail"
-    else:
-        sidebar_status_label = status_label
-        sidebar_status_tone = status_tone
+    counts = [
+        f"{count} {word}"
+        for count, word in ((summary.failed_count, "failed"), (summary.skipped_count, "skipped"))
+        if count
+    ]
+    sidebar_status_label = " · ".join([status_label, *counts])
+    sidebar_status_tone = "fail" if summary.failed_count else status_tone
 
-    workflow = _project_relative(summary.workflow, project_root=workspace_root.parent)
+    workflow = _project_relative(summary.workflow, project_root=project_root)
     masthead_chips = _build_masthead_chips(summary=summary)
     masthead_kv = _build_masthead_kv(
         summary=summary,
@@ -470,6 +512,7 @@ def build_report_data(
         status_label=status_label,
         status_tone=status_tone,
         has_failures=len(failures) > 0,
+        outcome=_outcome(summary),
         started_label=format_timestamp(summary.started_at),
         finished_label=format_timestamp(summary.finished_at),
         duration_label=format_duration(summary.duration_s),
@@ -479,7 +522,7 @@ def build_report_data(
         sidebar_status_label=sidebar_status_label,
         sidebar_status_tone=sidebar_status_tone,
         section_groups=_build_section_groups(
-            has_failures=len(failures) > 0,
+            has_failures=len(failures) > 0 or len(skipped) > 0,
             has_retries=len(retried) > 0,
             has_outputs=len(outputs) > 0,
             has_pages=len(pages) > 0,
@@ -490,6 +533,8 @@ def build_report_data(
         graph=graph,
         tasks=tasks,
         failures=failures,
+        skipped=skipped,
+        skip_causes=_count_skip_causes(skipped),
         retried=retried,
         outputs=outputs,
         pages=pages,
@@ -538,10 +583,13 @@ def _build_section_groups(
 # ----- Task rows ----------------------------------------------------------
 
 
-def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
+def _build_task_rows(
+    *, summary: RunSummary, measured_runs: Mapping[str, MeasuredTask]
+) -> tuple[TaskRow, ...]:
     """Build ordered task rows for the task ledger."""
     rows: list[TaskRow] = []
     for task in summary.tasks:
+        measured = measured_runs.get(task.cache_key or "") if task.cache_label == "hit" else None
         rows.append(
             TaskRow(
                 task_key=task.task_key,
@@ -554,7 +602,9 @@ def _build_task_rows(*, summary: RunSummary) -> tuple[TaskRow, ...]:
                 cache_label=task.cache_label,
                 duration_label=format_duration(task.duration_s),
                 attempts_label=task.attempts_label,
-                memory_label=_memory_label(task),
+                memory_label=(
+                    _measured_run_label(measured) if measured is not None else _memory_label(task)
+                ),
                 failed=task.status == "failed",
             )
         )
@@ -591,6 +641,18 @@ def _memory_label(task: TaskSummary) -> str:
     if isinstance(declared_gb, int) and declared_gb > 0:
         return f"{label} / {declared_gb} GiB"
     return label
+
+
+def _measured_run_label(measured: MeasuredTask) -> str:
+    """Return a cache hit's peak memory: the figure of the run that produced its result."""
+    peak = measured.peak_rss_bytes
+    label = format_bytes(peak) if isinstance(peak, int) else "—"
+    return f"{label} (run {_short_run_id(measured.run_id)})"
+
+
+def _short_run_id(run_id: str) -> str:
+    """Return the suffix a run is told apart by, as the masthead shows it."""
+    return run_id[-8:]
 
 
 # ----- Graph --------------------------------------------------------------
@@ -750,16 +812,31 @@ def _build_failures(
     *,
     summary: RunSummary,
     run_dir: Path,
+    project_root: Path,
     policy: SizingPolicy,
     artifact_copies: list[ArtifactCopy],
 ) -> tuple[FailureCard, ...]:
-    """Build one :class:`FailureCard` per failed task."""
+    """Build one :class:`FailureCard` per failed task.
+
+    Paths under the project are shown relative to it, as a traceback's
+    ``File "/home/me/project/workflow/steps.py"`` becomes
+    ``File "workflow/steps.py"``: the report is read on other machines, where
+    the checkout's location means nothing.
+    """
     cards: list[FailureCard] = []
     for task in summary.failed_tasks:
         category = task.failure_kind
 
         log_path = _first_log_path(task=task, run_dir=run_dir)
         log_tail = build_log_tail(path=log_path, policy=policy)
+        if log_tail is not None:
+            log_tail = replace(
+                log_tail,
+                lines=tuple(
+                    _project_relative_text(line, project_root=project_root)
+                    for line in log_tail.lines
+                ),
+            )
         log_relpath: str | None = None
         if log_path is not None and log_path.is_file():
             dest = f"logs/{log_path.name}"
@@ -774,12 +851,50 @@ def _build_failures(
                 category=category,
                 exit_code=task.exit_code,
                 attempts_label=task.attempts_label,
-                message=task.error,
+                message=(
+                    None
+                    if task.error is None
+                    else _project_relative_text(task.error, project_root=project_root)
+                ),
                 log_tail=log_tail,
                 log_relpath=log_relpath,
             )
         )
     return tuple(cards)
+
+
+def _build_skipped(*, summary: RunSummary) -> tuple[SkippedTask, ...]:
+    """List the tasks the run left without a result, each with why."""
+    labels = {task.task_key: task.label for task in summary.tasks}
+    return tuple(
+        SkippedTask(task_key=task.task_key, label=task.label, cause=cause)
+        for task in summary.tasks
+        if (cause := task.skip_cause(labels=labels)) is not None
+    )
+
+
+def _count_skip_causes(skipped: tuple[SkippedTask, ...]) -> tuple[SkipCause, ...]:
+    """Count the skipped tasks per cause, most common first."""
+    counts = Counter(task.cause for task in skipped)
+    return tuple(
+        SkipCause(cause=cause, count=count)
+        for cause, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+
+def _outcome(summary: RunSummary) -> str | None:
+    """Say what the run came to, when it did not succeed.
+
+    A failed run's recorded error says why the workflow has no result, which
+    the task table alone does not: most of its tasks may well have succeeded.
+    """
+    if summary.status == "succeeded":
+        return None
+    if summary.error:
+        return summary.error
+    if summary.status == "failed":
+        return "The run failed."
+    return None
 
 
 def _build_retried(*, summary: RunSummary) -> tuple[RetriedTask, ...]:
@@ -843,6 +958,7 @@ def _build_pages(
     summary: RunSummary,
     run_dir: Path,
     artifact_copies: list[ArtifactCopy],
+    include_code: bool,
 ) -> tuple[PageCard, ...]:
     """Build a card for each page a task rendered, such as a notebook's HTML."""
     cards: list[PageCard] = []
@@ -857,7 +973,7 @@ def _build_pages(
         dest = f"{stem}.html"
         artifact_copies.append(ArtifactCopy(source=source, dest_relpath=dest))
         page = source.read_text(encoding="utf-8", errors="replace")
-        static = static_notebook_page(page=page, title=task.label)
+        static = static_notebook_page(page=page, title=task.label, include_code=include_code)
 
         size_bytes = source.stat().st_size
         sub_parts = [format_duration(task.duration_s), format_bytes(size_bytes)]
@@ -887,12 +1003,18 @@ def _build_summary_cards(*, summary: RunSummary) -> tuple[StatCard, ...]:
     failed = summary.failed_count
     cache_hits = sum(1 for task in summary.tasks if task.cached or task.status == "cached")
 
-    tasks_sub_parts: list[str] = []
-    if succeeded:
-        tasks_sub_parts.append(f"{succeeded} ok")
-    if failed:
-        tasks_sub_parts.append(f"{failed} fail")
-    tasks_sub = " · ".join(tasks_sub_parts) or "no tasks"
+    tasks_sub = (
+        " · ".join(
+            f"{count} {word}"
+            for count, word in (
+                (succeeded, "ok"),
+                (failed, "fail"),
+                (summary.skipped_count, "skipped"),
+            )
+            if count
+        )
+        or "no tasks"
+    )
 
     failure_categories = [
         task.failure_kind for task in summary.failed_tasks if task.failure_kind is not None
@@ -989,6 +1111,13 @@ def _project_relative(path: str | None, *, project_root: Path) -> str | None:
         return str(Path(path).resolve().relative_to(project_root.resolve()))
     except ValueError:
         return path
+
+
+def _project_relative_text(text: str, *, project_root: Path) -> str:
+    """Return *text* with absolute paths under *project_root* made relative to it."""
+    for root in {str(project_root), str(project_root.resolve())}:
+        text = text.replace(root.rstrip("/") + "/", "")
+    return text
 
 
 def _build_environment_kv(*, summary: RunSummary, ginkgo_version: str) -> tuple[KVEntry, ...]:

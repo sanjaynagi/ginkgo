@@ -14,12 +14,14 @@ import base64
 import json
 import mimetypes
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import jinja2
 
+from ginkgo.query import TaskRow
 from ginkgo.runtime.run_summary import RunSummary
 
 from ginkgo_report.model import ReportData, build_report_data
@@ -32,6 +34,10 @@ _STATIC_DIR = Path(__file__).parent / "static"
 #: Written at the root of every exported report. Its presence marks the
 #: directory as ginkgo-owned, so a later export may replace its contents.
 _MARKER_NAME = ".ginkgo-report.json"
+
+#: Everything a bundle export writes at its root. Re-rendering removes only
+#: these, so files a user keeps beside a report survive it.
+_BUNDLE_ENTRIES = (_MARKER_NAME, "index.html", "assets", "pages", "logs")
 
 #: Carried in the head of every report page, so a single-file export can tell
 #: its own earlier output from a user's file of the same name.
@@ -67,6 +73,8 @@ def export_report(
     single_file: bool = False,
     managed_destination: bool = False,
     force: bool = False,
+    measured_runs: Mapping[str, TaskRow] | None = None,
+    include_code: bool = True,
 ) -> ExportResult:
     """Export a bundle or single-file report for one run.
 
@@ -92,9 +100,15 @@ def export_report(
         construction and is replaced without needing the ownership marker
         that later exports leave behind.
     force : bool
-        Replace a destination that ginkgo did not write. A missing destination,
-        an empty directory, or a previous export is always replaced; anything
-        else raises ``FileExistsError`` unless this is set.
+        Write into a destination that ginkgo did not write. A missing
+        destination, an empty directory, or a previous export is always
+        written; anything else raises ``FileExistsError`` unless this is set.
+        Either way only the report's own files are replaced.
+    measured_runs : Mapping[str, TaskRow] | None
+        The execution that measured each cache key's result, so a cache hit
+        can show the peak memory of the run that produced it.
+    include_code : bool
+        Whether the static copy of a notebook page shows each cell's code.
 
     Returns
     -------
@@ -110,6 +124,8 @@ def export_report(
         summary=summary,
         workspace_label=workspace_label,
         policy=policy,
+        measured_runs=measured_runs,
+        include_code=include_code,
     )
     out = Path(out)
 
@@ -333,21 +349,25 @@ def _prepare_out_file(out_path: Path, *, managed_destination: bool, force: bool)
 
 
 def _prepare_out_dir(out_dir: Path, *, managed_destination: bool, force: bool) -> None:
-    """Make ``out_dir`` an empty directory, refusing to destroy others' files.
+    """Ready ``out_dir`` for a bundle, never removing files the report does not write.
 
     A missing or empty directory is used as is. So is a destination ginkgo owns:
     either one it derived itself (``managed_destination``) or one an earlier
     export marked with ``_MARKER_NAME``, so re-rendering a report over itself
-    needs no opt-in. Any other non-empty directory belongs to the user and
-    raises ``FileExistsError`` unless ``force`` is set.
+    needs no opt-in; the earlier report's own entries are removed, so a page
+    or log it carried and this one does not is not left behind. Any other
+    non-empty directory belongs to the user and raises ``FileExistsError``
+    unless ``force`` is set, when the report is written in beside what is
+    there, replacing only files of the same name.
     """
     if out_dir.exists() and any(out_dir.iterdir()):
-        if not (force or managed_destination or _is_report_dir(out_dir)):
+        if managed_destination or _is_report_dir(out_dir):
+            _remove_bundle_entries(out_dir)
+        elif not force:
             raise FileExistsError(
                 f"{out_dir} is not empty and holds no ginkgo report; "
-                "refusing to delete files ginkgo did not write"
+                "refusing to write over files ginkgo did not write"
             )
-        _clean_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -361,10 +381,11 @@ def _write_marker(out_dir: Path, *, report: ReportData) -> None:
     (out_dir / _MARKER_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _clean_dir(path: Path) -> None:
-    """Remove all contents of ``path`` without removing ``path`` itself."""
-    for entry in path.iterdir():
+def _remove_bundle_entries(path: Path) -> None:
+    """Remove what an earlier bundle export wrote into ``path``, and nothing else."""
+    for name in _BUNDLE_ENTRIES:
+        entry = path / name
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry)
-        else:
+        elif entry.exists() or entry.is_symlink():
             entry.unlink()
