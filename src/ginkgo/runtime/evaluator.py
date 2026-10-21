@@ -974,6 +974,14 @@ class ConcurrentEvaluator:
             if remote_handle is not None:
                 node.remote_job_id = remote_handle.job_id
 
+            if isinstance(self._failure, KeyboardInterrupt) and (
+                future.cancelled() or future.exception() is not None
+            ):
+                # Work the interrupt stopped (a killed worker, a terminated
+                # command) did not fail: the node stays in flight and is
+                # closed as interrupted with every other unfinished task.
+                continue
+
             if future.cancelled():
                 # Only a stopping run cancels work; anything else is a
                 # scheduler bug, which stops the run and closes the node.
@@ -1112,7 +1120,9 @@ class ConcurrentEvaluator:
         A finished run has no task left ``pending``:
 
         - Work still in flight, and a task waiting on its own expansion, is
-          recorded as failed, cancelled by the stop.
+          recorded as failed, cancelled by the stop, when a failure stopped
+          the run. An interrupt is no task's failure, so under one it is
+          skipped as interrupted, like a task that never started.
         - A task between attempts, its retry scheduled, is recorded as failed
           with the failure of its last attempt; its remaining retries are
           abandoned, and a notice says so.
@@ -1121,13 +1131,17 @@ class ConcurrentEvaluator:
           waits on, if it waits on one, and else by the failure that stopped
           the run.
         """
+        interrupted = isinstance(reason, KeyboardInterrupt)
         for node in self._nodes.values():
             if node.state in _IN_FLIGHT_NODE_STATES or node.state == "waiting_dynamic":
-                self._close_unfinished_node(node=node, reason=reason)
+                if interrupted:
+                    self._cleanup_transport(node)
+                else:
+                    self._close_unfinished_node(node=node, reason=reason)
             elif node.state not in _TERMINAL_NODE_STATES and node.attempt > 0:
                 self._abandon_retry(node=node, reason=reason)
 
-        if isinstance(reason, KeyboardInterrupt):
+        if interrupted:
             for node in self._unfinished_nodes():
                 self._mark_node_skipped(node=node, reason="interrupted", blocker=None)
             return

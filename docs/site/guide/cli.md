@@ -168,9 +168,9 @@ none is printed.
 | --- | --- |
 | 0 | Success. |
 | 1 | A failure ended the run, or the workflow could not be started: an unknown or invalid workflow parameter, a missing workflow file, or an invalid budget such as `--cores 0` or `--jobs 0`. |
-| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement. The message goes to stderr. |
+| 2 | `argparse` rejected the command line (an unknown subcommand, a malformed option value such as `--jobs abc` or `--older-than 0d`, an unknown `runs ls --status`, no command at all), or a command rejected its arguments in its own check, for example `cache clear` with no key or flag, `cache prune` or `db prune` with no limit, `query` with no statement, `run --rerun` naming no task the workflow defines. The message goes to stderr. |
 | 3 | The run finished under a non-fatal failure policy &mdash; `on_failure="ignore"` or `--keep-going` &mdash; with failures in it. |
-| 130 | Interrupted with Ctrl-C. |
+| 130 | Interrupted with Ctrl-C. The run is recorded `cancelled`; every task it had not finished, running or not yet started, is recorded `skipped` as interrupted, not `failed`. |
 
 ### Task Names
 

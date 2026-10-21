@@ -230,6 +230,8 @@ class TestInterruptedRunEndToEnd:
         assert 0 < summary.succeeded_count < len(summary.tasks)
         # Every task ends terminal: what never started is skipped, not pending.
         assert all(task.is_terminal() for task in summary.tasks)
+        # A task the interrupt stopped mid-flight did not fail: it is skipped too.
+        assert summary.failed_count == 0
         assert any(
             (task.skipped_because or {}).get("reason") == "interrupted" for task in summary.tasks
         )
