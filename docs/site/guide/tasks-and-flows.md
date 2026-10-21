@@ -769,13 +769,17 @@ label from the most recent run that recorded each cache entry.
   has a usable value, a branch takes the label of the upstream branch it was
   mapped over, or else the first varying argument's value in full.
 - Chained fan-out joins the labels: `train[sample_a,lr=0.01,epochs=10]`.
-- A call that is neither mapped nor product-mapped has no label and is shown by
-  its task name.
+- Plain calls of one task gathered in one list are labelled as a `.map()`
+  over the arguments whose values differ would be: `[score(name=n) for n in
+  ["ann", "bo"]]` gives `score[ann]` and `score[bo]`, in a flow and in the
+  list a dynamic task returns alike.
+- Any other call that is neither mapped nor product-mapped has no label and is
+  shown by its task name.
 
 When two tasks would be shown under the same name or label, the second and
 later take an ordinal in graph order: `child`, `child[2]`, `child[3]`. This
-covers plain calls, branches whose values do not tell them apart, and the tasks
-a dynamic task returns.
+covers plain calls outside a shared list, and calls or branches whose values
+do not tell them apart.
 
 A `.map()` label comes from the values, so changing the `.map()` arguments can
 move a label onto different inputs. Compare cache keys before reading two

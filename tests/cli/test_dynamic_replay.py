@@ -287,3 +287,47 @@ def test_rerun_skips_the_cache_for_the_named_task_only() -> None:
         # pe's body ran again and returned the same child, which is unchanged.
         "farchild": ["cached"],
     }
+
+
+SCORES = """\
+from ginkgo import flow, task
+
+
+@task()
+def score(name: str) -> str:
+    return name.upper()
+
+
+@task()
+def score_all(names: list[str]) -> list:
+    return [score(name=name) for name in names]
+
+
+@flow
+def main():
+    return score_all(names=["ann", "bo"])
+"""
+
+
+def test_rerun_names_a_returned_call_by_its_label() -> None:
+    _write("flow.py", SCORES)
+    _run("flow.py")
+
+    assert _run("flow.py", "--rerun", "score[bo]") == {
+        "score_all": ["cached"],
+        "score": ["cached", "success"],
+    }
+
+
+def test_rerun_of_a_name_no_task_carries_is_a_usage_error() -> None:
+    _write("flow.py", SCORES)
+
+    result = subprocess.run(
+        [str(PYTHON), "-m", "ginkgo.cli", "run", "flow.py", "--rerun", "nosuch"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert "--rerun nosuch names no task" in result.stderr

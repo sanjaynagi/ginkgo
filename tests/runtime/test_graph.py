@@ -58,7 +58,28 @@ class TestRegistration:
         assert list(graph.nodes) == [1, 2, 0]
 
     def test_a_repeated_call_label_takes_an_ordinal(self) -> None:
-        graph = TaskGraph.build([label(text="a"), label(text="b")])
+        graph = TaskGraph.build(join(left=label(text="a"), right=label(text="b")))
+
+        assert [graph.nodes[node_id].label for node_id in (1, 2)] == ["label", "label[2]"]
+
+    def test_calls_listed_together_are_labelled_by_the_argument_that_differs(self) -> None:
+        graph = TaskGraph.build([join(left="x", right=r) for r in ("a", "b")])
+
+        assert [node.label for node in graph.nodes.values()] == ["join[a]", "join[b]"]
+
+    def test_listed_calls_differing_only_by_upstream_calls_inherit_their_labels(self) -> None:
+        texts = [label(text=t) for t in ("a", "b")]
+        graph = TaskGraph.build([texts, [join(left=t, right="z") for t in texts]])
+
+        assert sorted(node.label for node in graph.nodes.values()) == [
+            "join[a]",
+            "join[b]",
+            "label[a]",
+            "label[b]",
+        ]
+
+    def test_identical_listed_calls_take_ordinals(self) -> None:
+        graph = TaskGraph.build([label(text="a"), label(text="a")])
 
         assert [node.label for node in graph.nodes.values()] == ["label", "label[2]"]
 

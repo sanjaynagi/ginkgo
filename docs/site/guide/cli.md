@@ -140,10 +140,12 @@ touching the cache by hand. It is repeatable, and takes a task the way
 [Task Names](#task-names) describe: a function name reruns every branch of a
 fan-out, a display label such as `align[sample_a]` reruns one. The rerun
 saves its result as usual. Tasks downstream run again only if that result
-changed, and a dynamic task's children are still looked up on their own. A
-name that matches no task in the graph the flow builds is warned about, since
-only a dynamic task can still return one by that name. A dry run shows a
-rerun task as `will_run`.
+changed, and a dynamic task's children are still looked up on their own,
+and can be named by their labels too. A name that no task in the workflow's
+modules carries is a usage error (exit 2) before anything runs. A name of a
+defined task that the flow's graph lacks may still match a task a dynamic task
+returns; if nothing in the finished run matched it, the run warns. A dry run
+shows a rerun task as `will_run`.
 
 `--keep-going` stops a task failure from ending the run: every task is treated
 as `on_failure="ignore"`, so each branch that does not depend on the failure

@@ -302,6 +302,15 @@ class NodeRun:
         """The name the node is shown under: its display label or bare task name."""
         return self.display_label or self.task_def.base_name
 
+    @property
+    def rerun_names(self) -> frozenset[str]:
+        """The names ``--rerun`` selects the node by.
+
+        Its qualified task name, its base name (every call of the task), and
+        the label it is shown under (one call).
+        """
+        return frozenset({self.task_def.name, self.task_def.base_name, self.label})
+
     # The two identity views the runner contract (``TaskInvocation``) names;
     # everything else about the graph vertex is read through ``node``.
     @property
@@ -1937,12 +1946,8 @@ class ConcurrentEvaluator:
         return True
 
     def rerun_requested(self, *, node: NodeRun) -> bool:
-        """Return whether ``--rerun`` names *node*, so its cache is not consulted.
-
-        A name matches a task's qualified name, its base name (every branch
-        of a fan-out), or one branch's display label.
-        """
-        return not self.rerun.isdisjoint({node.task_def.name, node.task_def.base_name, node.label})
+        """Return whether ``--rerun`` names *node*, so its cache is not consulted."""
+        return not self.rerun.isdisjoint(node.rerun_names)
 
     def _record_cache_hit(self, *, node: NodeRun, cache_key: str) -> None:
         """Record that *node* is served by the entry under *cache_key*."""

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ginkgo.core.expr import ConstructedCall, Expr, ExprList, OutputIndex, OutputName
-from ginkgo.core.task import PartialCall, TaskDef
+from ginkgo.core.task import PartialCall, TaskDef, sibling_label_parts
 from ginkgo.errors import FailureKind, GinkgoError
 from ginkgo.runtime.edge_inference import (
     ConsumedPath,
@@ -145,6 +145,9 @@ class TaskGraph:
     """The highest ordinal each requested label has been given so far."""
     _display_labels: set[str] = field(default_factory=set, repr=False)
     """Every label a node is shown under, bare task names included."""
+    _sibling_label_parts: dict[int, tuple[str, ...]] = field(default_factory=dict, repr=False)
+    """Expression id -> label parts of a plain call gathered in a list with
+    other calls of its task, held until the call registers."""
 
     @classmethod
     def build(cls, value: Any) -> TaskGraph:
@@ -267,6 +270,7 @@ class TaskGraph:
         items: Iterable[Any]
         if isinstance(value, ExprList | list | tuple):
             items = value
+            self._label_sibling_calls(calls=[item for item in value if isinstance(item, Expr)])
         elif isinstance(value, dict):
             items = (item for pair in value.items() for item in pair)
         else:
@@ -333,8 +337,44 @@ class TaskGraph:
         str | None
             The label, or ``None`` when it is the bare task name.
         """
-        label = self._claim_display_label(expr.display_label)
+        parts = self._sibling_label_parts.pop(id(expr), ())
+        wanted = f"{expr.task_def.base_name}[{','.join(parts)}]" if parts else expr.display_label
+        label = self._claim_display_label(wanted)
         return label if label != expr.task_def.base_name else None
+
+    def _label_sibling_calls(self, *, calls: list[Expr]) -> None:
+        """Label the plain calls of each task in one list by what tells them apart.
+
+        Calls not yet registered, unmapped and with no label of their own are
+        grouped by task; a group of two or more is labelled as a ``.map()``
+        over the arguments that differ would be (``child[c0]``, ``child[c1]``),
+        in the static graph and in every dynamic expansion alike.
+        """
+        groups: dict[str, list[Expr]] = {}
+        for call in calls:
+            if id(call) in self._expr_nodes or call.mapped or call.display_label_parts:
+                continue
+            groups.setdefault(call.task_def.name, []).append(call)
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            for call, parts in zip(
+                group, sibling_label_parts(calls=group, inherited=self._label_parts_of)
+            ):
+                if parts:
+                    self._sibling_label_parts[id(call)] = parts
+
+    def _label_parts_of(self, expr: Expr) -> tuple[str, ...]:
+        """Return the label parts *expr* is shown under, registered or not."""
+        if expr.display_label_parts:
+            return expr.display_label_parts
+        if id(expr) in self._sibling_label_parts:
+            return self._sibling_label_parts[id(expr)]
+        node_id = self._expr_nodes.get(id(expr))
+        label = self.nodes[node_id].display_label if node_id in self.nodes else None
+        if label is None or not label.endswith("]"):
+            return ()
+        return (label[len(expr.task_def.base_name) + 1 : -1],)
 
     def relabel(self, *, current: str, wanted: str) -> str:
         """Give up a node's *current* label and return a unique form of *wanted*.
