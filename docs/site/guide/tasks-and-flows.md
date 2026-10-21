@@ -37,6 +37,11 @@ The flow should primarily:
 
 Heavy transformation logic belongs in task bodies, not in the flow.
 
+Task calls are keyword-only: write `count_reads(sample="a", reads_path=path)`,
+not `count_reads("a", path)`. Each value names the parameter it fills, which is
+what fan-out, partial calls and cache keys are built from; a positional call
+fails with a message saying so.
+
 ## Task Kinds
 
 Ginkgo has five task kinds. They share the same `@task` decorator, typed inputs
