@@ -780,13 +780,16 @@ def test_per_branch_arguments_stay_out_of_seeded_labels() -> None:
 
 
 def test_repeated_calls_without_fanout_values_keep_distinct_labels() -> None:
-    """Two calls of one task have nothing to tell them apart but an ordinal."""
+    """Two listed calls of one task are told apart by the argument that differs."""
     with record_constructed_calls() as calls:
         first = audit_site(site="forest", trend="forest.trend")
         second = audit_site(site="meadow", trend="meadow.trend")
     evaluator = _validated_evaluator((first, second), tuple(calls))
 
-    assert sorted(_seeded_labels(evaluator).values()) == ["audit_site", "audit_site[2]"]
+    assert sorted(_seeded_labels(evaluator).values()) == [
+        "audit_site[forest]",
+        "audit_site[meadow]",
+    ]
 
 
 def test_a_keep_going_run_still_lists_what_it_produced(tmp_path: Path) -> None:
