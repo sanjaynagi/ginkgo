@@ -48,6 +48,7 @@ __all__ = [
     "EnvironmentType",
     "EventSubscriber",
     "EventSubscriberCheckContext",
+    "EventSubscriberConfigProblem",
     "EventSubscriberContext",
     "EventSubscriberType",
     "ExecutorType",
@@ -264,6 +265,24 @@ class EventSubscriber(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class EventSubscriberConfigProblem:
+    """One problem an event subscriber's ``check`` finds in its config.
+
+    Parameters
+    ----------
+    message : str
+        What is wrong, and how to fix it.
+    blocking : bool
+        Whether the problem leaves the subscriber sending nothing. ``ginkgo
+        doctor`` reports a blocking problem as an error and any other, such as
+        a setting the subscriber ignores while still sending, as a warning.
+    """
+
+    message: str
+    blocking: bool = True
+
+
+@dataclass(frozen=True, kw_only=True)
 class EventSubscriberCheckContext:
     """What ``ginkgo doctor`` hands an event subscriber's config check.
 
@@ -291,8 +310,8 @@ class EventSubscriberType:
     build : Callable[[EventSubscriberContext], EventSubscriber | None]
         Return a subscriber for this run, or ``None`` when its config leaves
         it disabled.
-    check : Callable[[EventSubscriberCheckContext], Sequence[str]] | None
-        Return one message per problem with the subscriber's config, so
+    check : Callable[[EventSubscriberCheckContext], Sequence[EventSubscriberConfigProblem]] | None
+        Return one problem per thing wrong with the subscriber's config, so
         ``ginkgo doctor`` reports what a run would only warn about. ``None``
         when there is nothing to check.
     """
@@ -301,7 +320,9 @@ class EventSubscriberType:
 
     name: str
     build: Callable[[EventSubscriberContext], EventSubscriber | None]
-    check: Callable[[EventSubscriberCheckContext], Sequence[str]] | None = None
+    check: (
+        Callable[[EventSubscriberCheckContext], Sequence[EventSubscriberConfigProblem]] | None
+    ) = None
 
     @property
     def keys(self) -> tuple[str, ...]:

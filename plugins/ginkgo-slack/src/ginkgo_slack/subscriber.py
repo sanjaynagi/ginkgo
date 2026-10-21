@@ -9,11 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from ginkgo.core.secret import SecretRef
-from ginkgo.plugins.api import EventSubscriberCheckContext, EventSubscriberContext
+from ginkgo.plugins.api import (
+    EventSubscriberCheckContext,
+    EventSubscriberConfigProblem,
+    EventSubscriberContext,
+)
 from ginkgo.plugins.registry import PluginNotFoundError
 from ginkgo.runtime.events import GinkgoEvent, RunCompleted, RunStarted, TaskFailed
 from ginkgo_slack.webhook import (
+    SlackDeliveryError,
     SlackTaskFailure,
+    SlackUnreachableError,
     build_retry_exhausted_payload,
     build_run_failed_payload,
     build_run_started_payload,
@@ -74,6 +80,7 @@ class SlackSubscriber:
         repr=False,
     )
     _futures: list[tuple[str, Future[None]]] = field(default_factory=list, init=False, repr=False)
+    _unreachable: SlackUnreachableError | None = field(default=None, init=False, repr=False)
 
     def handle(self, event: GinkgoEvent) -> None:
         """Handle one runtime event."""
@@ -155,12 +162,23 @@ class SlackSubscriber:
 
     def _submit(self, *, event_name: str, payload: dict[str, Any]) -> None:
         """Post *payload* in the background; *event_name* names it if delivery fails."""
-        future = self._executor.submit(
-            post_slack_message,
-            webhook_url=self.webhook_url,
-            payload=payload,
-        )
-        self._futures.append((event_name, future))
+        self._futures.append((event_name, self._executor.submit(self._deliver, payload=payload)))
+
+    def _deliver(self, *, payload: dict[str, Any]) -> None:
+        """Post one payload, unless an earlier one found Slack unreachable.
+
+        Deliveries run one at a time on a single thread, so once the host has
+        failed to answer, each later notification would wait out the same
+        timeout and the run's end would wait for all of them. They are given up
+        instead, so an unreachable Slack costs a run one timeout.
+        """
+        if self._unreachable is not None:
+            raise SlackDeliveryError(f"not sent, as an earlier one failed: {self._unreachable}")
+        try:
+            post_slack_message(webhook_url=self.webhook_url, payload=payload)
+        except SlackUnreachableError as exc:
+            self._unreachable = exc
+            raise
 
     def _summary(self) -> RunSummary:
         """Reload the run from the ledger, which the recorder has committed."""
@@ -246,7 +264,7 @@ def build_slack_subscriber(context: EventSubscriberContext) -> SlackSubscriber |
     )
 
 
-def check_slack_config(context: EventSubscriberCheckContext) -> list[str]:
+def check_slack_config(context: EventSubscriberCheckContext) -> list[EventSubscriberConfigProblem]:
     """Return every problem with ``[notifications.slack]``, for ``ginkgo doctor``.
 
     Parameters
@@ -256,16 +274,24 @@ def check_slack_config(context: EventSubscriberCheckContext) -> list[str]:
 
     Returns
     -------
-    list[str]
-        One message per problem; empty when a run would send notifications as
-        configured, or when they are disabled and otherwise valid.
+    list[EventSubscriberConfigProblem]
+        One per problem; empty when a run would send notifications as
+        configured, or when they are disabled and otherwise valid. An unknown
+        event beside valid ones is not blocking: the run ignores it and still
+        sends the others.
     """
     config, problems = parse_notification_config(config=context.config)
     if config.enabled and not problems:
         _, problem = _resolve_webhook(ref=config.webhook, resolver=context.secret_resolver)
         if problem is not None:
             problems.append(problem)
-    return [*problems, *config.ignored_events]
+    return [
+        *(EventSubscriberConfigProblem(message=message) for message in problems),
+        *(
+            EventSubscriberConfigProblem(message=message, blocking=False)
+            for message in config.ignored_events
+        ),
+    ]
 
 
 def parse_notification_config(
