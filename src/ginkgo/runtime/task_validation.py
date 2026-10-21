@@ -158,6 +158,10 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
         ``True`` when the value should be content-hashed as a root path
         input.
     """
+    # The textual test first: it settles most strings without a stat or a
+    # walk over the annotation.
+    if not is_path_like(value) or not looks_like_path_string(str(value)):
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -165,9 +169,6 @@ def is_content_trackable_path_value(*, annotation: Any, value: Any) -> bool:
     ):
         return False
     if isinstance(value, (file, folder, tmp_dir, untracked)):
-        return False
-    # The textual test first: it settles most strings without a stat.
-    if not is_path_like(value) or not looks_like_path_string(str(value)):
         return False
     text = _resolved_existing_path_text(value)
     return text is not None and os.path.isfile(text)
@@ -201,6 +202,9 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     bool
         ``True`` when the value is a path the cache key does not track.
     """
+    # Most values name nothing on disk, which one stat settles.
+    if _resolved_existing_path_text(value) is None:
+        return False
     if (
         annotation is tmp_dir
         or is_untracked_annotation(annotation)
@@ -208,8 +212,6 @@ def is_untracked_path_value(*, annotation: Any, value: Any) -> bool:
     ):
         return False
     if isinstance(value, (file, folder, tmp_dir, untracked)):
-        return False
-    if _resolved_existing_path_text(value) is None:
         return False
     if is_content_trackable_path_value(annotation=annotation, value=value):
         return False

@@ -461,6 +461,9 @@ def looks_like_path_string(text: str) -> bool:
     """
     if "/" in text or os.sep in text or (os.altsep is not None and os.altsep in text):
         return True
+    # A suffix needs a dot; most strings have none, and Path is slow to build.
+    if "." not in text:
+        return False
     suffix = Path(text).suffix
     return suffix not in ("", ".")
 
