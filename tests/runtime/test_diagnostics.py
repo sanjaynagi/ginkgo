@@ -10,17 +10,19 @@ from __future__ import annotations
 import os
 from os import getenv
 
-from ginkgo import shell, task, untracked
+from ginkgo import Out, file, shell, task, untracked
 import pytest
 
 from ginkgo.runtime.diagnostics import (
     ENVIRON_READ_CODE,
     MISSING_DIRECTIVE_CODE,
     PATH_LIKE_STR_PARAM_CODE,
+    SPACED_COMMAND_PATH_CODE,
     _diagnostic_code_and_suggestion,
     environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
+    spaced_command_path_diagnostics,
 )
 from ginkgo.runtime.graph import TaskGraph
 from ginkgo.runtime.placement import Placement
@@ -47,12 +49,44 @@ def produce(name: str) -> str:
     return f"{name}.txt"
 
 
+@task()
+def write_named(name: str, out: Out[file]) -> file:
+    return out
+
+
+@task(kind="shell")
+def copy_named(src: file, out: Out[file]):
+    return shell(cmd=f"cp {src} {out}")
+
+
 def _nodes_for(build):
     """Build a graph and return every node it registers."""
     expr = build()
     graph = TaskGraph.build(expr)
     graph.validate(validator=TaskValidator(), placement=Placement())
     return list(graph.nodes.values())
+
+
+class TestSpacedCommandPathDiagnostics:
+    """ED5-8: an upstream path with a space, bound for a shell command."""
+
+    def test_warns_before_the_run_reaches_the_shell_task(self) -> None:
+        nodes = _nodes_for(
+            lambda: copy_named(src=write_named(name="a", out="o/sp ace.txt"), out="o/b.txt")
+        )
+
+        [diagnostic] = spaced_command_path_diagnostics(nodes=nodes)
+
+        assert diagnostic.code == SPACED_COMMAND_PATH_CODE
+        assert "copy_named is a shell task reading the result of write_named" in diagnostic.message
+        assert "'o/sp ace.txt'" in diagnostic.message
+
+    def test_no_warning_without_a_space(self) -> None:
+        nodes = _nodes_for(
+            lambda: copy_named(src=write_named(name="a", out="o/space.txt"), out="o/b.txt")
+        )
+
+        assert spaced_command_path_diagnostics(nodes=nodes) == []
 
 
 class TestPathLikeStrParamDiagnostics:

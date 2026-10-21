@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Collection, Sequence
 
 from rich.markup import escape
+from rich.text import Text
 
 from ginkgo import query
 from ginkgo.plugins.api import EnvironmentContext, EventSubscriberContext, EventSubscriberType
@@ -74,6 +75,7 @@ from ginkgo.runtime.diagnostics import (
     environ_read_diagnostics,
     missing_directive_diagnostics,
     path_like_str_param_diagnostics,
+    spaced_command_path_diagnostics,
     static_notice_diagnostics,
     unreachable_call_diagnostics,
 )
@@ -164,6 +166,7 @@ def _run_resolved_workflow(args, *, output_mode: RunMode, run_id: str) -> int:
         executor=getattr(args, "executor", "local"),
         param_extras=getattr(args, "param_extras", ()),
         command_flags=getattr(args, "command_flags", ()),
+        invoked_from=Path(args.invoked_from) if getattr(args, "invoked_from", None) else None,
     )
 
 
@@ -285,6 +288,7 @@ def run_workflow(
     plan_preview: bool = True,
     param_extras: Sequence[str] = (),
     command_flags: Collection[str] = (),
+    invoked_from: Path | None = None,
 ) -> int:
     run_id = run_id or make_run_id(workflow_path=workflow_path)
     rich_console = console(sys.stdout)
@@ -296,8 +300,9 @@ def run_workflow(
     # would name a run that never exists.
     if dry_run and output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [bold]--dry-run[/]"
         )
+        _print_project_root(rich_console, invoked_from=invoked_from)
 
     load_started = time.perf_counter()
     # The runtime config is loaded before the workflow is imported so that
@@ -428,7 +433,8 @@ def run_workflow(
     # container tasks that have to run, so it is a warning here, not a failure.
     for warning in evaluator.validator.env_warnings:
         diagnostic = env_warning_diagnostic(warning=warning, workflow_path=workflow_path)
-        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
+        # Not hard-wrapped: the message names paths and commands to copy.
+        console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}", soft_wrap=True)
 
     # A parameter must reach a task as an argument. One read from a module global
     # is invisible to that task's cache key, so a changed value would silently
@@ -486,6 +492,7 @@ def run_workflow(
                 task_defs=[node.task_def for node in evaluator.graph.nodes.values()]
             ),
             *static_notice_diagnostics(nodes=evaluator.graph.nodes.values()),
+            *spaced_command_path_diagnostics(nodes=evaluator.graph.nodes.values()),
         ]:
             # Escaped: the message names `Out[file]`, which Rich would
             # otherwise swallow as a style tag.
@@ -587,8 +594,9 @@ def run_workflow(
 
     if output_mode not in {"agent", "agent_verbose"}:
         rich_console.print(
-            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]\n"
+            f"[bold green]🌿 ginkgo run[/] [bold]{workflow_name}[/] [dim]({run_id})[/]"
         )
+        _print_project_root(rich_console, invoked_from=invoked_from)
         rich_console.print(
             f"[cyan]📦[/] Loading workflow...  [green]done[/] ({format_duration(load_elapsed)})"
         )
@@ -935,6 +943,35 @@ def _print_dropped_calls(*, diagnostics: list[WorkflowDiagnostic]) -> None:
         console(sys.stderr).print(f"[yellow]⚠[/] {escape(diagnostic.message)}")
         if diagnostic.suggestion:
             console(sys.stderr).print(f"  [dim]{escape(diagnostic.suggestion)}[/]")
+
+
+def _print_project_root(rich_console, *, invoked_from: Path | None) -> None:
+    """Print the project root the run resolves paths and writes ``.ginkgo/`` in.
+
+    Run from a subdirectory with no ``ginkgo.toml`` of its own, ginkgo runs the
+    project the nearest one above belongs to; that is said outright, since a
+    bare ``ginkgo run`` there runs that project's workflow, not one beside the
+    user.
+    """
+    rich_console.print(
+        Text.assemble(("Project: ", "dim"), (str(Path.cwd()), "dim")), soft_wrap=True
+    )
+    if invoked_from is not None:
+        subdirectory = (
+            invoked_from.relative_to(Path.cwd())
+            if invoked_from.is_relative_to(Path.cwd())
+            else invoked_from
+        )
+        rich_console.print(
+            Text(
+                f"Run from {subdirectory}/, which has no ginkgo.toml of its own: using the "
+                "project above it. Relative paths, outputs and .ginkgo/ are all at the "
+                "project root.",
+                style="yellow",
+            ),
+            soft_wrap=True,
+        )
+    rich_console.print()
 
 
 def _prune_old_events(*, keep_events_for: str) -> None:

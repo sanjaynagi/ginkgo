@@ -315,6 +315,12 @@ alone, and nothing checks that it exists. A path the task writes belongs in
 fills from another task's result is not flagged: the producing task's return
 annotation decides how that value is tracked.
 
+They also warn, as `spaced_command_path`, where a shell task reads the result
+of a task whose literal `Out[...]` path contains a space. A shell command is a
+string the shell splits on whitespace, so the run would refuse that path when
+it reaches the shell task, after the work upstream of it; a literal path given
+to the shell task itself is already a dry-run problem.
+
 Every diagnostic code is lower snake_case, such as `missing_secret` or
 `invalid_env_kind`. An error doctor does not recognise is reported under its
 exception's name, as in `file_not_found_error`.

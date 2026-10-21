@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Sequence
@@ -33,6 +34,14 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------
 
 _CONTAINER_SCHEMES = ("docker://", "oci://")
+
+
+def _daemon_start_hint(*, runtime: str, platform: str) -> str | None:
+    """Return how to start *runtime*'s daemon on *platform*, or ``None`` for an unknown runtime."""
+    hints = _DAEMON_START_HINTS.get(runtime)
+    if hints is None:
+        return None
+    return hints.get(platform, hints["linux"])
 
 
 def is_container_env(env: str) -> bool:
@@ -193,9 +202,20 @@ _MANIFEST_INSPECT_TIMEOUT_SECONDS = 15
 # unreachable, each with how to start that engine. Podman has no daemon on
 # Linux, where "info" simply succeeds; elsewhere it fails until the Podman
 # machine is running, as every "podman run" would.
+# How to start a daemon that is down, by runtime and then by platform: Docker
+# Desktop is an application on macOS and Windows, a systemd service on Linux.
+# Podman on Linux needs no daemon, but a rootful socket service may be in use.
 _DAEMON_START_HINTS = {
-    "docker": "start Docker Desktop or the Docker service (`sudo systemctl start docker`)",
-    "podman": "start the Podman machine (`podman machine start`)",
+    "docker": {
+        "darwin": "start Docker Desktop (`open -a Docker`) and wait for it to report running",
+        "linux": "start the Docker service (`sudo systemctl start docker`)",
+        "win32": "start Docker Desktop and wait for it to report running",
+    },
+    "podman": {
+        "darwin": "start the Podman machine (`podman machine start`)",
+        "linux": "start the Podman socket (`systemctl --user start podman.socket`)",
+        "win32": "start the Podman machine (`podman machine start`)",
+    },
 }
 
 # How to get access to a running daemon whose socket refused the user, as
@@ -632,7 +652,7 @@ class ContainerBackend:
         does. *before_pull* makes a timeout raise too: a daemon that cannot
         answer ``info`` in time would leave the unbounded pull hanging.
         """
-        start_hint = _DAEMON_START_HINTS.get(self.runtime)
+        start_hint = _daemon_start_hint(runtime=self.runtime, platform=sys.platform)
         if (
             start_hint is None
             or self._daemon_answered

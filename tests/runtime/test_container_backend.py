@@ -388,6 +388,26 @@ class TestContainerBackendDaemonProbe:
         assert "docker group" in message
         assert "systemctl start" not in message
 
+    @pytest.mark.parametrize(
+        ("platform", "hint"),
+        [("darwin", "open -a Docker"), ("linux", "sudo systemctl start docker")],
+    )
+    def test_a_stopped_daemon_gets_the_platform_s_start_hint(
+        self, tmp_path: Path, platform: str, hint: str
+    ):
+        """NC-5: no Linux systemctl advice on macOS."""
+        backend = ContainerBackend(project_root=tmp_path, probe_registry=True)
+        down = _completed(returncode=1, stderr="Cannot connect to the Docker daemon")
+        with (
+            patch("ginkgo.envs.container.sys.platform", platform),
+            patch("ginkgo.envs.container.shutil.which", return_value="/usr/bin/docker"),
+            patch.object(ContainerBackend, "_image_exists_locally", return_value=False),
+            patch("ginkgo.envs.container.subprocess.run", return_value=down),
+        ):
+            [warning] = backend.validate_envs(env_names={"docker://img:1"})
+        assert hint in str(warning)
+        assert ("systemctl" in str(warning)) == (platform == "linux")
+
     def test_local_lookup_timeout_reads_as_cannot_tell(self, tmp_path: Path):
         """A hung daemon must not stall validation, nor get the image blamed."""
         backend = ContainerBackend(project_root=tmp_path, pull_policy="never")

@@ -64,6 +64,13 @@ def forgetful(marker: file, out_path: Out[file]) -> file:
 
 
 @task()
+def makes_a_directory(marker: file, out_path: Out[file]) -> file:
+    """Creates a directory where its declared file output should be."""
+    Path(out_path).mkdir()
+    return marker
+
+
+@task()
 def writes_beside_its_output(out_path: Out[file]) -> file:
     """Writes the wrong path, then returns the declared one."""
     Path(out_path + ".x").write_text("x", encoding="utf-8")
@@ -224,6 +231,17 @@ class TestOutPostExecutionValidation:
 
         with pytest.raises(FileNotFoundError, match="was not written"):
             evaluate(forgetful(marker=file(str(marker)), out_path=str(missing)))
+
+    def test_a_directory_where_a_file_was_declared_is_named(self, tmp_path: Path):
+        """ED5-9: the path was written, as the wrong kind; say so."""
+        marker = tmp_path / "marker.txt"
+        marker.write_text("ok", encoding="utf-8")
+
+        with pytest.raises(
+            DeclaredOutputNotWrittenError,
+            match="is a directory; `Out\\[file\\]` needs a regular file",
+        ):
+            evaluate(makes_a_directory(marker=file(str(marker)), out_path=str(tmp_path / "o.txt")))
 
     def test_unwritten_output_of_a_file_returning_task_names_the_parameter(self, tmp_path: Path):
         """#341: the declared-output check runs before the generic ``.return`` check."""

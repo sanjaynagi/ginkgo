@@ -784,9 +784,11 @@ label from the most recent run that recorded each cache entry.
   shown by its task name.
 
 When two tasks would be shown under the same name or label, the second and
-later take an ordinal in graph order: `child`, `child[2]`, `child[3]`. This
-covers plain calls outside a shared list, and calls or branches whose values
-do not tell them apart.
+later take an ordinal in the order they run, each after its upstream calls:
+`child`, `child[2]`, `child[3]`. In a chain such as
+`step(x=step(x=step(x=0)))` the innermost call runs first and is `step`, and the
+one the flow returns is `step[3]`. This covers plain calls outside a shared
+list, and calls or branches whose values do not tell them apart.
 
 A `.map()` label comes from the values, so changing the `.map()` arguments can
 move a label onto different inputs. Compare cache keys before reading two

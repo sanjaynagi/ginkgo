@@ -135,6 +135,8 @@ def _normalize_working_directory(args: argparse.Namespace) -> None:
     root = project_root()
     if root == Path.cwd():
         return
+    # Kept for the run header, which says whose project this is.
+    args.invoked_from = str(Path.cwd())
 
     # Resolved before the chdir, while they still mean what the user typed.
     for name in _PATH_ARGS:

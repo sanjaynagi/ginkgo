@@ -1321,11 +1321,9 @@ class TestCliInit:
         for plugin in ("ginkgo_pixi", "ginkgo_notebook"):
             if importlib.util.find_spec(plugin) is None:
                 pytest.skip(f"the scaffold needs the {plugin} plugin")
-        if shutil.which("docker") is None or shutil.which("pixi") is None:
-            pytest.skip("running the scaffold end to end needs docker and pixi")
-        # The client binary existing does not mean the daemon is reachable.
-        if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
-            pytest.skip("running the scaffold end to end needs a reachable docker daemon")
+        # NC-5: the starter needs no container runtime, only pixi.
+        if shutil.which("pixi") is None:
+            pytest.skip("running the scaffold end to end needs pixi")
 
         init_result = _run_cli("init", "demo-project", cwd=Path.cwd())
         assert init_result.returncode == 0, init_result.stderr

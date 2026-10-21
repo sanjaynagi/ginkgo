@@ -62,6 +62,14 @@ class TestRegistration:
 
         assert [graph.nodes[node_id].label for node_id in (1, 2)] == ["label", "label[2]"]
 
+    def test_a_chain_s_ordinals_follow_the_order_it_runs(self) -> None:
+        """SC5-1: the first call of a chain to run has the bare label."""
+        graph = TaskGraph.build(label(text=label(text=label(text="a"))))
+
+        by_id = sorted(graph.nodes.values(), key=lambda node: node.node_id)
+        # Ids run root-first; the root runs last and takes the last ordinal.
+        assert [node.label for node in by_id] == ["label[3]", "label[2]", "label"]
+
     def test_calls_listed_together_are_labelled_by_the_argument_that_differs(self) -> None:
         graph = TaskGraph.build([join(left="x", right=r) for r in ("a", "b")])
 
