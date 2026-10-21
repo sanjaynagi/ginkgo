@@ -192,7 +192,7 @@ def run_directory_problems(*, recorded_run_ids: set[str], root: Path) -> list[st
         if not (root / run_id).is_dir()
     ]
     problems += [
-        f"run directory {name} has no row (orphan)"
+        f"run directory {name} is not referenced by the ledger (the ledger may have been reset)"
         for name in orphaned_run_directories(recorded_run_ids=recorded_run_ids, root=root)
     ]
     return problems

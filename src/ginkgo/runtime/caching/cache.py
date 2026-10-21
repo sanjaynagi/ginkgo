@@ -838,7 +838,8 @@ class CacheStore:
             except _UNREADABLE_ENTRY_ERRORS as exc:
                 problems.append(f"cache entry {key} has an unreadable output.json: {exc}")
         problems += [
-            f"cache directory {entry.name} has no row (orphan)"
+            f"cache directory {entry.name} is not referenced by the ledger "
+            "(the ledger may have been reset)"
             for entry in self.orphan_entry_dirs()
         ]
         problems += [

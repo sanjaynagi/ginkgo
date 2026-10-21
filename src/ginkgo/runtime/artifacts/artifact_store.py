@@ -836,7 +836,8 @@ class LocalArtifactStore:
                     )
 
         problems += [
-            f"artifact file {path.parent.name}/{path.name} has no row (orphan)"
+            f"artifact file {path.parent.name}/{path.name} is not referenced by the ledger "
+            "(the ledger may have been reset)"
             for path in self._orphan_files()
         ]
         return problems
