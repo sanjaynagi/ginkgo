@@ -167,12 +167,10 @@ def align(reads: file, bam: Out[file], qc_dir: Out[folder]) -> file: ...
   fails naming the parameter and the path. On a cache hit, a tracked output
   file or folder that is missing or modified on disk is restored from the
   artifact store without re-running the task and without a log line. This
-  covers `file(...)` returns and inferred returns (below). The restore
-  overwrites hand edits: an edited output is reset to the cached bytes. An
-  `Out[...]` path that is not part of the return value, as with an explicit
-  `-> None` return, has no stored artifact: on a cache hit it is only checked
-  for existence. A missing one is a miss and the task re-runs; an edited one
-  is neither restored nor re-run, so the edit stays.
+  covers `file(...)` returns and every declared `Out[...]` path, whatever the
+  task's return annotation says (`-> str`, `-> None`, or a dynamic task
+  returning tasks). The restore overwrites hand edits: an edited output is
+  reset to the cached bytes.
 - Supported for remote tasks (`remote=True` / `executor=`) too: with a
   `[remote.artifacts] store` configured, each declared path is rewritten to a
   worker-local scratch path, staged back through the same channel returned

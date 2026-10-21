@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ginkgo import Out, evaluate, file, task
+from ginkgo import Out, evaluate, file, folder, task
+from ginkgo.runtime.evaluator import ConcurrentEvaluator
 from tests.conftest import EventCollector
 
 
@@ -34,3 +35,58 @@ def test_a_returned_template_can_use_one_child_twice() -> None:
     assert Path(merged).read_text() == "c0c1"
     assert parts == ["out/0.txt", "out/1.txt"]
     assert len(collector.started()) == 4  # parent, merge, and each child once
+
+
+@task()
+def score(*, name: str) -> str:
+    return name.upper()
+
+
+@task()
+def score_all(*, names: list[str]) -> list:
+    return [score(name=name) for name in names]
+
+
+def _started_labels(collector: EventCollector) -> list[str]:
+    return sorted(event.display_label or "" for event in collector.started())
+
+
+def test_returned_calls_are_labelled_by_the_argument_that_differs() -> None:
+    collector = EventCollector()
+
+    evaluate(score_all(names=["ann", "bo"]), event_bus=collector.bus)
+
+    assert _started_labels(collector) == ["", "score[ann]", "score[bo]"]
+
+
+def test_rerun_names_one_returned_call_by_its_label() -> None:
+    evaluate(score_all(names=["ann", "bo"]))
+    collector = EventCollector()
+
+    ConcurrentEvaluator(rerun=frozenset({"score[bo]"}), event_bus=collector.bus).evaluate(
+        score_all(names=["ann", "bo"])
+    )
+
+    assert _started_labels(collector) == ["score[bo]"]
+
+
+@task()
+def read_chunk(*, chunk: file) -> str:
+    return Path(chunk).read_text(encoding="utf-8")
+
+
+@task()
+def split(*, n: int, chunks: Out[folder]) -> list:
+    Path(chunks).mkdir()
+    for i in range(n):
+        (Path(chunks) / f"{i}.txt").write_text(str(i), encoding="utf-8")
+    return [read_chunk(chunk=str(path)) for path in sorted(Path(chunks).iterdir())]
+
+
+def test_a_cached_dynamic_parent_restores_its_out_folder() -> None:
+    evaluate(split(n=3, chunks="chunks"))
+    evaluate(split(n=1, chunks="chunks"))
+
+    # A hit on the n=3 entry: the folder holds the n=1 run's one chunk until
+    # the hit restores the three its children read.
+    assert evaluate(split(n=3, chunks="chunks")) == ["0", "1", "2"]

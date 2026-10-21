@@ -270,7 +270,7 @@ class TestOutEndToEndCaching:
         evaluate(write_output(payload="v1", out_path=str(out_path)), event_bus=collector.bus)
         assert collector.cached()
 
-    def test_changing_output_content_does_not_invalidate(self, tmp_path: Path):
+    def test_an_edited_output_is_restored_on_a_hit_whatever_the_return(self, tmp_path: Path):
         out_path = tmp_path / "content_changes.txt"
         evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
 
@@ -282,24 +282,20 @@ class TestOutEndToEndCaching:
             event_bus=collector.bus,
         )
         assert collector.cached()
-        # A cache hit contributes only the Out[...] path to the key, and
-        # nothing restores its content on a hit — the tampered bytes are left
-        # exactly as they were, proving content never gated this hit.
-        assert out_path.read_text(encoding="utf-8") == "tampered"
+        assert out_path.read_text(encoding="utf-8") == "v1"
 
-    def test_deleting_the_output_forces_a_rerun(self, tmp_path: Path):
+    def test_a_deleted_output_is_restored_on_a_hit(self, tmp_path: Path):
         out_path = tmp_path / "deleted.txt"
         evaluate(write_output_untracked_return(payload="v1", out_path=str(out_path)))
 
         out_path.unlink()
-        assert not out_path.exists()
 
         collector = EventCollector()
         evaluate(
             write_output_untracked_return(payload="v1", out_path=str(out_path)),
             event_bus=collector.bus,
         )
-        assert not collector.cached()
+        assert collector.cached()
         assert out_path.read_text(encoding="utf-8") == "v1"
 
     def test_optional_output_absent_is_a_cache_hit_with_no_path_to_check(self, tmp_path: Path):
