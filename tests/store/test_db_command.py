@@ -7,10 +7,11 @@ import json
 import pytest
 
 from ginkgo.cli.app import main
-from ginkgo.formatting import now_iso
+from ginkgo.formatting import format_bytes, now_iso
 from ginkgo.remote.staging import StagingCache, StagingEntry
 from ginkgo.runtime.artifacts.artifact_model import ArtifactRecord
 from ginkgo.runtime.caching.index import CacheIndex
+from ginkgo.store.maintenance import large_ledger_warning, on_disk_bytes
 from ginkgo.store.protocol import ProjectionOp
 from ginkgo.store.schema import SCHEMA_VERSION
 from ginkgo.store import sqlite as sqlite_module
@@ -447,6 +448,27 @@ class TestDbVacuum:
 
         assert main(["db", "vacuum"]) == 0
         assert "→" in capsys.readouterr().out
+
+    def test_vacuum_reports_the_write_ahead_log_with_the_file(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        _run_row(tmp_path, "run-1", finished_at="2020-01-01T00:00:00+00:00", events=2000)
+        main(["db", "prune", "--events-older-than", "1d"])
+        db = tmp_path / ".ginkgo" / "ginkgo.db"
+        capsys.readouterr()
+
+        assert main(["db", "vacuum"]) == 0
+        output = capsys.readouterr().out
+        assert f"→ {format_bytes(on_disk_bytes(db))} on disk" in output
+        assert "write-ahead log included" in output
+
+    def test_a_large_ledger_is_named_with_its_size(self, tmp_path):
+        db = tmp_path / "ginkgo.db"
+        with open_store(db):
+            pass
+
+        assert large_ledger_warning(db) is None
+        warning = large_ledger_warning(db, threshold=1)
+        assert warning is not None and format_bytes(on_disk_bytes(db)) in warning
 
     def test_vacuum_says_so_when_nothing_was_reclaimed(self, tmp_path, monkeypatch, capsys):
         """An unchanged size is the only signal SQLite gives that it did nothing."""

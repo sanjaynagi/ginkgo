@@ -47,7 +47,6 @@ CREATE TABLE events (
   payload   TEXT NOT NULL              -- JSON of the remaining event fields
 );
 CREATE INDEX events_run      ON events(run_id, seq);
-CREATE INDEX events_type_ts  ON events(type, ts);
 
 -- run projections
 CREATE TABLE runs (
@@ -150,12 +149,14 @@ CREATE TABLE env_materializations (env_hash TEXT NOT NULL, host TEXT NOT NULL,
 
 MIGRATIONS: list[tuple[int, str | Callable[[Connection], None]]] = [
     (3, _SCHEMA),
+    (4, "DROP INDEX IF EXISTS events_type_ts;"),
 ]
 """Every schema step, in the order they are applied, keyed by resulting version.
 
 The schema starts at version 3: removing the asset catalog edited it in place,
 so a database written at version 1 or 2 is refused and the user deletes the
-workspace. Later additive changes get a step of their own.
+workspace. Later additive changes get a step of their own. Version 4 drops an
+index on ``events(type, ts)`` that no query used and every event paid for.
 """
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

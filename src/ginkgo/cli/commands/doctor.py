@@ -24,6 +24,7 @@ from ginkgo.runtime.backend import EnvironmentRouter
 from ginkgo.runtime.diagnostics import WorkflowDiagnostic, collect_workflow_diagnostics
 from ginkgo.runtime.environment.secrets import SecretResolver, build_secret_resolver
 from ginkgo.runtime.rundir import RUNS_WITHOUT_LEDGER_CODE, runs_without_ledger_warning
+from ginkgo.store.maintenance import LARGE_LEDGER_CODE, large_ledger_warning
 from ginkgo.workspace_layout import WorkspaceLayout
 
 
@@ -50,6 +51,7 @@ def command_doctor(args) -> int:
     # diagnostics below, because collecting those builds the run machinery,
     # which creates the ledger the question is about.
     ledger_warning = runs_without_ledger_warning(layout=WorkspaceLayout.relative())
+    size_warning = large_ledger_warning(WorkspaceLayout.relative().db)
 
     # Same environment pair that ``run`` builds, so doctor reaches the
     # declared-env check and searches the env directories the run will use --
@@ -99,6 +101,17 @@ def command_doctor(args) -> int:
                 message=ledger_warning,
                 suggestion="Restore .ginkgo/ginkgo.db, or delete the run directories "
                 "if their history is not wanted.",
+            )
+        )
+
+    if size_warning is not None:
+        diagnostics.append(
+            WorkflowDiagnostic(
+                severity="warning",
+                code=LARGE_LEDGER_CODE,
+                message=size_warning,
+                suggestion="Drop old runs' events with `ginkgo db prune --events-older-than "
+                "90d`, then `ginkgo db vacuum`; the runs themselves stay listed.",
             )
         )
 

@@ -55,14 +55,21 @@ def stored_event(event: GinkgoEvent) -> StoredEvent:
         The row, with the filtered columns lifted out of the payload.
     """
     payload = event.to_payload()
+    # Each is stored once, in its column; StoredEvent.fields puts them back.
+    task_id = _column(payload, "task_id")
+    attempt = payload.get("attempt") if isinstance(payload.get("attempt"), int) else None
+    cache_key = _column(payload, "cache_key")
+    for name, value in (("task_id", task_id), ("attempt", attempt), ("cache_key", cache_key)):
+        if value is not None:
+            del payload[name]
     return StoredEvent(
-        run_id=payload.get("run_id") or "",
-        ts=payload.get("ts") or "",
-        type=payload.get("event") or "",
-        v=int(payload.get("v") or 1),
-        task_id=_column(payload, "task_id"),
-        attempt=payload.get("attempt") if isinstance(payload.get("attempt"), int) else None,
-        cache_key=_column(payload, "cache_key"),
+        run_id=payload.pop("run_id", None) or "",
+        ts=payload.pop("ts", None) or "",
+        type=payload.pop("event", None) or "",
+        v=int(payload.pop("v", None) or 1),
+        task_id=task_id,
+        attempt=attempt,
+        cache_key=cache_key,
         payload=json.dumps(payload, sort_keys=True, default=str),
     )
 

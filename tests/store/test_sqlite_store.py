@@ -157,6 +157,20 @@ class TestMigrations:
         with pytest.raises(SchemaVersionError, match="ginkgo db migrate"):
             schema_version(connection)
 
+    def test_a_version_3_database_loses_the_unused_events_index(self, tmp_path):
+        connection = sqlite3.connect(tmp_path / "ginkgo.db")
+        connection.isolation_level = None
+        connection.execute("CREATE TABLE schema_version (version INTEGER, applied_at TEXT)")
+        connection.execute("CREATE TABLE events (seq INTEGER PRIMARY KEY, type TEXT, ts TEXT)")
+        connection.execute("CREATE INDEX events_type_ts ON events(type, ts)")
+        connection.execute("INSERT INTO schema_version VALUES (3, '2026-10-01')")
+
+        assert migrate(connection) == SCHEMA_VERSION
+        indexes = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'events_type_ts'"
+        ).fetchall()
+        assert indexes == []
+
     def test_migrating_twice_changes_nothing(self, tmp_path):
         connection = sqlite3.connect(tmp_path / "ginkgo.db")
         connection.isolation_level = None

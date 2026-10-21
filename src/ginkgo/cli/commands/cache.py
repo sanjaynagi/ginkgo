@@ -133,6 +133,8 @@ def command_cache(args) -> int:
             f"{'entry' if len(entries) == 1 else 'entries'} "
             f"([bold]{format_bytes(freed_bytes)}[/] freed)."
         )
+        if entries:
+            rich_console.print(_LEDGER_SPACE_NOTE)
         return 0
 
     if args.cache_command == "explain":
@@ -170,15 +172,18 @@ def _clear(args, rich_console) -> int:
         if not (CACHE_ROOT / args.cache_key).is_dir():
             raise FileNotFoundError(f"Cache entry not found: {args.cache_key}")
         with _cache_store() as cache_store:
+            output_bytes = _output_bytes(cache_store, args.cache_key)
             _remove_entry(cache_store, args.cache_key)
-            _gc_orphan_artifacts(cache_store)
+            freed_bytes = output_bytes + _gc_orphan_artifacts(cache_store)
 
         message = Text()
         message.append("✓ ", style="green")
         message.append("Removed cache entry ")
         message.append(args.cache_key, style="bold")
+        message.append(f" ({format_bytes(freed_bytes)} freed).")
         message.no_wrap = True
         rich_console.print(message)
+        rich_console.print(_LEDGER_SPACE_NOTE)
         return 0
 
     if not _database_exists():
@@ -190,6 +195,7 @@ def _clear(args, rich_console) -> int:
     if args.orphans:
         with _cache_store() as cache_store:
             orphans = _remove_orphans(cache_store)
+            _gc_orphan_artifacts(cache_store)
         rich_console.print(
             f"[green]✓[/] Removed [bold]{orphans}[/] orphaned cache "
             f"{'directory' if orphans == 1 else 'directories'}."
@@ -203,21 +209,38 @@ def _clear(args, rich_console) -> int:
     with _cache_store() as cache_store:
         for row in rows:
             _remove_entry(cache_store, row.cache_key)
-        if args.clear_all:
-            orphans = _remove_orphans(cache_store)
-        else:
-            orphans = 0
-            _gc_orphan_artifacts(cache_store)
-    total_bytes = sum(row.size_bytes for row in rows)
+        orphans = _remove_orphans(cache_store) if args.clear_all else 0
+        # As prune counts it: an artifact another entry still names stays.
+        freed_bytes = sum(row.output_bytes for row in rows) + _gc_orphan_artifacts(cache_store)
     removed = f"{len(rows)} cache {'entry' if len(rows) == 1 else 'entries'}"
     if orphans:
         removed += f" and {orphans} orphaned {'directory' if orphans == 1 else 'directories'}"
-    rich_console.print(f"[green]✓[/] Removed [bold]{removed}[/] ({format_bytes(total_bytes)}).")
+    rich_console.print(
+        f"[green]✓[/] Removed [bold]{removed}[/] ({format_bytes(freed_bytes)} freed)."
+    )
+    if rows:
+        rich_console.print(_LEDGER_SPACE_NOTE)
     return 0
 
 
+_LEDGER_SPACE_NOTE = (
+    "[dim]The entries' rows in .ginkgo/ginkgo.db are freed for reuse; "
+    "`ginkgo db vacuum` returns that space to the disk.[/]"
+)
+"""What ``clear`` and ``prune`` say about bytes their freed count leaves out."""
+
+
+def _output_bytes(cache_store: CacheStore, cache_key: str) -> int:
+    """Return the stored output bytes of one entry, ``0`` when it has no row."""
+    entry = cache_store.index.entry(cache_key)
+    return 0 if entry is None else int(entry["size_bytes"] or 0)
+
+
 def _remove_orphans(cache_store: CacheStore) -> int:
-    """Remove the entry directories with no row, then unreferenced artifacts.
+    """Remove the entry directories with no row.
+
+    The artifacts they named are the caller's to collect, with
+    :func:`_gc_orphan_artifacts`.
 
     Returns
     -------
@@ -227,7 +250,6 @@ def _remove_orphans(cache_store: CacheStore) -> int:
     orphans = cache_store.orphan_entry_dirs()
     for entry_dir in orphans:
         _safe_rmtree(entry_dir)
-    _gc_orphan_artifacts(cache_store)
     return len(orphans)
 
 
@@ -484,24 +506,26 @@ def _describe_prune_policy(
     return f"matching policy ({'; '.join(parts)})"
 
 
-_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|K|M|G|T)?\s*$", re.IGNORECASE)
+_SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:([KMGT])(I)?)?B?\s*$", re.IGNORECASE)
 
 
 def parse_size_bytes(value: str) -> int:
     """Parse a compact size string (e.g. ``2GB``) to an integer byte count.
 
+    ``KB``/``MB``/``GB``/``TB`` (or ``K``/``M``/``G``/``T``) are decimal and
+    ``KiB``/``MiB``/``GiB``/``TiB`` binary, the units sizes are printed in.
+
     Raises
     ------
     ValueError
-        If *value* is not a number with an optional B/KB/MB/GB/TB unit.
+        If *value* is not a number with an optional unit.
     """
     match = _SIZE_PATTERN.fullmatch(value)
     if match is None:
-        raise ValueError(f"Invalid size {value!r}. Use e.g. 500MB, 2GB, 10GB.")
-    count = float(match.group(1))
-    unit = (match.group(2) or "B").upper().rstrip("B") or "B"
-    multipliers = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-    return int(count * multipliers[unit])
+        raise ValueError(f"Invalid size {value!r}. Use e.g. 500MB, 2GB, 10GiB.")
+    count, prefix, binary = match.groups()
+    exponent = " KMGT".index(prefix.upper()) if prefix else 0
+    return int(float(count) * (1024 if binary else 1000) ** exponent)
 
 
 def _safe_rmtree(path: Path) -> None:

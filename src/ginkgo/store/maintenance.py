@@ -18,10 +18,28 @@ per-event detail, not the run.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
+from ginkgo.formatting import format_bytes
 from ginkgo.store.protocol import ProjectionOp, ProvenanceStore
 
-__all__ = ["prune_digest_memo", "prune_events", "vacuum"]
+__all__ = [
+    "LARGE_LEDGER_BYTES",
+    "LARGE_LEDGER_CODE",
+    "large_ledger_warning",
+    "on_disk_bytes",
+    "prune_digest_memo",
+    "prune_events",
+    "vacuum",
+]
+
+LARGE_LEDGER_BYTES = 1024**3
+"""The ledger size past which ``ginkgo doctor`` suggests pruning.
+
+A fully cached run writes about 3.5 KiB per task, so this is a nightly
+1,000-task workflow's ledger after roughly ten months."""
+
+LARGE_LEDGER_CODE = "large_ledger"
 
 _FINISHED_RUNS_BEFORE = "SELECT run_id FROM runs WHERE finished_at IS NOT NULL AND finished_at < ?"
 
@@ -103,3 +121,33 @@ def vacuum(store: ProvenanceStore) -> None:
     It rewrites the whole database, so it wants exclusive access and a moment.
     """
     store.query("VACUUM")
+
+
+def on_disk_bytes(path: Path) -> int:
+    """Return what the database at *path* occupies, its write-ahead log included."""
+    files = (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm"))
+    return sum(file.stat().st_size for file in files if file.is_file())
+
+
+def large_ledger_warning(path: Path, *, threshold: int = LARGE_LEDGER_BYTES) -> str | None:
+    """Return a warning when the ledger at *path* has outgrown *threshold*.
+
+    Parameters
+    ----------
+    path : Path
+        The ledger database.
+    threshold : int, optional
+        Size in bytes, write-ahead log included, above which to warn.
+
+    Returns
+    -------
+    str | None
+        The warning, or ``None`` when the ledger is smaller.
+    """
+    size = on_disk_bytes(path)
+    if size <= threshold:
+        return None
+    return (
+        f"The ledger {path} is {format_bytes(size)}. Every run adds to it, cached "
+        "tasks included, and nothing is removed unless you prune it."
+    )

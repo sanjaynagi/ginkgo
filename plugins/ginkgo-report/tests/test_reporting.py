@@ -363,8 +363,8 @@ class TestFormatters:
 
     def test_bytes(self) -> None:
         assert format_bytes(512) == "512 B"
-        assert format_bytes(2048) == "2.0 KB"
-        assert format_bytes(5_368_709_120) == "5.0 GB"
+        assert format_bytes(2048) == "2.0 KiB"
+        assert format_bytes(5_368_709_120) == "5.0 GiB"
 
     def test_bytes_none(self) -> None:
         assert format_bytes(None) == "—"
