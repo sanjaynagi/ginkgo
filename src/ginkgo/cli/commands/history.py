@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 
 from rich.console import Group
@@ -112,7 +113,9 @@ def _summary_block(history: ResourceHistory) -> Text:
     declared = history.declared_memory_gb
     if declared:
         text.append(f"  declared {_gib(declared)}")
-        if history.effective_memory_gb and history.effective_memory_gb != declared:
+        # The scheduler budgets whole GiB, so only a budget above the
+        # declaration rounded up is an escalation.
+        if history.effective_memory_gb and history.effective_memory_gb > math.ceil(declared):
             text.append(f"  ·  ran against {_gib(history.effective_memory_gb)} after escalation")
         headroom = history.headroom
         if headroom is not None:
@@ -160,7 +163,7 @@ def _censored_line(history: ResourceHistory) -> str:
 
 
 def _gib(value: float) -> str:
-    """Render a declared memory figure, which is whole GiB in practice."""
+    """Render a memory figure in GiB, such as ``0.5 GiB`` for a ``512Mi`` declaration."""
     return f"{value:g} GiB"
 
 

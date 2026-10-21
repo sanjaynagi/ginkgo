@@ -95,15 +95,25 @@ task starts: the interpreter, ginkgo, and the workflow module with everything
 it imports, which is often 100 MB or more. That memory is the worker's, not the
 task's, so a Python task's `peak_rss_bytes` is its peak *above* the worker's
 resident memory as the body started, and the worker's figure is recorded
-beside it as `baseline_rss_bytes`. A task that allocates nothing measures close
-to zero. CPU time is likewise measured from the start of the body, after the
-workflow module is imported. A subprocess task's figure is its whole process
-tree, which is all the task's own.
+beside it as `baseline_rss_bytes`. The measurement stops as the body returns,
+before the worker encodes the result, so a task that allocates nothing measures
+close to zero even as the first task of a fresh worker. CPU time is likewise
+measured over the body alone, after the workflow module is imported. A
+subprocess task's figure is its whole process tree, which is all the task's
+own.
+
+A subprocess tree is sampled every quarter second, the first sample a quarter
+second after the command starts. A shell or script task that finishes sooner
+has no memory figure at all, and one that runs a little longer is measured from
+a sample or two, which can miss a short spike. Read a quick task's missing or
+small figure as "too short to sample", not as "used nothing".
 
 `ginkgo report` surfaces it as a **Peak memory** column in the task ledger
 (`measured / declared`, e.g. `3.2 GiB / 16Gi`, with the declaration as
-written); `ginkgo runs show --json` includes the raw `resource_usage` record per
-task. See [Reports](reports.md).
+written). A cache hit measured nothing in its run, so the report shows the peak
+of the earlier run that produced the result, named after it
+(`3.2 GiB (run 9e1f3e6c)`). `ginkgo runs show --json` includes the raw
+`resource_usage` record per task. See [Reports](reports.md).
 
 ### Across Runs
 
@@ -142,6 +152,10 @@ themselves:
   actually reached. Interpolating between two samples would report a peak no
   run ever hit, from a sampler whose resolution is a periodic `ps` of the
   process tree — a short spike can be missed entirely.
+
+The declared figure is the declaration as written, in GiB: `memory="512Mi"`
+reads `declared 0.5 GiB`, and the percentage is of that, not of the whole GiB
+the scheduler rounds it up to when budgeting.
 
 Where a retry escalated under `memory_retry_multiplier`, the declaration and
 the budget the attempt ran against are recorded separately, and the summary

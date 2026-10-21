@@ -129,11 +129,13 @@ class _TaskPeakRss:
         self._interval = interval_seconds
         self._stop = Event()
         self._peak = 0
+        # Started before the baseline is read, so the sampler's own thread
+        # stack is the worker's and not charged to the task.
+        self._thread = Thread(target=self._run, name="ginkgo-task-rss", daemon=True)
+        self._thread.start()
         self._sample()
         # Resident bytes as the task started; 0 where they cannot be read.
         self.baseline_bytes = self._peak
-        self._thread = Thread(target=self._run, name="ginkgo-task-rss", daemon=True)
-        self._thread.start()
 
     def stop(self, *, usage_end: Any) -> int:
         """Stop sampling and return the task's peak resident bytes above the baseline.
@@ -166,18 +168,21 @@ class _TaskPeakRss:
             self._peak = max(self._peak, rss)
 
 
-def _attach_measured_resources(
-    *, response: dict[str, Any], usage_start: Any | None, peak_rss: _TaskPeakRss | None
-) -> None:
-    """Add the task-body usage measurement to a worker response.
+def _body_usage(
+    *, usage_start: Any | None, peak_rss: _TaskPeakRss | None
+) -> dict[str, Any] | None:
+    """Return the task body's usage, measured as the body returns or raises.
 
-    Attached to error responses too — the usage measured before a failure
-    is what right-sizes an OOM-prone task.
+    Taken before the worker encodes the result and closes the task's logs:
+    that is the worker's work, and a fresh worker's first encode imports and
+    allocates enough to swamp a small task's own figure. Recorded for failed
+    bodies too — the usage measured before a failure is what right-sizes an
+    OOM-prone task.
     """
     usage_end = _rusage_snapshot() if usage_start is not None else None
     if usage_start is None or usage_end is None or peak_rss is None:
-        return
-    response["measured_resources"] = {
+        return None
+    return {
         "peak_rss_bytes": peak_rss.stop(usage_end=usage_end),
         "baseline_rss_bytes": peak_rss.baseline_bytes,
         "cpu_seconds": round(
@@ -229,8 +234,7 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         "display_label": payload.get("display_label"),
     }
     fn = None
-    usage_start: Any | None = None
-    peak_rss: _TaskPeakRss | None = None
+    measured: dict[str, Any] | None = None
     try:
         with (
             _task_log_context(
@@ -252,9 +256,11 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
             # Measured from here, once the workflow module is imported, so
             # the body's usage is not charged with the worker's imports.
             usage_start = _rusage_snapshot()
-            if usage_start is not None:
-                peak_rss = _TaskPeakRss(usage_start=usage_start)
-            result = fn(**decoded_args)
+            peak_rss = _TaskPeakRss(usage_start=usage_start) if usage_start is not None else None
+            try:
+                result = fn(**decoded_args)
+            finally:
+                measured = _body_usage(usage_start=usage_start, peak_rss=peak_rss)
 
         # Encode while any fuse mounts are still live: the result may
         # reference paths inside a mount (e.g. an input path returned
@@ -279,13 +285,15 @@ def run_task(payload: dict[str, Any]) -> dict[str, Any]:
         message = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
         exc.args = (redact_text(text=message, secret_values=secret_values),)
         response = error_response(exc)
-        _attach_measured_resources(response=response, usage_start=usage_start, peak_rss=peak_rss)
+        if measured is not None:
+            response["measured_resources"] = measured
         return response
     finally:
         if mounted_access is not None:
             mounted_access.close()
 
-    _attach_measured_resources(response=response, usage_start=usage_start, peak_rss=peak_rss)
+    if measured is not None:
+        response["measured_resources"] = measured
     if mounted_access is not None:
         response["remote_input_access"] = mounted_access.stats().to_dict()
     return response
