@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from collections.abc import Iterable
 from types import UnionType
 from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
@@ -315,10 +316,82 @@ def pair_elements_with_annotations(*, annotation: Any, value: Any) -> list[tuple
     return [(inner_annotation, item) for item in value]
 
 
+def rebuild_sequence(*, like: list | tuple, items: Iterable[Any]) -> list | tuple:
+    """Return a sequence of *like*'s own type holding *items*.
+
+    A walk that rewrites a container's elements must not turn a ``namedtuple``
+    or a ``list`` subclass into the builtin, since the value codec carries
+    those types across task boundaries.
+
+    Parameters
+    ----------
+    like : list | tuple
+        The sequence being rewritten.
+    items : Iterable[Any]
+        Its rewritten elements.
+
+    Returns
+    -------
+    list | tuple
+        A sequence of ``type(like)``. A ``namedtuple`` takes its fields as
+        separate arguments, so it is built with ``_make``.
+    """
+    sequence_type = type(like)
+    if (
+        sequence_type is not tuple
+        and issubclass(sequence_type, tuple)
+        and hasattr(sequence_type, "_make")
+    ):
+        return sequence_type._make(items)
+    return sequence_type(items)
+
+
 #: Exact types of a value that cannot name a path, a remote object or a secret.
 #: Walks over task values settle such a leaf with one type check, so a long list
 #: of numbers costs little to hash, label or validate.
 PLAIN_SCALAR_TYPES = frozenset({type(None), bool, int, float})
+
+
+def plain_data_strings(value: Any) -> set[str] | None:
+    """Return the strings a nested plain-data container holds, or ``None``.
+
+    Plain data is an exact ``list``, ``tuple`` or ``dict`` of plain scalars
+    (:data:`PLAIN_SCALAR_TYPES`), exact strings, and more plain data. Such a
+    value holds no marker, secret, remote object or pickled object, so a walk
+    looking for one need only ask about its strings, each once, instead of
+    visiting every element. Anything else — a subclass, an object, a dict
+    carrying a ``__ginkgo_type__`` tag — gives ``None``, and the caller walks
+    the value element by element.
+
+    Parameters
+    ----------
+    value : Any
+        The candidate value.
+
+    Returns
+    -------
+    set[str] | None
+        The distinct strings, or ``None`` when *value* is not plain data.
+    """
+    if type(value) not in (list, tuple, dict):
+        return None
+    strings: set[str] = set()
+    pending: list[Any] = [value]
+    while pending:
+        current = pending.pop()
+        current_type = type(current)
+        if current_type is dict:
+            if "__ginkgo_type__" in current:
+                return None
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif current_type in (list, tuple):
+            pending.extend(current)
+        elif current_type is str:
+            strings.add(current)
+        elif current_type not in PLAIN_SCALAR_TYPES:
+            return None
+    return strings
 
 
 def holds_only_plain_scalars(value: Any) -> bool:

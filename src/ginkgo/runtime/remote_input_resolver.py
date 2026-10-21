@@ -24,7 +24,13 @@ from typing import Any, get_args, get_origin
 
 from ginkgo.config import load_runtime_config
 from ginkgo.core.remote import RemoteFileRef, RemoteFolderRef, RemoteRef, is_remote_uri
-from ginkgo.core.types import PLAIN_SCALAR_TYPES, file, folder
+from ginkgo.core.types import (
+    PLAIN_SCALAR_TYPES,
+    file,
+    folder,
+    plain_data_strings,
+    rebuild_sequence,
+)
 from ginkgo.remote.access.doctor import local_streaming_available
 from ginkgo.remote.access.protocol import encode_fuse_ref
 from ginkgo.remote.access.resolver import (
@@ -40,6 +46,10 @@ from ginkgo.workspace_layout import WorkspaceLayout
 def remote_value_requires_staging(*, annotation: Any, value: Any) -> bool:
     """Return whether a value must be staged before cache identity is safe."""
     if type(value) in PLAIN_SCALAR_TYPES:
+        return False
+    # A large plain value is settled by its distinct strings alone.
+    strings = plain_data_strings(value)
+    if strings is not None and not any(is_remote_uri(text) for text in strings):
         return False
     if isinstance(value, RemoteRef):
         return value.version_id is None
@@ -357,7 +367,7 @@ class RemoteStager:
                 )
                 for item in value
             ]
-            return type(value)(staged_items)
+            return rebuild_sequence(like=value, items=staged_items)
 
         return value
 

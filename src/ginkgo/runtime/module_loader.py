@@ -8,8 +8,9 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
-from ginkgo.project import find_project_root
+from ginkgo.project import find_project_root, project_root
 
 
 USER_MODULE_PREFIX = "ginkgo_user_"
@@ -17,7 +18,8 @@ USER_MODULE_PREFIX = "ginkgo_user_"
 
 The name is unique to this process and this absolute path, so nothing outside
 the run can import it. Anything that records a class by module name — pickle,
-above all — must treat such a name as unresolvable rather than durable.
+above all — must treat such a name as unresolvable rather than durable, and
+record :func:`workflow_module_reference` instead.
 """
 
 
@@ -35,6 +37,106 @@ def cache_identity_module_name(name: str) -> str:
     package module keeps its stable dotted name.
     """
     return CACHE_IDENTITY_MODULE if name.startswith(USER_MODULE_PREFIX) else name
+
+
+def workflow_module_reference(module_name: str) -> str | None:
+    """Return where a single-file workflow module can be found again, or ``None``.
+
+    A class or function defined in a single-file workflow records the
+    synthetic module name, which no other process can import. This is the
+    portable stand-in pickle records instead: the module's file relative to
+    the project root, or its absolute path when it lies outside the project.
+
+    Parameters
+    ----------
+    module_name : str
+        The ``__module__`` of the class or function being recorded.
+
+    Returns
+    -------
+    str | None
+        The reference, or ``None`` for a module with a real, importable name.
+    """
+    if not module_name.startswith(USER_MODULE_PREFIX):
+        return None
+    module_file = getattr(sys.modules.get(module_name), "__file__", None)
+    if module_file is None:
+        return None
+    path = Path(module_file).resolve()
+    try:
+        return path.relative_to(project_root().resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def import_workflow_attribute(reference: str, qualname: str) -> Any:
+    """Return the object *qualname* names in the single-file workflow at *reference*.
+
+    The reconstructor pickle calls, with the arguments it recorded, for a class
+    or function pickled by :func:`workflow_module_reference`; hence the
+    positional parameters. The workflow already loaded in this process is
+    preferred, so a value decoded in a run is an instance of the very class
+    that run's tasks use: first the module loaded from *reference*, then, when
+    the workflow has since been renamed or copied, the most recently loaded
+    single-file workflow defining *qualname*. Only when neither is loaded (a
+    fresh worker whose task lives in another module) is the file at
+    *reference* loaded.
+
+    Parameters
+    ----------
+    reference : str
+        A :func:`workflow_module_reference`.
+    qualname : str
+        The object's qualified name within the module.
+
+    Returns
+    -------
+    Any
+        The class or function.
+    """
+    path = Path(reference)
+    if not path.is_absolute():
+        path = project_root() / path
+    path = path.resolve()
+
+    loaded = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith(USER_MODULE_PREFIX) and module is not None
+    ]
+    module = next(
+        (
+            module
+            for module in loaded
+            if getattr(module, "__file__", None) and Path(module.__file__).resolve() == path
+        ),
+        None,
+    )
+    if module is None:
+        module = next(
+            (module for module in reversed(loaded) if _has_qualname(module, qualname)),
+            None,
+        )
+    if module is None:
+        module = load_module_from_path(path)
+    return _lookup_qualname(module, qualname)
+
+
+def _lookup_qualname(module: ModuleType, qualname: str) -> Any:
+    """Return the object a dotted *qualname* names inside *module*."""
+    target: Any = module
+    for part in qualname.split("."):
+        target = getattr(target, part)
+    return target
+
+
+def _has_qualname(module: ModuleType, qualname: str) -> bool:
+    """Return whether *module* defines *qualname*."""
+    try:
+        _lookup_qualname(module, qualname)
+    except AttributeError:
+        return False
+    return True
 
 
 def task_base_name(name: str) -> str:

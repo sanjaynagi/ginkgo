@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import sys
+from collections import OrderedDict, defaultdict, namedtuple
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,6 +20,13 @@ from ginkgo.runtime.artifacts.value_codec import (
     encode_value,
     hash_value_bytes,
 )
+from ginkgo.runtime.module_loader import load_module_from_path
+
+Point = namedtuple("Point", "x y")
+
+
+class Numbers(list):
+    """A list subclass, as a workflow might define one."""
 
 
 class TestPathMarkers:
@@ -42,6 +54,132 @@ class TestScalarSubclasses:
 
         assert type(decoded) is type(value)
         assert decoded == value
+
+
+class TestContainerSubclasses:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            Point(1, 2),
+            OrderedDict(b=1, a=2),
+            defaultdict(list, {"a": [1]}),
+            Numbers([1, 2]),
+        ],
+        ids=["namedtuple", "ordereddict", "defaultdict", "list-subclass"],
+    )
+    def test_a_subclass_round_trips_as_itself(self, tmp_path, value) -> None:
+        decoded = decode_value(encode_value(value, base_dir=tmp_path), base_dir=tmp_path)
+
+        assert type(decoded) is type(value)
+        assert decoded == value
+
+    def test_a_defaultdict_keeps_its_default_factory(self, tmp_path) -> None:
+        value = defaultdict(list, {"a": [1]})
+
+        decoded = decode_value(encode_value(value, base_dir=tmp_path), base_dir=tmp_path)
+
+        assert decoded["missing"] == []
+
+    def test_exact_containers_are_still_encoded_item_by_item(self, tmp_path) -> None:
+        encoded = encode_value([(1,), {"a": 2}], base_dir=tmp_path)
+
+        assert encoded["__ginkgo_type__"] == "list"
+        assert [item["__ginkgo_type__"] for item in encoded["items"]] == ["tuple", "dict"]
+
+    def test_a_class_that_cannot_be_imported_is_a_codec_error(self, tmp_path) -> None:
+        Local = namedtuple("Local", "x")
+
+        with pytest.raises(CodecError, match="module level"):
+            encode_value(Local(1), base_dir=tmp_path)
+
+
+WORKFLOW_SOURCE = """
+import dataclasses
+import enum
+
+
+@dataclasses.dataclass
+class Point:
+    x: int
+
+
+class Colour(enum.Enum):
+    RED = 1
+"""
+
+
+@pytest.fixture
+def workflow_project(tmp_path, monkeypatch) -> Path:
+    """A project whose single-file workflow defines a dataclass and an enum."""
+    project = tmp_path / "project"
+    (project / "workflow").mkdir(parents=True)
+    (project / "ginkgo.toml").write_text("", encoding="utf-8")
+    (project / "workflow" / "flow.py").write_text(WORKFLOW_SOURCE, encoding="utf-8")
+    monkeypatch.chdir(project)
+    # Loading the workflow puts its directory on sys.path; undo that after.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    return project
+
+
+def _forget_workflow_modules() -> None:
+    """Drop every loaded single-file workflow, as a fresh process has none."""
+    for name in [name for name in sys.modules if name.startswith("ginkgo_user_")]:
+        del sys.modules[name]
+
+
+class TestWorkflowClasses:
+    def test_a_value_decodes_in_a_process_that_never_loaded_the_workflow(
+        self, workflow_project
+    ) -> None:
+        module = load_module_from_path(workflow_project / "workflow" / "flow.py")
+        encoded = encode_value([module.Point(3), module.Colour.RED], base_dir=workflow_project)
+        _forget_workflow_modules()
+
+        point, colour = decode_value(encoded, base_dir=workflow_project)
+
+        assert type(point).__qualname__ == "Point"
+        assert point.x == 3
+        assert colour.name == "RED"
+
+    def test_a_value_decodes_as_the_loaded_workflow_class(self, workflow_project) -> None:
+        module = load_module_from_path(workflow_project / "workflow" / "flow.py")
+
+        decoded = decode_value(
+            encode_value(module.Colour.RED, base_dir=workflow_project),
+            base_dir=workflow_project,
+        )
+
+        assert decoded is module.Colour.RED
+
+    def test_a_moved_project_decodes_its_values(self, workflow_project, monkeypatch) -> None:
+        module = load_module_from_path(workflow_project / "workflow" / "flow.py")
+        encoded = encode_value(module.Point(3), base_dir=workflow_project)
+        moved = workflow_project.with_name("moved")
+        shutil.move(workflow_project, moved)
+        monkeypatch.chdir(moved)
+        _forget_workflow_modules()
+
+        assert decode_value(encoded, base_dir=moved).x == 3
+
+    def test_a_copied_workflow_hashes_its_values_the_same(self, workflow_project) -> None:
+        original = load_module_from_path(workflow_project / "workflow" / "flow.py")
+        copy_path = workflow_project / "workflow" / "flow_copy.py"
+        copy_path.write_text(WORKFLOW_SOURCE, encoding="utf-8")
+        copy = load_module_from_path(copy_path)
+
+        assert hash_value_bytes(original.Point(3)) == hash_value_bytes(copy.Point(3))
+
+
+class TestArrayCodecs:
+    def test_an_array_round_trips(self, tmp_path) -> None:
+        value = np.arange(6, dtype=np.int32).reshape(2, 3)
+
+        decoded = decode_value(
+            encode_value(value, base_dir=tmp_path, inline_limit=0), base_dir=tmp_path
+        )
+
+        assert decoded.dtype == value.dtype
+        assert (decoded == value).all()
 
 
 class TestDecodeTags:
